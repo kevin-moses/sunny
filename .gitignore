@@ -1,0 +1,93 @@
+**/.env
+.claude
+# Xcode / Swift
+DerivedData/
+build/
+*.xcworkspace
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcodeproj/xcshareddata/WorkspaceSettings.xcsettings
+*.xcuserstate
+*.xcuserdata/
+*.moved-aside
+*.xcuserdatad/
+*.swiftsourceinfo
+*.swiftpm/
+.swiftpm/
+.swift-version
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.app
+*.DS_Store
+
+# Swift Package Manager
+/.build/
+Package.resolved
+
+# Carthage
+Carthage/Build/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# Xcode Server
+integration.json
+
+# Swift Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# User-specific
+*.personal.xcconfig
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg-info/
+.eggs/
+dist/
+build/
+*.log
+*.sqlite3
+*.db
+*.pot
+*.mo
+*.coverage
+.coverage.*
+.cache
+.tox/
+.mypy_cache/
+.pytest_cache/
+.dmypy.json
+.pyre/
+*.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.envrc
+*.bak
+*.swp
+*.swo
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
