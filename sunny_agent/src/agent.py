@@ -18,6 +18,7 @@ from livekit.agents import (
 from livekit.agents.llm import function_tool
 from livekit.plugins import cartesia, deepgram, noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from tavily import TavilyClient
 
 logger = logging.getLogger("agent")
 
@@ -27,27 +28,32 @@ load_dotenv(".env.local")
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful voice AI assistant.
+            instructions="""You are a helpful voice assistant named Sunny, here to make the user's life easier. You are a voice interface to help with more accessible phone interactions.
             You eagerly assist users with their questions by providing information from your extensive knowledge.
             Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
             You are curious, friendly, and have a sense of humor.""",
         )
+        self.tavliy_client = TavilyClient()  # API key is loaded from .env.local automatically
 
-    # all functions annotated with @function_tool will be passed to the LLM when this
-    # agent is active
     @function_tool
-    async def lookup_weather(self, context: RunContext, location: str):
-        """Use this tool to look up current weather information in the given location.
-
-        If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-
+    async def web_search(self, context: RunContext, query: str):
+        """Use this tool to look up information on the web.
+        
         Args:
-            location: The location to look up weather information for (e.g. city name)
+            query: The search query to look up
+            
+        Returns:
+            The search results or an error message
         """
-
-        logger.info(f"Looking up weather for {location}")
-
-        return "sunny with a temperature of 70 degrees."
+        logger.info(f"Looking up information on {query}")
+        await context.session.say("I'm looking up information on that topic. Please wait a moment.")
+        try:
+            response = self.tavliy_client.search(query, include_answer="basic")
+            logger.info(f"Answer: {response.get('answer')}")
+            return response.get("answer", "No results found for that query.")
+        except Exception as e:
+            logger.error(f"Error looking up information on {query}: {e}")
+            return "I'm sorry, I'm having trouble with my web search right now. Please try again later."
 
 
 def prewarm(proc: JobProcess):
@@ -61,31 +67,32 @@ async def entrypoint(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using OpenAI, Cartesia, Deepgram, and the LiveKit turn detector
-    session = AgentSession(
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all providers at https://docs.livekit.io/agents/integrations/llm/
-        llm=openai.LLM(model="gpt-4o-mini"),
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all providers at https://docs.livekit.io/agents/integrations/stt/
-        stt=deepgram.STT(model="nova-3", language="multi"),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all providers at https://docs.livekit.io/agents/integrations/tts/
-        tts=cartesia.TTS(voice="6f84f4b8-58a2-430c-8c79-688dad597532"),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
-        turn_detection=MultilingualModel(),
-        vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
-        preemptive_generation=True,
-    )
+    # # Set up a voice AI pipeline using OpenAI, Cartesia, Deepgram, and the LiveKit turn detector
+    # session = AgentSession(
+    #     # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
+    #     # See all providers at https://docs.livekit.io/agents/integrations/llm/
+    #     llm=openai.LLM(model="gpt-4o-mini"),
+    #     # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
+    #     # See all providers at https://docs.livekit.io/agents/integrations/stt/
+    #     stt=deepgram.STT(model="nova-3", language="multi"),
+    #     # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
+    #     # See all providers at https://docs.livekit.io/agents/integrations/tts/
+    #     tts=cartesia.TTS(voice="6f84f4b8-58a2-430c-8c79-688dad597532"),
+    #     # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
+    #     # See more at https://docs.livekit.io/agents/build/turns
+    #     turn_detection=MultilingualModel(),
+    #     vad=ctx.proc.userdata["vad"],
+    #     # allow the LLM to generate a response while waiting for the end of turn
+    #     # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
+    #     preemptive_generation=True,
+    # )
 
     # To use a realtime model instead of a voice pipeline, use the following session setup instead:
-    # session = AgentSession(
-    #     # See all providers at https://docs.livekit.io/agents/integrations/realtime/
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
+    session = AgentSession(
+        # See all providers at https://docs.livekit.io/agents/integrations/realtime/
+        llm=openai.realtime.RealtimeModel(voice="shimmer", modalities=["text"]),
+        tts=cartesia.TTS(voice="6f84f4b8-58a2-430c-8c79-688dad597532"),
+    )
 
     # sometimes background noise could interrupt the agent session, these are considered false positive interruptions
     # when it's detected, you may resume the agent's speech

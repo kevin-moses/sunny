@@ -13,6 +13,7 @@ dependencies = [
     "livekit-plugins-noise-cancellation~=0.2",
     "numpy<2",
     "python-dotenv",
+    "tavily-python>=0.7.12",
 ]
 
 [dependency-groups]
