@@ -3,6 +3,25 @@ import Combine
 import LiveKit
 import Observation
 
+/// Data structure for reminder creation
+struct ReminderData: Codable {
+    let title: String
+    let notes: String?
+    let due_date: String?
+}
+
+/// Data structure for contact search
+struct ContactSearchData: Codable {
+    let query: String
+}
+
+/// Data structure for message sending
+struct MessageData: Codable {
+    let contactId: String
+    let phoneNumber: String
+    let message: String
+}
+
 /// The main view model encapsulating root states and behaviors of the app
 /// such as connection, published tracks, etc.
 ///
@@ -91,6 +110,12 @@ final class AppViewModel {
     @Dependency(\.tokenService) private var tokenService
     @ObservationIgnored
     @Dependency(\.errorHandler) private var errorHandler
+    @ObservationIgnored
+    @Dependency(\.reminderService) private var reminderService
+    @ObservationIgnored
+    @Dependency(\.contactService) private var contactService
+    @ObservationIgnored
+    @Dependency(\.messageService) private var messageService
 
     // MARK: - Initialization
 
@@ -99,6 +124,7 @@ final class AppViewModel {
 
         observeRoom()
         observeDevices()
+        setupRpcMethods()
     }
 
     private func observeRoom() {
@@ -148,6 +174,78 @@ final class AppViewModel {
 
     deinit {
         AudioManager.shared.onDeviceUpdate = nil
+    }
+    
+    private func setupRpcMethods() {
+        Task { [weak self] in
+            do {
+                try await self?.room.registerRpcMethod("createReminder") { data async throws -> String in
+                    print("[RPC] createReminder from: \(data.callerIdentity)")
+                    print("[RPC] payload: \(data.payload.prefix(200))")
+                    do {
+                        let reminderData = try JSONDecoder().decode(ReminderData.self, from: data.payload.data(using: .utf8) ?? Data())
+
+                        // Use a fresh service instance to avoid crossing actors
+                        let service = EventKitReminderService()
+                        let result = try service.createReminder(
+                            title: reminderData.title,
+                            notes: reminderData.notes ?? "",
+                            dueDate: reminderData.due_date ?? ""
+                        )
+                        print("[RPC] createReminder success: \(result)")
+                        return result
+                    } catch {
+                        print("[RPC] createReminder error: \(error)")
+                        return "Error creating reminder: \(error.localizedDescription)"
+                    }
+                }
+
+                try await self?.room.registerRpcMethod("findContact") { data async throws -> String in
+                    print("[RPC] findContact from: \(data.callerIdentity)")
+                    print("[RPC] payload: \(data.payload.prefix(200))")
+                    do {
+                        let searchData = try JSONDecoder().decode(ContactSearchData.self, from: data.payload.data(using: .utf8) ?? Data())
+
+                        // Use a fresh service instance to avoid crossing actors
+                        let service = ContactService()
+                        let contacts = try await service.findContacts(query: searchData.query)
+
+                        // Return JSON array of contacts
+                        let jsonData = try JSONEncoder().encode(contacts)
+                        let result = String(data: jsonData, encoding: .utf8) ?? "[]"
+
+                        print("[RPC] findContact success: found \(contacts.count) contacts")
+                        return result
+                    } catch {
+                        print("[RPC] findContact error: \(error)")
+                        return "[]" // Return empty array on error
+                    }
+                }
+
+                try await self?.room.registerRpcMethod("sendMessage") { data async throws -> String in
+                    print("[RPC] sendMessage from: \(data.callerIdentity)")
+                    print("[RPC] payload: \(data.payload.prefix(200))")
+                    do {
+                        let messageData = try JSONDecoder().decode(MessageData.self, from: data.payload.data(using: .utf8) ?? Data())
+
+                        // Use a fresh service instance to avoid crossing actors
+                        let service = await MessageService()
+                        let result = try await service.sendMessage(
+                            contactId: messageData.contactId,
+                            phoneNumber: messageData.phoneNumber,
+                            message: messageData.message
+                        )
+                        print("[RPC] sendMessage success: \(result)")
+                        return result
+                    } catch {
+                        print("[RPC] sendMessage error: \(error)")
+                        return "Error sending message: \(error.localizedDescription)"
+                    }
+                }
+            } catch {
+                self?.errorHandler(error)
+            }
+        }
     }
 
     private func resetState() {

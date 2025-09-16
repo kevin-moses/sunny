@@ -19,6 +19,9 @@ final class Dependencies {
     // MARK: Services
 
     lazy var tokenService = TokenService()
+    lazy var reminderService = EventKitReminderService()
+    lazy var contactService = ContactService()
+    lazy var messageService = MessageService()
 
     private lazy var localMessageSender = LocalMessageSender(room: room)
     lazy var messageSenders: [any MessageSender] = [

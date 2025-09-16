@@ -50,14 +50,6 @@ Frame the AI's persona as a helpful, patient human assistant, not a machine.
 
     Proactive Suggestions: After completing a task, it could offer relevant next steps. "Your reminder is set. Do you need help with anything else?"
 
-Pillar 4: The Human Fallback
-
-This is your most critical trust-building feature.
-
-    Escape Hatch: If the user gets frustrated or says "I need help" or "I want to talk to a person," the app should have a pre-configured action.
-
-    LiveKit's Superpower: Use LiveKit to seamlessly escalate the session to a video or audio call with a designated family member, caregiver, or support contact. This transforms the app from a useful tool into a safety net.
-
 4. Technical and Implementation Notes
 
     On-Device Functions (Reminders, Texts): Your primary integration point will be Apple's Shortcuts framework. You can have your AI generate the parameters for a Shortcut and then execute it. This is the most robust way to interact with native iOS functions.

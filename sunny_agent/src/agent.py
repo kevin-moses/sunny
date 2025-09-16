@@ -1,3 +1,4 @@
+import json
 import logging
 
 from dotenv import load_dotenv
@@ -55,6 +56,147 @@ class Assistant(Agent):
             logger.error(f"Error looking up information on {query}: {e}")
             return "I'm sorry, I'm having trouble with my web search right now. Please try again later."
 
+    @function_tool
+    async def create_reminder(self, context: RunContext, title: str, notes: str = "", due_date: str = ""):
+        """Create a reminder in the user's Reminders app.
+
+        Args:
+            title: The title of the reminder (required)
+            notes: Optional notes for the reminder
+            due_date: Optional due date in format "YYYY-MM-DD HH:MM" or "YYYY-MM-DD"
+
+        Returns:
+            Confirmation message or error
+        """
+        logger.info(f"Creating reminder: {title}")
+        await context.session.say("I'll create that reminder for you.")
+
+        try:
+            # Import get_job_context to access the room
+            from livekit.agents import get_job_context
+
+            room = get_job_context().room
+            participant_identity = next(iter(room.remote_participants))
+
+            # Prepare the reminder data
+            reminder_data = {
+                "title": title,
+                "notes": notes,
+                "due_date": due_date
+            }
+
+            # Send RPC call to the iOS app
+            response = await room.local_participant.perform_rpc(
+                destination_identity=participant_identity,
+                method="createReminder",
+                payload=json.dumps(reminder_data),
+                response_timeout=10.0,
+            )
+
+            logger.info(f"Reminder creation response: {response}")
+            return f"Reminder '{title}' has been created successfully."
+
+        except Exception as e:
+            logger.error(f"Error creating reminder: {e}")
+            return "I'm sorry, I couldn't create that reminder. Please try again."
+
+    @function_tool
+    async def find_contact(self, context: RunContext, query: str):
+        """Find contacts matching a search query.
+
+        Args:
+            query: The search string to match against contact names
+
+        Returns:
+            List of matching contacts with names and phone numbers
+        """
+        logger.info(f"Finding contacts for query: {query}")
+        await context.session.say("Let me search your contacts.")
+
+        try:
+            # Import get_job_context to access the room
+            from livekit.agents import get_job_context
+
+            room = get_job_context().room
+            participant_identity = next(iter(room.remote_participants))
+
+            # Prepare the search data
+            search_data = {
+                "query": query
+            }
+
+            # Send RPC call to the iOS app
+            response = await room.local_participant.perform_rpc(
+                destination_identity=participant_identity,
+                method="findContact",
+                payload=json.dumps(search_data),
+                response_timeout=10.0,
+            )
+
+            logger.info(f"Contact search response: {response}")
+
+            # Parse the response to get contact list
+            contacts = json.loads(response)
+
+            if not contacts:
+                return f"I couldn't find any contacts matching '{query}'. Please try a different name."
+            elif len(contacts) == 1:
+                contact = contacts[0]
+                return f"I found {contact['name']} with phone number {contact['phone']}."
+            else:
+                contact_list = ", ".join([f"{c['name']} ({c['phone']})" for c in contacts[:3]])
+                if len(contacts) > 3:
+                    contact_list += f" and {len(contacts) - 3} more"
+                return f"I found {len(contacts)} contacts: {contact_list}. Which one would you like to message?"
+
+        except Exception as e:
+            logger.error(f"Error finding contacts: {e}")
+            return "I'm sorry, I couldn't search your contacts right now. Please try again."
+
+    @function_tool
+    async def send_message(self, context: RunContext, contact_name: str, phone_number: str, message: str):
+        """Send a message to a contact.
+
+        Args:
+            contact_name: The name of the contact (for confirmation)
+            phone_number: The recipient's phone number
+            message: The message content to send
+
+        Returns:
+            Confirmation message or error
+        """
+        logger.info(f"Sending message to {contact_name} ({phone_number}): {message}")
+        await context.session.say(f"I'll send that message to {contact_name}.")
+
+        try:
+            # Import get_job_context to access the room
+            from livekit.agents import get_job_context
+
+            room = get_job_context().room
+            participant_identity = next(iter(room.remote_participants))
+
+            # Prepare the message data
+            message_data = {
+                "contactId": "",  # Not currently used but available for future
+                "phoneNumber": phone_number,
+                "message": message
+            }
+
+            # Send RPC call to the iOS app
+            response = await room.local_participant.perform_rpc(
+                destination_identity=participant_identity,
+                method="sendMessage",
+                payload=json.dumps(message_data),
+                response_timeout=10.0,
+            )
+
+            logger.info(f"Message send response: {response}")
+            return f"I've opened the message composer to send '{message}' to {contact_name}. Please review and send."
+
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            return "I'm sorry, I couldn't send that message. Please try again."
+
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
@@ -91,7 +233,7 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         # See all providers at https://docs.livekit.io/agents/integrations/realtime/
         llm=openai.realtime.RealtimeModel(voice="shimmer", modalities=["text"]),
-        tts=cartesia.TTS(voice="6f84f4b8-58a2-430c-8c79-688dad597532"),
+        tts=cartesia.TTS(voice="1db9bd26-cac5-41dd-bf8d-0988d1f4eb03"),
     )
 
     # sometimes background noise could interrupt the agent session, these are considered false positive interruptions
