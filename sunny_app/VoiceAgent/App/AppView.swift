@@ -1,12 +1,25 @@
+// App/AppView.swift
+//
+// Root view for the Sunny app. Hosts the start screen or the active interaction
+// view depending on connection state, and overlays error/warning banners.
+//
+// In DEBUG builds, a floating "DEV" button in the top-right corner opens
+// DevSettingsView — a live slider panel for adjusting SunnyTheme properties.
+// Remove the devSettingsButton overlay once the design is finalized.
+//
+// Background is fixed to SunnyColors.background (#EBC196) app-wide.
+
 import SwiftUI
 
 struct AppView: View {
     @Environment(AppViewModel.self) private var viewModel
+    @Environment(SunnyTheme.self) private var theme
+
     @State private var chatViewModel = ChatViewModel()
-
     @State private var error: Error?
-    @FocusState private var keyboardFocus: Bool
+    @State private var showDevSettings = false
 
+    @FocusState private var keyboardFocus: Bool
     @Namespace private var namespace
 
     var body: some View {
@@ -18,6 +31,15 @@ struct AppView: View {
             }
 
             errors()
+        }
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            devSettingsButton()
+        }
+        #endif
+        .sheet(isPresented: $showDevSettings) {
+            DevSettingsView()
+                .environment(theme)
         }
         .environment(\.namespace, namespace)
         #if os(visionOS)
@@ -39,7 +61,7 @@ struct AppView: View {
                 }
             }
         #endif
-            .background(.bg1)
+            .background(SunnyColors.background)
             .animation(.default, value: viewModel.isInteractive)
             .animation(.default, value: viewModel.interactionMode)
             .animation(.default, value: viewModel.isCameraEnabled)
@@ -52,6 +74,8 @@ struct AppView: View {
             .sensoryFeedback(.impact, trigger: viewModel.isListening)
         #endif
     }
+
+    // MARK: - Sub-views
 
     @ViewBuilder
     private func start() -> some View {
@@ -107,8 +131,37 @@ struct AppView: View {
         }
         .animation(.default, value: chatViewModel.messages.isEmpty)
     }
+
+    // MARK: - Dev Settings Button (DEBUG only)
+
+    /// Floating pill button in the top-right safe area that opens DevSettingsView.
+    /// Only compiled in DEBUG builds — not present in release.
+    @ViewBuilder
+    private func devSettingsButton() -> some View {
+        Button {
+            showDevSettings = true
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(theme.accentColor)
+                    .frame(width: 8, height: 8)
+                Text("DEV")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.primary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(theme.accentColor.opacity(0.4), lineWidth: 1))
+        }
+        .accessibilityLabel("Open developer settings")
+        .padding(.top, 8)
+        .padding(.trailing, 16)
+    }
 }
 
 #Preview {
     AppView()
+        .environment(AppViewModel())
+        .environment(SunnyTheme())
 }

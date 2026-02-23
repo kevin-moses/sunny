@@ -1,3 +1,9 @@
+// Helpers/Style.swift
+//
+// Shared SwiftUI button styles and layout constants used across the Sunny app.
+// ProminentButtonStyle accepts an accentColor so callers can pass theme.accentColor.
+// Button text is BLACK for maximum contrast against the warm accent backgrounds.
+
 import SwiftUI
 
 extension CGFloat {
@@ -19,29 +25,49 @@ extension CGFloat {
     static let cornerRadiusLarge: Self = 4 * grid
 }
 
+/// Full-width solid button used for primary call-to-action (e.g. connect).
+///
+/// purpose: Render a prominent tappable button with a solid accent background.
+/// @param accentColor: (Color) fill color for the button background; pass theme.accentColor
+/// @param fontSize: (CGFloat) label font size in points; pass theme.buttonFontSize
 struct ProminentButtonStyle: ButtonStyle {
+    var accentColor: Color = .fgAccent
+    var fontSize: CGFloat = 19
+    var cornerRadius: CGFloat = 12
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .textCase(.uppercase)
-            .font(.system(size: 14, weight: .semibold, design: .monospaced))
-            .foregroundStyle(.white)
-            .background(.fgAccent.opacity(configuration.isPressed ? 0.75 : 1))
-            .cornerRadius(8)
+            .font(.system(size: fontSize, weight: .semibold))
+            .foregroundStyle(.black)
+            .background(accentColor.opacity(configuration.isPressed ? 0.75 : 1))
+            .cornerRadius(cornerRadius)
     }
 }
 
+/// Circular icon button used in lists and secondary actions.
+///
+/// purpose: Render a round button with accent fill, disabled-state awareness.
+/// @param accentColor: (Color) fill color; defaults to .fgAccent
 struct RoundButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) var isEnabled
+    var accentColor: Color = .fgAccent
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white)
-            .background(isEnabled ? .fgAccent.opacity(configuration.isPressed ? 0.75 : 1) : .fg4.opacity(0.4))
+            .background(isEnabled ? accentColor.opacity(configuration.isPressed ? 0.75 : 1) : .fg4.opacity(0.4))
             .clipShape(Circle())
     }
 }
 
+/// Icon button style used inside the control bar.
+///
+/// purpose: Render an icon button with optional toggled-on background fill.
+/// @param isToggled: (Bool) whether the toggled-on background fill is shown
+/// @param foregroundColor: (Color) icon/label tint
+/// @param backgroundColor: (Color) fill when isToggled is true
+/// @param borderColor: (Color) used for disabled state foreground
 struct ControlBarButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) var isEnabled
 

@@ -1,3 +1,13 @@
+// ControlBar/ControlBar.swift
+//
+// Bottom action bar showing microphone, camera, screen share, text input,
+// and disconnect controls. All buttons meet the 60x60pt minimum tap target
+// size required for senior accessibility.
+//
+// Reads SunnyTheme for accent color used on active/toggled states.
+// Background uses SunnyColors.background (#EBC196) to match the app background.
+// Accessibility: each button has an explicit accessibilityLabel.
+
 import LiveKitComponents
 
 /// A multiplatform view that shows the control bar: audio/video and chat controls.
@@ -5,11 +15,13 @@ import LiveKitComponents
 /// - SeeAlso: ``AgentFeatures``
 struct ControlBar: View {
     @Environment(AppViewModel.self) private var viewModel
+    @Environment(SunnyTheme.self) private var theme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private enum Constants {
-        static let buttonWidth: CGFloat = 16 * .grid
-        static let buttonHeight: CGFloat = 11 * .grid
+        /// Minimum 60pt wide button for senior tap target compliance.
+        static let buttonWidth: CGFloat  = 60
+        static let buttonHeight: CGFloat = 60
     }
 
     var body: some View {
@@ -48,13 +60,15 @@ struct ControlBar: View {
             )
             .background(
                 RoundedRectangle(cornerRadius: 7.5 * .grid)
-                    .fill(.bg1)
+                    .fill(SunnyColors.background)
                     .shadow(color: .black.opacity(0.1), radius: 10, y: 10)
             )
             .safeAreaPadding(.bottom, 8 * .grid)
             .safeAreaPadding(.horizontal, 16 * .grid)
         #endif
     }
+
+    // MARK: - Spacers
 
     @ViewBuilder
     private func flexibleSpacer() -> some View {
@@ -75,6 +89,8 @@ struct ControlBar: View {
             .frame(width: 1, height: 3 * .grid)
     }
 
+    // MARK: - Controls
+
     @ViewBuilder
     private func audioControls() -> some View {
         HStack(spacing: .zero) {
@@ -88,10 +104,10 @@ struct ControlBar: View {
                         .frame(maxHeight: .infinity)
                         .id(viewModel.audioTrack?.id)
                 }
-                .frame(height: Constants.buttonHeight)
-                .padding(.horizontal, 2 * .grid)
+                .frame(width: Constants.buttonWidth, height: Constants.buttonHeight)
                 .contentShape(Rectangle())
             }
+            .accessibilityLabel(viewModel.isMicrophoneEnabled ? "Mute microphone" : "Unmute microphone")
             #if os(macOS)
             separator()
             AudioDeviceSelector()
@@ -109,10 +125,10 @@ struct ControlBar: View {
             AsyncButton(action: viewModel.toggleCamera) {
                 Image(systemName: viewModel.isCameraEnabled ? "video.fill" : "video.slash.fill")
                     .transition(.symbolEffect)
-                    .frame(height: Constants.buttonHeight)
-                    .padding(.horizontal, 2 * .grid)
+                    .frame(width: Constants.buttonWidth, height: Constants.buttonHeight)
                     .contentShape(Rectangle())
             }
+            .accessibilityLabel(viewModel.isCameraEnabled ? "Turn off camera" : "Turn on camera")
             #if os(macOS)
             separator()
             VideoDeviceSelector()
@@ -139,6 +155,7 @@ struct ControlBar: View {
                 borderColor: .separator1
             )
         )
+        .accessibilityLabel(viewModel.isScreenShareEnabled ? "Stop screen share" : "Start screen share")
         .disabled(viewModel.agent == nil)
     }
 
@@ -157,6 +174,7 @@ struct ControlBar: View {
                 borderColor: .separator1
             )
         )
+        .accessibilityLabel(viewModel.interactionMode == .text ? "Switch to voice" : "Switch to text")
         .disabled(viewModel.agent == nil)
     }
 
@@ -174,6 +192,7 @@ struct ControlBar: View {
                 borderColor: .separatorSerious
             )
         )
+        .accessibilityLabel("End conversation")
         .disabled(viewModel.connectionState == .disconnected)
     }
 }
@@ -181,4 +200,5 @@ struct ControlBar: View {
 #Preview {
     ControlBar()
         .environment(AppViewModel())
+        .environment(SunnyTheme())
 }

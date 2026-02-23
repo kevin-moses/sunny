@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0AD646302EA86AFA007821AA /* Noise in Frameworks */ = {isa = PBXBuildFile; productRef = 0AD6462F2EA86AFA007821AA /* Noise */; };
 		ACAEBA5B2DE6EE970072E93E /* ReplayKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ACAEBA5A2DE6EE970072E93E /* ReplayKit.framework */; };
 		ACAEBA622DE6EE970072E93E /* BroadcastExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = ACAEBA582DE6EE970072E93E /* BroadcastExtension.appex */; platformFilters = (ios, xros, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ACAEBA692DE6EF4B0072E93E /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = ACAEBA682DE6EF4B0072E93E /* LiveKit */; };
@@ -47,6 +48,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0AD6462E2EA5CED2007821AA /* playground.playground */ = {isa = PBXFileReference; lastKnownFileType = file.playground; name = playground.playground; path = /Users/Kevin/Desktop/playground.playground; sourceTree = "<absolute>"; xcLanguageSpecificationIdentifier = xcode.lang.swift; };
 		0ADC76C12E79081900AC3537 /* sunnyDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = sunnyDebug.entitlements; sourceTree = "<group>"; };
 		ACAEBA582DE6EE970072E93E /* BroadcastExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BroadcastExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		ACAEBA5A2DE6EE970072E93E /* ReplayKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ReplayKit.framework; path = System/Library/Frameworks/ReplayKit.framework; sourceTree = SDKROOT; };
@@ -122,6 +124,7 @@
 				ACFBA1DB2D8D5CBE0021202B /* Collections in Frameworks */,
 				B5E1B90F2D14E9EC00A38CB6 /* LiveKitComponents in Frameworks */,
 				B5E1B9122D14E9F500A38CB6 /* LiveKit in Frameworks */,
+				0AD646302EA86AFA007821AA /* Noise in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -139,6 +142,7 @@
 		B5B5E3A92D124AE00099C9BE = {
 			isa = PBXGroup;
 			children = (
+				0AD6462E2EA5CED2007821AA /* playground.playground */,
 				0ADC76C12E79081900AC3537 /* sunnyDebug.entitlements */,
 				B5B5E3B42D124AE00099C9BE /* VoiceAgent */,
 				ACAEBA5C2DE6EE970072E93E /* BroadcastExtension */,
@@ -229,6 +233,7 @@
 				B5E1B90E2D14E9EC00A38CB6 /* LiveKitComponents */,
 				B5E1B9112D14E9F500A38CB6 /* LiveKit */,
 				ACFBA1DA2D8D5CBE0021202B /* Collections */,
+				0AD6462F2EA86AFA007821AA /* Noise */,
 			);
 			productName = VoiceAgent;
 			productReference = B5B5E3B22D124AE00099C9BE /* sunny.app */;
@@ -269,6 +274,7 @@
 				B5E1B90D2D14E9EC00A38CB6 /* XCRemoteSwiftPackageReference "components-swift" */,
 				B5E1B9102D14E9F500A38CB6 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 				ACFBA1D92D8D5CBE0021202B /* XCRemoteSwiftPackageReference "swift-collections" */,
+				0AD6462D2EA5CE9F007821AA /* XCRemoteSwiftPackageReference "swift-noise" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B5B5E3B32D124AE00099C9BE /* Products */;
@@ -724,6 +730,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		0AD6462D2EA5CE9F007821AA /* XCRemoteSwiftPackageReference "swift-noise" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tayloraswift/swift-noise";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
 		ACFBA1D92D8D5CBE0021202B /* XCRemoteSwiftPackageReference "swift-collections" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apple/swift-collections";
@@ -751,6 +765,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0AD6462F2EA86AFA007821AA /* Noise */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0AD6462D2EA5CE9F007821AA /* XCRemoteSwiftPackageReference "swift-noise" */;
+			productName = Noise;
+		};
 		ACAEBA682DE6EF4B0072E93E /* LiveKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = LiveKit;

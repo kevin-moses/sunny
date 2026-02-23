@@ -1,7 +1,5 @@
 if you use emojis i'll shut you down immediately. if you're confused about something, ask me questions. if you think you've found a fix to a problem, DOUBLE CHECK that your assumptions are correct and the fix actually works.
 
-refer to notes/brief.md to understand the intent for the project.
-
 Any frontend code should go in sunny_app. Any backend code, including agents, server, etc. should go in sunny_server.
 
 Assume i have two separate terminals in the background running sunny_server and sunny_app. don't run the apps as a background process

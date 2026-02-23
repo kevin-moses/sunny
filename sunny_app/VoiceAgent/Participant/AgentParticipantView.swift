@@ -1,10 +1,21 @@
+// Participant/AgentParticipantView.swift
+//
+// Displays the agent's visual presence during an active session.
+// Shows a live video avatar if available, otherwise a BarAudioVisualizer
+// driven by the agent's audio track. Falls back to a single placeholder bar
+// while the agent is connecting.
+//
+// The visualizer bars use theme.accentColor so they match the selected accent.
+
 import LiveKitComponents
+import SwiftUI
 
 /// A view that combines the avatar camera view (if available)
 /// or the audio visualizer (if available).
 /// - Note: If both are unavailable, the view will show a placeholder visualizer.
 struct AgentParticipantView: View {
     @Environment(AppViewModel.self) private var viewModel
+    @Environment(SunnyTheme.self) private var theme
     @Environment(\.namespace) private var namespace
 
     /// Reveals the avatar camera view when true.
@@ -34,6 +45,7 @@ struct AgentParticipantView: View {
             } else if let agentAudioTrack = viewModel.agentAudioTrack {
                 BarAudioVisualizer(audioTrack: agentAudioTrack,
                                    agentState: viewModel.agent?.agentState ?? .listening,
+                                   barColor: theme.accentColor,
                                    barCount: 5,
                                    barSpacingFactor: 0.05,
                                    barMinOpacity: 0.1)
@@ -42,6 +54,7 @@ struct AgentParticipantView: View {
             } else if viewModel.isInteractive {
                 BarAudioVisualizer(audioTrack: nil,
                                    agentState: .listening,
+                                   barColor: theme.accentColor,
                                    barCount: 1,
                                    barMinOpacity: 0.1)
                     .frame(maxWidth: 10.5 * .grid, maxHeight: 48 * .grid)

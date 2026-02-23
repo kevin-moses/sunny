@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "%@%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@"
+          }
+        }
+      }
+    },
+    "%lldpt" : {
+
+    },
+    "Accent Color" : {
+
+    },
     "agent.listening" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11,6 +27,15 @@
           }
         }
       }
+    },
+    "Body Text" : {
+
+    },
+    "Button Text" : {
+
+    },
+    "Close developer settings" : {
+
     },
     "connect.connecting" : {
       "extractionState" : "manual",
@@ -56,6 +81,27 @@
         }
       }
     },
+    "Corner Radius" : {
+
+    },
+    "Current:" : {
+
+    },
+    "DEV" : {
+
+    },
+    "Dev Settings" : {
+
+    },
+    "Done" : {
+
+    },
+    "Double-tap to connect and start speaking" : {
+
+    },
+    "End conversation" : {
+
+    },
     "error.ok" : {
       "localizations" : {
         "en" : {
@@ -76,6 +122,12 @@
         }
       }
     },
+    "Geometry" : {
+
+    },
+    "Hello, world!" : {
+
+    },
     "message.placeholder" : {
       "localizations" : {
         "en" : {
@@ -85,6 +137,51 @@
           }
         }
       }
+    },
+    "Mute microphone" : {
+
+    },
+    "Open developer settings" : {
+
+    },
+    "Preview: Tap the button below to talk." : {
+
+    },
+    "Reset to Defaults" : {
+
+    },
+    "Start screen share" : {
+
+    },
+    "Stop screen share" : {
+
+    },
+    "Sunny is listening" : {
+
+    },
+    "Sunny said: %@" : {
+
+    },
+    "Switch to text" : {
+
+    },
+    "Switch to voice" : {
+
+    },
+    "Talk to Sunny" : {
+
+    },
+    "Turn off camera" : {
+
+    },
+    "Turn on camera" : {
+
+    },
+    "Typography" : {
+
+    },
+    "Unmute microphone" : {
+
     },
     "warning.reconnecting" : {
       "extractionState" : "manual",
@@ -107,6 +204,9 @@
           }
         }
       }
+    },
+    "You said: %@" : {
+
     }
   },
   "version" : "1.0"

@@ -1,15 +1,24 @@
+// VoiceAgentApp.swift
+//
+// App entry point. Creates the root view model and SunnyTheme, injecting both
+// into the SwiftUI environment for the entire view hierarchy.
+
 import LiveKit
 import SwiftUI
 
 @main
 struct VoiceAgentApp: App {
-    // Create the root view model
+    /// Root view model managing connection state and agent features.
     private let viewModel = AppViewModel()
+
+    /// Shared theme object — drives all adjustable UI parameters via DevSettingsView.
+    @State private var theme = SunnyTheme()
 
     var body: some Scene {
         WindowGroup {
             AppView()
                 .environment(viewModel)
+                .environment(theme)
         }
         #if os(macOS)
         .defaultSize(width: 900, height: 900)
@@ -28,7 +37,7 @@ struct AgentFeatures: OptionSet {
     let rawValue: Int
 
     static let voice = Self(rawValue: 1 << 0)
-    static let text = Self(rawValue: 1 << 1)
+    static let text  = Self(rawValue: 1 << 1)
     static let video = Self(rawValue: 1 << 2)
 
     static let current: Self = [.voice, .text]
