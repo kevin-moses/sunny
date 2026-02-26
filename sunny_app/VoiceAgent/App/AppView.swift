@@ -1,14 +1,3 @@
-// App/AppView.swift
-//
-// Root view for the Sunny app. Hosts the start screen or the active interaction
-// view depending on connection state, and overlays error/warning banners.
-//
-// In DEBUG builds, a floating "DEV" button in the top-right corner opens
-// DevSettingsView — a live slider panel for adjusting SunnyTheme properties.
-// Remove the devSettingsButton overlay once the design is finalized.
-//
-// Background is fixed to SunnyColors.background (#EBC196) app-wide.
-
 import SwiftUI
 
 struct AppView: View {
@@ -34,14 +23,14 @@ struct AppView: View {
         }
         #if DEBUG
         .overlay(alignment: .topTrailing) {
-            devSettingsButton()
-        }
+                devSettingsButton()
+            }
         #endif
-        .sheet(isPresented: $showDevSettings) {
-            DevSettingsView()
-                .environment(theme)
-        }
-        .environment(\.namespace, namespace)
+            .sheet(isPresented: $showDevSettings) {
+                DevSettingsView()
+                    .environment(theme)
+            }
+            .environment(\.namespace, namespace)
         #if os(visionOS)
             .ornament(attachmentAnchor: .scene(.bottom)) {
                 if viewModel.isInteractive {
@@ -77,7 +66,6 @@ struct AppView: View {
 
     // MARK: - Sub-views
 
-    @ViewBuilder
     private func start() -> some View {
         StartView()
     }
@@ -119,7 +107,6 @@ struct AppView: View {
         #endif
     }
 
-    @ViewBuilder
     private func agentListening() -> some View {
         ZStack {
             if chatViewModel.messages.isEmpty,
@@ -136,7 +123,6 @@ struct AppView: View {
 
     /// Floating pill button in the top-right safe area that opens DevSettingsView.
     /// Only compiled in DEBUG builds — not present in release.
-    @ViewBuilder
     private func devSettingsButton() -> some View {
         Button {
             showDevSettings = true

@@ -31,7 +31,6 @@ struct ChatView: View {
 
     // MARK: - Message rows
 
-    @ViewBuilder
     private func message(_ message: ReceivedMessage) -> some View {
         ZStack {
             switch message.content {
@@ -49,7 +48,6 @@ struct ChatView: View {
     ///
     /// purpose: Render a user transcript message as a right-aligned bubble.
     /// @param text: (String) the transcript string to display
-    @ViewBuilder
     private func userTranscript(_ text: String) -> some View {
         HStack {
             Spacer(minLength: 4 * .grid)
@@ -70,7 +68,6 @@ struct ChatView: View {
     ///
     /// purpose: Render an agent transcript message as left-aligned plain text.
     /// @param text: (String) the transcript string to display
-    @ViewBuilder
     private func agentTranscript(_ text: String) -> some View {
         HStack {
             Text(text.trimmingCharacters(in: .whitespacesAndNewlines))

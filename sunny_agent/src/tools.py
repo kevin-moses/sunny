@@ -4,8 +4,10 @@
 # functions that read from and write to the Supabase `reminders` table.
 # These helpers contain no LiveKit imports or @function_tool decorators; they are
 # called by the @function_tool methods on the Assistant class in agent.py.
+# The reminder_type parameter avoids shadowing the Python builtin `type`.
+# The timezone parameter is sourced from the user's profile (not hardcoded).
 #
-# Last modified: 2026-02-22
+# Last modified: 2026-02-24
 
 from supabase import AsyncClient
 
@@ -43,57 +45,70 @@ def format_days_for_voice(days: list[str]) -> str:
     @param days: (list[str]) Day abbreviations from ["mon","tue","wed","thu","fri","sat","sun"].
     @return: (str) Spoken day string, e.g. "every day", "on weekdays", "on Mon, Tue".
     """
-    ALL_DAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
-    WEEKDAYS = {"mon", "tue", "wed", "thu", "fri"}
-    WEEKEND = {"sat", "sun"}
-    DAY_LABELS = {
-        "mon": "Mon", "tue": "Tue", "wed": "Wed",
-        "thu": "Thu", "fri": "Fri", "sat": "Sat", "sun": "Sun",
+    all_days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    weekdays = {"mon", "tue", "wed", "thu", "fri"}
+    weekend = {"sat", "sun"}
+    day_labels = {
+        "mon": "Mon",
+        "tue": "Tue",
+        "wed": "Wed",
+        "thu": "Thu",
+        "fri": "Fri",
+        "sat": "Sat",
+        "sun": "Sun",
     }
 
     day_set = {d.lower() for d in days}
 
-    if day_set == ALL_DAYS:
+    if day_set == all_days:
         return "every day"
-    if day_set == WEEKDAYS:
+    if day_set == weekdays:
         return "on weekdays"
-    if day_set == WEEKEND:
+    if day_set == weekend:
         return "on weekends"
 
     ordered = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    labels = [DAY_LABELS[d] for d in ordered if d in day_set]
+    labels = [day_labels[d] for d in ordered if d in day_set]
     return "on " + ", ".join(labels)
 
 
 async def db_save_reminder(
     client: AsyncClient,
     user_id: str,
-    type: str,
+    reminder_type: str,
     title: str,
     description: str,
     times: list[str],
     days: list[str],
+    timezone: str = "America/New_York",
 ) -> str:
     """
     purpose: Insert a new reminder into the Supabase reminders table and return
              a voice-friendly confirmation string.
     @param client: (AsyncClient) Supabase async client.
     @param user_id: (str) UUID of the user who owns this reminder.
-    @param type: (str) Reminder type: 'medication'|'appointment'|'exercise'|'wellness_checkin'|'custom'.
+    @param reminder_type: (str) Reminder type: 'medication'|'appointment'|'exercise'|'wellness_checkin'|'custom'.
     @param title: (str) Short label for the reminder, e.g. "blood pressure medication".
     @param description: (str) Optional additional detail (may be empty string).
     @param times: (list[str]) 24-hour time strings, e.g. ["09:00", "21:00"].
     @param days: (list[str]) Day abbreviations, e.g. ["mon","tue","wed","thu","fri","sat","sun"].
+    @param timezone: (str) IANA timezone string from the user's profile, e.g. "America/New_York".
     @return: (str) Voice-friendly confirmation, e.g. "Done, I've saved your aspirin reminder...".
     """
-    await client.table("reminders").insert({
-        "user_id": user_id,
-        "type": type,
-        "title": title,
-        "description": description,
-        "schedule": {"times": times, "days": days},
-        "timezone": "America/New_York",
-    }).execute()
+    await (
+        client.table("reminders")
+        .insert(
+            {
+                "user_id": user_id,
+                "type": reminder_type,
+                "title": title,
+                "description": description,
+                "schedule": {"times": times, "days": days},
+                "timezone": timezone,
+            }
+        )
+        .execute()
+    )
 
     time_str = " and ".join(format_time_for_voice(t) for t in times)
     days_str = format_days_for_voice(days)
@@ -174,5 +189,10 @@ async def db_delete_reminder(
         return "ambiguous", matches
 
     reminder_id = matches[0]["id"]
-    await client.table("reminders").update({"active": False}).eq("id", reminder_id).execute()
+    await (
+        client.table("reminders")
+        .update({"active": False})
+        .eq("id", reminder_id)
+        .execute()
+    )
     return "deleted", matches

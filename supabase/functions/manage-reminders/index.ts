@@ -1,5 +1,13 @@
+// manage-reminders/index.ts
+// Purpose: CRUD Edge Function for the Sunny reminders table.
+// GET    — list all active reminders for the authenticated user.
+// POST   — create a new reminder (validates type, schedule times, and days).
+// DELETE — soft-delete a reminder by reminder_id (sets active=false).
+//
+// Last modified: 2026-02-24
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { corsHeaders, error, getUserId, success } from "../_shared/response.ts";
+import { corsHeaders, error, getUserId, success, UUID_REGEX } from "../_shared/response.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
 
 const VALID_TYPES = new Set([
@@ -12,8 +20,6 @@ const VALID_TYPES = new Set([
 
 const VALID_DAYS = new Set(["sun", "mon", "tue", "wed", "thu", "fri", "sat"]);
 const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type ReminderInput = {
   type: string;
@@ -160,7 +166,7 @@ serve(async (req: Request) => {
       return success({ deleted: true });
     }
 
-    return error("Method not allowed", "METHOD_NOT_ALLOWED", 400);
+    return error("Method not allowed", "METHOD_NOT_ALLOWED", 405);
   } catch (err) {
     console.error("manage-reminders unhandled error", err);
     return error("Internal server error", "INTERNAL_ERROR", 500);

@@ -1,9 +1,3 @@
-// ConversationLog/ConversationListView.swift
-//
-// DEV-only view showing the full conversation history for the current user.
-// Embedded in the "Logs" tab of DevSettingsView (DEBUG builds only).
-// Fetches data from the Sunny API via SunnyAPIClient; no direct Supabase calls.
-
 import SwiftUI
 
 /// Scrollable list of past conversations, shown newest-first.
@@ -32,9 +26,9 @@ struct ConversationListView: View {
             }
         }
         .overlay {
-            if isLoading && conversations.isEmpty {
+            if isLoading, conversations.isEmpty {
                 ProgressView("Loading conversations...")
-            } else if !isLoading && errorMessage == nil && conversations.isEmpty {
+            } else if !isLoading, errorMessage == nil, conversations.isEmpty {
                 ContentUnavailableView {
                     Text("No conversations yet.")
                 }
@@ -53,7 +47,6 @@ struct ConversationListView: View {
     ///
     /// purpose: Display summary info for one conversation in the list.
     /// @param item: (ConversationItem) the conversation to render
-    @ViewBuilder
     private func conversationRow(_ item: ConversationItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {

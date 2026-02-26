@@ -35,7 +35,6 @@ struct StartView: View {
     // MARK: - Sub-views
 
     /// Animated waveform bars tinted with the theme accent color.
-    @ViewBuilder
     private func bars() -> some View {
         HStack(spacing: .grid) {
             ForEach(0 ..< 5, id: \.self) { index in
@@ -57,7 +56,6 @@ struct StartView: View {
     }
 
     /// Small helper text at the bottom of the screen.
-    @ViewBuilder
     private func tip() -> some View {
         VStack(spacing: 2 * .grid) {
             #if targetEnvironment(simulator)

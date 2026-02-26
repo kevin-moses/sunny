@@ -1,3 +1,9 @@
+// get-conversations/index.ts
+// Purpose: Returns a paginated list of conversation sessions for the authenticated user,
+// including computed duration in minutes. Used by the iOS conversation history view.
+//
+// Last modified: 2026-02-24
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { corsHeaders, error, getUserId, success } from "../_shared/response.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
@@ -32,7 +38,7 @@ serve(async (req: Request) => {
     }
 
     if (req.method !== "GET") {
-      return error("Method not allowed", "METHOD_NOT_ALLOWED", 400);
+      return error("Method not allowed", "METHOD_NOT_ALLOWED", 405);
     }
 
     const limit = parsePositiveInt(url.searchParams.get("limit"), 20);

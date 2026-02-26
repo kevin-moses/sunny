@@ -1,16 +1,26 @@
 # memory.py
 # Purpose: Supabase integration for per-session user context loading and conversation logging.
 # Handles: async Supabase client init, user context RPC calls, real-time message logging,
-# post-session summarization via Claude, and upsert of extracted facts into user_facts.
+# post-session summarization via Claude, and updating users.profile_summary with a
+# concise prose paragraph that merges existing knowledge with new session facts.
 #
-# Last modified: 2026-02-22
+# profile_summary approach (replaces user_facts upsert):
+#   - _generate_summary() now produces a "profile_summary" key in addition to
+#     "summary", "facts", and "concerns". The profile_summary is a ~150-word prose
+#     paragraph describing what Sunny knows about the user, built by merging the
+#     existing profile_summary with new information from the current conversation.
+#   - _store_summary() writes this paragraph to users.profile_summary via a direct
+#     UPDATE, and no longer calls upsert_user_fact for individual key-value facts.
+#   - extracted facts (list of dicts) are still stored in session_summaries for audit.
+#
+# Last modified: 2026-02-26
 
 import json
 import logging
 import os
 from datetime import datetime, timezone
 
-import anthropic
+from anthropic import AsyncAnthropic
 from livekit.agents.llm import ChatMessage
 from supabase import AsyncClient, acreate_client
 
@@ -43,7 +53,9 @@ def resolve_user_id(room) -> str:
                 data = json.loads(participant.metadata)
                 user_id = data.get("user_id")
                 if user_id:
-                    logger.info(f"Resolved user_id={user_id} from participant {identity}")
+                    logger.info(
+                        f"Resolved user_id={user_id} from participant {identity}"
+                    )
                     return user_id
             except (json.JSONDecodeError, KeyError):
                 pass
@@ -58,6 +70,7 @@ async def load_user_context(client: AsyncClient, user_id: str) -> dict:
     @param client: (AsyncClient) Supabase async client.
     @param user_id: (str) UUID of the user to load context for.
     @return: (dict) Context dict with keys: profile, facts, summaries, reminders.
+             profile now includes a 'profile_summary' key (may be empty string).
     """
     try:
         result = await client.rpc("get_user_context", {"p_user_id": user_id}).execute()
@@ -80,10 +93,16 @@ async def create_conversation(client: AsyncClient, user_id: str) -> str:
     @return: (str) UUID of the newly created conversation, or "" on failure.
     """
     try:
-        result = await client.table("conversations").insert({
-            "user_id": user_id,
-            "status": "active",
-        }).execute()
+        result = (
+            await client.table("conversations")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "status": "active",
+                }
+            )
+            .execute()
+        )
         conversation_id = result.data[0]["id"]
         logger.info(f"Created conversation {conversation_id} for user {user_id}")
         return conversation_id
@@ -95,20 +114,31 @@ async def create_conversation(client: AsyncClient, user_id: str) -> str:
 class ConversationLogger:
     """
     purpose: Owns a single session's database record, handling real-time message
-             logging and post-session finalization (summary generation + fact upsert).
+             logging and post-session finalization (summary generation + profile update).
+             At session end, generates a Claude summary that includes a merged
+             profile_summary prose paragraph, then writes it to users.profile_summary.
     """
 
-    def __init__(self, client: AsyncClient, user_id: str, conversation_id: str) -> None:
+    def __init__(
+        self,
+        client: AsyncClient,
+        user_id: str,
+        conversation_id: str,
+        existing_profile_summary: str = "",
+    ) -> None:
         """
         purpose: Initialize the logger with references to the Supabase client and
                  the IDs needed for all DB operations in this session.
         @param client: (AsyncClient) Supabase async client.
         @param user_id: (str) UUID of the user.
         @param conversation_id: (str) UUID of the conversation row for this session.
+        @param existing_profile_summary: (str) Current users.profile_summary value,
+               used as the baseline when generating the updated profile prose paragraph.
         """
         self._client = client
         self._user_id = user_id
         self._conversation_id = conversation_id
+        self._existing_profile_summary = existing_profile_summary
 
     async def log_message(self, role: str, content: str) -> None:
         """
@@ -121,18 +151,27 @@ class ConversationLogger:
         if not self._conversation_id:
             return
         try:
-            await self._client.table("messages").insert({
-                "conversation_id": self._conversation_id,
-                "role": role,
-                "content": content,
-            }).execute()
+            await (
+                self._client.table("messages")
+                .insert(
+                    {
+                        "conversation_id": self._conversation_id,
+                        "role": role,
+                        "content": content,
+                    }
+                )
+                .execute()
+            )
         except Exception as e:
-            logger.warning(f"Failed to log {role} message (conversation={self._conversation_id}): {e}")
+            logger.warning(
+                f"Failed to log {role} message (conversation={self._conversation_id}): {e}"
+            )
 
     async def finalize(self, chat_history) -> None:
         """
         purpose: Called at session shutdown. Marks the conversation completed,
-                 generates a Claude summary of the transcript, and stores results.
+                 generates a Claude summary of the transcript (including an updated
+                 profile_summary paragraph), and stores results to Supabase.
         @param chat_history: (ChatContext) The session's full chat history from
                              AgentSession.history. Items filtered to user/assistant
                              ChatMessage instances only.
@@ -142,10 +181,17 @@ class ConversationLogger:
 
         # Mark conversation ended
         try:
-            await self._client.table("conversations").update({
-                "ended_at": datetime.now(timezone.utc).isoformat(),
-                "status": "completed",
-            }).eq("id", self._conversation_id).execute()
+            await (
+                self._client.table("conversations")
+                .update(
+                    {
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "completed",
+                    }
+                )
+                .eq("id", self._conversation_id)
+                .execute()
+            )
         except Exception as e:
             logger.warning(f"Failed to mark conversation as completed: {e}")
             return
@@ -164,47 +210,74 @@ class ConversationLogger:
 
         logger.info(f"Generating summary for {len(transcript_lines)} transcript turns")
         transcript = "\n".join(transcript_lines)
-        result = await self._generate_summary(transcript)
+        result = await self._generate_summary(
+            transcript, self._existing_profile_summary
+        )
 
         summary = result.get("summary", "")
         facts = result.get("facts", [])
         concerns = result.get("concerns", [])
+        profile_summary = result.get("profile_summary", "")
 
         logger.info(f"Summary: {summary}")
+        if profile_summary:
+            logger.info(f"Profile summary updated ({len(profile_summary)} chars)")
         if facts:
             for f in facts:
-                logger.info(f"  Extracted fact — {f.get('category')}/{f.get('key')}: {f.get('value')}")
+                logger.info(
+                    f"  Extracted fact — {f.get('category')}/{f.get('key')}: {f.get('value')}"
+                )
         else:
             logger.info("  No facts extracted")
         if concerns:
             for c in concerns:
                 logger.warning(f"  Flagged concern: {c}")
 
-        await self._store_summary(summary, facts, concerns)
+        await self._store_summary(summary, facts, concerns, profile_summary)
         logger.info(f"Session finalized for conversation {self._conversation_id}")
 
-    async def _generate_summary(self, transcript: str) -> dict:
+    async def _generate_summary(self, transcript: str, existing_profile: str) -> dict:
         """
-        purpose: Call Claude directly (sync Anthropic SDK) to produce a structured
-                 summary of the session transcript. Returns a safe fallback on parse failure.
+        purpose: Call Claude asynchronously to produce a structured summary of the
+                 session transcript. Generates both a session summary and an updated
+                 profile_summary prose paragraph that merges existing knowledge with
+                 new information from this conversation. Uses AsyncAnthropic to avoid
+                 blocking the event loop during finalization.
         @param transcript: (str) Newline-joined "ROLE: content" lines from the session.
-        @return: (dict) Keys: summary (str), facts (list of dicts), concerns (list of str).
+        @param existing_profile: (str) The user's current profile_summary (may be empty
+               for new users). Used as baseline for the merged profile paragraph.
+        @return: (dict) Keys: summary (str), facts (list of dicts), concerns (list of str),
+                 profile_summary (str).
         """
+        existing_section = (
+            f"Existing profile paragraph:\n{existing_profile}\n\n"
+            if existing_profile
+            else "No existing profile yet.\n\n"
+        )
         prompt = (
             "You are analyzing a conversation between a voice assistant (Sunny) and an elderly user.\n\n"
+            f"{existing_section}"
             f"Conversation transcript:\n{transcript}\n\n"
             "Generate a JSON response with exactly these keys:\n"
-            '1. "summary": A 2-3 sentence summary of what was discussed.\n'
+            '1. "summary": A 2-3 sentence summary of what was discussed in this session.\n'
             '2. "facts": A list of facts learned about the user. Each fact is an object with '
             '"category" (one of: medication, health, preference, personal, device), "key", and "value".\n'
             '3. "concerns": A list of any health or safety concerns mentioned (plain strings). '
-            "Empty list if none.\n\n"
+            "Empty list if none.\n"
+            '4. "profile_summary": A concise prose paragraph (max 150 words) describing what '
+            "Sunny knows about this user. Merge the existing profile paragraph with any new "
+            "information learned in this conversation. Write it as useful context Sunny can "
+            "read at the start of a future session — include name preferences, health background, "
+            "device comfort level, communication style, and any recurring topics. Omit trivial "
+            "or one-off details. If the existing profile is empty, build it solely from this session.\n\n"
             "Respond with valid JSON only, no markdown or other text."
         )
         try:
-            logger.info(f"Calling {SUMMARY_MODEL} to summarize transcript ({len(transcript.splitlines())} lines)")
-            sdk_client = anthropic.Anthropic()
-            response = sdk_client.messages.create(
+            logger.info(
+                f"Calling {SUMMARY_MODEL} to summarize transcript ({len(transcript.splitlines())} lines)"
+            )
+            sdk_client = AsyncAnthropic()
+            response = await sdk_client.messages.create(
                 model=SUMMARY_MODEL,
                 max_tokens=SUMMARY_MAX_TOKENS,
                 messages=[{"role": "user", "content": prompt}],
@@ -219,38 +292,63 @@ class ConversationLogger:
                 "summary": parsed.get("summary", ""),
                 "facts": parsed.get("facts", []),
                 "concerns": parsed.get("concerns", []),
+                "profile_summary": parsed.get("profile_summary", ""),
             }
         except Exception as e:
             logger.warning(f"Failed to generate session summary: {e}")
-            return {"summary": "", "facts": [], "concerns": []}
+            return {"summary": "", "facts": [], "concerns": [], "profile_summary": ""}
 
-    async def _store_summary(self, summary: str, facts: list, concerns: list) -> None:
+    async def _store_summary(
+        self,
+        summary: str,
+        facts: list,
+        concerns: list,
+        profile_summary: str,
+    ) -> None:
         """
-        purpose: Insert the generated summary into session_summaries and upsert
-                 each extracted fact into user_facts via RPC.
+        purpose: Insert the generated summary into session_summaries and update
+                 users.profile_summary with the new merged prose paragraph.
+                 No longer writes individual facts to user_facts; extracted facts
+                 are stored only in session_summaries.extracted_facts for audit.
         @param summary: (str) Human-readable session summary.
         @param facts: (list) List of dicts with keys: category, key, value.
         @param concerns: (list) List of plain-string health/safety concern descriptions.
+        @param profile_summary: (str) Updated prose paragraph describing the user;
+               written to users.profile_summary if non-empty.
         """
         try:
-            await self._client.table("session_summaries").insert({
-                "conversation_id": self._conversation_id,
-                "summary": summary,
-                "extracted_facts": facts,
-                "flagged_concerns": concerns,
-            }).execute()
+            await (
+                self._client.table("session_summaries")
+                .insert(
+                    {
+                        "conversation_id": self._conversation_id,
+                        "summary": summary,
+                        "extracted_facts": facts,
+                        "flagged_concerns": concerns,
+                    }
+                )
+                .execute()
+            )
         except Exception as e:
-            logger.warning(f"Failed to store session summary (conversation={self._conversation_id}): {e}")
+            logger.warning(
+                f"Failed to store session summary (conversation={self._conversation_id}): {e}"
+            )
             return
 
-        for fact in facts:
+        if profile_summary:
             try:
-                await self._client.rpc("upsert_user_fact", {
-                    "p_user_id": self._user_id,
-                    "p_category": fact.get("category"),
-                    "p_key": fact.get("key"),
-                    "p_value": fact.get("value"),
-                    "p_conversation_id": self._conversation_id,
-                }).execute()
+                await (
+                    self._client.table("users")
+                    .update(
+                        {
+                            "profile_summary": profile_summary,
+                        }
+                    )
+                    .eq("id", self._user_id)
+                    .execute()
+                )
+                logger.info(f"Updated profile_summary for user {self._user_id}")
             except Exception as e:
-                logger.warning(f"Failed to upsert user fact {fact}: {e}")
+                logger.warning(
+                    f"Failed to update profile_summary for user {self._user_id}: {e}"
+                )

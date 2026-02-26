@@ -1,10 +1,3 @@
-// ConversationLog/ConversationDetailView.swift
-//
-// DEV-only view showing the full message transcript for a single conversation.
-// Displays user and assistant messages as chat bubbles matching the main ChatView style.
-// System and tool messages are filtered out. Summary shown at bottom when available.
-// Fetches messages from the Sunny API via SunnyAPIClient on appear.
-
 import SwiftUI
 
 /// Full transcript view for a single conversation.
@@ -23,7 +16,7 @@ struct ConversationDetailView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 4 * .grid) {
-                if isLoading && messages.isEmpty {
+                if isLoading, messages.isEmpty {
                     ProgressView("Loading transcript...")
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
@@ -98,7 +91,6 @@ struct ConversationDetailView: View {
         }
     }
 
-    @ViewBuilder
     private func summaryCard(_ summary: String) -> some View {
         VStack(alignment: .leading, spacing: 2 * .grid) {
             Text("Summary")

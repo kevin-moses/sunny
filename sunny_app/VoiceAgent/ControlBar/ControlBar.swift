@@ -20,7 +20,7 @@ struct ControlBar: View {
 
     private enum Constants {
         /// Minimum 60pt wide button for senior tap target compliance.
-        static let buttonWidth: CGFloat  = 60
+        static let buttonWidth: CGFloat = 60
         static let buttonHeight: CGFloat = 60
     }
 
@@ -70,19 +70,16 @@ struct ControlBar: View {
 
     // MARK: - Spacers
 
-    @ViewBuilder
     private func flexibleSpacer() -> some View {
         Spacer()
             .frame(maxWidth: horizontalSizeClass == .regular ? 8 * .grid : 2 * .grid)
     }
 
-    @ViewBuilder
     private func biggerSpacer() -> some View {
         Spacer()
             .frame(maxWidth: horizontalSizeClass == .regular ? 8 * .grid : .infinity)
     }
 
-    @ViewBuilder
     private func separator() -> some View {
         Rectangle()
             .fill(.separator1)
@@ -91,7 +88,6 @@ struct ControlBar: View {
 
     // MARK: - Controls
 
-    @ViewBuilder
     private func audioControls() -> some View {
         HStack(spacing: .zero) {
             Spacer()
@@ -118,7 +114,6 @@ struct ControlBar: View {
         .frame(width: Constants.buttonWidth)
     }
 
-    @ViewBuilder
     private func videoControls() -> some View {
         HStack(spacing: .zero) {
             Spacer()
@@ -140,7 +135,6 @@ struct ControlBar: View {
         .disabled(viewModel.agent == nil)
     }
 
-    @ViewBuilder
     private func screenShareButton() -> some View {
         AsyncButton(action: viewModel.toggleScreenShare) {
             Image(systemName: "arrow.up.square.fill")
@@ -159,7 +153,6 @@ struct ControlBar: View {
         .disabled(viewModel.agent == nil)
     }
 
-    @ViewBuilder
     private func textInputButton() -> some View {
         AsyncButton(action: viewModel.toggleTextInput) {
             Image(systemName: "ellipsis.message.fill")
@@ -178,7 +171,6 @@ struct ControlBar: View {
         .disabled(viewModel.agent == nil)
     }
 
-    @ViewBuilder
     private func disconnectButton() -> some View {
         AsyncButton(action: viewModel.disconnect) {
             Image(systemName: "phone.down.fill")

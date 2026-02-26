@@ -1,22 +1,9 @@
-// Theme/SunnyTheme.swift
-//
-// Observable theme object holding all adjustable UI parameters for Sunny.
-// Injected into the SwiftUI environment by VoiceAgentApp and read by views
-// via @Environment(SunnyTheme.self).
-//
-// All properties are persisted to UserDefaults so they survive restarts.
-// DevSettingsView drives this object at runtime via sliders/pickers.
-// Once the design is finalized, sliders will be removed and these hardcoded.
-//
-// Background color is fixed to SunnyColors.background (#FAE6CC) and not persisted.
-
 import SwiftUI
 
 /// Holds all runtime-adjustable design parameters for the Sunny UI.
 /// Read in any view with: @Environment(SunnyTheme.self) private var theme
 @Observable
 final class SunnyTheme {
-
     // MARK: - Accent Color
 
     /// Index into SunnyPalette.all that determines the current accent color.
@@ -50,13 +37,19 @@ final class SunnyTheme {
     // MARK: - Derived
 
     /// The currently selected accent color from SunnyPalette.
-    var accentColor: Color { SunnyPalette.all[accentColorIndex].color }
+    var accentColor: Color {
+        SunnyPalette.all[accentColorIndex].color
+    }
 
     /// The human-readable name of the currently selected accent color.
-    var accentColorName: String { SunnyPalette.all[accentColorIndex].name }
+    var accentColorName: String {
+        SunnyPalette.all[accentColorIndex].name
+    }
 
     /// Fixed app background color — not user-selectable.
-    var backgroundColor: Color { SunnyColors.background }
+    var backgroundColor: Color {
+        SunnyColors.background
+    }
 
     // MARK: - Init
 
@@ -65,7 +58,7 @@ final class SunnyTheme {
         let ud = UserDefaults.standard
 
         let savedIndex = ud.integer(forKey: Keys.accentColorIndex)
-        accentColorIndex = (0..<SunnyPalette.all.count).contains(savedIndex) ? savedIndex : 0
+        accentColorIndex = (0 ..< SunnyPalette.all.count).contains(savedIndex) ? savedIndex : 0
 
         let rawBody = ud.double(forKey: Keys.bodyFontSize)
         bodyFontSize = rawBody > 0 ? CGFloat(rawBody) : 17
@@ -84,17 +77,17 @@ final class SunnyTheme {
     /// purpose: Restore the theme to baseline after experimenting with sliders.
     func resetToDefaults() {
         accentColorIndex = 0
-        bodyFontSize     = 17
-        buttonFontSize   = 19
-        cornerRadius     = 12
+        bodyFontSize = 17
+        buttonFontSize = 19
+        cornerRadius = 12
     }
 
     // MARK: - UserDefaults Keys
 
     private enum Keys {
         static let accentColorIndex = "sunnyTheme.accentColorIndex"
-        static let bodyFontSize     = "sunnyTheme.bodyFontSize"
-        static let buttonFontSize   = "sunnyTheme.buttonFontSize"
-        static let cornerRadius     = "sunnyTheme.cornerRadius"
+        static let bodyFontSize = "sunnyTheme.bodyFontSize"
+        static let buttonFontSize = "sunnyTheme.buttonFontSize"
+        static let cornerRadius = "sunnyTheme.cornerRadius"
     }
 }

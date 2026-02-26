@@ -1,12 +1,3 @@
-// Participant/AgentParticipantView.swift
-//
-// Displays the agent's visual presence during an active session.
-// Shows a live video avatar if available, otherwise a BarAudioVisualizer
-// driven by the agent's audio track. Falls back to a single placeholder bar
-// while the agent is connecting.
-//
-// The visualizer bars use theme.accentColor so they match the selected accent.
-
 import LiveKitComponents
 import SwiftUI
 

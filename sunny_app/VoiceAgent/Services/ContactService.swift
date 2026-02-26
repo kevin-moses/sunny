@@ -4,16 +4,14 @@ import Foundation
 /// Service for managing contacts and contact searches
 /// This service provides client-side contact management while keeping contact data private
 final class ContactService: ObservableObject, Sendable {
-
-    init() {
-    }
+    init() {}
 
     /// Find contacts matching a search query (name, phone, etc.)
     /// @param query: The search string to match against contact names
     /// @return: Array of contact results with name and phone number
     func findContacts(query: String) async throws -> [[String: String]] {
         // Perform contacts access off main thread
-        return try await Task.detached {
+        try await Task.detached {
             let contactStore = CNContactStore()
 
             // Request authorization if needed
@@ -37,7 +35,7 @@ final class ContactService: ObservableObject, Sendable {
                 CNContactGivenNameKey as CNKeyDescriptor,
                 CNContactFamilyNameKey as CNKeyDescriptor,
                 CNContactPhoneNumbersKey as CNKeyDescriptor,
-                CNContactIdentifierKey as CNKeyDescriptor
+                CNContactIdentifierKey as CNKeyDescriptor,
             ]
 
             var contacts: [CNContact] = []
@@ -64,7 +62,7 @@ final class ContactService: ObservableObject, Sendable {
                 return [
                     "id": contact.identifier,
                     "name": fullName.isEmpty ? "Unknown" : fullName,
-                    "phone": phoneNumber
+                    "phone": phoneNumber,
                 ]
             }
 

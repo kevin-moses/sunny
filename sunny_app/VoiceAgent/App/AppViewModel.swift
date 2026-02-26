@@ -175,7 +175,7 @@ final class AppViewModel {
     deinit {
         AudioManager.shared.onDeviceUpdate = nil
     }
-    
+
     private func setupRpcMethods() {
         Task { [weak self] in
             do {

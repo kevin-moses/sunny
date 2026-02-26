@@ -1,12 +1,19 @@
+// response.ts
+// Purpose: Shared HTTP response helpers and auth utilities for Sunny Edge Functions.
+// Provides CORS headers, typed success/error response constructors, UUID validation,
+// and a lightweight user identity resolver (UUID bearer token for MVP; real JWT Phase 3).
+//
+// Last modified: 2026-02-26
+
 const TEST_USER_ID = "00000000-0000-0000-0000-000000000001";
-const UUID_REGEX =
+export const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function corsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*", // TODO Phase 3: lock down origin
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Content-Type": "application/json",
   };
 }

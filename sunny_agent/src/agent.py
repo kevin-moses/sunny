@@ -6,13 +6,21 @@
 # Exposes tool functions for web search, reminders, contact lookup, and messaging,
 # all delegated to the iOS app over LiveKit RPC. Also exposes save_reminder,
 # list_reminders, and delete_reminder tools backed directly by the Supabase reminders table.
+# Exposes four guided workflow tools (start_workflow, confirm_step, go_back_step,
+# exit_workflow) backed by WorkflowEngine, which now uses Supabase pgvector semantic
+# search to find workflows and fetches steps from the DB (WF-4).
 #
 # Error handling: STT garbage filter silences short/non-alphabetic transcripts; progressive
 # error recovery speaks escalating messages on LLM/STT/TTS failures; participant disconnect
 # and reconnect handlers log session end and greet returning users within 10 minutes;
 # agent_state_changed handler delivers a proactive greeting on session start.
 #
-# Last modified: 2026-02-22
+# Fixes applied: async Anthropic client in memory.py, user timezone in reminders,
+# get_running_loop() replaces deprecated get_event_loop(), empty step_ids guard,
+# reminder_type parameter rename, user_timezone threaded from profile,
+# existing_profile_summary passed to ConversationLogger for merged profile generation.
+#
+# Last modified: 2026-02-26
 
 import asyncio
 import json
@@ -57,8 +65,9 @@ from memory import (
     load_user_context,
     resolve_user_id,
 )
-from prompts import format_user_context, render_system_prompt
+from prompts import format_step_context, format_user_context, render_system_prompt
 from tools import db_delete_reminder, db_list_reminders, db_save_reminder
+from workflow_engine import WorkflowEngine, WorkflowState
 
 logger = logging.getLogger("agent")
 
@@ -74,17 +83,33 @@ class Assistant(Agent):
              for web search, reminders, contacts, and SMS messaging.
     """
 
-    def __init__(self, instructions: str, user_id: str, supabase: AsyncClient) -> None:
+    def __init__(
+        self,
+        instructions: str,
+        user_id: str,
+        supabase: AsyncClient,
+        engine: WorkflowEngine,
+        ios_version: str,
+        user_timezone: str = "America/New_York",
+    ) -> None:
         """
         purpose: Initialize the Assistant with a pre-rendered system prompt and
-                 the Supabase client + user_id needed for reminder CRUD tools.
+                 the Supabase client + user_id needed for reminder CRUD tools,
+                 plus the WorkflowEngine and iOS version for guided workflow support.
         @param instructions: (str) The fully rendered system prompt from render_system_prompt().
         @param user_id: (str) UUID of the current user, used for all DB reminder operations.
         @param supabase: (AsyncClient) Authenticated Supabase async client.
+        @param engine: (WorkflowEngine) Loaded workflow engine for task matching and step resolution.
+        @param ios_version: (str) User's iOS major version string, e.g. "18" or "unknown".
+        @param user_timezone: (str) IANA timezone from the user's profile, used for reminder storage.
         """
         super().__init__(instructions=instructions)
         self._user_id = user_id
         self._supabase = supabase
+        self._engine = engine
+        self._ios_version = ios_version
+        self._user_timezone = user_timezone
+        self._workflow_state: WorkflowState | None = None
         self.tavily_client = TavilyClient()
 
     @function_tool
@@ -99,7 +124,9 @@ class Assistant(Agent):
             The search results or an error message
         """
         logger.info(f"Looking up information on {query}")
-        await context.session.say("I'm looking up information on that topic. Please wait a moment.")
+        await context.session.say(
+            "I'm looking up information on that topic. Please wait a moment."
+        )
         try:
             response = self.tavily_client.search(query, include_answer="basic")
             logger.info(f"Answer: {response.get('answer')}")
@@ -109,7 +136,9 @@ class Assistant(Agent):
             return "I'm sorry, I'm having trouble with my web search right now. Please try again later."
 
     @function_tool
-    async def create_reminder(self, context: RunContext, title: str, notes: str = "", due_date: str = ""):
+    async def create_reminder(
+        self, context: RunContext, title: str, notes: str = "", due_date: str = ""
+    ):
         """
         purpose: Create a reminder in the user's Reminders app via iOS RPC.
 
@@ -186,9 +215,13 @@ class Assistant(Agent):
                 return f"I couldn't find any contacts matching '{query}'. Please try a different name."
             elif len(contacts) == 1:
                 contact = contacts[0]
-                return f"I found {contact['name']} with phone number {contact['phone']}."
+                return (
+                    f"I found {contact['name']} with phone number {contact['phone']}."
+                )
             else:
-                contact_list = ", ".join([f"{c['name']} ({c['phone']})" for c in contacts[:3]])
+                contact_list = ", ".join(
+                    [f"{c['name']} ({c['phone']})" for c in contacts[:3]]
+                )
                 if len(contacts) > 3:
                     contact_list += f" and {len(contacts) - 3} more"
                 return f"I found {len(contacts)} contacts: {contact_list}. Which one would you like to message?"
@@ -198,7 +231,9 @@ class Assistant(Agent):
             return "I'm sorry, I couldn't search your contacts right now. Please try again."
 
     @function_tool
-    async def send_message(self, context: RunContext, contact_name: str, phone_number: str, message: str):
+    async def send_message(
+        self, context: RunContext, contact_name: str, phone_number: str, message: str
+    ):
         """
         purpose: Send a message to a contact via iOS RPC.
 
@@ -243,7 +278,7 @@ class Assistant(Agent):
     async def save_reminder(
         self,
         context: RunContext,
-        type: str,
+        reminder_type: str,
         title: str,
         description: str,
         times: list[str],
@@ -255,7 +290,7 @@ class Assistant(Agent):
                  appointments, exercise, or any recurring wellness reminders.
 
         Args:
-            type: Category of reminder: 'medication'|'appointment'|'exercise'|'wellness_checkin'|'custom'
+            reminder_type: Category of reminder: 'medication'|'appointment'|'exercise'|'wellness_checkin'|'custom'
             title: Short label for the reminder, e.g. "blood pressure medication"
             description: Optional additional detail (use empty string if none)
             times: 24-hour time strings, e.g. ["09:00", "21:00"]
@@ -267,7 +302,14 @@ class Assistant(Agent):
         logger.info(f"Saving reminder: {title} at {times} on {days}")
         try:
             return await db_save_reminder(
-                self._supabase, self._user_id, type, title, description, times, days
+                self._supabase,
+                self._user_id,
+                reminder_type,
+                title,
+                description,
+                times,
+                days,
+                self._user_timezone,
             )
         except Exception as e:
             logger.error(f"Error saving reminder '{title}': {e}")
@@ -301,7 +343,9 @@ class Assistant(Agent):
         Returns:
             Voice-friendly confirmation, not-found message, or clarification request
         """
-        logger.info(f"Deleting reminder matching '{reminder_title}' for user {self._user_id}")
+        logger.info(
+            f"Deleting reminder matching '{reminder_title}' for user {self._user_id}"
+        )
         try:
             status, matches = await db_delete_reminder(
                 self._supabase, self._user_id, reminder_title
@@ -319,7 +363,132 @@ class Assistant(Agent):
             return f"I found a few reminders that match: {names}. Which one would you like to cancel?"
         except Exception as e:
             logger.error(f"Error deleting reminder '{reminder_title}': {e}")
-            return "I'm sorry, I had trouble cancelling that reminder. Please try again."
+            return (
+                "I'm sorry, I had trouble cancelling that reminder. Please try again."
+            )
+
+    @function_tool
+    async def start_workflow(self, context: RunContext, task_description: str) -> str:
+        """
+        purpose: Find and start a guided step-by-step workflow for an iPhone task.
+                 Searches available workflow guides by task description, starts the
+                 best match, and returns step context instructing the LLM to speak
+                 the first step to the user and wait for their response.
+
+        Args:
+            task_description: Short description of what the user wants to do,
+                               e.g. "block a contact", "adjust screen brightness"
+
+        Returns:
+            Step context string for the first step, or a message if no match found
+        """
+        workflow_id, workflow_title, has_steps = await self._engine.find_workflow(
+            task_description
+        )
+        if not workflow_id:
+            return (
+                "I don't have a specific step-by-step guide for that yet. "
+                "I can still try to help you — what would you like to do?"
+            )
+        if not has_steps:
+            return (
+                f"I know about '{workflow_title}' but that guide isn't ready yet. "
+                "I can still try to help you manually."
+            )
+        self._workflow_state = await self._engine.resolve_workflow(
+            workflow_id, self._ios_version, workflow_title
+        )
+        state = self._workflow_state
+        if not state.step_ids:
+            self._workflow_state = None
+            return (
+                f"I found a guide for '{workflow_title}' but it has no steps available. "
+                "I can still try to help you manually."
+            )
+        step = state.step_map[state.step_ids[0]]
+        total = len(state.step_ids)
+        return format_step_context(step, 1, total, state.workflow_title)
+
+    @function_tool
+    async def confirm_step(self, context: RunContext) -> str:
+        """
+        purpose: Advance to the next step after the user explicitly confirms they
+                 completed the current one. Returns step context instructing the LLM
+                 to speak the next step, or a completion message if the workflow is done.
+                 Do NOT call this based on silence — only call when user confirms.
+
+        Returns:
+            Step context for the next step, or a workflow-complete message
+        """
+        if not self._workflow_state:
+            return "No workflow is currently active."
+        state = self._workflow_state
+        current_step = state.step_map[state.step_ids[state.current_index]]
+        state.history.append(state.current_index)
+
+        if (
+            current_step.next_step is None
+            or current_step.next_step not in state.step_map
+        ):
+            self._workflow_state = None
+            return (
+                f"Workflow complete. The user has finished '{state.workflow_title}'. "
+                "Return to normal conversation."
+            )
+
+        next_index = state.step_ids.index(current_step.next_step)
+        state.current_index = next_index
+        next_step = state.step_map[current_step.next_step]
+        total = len(state.step_ids)
+        return format_step_context(
+            next_step, next_index + 1, total, state.workflow_title
+        )
+
+    @function_tool
+    async def go_back_step(self, context: RunContext) -> str:
+        """
+        purpose: Return to the previous step in the active workflow. Returns step
+                 context instructing the LLM to re-deliver the previous step's
+                 instruction and confirmation prompt.
+
+        Returns:
+            Step context for the previous step, or the first step if already there
+        """
+        if not self._workflow_state:
+            return "No workflow is currently active."
+        state = self._workflow_state
+        total = len(state.step_ids)
+
+        if not state.history:
+            step = state.step_map[state.step_ids[0]]
+            return (
+                'Tell the user: "We\'re already at the first step." '
+                "Then speak this step again: "
+                + format_step_context(step, 1, total, state.workflow_title)
+            )
+
+        prev_index = state.history.pop()
+        state.current_index = prev_index
+        step = state.step_map[state.step_ids[prev_index]]
+        return (
+            'Tell the user: "No problem, let\'s go back." '
+            "Then speak this step: "
+            + format_step_context(step, prev_index + 1, total, state.workflow_title)
+        )
+
+    @function_tool
+    async def exit_workflow(self, context: RunContext) -> str:
+        """
+        purpose: Exit the active workflow and return to normal conversation.
+
+        Returns:
+            Confirmation that the workflow was exited
+        """
+        if not self._workflow_state:
+            return "No workflow is currently active."
+        title = self._workflow_state.workflow_title
+        self._workflow_state = None
+        return f"Workflow '{title}' exited. Return to normal conversation."
 
 
 def _is_garbage_input(text: str) -> bool:
@@ -379,15 +548,25 @@ async def entrypoint(ctx: JobContext):
     supabase = await create_supabase_client()
     raw_context = await load_user_context(supabase, user_id)
     conversation_id = await create_conversation(supabase, user_id)
-    conv_logger = ConversationLogger(supabase, user_id, conversation_id)
-    user_name = raw_context.get("profile", {}).get("name", "")
+    profile = raw_context.get("profile", {})
+    user_name = profile.get("name", "")
+    ios_version = profile.get("ios_version", "unknown")
+    user_timezone = profile.get("timezone", "America/New_York")
+    existing_profile_summary = profile.get("profile_summary", "")
+    conv_logger = ConversationLogger(
+        supabase, user_id, conversation_id, existing_profile_summary
+    )
 
-    # 4. Render system prompt with injected user context
+    # 4. Initialize workflow engine backed by Supabase (WF-4)
+    engine = WorkflowEngine(supabase=supabase)
+    logger.info("WorkflowEngine initialized with Supabase pgvector backend")
+
+    # 5. Render system prompt with injected user context
     context_block = format_user_context(raw_context)
     rendered_prompt = render_system_prompt(context_block)
     logger.info(f"System prompt rendered for user_id={user_id}")
 
-    # 5. Build session with senior-optimized voice UX parameters
+    # 6. Build session with senior-optimized voice UX parameters
     session = AgentSession(
         stt=deepgram.STT(model=STT_MODEL, language=STT_LANGUAGE),
         llm=anthropic.LLM(model=LLM_MODEL),
@@ -401,13 +580,13 @@ async def entrypoint(ctx: JobContext):
         min_interruption_words=MIN_INTERRUPTION_WORDS,
     )
 
-    # 6. State variables for error recovery and reconnect detection
+    # 7. State variables for error recovery and reconnect detection
     consecutive_errors = 0
     last_disconnect_time: float | None = None
     last_topic: str = ""
     _greeted = False
 
-    # 7. Real-time message logging — fires on every completed conversation turn
+    # 8. Real-time message logging — fires on every completed conversation turn
     @session.on("conversation_item_added")
     def _on_item_added(ev: ConversationItemAddedEvent):
         """
@@ -423,9 +602,9 @@ async def entrypoint(ctx: JobContext):
             if item.role in ("user", "assistant"):
                 text = item.text_content
                 if text:
-                    asyncio.create_task(conv_logger.log_message(item.role, text))
+                    asyncio.create_task(conv_logger.log_message(item.role, text))  # noqa: RUF006
 
-    # 8. STT garbage filter — silently discard noise before the LLM responds
+    # 9. STT garbage filter — silently discard noise before the LLM responds
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(ev):
         """
@@ -437,10 +616,10 @@ async def entrypoint(ctx: JobContext):
             return
         text = ev.transcript.strip()
         if _is_garbage_input(text):
-            logger.info(f"Ignoring garbage STT input (user={user_id}): {repr(text)}")
+            logger.info(f"Ignoring garbage STT input (user={user_id}): {text!r}")
             session.interrupt()
 
-    # 9. Progressive error recovery — speak an escalating message on pipeline failures
+    # 10. Progressive error recovery — speak an escalating message on pipeline failures
     @session.on("error")
     def _on_session_error(ev):
         """
@@ -454,28 +633,36 @@ async def entrypoint(ctx: JobContext):
             f"Session error #{consecutive_errors} (user={user_id}, "
             f"conversation={conversation_id}): {ev.error}"
         )
-        asyncio.create_task(session.say(_recovery_message(consecutive_errors, user_name)))
+        asyncio.create_task(  # noqa: RUF006
+            session.say(_recovery_message(consecutive_errors, user_name))
+        )
 
-    # 10. Proactive greeting — speak once when session becomes idle and user isn't already talking
+    # 11. Proactive greeting — speak once when session becomes idle and user isn't already talking
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev):
         """
-        purpose: Deliver a proactive greeting the first time the agent reaches idle state.
-                 Skipped if VAD has already detected the user speaking first.
+        purpose: Deliver a proactive greeting the first time the agent reaches idle state,
+                 but only if no conversation has occurred yet. If the user spoke before the
+                 agent finished initializing, session.history will already contain messages
+                 and the greeting is skipped to avoid overriding the response in progress.
         @param ev: Event with .new_state (str) indicating the agent's new pipeline state.
         """
         nonlocal _greeted
         if ev.new_state == "idle" and not _greeted:
             _greeted = True
-            if session.user_state != "speaking":
+            # Skip greeting if a conversation has already started (user spoke first)
+            history_has_messages = len(session.history.items) > 0
+            if session.user_state != "speaking" and not history_has_messages:
                 name_part = f", {user_name}" if user_name else ""
-                asyncio.create_task(session.say(
-                    f"Hi{name_part}! I'm Sunny, your personal helper. "
-                    "I can help you with reminders, answer questions, or just have a chat. "
-                    "What's on your mind?"
-                ))
+                asyncio.create_task(  # noqa: RUF006
+                    session.say(
+                        f"Hi{name_part}! I'm Sunny, your personal helper. "
+                        "I can help you with reminders, answer questions, or just have a chat. "
+                        "What's on your mind?"
+                    )
+                )
 
-    # 11. Participant disconnect — record disconnect time and last topic for reconnect greeting
+    # 12. Participant disconnect — record disconnect time and last topic for reconnect greeting
     def _on_participant_disconnected(participant):
         """
         purpose: Record the disconnect timestamp and last assistant message so the
@@ -483,16 +670,17 @@ async def entrypoint(ctx: JobContext):
         @param participant: The disconnected LiveKit participant object.
         """
         nonlocal last_disconnect_time, last_topic
-        last_disconnect_time = asyncio.get_event_loop().time()
+        last_disconnect_time = asyncio.get_running_loop().time()
         history = [
-            i for i in session.history.items
+            i
+            for i in session.history.items
             if isinstance(i, ChatMessage) and i.role == "assistant"
         ]
         last_topic = history[-1].text_content[:80] if history else ""
         logger.info(f"Participant {participant.identity} disconnected (user={user_id})")
-        asyncio.create_task(conv_logger.finalize(session.history))
+        asyncio.create_task(conv_logger.finalize(session.history))  # noqa: RUF006
 
-    # 12. Participant reconnect — greet returning user within 10-minute window
+    # 13. Participant reconnect — greet returning user within 10-minute window
     def _on_participant_connected(participant):
         """
         purpose: Greet the user with their last topic if they reconnect within 10 minutes.
@@ -502,17 +690,21 @@ async def entrypoint(ctx: JobContext):
         nonlocal last_disconnect_time, last_topic
         if last_disconnect_time is None:
             return  # first connection, not a reconnect
-        elapsed = asyncio.get_event_loop().time() - last_disconnect_time
+        elapsed = asyncio.get_running_loop().time() - last_disconnect_time
         if elapsed < 600:  # 10-minute reconnect window
-            topic_suffix = f" We were talking about: {last_topic}." if last_topic else ""
-            greeting = f"Welcome back{', ' + user_name if user_name else ''}!{topic_suffix}"
-            asyncio.create_task(session.say(greeting))
+            topic_suffix = (
+                f" We were talking about: {last_topic}." if last_topic else ""
+            )
+            greeting = (
+                f"Welcome back{', ' + user_name if user_name else ''}!{topic_suffix}"
+            )
+            asyncio.create_task(session.say(greeting))  # noqa: RUF006
         last_disconnect_time = None
 
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
     ctx.room.on("participant_connected", _on_participant_connected)
 
-    # 13. False interruption recovery — resume agent speech after background noise
+    # 14. False interruption recovery — resume agent speech after background noise
     @session.on("agent_false_interruption")
     def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
         """
@@ -522,7 +714,7 @@ async def entrypoint(ctx: JobContext):
         logger.info("false positive interruption, resuming")
         session.generate_reply(instructions=ev.extra_instructions or NOT_GIVEN)
 
-    # 14. Metrics collection
+    # 15. Metrics collection
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
@@ -534,7 +726,7 @@ async def entrypoint(ctx: JobContext):
         metrics.log_metrics(ev.metrics)
         usage_collector.collect(ev.metrics)
 
-    # 15. Shutdown callbacks — safety fallback for process-kill scenarios and usage logging
+    # 16. Shutdown callbacks — safety fallback for process-kill scenarios and usage logging
     #     (disconnect handler also calls finalize; both calling it is safe — finalize is idempotent)
     async def _on_shutdown():
         """
@@ -553,9 +745,16 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(_on_shutdown)
     ctx.add_shutdown_callback(_log_usage)
 
-    # 16. Start session — room is already connected, session.start() will not reconnect
+    # 17. Start session — room is already connected, session.start() will not reconnect
     await session.start(
-        agent=Assistant(instructions=rendered_prompt, user_id=user_id, supabase=supabase),
+        agent=Assistant(
+            instructions=rendered_prompt,
+            user_id=user_id,
+            supabase=supabase,
+            engine=engine,
+            ios_version=ios_version,
+            user_timezone=user_timezone,
+        ),
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),

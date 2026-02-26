@@ -4,7 +4,7 @@
 // Used by the DEV conversation log to fetch conversation history and transcripts.
 //
 // Auth: Bearer token is hardcoded to the test user UUID for MVP.
-// TODO Phase 3: replace with real JWT once auth is implemented.
+// TODO: Phase 3: replace with real JWT once auth is implemented.
 //
 // All endpoints follow the { data: T, error: null } response envelope.
 // Dates are decoded from ISO-8601 strings (with or without fractional seconds).
@@ -58,7 +58,7 @@ actor SunnyAPIClient {
         )
         components?.queryItems = [
             URLQueryItem(name: "limit", value: "\(limit)"),
-            URLQueryItem(name: "offset", value: "\(offset)")
+            URLQueryItem(name: "offset", value: "\(offset)"),
         ]
         guard let url = components?.url else {
             throw SunnyAPIError.invalidURL
@@ -86,7 +86,7 @@ actor SunnyAPIClient {
     // IOS-4 scope does not require these endpoints yet.
     func fetchUserProfile() async throws {}
     func fetchReminders() async throws {}
-    func saveDeviceToken(_ token: String) async throws {}
+    func saveDeviceToken(_: String) async throws {}
 
     /// Generic HTTP request helper that decodes the API response envelope.
     ///
@@ -105,7 +105,7 @@ actor SunnyAPIClient {
             throw SunnyAPIError.invalidResponse
         }
 
-        guard (200..<300).contains(httpResponse.statusCode) else {
+        guard (200 ..< 300).contains(httpResponse.statusCode) else {
             let body = String(data: data, encoding: .utf8)
             throw SunnyAPIError.httpError(statusCode: httpResponse.statusCode, body: body)
         }

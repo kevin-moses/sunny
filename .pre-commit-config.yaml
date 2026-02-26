@@ -1,0 +1,42 @@
+# .pre-commit-config.yaml
+# Pre-commit hooks for the sunny repo.
+# Covers Python (ruff lint+format, mypy) and Swift (swiftformat).
+#
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+# Update hook versions: pre-commit autoupdate
+#
+# Note: swiftformat and ruff auto-fix files in place. If a commit is blocked
+# because files were modified, re-stage the changes and commit again.
+
+repos:
+  # --- Python: ruff lint (with auto-fix) and format ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^sunny_agent/
+      - id: ruff-format
+        files: ^sunny_agent/
+
+  # --- Python: mypy type checking ---
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: bash -c 'cd sunny_agent && uv run mypy src/ --ignore-missing-imports'
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^sunny_agent/
+
+  # --- Swift: swiftformat (auto-formats in place) ---
+  - repo: local
+    hooks:
+      - id: swiftformat
+        name: swiftformat
+        entry: swiftformat
+        language: system
+        files: \.swift$
+        args: [--quiet]

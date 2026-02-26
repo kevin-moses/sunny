@@ -1,17 +1,3 @@
-// Theme/DevSettingsView.swift
-//
-// Developer-only panel for adjusting Sunny's UI parameters and viewing
-// conversation logs at runtime.
-// Presented as a modal sheet triggered by a floating "DEV" button visible only
-// in DEBUG builds (top-right corner of AppView).
-//
-// The sheet is tabbed:
-// - Settings: Existing SunnyTheme controls (persisted via UserDefaults)
-// - Logs: Conversation history fetched from the API
-//
-// Background color is fixed (#FAE6CC) and not shown in this panel.
-// Accent palette shows exactly 5 entries as defined in SunnyPalette.all.
-
 import SwiftUI
 
 /// Form-based sheet exposing live sliders and pickers for all SunnyTheme properties.
@@ -111,7 +97,7 @@ struct DevSettingsView: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Slider(value: $theme.bodyFontSize, in: 14...24, step: 1)
+                Slider(value: $theme.bodyFontSize, in: 14 ... 24, step: 1)
                     .tint(theme.accentColor)
                 Text("Preview: Tap the button below to talk.")
                     .font(.system(size: theme.bodyFontSize))
@@ -128,7 +114,7 @@ struct DevSettingsView: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Slider(value: $theme.buttonFontSize, in: 15...28, step: 1)
+                Slider(value: $theme.buttonFontSize, in: 15 ... 28, step: 1)
                     .tint(theme.accentColor)
                 RoundedRectangle(cornerRadius: theme.cornerRadius)
                     .fill(theme.accentColor)
@@ -156,7 +142,7 @@ struct DevSettingsView: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Slider(value: $theme.cornerRadius, in: 4...32, step: 2)
+                Slider(value: $theme.cornerRadius, in: 4 ... 32, step: 2)
                     .tint(theme.accentColor)
                 HStack(spacing: 12) {
                     RoundedRectangle(cornerRadius: theme.cornerRadius)
@@ -176,7 +162,6 @@ struct DevSettingsView: View {
     }
 
     /// Destructive reset button to restore all factory defaults.
-    @ViewBuilder
     private func resetSection() -> some View {
         Section {
             Button("Reset to Defaults", role: .destructive) {

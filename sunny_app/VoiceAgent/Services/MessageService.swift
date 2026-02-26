@@ -1,18 +1,17 @@
-import MessageUI
 import Foundation
+import MessageUI
 import UIKit
 
 /// Service for sending messages using MessageUI framework
 /// This service handles composing and sending SMS messages to contacts
 @MainActor
 final class MessageService: NSObject, ObservableObject {
-
     /// Send a message to a contact
     /// @param contactId: The contact identifier (currently unused but available for future use)
     /// @param phoneNumber: The recipient's phone number
     /// @param message: The message content to send
     /// @return: Result message indicating success or failure
-    func sendMessage(contactId: String, phoneNumber: String, message: String) throws -> String {
+    func sendMessage(contactId _: String, phoneNumber: String, message: String) throws -> String {
         // Check if device can send text messages
         guard MFMessageComposeViewController.canSendText() else {
             throw MessageError.deviceCannotSendMessages
@@ -38,7 +37,8 @@ final class MessageService: NSObject, ObservableObject {
         // Present the message composer from the root view controller
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let window = windowScene.windows.first,
-           let rootViewController = window.rootViewController {
+           let rootViewController = window.rootViewController
+        {
             rootViewController.present(messageComposer, animated: true)
         }
 

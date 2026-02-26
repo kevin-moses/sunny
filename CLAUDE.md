@@ -1,6 +1,8 @@
 if you use emojis i'll shut you down immediately. if you're confused about something, ask me questions. if you think you've found a fix to a problem, DOUBLE CHECK that your assumptions are correct and the fix actually works.
 
-Any frontend code should go in sunny_app. Any backend code, including agents, server, etc. should go in sunny_server.
+Style guide enforcement should be done via pre-commit.  Ensure you run pre-commit run --all-files before adding/commiting changes to git.  Use mypy, ruff, swiftlint, and swiftformat. If files are modified by the hook, run pre-commit again.
+
+Any frontend code should go in sunny_app.
 
 Assume i have two separate terminals in the background running sunny_server and sunny_app. don't run the apps as a background process
 

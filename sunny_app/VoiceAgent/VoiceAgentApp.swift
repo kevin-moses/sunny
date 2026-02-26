@@ -1,8 +1,3 @@
-// VoiceAgentApp.swift
-//
-// App entry point. Creates the root view model and SunnyTheme, injecting both
-// into the SwiftUI environment for the entire view hierarchy.
-
 import LiveKit
 import SwiftUI
 
@@ -37,7 +32,7 @@ struct AgentFeatures: OptionSet {
     let rawValue: Int
 
     static let voice = Self(rawValue: 1 << 0)
-    static let text  = Self(rawValue: 1 << 1)
+    static let text = Self(rawValue: 1 << 1)
     static let video = Self(rawValue: 1 << 2)
 
     static let current: Self = [.voice, .text]

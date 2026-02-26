@@ -1,9 +1,3 @@
-// Helpers/Style.swift
-//
-// Shared SwiftUI button styles and layout constants used across the Sunny app.
-// ProminentButtonStyle accepts an accentColor so callers can pass theme.accentColor.
-// Button text is BLACK for maximum contrast against the warm accent backgrounds.
-
 import SwiftUI
 
 extension CGFloat {

@@ -12,9 +12,11 @@ dependencies = [
     "livekit-agents[openai,anthropic,turn-detector,silero,cartesia,deepgram]~=1.2",
     "livekit-plugins-noise-cancellation~=0.2",
     "numpy<2",
+    "openai>=1.0.0",
     "python-dotenv",
     "tavily-python>=0.7.12",
     "supabase>=2.10.0",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -22,6 +24,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "ruff",
+    "mypy",
 ]
 
 [tool.setuptools.packages.find]
@@ -45,3 +48,19 @@ ignore = ["E501"]  # Line too long (handled by formatter)
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.mypy]
+# Type-check at 3.10 since the codebase uses X | Y union syntax.
+# Strictness is intentionally relaxed for the existing codebase; tighten over time.
+python_version = "3.10"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+warn_return_any = false
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+# src.* uses supabase's recursive JSON union type (int | float | Sequence[JSON] |
+# Mapping[str, JSON]) and third-party SDK union types that mypy can't fully narrow.
+# Ignored until the codebase adds explicit cast() or isinstance() guards.
+module = ["src.memory", "src.tools", "src.workflow_engine", "src.agent"]
+ignore_errors = true

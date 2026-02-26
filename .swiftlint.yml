@@ -1,0 +1,49 @@
+# .swiftlint.yml
+# SwiftLint configuration for the sunny iOS app.
+# Docs: https://realm.github.io/SwiftLint/rule-directory.html
+
+included:
+  - sunny_app
+
+excluded:
+  - sunny_app/VoiceAgent.xcodeproj
+  - sunny_app/Pods
+  - .build
+
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - closure_spacing
+  - overridden_super_call
+  - redundant_nil_coalescing
+  - toggle_bool
+  - unneeded_parentheses_in_closure_argument
+
+disabled_rules:
+  - trailing_whitespace   # handled by swiftformat
+  - line_length           # handled by swiftformat
+  - todo                  # TODOs are tracked in tickets, not enforced at commit time
+
+identifier_name:
+  min_length:
+    warning: 1
+  excluded:
+    - r
+    - g
+    - b
+    - i
+    - x
+    - y
+    - ud    # UserDefaults local alias
+
+function_body_length:
+  warning: 80
+  error: 120
+
+type_body_length:
+  warning: 300
+  error: 400
+
+file_length:
+  warning: 500
+  error: 800

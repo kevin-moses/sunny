@@ -1,3 +1,10 @@
+// get-user-profile/index.ts
+// Purpose: Returns the full user context (profile, facts, reminders, recent summaries)
+// by calling the get_user_context Supabase RPC. Used by the iOS app on launch to
+// pre-populate the agent's system prompt with personalized context.
+//
+// Last modified: 2026-02-24
+
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { corsHeaders, error, getUserId, success } from "../_shared/response.ts";
 import { supabaseAdmin } from "../_shared/supabase.ts";
@@ -13,7 +20,7 @@ serve(async (req: Request) => {
     }
 
     if (req.method !== "GET") {
-      return error("Method not allowed", "METHOD_NOT_ALLOWED", 400);
+      return error("Method not allowed", "METHOD_NOT_ALLOWED", 405);
     }
 
     const { data, error: rpcError } = await supabaseAdmin.rpc("get_user_context", {

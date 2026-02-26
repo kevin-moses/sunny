@@ -561,6 +561,86 @@ Document: what was requested, what was created/fixed, evidence from logs.
 
 ---
 
+## WF-4: Migrate workflows to Supabase with embedding retrieval
+
+**Size:** M (3-4h) | **Depends on:** WF-2 (engine exists), DB-1 ✅
+
+**Acceptance Criteria:**
+- Workflows and steps stored in Supabase `workflows` + `workflow_steps` tables
+- pgvector embeddings (OpenAI text-embedding-3-small, 1536 dims) on workflow title+description
+- `match_workflow` RPC returns best semantic match via cosine similarity with HNSW index
+- `get_workflow_steps` RPC returns version-specific steps with automatic fallback
+- Ingestion script loads all 88 JSON files + 896 manifest entries, idempotent via upsert
+- `WorkflowEngine` refactored to query Supabase instead of loading from disk
+- Same external interface (`find_workflow`, `resolve_workflow`) so agent.py changes are minimal
+- `find_workflow` latency under 500ms (embedding generation + pgvector query)
+- In-memory cache for resolved workflows avoids repeated step fetches
+- JSON files remain source of truth for editing/versioning; Supabase is runtime store
+- All existing tests pass with updated mocks
+
+**Agent Prompt:**
+```
+Migrate Sunny's workflow system from local JSON files to Supabase with
+pgvector embedding-based retrieval. The current system loads 88 JSON
+files + 896-entry manifest into memory at startup and uses token-overlap
+scoring. Replace with semantic search.
+
+STEP 1: Database migration (supabase/migrations/004_workflows.sql)
+- Enable pgvector extension
+- Create `workflows` table: id (text PK), title, description, version,
+  estimated_minutes, source_type, source_urls, has_steps (boolean),
+  embedding (vector(1536)), created_at, updated_at
+- HNSW index on embedding column (vector_cosine_ops, m=16, ef_construction=64)
+- Create `workflow_steps` table: workflow_id (FK), ios_version (text: '16',
+  '18', '26', or 'fallback'), step_index, step_id, instruction, visual_cue,
+  confirmation_prompt, success_indicators, common_issues (jsonb), fallback,
+  next_step. Unique on (workflow_id, ios_version, step_id).
+- RPC `match_workflow(query_embedding vector, match_threshold float,
+  match_count int)`: cosine similarity search returning (workflow_id, title,
+  description, has_steps, similarity)
+- RPC `get_workflow_steps(p_workflow_id text, p_ios_version text)`: returns
+  steps with automatic fallback to 'fallback' version if requested iOS
+  version has no steps
+
+STEP 2: Ingestion script (sunny_agent/scripts/ingest_workflows.py)
+- Standalone CLI, not part of agent runtime
+- Load manifest.yaml (896 entries) + workflows/*.json (88 files)
+- Generate embeddings via OpenAI text-embedding-3-small in batches of 100
+- Embedding text per workflow: "{title}: {description}" (just title for
+  manifest-only entries)
+- Upsert into workflows table (ON CONFLICT on id)
+- For each JSON file: insert steps for each ios_version + fallback_steps
+  (ios_version stored as 'fallback')
+- Idempotent, safe to re-run after editing JSON files
+- Requires SUPABASE_URL, SUPABASE_SECRET_KEY, OPENAI_API_KEY env vars
+
+STEP 3: Refactor WorkflowEngine (sunny_agent/src/workflow_engine.py)
+- Keep WorkflowStep + WorkflowState dataclasses identical
+- Constructor: __init__(supabase: AsyncClient) instead of file paths
+- find_workflow() becomes async: generate embedding via openai.AsyncOpenAI,
+  call match_workflow RPC, return (id, title, has_steps)
+- resolve_workflow() becomes async: call get_workflow_steps RPC, build
+  WorkflowState from DB rows
+- Add _step_cache dict for resolved workflows (avoids re-fetching in session)
+- Remove all file loading, token matching, stopword logic
+
+STEP 4: Update agent.py
+- entrypoint(): replace WorkflowEngine(workflows_dir=..., manifest_path=...)
+  with WorkflowEngine(supabase=supabase) -- supabase client already exists
+- start_workflow(): add await to find_workflow() and resolve_workflow() calls
+- Remove unused Path import and repo_root computation
+
+STEP 5: Dependencies and config
+- Add "openai>=1.0.0" to pyproject.toml (explicit, currently transitive)
+- Add EMBEDDING_MODEL and WORKFLOW_MATCH_THRESHOLD to config.py
+
+STEP 6: Update tests
+- _make_assistant(): change WorkflowEngine mock to use AsyncClient
+- Patch find_workflow and resolve_workflow with AsyncMock
+```
+
+---
+
 # Phase 2 Integration Testing
 
 ## INT-2: Full notification → adherence → caregiver flow test
@@ -652,6 +732,7 @@ Create test_phase2_checklist.md with pass/fail columns.
 | AGENT-V2-1 | Agent V2 | M | Phase 1 done | ⬜ | sunny-agent |
 | AGENT-V2-2 | Agent V2 | M | NOTIFY-2 | ⬜ | sunny-agent |
 | AGENT-V2-3 | Agent V2 | M | Phase 1 done, WF-0 | ⬜ | sunny-workflows |
+| **WF-4** | **Workflows** | **M** | **WF-2, DB-1 ✅** | ⬜ | sunny-workflows |
 | INT-2 | Integration | S | All above | ⬜ | any |
 
 ## Parallel Execution Plan
@@ -669,16 +750,16 @@ Phase 2 (~3-4 weeks):
   sunny-notify:    NOTIFY-1 ──> NOTIFY-2 ──> ADHERENCE-1 ──> ADHERENCE-2
   sunny-caregiver: ─────────────────────────── CG-1 (after API-2) ──> CG-2
   sunny-agent:     AGENT-V2-1 ──> AGENT-V2-2
-  sunny-workflows: AGENT-V2-3 (uses WF-0 scraper)
+  sunny-workflows: WF-4 (can start immediately) ──> AGENT-V2-3
   Integration:     ────────────────────────────────────────────────> INT-2
 ```
 
 ## Full Project Summary
 
 ```
-Total tickets:  28 (16 Phase 1 + 12 Phase 2)
+Total tickets:  29 (16 Phase 1 + 13 Phase 2)
 Completed:       8 (DB-1, DB-2, AGENT-1-4, IOS-1, IOS-2)
-Remaining:      20 (8 Phase 1 + 12 Phase 2)
-Est. hours:     62-87 hours remaining
+Remaining:      21 (8 Phase 1 + 13 Phase 2)
+Est. hours:     65-91 hours remaining
 Est. timeline:  4-6 weeks at ~15-20 hours/week
 ```

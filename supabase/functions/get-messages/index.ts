@@ -1,9 +1,12 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { corsHeaders, error, getUserId, success } from "../_shared/response.ts";
-import { supabaseAdmin } from "../_shared/supabase.ts";
+// get-messages/index.ts
+// Purpose: Returns all messages for a specific conversation, along with the conversation's
+// summary, sentiment, and topic metadata. Used by the iOS conversation detail view.
+//
+// Last modified: 2026-02-24
 
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { corsHeaders, error, getUserId, success, UUID_REGEX } from "../_shared/response.ts";
+import { supabaseAdmin } from "../_shared/supabase.ts";
 
 serve(async (req: Request) => {
   const started = Date.now();
@@ -16,7 +19,7 @@ serve(async (req: Request) => {
     }
 
     if (req.method !== "GET") {
-      return error("Method not allowed", "METHOD_NOT_ALLOWED", 400);
+      return error("Method not allowed", "METHOD_NOT_ALLOWED", 405);
     }
 
     const conversationId = url.searchParams.get("conversation_id");
