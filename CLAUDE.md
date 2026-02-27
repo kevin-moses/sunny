@@ -2,6 +2,8 @@ if you use emojis i'll shut you down immediately. if you're confused about somet
 
 Style guide enforcement should be done via pre-commit.  Ensure you run pre-commit run --all-files before adding/commiting changes to git.  Use mypy, ruff, swiftlint, and swiftformat. If files are modified by the hook, run pre-commit again.
 
+Before deploying or committing any code, or making a migration, use the TLM code reviewer agent @"tlm-code-reviewer (agent)" to review code. 
+
 Any frontend code should go in sunny_app.
 
 Assume i have two separate terminals in the background running sunny_server and sunny_app. don't run the apps as a background process

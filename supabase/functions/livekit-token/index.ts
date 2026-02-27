@@ -11,7 +11,16 @@
 //   LIVEKIT_API_SECRET -- LiveKit project API secret
 //   LIVEKIT_SERVER_URL -- wss://... URL of the LiveKit server
 //
-// Last modified: 2026-02-24
+// Optional request body fields for session context (embedded in participant metadata):
+//   userId         -- UUID of the user; agent uses this to load per-user context
+//   trigger        -- what initiated the session: 'app_open' | 'notification_tap' | 'watch_tap'
+//   reminderId     -- UUID of the reminder that triggered this session (notification_tap only)
+//   adherenceLogId -- UUID of the adherence_log row associated with this check-in
+//
+// Participant metadata JSON shape:
+//   { user_id, trigger, reminder_id, adherence_log_id }  (omitted if not provided)
+//
+// Last modified: 2026-02-26
 
 import { AccessToken } from "npm:livekit-server-sdk@2";
 import { corsHeaders, error, success } from "../_shared/response.ts";
@@ -36,14 +45,21 @@ Deno.serve(async (req: Request) => {
     return error("Token service not configured", "SERVER_MISCONFIGURED", 500);
   }
 
-  let body: { roomName?: string; participantName?: string; userId?: string };
+  let body: {
+    roomName?: string;
+    participantName?: string;
+    userId?: string;
+    trigger?: string;
+    reminderId?: string;
+    adherenceLogId?: string;
+  };
   try {
     body = await req.json();
   } catch {
     return error("Request body must be valid JSON", "INVALID_BODY", 400);
   }
 
-  const { roomName, participantName, userId } = body;
+  const { roomName, participantName, userId, trigger, reminderId, adherenceLogId } = body;
 
   if (!roomName || typeof roomName !== "string") {
     return error("roomName is required", "MISSING_ROOM_NAME", 400);
@@ -52,8 +68,16 @@ Deno.serve(async (req: Request) => {
     return error("participantName is required", "MISSING_PARTICIPANT_NAME", 400);
   }
 
-  // Embed userId in participant metadata so the agent can resolve the user
-  const metadata = userId ? JSON.stringify({ user_id: userId }) : undefined;
+  // Embed session context in participant metadata so the agent can resolve user and
+  // reminder context (trigger type, reminder UUID, adherence log UUID).
+  const metadataObj: Record<string, string> = {};
+  if (userId) metadataObj.user_id = userId;
+  if (trigger) metadataObj.trigger = trigger;
+  if (reminderId) metadataObj.reminder_id = reminderId;
+  if (adherenceLogId) metadataObj.adherence_log_id = adherenceLogId;
+  const metadata = Object.keys(metadataObj).length > 0
+    ? JSON.stringify(metadataObj)
+    : undefined;
 
   const token = new AccessToken(apiKey, apiSecret, {
     identity: participantName,

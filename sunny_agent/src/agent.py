@@ -15,6 +15,12 @@
 # and reconnect handlers log session end and greet returning users within 10 minutes;
 # agent_state_changed handler delivers a proactive greeting on session start.
 #
+# Session context (NOTIFY-1): resolve_session_context() reads trigger/reminder_id from
+# participant metadata. When trigger == "notification_tap" and a reminder_id is present,
+# the agent overrides the default greeting with a reminder-specific prompt so the user
+# receives contextual check-in ("Time for your blood pressure medication. Did you take it?").
+# Session context is also persisted to the conversations row via create_conversation().
+#
 # Fixes applied: async Anthropic client in memory.py, user timezone in reminders,
 # get_running_loop() replaces deprecated get_event_loop(), empty step_ids guard,
 # reminder_type parameter rename, user_timezone threaded from profile,
@@ -63,6 +69,7 @@ from memory import (
     create_conversation,
     create_supabase_client,
     load_user_context,
+    resolve_session_context,
     resolve_user_id,
 )
 from prompts import format_step_context, format_user_context, render_system_prompt
@@ -534,6 +541,8 @@ async def entrypoint(ctx: JobContext):
              UX parameters and real-time conversation logging.
              Also registers error recovery, STT garbage filter, participant reconnect,
              and proactive greeting handlers so the agent never goes silent.
+             When the session was triggered by a notification tap, a reminder-specific
+             initial greeting overrides the default welcome message.
     @param ctx: (JobContext) LiveKit job context providing room access and lifecycle hooks.
     """
     ctx.log_context_fields = {"room": ctx.room.name}
@@ -541,13 +550,23 @@ async def entrypoint(ctx: JobContext):
     # 1. Connect first — gives us access to participant metadata before building the prompt
     await ctx.connect()
 
-    # 2. Resolve user_id from participant metadata (or fallback)
+    # 2. Resolve user_id and session context from participant metadata (or fallbacks)
     user_id = resolve_user_id(ctx.room)
+    session_ctx = resolve_session_context(ctx.room)
+    session_trigger = session_ctx.get("trigger", "app_open")
+    session_reminder_id = session_ctx.get("reminder_id")
+    session_adherence_log_id = session_ctx.get("adherence_log_id")
 
-    # 3. Init Supabase, load context, create conversation row
+    # 3. Init Supabase, load context, create conversation row with session context
     supabase = await create_supabase_client()
     raw_context = await load_user_context(supabase, user_id)
-    conversation_id = await create_conversation(supabase, user_id)
+    conversation_id = await create_conversation(
+        supabase,
+        user_id,
+        trigger=session_trigger,
+        reminder_id=session_reminder_id,
+        adherence_log_id=session_adherence_log_id,
+    )
     profile = raw_context.get("profile", {})
     user_name = profile.get("name", "")
     ios_version = profile.get("ios_version", "unknown")
@@ -557,16 +576,41 @@ async def entrypoint(ctx: JobContext):
         supabase, user_id, conversation_id, existing_profile_summary
     )
 
-    # 4. Initialize workflow engine backed by Supabase (WF-4)
+    # 4. Compute initial greeting override for notification-tap sessions
+    #    When a reminder notification is tapped, greet the user with context rather than
+    #    the generic welcome so the session feels like a purposeful check-in.
+    name_part = f", {user_name}" if user_name else ""
+    initial_greeting: str | None = None
+    if session_trigger == "notification_tap" and session_reminder_id:
+        reminders = raw_context.get("reminders", [])
+        matched_reminder = next(
+            (r for r in reminders if str(r.get("id", "")) == session_reminder_id),
+            None,
+        )
+        if matched_reminder:
+            r_title = matched_reminder.get("title", "your reminder")
+            r_type = matched_reminder.get("type", "")
+            if r_type == "medication":
+                initial_greeting = (
+                    f"Hi{name_part}! It's time for your {r_title}. Did you take it?"
+                )
+            else:
+                initial_greeting = (
+                    f"Hi{name_part}! I'm checking in about your {r_title}. "
+                    "Is there anything you need help with?"
+                )
+            logger.info(f"Notification tap greeting: {initial_greeting!r}")
+
+    # 5. Initialize workflow engine backed by Supabase (WF-4)
     engine = WorkflowEngine(supabase=supabase)
     logger.info("WorkflowEngine initialized with Supabase pgvector backend")
 
-    # 5. Render system prompt with injected user context
+    # 6. Render system prompt with injected user context
     context_block = format_user_context(raw_context)
     rendered_prompt = render_system_prompt(context_block)
     logger.info(f"System prompt rendered for user_id={user_id}")
 
-    # 6. Build session with senior-optimized voice UX parameters
+    # 7. Build session with senior-optimized voice UX parameters
     session = AgentSession(
         stt=deepgram.STT(model=STT_MODEL, language=STT_LANGUAGE),
         llm=anthropic.LLM(model=LLM_MODEL),
@@ -580,13 +624,13 @@ async def entrypoint(ctx: JobContext):
         min_interruption_words=MIN_INTERRUPTION_WORDS,
     )
 
-    # 7. State variables for error recovery and reconnect detection
+    # 8. State variables for error recovery and reconnect detection
     consecutive_errors = 0
     last_disconnect_time: float | None = None
     last_topic: str = ""
     _greeted = False
 
-    # 8. Real-time message logging — fires on every completed conversation turn
+    # 9. Real-time message logging — fires on every completed conversation turn
     @session.on("conversation_item_added")
     def _on_item_added(ev: ConversationItemAddedEvent):
         """
@@ -604,7 +648,7 @@ async def entrypoint(ctx: JobContext):
                 if text:
                     asyncio.create_task(conv_logger.log_message(item.role, text))  # noqa: RUF006
 
-    # 9. STT garbage filter — silently discard noise before the LLM responds
+    # 10. STT garbage filter — silently discard noise before the LLM responds
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(ev):
         """
@@ -619,7 +663,7 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"Ignoring garbage STT input (user={user_id}): {text!r}")
             session.interrupt()
 
-    # 10. Progressive error recovery — speak an escalating message on pipeline failures
+    # 11. Progressive error recovery — speak an escalating message on pipeline failures
     @session.on("error")
     def _on_session_error(ev):
         """
@@ -637,7 +681,7 @@ async def entrypoint(ctx: JobContext):
             session.say(_recovery_message(consecutive_errors, user_name))
         )
 
-    # 11. Proactive greeting — speak once when session becomes idle and user isn't already talking
+    # 12. Proactive greeting — speak once when session becomes idle and user isn't already talking
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev):
         """
@@ -645,6 +689,8 @@ async def entrypoint(ctx: JobContext):
                  but only if no conversation has occurred yet. If the user spoke before the
                  agent finished initializing, session.history will already contain messages
                  and the greeting is skipped to avoid overriding the response in progress.
+                 When initial_greeting is set (notification-tap sessions), uses the reminder-
+                 specific check-in message instead of the generic welcome.
         @param ev: Event with .new_state (str) indicating the agent's new pipeline state.
         """
         nonlocal _greeted
@@ -653,16 +699,14 @@ async def entrypoint(ctx: JobContext):
             # Skip greeting if a conversation has already started (user spoke first)
             history_has_messages = len(session.history.items) > 0
             if session.user_state != "speaking" and not history_has_messages:
-                name_part = f", {user_name}" if user_name else ""
-                asyncio.create_task(  # noqa: RUF006
-                    session.say(
-                        f"Hi{name_part}! I'm Sunny, your personal helper. "
-                        "I can help you with reminders, answer questions, or just have a chat. "
-                        "What's on your mind?"
-                    )
+                greeting = initial_greeting or (
+                    f"Hi{name_part}! I'm Sunny, your personal helper. "
+                    "I can help you with reminders, answer questions, or just have a chat. "
+                    "What's on your mind?"
                 )
+                asyncio.create_task(session.say(greeting))  # noqa: RUF006
 
-    # 12. Participant disconnect — record disconnect time and last topic for reconnect greeting
+    # 13. Participant disconnect — record disconnect time and last topic for reconnect greeting
     def _on_participant_disconnected(participant):
         """
         purpose: Record the disconnect timestamp and last assistant message so the
@@ -680,7 +724,7 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Participant {participant.identity} disconnected (user={user_id})")
         asyncio.create_task(conv_logger.finalize(session.history))  # noqa: RUF006
 
-    # 13. Participant reconnect — greet returning user within 10-minute window
+    # 14. Participant reconnect — greet returning user within 10-minute window
     def _on_participant_connected(participant):
         """
         purpose: Greet the user with their last topic if they reconnect within 10 minutes.
@@ -704,7 +748,7 @@ async def entrypoint(ctx: JobContext):
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
     ctx.room.on("participant_connected", _on_participant_connected)
 
-    # 14. False interruption recovery — resume agent speech after background noise
+    # 15. False interruption recovery — resume agent speech after background noise
     @session.on("agent_false_interruption")
     def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
         """
@@ -714,7 +758,7 @@ async def entrypoint(ctx: JobContext):
         logger.info("false positive interruption, resuming")
         session.generate_reply(instructions=ev.extra_instructions or NOT_GIVEN)
 
-    # 15. Metrics collection
+    # 16. Metrics collection
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
@@ -726,7 +770,7 @@ async def entrypoint(ctx: JobContext):
         metrics.log_metrics(ev.metrics)
         usage_collector.collect(ev.metrics)
 
-    # 16. Shutdown callbacks — safety fallback for process-kill scenarios and usage logging
+    # 17. Shutdown callbacks — safety fallback for process-kill scenarios and usage logging
     #     (disconnect handler also calls finalize; both calling it is safe — finalize is idempotent)
     async def _on_shutdown():
         """
@@ -745,7 +789,7 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(_on_shutdown)
     ctx.add_shutdown_callback(_log_usage)
 
-    # 17. Start session — room is already connected, session.start() will not reconnect
+    # 18. Start session — room is already connected, session.start() will not reconnect
     await session.start(
         agent=Assistant(
             instructions=rendered_prompt,

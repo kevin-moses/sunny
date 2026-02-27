@@ -27,6 +27,12 @@ struct MessageData: Codable {
 ///
 /// It consumes `LiveKit.Room` object, observing its internal state and propagating appropriate changes.
 /// It does not expose any publicly mutable state, encouraging unidirectional data flow.
+///
+/// Notification-tap auto-connect: When a push notification is tapped, NotificationService
+/// broadcasts .sunnyNotificationTapped. AppViewModel observes this and calls
+/// connectFromNotification(context:), which stores the context then calls connect().
+/// getConnection() picks up the pending context and passes it to the livekit-token edge
+/// function so the agent receives reminder metadata in participant metadata.
 @MainActor
 @Observable
 final class AppViewModel {
@@ -61,6 +67,9 @@ final class AppViewModel {
     // MARK: - State
 
     // MARK: Connection
+
+    /// Reminder context from a notification tap, cleared after getConnection() consumes it.
+    private(set) var pendingNotificationContext: NotificationContext?
 
     private(set) var connectionState: ConnectionState = .disconnected
     private(set) var isListening = false
@@ -105,6 +114,9 @@ final class AppViewModel {
     // MARK: - Dependencies
 
     @ObservationIgnored
+    private var notificationObserverTask: Task<Void, Never>?
+
+    @ObservationIgnored
     @Dependency(\.room) private var room
     @ObservationIgnored
     @Dependency(\.tokenService) private var tokenService
@@ -125,6 +137,23 @@ final class AppViewModel {
         observeRoom()
         observeDevices()
         setupRpcMethods()
+        observeNotificationTaps()
+    }
+
+    /// Subscribes to .sunnyNotificationTapped Foundation notifications so that tapping a
+    /// push notification while the app is running auto-connects with reminder context.
+    ///
+    /// purpose: Bridge Foundation NotificationCenter events (posted by NotificationService)
+    ///          into an async connect call that passes the reminder context to livekit-token.
+    ///          The Task is stored in notificationObserverTask so it is cancelled in deinit,
+    ///          preventing a Task leak if the view model scope ever changes.
+    private func observeNotificationTaps() {
+        notificationObserverTask = Task { @MainActor [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: .sunnyNotificationTapped) {
+                guard let self, let ctx = notification.object as? NotificationContext else { continue }
+                await connectFromNotification(context: ctx)
+            }
+        }
     }
 
     private func observeRoom() {
@@ -174,6 +203,7 @@ final class AppViewModel {
 
     deinit {
         AudioManager.shared.onDeviceUpdate = nil
+        notificationObserverTask?.cancel()
     }
 
     private func setupRpcMethods() {
@@ -255,6 +285,17 @@ final class AppViewModel {
 
     // MARK: - Connection
 
+    /// Initiates a LiveKit session pre-loaded with reminder context from a notification tap.
+    ///
+    /// purpose: Stores the NotificationContext so getConnection() can embed it in the
+    ///          livekit-token request, then delegates to connect() for the full connect flow.
+    ///          The agent receives the context via participant metadata and greets in context.
+    /// @param context: (NotificationContext) reminder context parsed from the notification payload
+    func connectFromNotification(context: NotificationContext) async {
+        pendingNotificationContext = context
+        await connect()
+    }
+
     func connect() async {
         errorHandler(nil)
         resetState()
@@ -298,9 +339,26 @@ final class AppViewModel {
         )
     }
 
+    /// Fetches LiveKit connection details, embedding notification context when present.
+    ///
+    /// purpose: When pendingNotificationContext is set (user tapped a reminder notification),
+    ///          bypass the sandbox TokenService and call the Supabase livekit-token function
+    ///          directly so that trigger/reminderId/adherenceLogId are embedded in participant
+    ///          metadata. The agent reads these to deliver a reminder-aware greeting.
+    ///          Falls back to the standard tokenService path for normal app-open sessions.
+    /// @return TokenService.ConnectionDetails with serverUrl and participantToken
     private func getConnection() async throws -> TokenService.ConnectionDetails {
         let roomName = "room-\(Int.random(in: 1000 ... 9999))"
         let participantName = "user-\(Int.random(in: 1000 ... 9999))"
+
+        if let context = pendingNotificationContext {
+            pendingNotificationContext = nil
+            return try await SunnyAPIClient.shared.fetchLiveKitToken(
+                roomName: roomName,
+                participantName: participantName,
+                notificationContext: context
+            )
+        }
 
         return try await tokenService.fetchConnectionDetails(
             roomName: roomName,

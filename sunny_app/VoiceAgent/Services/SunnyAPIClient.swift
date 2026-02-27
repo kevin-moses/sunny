@@ -1,13 +1,15 @@
 // Services/SunnyAPIClient.swift
 //
 // HTTP client for Sunny's Supabase Edge Function REST API.
-// Used by the DEV conversation log to fetch conversation history and transcripts.
+// Handles: conversation history fetching (DEV logs), FCM device token registration,
+// and LiveKit token fetching with optional notification session context.
 //
 // Auth: Bearer token is hardcoded to the test user UUID for MVP.
 // TODO: Phase 3: replace with real JWT once auth is implemented.
 //
 // All endpoints follow the { data: T, error: null } response envelope.
 // Dates are decoded from ISO-8601 strings (with or without fractional seconds).
+// POST requests with a body must pass Data via the body parameter of request(_:method:body:).
 
 import Foundation
 
@@ -86,19 +88,64 @@ actor SunnyAPIClient {
     // IOS-4 scope does not require these endpoints yet.
     func fetchUserProfile() async throws {}
     func fetchReminders() async throws {}
-    func saveDeviceToken(_: String) async throws {}
+
+    /// Registers the device's FCM token with the backend so push notifications can be sent.
+    ///
+    /// purpose: POST the FCM registration token to save-device-token so the server can
+    ///          address push notifications to this device. Safe to call on every token
+    ///          refresh — the edge function upserts on (user_id, platform).
+    /// @param token: (String) FCM registration token from FirebaseMessaging
+    func saveDeviceToken(_ token: String) async throws {
+        let url = baseURL.appending(path: "save-device-token")
+        let body = try JSONEncoder().encode(DeviceTokenRequest(token: token, platform: "ios"))
+        let _: DeviceTokenResponse = try await request(url: url, method: "POST", body: body)
+    }
+
+    /// Fetches LiveKit connection details from the Supabase edge function, embedding
+    /// optional notification session context in the participant metadata.
+    ///
+    /// purpose: Call livekit-token to obtain a signed JWT and server URL. When a
+    ///          NotificationContext is supplied the trigger, reminderId, and adherenceLogId
+    ///          are embedded in participant metadata so the agent can greet the user in context.
+    /// @param roomName: (String) LiveKit room identifier
+    /// @param participantName: (String) Participant display name for this session
+    /// @param notificationContext: (NotificationContext?) optional reminder tap context
+    /// @return TokenService.ConnectionDetails with serverUrl and participantToken
+    func fetchLiveKitToken(
+        roomName: String,
+        participantName: String,
+        notificationContext: NotificationContext? = nil
+    ) async throws -> TokenService.ConnectionDetails {
+        let url = baseURL.appending(path: "livekit-token")
+        let requestBody = LiveKitTokenRequest(
+            roomName: roomName,
+            participantName: participantName,
+            userId: testUserId,
+            trigger: notificationContext?.trigger,
+            reminderId: notificationContext?.reminderId,
+            adherenceLogId: notificationContext?.adherenceLogId
+        )
+        let body = try JSONEncoder().encode(requestBody)
+        return try await request(url: url, method: "POST", body: body)
+    }
 
     /// Generic HTTP request helper that decodes the API response envelope.
     ///
     /// purpose: Execute a request, unwrap { data, error } envelope, and return typed payload.
+    ///          When body is provided the request is sent as application/json POST body.
     /// @param url: (URL) fully-formed request URL
-    /// @param method: (String) HTTP method string e.g. "GET"
+    /// @param method: (String) HTTP method string e.g. "GET" or "POST"
+    /// @param body: (Data?) optional JSON-encoded request body; sets Content-Type automatically
     /// @return decoded payload of type T
-    private func request<T: Decodable>(url: URL, method: String) async throws -> T {
+    private func request<T: Decodable>(url: URL, method: String, body: Data? = nil) async throws -> T {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(testUserId)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -193,4 +240,22 @@ struct ConversationMetadata: Codable {
 struct MessagesResponse: Codable {
     let messages: [MessageItem]
     let conversation: ConversationMetadata
+}
+
+private struct DeviceTokenRequest: Encodable {
+    let token: String
+    let platform: String
+}
+
+struct DeviceTokenResponse: Decodable {
+    let saved: Bool
+}
+
+private struct LiveKitTokenRequest: Encodable {
+    let roomName: String
+    let participantName: String
+    let userId: String
+    let trigger: String?
+    let reminderId: String?
+    let adherenceLogId: String?
 }

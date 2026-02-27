@@ -13,6 +13,12 @@
 #     UPDATE, and no longer calls upsert_user_fact for individual key-value facts.
 #   - extracted facts (list of dicts) are still stored in session_summaries for audit.
 #
+# Session context (NOTIFY-1):
+#   - resolve_session_context() reads trigger/reminder_id/adherence_log_id from
+#     participant metadata alongside user_id so the agent knows how the session started.
+#   - create_conversation() now accepts trigger, reminder_id, adherence_log_id and
+#     writes them to the conversations row (columns added in migration 008).
+#
 # Last modified: 2026-02-26
 
 import json
@@ -63,6 +69,28 @@ def resolve_user_id(room) -> str:
     return FALLBACK_USER_ID
 
 
+def resolve_session_context(room) -> dict:
+    """
+    purpose: Extract session-trigger context from the first remote participant's metadata JSON.
+             Returns trigger type, reminder UUID, and adherence log UUID when present.
+             Defaults to trigger='app_open' with None for reminder fields if no metadata found.
+    @param room: (livekit.rtc.Room) The connected LiveKit room.
+    @return: (dict) Keys: trigger (str), reminder_id (str|None), adherence_log_id (str|None).
+    """
+    for _identity, participant in room.remote_participants.items():
+        if participant.metadata:
+            try:
+                data = json.loads(participant.metadata)
+                return {
+                    "trigger": data.get("trigger", "app_open"),
+                    "reminder_id": data.get("reminder_id"),
+                    "adherence_log_id": data.get("adherence_log_id"),
+                }
+            except (json.JSONDecodeError, KeyError):
+                pass
+    return {"trigger": "app_open", "reminder_id": None, "adherence_log_id": None}
+
+
 async def load_user_context(client: AsyncClient, user_id: str) -> dict:
     """
     purpose: Call the get_user_context RPC to load profile, facts, summaries,
@@ -85,26 +113,38 @@ async def load_user_context(client: AsyncClient, user_id: str) -> dict:
         return {}
 
 
-async def create_conversation(client: AsyncClient, user_id: str) -> str:
+async def create_conversation(
+    client: AsyncClient,
+    user_id: str,
+    trigger: str | None = None,
+    reminder_id: str | None = None,
+    adherence_log_id: str | None = None,
+) -> str:
     """
     purpose: Insert a new row in the conversations table and return its UUID.
+             Optionally records the session trigger type and associated reminder/adherence
+             context (columns added in migration 008) for analytics and agent context.
     @param client: (AsyncClient) Supabase async client.
     @param user_id: (str) UUID of the user this conversation belongs to.
+    @param trigger: (str|None) What initiated the session: 'app_open', 'notification_tap', etc.
+    @param reminder_id: (str|None) UUID of the reminders row that fired this session.
+    @param adherence_log_id: (str|None) UUID of the adherence_log row for this check-in.
     @return: (str) UUID of the newly created conversation, or "" on failure.
     """
     try:
-        result = (
-            await client.table("conversations")
-            .insert(
-                {
-                    "user_id": user_id,
-                    "status": "active",
-                }
-            )
-            .execute()
-        )
+        row: dict = {"user_id": user_id, "status": "active"}
+        if trigger:
+            row["trigger"] = trigger
+        if reminder_id:
+            row["reminder_id"] = reminder_id
+        if adherence_log_id:
+            row["adherence_log_id"] = adherence_log_id
+
+        result = await client.table("conversations").insert(row).execute()
         conversation_id = result.data[0]["id"]
-        logger.info(f"Created conversation {conversation_id} for user {user_id}")
+        logger.info(
+            f"Created conversation {conversation_id} for user {user_id} (trigger={trigger})"
+        )
         return conversation_id
     except Exception as e:
         logger.warning(f"Failed to create conversation: {e}")
