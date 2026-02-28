@@ -1,3 +1,19 @@
+// App/AppViewModel.swift
+//
+// Purpose: Main view model for the Sunny app. Encapsulates root state and behaviors
+// including LiveKit room connection, published tracks, interaction mode, microphone/camera/
+// screen share toggles, RPC method registration, and device observation.
+//
+// Notification-tap auto-connect: observeNotificationTaps() bridges .sunnyNotificationTapped
+// Foundation notifications into connectFromNotification(context:), which passes reminder
+// metadata to the livekit-token edge function so the agent greets in context.
+//
+// Darwin broadcast listener (iOS only): setupBroadcastStopListener() registers a
+// CFNotificationCenter observer for "iOS_BroadcastStopped" (posted by LKSampleHandler when
+// the broadcast extension's broadcastFinished() fires). The callback bridges to a Foundation
+// notification consumed by observeBroadcastStopped(), which forces room state back in sync
+// if the extension was killed by iOS or stopped from Control Center.
+
 @preconcurrency import AVFoundation
 import Combine
 import LiveKit
@@ -33,6 +49,11 @@ struct MessageData: Codable {
 /// connectFromNotification(context:), which stores the context then calls connect().
 /// getConnection() picks up the pending context and passes it to the livekit-token edge
 /// function so the agent receives reminder metadata in participant metadata.
+///
+/// Darwin broadcast listener: Listens for the iOS_BroadcastStopped Darwin notification
+/// posted by the system when the broadcast extension stops or crashes unexpectedly.
+/// On receipt, forces isScreenShareEnabled = false and tells LiveKit to unpublish the
+/// screen track so room state stays in sync even if the extension was killed by iOS.
 @MainActor
 @Observable
 final class AppViewModel {
@@ -115,6 +136,8 @@ final class AppViewModel {
 
     @ObservationIgnored
     private var notificationObserverTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var broadcastStopObserverTask: Task<Void, Never>?
 
     @ObservationIgnored
     @Dependency(\.room) private var room
@@ -138,6 +161,10 @@ final class AppViewModel {
         observeDevices()
         setupRpcMethods()
         observeNotificationTaps()
+        #if os(iOS)
+        setupBroadcastStopListener()
+        observeBroadcastStopped()
+        #endif
     }
 
     /// Subscribes to .sunnyNotificationTapped Foundation notifications so that tapping a
@@ -155,6 +182,60 @@ final class AppViewModel {
             }
         }
     }
+
+    #if os(iOS)
+    /// Registers a Darwin notification observer for iOS_BroadcastStopped, bridging it
+    /// to Foundation's NotificationCenter so it can be consumed in an async context.
+    ///
+    /// purpose: The broadcast extension posts iOS_BroadcastStopped to the Darwin
+    ///          notification center when it stops (either normally or due to a crash /
+    ///          memory kill). CFNotificationCenter callbacks are C-compatible functions,
+    ///          so we bridge to Foundation NotificationCenter and handle the event in
+    ///          observeBroadcastStopped() where we have full async/MainActor context.
+    private func setupBroadcastStopListener() {
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            nil,
+            { _, _, _, _, _ in
+                NotificationCenter.default.post(
+                    name: Notification.Name("sunny.darwinBroadcastStopped"),
+                    object: nil
+                )
+            },
+            "iOS_BroadcastStopped" as CFString,
+            nil,
+            .deliverImmediately
+        )
+    }
+
+    /// Observes the Foundation bridge notification for iOS_BroadcastStopped and
+    /// syncs LiveKit room state when the broadcast extension stops unexpectedly.
+    ///
+    /// purpose: If the broadcast extension is killed by iOS (e.g., memory limit exceeded)
+    ///          or stopped from Control Center, LiveKit's room state may not update on its
+    ///          own. This observer forces isScreenShareEnabled = false and calls
+    ///          setScreenShare(enabled: false) to ensure the room track is unpublished and
+    ///          the UI reflects the correct state. The Task is stored so it can be
+    ///          cancelled in deinit to prevent a Task leak.
+    private func observeBroadcastStopped() {
+        broadcastStopObserverTask = Task { @MainActor [weak self] in
+            for await _ in NotificationCenter.default.notifications(
+                named: Notification.Name("sunny.darwinBroadcastStopped")
+            ) {
+                guard let self, isScreenShareEnabled else { continue }
+                isScreenShareEnabled = false
+                do {
+                    try await room.localParticipant.setScreenShare(enabled: false)
+                } catch {
+                    // Room may already have unpublished the track; suppress the error.
+                    #if DEBUG
+                    print("[AppViewModel] observeBroadcastStopped setScreenShare error (suppressed): \(error)")
+                    #endif
+                }
+            }
+        }
+    }
+    #endif
 
     private func observeRoom() {
         Task { [weak self] in
@@ -204,6 +285,15 @@ final class AppViewModel {
     deinit {
         AudioManager.shared.onDeviceUpdate = nil
         notificationObserverTask?.cancel()
+        #if os(iOS)
+        broadcastStopObserverTask?.cancel()
+        CFNotificationCenterRemoveObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            nil,
+            CFNotificationName("iOS_BroadcastStopped" as CFString),
+            nil
+        )
+        #endif
     }
 
     private func setupRpcMethods() {

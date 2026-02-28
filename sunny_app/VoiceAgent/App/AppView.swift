@@ -1,3 +1,11 @@
+// App/AppView.swift
+//
+// Purpose: Root view for the Sunny app. Switches between StartView and the
+// interactive conversation views (voice/text/vision) based on AppViewModel state.
+// Hosts the ControlBar in a safeAreaInset (iOS) or ornament (visionOS).
+// Overlays ScreenShareStatusBanner at the top while screen sharing is active,
+// and shows error/reconnecting banners via the errors() helper.
+
 import SwiftUI
 
 struct AppView: View {
@@ -17,6 +25,11 @@ struct AppView: View {
                 interactions()
             } else {
                 start()
+            }
+
+            if viewModel.isScreenShareEnabled {
+                ScreenShareStatusBanner()
+                    .zIndex(1)
             }
 
             errors()

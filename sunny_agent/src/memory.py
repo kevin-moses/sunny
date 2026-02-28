@@ -19,7 +19,7 @@
 #   - create_conversation() now accepts trigger, reminder_id, adherence_log_id and
 #     writes them to the conversations row (columns added in migration 008).
 #
-# Last modified: 2026-02-26
+# Last modified: 2026-02-28
 
 import json
 import logging
@@ -179,6 +179,7 @@ class ConversationLogger:
         self._user_id = user_id
         self._conversation_id = conversation_id
         self._existing_profile_summary = existing_profile_summary
+        self._finalized: bool = False
 
     async def log_message(self, role: str, content: str) -> None:
         """
@@ -212,12 +213,18 @@ class ConversationLogger:
         purpose: Called at session shutdown. Marks the conversation completed,
                  generates a Claude summary of the transcript (including an updated
                  profile_summary paragraph), and stores results to Supabase.
+                 Idempotent: the second call (from _on_shutdown when _on_participant_disconnected
+                 already ran) returns immediately without touching the DB.
+                 A failure updating conversations.status is non-critical and does not
+                 prevent summary generation — the summary path always runs if there is
+                 transcript content.
         @param chat_history: (ChatContext) The session's full chat history from
                              AgentSession.history. Items filtered to user/assistant
                              ChatMessage instances only.
         """
-        if not self._conversation_id:
+        if self._finalized or not self._conversation_id:
             return
+        self._finalized = True
 
         # Mark conversation ended
         try:
@@ -234,7 +241,7 @@ class ConversationLogger:
             )
         except Exception as e:
             logger.warning(f"Failed to mark conversation as completed: {e}")
-            return
+            # Non-critical — continue to summary generation regardless
 
         # Build transcript from chat history
         transcript_lines = []

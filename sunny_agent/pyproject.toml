@@ -17,6 +17,7 @@ dependencies = [
     "tavily-python>=0.7.12",
     "supabase>=2.10.0",
     "pyyaml>=6.0",
+    "Pillow>=10.0.0",
 ]
 
 [dependency-groups]

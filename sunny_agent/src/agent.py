@@ -21,18 +21,27 @@
 # receives contextual check-in ("Time for your blood pressure medication. Did you take it?").
 # Session context is also persisted to the conversations row via create_conversation().
 #
+# Screen share (SCREEN-3): entrypoint() registers track_subscribed / track_unsubscribed
+# room event handlers. When the iOS broadcast extension publishes a video track,
+# ScreenCapture.start_capture() opens a VideoStream and reads frames in a background
+# asyncio task. Changed frames (perceptual hash Hamming distance > threshold) are stored
+# as JPEG bytes. ScreenCapture is passed to Assistant so SCREEN-4 can inject frames into
+# the LLM on each user turn. stop_capture() is also called on participant_disconnected as
+# a guard against missed track_unsubscribed events on abrupt disconnects.
+#
 # Fixes applied: async Anthropic client in memory.py, user timezone in reminders,
 # get_running_loop() replaces deprecated get_event_loop(), empty step_ids guard,
 # reminder_type parameter rename, user_timezone threaded from profile,
 # existing_profile_summary passed to ConversationLogger for merged profile generation.
 #
-# Last modified: 2026-02-26
+# Last modified: 2026-02-28
 
 import asyncio
 import json
 import logging
 
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import (
     NOT_GIVEN,
     Agent,
@@ -73,6 +82,7 @@ from memory import (
     resolve_user_id,
 )
 from prompts import format_step_context, format_user_context, render_system_prompt
+from screen_capture import ScreenCapture
 from tools import db_delete_reminder, db_list_reminders, db_save_reminder
 from workflow_engine import WorkflowEngine, WorkflowState
 
@@ -88,6 +98,7 @@ class Assistant(Agent):
     """
     purpose: Voice assistant agent with senior-optimized persona and tool integrations
              for web search, reminders, contacts, and SMS messaging.
+             Holds an optional ScreenCapture reference for SCREEN-4 frame injection.
     """
 
     def __init__(
@@ -98,17 +109,21 @@ class Assistant(Agent):
         engine: WorkflowEngine,
         ios_version: str,
         user_timezone: str = "America/New_York",
+        screen_capture: "ScreenCapture | None" = None,
     ) -> None:
         """
         purpose: Initialize the Assistant with a pre-rendered system prompt and
                  the Supabase client + user_id needed for reminder CRUD tools,
                  plus the WorkflowEngine and iOS version for guided workflow support.
+                 Accepts an optional ScreenCapture instance for SCREEN-4 frame injection.
         @param instructions: (str) The fully rendered system prompt from render_system_prompt().
         @param user_id: (str) UUID of the current user, used for all DB reminder operations.
         @param supabase: (AsyncClient) Authenticated Supabase async client.
         @param engine: (WorkflowEngine) Loaded workflow engine for task matching and step resolution.
         @param ios_version: (str) User's iOS major version string, e.g. "18" or "unknown".
         @param user_timezone: (str) IANA timezone from the user's profile, used for reminder storage.
+        @param screen_capture: (ScreenCapture | None) Active screen capture instance, or None if
+                               screen sharing has not started. Consumed by SCREEN-4.
         """
         super().__init__(instructions=instructions)
         self._user_id = user_id
@@ -117,6 +132,7 @@ class Assistant(Agent):
         self._ios_version = ios_version
         self._user_timezone = user_timezone
         self._workflow_state: WorkflowState | None = None
+        self._screen_capture = screen_capture
         self.tavily_client = TavilyClient()
 
     @function_tool
@@ -605,6 +621,9 @@ async def entrypoint(ctx: JobContext):
     engine = WorkflowEngine(supabase=supabase)
     logger.info("WorkflowEngine initialized with Supabase pgvector backend")
 
+    # 5b. Screen share capture — receives frames from the iOS broadcast extension (SCREEN-3)
+    screen_capture = ScreenCapture()
+
     # 6. Render system prompt with injected user context
     context_block = format_user_context(raw_context)
     rendered_prompt = render_system_prompt(context_block)
@@ -711,6 +730,8 @@ async def entrypoint(ctx: JobContext):
         """
         purpose: Record the disconnect timestamp and last assistant message so the
                  agent can greet the user with context on a quick reconnect.
+                 Also stops screen capture as a guard against missed track_unsubscribed
+                 events on abrupt disconnects.
         @param participant: The disconnected LiveKit participant object.
         """
         nonlocal last_disconnect_time, last_topic
@@ -722,6 +743,7 @@ async def entrypoint(ctx: JobContext):
         ]
         last_topic = history[-1].text_content[:80] if history else ""
         logger.info(f"Participant {participant.identity} disconnected (user={user_id})")
+        screen_capture.stop_capture()  # guard: stop capture if track event was missed
         asyncio.create_task(conv_logger.finalize(session.history))  # noqa: RUF006
 
     # 14. Participant reconnect — greet returning user within 10-minute window
@@ -745,8 +767,43 @@ async def entrypoint(ctx: JobContext):
             asyncio.create_task(session.say(greeting))  # noqa: RUF006
         last_disconnect_time = None
 
+    # 13b. Track subscribed — start capturing frames from iOS screen share (SCREEN-3)
+    def _on_track_subscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        """
+        purpose: Start capturing frames when the participant publishes a video track
+                 (screen share from the iOS broadcast extension).
+        @param track: (rtc.Track) The subscribed track.
+        @param publication: (rtc.RemoteTrackPublication) The track publication.
+        @param participant: (rtc.RemoteParticipant) The publishing participant.
+        """
+        if track.kind == rtc.TrackKind.KIND_VIDEO:
+            logger.info(f"Screen share track subscribed from {participant.identity}")
+            screen_capture.start_capture(track)
+
+    # 13c. Track unsubscribed — stop frame capture when screen share ends (SCREEN-3)
+    def _on_track_unsubscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        """
+        purpose: Stop frame capture when the screen share track is unpublished.
+        @param track: (rtc.Track) The unsubscribed track.
+        @param publication: (rtc.RemoteTrackPublication) The track publication.
+        @param participant: (rtc.RemoteParticipant) The publishing participant.
+        """
+        if track.kind == rtc.TrackKind.KIND_VIDEO:
+            logger.info(f"Screen share track unsubscribed from {participant.identity}")
+            screen_capture.stop_capture()
+
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
     ctx.room.on("participant_connected", _on_participant_connected)
+    ctx.room.on("track_subscribed", _on_track_subscribed)
+    ctx.room.on("track_unsubscribed", _on_track_unsubscribed)
 
     # 15. False interruption recovery — resume agent speech after background noise
     @session.on("agent_false_interruption")
@@ -798,6 +855,7 @@ async def entrypoint(ctx: JobContext):
             engine=engine,
             ios_version=ios_version,
             user_timezone=user_timezone,
+            screen_capture=screen_capture,
         ),
         room=ctx.room,
         room_input_options=RoomInputOptions(

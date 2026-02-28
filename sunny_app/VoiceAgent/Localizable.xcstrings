@@ -1,6 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "—" : {
+
+    },
     "%@%@" : {
       "localizations" : {
         "en" : {
@@ -10,6 +13,9 @@
           }
         }
       }
+    },
+    "%lld min" : {
+
     },
     "%lldpt" : {
 
@@ -81,6 +87,9 @@
         }
       }
     },
+    "Conversation Logs" : {
+
+    },
     "Corner Radius" : {
 
     },
@@ -128,6 +137,15 @@
     "Hello, world!" : {
 
     },
+    "Loading conversations..." : {
+
+    },
+    "Loading transcript..." : {
+
+    },
+    "Logs" : {
+
+    },
     "message.placeholder" : {
       "localizations" : {
         "en" : {
@@ -141,6 +159,9 @@
     "Mute microphone" : {
 
     },
+    "No conversations yet." : {
+
+    },
     "Open developer settings" : {
 
     },
@@ -150,10 +171,19 @@
     "Reset to Defaults" : {
 
     },
+    "Settings" : {
+
+    },
     "Start screen share" : {
 
     },
     "Stop screen share" : {
+
+    },
+    "Summary" : {
+
+    },
+    "Sunny can see your screen" : {
 
     },
     "Sunny is listening" : {

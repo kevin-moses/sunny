@@ -366,12 +366,12 @@
 		ACAEBA642DE6EE970072E93E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_ENTITLEMENTS = BroadcastExtension/BroadcastExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = YKS87YND73;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BroadcastExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = VoiceAgent;
+				INFOPLIST_KEY_CFBundleDisplayName = sunny;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -398,12 +398,12 @@
 		ACAEBA652DE6EE970072E93E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = "";
+				CODE_SIGN_ENTITLEMENTS = BroadcastExtension/BroadcastExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = YKS87YND73;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BroadcastExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = VoiceAgent;
+				INFOPLIST_KEY_CFBundleDisplayName = sunny;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -622,7 +622,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = sunny;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
-				INFOPLIST_KEY_NSCameraUsageDescription = "VoiceAgent uses your camera";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Sunny uses your camera";
+				INFOPLIST_KEY_NSContactsUsageDescription = "This app needs access to your contacts to help you send messages by voice command.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "VoiceAgent uses your microphone";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -669,7 +670,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = sunny;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
-				INFOPLIST_KEY_NSCameraUsageDescription = "VoiceAgent uses your camera";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Sunny uses your camera";
+				INFOPLIST_KEY_NSContactsUsageDescription = "This app needs access to your contacts to help you send messages by voice command.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "VoiceAgent uses your microphone";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
