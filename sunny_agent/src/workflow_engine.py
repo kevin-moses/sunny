@@ -5,7 +5,11 @@
 # resolve_workflow() calls the get_workflow_steps RPC and builds a WorkflowState.
 # In-memory _step_cache avoids repeated DB round-trips for steps already fetched this session.
 #
-# Last modified: 2026-02-24
+# Active workflow state (SCREEN-4): WorkflowEngine owns _active_state so that workflow
+# progress survives agent handoffs (e.g. voice -> VisionAssistant -> voice). Both agents
+# share the same engine reference, so get/set/clear_active_state operate on the same slot.
+#
+# Last modified: 2026-02-28
 
 from __future__ import annotations
 
@@ -72,6 +76,8 @@ class WorkflowEngine:
              the best-matching workflow for a user task description.
              resolve_workflow() fetches ordered steps from the DB with automatic iOS
              version fallback, and caches results for the session lifetime.
+             _active_state holds the currently running WorkflowState (if any) and is
+             shared across agent handoffs via get/set/clear_active_state().
     """
 
     def __init__(self, supabase: AsyncClient) -> None:
@@ -91,6 +97,29 @@ class WorkflowEngine:
         # WorkflowState with current_index=0 and history=[] so that re-starting
         # the same workflow always begins at step 1.
         self._step_cache: dict[tuple[str, str], WorkflowState] = {}
+        # Active workflow state shared across agent handoffs (SCREEN-4).
+        self._active_state: WorkflowState | None = None
+
+    def get_active_state(self) -> WorkflowState | None:
+        """
+        purpose: Return the currently active WorkflowState, or None if no workflow is running.
+        @return: (WorkflowState | None) The active workflow state.
+        """
+        return self._active_state
+
+    def set_active_state(self, state: WorkflowState) -> None:
+        """
+        purpose: Set the active WorkflowState. Called by start_workflow when a workflow begins.
+        @param state: (WorkflowState) The workflow state to make active.
+        """
+        self._active_state = state
+
+    def clear_active_state(self) -> None:
+        """
+        purpose: Clear the active WorkflowState. Called by exit_workflow or confirm_step
+                 when the workflow completes or is abandoned.
+        """
+        self._active_state = None
 
     async def find_workflow(self, task_description: str) -> tuple[str, str, bool]:
         """

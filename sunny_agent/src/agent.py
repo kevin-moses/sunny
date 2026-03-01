@@ -21,13 +21,15 @@
 # receives contextual check-in ("Time for your blood pressure medication. Did you take it?").
 # Session context is also persisted to the conversations row via create_conversation().
 #
-# Screen share (SCREEN-3): entrypoint() registers track_subscribed / track_unsubscribed
+# Screen share (SCREEN-3/4): entrypoint() registers track_subscribed / track_unsubscribed
 # room event handlers. When the iOS broadcast extension publishes a video track,
 # ScreenCapture.start_capture() opens a VideoStream and reads frames in a background
 # asyncio task. Changed frames (perceptual hash Hamming distance > threshold) are stored
-# as JPEG bytes. ScreenCapture is passed to Assistant so SCREEN-4 can inject frames into
-# the LLM on each user turn. stop_capture() is also called on participant_disconnected as
-# a guard against missed track_unsubscribed events on abrupt disconnects.
+# as JPEG bytes. On track_subscribed, session.update_agent() hands off to VisionAssistant
+# (GPT-4o + frame injection). On track_unsubscribed, handoff returns to voice-only
+# Assistant. Workflow state survives handoffs via WorkflowEngine._active_state (SCREEN-4).
+# stop_capture() is also called on participant_disconnected as a guard against missed
+# track_unsubscribed events on abrupt disconnects.
 #
 # Fixes applied: async Anthropic client in memory.py, user timezone in reminders,
 # get_running_loop() replaces deprecated get_event_loop(), empty step_ids guard,
@@ -57,7 +59,7 @@ from livekit.agents import (
     cli,
     metrics,
 )
-from livekit.agents.llm import ChatMessage, function_tool
+from livekit.agents.llm import LLM, ChatMessage, function_tool
 from livekit.plugins import anthropic, cartesia, deepgram, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from supabase import AsyncClient
@@ -84,7 +86,7 @@ from memory import (
 from prompts import format_step_context, format_user_context, render_system_prompt
 from screen_capture import ScreenCapture
 from tools import db_delete_reminder, db_list_reminders, db_save_reminder
-from workflow_engine import WorkflowEngine, WorkflowState
+from workflow_engine import WorkflowEngine
 
 logger = logging.getLogger("agent")
 
@@ -96,9 +98,10 @@ load_dotenv(".env")
 
 class Assistant(Agent):
     """
-    purpose: Voice assistant agent with senior-optimized persona and tool integrations
+    purpose: Voice-only assistant agent with senior-optimized persona and tool integrations
              for web search, reminders, contacts, and SMS messaging.
-             Holds an optional ScreenCapture reference for SCREEN-4 frame injection.
+             Active workflow state is stored on the shared WorkflowEngine so it survives
+             agent handoffs during screen sharing (SCREEN-4).
     """
 
     def __init__(
@@ -110,12 +113,16 @@ class Assistant(Agent):
         ios_version: str,
         user_timezone: str = "America/New_York",
         screen_capture: "ScreenCapture | None" = None,
+        llm: LLM | None = None,
     ) -> None:
         """
         purpose: Initialize the Assistant with a pre-rendered system prompt and
                  the Supabase client + user_id needed for reminder CRUD tools,
                  plus the WorkflowEngine and iOS version for guided workflow support.
-                 Accepts an optional ScreenCapture instance for SCREEN-4 frame injection.
+                 Accepts an optional ScreenCapture instance for frame injection.
+                 Active workflow state is owned by the engine (not the agent) so that
+                 workflow progress survives agent handoffs during screen sharing.
+                 Accepts an optional llm override so VisionAssistant can pass GPT-4o.
         @param instructions: (str) The fully rendered system prompt from render_system_prompt().
         @param user_id: (str) UUID of the current user, used for all DB reminder operations.
         @param supabase: (AsyncClient) Authenticated Supabase async client.
@@ -123,15 +130,18 @@ class Assistant(Agent):
         @param ios_version: (str) User's iOS major version string, e.g. "18" or "unknown".
         @param user_timezone: (str) IANA timezone from the user's profile, used for reminder storage.
         @param screen_capture: (ScreenCapture | None) Active screen capture instance, or None if
-                               screen sharing has not started. Consumed by SCREEN-4.
+                               screen sharing has not started.
+        @param llm: (LLM | None) Optional LLM override; when None the session-level LLM is used.
         """
-        super().__init__(instructions=instructions)
+        agent_kwargs: dict = {"instructions": instructions}
+        if llm is not None:
+            agent_kwargs["llm"] = llm
+        super().__init__(**agent_kwargs)
         self._user_id = user_id
         self._supabase = supabase
         self._engine = engine
         self._ios_version = ios_version
         self._user_timezone = user_timezone
-        self._workflow_state: WorkflowState | None = None
         self._screen_capture = screen_capture
         self.tavily_client = TavilyClient()
 
@@ -418,16 +428,16 @@ class Assistant(Agent):
                 f"I know about '{workflow_title}' but that guide isn't ready yet. "
                 "I can still try to help you manually."
             )
-        self._workflow_state = await self._engine.resolve_workflow(
+        state = await self._engine.resolve_workflow(
             workflow_id, self._ios_version, workflow_title
         )
-        state = self._workflow_state
         if not state.step_ids:
-            self._workflow_state = None
+            self._engine.clear_active_state()
             return (
                 f"I found a guide for '{workflow_title}' but it has no steps available. "
                 "I can still try to help you manually."
             )
+        self._engine.set_active_state(state)
         step = state.step_map[state.step_ids[0]]
         total = len(state.step_ids)
         return format_step_context(step, 1, total, state.workflow_title)
@@ -443,9 +453,9 @@ class Assistant(Agent):
         Returns:
             Step context for the next step, or a workflow-complete message
         """
-        if not self._workflow_state:
+        state = self._engine.get_active_state()
+        if not state:
             return "No workflow is currently active."
-        state = self._workflow_state
         current_step = state.step_map[state.step_ids[state.current_index]]
         state.history.append(state.current_index)
 
@@ -453,7 +463,7 @@ class Assistant(Agent):
             current_step.next_step is None
             or current_step.next_step not in state.step_map
         ):
-            self._workflow_state = None
+            self._engine.clear_active_state()
             return (
                 f"Workflow complete. The user has finished '{state.workflow_title}'. "
                 "Return to normal conversation."
@@ -477,9 +487,9 @@ class Assistant(Agent):
         Returns:
             Step context for the previous step, or the first step if already there
         """
-        if not self._workflow_state:
+        state = self._engine.get_active_state()
+        if not state:
             return "No workflow is currently active."
-        state = self._workflow_state
         total = len(state.step_ids)
 
         if not state.history:
@@ -507,10 +517,11 @@ class Assistant(Agent):
         Returns:
             Confirmation that the workflow was exited
         """
-        if not self._workflow_state:
+        state = self._engine.get_active_state()
+        if not state:
             return "No workflow is currently active."
-        title = self._workflow_state.workflow_title
-        self._workflow_state = None
+        title = state.workflow_title
+        self._engine.clear_active_state()
         return f"Workflow '{title}' exited. Return to normal conversation."
 
 
@@ -643,11 +654,14 @@ async def entrypoint(ctx: JobContext):
         min_interruption_words=MIN_INTERRUPTION_WORDS,
     )
 
-    # 8. State variables for error recovery and reconnect detection
+    # 8. State variables for error recovery, reconnect detection, and screen-share tracking
     consecutive_errors = 0
     last_disconnect_time: float | None = None
     last_topic: str = ""
     _greeted = False
+    _screen_active = (
+        False  # guard against duplicate track_subscribed/unsubscribed events
+    )
 
     # 9. Real-time message logging — fires on every completed conversation turn
     @session.on("conversation_item_added")
@@ -767,38 +781,110 @@ async def entrypoint(ctx: JobContext):
             asyncio.create_task(session.say(greeting))  # noqa: RUF006
         last_disconnect_time = None
 
-    # 13b. Track subscribed — start capturing frames from iOS screen share (SCREEN-3)
+    # 13b. Track subscribed — start capturing and hand off to VisionAssistant (SCREEN-4)
     def _on_track_subscribed(
         track: rtc.Track,
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ) -> None:
         """
-        purpose: Start capturing frames when the participant publishes a video track
-                 (screen share from the iOS broadcast extension).
+        purpose: When the iOS broadcast extension publishes a video track, start capturing
+                 frames and hand off to VisionAssistant (GPT-4o + frame injection).
+                 session.update_agent() replaces the running agent while preserving chat
+                 history and the shared WorkflowEngine state. A reply is generated to
+                 acknowledge that screen sharing is active.
         @param track: (rtc.Track) The subscribed track.
         @param publication: (rtc.RemoteTrackPublication) The track publication.
         @param participant: (rtc.RemoteParticipant) The publishing participant.
         """
+        nonlocal _screen_active
         if track.kind == rtc.TrackKind.KIND_VIDEO:
+            if _screen_active:
+                logger.warning("Duplicate track_subscribed event — ignoring")
+                return
+            _screen_active = True
             logger.info(f"Screen share track subscribed from {participant.identity}")
             screen_capture.start_capture(track)
+            # Lazy import to avoid circular dependency (vision_agent imports Assistant from here)
+            from vision_agent import VisionAssistant
 
-    # 13c. Track unsubscribed — stop frame capture when screen share ends (SCREEN-3)
+            vision = VisionAssistant(
+                user_id=user_id,
+                supabase=supabase,
+                engine=engine,
+                ios_version=ios_version,
+                user_timezone=user_timezone,
+                screen_capture=screen_capture,
+            )
+            session.update_agent(vision)
+
+            # Defer generate_reply so the agent transition task (scheduled by
+            # update_agent as asyncio.create_task) can complete before the reply
+            # is generated. Without the sleep, generate_reply races the transition
+            # and the old voice agent handles the announcement instead of VisionAssistant.
+            async def _announce_screen_share() -> None:
+                """
+                purpose: Wait one event-loop tick for the agent transition to complete,
+                         then ask VisionAssistant to announce it can see the screen.
+                """
+                await asyncio.sleep(0)
+                session.generate_reply(
+                    instructions=(
+                        "Acknowledge that you can now see the user's screen. "
+                        "Briefly describe what you see to confirm screen sharing is working, "
+                        "then ask how you can help."
+                    )
+                )
+
+            asyncio.create_task(_announce_screen_share())  # noqa: RUF006
+
+    # 13c. Track unsubscribed — stop capture and restore voice-only Assistant (SCREEN-4)
     def _on_track_unsubscribed(
         track: rtc.Track,
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ) -> None:
         """
-        purpose: Stop frame capture when the screen share track is unpublished.
+        purpose: When the screen share track is unpublished, stop frame capture and hand
+                 back to the voice-only Assistant. The shared WorkflowEngine preserves any
+                 active workflow state across the handoff.
         @param track: (rtc.Track) The unsubscribed track.
         @param publication: (rtc.RemoteTrackPublication) The track publication.
         @param participant: (rtc.RemoteParticipant) The publishing participant.
         """
+        nonlocal _screen_active
         if track.kind == rtc.TrackKind.KIND_VIDEO:
+            if not _screen_active:
+                logger.warning("Duplicate track_unsubscribed event — ignoring")
+                return
+            _screen_active = False
             logger.info(f"Screen share track unsubscribed from {participant.identity}")
             screen_capture.stop_capture()
+            voice = Assistant(
+                instructions=rendered_prompt,
+                user_id=user_id,
+                supabase=supabase,
+                engine=engine,
+                ios_version=ios_version,
+                user_timezone=user_timezone,
+                screen_capture=screen_capture,
+            )
+            session.update_agent(voice)
+
+            async def _announce_screen_stopped() -> None:
+                """
+                purpose: Wait one event-loop tick for the agent transition to complete,
+                         then ask the restored voice Assistant to announce screen sharing stopped.
+                """
+                await asyncio.sleep(0)
+                session.generate_reply(
+                    instructions=(
+                        "Let the user know screen sharing has stopped. "
+                        "Offer to keep helping with voice-only guidance."
+                    )
+                )
+
+            asyncio.create_task(_announce_screen_stopped())  # noqa: RUF006
 
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
     ctx.room.on("participant_connected", _on_participant_connected)
