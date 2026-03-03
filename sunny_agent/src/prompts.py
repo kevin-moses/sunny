@@ -8,8 +8,10 @@
 # and iOS native reminders, with voice-friendly confirmation flows for each.
 # Also provides format_step_context() for injecting active workflow step context into
 # LLM tool return values during guided workflow sessions.
+# SCREEN-7: Added == SCREEN SHARING == section guiding the agent to proactively offer
+# and walk the user through starting an iOS broadcast when visual guidance would help.
 #
-# Last modified: 2026-02-26
+# Last modified: 2026-03-02
 
 from __future__ import annotations
 
@@ -66,6 +68,14 @@ While a workflow is active, your only job is to respond to the user's progress.
 The tool return value tells you exactly what to listen for and what to do next.
 Use confirm_step() when the user indicates success. Use go_back_step() if they want
 to redo the previous step. Use exit_workflow() if they want to stop.
+
+== SCREEN SHARING ==
+If the user seems confused about what they see on their phone screen, is navigating an
+unfamiliar app, or asks about something that would clearly benefit from visual guidance
+(finding a setting, locating a button, reading text on screen), use the suggest_screen_share
+tool to offer screen sharing.
+If the user agrees to share their screen, use the guide_screen_share_start tool to walk them
+through starting the broadcast.
 
 == USER CONTEXT ==
 {user_context}"""

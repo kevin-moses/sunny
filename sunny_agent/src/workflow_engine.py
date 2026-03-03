@@ -9,7 +9,11 @@
 # progress survives agent handoffs (e.g. voice -> VisionAssistant -> voice). Both agents
 # share the same engine reference, so get/set/clear_active_state operate on the same slot.
 #
-# Last modified: 2026-02-28
+# Step context helpers (SCREEN-5): get_current_step_context() returns the formatted step
+# string injected by VisionAssistant into each LLM turn, making the engine the authoritative
+# source of workflow step context. Freeform context is a UI concern owned by vision_agent.py.
+#
+# Last modified: 2026-03-01
 
 from __future__ import annotations
 
@@ -120,6 +124,24 @@ class WorkflowEngine:
                  when the workflow completes or is abandoned.
         """
         self._active_state = None
+
+    def get_current_step_context(self) -> str | None:
+        """
+        purpose: Return a formatted string describing the current workflow step, or None
+                 if no workflow is active. Used by VisionAssistant to inject step context
+                 into each LLM turn without duplicating the formatting logic inline.
+                 Format: "Step N of M in '<title>': <instruction>. Expected visual cue: <cue>."
+        @return: (str | None) Formatted step context string, or None if no active workflow.
+        """
+        state = self._active_state
+        if not state:
+            return None
+        step = state.step_map[state.step_ids[state.current_index]]
+        return (
+            f"Step {state.current_index + 1} of {len(state.step_ids)} "
+            f"in '{state.workflow_title}': {step.instruction}. "
+            f"Expected visual cue: {step.visual_cue}."
+        )
 
     async def find_workflow(self, task_description: str) -> tuple[str, str, bool]:
         """

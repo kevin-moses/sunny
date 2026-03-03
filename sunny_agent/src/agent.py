@@ -31,16 +31,41 @@
 # stop_capture() is also called on participant_disconnected as a guard against missed
 # track_unsubscribed events on abrupt disconnects.
 #
+# Step advancement (SCREEN-5): _advance_workflow_step() is a private helper that contains
+# the shared step-advancement logic used by both confirm_step (verbal) and
+# confirm_step_completed (visual, on VisionAssistant). confirm_step delegates to it.
+# Proactive monitor (SCREEN-5): _monitor_screen_changes() polls for screen changes during
+# active workflows and triggers a VisionAssistant LLM reply when the screen changes while
+# the agent is in listening state, removing the UX friction of requiring verbal confirmation.
+#
+# Proactive-first UX (SCREEN-7): Screen-share greeting now tells the user they do NOT
+# need to confirm verbally — the agent watches the screen and auto-advances. The proactive
+# monitor instructions no longer ask the user to confirm; instead, the monitor silently
+# advances on match and only speaks to guide the user when the screen does not match.
+#
+# Echo detection (SCREEN-7): _is_echo() and _normalize_for_echo() module-level helpers
+# detect when STT transcribes the agent's own TTS output back as user speech (AEC
+# calibration issue on first call). _on_item_added buffers normalized assistant text;
+# _on_user_input_transcribed checks user transcripts against the buffer and suppresses
+# matches via session.interrupt().
+#
+# Screen share UX tools (SCREEN-7): Assistant now exposes suggest_screen_share and
+# guide_screen_share_start @function_tools so the LLM can proactively offer and walk
+# the user through starting an iOS broadcast when visual guidance would help.
+# _privacy_disclosed state variable ensures the one-time privacy disclosure
+# (screen content visible warning) is delivered only on the first share per session.
+#
 # Fixes applied: async Anthropic client in memory.py, user timezone in reminders,
 # get_running_loop() replaces deprecated get_event_loop(), empty step_ids guard,
 # reminder_type parameter rename, user_timezone threaded from profile,
 # existing_profile_summary passed to ConversationLogger for merged profile generation.
 #
-# Last modified: 2026-02-28
+# Last modified: 2026-03-02
 
 import asyncio
 import json
 import logging
+import re
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -66,11 +91,13 @@ from supabase import AsyncClient
 from tavily import TavilyClient
 
 from config import (
+    ECHO_DETECTION_WINDOW_S,
     LLM_MODEL,
     MAX_ENDPOINTING_DELAY,
     MIN_ENDPOINTING_DELAY,
     MIN_INTERRUPTION_DURATION,
     MIN_INTERRUPTION_WORDS,
+    PROACTIVE_MONITOR_INTERVAL_S,
     STT_LANGUAGE,
     STT_MODEL,
     TTS_VOICE,
@@ -442,23 +469,20 @@ class Assistant(Agent):
         total = len(state.step_ids)
         return format_step_context(step, 1, total, state.workflow_title)
 
-    @function_tool
-    async def confirm_step(self, context: RunContext) -> str:
+    def _advance_workflow_step(self) -> str:
         """
-        purpose: Advance to the next step after the user explicitly confirms they
-                 completed the current one. Returns step context instructing the LLM
-                 to speak the next step, or a completion message if the workflow is done.
-                 Do NOT call this based on silence — only call when user confirms.
-
-        Returns:
-            Step context for the next step, or a workflow-complete message
+        purpose: Advance the active workflow to the next step and return the step context
+                 string. Clears the active state and returns a completion message if the
+                 workflow is on its last step. Returns a no-workflow message if no workflow
+                 is running. Used by both confirm_step (verbal) and confirm_step_completed
+                 (visual) tools.
+        @return: (str) Step context for the next step, or a completion/no-workflow message.
         """
         state = self._engine.get_active_state()
         if not state:
             return "No workflow is currently active."
         current_step = state.step_map[state.step_ids[state.current_index]]
         state.history.append(state.current_index)
-
         if (
             current_step.next_step is None
             or current_step.next_step not in state.step_map
@@ -468,14 +492,24 @@ class Assistant(Agent):
                 f"Workflow complete. The user has finished '{state.workflow_title}'. "
                 "Return to normal conversation."
             )
-
         next_index = state.step_ids.index(current_step.next_step)
         state.current_index = next_index
         next_step = state.step_map[current_step.next_step]
-        total = len(state.step_ids)
         return format_step_context(
-            next_step, next_index + 1, total, state.workflow_title
+            next_step, next_index + 1, len(state.step_ids), state.workflow_title
         )
+
+    @function_tool
+    async def confirm_step(self, context: RunContext) -> str:
+        """
+        purpose: Advance to the next step after the user explicitly confirms they
+                 completed the current one. Returns step context instructing the LLM
+                 to speak the next step, or a completion message if the workflow is done.
+                 Do NOT call this based on silence — only call when user confirms.
+                 Delegates to _advance_workflow_step() to share logic with confirm_step_completed.
+        @return: (str) Step context for the next step, or a workflow-complete message.
+        """
+        return self._advance_workflow_step()
 
     @function_tool
     async def go_back_step(self, context: RunContext) -> str:
@@ -524,6 +558,41 @@ class Assistant(Agent):
         self._engine.clear_active_state()
         return f"Workflow '{title}' exited. Return to normal conversation."
 
+    @function_tool
+    async def suggest_screen_share(self, context: RunContext) -> str:
+        """
+        purpose: Offer to start screen sharing when the user seems confused about
+                 on-phone navigation or when visual guidance would significantly help.
+                 Returns a verbal prompt inviting the user to share their screen.
+        @param context: (RunContext) LiveKit agent run context.
+        @return: (str) Verbal suggestion for the user.
+        """
+        return (
+            "I think it would really help if I could see your screen while we work on this. "
+            "Would you like to share your screen with me? I can walk you through how to start "
+            "it in just a couple of steps."
+        )
+
+    @function_tool
+    async def guide_screen_share_start(self, context: RunContext) -> str:
+        """
+        purpose: Provide step-by-step verbal instructions to guide a senior through
+                 starting the iOS screen broadcast. Covers locating the share button,
+                 tapping Start Broadcast in the system picker, and reassuring the user
+                 about the red status bar indicator.
+        @param context: (RunContext) LiveKit agent run context.
+        @return: (str) Step-by-step verbal guidance script.
+        """
+        return (
+            "Great! Look for the screen sharing button near the bottom of the app — "
+            "it looks like a small broadcast icon. Tap it. "
+            "A box will pop up that says 'Start Broadcast.' Go ahead and tap that. "
+            "You will hear a short countdown — three, two, one — and then I will be able "
+            "to see your screen. "
+            "The clock at the very top of your phone will turn red when sharing is on. "
+            "That is completely normal and just means I can see your screen."
+        )
+
 
 def _is_garbage_input(text: str) -> bool:
     """
@@ -533,6 +602,59 @@ def _is_garbage_input(text: str) -> bool:
     @return: (bool) True if the input should be discarded without LLM processing.
     """
     return len(text) < 3 or not any(c.isalpha() for c in text)
+
+
+# Echo detection helpers (SCREEN-7) — detect when STT transcribes the agent's own
+# TTS output back as user speech, a known AEC calibration issue on first call.
+_ECHO_NORMALIZE_RE = re.compile(r"[^a-z0-9 ]")
+_ECHO_MULTISPACES_RE = re.compile(r" {2,}")
+
+
+def _normalize_for_echo(text: str) -> str:
+    """
+    purpose: Normalize text for echo comparison by lowercasing, stripping punctuation,
+             and collapsing multiple spaces produced by multi-char punctuation (em-dash).
+    @param text: (str) Raw transcript or agent speech text.
+    @return: (str) Lowercase text with only alphanumeric characters and single spaces.
+    """
+    stripped = _ECHO_NORMALIZE_RE.sub("", text.lower()).strip()
+    return _ECHO_MULTISPACES_RE.sub(" ", stripped)
+
+
+def _is_echo(
+    text: str,
+    recent_agent_texts: list[tuple[float, str]],
+    now: float,
+    window: float,
+) -> bool:
+    """
+    purpose: Check whether a user transcript is an echo of recent agent speech.
+             Uses word-overlap ratio rather than exact substring because STT
+             garbles the echo (e.g. "I want to get showing" for "I want to make
+             sure"). A transcript is considered echo if >= 60% of its words appear
+             in any agent text spoken within the detection window.
+    @param text: (str) Raw user transcript from STT.
+    @param recent_agent_texts: (list[tuple[float, str]]) Buffer of
+           (timestamp, normalized_agent_text) pairs.
+    @param now: (float) Current event loop time.
+    @param window: (float) Detection window in seconds.
+    @return: (bool) True if the transcript matches recent agent speech.
+    """
+    normalized = _normalize_for_echo(text)
+    words = normalized.split()
+    if len(words) < 2:
+        return False  # single words like "yeah" or "ok" are never echo
+    word_set = set(words)
+    for ts, agent_text in recent_agent_texts:
+        if now - ts > window:
+            continue
+        agent_words = set(agent_text.split())
+        if not agent_words:
+            continue
+        overlap = len(word_set & agent_words) / len(word_set)
+        if overlap >= 0.6:
+            return True
+    return False
 
 
 def _recovery_message(consecutive_errors: int, name: str) -> str:
@@ -662,13 +784,21 @@ async def entrypoint(ctx: JobContext):
     _screen_active = (
         False  # guard against duplicate track_subscribed/unsubscribed events
     )
+    _privacy_disclosed = (
+        False  # one-time privacy note per session on first screen share (SCREEN-7)
+    )
+    _recent_agent_texts: list[
+        tuple[float, str]
+    ] = []  # echo detection buffer (SCREEN-7)
 
-    # 9. Real-time message logging — fires on every completed conversation turn
+    # 9. Real-time message logging — fires on every completed conversation turn.
+    #    Also buffers assistant speech text for echo detection (SCREEN-7).
     @session.on("conversation_item_added")
     def _on_item_added(ev: ConversationItemAddedEvent):
         """
-        purpose: Handle conversation_item_added events to log each turn to Supabase
-                 and reset the error streak counter on any successful assistant reply.
+        purpose: Handle conversation_item_added events to log each turn to Supabase,
+                 reset the error streak counter on any successful assistant reply,
+                 and buffer assistant text for echo detection (SCREEN-7).
         @param ev: (ConversationItemAddedEvent) Event containing the new ChatMessage.
         """
         nonlocal consecutive_errors
@@ -680,13 +810,27 @@ async def entrypoint(ctx: JobContext):
                 text = item.text_content
                 if text:
                     asyncio.create_task(conv_logger.log_message(item.role, text))  # noqa: RUF006
+                    # Buffer assistant speech for echo detection (SCREEN-7).
+                    # Cap at 50 entries to prevent unbounded growth if user
+                    # never speaks (pruning only happens in the STT handler).
+                    if item.role == "assistant":
+                        if len(_recent_agent_texts) >= 50:
+                            _recent_agent_texts.pop(0)
+                        _recent_agent_texts.append(
+                            (
+                                asyncio.get_running_loop().time(),
+                                _normalize_for_echo(text),
+                            )
+                        )
 
-    # 10. STT garbage filter — silently discard noise before the LLM responds
+    # 10. STT garbage/echo filter — silently discard noise and echo before the LLM responds
     @session.on("user_input_transcribed")
     def _on_user_input_transcribed(ev):
         """
         purpose: Discard short or non-alphabetic STT transcripts (coughs, TV, brief noise)
-                 before the LLM generates a response, keeping the session silent for noise.
+                 and detect agent echo (SCREEN-7) where AEC leaks TTS output back through
+                 the mic as a spurious user turn. Calls session.interrupt() to suppress
+                 the LLM response for both garbage and echo inputs.
         @param ev: Event with .is_final (bool) and .transcript (str).
         """
         if not ev.is_final:
@@ -695,6 +839,18 @@ async def entrypoint(ctx: JobContext):
         if _is_garbage_input(text):
             logger.info(f"Ignoring garbage STT input (user={user_id}): {text!r}")
             session.interrupt()
+            return
+        # Echo detection (SCREEN-7): prune old entries and check for echo
+        now = asyncio.get_running_loop().time()
+        _recent_agent_texts[:] = [
+            (ts, t)
+            for ts, t in _recent_agent_texts
+            if now - ts < ECHO_DETECTION_WINDOW_S
+        ]
+        if _is_echo(text, _recent_agent_texts, now, ECHO_DETECTION_WINDOW_S):
+            logger.info(f"Ignoring echo STT input (user={user_id}): {text!r}")
+            session.interrupt()
+            return
 
     # 11. Progressive error recovery — speak an escalating message on pipeline failures
     @session.on("error")
@@ -710,9 +866,7 @@ async def entrypoint(ctx: JobContext):
             f"Session error #{consecutive_errors} (user={user_id}, "
             f"conversation={conversation_id}): {ev.error}"
         )
-        asyncio.create_task(  # noqa: RUF006
-            session.say(_recovery_message(consecutive_errors, user_name))
-        )
+        session.say(_recovery_message(consecutive_errors, user_name))
 
     # 12. Proactive greeting — speak once when session becomes idle and user isn't already talking
     @session.on("agent_state_changed")
@@ -737,7 +891,7 @@ async def entrypoint(ctx: JobContext):
                     "I can help you with reminders, answer questions, or just have a chat. "
                     "What's on your mind?"
                 )
-                asyncio.create_task(session.say(greeting))  # noqa: RUF006
+                session.say(greeting)
 
     # 13. Participant disconnect — record disconnect time and last topic for reconnect greeting
     def _on_participant_disconnected(participant):
@@ -778,7 +932,7 @@ async def entrypoint(ctx: JobContext):
             greeting = (
                 f"Welcome back{', ' + user_name if user_name else ''}!{topic_suffix}"
             )
-            asyncio.create_task(session.say(greeting))  # noqa: RUF006
+            session.say(greeting)
         last_disconnect_time = None
 
     # 13b. Track subscribed — start capturing and hand off to VisionAssistant (SCREEN-4)
@@ -797,7 +951,7 @@ async def entrypoint(ctx: JobContext):
         @param publication: (rtc.RemoteTrackPublication) The track publication.
         @param participant: (rtc.RemoteParticipant) The publishing participant.
         """
-        nonlocal _screen_active
+        nonlocal _screen_active, _privacy_disclosed
         if track.kind == rtc.TrackKind.KIND_VIDEO:
             if _screen_active:
                 logger.warning("Duplicate track_subscribed event — ignoring")
@@ -825,14 +979,28 @@ async def entrypoint(ctx: JobContext):
             async def _announce_screen_share() -> None:
                 """
                 purpose: Wait one event-loop tick for the agent transition to complete,
-                         then ask VisionAssistant to announce it can see the screen.
+                         then ask VisionAssistant to announce it can see the screen. On the
+                         first screen share in the session also delivers a one-time privacy
+                         disclosure so the user knows everything on-screen is visible.
                 """
+                nonlocal _privacy_disclosed
                 await asyncio.sleep(0)
+                privacy_note = ""
+                if not _privacy_disclosed:
+                    _privacy_disclosed = True
+                    privacy_note = (
+                        " Also include a brief privacy note: while you can see their screen you "
+                        "can see everything on it — if they need to check something private they "
+                        "should stop sharing first."
+                    )
                 session.generate_reply(
                     instructions=(
                         "Acknowledge that you can now see the user's screen. "
-                        "Briefly describe what you see to confirm screen sharing is working, "
-                        "then ask how you can help."
+                        "Briefly describe what you see to confirm screen sharing is working. "
+                        "Tell the user: since you can see their screen, they can just follow "
+                        "along and you will watch for each step \u2014 they only need to speak up "
+                        "if they get stuck or cannot find something. Then ask how you can help."
+                        + privacy_note
                     )
                 )
 
@@ -948,6 +1116,57 @@ async def entrypoint(ctx: JobContext):
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
+
+    # 19. Proactive screen change monitor — triggers LLM reply when screen changes
+    #     during an active workflow without requiring user speech (SCREEN-5)
+    _proactive_pending = False
+
+    async def _monitor_screen_changes() -> None:
+        """
+        purpose: Poll for screen changes during active workflows and trigger a proactive
+                 LLM reply when the screen changes while the agent is idle. This removes
+                 the UX friction of the user having to verbally confirm every step —
+                 the agent notices the change and initiates the conversation.
+                 Uses PROACTIVE_MONITOR_INTERVAL_S from config to control poll frequency
+                 (SCREEN-6). generate_reply() is wrapped in try/except RuntimeError so
+                 that a draining speech scheduler does not crash the monitor loop — the
+                 attempt is silently skipped and retried on the next poll interval.
+        """
+        nonlocal _proactive_pending
+        while True:
+            await asyncio.sleep(PROACTIVE_MONITOR_INTERVAL_S)
+            if not _screen_active or not screen_capture.has_active_stream:
+                _proactive_pending = False
+                continue
+            if not screen_capture.peek_frame_changed():
+                _proactive_pending = False
+                continue
+            if not engine.get_active_state():
+                _proactive_pending = False
+                continue
+            if _proactive_pending:
+                continue
+            if session.agent_state != "listening":
+                continue
+            _proactive_pending = True
+            step_ctx = engine.get_current_step_context()
+            try:
+                session.generate_reply(
+                    instructions=(
+                        f"The user's screen just changed. {step_ctx} "
+                        "Check if the screen matches the expected step. If it does, call "
+                        "confirm_step_completed and move on. If it does not, briefly describe "
+                        "what you see and guide the user to the correct screen."
+                    )
+                )
+            except RuntimeError:
+                # Speech scheduler is draining a previous item — retry on next poll.
+                logger.debug(
+                    "Proactive generate_reply skipped: speech scheduler not ready"
+                )
+                _proactive_pending = False
+
+    asyncio.create_task(_monitor_screen_changes())  # noqa: RUF006
 
 
 if __name__ == "__main__":

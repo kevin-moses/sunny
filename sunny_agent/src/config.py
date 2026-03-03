@@ -4,8 +4,12 @@
 # other values referenced across agent, memory, prompt, and workflow modules.
 # Added EMBEDDING_MODEL and WORKFLOW_MATCH_THRESHOLD for WF-4 Supabase workflow retrieval.
 # Added VISION_LLM_MODEL for the SCREEN-4 vision-enabled handoff agent.
+# Switched VISION_LLM_MODEL from gpt-4.1-mini to gemini-3-flash-preview for lower
+# cost and faster TTFT, improving proactive auto-advance responsiveness (SCREEN-7).
+# Added PROACTIVE_MONITOR_INTERVAL_S for SCREEN-6 proactive screen-change monitor tuning.
+# Added ECHO_DETECTION_WINDOW_S for SCREEN-7 agent self-interruption (echo) prevention.
 #
-# Last modified: 2026-02-28
+# Last modified: 2026-03-01
 
 FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -27,5 +31,17 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 # Minimum cosine similarity score to accept a workflow match (0.0-1.0)
 WORKFLOW_MATCH_THRESHOLD: float = 0.5
 
-# Vision-enabled agent LLM (SCREEN-4) — must be a vision-capable model
-VISION_LLM_MODEL = "gpt-4o"
+# Vision-enabled agent LLM (SCREEN-4) — must be a vision-capable model.
+# Using Gemini 3 Flash for lower cost (~3-6x vs gpt-4.1-mini) and faster
+# TTFT, which improves proactive auto-advance responsiveness.
+# Previous: "gpt-4.1-mini" (OpenAI) — swap back if Gemini vision quality
+# is insufficient on iOS screenshots.
+VISION_LLM_MODEL = "gemini-3-flash-preview"
+
+# Proactive screen-change monitor interval (SCREEN-6) — how often the monitor
+# loop checks for screen changes while a workflow is active.
+PROACTIVE_MONITOR_INTERVAL_S: float = 0.5
+
+# Echo detection window (SCREEN-7) — how long to keep agent speech text for
+# echo comparison. Must exceed max TTS audio duration (~10-15s).
+ECHO_DETECTION_WINDOW_S: float = 15.0

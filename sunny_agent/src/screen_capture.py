@@ -7,13 +7,15 @@
 # Change detection uses a 64-bit perceptual hash (average hash). Frames whose
 # Hamming distance from the previous accepted frame exceeds HAMMING_THRESHOLD
 # are stored; identical or near-identical frames are discarded to avoid flooding
-# the LLM with redundant images.
+# the LLM with redundant images. Additionally, time-based throttling (SCREEN-5)
+# limits accepted frames to at most one every MIN_FRAME_INTERVAL_S seconds,
+# preventing scroll-heavy UI interactions from flooding the vision LLM.
 #
 # No LLM calls are made here — this module is pure plumbing: track subscription,
 # frame capture, change detection, and JPEG encoding.
 #
 # I420 support added: ReplayKit on iOS delivers frames in I420 (YUV 4:2:0 planar)
-# format. _i420_to_pil() converts using BT.601 full-range YCbCr→RGB coefficients.
+# format. _i420_to_pil() converts using BT.601 full-range YCbCr->RGB coefficients.
 #
 # Efficiency notes:
 #   - frame.data is passed directly to PIL/numpy without copying via bytes().
@@ -21,10 +23,11 @@
 #   - _compute_hash has an I420 fast-path: reads Y plane directly as grayscale,
 #     skipping the full YUV->RGB->L round-trip (~50-70% faster for iOS frames).
 #
-# Last modified: 2026-02-28
+# Last modified: 2026-03-01
 
 import asyncio
 import logging
+import time
 from io import BytesIO
 
 import numpy as np
@@ -34,10 +37,11 @@ from PIL import Image
 logger = logging.getLogger("screen_capture")
 
 HASH_SIZE = 8  # 8x8 grid -> 64-bit perceptual hash
-HAMMING_THRESHOLD = 3  # Hamming distance > this -> frame is "changed"
-JPEG_QUALITY = 85
-MAX_DIMENSION = 2048  # thumbnail fits within 2048x2048, preserving aspect ratio
-# (portrait iPhone ~944x2048 - full corner visibility)
+HAMMING_THRESHOLD = 5  # Hamming distance > this -> frame is "changed"
+JPEG_QUALITY = 70
+MAX_DIMENSION = 1024  # thumbnail fits within 1024x1024, preserving aspect ratio
+# (portrait iPhone ~473x1024 - sufficient for LLM visual analysis)
+MIN_FRAME_INTERVAL_S = 0.5  # minimum seconds between accepted frames
 
 
 def _i420_to_pil(data: bytes, width: int, height: int) -> Image.Image:
@@ -203,6 +207,15 @@ class ScreenCapture:
         self._frame_changed = False
         return self._latest_frame_bytes
 
+    def peek_frame_changed(self) -> bool:
+        """
+        purpose: Check if a new frame is pending without consuming it.
+                 Used by the proactive screen change monitor to detect changes
+                 without stealing the frame from on_user_turn_completed.
+        @return: (bool) True if a new frame has arrived since last consume.
+        """
+        return self._frame_changed
+
     def start_capture(self, track: rtc.Track) -> None:
         """
         purpose: Begin capturing frames from the given LiveKit video track.
@@ -242,14 +255,20 @@ class ScreenCapture:
         """
         purpose: Background asyncio task that reads frames from the video stream,
                  computes perceptual hashes, and stores changed frames as JPEG bytes.
+                 Frames are throttled to at most one every MIN_FRAME_INTERVAL_S seconds
+                 to avoid flooding the vision LLM with redundant frames during scrolling.
                  Exits cleanly on CancelledError. Logs and exits on other exceptions
                  to avoid crashing the agent session.
         """
         try:
             if self._video_stream is None:
                 return
+            last_accepted = 0.0
             async for event in self._video_stream:
                 frame = event.frame
+                now = time.monotonic()
+                if now - last_accepted < MIN_FRAME_INTERVAL_S:
+                    continue
                 h = _compute_hash(frame)
                 if (
                     self._prev_hash is None
@@ -258,6 +277,7 @@ class ScreenCapture:
                     self._latest_frame_bytes = _encode_frame(frame)
                     self._frame_changed = True
                     self._prev_hash = h
+                    last_accepted = now
                     logger.info(
                         "Frame captured (%d bytes, %dx%d)",
                         len(self._latest_frame_bytes),
