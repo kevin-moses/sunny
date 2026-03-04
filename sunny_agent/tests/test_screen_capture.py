@@ -8,11 +8,16 @@
 #   - _compute_hash: determinism, color sensitivity
 #   - _encode_frame: JPEG output validation, MAX_DIMENSION constraint
 #   - _i420_to_pil: I420 decoding (iOS ReplayKit native format)
-#   - ScreenCapture state: initial None, flag-reset semantics, stop_capture cleanup
+#   - ScreenCapture state: callback wiring, stop_capture cleanup (SCREEN-9)
+#   - _read_frames: integration path — changed frame fires _on_frame_captured (SCREEN-9)
 #
-# Last modified: 2026-02-28 (consume_frame_bytes rename)
+# Last modified: 2026-03-03 (SCREEN-9: updated state tests + integration test)
 
+from io import BytesIO
+
+import pytest
 from livekit import rtc
+from PIL import Image
 
 from screen_capture import (
     MAX_DIMENSION,
@@ -47,14 +52,20 @@ def _make_rgba_frame(width: int, height: int, r: int, g: int, b: int) -> rtc.Vid
 # ---------------------------------------------------------------------------
 
 
-def test_hamming_distance_identical():
-    """_hamming_distance(x, x) must always be 0."""
+def test_hamming_distance_identical() -> None:
+    """
+    purpose: Assert _hamming_distance returns 0 when both inputs are identical,
+             for a range of values including edge cases (0, 1, max uint32, arbitrary).
+    """
     for x in (0, 1, 0xFFFFFFFF, 0xDEADBEEF):
         assert _hamming_distance(x, x) == 0
 
 
-def test_hamming_distance_known():
-    """0b0101 XOR 0b1010 = 0b1111 → 4 bits set."""
+def test_hamming_distance_known() -> None:
+    """
+    purpose: Assert _hamming_distance returns the correct count for a known pair:
+             0b0101 XOR 0b1010 = 0b1111, which has 4 bits set.
+    """
     assert _hamming_distance(0b0101, 0b1010) == 4
 
 
@@ -63,8 +74,11 @@ def test_hamming_distance_known():
 # ---------------------------------------------------------------------------
 
 
-def test_compute_hash_deterministic():
-    """The same frame must produce the same hash on two independent calls."""
+def test_compute_hash_deterministic() -> None:
+    """
+    purpose: Assert _compute_hash returns the same integer for the same frame
+             on two independent calls (determinism).
+    """
     frame = _make_rgba_frame(64, 64, 128, 64, 32)
     assert _compute_hash(frame) == _compute_hash(frame)
 
@@ -93,11 +107,11 @@ def _make_half_black_half_white_rgba_frame(width: int, height: int) -> rtc.Video
     return rtc.VideoFrame(width, height, rtc.VideoBufferType.RGBA, top + bottom)
 
 
-def test_compute_hash_different_colors():
-    """Frames with inverted halves must produce different perceptual hashes.
-
-    Solid-color images always produce all-1s hashes (every pixel equals the mean),
-    so this test uses spatially varying frames to exercise meaningful differentiation.
+def test_compute_hash_different_colors() -> None:
+    """
+    purpose: Assert spatially inverted frames produce different perceptual hashes.
+             Solid-color frames all hash the same (every pixel equals the mean),
+             so spatially varying frames are used to exercise differentiation.
     """
     white_top = _make_half_white_half_black_rgba_frame(64, 64)
     black_top = _make_half_black_half_white_rgba_frame(64, 64)
@@ -109,19 +123,20 @@ def test_compute_hash_different_colors():
 # ---------------------------------------------------------------------------
 
 
-def test_encode_frame_returns_jpeg():
-    """Encoded output must start with the JPEG SOI marker (0xFF 0xD8)."""
+def test_encode_frame_returns_jpeg() -> None:
+    """
+    purpose: Assert _encode_frame output starts with the JPEG SOI marker (0xFF 0xD8).
+    """
     frame = _make_rgba_frame(64, 64, 200, 100, 50)
     data = _encode_frame(frame)
     assert data[:2] == b"\xff\xd8"
 
 
-def test_encode_frame_within_max_dim():
-    """Decoding the encoded output must produce an image within MAX_DIMENSION on each axis."""
-    from io import BytesIO
-
-    from PIL import Image
-
+def test_encode_frame_within_max_dim() -> None:
+    """
+    purpose: Assert that encoding a large frame produces an image within
+             MAX_DIMENSION on each axis (thumbnail path exercised).
+    """
     # Use a large frame to exercise the thumbnail path
     frame = _make_rgba_frame(4096, 4096, 0, 128, 255)
     data = _encode_frame(frame)
@@ -155,10 +170,10 @@ def _make_i420_frame(
     )
 
 
-def test_i420_to_pil_returns_rgb():
-    """_i420_to_pil must return an RGB image with the correct dimensions."""
-    from PIL import Image
-
+def test_i420_to_pil_returns_rgb() -> None:
+    """
+    purpose: Assert _i420_to_pil returns an RGB PIL Image with the correct dimensions.
+    """
     width, height = 64, 48
     img = _i420_to_pil(
         bytes([128] * width * height + [128] * (width // 2) * (height // 2) * 2),
@@ -170,54 +185,121 @@ def test_i420_to_pil_returns_rgb():
     assert img.size == (width, height)
 
 
-def test_i420_frame_hashable():
-    """_compute_hash must not raise for I420 frames (the format from ReplayKit)."""
+def test_i420_frame_hashable() -> None:
+    """
+    purpose: Assert _compute_hash does not raise for I420 frames (the format
+             delivered by the iOS ReplayKit broadcast extension).
+    """
     frame = _make_i420_frame(64, 48, y_val=128, u_val=128, v_val=128)
     h = _compute_hash(frame)
     assert isinstance(h, int)
 
 
-def test_i420_frame_encodable():
-    """_encode_frame must not raise for I420 frames and must return JPEG bytes."""
+def test_i420_frame_encodable() -> None:
+    """
+    purpose: Assert _encode_frame does not raise for I420 frames and returns
+             valid JPEG bytes starting with the SOI marker.
+    """
     frame = _make_i420_frame(64, 48, y_val=200, u_val=100, v_val=150)
     data = _encode_frame(frame)
     assert data[:2] == b"\xff\xd8"
 
 
 # ---------------------------------------------------------------------------
-# ScreenCapture state machine tests
+# ScreenCapture state machine tests (SCREEN-9: callback API)
 # ---------------------------------------------------------------------------
 
 
-def test_consume_returns_none_initially():
-    """A freshly created ScreenCapture must return None before any frame arrives."""
+def test_set_on_frame_captured_stores_callback() -> None:
+    """
+    purpose: set_on_frame_captured should store the callable on _on_frame_captured.
+             Passing None should clear it without raising. Verifies SCREEN-9 API.
+    """
     sc = ScreenCapture()
-    assert sc.consume_frame_bytes() is None
+    captured: list[bytes] = []
+    sc.set_on_frame_captured(lambda b: captured.append(b))
+    assert sc._on_frame_captured is not None
+    sc.set_on_frame_captured(None)
+    assert sc._on_frame_captured is None
 
 
-def test_consume_resets_changed_flag():
-    """consume_frame_bytes() returns bytes on first call, then None (flag reset)."""
+def test_stop_capture_clears_state() -> None:
+    """
+    purpose: stop_capture() must reset all frame state and report has_active_stream == False.
+    """
     sc = ScreenCapture()
-    # Inject state directly to bypass the async capture loop
-    sc._latest_frame_bytes = b"fake-jpeg"
-    sc._frame_changed = True
-
-    first = sc.consume_frame_bytes()
-    assert first == b"fake-jpeg"
-    # Second call: flag was reset, should return None
-    assert sc.consume_frame_bytes() is None
-
-
-def test_stop_capture_clears_state():
-    """stop_capture() must reset all state and report has_active_stream == False."""
-    sc = ScreenCapture()
-    sc._latest_frame_bytes = b"something"
-    sc._frame_changed = True
     sc._prev_hash = 42
 
     sc.stop_capture()
 
     assert not sc.has_active_stream
-    assert sc.consume_frame_bytes() is None
     assert sc._prev_hash is None
-    assert not sc._frame_changed
+
+
+# ---------------------------------------------------------------------------
+# _read_frames integration: changed frame fires _on_frame_captured (SCREEN-9)
+# ---------------------------------------------------------------------------
+
+
+class _FakeVideoStream:
+    """
+    purpose: Minimal async iterable that yields a fixed list of VideoFrameEvent objects,
+             then stops. Used to drive _read_frames without a real LiveKit connection.
+    """
+
+    def __init__(self, events: list[rtc.VideoFrameEvent]) -> None:
+        """
+        purpose: Store the events to be yielded.
+        @param events: (list[rtc.VideoFrameEvent]) Events to emit in order.
+        """
+        self._events = events
+
+    def __aiter__(self) -> "_FakeVideoStream":
+        """
+        purpose: Return self as the async iterator.
+        @return: (_FakeVideoStream) self.
+        """
+        self._iter = iter(self._events)
+        return self
+
+    async def __anext__(self) -> rtc.VideoFrameEvent:
+        """
+        purpose: Yield the next event or raise StopAsyncIteration when exhausted.
+        @return: (rtc.VideoFrameEvent) Next event.
+        @raises StopAsyncIteration: When all events have been yielded.
+        """
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        """
+        purpose: No-op close for API compatibility with rtc.VideoStream.
+        """
+
+
+@pytest.mark.asyncio
+async def test_read_frames_fires_callback_on_changed_frame() -> None:
+    """
+    purpose: Assert that _read_frames calls _on_frame_captured when a changed frame
+             passes hash detection. Covers the core SCREEN-9 delivery path:
+             frame arrives -> hash differs -> encode -> callback fires.
+             Uses _FakeVideoStream to drive _read_frames without a real LiveKit server.
+    """
+    frame = _make_rgba_frame(64, 64, 100, 150, 200)
+    event = rtc.VideoFrameEvent(
+        frame=frame, timestamp_us=0, rotation=rtc.VideoRotation.VIDEO_ROTATION_0
+    )
+
+    sc = ScreenCapture()
+    received: list[bytes] = []
+    sc.set_on_frame_captured(lambda b: received.append(b))
+    sc._video_stream = _FakeVideoStream([event])  # type: ignore[assignment]
+
+    await sc._read_frames()
+
+    assert len(received) == 1, (
+        "Callback should have fired exactly once for the changed frame"
+    )
+    assert received[0][:2] == b"\xff\xd8", "Callback should receive valid JPEG bytes"

@@ -2,7 +2,8 @@
 # Purpose: Screen share frame capture for the Sunny voice agent.
 # Subscribes to a LiveKit video track (iOS broadcast extension screen share),
 # reads frames in a background asyncio task, and stores the latest changed frame
-# as JPEG bytes for SCREEN-4 (vision agent / LLM injection) to consume.
+# as JPEG bytes. On each accepted frame, fires an _on_frame_captured callback
+# (SCREEN-9: event-driven push to ScreenDescriber, replacing the poll loop).
 #
 # Change detection uses a 64-bit perceptual hash (average hash). Frames whose
 # Hamming distance from the previous accepted frame exceeds HAMMING_THRESHOLD
@@ -23,11 +24,19 @@
 #   - _compute_hash has an I420 fast-path: reads Y plane directly as grayscale,
 #     skipping the full YUV->RGB->L round-trip (~50-70% faster for iOS frames).
 #
-# Last modified: 2026-03-01
+# SCREEN-7: Added last_frame_change_time property to detect staleness.
+#           Added small-frame guard to skip 8x8 termination frames from iOS.
+# SCREEN-9: Replaced _frame_changed flag / peek_frame_changed / consume_frame_bytes
+#           with _on_frame_captured callback pushed synchronously from _read_frames.
+#
+# Last modified: 2026-03-03
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from io import BytesIO
 
 import numpy as np
@@ -169,8 +178,9 @@ class ScreenCapture:
     purpose: Manages subscription to a LiveKit video track representing an iOS
              screen share (from the broadcast extension). Reads frames in a
              background asyncio task and stores the latest changed frame as JPEG
-             bytes. SCREEN-4 calls consume_frame_bytes() to inject frames into
-             the LLM on each user turn.
+             bytes. On each accepted frame, the _on_frame_captured callback is
+             invoked synchronously from _read_frames so ScreenDescriber can react
+             immediately without polling (SCREEN-9: event-driven push).
 
              Change detection uses a 64-bit perceptual hash; frames within
              HAMMING_THRESHOLD bits of the previous accepted frame are discarded.
@@ -180,11 +190,11 @@ class ScreenCapture:
         """
         purpose: Initialize ScreenCapture with all state set to idle/empty.
         """
-        self._latest_frame_bytes: bytes | None = None
-        self._frame_changed: bool = False
+        self._on_frame_captured: Callable[[bytes], None] | None = None
         self._prev_hash: int | None = None
         self._video_stream: rtc.VideoStream | None = None
         self._read_task: asyncio.Task[None] | None = None
+        self._last_frame_change_time: float = 0.0
 
     @property
     def has_active_stream(self) -> bool:
@@ -194,27 +204,25 @@ class ScreenCapture:
         """
         return self._video_stream is not None
 
-    def consume_frame_bytes(self) -> bytes | None:
+    @property
+    def last_frame_change_time(self) -> float:
         """
-        purpose: Consume the latest changed JPEG frame bytes and reset the changed flag.
-                 Returns None if no new frame has arrived since the last call.
-                 Calling this clears the changed flag — subsequent calls return None
-                 until a new distinct frame is captured.
-        @return: (bytes | None) JPEG bytes if a new frame is available, else None.
+        purpose: Return the monotonic timestamp of the last accepted (changed) frame.
+                 Allows callers to detect screen staleness without consuming the frame.
+        @return: (float) time.monotonic() value of the last accepted frame, or 0.0
+                 if no frame has been accepted yet.
         """
-        if not self._frame_changed:
-            return None
-        self._frame_changed = False
-        return self._latest_frame_bytes
+        return self._last_frame_change_time
 
-    def peek_frame_changed(self) -> bool:
+    def set_on_frame_captured(self, callback: Callable[[bytes], None] | None) -> None:
         """
-        purpose: Check if a new frame is pending without consuming it.
-                 Used by the proactive screen change monitor to detect changes
-                 without stealing the frame from on_user_turn_completed.
-        @return: (bool) True if a new frame has arrived since last consume.
+        purpose: Register (or clear) a callback invoked with fresh JPEG bytes every time
+                 a changed frame is accepted. Used by ScreenDescriber to replace polling
+                 (SCREEN-9: event-driven push replaces peek_frame_changed poll loop).
+        @param callback: (Callable | None) Called synchronously from _read_frames task.
+                         Pass None to unregister.
         """
-        return self._frame_changed
+        self._on_frame_captured = callback
 
     def start_capture(self, track: rtc.Track) -> None:
         """
@@ -230,8 +238,6 @@ class ScreenCapture:
         """
         purpose: Stop the frame capture loop and release all resources.
                  Safe to call on a fresh instance or multiple times.
-                 Any buffered frame bytes are discarded; callers must not
-                 rely on get_latest_frame_bytes() returning data after stop_capture().
         """
         if self._read_task is not None:
             self._read_task.cancel()
@@ -247,16 +253,17 @@ class ScreenCapture:
                     logger.warning("VideoStream.aclose() raised during stop_capture")
 
             asyncio.create_task(_safe_aclose())  # noqa: RUF006
-        self._latest_frame_bytes = None
-        self._frame_changed = False
         self._prev_hash = None
+        self._last_frame_change_time = 0.0
 
     async def _read_frames(self) -> None:
         """
         purpose: Background asyncio task that reads frames from the video stream,
-                 computes perceptual hashes, and stores changed frames as JPEG bytes.
-                 Frames are throttled to at most one every MIN_FRAME_INTERVAL_S seconds
-                 to avoid flooding the vision LLM with redundant frames during scrolling.
+                 computes perceptual hashes, and on each changed frame: encodes it as
+                 JPEG, updates _last_frame_change_time, and calls _on_frame_captured.
+                 Frames are throttled to at most one every MIN_FRAME_INTERVAL_S seconds.
+                 Skips frames smaller than 32x32 pixels (the iOS broadcast extension
+                 sends an 8x8 termination frame on session end that passes hash detection).
                  Exits cleanly on CancelledError. Logs and exits on other exceptions
                  to avoid crashing the agent session.
         """
@@ -269,21 +276,32 @@ class ScreenCapture:
                 now = time.monotonic()
                 if now - last_accepted < MIN_FRAME_INTERVAL_S:
                     continue
+                # Skip termination frames — iOS broadcast extension sends an 8x8 frame
+                # on session end that has a different hash and would corrupt the cache.
+                if frame.width < 32 or frame.height < 32:
+                    logger.debug(
+                        "Skipping undersized frame (%dx%d)",
+                        frame.width,
+                        frame.height,
+                    )
+                    continue
                 h = _compute_hash(frame)
                 if (
                     self._prev_hash is None
                     or _hamming_distance(h, self._prev_hash) > HAMMING_THRESHOLD
                 ):
-                    self._latest_frame_bytes = _encode_frame(frame)
-                    self._frame_changed = True
+                    frame_bytes = _encode_frame(frame)
                     self._prev_hash = h
+                    self._last_frame_change_time = now
                     last_accepted = now
                     logger.info(
                         "Frame captured (%d bytes, %dx%d)",
-                        len(self._latest_frame_bytes),
+                        len(frame_bytes),
                         frame.width,
                         frame.height,
                     )
+                    if self._on_frame_captured is not None:
+                        self._on_frame_captured(frame_bytes)
         except asyncio.CancelledError:
             pass
         except Exception:

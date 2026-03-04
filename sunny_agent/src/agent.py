@@ -21,27 +21,33 @@
 # receives contextual check-in ("Time for your blood pressure medication. Did you take it?").
 # Session context is also persisted to the conversations row via create_conversation().
 #
-# Screen share (SCREEN-3/4): entrypoint() registers track_subscribed / track_unsubscribed
+# Screen share (SCREEN-3/4/7): entrypoint() registers track_subscribed / track_unsubscribed
 # room event handlers. When the iOS broadcast extension publishes a video track,
 # ScreenCapture.start_capture() opens a VideoStream and reads frames in a background
 # asyncio task. Changed frames (perceptual hash Hamming distance > threshold) are stored
-# as JPEG bytes. On track_subscribed, session.update_agent() hands off to VisionAssistant
-# (GPT-4o + frame injection). On track_unsubscribed, handoff returns to voice-only
-# Assistant. Workflow state survives handoffs via WorkflowEngine._active_state (SCREEN-4).
-# stop_capture() is also called on participant_disconnected as a guard against missed
-# track_unsubscribed events on abrupt disconnects.
+# as JPEG bytes. On track_subscribed, _screen_describer is created and attached in-place
+# to the running Assistant via assistant._screen_describer (no agent swap, no context loss).
+# On track_unsubscribed, _screen_describer is cleared via assistant._screen_describer = None.
+# Workflow state survives across screen-share sessions via WorkflowEngine._active_state.
+# stop_capture() and screen_describer.stop() are called on participant_disconnected as
+# a guard against missed track_unsubscribed events on abrupt disconnects.
+#
+# VisionAssistant eliminated (SCREEN-8): VisionAssistant and the session.update_agent()
+# handoff have been removed. All screen-share logic now lives in Assistant as conditional
+# behavior gated on self._screen_describer is not None. This eliminates the two bugs from
+# the handoff pattern: (1) workflow context loss from fresh LLM conversation on update_agent,
+# (2) generate_reply race condition requiring a 0.5s workaround sleep.
 #
 # Step advancement (SCREEN-5): _advance_workflow_step() is a private helper that contains
 # the shared step-advancement logic used by both confirm_step (verbal) and
-# confirm_step_completed (visual, on VisionAssistant). confirm_step delegates to it.
-# Proactive monitor (SCREEN-5): _monitor_screen_changes() polls for screen changes during
-# active workflows and triggers a VisionAssistant LLM reply when the screen changes while
-# the agent is in listening state, removing the UX friction of requiring verbal confirmation.
+# confirm_step_completed (visual). confirm_step delegates to it.
+# Proactive monitor (SCREEN-7): replaces polling loop with _on_description_ready callback
+# from ScreenDescriber. After each successful background Gemini describe, the callback
+# fires session.generate_reply() if a workflow is active and agent is in listening state.
 #
 # Proactive-first UX (SCREEN-7): Screen-share greeting now tells the user they do NOT
 # need to confirm verbally — the agent watches the screen and auto-advances. The proactive
-# monitor instructions no longer ask the user to confirm; instead, the monitor silently
-# advances on match and only speaks to guide the user when the screen does not match.
+# monitor only speaks to guide the user when the screen does not match the expected step.
 #
 # Echo detection (SCREEN-7): _is_echo() and _normalize_for_echo() module-level helpers
 # detect when STT transcribes the agent's own TTS output back as user speech (AEC
@@ -49,9 +55,10 @@
 # _on_user_input_transcribed checks user transcripts against the buffer and suppresses
 # matches via session.interrupt().
 #
-# Screen share UX tools (SCREEN-7): Assistant now exposes suggest_screen_share and
+# Screen share UX tools (SCREEN-7): Assistant exposes suggest_screen_share and
 # guide_screen_share_start @function_tools so the LLM can proactively offer and walk
-# the user through starting an iOS broadcast when visual guidance would help.
+# the user through starting an iOS broadcast when visual guidance would help. Both tools
+# return early with "Screen sharing is already active." when _screen_describer is not None.
 # _privacy_disclosed state variable ensures the one-time privacy disclosure
 # (screen content visible warning) is delivered only on the first share per session.
 #
@@ -60,12 +67,13 @@
 # reminder_type parameter rename, user_timezone threaded from profile,
 # existing_profile_summary passed to ConversationLogger for merged profile generation.
 #
-# Last modified: 2026-03-02
+# Last modified: 2026-03-03 (SCREEN-8: eliminate VisionAssistant, in-place _screen_describer)
 
 import asyncio
 import json
 import logging
 import re
+import time
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -84,7 +92,13 @@ from livekit.agents import (
     cli,
     metrics,
 )
-from livekit.agents.llm import LLM, ChatMessage, function_tool
+from livekit.agents.llm import (
+    LLM,
+    ChatContext,
+    ChatMessage,
+    ImageContent,
+    function_tool,
+)
 from livekit.plugins import anthropic, cartesia, deepgram, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from supabase import AsyncClient
@@ -97,7 +111,7 @@ from config import (
     MIN_ENDPOINTING_DELAY,
     MIN_INTERRUPTION_DURATION,
     MIN_INTERRUPTION_WORDS,
-    PROACTIVE_MONITOR_INTERVAL_S,
+    SCREEN_STALE_THRESHOLD_S,
     STT_LANGUAGE,
     STT_MODEL,
     TTS_VOICE,
@@ -112,6 +126,7 @@ from memory import (
 )
 from prompts import format_step_context, format_user_context, render_system_prompt
 from screen_capture import ScreenCapture
+from screen_describer import ScreenDescriber
 from tools import db_delete_reminder, db_list_reminders, db_save_reminder
 from workflow_engine import WorkflowEngine
 
@@ -122,13 +137,29 @@ logging.getLogger("hpack").setLevel(logging.WARNING)
 
 load_dotenv(".env")
 
+# Constants for screen description injection (moved from vision_agent.py, SCREEN-8).
+# Defined here so injection and stripping sites stay in sync.
+_SCREEN_DESC_PREFIX = "[SCREEN DESCRIPTION"
+_FRESH_VIEW_PREFIX = "[Fresh view"
+_ACTIVE_WORKFLOW_PREFIX = "[ACTIVE WORKFLOW"
+_NO_WORKFLOW_PREFIX = "[NO WORKFLOW ACTIVE"
+_FREEFORM_CONTEXT_HINT = (
+    "No structured workflow is active. Analyze the screen content and "
+    "help the user with whatever they are trying to do. Identify the app "
+    "and available actions visible on screen."
+)
+
 
 class Assistant(Agent):
     """
     purpose: Voice-only assistant agent with senior-optimized persona and tool integrations
-             for web search, reminders, contacts, and SMS messaging.
+             for web search, reminders, contacts, and SMS messaging. When screen sharing is
+             active (_screen_describer is not None), also injects screen descriptions into
+             each user turn and exposes refresh_vision and confirm_step_completed tools.
              Active workflow state is stored on the shared WorkflowEngine so it survives
-             agent handoffs during screen sharing (SCREEN-4).
+             screen-share sessions (SCREEN-4). VisionAssistant has been eliminated (SCREEN-8):
+             screen-share logic lives here as conditional behavior, set in-place via
+             assistant._screen_describer without any agent swap.
     """
 
     def __init__(
@@ -140,6 +171,7 @@ class Assistant(Agent):
         ios_version: str,
         user_timezone: str = "America/New_York",
         screen_capture: "ScreenCapture | None" = None,
+        screen_describer: "ScreenDescriber | None" = None,
         llm: LLM | None = None,
     ) -> None:
         """
@@ -148,8 +180,8 @@ class Assistant(Agent):
                  plus the WorkflowEngine and iOS version for guided workflow support.
                  Accepts an optional ScreenCapture instance for frame injection.
                  Active workflow state is owned by the engine (not the agent) so that
-                 workflow progress survives agent handoffs during screen sharing.
-                 Accepts an optional llm override so VisionAssistant can pass GPT-4o.
+                 workflow progress survives screen-share sessions.
+                 Accepts an optional llm override for flexibility.
         @param instructions: (str) The fully rendered system prompt from render_system_prompt().
         @param user_id: (str) UUID of the current user, used for all DB reminder operations.
         @param supabase: (AsyncClient) Authenticated Supabase async client.
@@ -158,6 +190,9 @@ class Assistant(Agent):
         @param user_timezone: (str) IANA timezone from the user's profile, used for reminder storage.
         @param screen_capture: (ScreenCapture | None) Active screen capture instance, or None if
                                screen sharing has not started.
+        @param screen_describer: (ScreenDescriber | None) Background Gemini describer, or None
+                                 when screen sharing is not active. Set in-place by entrypoint()
+                                 on track_subscribed / cleared on track_unsubscribed (SCREEN-8).
         @param llm: (LLM | None) Optional LLM override; when None the session-level LLM is used.
         """
         agent_kwargs: dict = {"instructions": instructions}
@@ -170,7 +205,128 @@ class Assistant(Agent):
         self._ios_version = ios_version
         self._user_timezone = user_timezone
         self._screen_capture = screen_capture
+        self._screen_describer = screen_describer
         self.tavily_client = TavilyClient()
+
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        """
+        purpose: Inject the latest screen description into every user turn before the LLM
+                 responds. Only active when screen sharing is in progress
+                 (self._screen_describer is not None). In voice-only mode, returns immediately.
+                 Reads from ScreenDescriber cache (pre-computed by Gemini in the background)
+                 rather than calling Gemini directly on the hot path.
+                 Three injection branches:
+                   - fresh: description text with captured-N-seconds-ago label
+                   - stale: description text + stale marker (screen changed within threshold)
+                   - none:  cold-start placeholder (no description yet)
+                 Staleness is driven solely by SCREEN_STALE_THRESHOLD_S on last_change;
+                 the prior description_outdated check was removed (BUGS-2).
+                 Also injects workflow step context. Strips old description strings
+                 and ImageContent items from prior messages to keep token count flat (SCREEN-6).
+        @param turn_ctx: (ChatContext) The current chat context.
+        @param new_message: (ChatMessage) The user message about to be sent to the LLM.
+                            Content items are appended in-place.
+        """
+        if self._screen_describer is None:
+            return  # voice-only mode — no screen description to inject
+
+        # SCREEN-6: Strip old description strings and ImageContent from previous messages
+        # to keep token count flat rather than growing linearly with conversation length.
+        _stale_prefixes = (
+            _SCREEN_DESC_PREFIX,
+            _FRESH_VIEW_PREFIX,
+            _ACTIVE_WORKFLOW_PREFIX,
+            _NO_WORKFLOW_PREFIX,
+        )
+        for msg in turn_ctx.items[:-1]:
+            if isinstance(msg, ChatMessage) and isinstance(msg.content, list):
+                msg.content = [
+                    item
+                    for item in msg.content
+                    if not isinstance(item, ImageContent)
+                    and not (isinstance(item, str) and item.startswith(_stale_prefixes))
+                ]
+
+        # Determine description freshness
+        description = self._screen_describer.get_description()
+        desc_time = self._screen_describer.last_description_time
+        last_change = (
+            self._screen_capture.last_frame_change_time if self._screen_capture else 0.0
+        )
+
+        now = time.monotonic()
+        # Mark stale only when the screen changed within the threshold window.
+        # A strict last_change > desc_time comparison was intentionally removed:
+        # ReplayKit delivers frames continuously, so last_change is nearly always
+        # a few milliseconds newer than desc_time even on a static screen (BUGS-2).
+        screen_changed_recently = (
+            last_change > 0.0 and (now - last_change) < SCREEN_STALE_THRESHOLD_S
+        )
+
+        if description is None:
+            # Cold start — no description produced yet
+            desc_block = (
+                f"{_SCREEN_DESC_PREFIX} - not yet available"
+                ' — tell the user "give me a moment to focus on your screen"]'
+            )
+        elif screen_changed_recently:
+            desc_block = (
+                f"{_SCREEN_DESC_PREFIX} - possibly stale,"
+                f" screen changed {now - last_change:.1f}s ago"
+                " — call refresh_vision() for latest view]\n" + description
+            )
+        else:
+            age_s = now - desc_time
+            desc_block = (
+                f"{_SCREEN_DESC_PREFIX} - captured {age_s:.0f}s ago]\n" + description
+            )
+
+        new_message.content.append(desc_block)
+
+        # Workflow step context
+        step_ctx = self._engine.get_current_step_context()
+        if step_ctx:
+            new_message.content.append(
+                f"{_ACTIVE_WORKFLOW_PREFIX} — {step_ctx} "
+                "If screen matches, give the instruction. "
+                "If already complete, call confirm_step_completed. "
+                "If wrong screen, tell user where to go.]"
+            )
+        elif description is not None:
+            new_message.content.append(
+                f"{_NO_WORKFLOW_PREFIX} — {_FREEFORM_CONTEXT_HINT}]"
+            )
+
+    @function_tool
+    async def refresh_vision(self, context: RunContext) -> str:
+        """
+        purpose: Request a fresh screen description from the ScreenDescriber using the
+                 most recent frame. Calls describe_now() which returns a cached result
+                 if very fresh (< DESCRIBE_NOW_CACHE_FRESH_S) or makes a new Gemini call
+                 (~2s with gemini-3.1-flash-lite-preview). Returns a fallback if screen
+                 sharing is not active or no frame is available.
+        @param context: (RunContext) LiveKit agent run context (required by @function_tool).
+        @return: (str) Fresh human-readable description, or appropriate fallback.
+        """
+        if self._screen_describer is None:
+            return "Screen sharing is not active."
+        description = await self._screen_describer.describe_now()
+        return f"{_FRESH_VIEW_PREFIX}]\n{description}"
+
+    @function_tool
+    async def confirm_step_completed(self, context: RunContext) -> str:
+        """
+        purpose: Advance the workflow to the next step when the screen description
+                 confirms the user has completed the current step. Call this when you can
+                 see from the description that the expected state for the current step has
+                 been reached — without requiring the user to say so verbally. Delegates
+                 to _advance_workflow_step() so the step-advancement logic is not duplicated.
+        @param context: (RunContext) LiveKit agent run context (required by @function_tool).
+        @return: (str) Step context for the next step, or a completion message.
+        """
+        return self._advance_workflow_step()
 
     @function_tool
     async def web_search(self, context: RunContext, query: str):
@@ -563,10 +719,13 @@ class Assistant(Agent):
         """
         purpose: Offer to start screen sharing when the user seems confused about
                  on-phone navigation or when visual guidance would significantly help.
-                 Returns a verbal prompt inviting the user to share their screen.
+                 Returns early if screen sharing is already active (SCREEN-8).
+                 Returns a verbal prompt inviting the user to share their screen otherwise.
         @param context: (RunContext) LiveKit agent run context.
-        @return: (str) Verbal suggestion for the user.
+        @return: (str) Verbal suggestion for the user, or no-op if already sharing.
         """
+        if self._screen_describer is not None:
+            return "Screen sharing is already active."
         return (
             "I think it would really help if I could see your screen while we work on this. "
             "Would you like to share your screen with me? I can walk you through how to start "
@@ -579,10 +738,13 @@ class Assistant(Agent):
         purpose: Provide step-by-step verbal instructions to guide a senior through
                  starting the iOS screen broadcast. Covers locating the share button,
                  tapping Start Broadcast in the system picker, and reassuring the user
-                 about the red status bar indicator.
+                 about the red status bar indicator. Returns early if screen sharing is
+                 already active (SCREEN-8).
         @param context: (RunContext) LiveKit agent run context.
-        @return: (str) Step-by-step verbal guidance script.
+        @return: (str) Step-by-step verbal guidance script, or no-op if already sharing.
         """
+        if self._screen_describer is not None:
+            return "Screen sharing is already active."
         return (
             "Great! Look for the screen sharing button near the bottom of the app — "
             "it looks like a small broadcast icon. Tap it. "
@@ -787,6 +949,7 @@ async def entrypoint(ctx: JobContext):
     _privacy_disclosed = (
         False  # one-time privacy note per session on first screen share (SCREEN-7)
     )
+    _screen_describer: ScreenDescriber | None = None  # SCREEN-7 hybrid router
     _recent_agent_texts: list[
         tuple[float, str]
     ] = []  # echo detection buffer (SCREEN-7)
@@ -866,7 +1029,12 @@ async def entrypoint(ctx: JobContext):
             f"Session error #{consecutive_errors} (user={user_id}, "
             f"conversation={conversation_id}): {ev.error}"
         )
-        session.say(_recovery_message(consecutive_errors, user_name))
+        try:
+            session.say(_recovery_message(consecutive_errors, user_name))
+        except Exception:
+            logger.warning(
+                "session.say() failed in error handler; speech scheduler draining"
+            )
 
     # 12. Proactive greeting — speak once when session becomes idle and user isn't already talking
     @session.on("agent_state_changed")
@@ -898,11 +1066,11 @@ async def entrypoint(ctx: JobContext):
         """
         purpose: Record the disconnect timestamp and last assistant message so the
                  agent can greet the user with context on a quick reconnect.
-                 Also stops screen capture as a guard against missed track_unsubscribed
-                 events on abrupt disconnects.
+                 Also stops screen describer and capture as a guard against missed
+                 track_unsubscribed events on abrupt disconnects.
         @param participant: The disconnected LiveKit participant object.
         """
-        nonlocal last_disconnect_time, last_topic
+        nonlocal last_disconnect_time, last_topic, _screen_describer
         last_disconnect_time = asyncio.get_running_loop().time()
         history = [
             i
@@ -911,6 +1079,12 @@ async def entrypoint(ctx: JobContext):
         ]
         last_topic = history[-1].text_content[:80] if history else ""
         logger.info(f"Participant {participant.identity} disconnected (user={user_id})")
+        if _screen_describer is not None:
+            _screen_describer.stop()
+            _screen_describer = None  # clear local ref (attribute cleared below)
+        _assistant._screen_describer = (
+            None  # authoritative clear — no agent swap needed
+        )
         screen_capture.stop_capture()  # guard: stop capture if track event was missed
         asyncio.create_task(conv_logger.finalize(session.history))  # noqa: RUF006
 
@@ -935,7 +1109,42 @@ async def entrypoint(ctx: JobContext):
             session.say(greeting)
         last_disconnect_time = None
 
-    # 13b. Track subscribed — start capturing and hand off to VisionAssistant (SCREEN-4)
+    # 13b. Proactive description-ready callback — fires after each background Gemini describe
+    #      (SCREEN-7). Replaces the _monitor_screen_changes polling loop. ScreenDescriber
+    #      calls this from the asyncio event loop after storing a new description.
+    _proactive_pending = False
+
+    def _on_description_ready(_description: str) -> None:
+        """
+        purpose: Callback invoked by ScreenDescriber after each successful background Gemini
+                 describe call. If a workflow is active and the agent is in listening state,
+                 triggers a proactive generate_reply so the Assistant can check the screen
+                 and advance the workflow or guide the user. Replaces the polling loop from
+                 SCREEN-5/6 with an event-driven approach (SCREEN-7).
+                 _proactive_pending is reset in a finally block so every description event
+                 can trigger at most one reply; it rearms on the next description callback.
+        @param _description: (str) The fresh description text (unused; Assistant reads
+                              from ScreenDescriber cache via on_user_turn_completed).
+        """
+        nonlocal _proactive_pending
+        if not _screen_active or not engine.get_active_state():
+            return
+        if _proactive_pending or session.agent_state != "listening":
+            return
+        _proactive_pending = True
+        try:
+            session.generate_reply(
+                instructions=(
+                    "Screen changed. If it matches the expected step, "
+                    "call confirm_step_completed. If not, give a one-sentence redirect."
+                )
+            )
+        except RuntimeError:
+            logger.debug("Proactive generate_reply skipped: speech scheduler not ready")
+        finally:
+            _proactive_pending = False
+
+    # 13c. Track subscribed — start capturing and attach ScreenDescriber in-place (SCREEN-8)
     def _on_track_subscribed(
         track: rtc.Track,
         publication: rtc.RemoteTrackPublication,
@@ -943,114 +1152,113 @@ async def entrypoint(ctx: JobContext):
     ) -> None:
         """
         purpose: When the iOS broadcast extension publishes a video track, start capturing
-                 frames and hand off to VisionAssistant (GPT-4o + frame injection).
-                 session.update_agent() replaces the running agent while preserving chat
-                 history and the shared WorkflowEngine state. A reply is generated to
-                 acknowledge that screen sharing is active.
+                 frames, create ScreenDescriber (background Gemini), wire the proactive
+                 callback, and attach ScreenDescriber in-place to the running Assistant via
+                 assistant._screen_describer. No agent swap — no context loss and no handoff
+                 race condition (SCREEN-8).
         @param track: (rtc.Track) The subscribed track.
         @param publication: (rtc.RemoteTrackPublication) The track publication.
         @param participant: (rtc.RemoteParticipant) The publishing participant.
         """
-        nonlocal _screen_active, _privacy_disclosed
+        nonlocal _screen_active, _privacy_disclosed, _screen_describer
         if track.kind == rtc.TrackKind.KIND_VIDEO:
             if _screen_active:
                 logger.warning("Duplicate track_subscribed event — ignoring")
                 return
             _screen_active = True
+            session.interrupt()
             logger.info(f"Screen share track subscribed from {participant.identity}")
             screen_capture.start_capture(track)
-            # Lazy import to avoid circular dependency (vision_agent imports Assistant from here)
-            from vision_agent import VisionAssistant
 
-            vision = VisionAssistant(
-                user_id=user_id,
-                supabase=supabase,
-                engine=engine,
-                ios_version=ios_version,
-                user_timezone=user_timezone,
-                screen_capture=screen_capture,
-            )
-            session.update_agent(vision)
+            # SCREEN-7: Create background Gemini describer and wire proactive callback
+            _screen_describer = ScreenDescriber(screen_capture, engine)
+            _screen_describer.set_on_description_ready(_on_description_ready)
+            _screen_describer.start()
 
-            # Defer generate_reply so the agent transition task (scheduled by
-            # update_agent as asyncio.create_task) can complete before the reply
-            # is generated. Without the sleep, generate_reply races the transition
-            # and the old voice agent handles the announcement instead of VisionAssistant.
+            # Attach screen describer in-place — no agent swap, no context loss (SCREEN-8)
+            _assistant._screen_describer = _screen_describer
+
             async def _announce_screen_share() -> None:
                 """
-                purpose: Wait one event-loop tick for the agent transition to complete,
-                         then ask VisionAssistant to announce it can see the screen. On the
-                         first screen share in the session also delivers a one-time privacy
-                         disclosure so the user knows everything on-screen is visible.
+                purpose: Deliver a brief acknowledgement that screen sharing has started.
+                         No sleep needed — no agent handoff to wait for. If a workflow is
+                         already active, instructs the model to acknowledge sharing and
+                         immediately deliver the current step. Otherwise, the model picks up
+                         from wherever the conversation left off. On the first screen share
+                         also delivers a one-time privacy disclosure.
                 """
                 nonlocal _privacy_disclosed
-                await asyncio.sleep(0)
                 privacy_note = ""
                 if not _privacy_disclosed:
                     _privacy_disclosed = True
                     privacy_note = (
-                        " Also include a brief privacy note: while you can see their screen you "
-                        "can see everything on it — if they need to check something private they "
-                        "should stop sharing first."
+                        " Also include a brief privacy note: while you can see their screen, "
+                        "you can see everything on it — if they need to check something private "
+                        "they should stop sharing first."
                     )
-                session.generate_reply(
-                    instructions=(
-                        "Acknowledge that you can now see the user's screen. "
-                        "Briefly describe what you see to confirm screen sharing is working. "
-                        "Tell the user: since you can see their screen, they can just follow "
-                        "along and you will watch for each step \u2014 they only need to speak up "
-                        "if they get stuck or cannot find something. Then ask how you can help."
-                        + privacy_note
+                if engine.get_active_state():
+                    # Workflow already in progress — do not re-initiate; continue the active step
+                    instruction = (
+                        "Screen sharing started. Say 'I can see your screen' then give the "
+                        "current workflow step instruction. One sentence total. No tools."
                     )
-                )
+                else:
+                    instruction = (
+                        "Screen sharing started. Say 'I can see your screen' and continue "
+                        "from where you left off. One sentence. No tools."
+                    )
+                try:
+                    session.generate_reply(instructions=instruction + privacy_note)
+                except RuntimeError:
+                    logger.debug("_announce_screen_share skipped: session not ready")
 
             asyncio.create_task(_announce_screen_share())  # noqa: RUF006
 
-    # 13c. Track unsubscribed — stop capture and restore voice-only Assistant (SCREEN-4)
+    # 13c. Track unsubscribed — stop capture and clear ScreenDescriber in-place (SCREEN-8)
     def _on_track_unsubscribed(
         track: rtc.Track,
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ) -> None:
         """
-        purpose: When the screen share track is unpublished, stop frame capture and hand
-                 back to the voice-only Assistant. The shared WorkflowEngine preserves any
-                 active workflow state across the handoff.
+        purpose: When the screen share track is unpublished, stop ScreenDescriber and frame
+                 capture, then clear _screen_describer in-place on the running Assistant.
+                 No agent swap needed — no context loss (SCREEN-8). The shared WorkflowEngine
+                 preserves any active workflow state.
         @param track: (rtc.Track) The unsubscribed track.
         @param publication: (rtc.RemoteTrackPublication) The track publication.
         @param participant: (rtc.RemoteParticipant) The publishing participant.
         """
-        nonlocal _screen_active
+        nonlocal _screen_active, _screen_describer
         if track.kind == rtc.TrackKind.KIND_VIDEO:
             if not _screen_active:
                 logger.warning("Duplicate track_unsubscribed event — ignoring")
                 return
             _screen_active = False
+            session.interrupt()
             logger.info(f"Screen share track unsubscribed from {participant.identity}")
+            if _screen_describer is not None:
+                _screen_describer.stop()
+                _screen_describer = None
             screen_capture.stop_capture()
-            voice = Assistant(
-                instructions=rendered_prompt,
-                user_id=user_id,
-                supabase=supabase,
-                engine=engine,
-                ios_version=ios_version,
-                user_timezone=user_timezone,
-                screen_capture=screen_capture,
-            )
-            session.update_agent(voice)
+
+            # Clear screen describer in-place — no agent swap needed (SCREEN-8)
+            _assistant._screen_describer = None
 
             async def _announce_screen_stopped() -> None:
                 """
-                purpose: Wait one event-loop tick for the agent transition to complete,
-                         then ask the restored voice Assistant to announce screen sharing stopped.
+                purpose: Ask the assistant to announce screen sharing stopped.
+                         No sleep needed — no agent handoff to wait for.
                 """
-                await asyncio.sleep(0)
-                session.generate_reply(
-                    instructions=(
-                        "Let the user know screen sharing has stopped. "
-                        "Offer to keep helping with voice-only guidance."
+                try:
+                    session.generate_reply(
+                        instructions=(
+                            "Let the user know screen sharing has stopped. "
+                            "Offer to keep helping with voice-only guidance."
+                        )
                     )
-                )
+                except RuntimeError:
+                    logger.debug("_announce_screen_stopped skipped: session not ready")
 
             asyncio.create_task(_announce_screen_stopped())  # noqa: RUF006
 
@@ -1058,6 +1266,46 @@ async def entrypoint(ctx: JobContext):
     ctx.room.on("participant_connected", _on_participant_connected)
     ctx.room.on("track_subscribed", _on_track_subscribed)
     ctx.room.on("track_unsubscribed", _on_track_unsubscribed)
+
+    # 14b. iOS log forwarding — receive structured log entries published by the iOS app
+    # on the "ios.log" topic and re-emit them via Python logging so iOS and server logs
+    # appear in the same terminal timeline for cross-side failure diagnosis.
+    _ios_log_level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+    }
+
+    def _on_data_received(packet: rtc.DataPacket) -> None:
+        """
+        purpose: Receive data messages from room participants and re-emit iOS log entries via
+                 Python logging so they appear alongside server logs in the same terminal.
+                 Accepts packets on topic "ios.log" or with no topic — the latter handles
+                 LiveKit SDK versions where the topic field is not transmitted on the wire.
+                 Non-log packets (e.g. chat) are filtered out by schema: a valid log payload
+                 must have "component" starting with "ios." and a known "level" key.
+        @param packet: (rtc.DataPacket) Incoming data packet with .data (bytes), .topic (str|None),
+                       and .participant (RemoteParticipant|None).
+        """
+        # Accept explicit "ios.log" topic or unpopulated topic (SDK version safety)
+        if packet.topic not in ("ios.log", "", None):
+            return
+        try:
+            payload = json.loads(packet.data)
+            component = payload.get("component", "")
+            # Schema guard: only process packets that look like iOS log entries
+            if not component.startswith("ios."):
+                return
+            message = payload.get("message", "")
+            level_str = payload.get("level", "INFO")
+            level = _ios_log_level_map.get(level_str, logging.INFO)
+            ios_logger = logging.getLogger(component)
+            ios_logger.log(level, "%s", message, extra=payload.get("metadata") or {})
+        except Exception:
+            pass
+
+    ctx.room.on("data_received", _on_data_received)
 
     # 15. False interruption recovery — resume agent speech after background noise
     @session.on("agent_false_interruption")
@@ -1067,7 +1315,10 @@ async def entrypoint(ctx: JobContext):
         @param ev: (AgentFalseInterruptionEvent) Event with optional extra instructions.
         """
         logger.info("false positive interruption, resuming")
-        session.generate_reply(instructions=ev.extra_instructions or NOT_GIVEN)
+        try:
+            session.generate_reply(instructions=ev.extra_instructions or NOT_GIVEN)
+        except RuntimeError as e:
+            logger.warning("Proactive generate_reply skipped: %s", e)
 
     # 16. Metrics collection
     usage_collector = metrics.UsageCollector()
@@ -1100,73 +1351,30 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(_on_shutdown)
     ctx.add_shutdown_callback(_log_usage)
 
+    _assistant = Assistant(
+        instructions=rendered_prompt,
+        user_id=user_id,
+        supabase=supabase,
+        engine=engine,
+        ios_version=ios_version,
+        user_timezone=user_timezone,
+        screen_capture=screen_capture,
+    )
+
     # 18. Start session — room is already connected, session.start() will not reconnect
     await session.start(
-        agent=Assistant(
-            instructions=rendered_prompt,
-            user_id=user_id,
-            supabase=supabase,
-            engine=engine,
-            ios_version=ios_version,
-            user_timezone=user_timezone,
-            screen_capture=screen_capture,
-        ),
+        agent=_assistant,
         room=ctx.room,
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
-    # 19. Proactive screen change monitor — triggers LLM reply when screen changes
-    #     during an active workflow without requiring user speech (SCREEN-5)
-    _proactive_pending = False
-
-    async def _monitor_screen_changes() -> None:
-        """
-        purpose: Poll for screen changes during active workflows and trigger a proactive
-                 LLM reply when the screen changes while the agent is idle. This removes
-                 the UX friction of the user having to verbally confirm every step —
-                 the agent notices the change and initiates the conversation.
-                 Uses PROACTIVE_MONITOR_INTERVAL_S from config to control poll frequency
-                 (SCREEN-6). generate_reply() is wrapped in try/except RuntimeError so
-                 that a draining speech scheduler does not crash the monitor loop — the
-                 attempt is silently skipped and retried on the next poll interval.
-        """
-        nonlocal _proactive_pending
-        while True:
-            await asyncio.sleep(PROACTIVE_MONITOR_INTERVAL_S)
-            if not _screen_active or not screen_capture.has_active_stream:
-                _proactive_pending = False
-                continue
-            if not screen_capture.peek_frame_changed():
-                _proactive_pending = False
-                continue
-            if not engine.get_active_state():
-                _proactive_pending = False
-                continue
-            if _proactive_pending:
-                continue
-            if session.agent_state != "listening":
-                continue
-            _proactive_pending = True
-            step_ctx = engine.get_current_step_context()
-            try:
-                session.generate_reply(
-                    instructions=(
-                        f"The user's screen just changed. {step_ctx} "
-                        "Check if the screen matches the expected step. If it does, call "
-                        "confirm_step_completed and move on. If it does not, briefly describe "
-                        "what you see and guide the user to the correct screen."
-                    )
-                )
-            except RuntimeError:
-                # Speech scheduler is draining a previous item — retry on next poll.
-                logger.debug(
-                    "Proactive generate_reply skipped: speech scheduler not ready"
-                )
-                _proactive_pending = False
-
-    asyncio.create_task(_monitor_screen_changes())  # noqa: RUF006
+    # 19. Proactive screen change monitor (SCREEN-7): now event-driven via
+    #     _on_description_ready callback (defined above, wired in _on_track_subscribed).
+    #     ScreenDescriber fires the callback after each background Gemini describe, which
+    #     calls session.generate_reply() when a workflow is active and the agent is idle.
+    #     No asyncio polling task is needed.
 
 
 if __name__ == "__main__":

@@ -3,13 +3,15 @@
 # Contains voice UX parameters tuned for senior users, model identifiers, and
 # other values referenced across agent, memory, prompt, and workflow modules.
 # Added EMBEDDING_MODEL and WORKFLOW_MATCH_THRESHOLD for WF-4 Supabase workflow retrieval.
-# Added VISION_LLM_MODEL for the SCREEN-4 vision-enabled handoff agent.
-# Switched VISION_LLM_MODEL from gpt-4.1-mini to gemini-3-flash-preview for lower
-# cost and faster TTFT, improving proactive auto-advance responsiveness (SCREEN-7).
-# Added PROACTIVE_MONITOR_INTERVAL_S for SCREEN-6 proactive screen-change monitor tuning.
+# Added DESCRIBE_LLM_MODEL for the ScreenDescriber background Gemini calls.
+# Added SCREEN_STALE_THRESHOLD_S and DESCRIBE_RATE_LIMIT_S for the hybrid
+# router: Haiku handles all conversational turns; Gemini runs in the background.
 # Added ECHO_DETECTION_WINDOW_S for SCREEN-7 agent self-interruption (echo) prevention.
+# SCREEN-9: Removed PROACTIVE_MONITOR_INTERVAL_S (poll loop replaced by callback).
+# Swapped DESCRIBE_LLM_MODEL to gemini-3.1-flash-lite-preview (~2s vs ~10-12s) and
+# lowered DESCRIBE_RATE_LIMIT_S from 2.0 to 1.0 to match the faster model.
 #
-# Last modified: 2026-03-01
+# Last modified: 2026-03-03
 
 FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -31,16 +33,25 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 # Minimum cosine similarity score to accept a workflow match (0.0-1.0)
 WORKFLOW_MATCH_THRESHOLD: float = 0.5
 
-# Vision-enabled agent LLM (SCREEN-4) — must be a vision-capable model.
-# Using Gemini 3 Flash for lower cost (~3-6x vs gpt-4.1-mini) and faster
-# TTFT, which improves proactive auto-advance responsiveness.
-# Previous: "gpt-4.1-mini" (OpenAI) — swap back if Gemini vision quality
-# is insufficient on iOS screenshots.
-VISION_LLM_MODEL = "gemini-3-flash-preview"
+# Background screen describer LLM — used only by ScreenDescriber for background Gemini
+# calls. Assistant uses Claude Haiku (LLM_MODEL) for all conversational turns, keeping
+# hot-path TTFT at 0.4-0.6s. Gemini runs in the background.
+# Swapped from gemini-2.5-flash (~10-12s) to gemini-3.1-flash-lite-preview (~2s, 6x faster)
+# with identical accuracy (benchmark confirmed). This enables rate limit reduction below.
+DESCRIBE_LLM_MODEL = "gemini-3.1-flash-lite-preview"
 
-# Proactive screen-change monitor interval (SCREEN-6) — how often the monitor
-# loop checks for screen changes while a workflow is active.
-PROACTIVE_MONITOR_INTERVAL_S: float = 0.5
+# Staleness threshold (SCREEN-7): if screen changed within this many seconds of a user
+# turn, inject a stale marker so Haiku can call refresh_vision for a fresh description.
+SCREEN_STALE_THRESHOLD_S: float = 1.5
+
+# Rate limit for background Gemini describe calls: prevents scroll bursts from spamming
+# Gemini. At most one background describe every DESCRIBE_RATE_LIMIT_S seconds.
+# Lowered from 2.0 to 1.0 since gemini-3.1-flash-lite-preview is fast enough.
+DESCRIBE_RATE_LIMIT_S: float = 1.0
+
+# Cache freshness window for describe_now(): if the cached description is younger than
+# this, describe_now() returns it immediately without a redundant Gemini call.
+DESCRIBE_NOW_CACHE_FRESH_S: float = 1.0
 
 # Echo detection window (SCREEN-7) — how long to keep agent speech text for
 # echo comparison. Must exceed max TTS audio duration (~10-15s).

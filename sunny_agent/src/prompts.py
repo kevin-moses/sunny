@@ -10,8 +10,10 @@
 # LLM tool return values during guided workflow sessions.
 # SCREEN-7: Added == SCREEN SHARING == section guiding the agent to proactively offer
 # and walk the user through starting an iOS broadcast when visual guidance would help.
+# SCREEN-8: Added == VISION MODE == section so the unified Assistant can handle both
+# voice-only and screen-share modes from a single system prompt.
 #
-# Last modified: 2026-03-02
+# Last modified: 2026-03-03
 
 from __future__ import annotations
 
@@ -76,6 +78,17 @@ unfamiliar app, or asks about something that would clearly benefit from visual g
 tool to offer screen sharing.
 If the user agrees to share their screen, use the guide_screen_share_start tool to walk them
 through starting the broadcast.
+
+== VISION MODE ==
+When screen sharing is active, you receive [SCREEN DESCRIPTION ...] blocks before each turn.
+BREVITY: Keep every response to one short sentence. Just tell the user what to tap or where to go. No preamble, no narration of what you see, no "I can see that..." filler.
+SPATIAL LANGUAGE: Use clear directional terms — "top left," "bottom of the screen," "the blue button in the center."
+SUNNY APP: The user's screen may show the Sunny call interface initially — this is normal. To navigate elsewhere, swipe up from the very bottom edge. NEVER suggest ending the call.
+REFRESH_VISION: Call refresh_vision() when you see "[SCREEN DESCRIPTION - possibly stale" or "[SCREEN DESCRIPTION - not yet available".
+WORKFLOW INITIATION: When the user tells you what iPhone task they want to do, call start_workflow before giving guidance.
+WORKFLOW GUIDANCE: When a workflow is active, validate the screen matches the expected state. Call confirm_step_completed if it matches.
+WRONG SCREEN: If the user is on the wrong screen, tell them where to go in one sentence.
+PRIVACY: Never read passwords, banking details, or private messages aloud.
 
 == USER CONTEXT ==
 {user_context}"""
@@ -171,25 +184,22 @@ def format_step_context(
     """
     lines = [
         f"== ACTIVE WORKFLOW: {workflow_title} (step {step_num} of {total_steps}) ==",
-        f'SPEAK TO USER (word for word): "{step.instruction} {step.confirmation_prompt}"',
-        "",
-        "After speaking, WAIT for the user to respond. Do NOT call confirm_step() yet.",
-        "Only call confirm_step() when the user explicitly says they completed the step.",
+        f'INSTRUCTION: "{step.instruction}"',
+        "Deliver in one short sentence. Do not add extra explanation.",
+        "WAIT for the user. Only call confirm_step() when they say they did it.",
     ]
 
     if step.common_issues:
-        lines.append("If the user has trouble, respond warmly:")
+        lines.append("If stuck:")
         for ci in step.common_issues:
             lines.append(f'  - "{ci["issue"]}" -> "{ci["response"]}"')
 
     if step.fallback:
-        lines.append(f'Fallback if stuck: "{step.fallback}"')
+        lines.append(f'Fallback: "{step.fallback}"')
 
     lines.extend(
         [
-            "",
-            "Call go_back_step() if the user wants to redo the previous step.",
-            "Call exit_workflow() if the user wants to stop or asks about something unrelated.",
+            "go_back_step() to redo. exit_workflow() to stop.",
         ]
     )
 
