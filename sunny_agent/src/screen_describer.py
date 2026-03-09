@@ -30,6 +30,9 @@
 # Gemini call completes, if _latest_received_frame differs (a newer frame arrived during
 # the call), another _describe() is scheduled immediately — closing the latency gap
 # where the screen changes during a Gemini call and the new frame never gets described.
+# UX fix: _DESCRIBE_PROMPT_BASE now instructs Gemini to prioritize overlay navigation
+# controls (Add, Set, Done, "Set as Wallpaper Pair") when a lock/home screen is shown
+# as a preview inside another app (e.g. wallpaper customization flow).
 #
 # Last modified: 2026-03-03
 
@@ -66,6 +69,7 @@ Analyze this iOS screenshot and output JSON matching this exact schema:
 }
 target_visible and step_complete are null when no workflow is active.
 Include ALL tappable/visible UI elements in notable_elements with label, position (e.g. "top left", "row 3", "bottom center"), and state (e.g. "enabled", "selected", "dimmed").
+IMPORTANT: If the screen shows a lock screen or home screen as a PREVIEW inside another app (e.g. wallpaper selection, customization), focus on the overlay navigation controls (Add, Set, Cancel, Done, Apply, "Set as Wallpaper Pair" buttons) rather than the preview content. Include those buttons as notable_elements.
 Output only valid JSON, no markdown code fences."""
 
 _DESCRIBE_PROMPT_WITH_STEP = """\

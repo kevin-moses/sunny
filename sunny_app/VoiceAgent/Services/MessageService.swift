@@ -1,9 +1,17 @@
+// Services/MessageService.swift
+//
+// Purpose: Composes and sends SMS messages using the MessageUI framework. Called by
+// AppViewModel's "sendMessage" RPC handler. Logs compose lifecycle events via
+// SunnyLogger for cross-side debugging.
+//
+// Last modified: 2026-03-03
+
 import Foundation
 import MessageUI
 import UIKit
 
-/// Service for sending messages using MessageUI framework
-/// This service handles composing and sending SMS messages to contacts
+/// Service for sending messages using MessageUI framework.
+/// Handles composing and sending SMS messages to contacts.
 @MainActor
 final class MessageService: NSObject, ObservableObject {
     /// Send a message to a contact
@@ -26,7 +34,8 @@ final class MessageService: NSObject, ObservableObject {
             throw MessageError.emptyMessage
         }
 
-        print("[Messages] Preparing to send message to \(phoneNumber): '\(message)'")
+        SunnyLogger.shared.info("Messages", "Preparing to send message",
+                                metadata: ["phone": phoneNumber])
 
         // Create the message composer
         let messageComposer = MFMessageComposeViewController()
@@ -57,13 +66,13 @@ extension MessageService: MFMessageComposeViewControllerDelegate {
             controller.dismiss(animated: true) {
                 switch result {
                 case .cancelled:
-                    print("[Messages] Message composition cancelled")
+                    SunnyLogger.shared.info("Messages", "Message composition cancelled")
                 case .sent:
-                    print("[Messages] Message sent successfully")
+                    SunnyLogger.shared.info("Messages", "Message sent successfully")
                 case .failed:
-                    print("[Messages] Message sending failed")
+                    SunnyLogger.shared.error("Messages", "Message sending failed")
                 @unknown default:
-                    print("[Messages] Unknown message result")
+                    SunnyLogger.shared.warning("Messages", "Unknown message result")
                 }
             }
         }

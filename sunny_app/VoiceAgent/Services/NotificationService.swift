@@ -184,7 +184,7 @@ extension NotificationService: MessagingDelegate {
                 try await SunnyAPIClient.shared.saveDeviceToken(token)
             } catch {
                 // Log but do not propagate — FCM will retry on the next token refresh cycle
-                print("[NotificationService] Failed to save FCM token: \(error)")
+                SunnyLogger.shared.warning("NotificationService", "Failed to save FCM token: \(error)")
             }
         }
     }

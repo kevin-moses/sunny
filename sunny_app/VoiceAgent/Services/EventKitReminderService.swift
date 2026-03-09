@@ -1,7 +1,15 @@
+// Services/EventKitReminderService.swift
+//
+// Purpose: Creates EKReminder entries using EventKit. Called by AppViewModel's
+// "createReminder" RPC handler. Logs authorization status, calendar selection,
+// and save result via SunnyLogger for cross-side debugging.
+//
+// Last modified: 2026-03-03
+
 import EventKit
 import Foundation
 
-/// Service for creating reminders using EventKit
+/// Service for creating reminders using EventKit.
 final class EventKitReminderService: ObservableObject {
     private let eventStore = EKEventStore()
 
@@ -9,9 +17,10 @@ final class EventKitReminderService: ObservableObject {
     func createReminder(title: String, notes: String = "", dueDate: String = "") throws -> String {
         // Debug: authorization and calendars
         let authStatus = EKEventStore.authorizationStatus(for: .reminder)
-        print("[EventKit] Reminders auth status: \(authStatus.rawValue)")
+        SunnyLogger.shared.debug("EventKit", "Reminders auth status: \(authStatus.rawValue)")
         let reminderCalendars = eventStore.calendars(for: .reminder)
-        print("[EventKit] Found \(reminderCalendars.count) reminder calendars: \(reminderCalendars.map(\.title))")
+        SunnyLogger.shared.debug("EventKit", "Found \(reminderCalendars.count) reminder calendars",
+                                 metadata: ["calendars": reminderCalendars.map(\.title)])
 
         // Create the reminder
         let reminder = EKReminder(eventStore: eventStore)
@@ -30,11 +39,12 @@ final class EventKitReminderService: ObservableObject {
             throw EventKitError.noSourceAvailable
         }
         reminder.calendar = defaultCalendar
-        print("[EventKit] Using calendar: \(defaultCalendar.title)")
+        SunnyLogger.shared.debug("EventKit", "Using calendar: \(defaultCalendar.title)")
 
         // Save the reminder - EventKit will automatically prompt for permissions if needed
         try eventStore.save(reminder, commit: true)
-        print("[EventKit] Saved reminder with id: \(reminder.calendarItemIdentifier) title: \(title)")
+        SunnyLogger.shared.info("EventKit", "Saved reminder",
+                                metadata: ["id": reminder.calendarItemIdentifier, "title": title])
 
         return "Reminder '\(title)' created in '\(defaultCalendar.title)'"
     }

@@ -646,6 +646,14 @@ token.addGrant({
 - Error recovery scripts are implemented for: broadcast crashes, accidental stop, extension memory kill
 - A `suggest_screen_share` function tool lets the voice-only agent recommend screen sharing when appropriate
 - Privacy verbal flow exists: "While I can see your screen, I can see everything — if you need to check something private, just stop sharing first"
+- **Proactive-first UX**: The vision system prompt tells the model that verbal confirmation is NOT required — the agent watches the screen and auto-advances steps. The user only speaks when stuck.
+- **Screen-share greeting**: On track_subscribed, the greeting tells the user they can just follow along and the agent will watch for each step.
+- **Proactive monitor**: The monitor instructions no longer ask the user to confirm; the monitor silently advances on match and only speaks to guide when the screen does not match.
+
+**Implementation notes (proactive-first UX):**
+- `vision_agent.py` VISION_SYSTEM_PROMPT: PACING rewritten to remove "wait for confirmation"; VISUAL STEP ADVANCEMENT section merged into PACING.
+- `agent.py` track_subscribed greeting: tells user they do not need to confirm verbally.
+- `agent.py` `_monitor_screen_changes`: instructions changed from "ask user to confirm" to "call confirm_step_completed and move on" on match.
 
 **Technical approach:**
 

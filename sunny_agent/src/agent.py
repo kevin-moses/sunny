@@ -275,7 +275,8 @@ class Assistant(Agent):
             desc_block = (
                 f"{_SCREEN_DESC_PREFIX} - possibly stale,"
                 f" screen changed {now - last_change:.1f}s ago"
-                " — call refresh_vision() for latest view]\n" + description
+                " — DO NOT give navigation instructions. Call refresh_vision() first.]\n"
+                + description
             )
         else:
             age_s = now - desc_time
@@ -313,7 +314,7 @@ class Assistant(Agent):
         if self._screen_describer is None:
             return "Screen sharing is not active."
         description = await self._screen_describer.describe_now()
-        return f"{_FRESH_VIEW_PREFIX}]\n{description}"
+        return f"{_FRESH_VIEW_PREFIX} — one sentence only, no preamble.]\n{description}"
 
     @function_tool
     async def confirm_step_completed(self, context: RunContext) -> str:
@@ -1204,8 +1205,9 @@ async def entrypoint(ctx: JobContext):
                     )
                 else:
                     instruction = (
-                        "Screen sharing started. Say 'I can see your screen' and continue "
-                        "from where you left off. One sentence. No tools."
+                        "Screen sharing is now active. STOP any prior screen sharing setup "
+                        "instructions — the setup is complete. Say 'I can see your screen' "
+                        "then ask what they need help with. One sentence. No tools."
                     )
                 try:
                     session.generate_reply(instructions=instruction + privacy_note)

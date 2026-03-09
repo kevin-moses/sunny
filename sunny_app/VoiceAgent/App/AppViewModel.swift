@@ -13,6 +13,10 @@
 // the broadcast extension's broadcastFinished() fires). The callback bridges to a Foundation
 // notification consumed by observeBroadcastStopped(), which forces room state back in sync
 // if the extension was killed by iOS or stopped from Control Center.
+//
+// Logging: SunnyLogger.shared is attached to the room after successful connect and detached
+// on disconnect, forwarding structured iOS log entries to the agent server terminal in
+// real time so both iOS and Python logs are visible in the same timeline.
 
 @preconcurrency import AVFoundation
 import Combine
@@ -228,9 +232,7 @@ final class AppViewModel {
                     try await room.localParticipant.setScreenShare(enabled: false)
                 } catch {
                     // Room may already have unpublished the track; suppress the error.
-                    #if DEBUG
-                    print("[AppViewModel] observeBroadcastStopped setScreenShare error (suppressed): \(error)")
-                    #endif
+                    SunnyLogger.shared.debug("AppViewModel", "observeBroadcastStopped setScreenShare error (suppressed): \(error)")
                 }
             }
         }
@@ -300,8 +302,8 @@ final class AppViewModel {
         Task { [weak self] in
             do {
                 try await self?.room.registerRpcMethod("createReminder") { data async throws -> String in
-                    print("[RPC] createReminder from: \(data.callerIdentity)")
-                    print("[RPC] payload: \(data.payload.prefix(200))")
+                    SunnyLogger.shared.info("RPC", "createReminder from: \(data.callerIdentity)",
+                                            metadata: ["payload_preview": String(data.payload.prefix(200))])
                     do {
                         let reminderData = try JSONDecoder().decode(ReminderData.self, from: data.payload.data(using: .utf8) ?? Data())
 
@@ -312,17 +314,17 @@ final class AppViewModel {
                             notes: reminderData.notes ?? "",
                             dueDate: reminderData.due_date ?? ""
                         )
-                        print("[RPC] createReminder success: \(result)")
+                        SunnyLogger.shared.info("RPC", "createReminder success: \(result)")
                         return result
                     } catch {
-                        print("[RPC] createReminder error: \(error)")
+                        SunnyLogger.shared.error("RPC", "createReminder error: \(error)")
                         return "Error creating reminder: \(error.localizedDescription)"
                     }
                 }
 
                 try await self?.room.registerRpcMethod("findContact") { data async throws -> String in
-                    print("[RPC] findContact from: \(data.callerIdentity)")
-                    print("[RPC] payload: \(data.payload.prefix(200))")
+                    SunnyLogger.shared.info("RPC", "findContact from: \(data.callerIdentity)",
+                                            metadata: ["payload_preview": String(data.payload.prefix(200))])
                     do {
                         let searchData = try JSONDecoder().decode(ContactSearchData.self, from: data.payload.data(using: .utf8) ?? Data())
 
@@ -334,17 +336,17 @@ final class AppViewModel {
                         let jsonData = try JSONEncoder().encode(contacts)
                         let result = String(data: jsonData, encoding: .utf8) ?? "[]"
 
-                        print("[RPC] findContact success: found \(contacts.count) contacts")
+                        SunnyLogger.shared.info("RPC", "findContact success", metadata: ["count": contacts.count])
                         return result
                     } catch {
-                        print("[RPC] findContact error: \(error)")
+                        SunnyLogger.shared.error("RPC", "findContact error: \(error)")
                         return "[]" // Return empty array on error
                     }
                 }
 
                 try await self?.room.registerRpcMethod("sendMessage") { data async throws -> String in
-                    print("[RPC] sendMessage from: \(data.callerIdentity)")
-                    print("[RPC] payload: \(data.payload.prefix(200))")
+                    SunnyLogger.shared.info("RPC", "sendMessage from: \(data.callerIdentity)",
+                                            metadata: ["payload_preview": String(data.payload.prefix(200))])
                     do {
                         let messageData = try JSONDecoder().decode(MessageData.self, from: data.payload.data(using: .utf8) ?? Data())
 
@@ -355,10 +357,10 @@ final class AppViewModel {
                             phoneNumber: messageData.phoneNumber,
                             message: messageData.message
                         )
-                        print("[RPC] sendMessage success: \(result)")
+                        SunnyLogger.shared.info("RPC", "sendMessage success: \(result)")
                         return result
                     } catch {
-                        print("[RPC] sendMessage error: \(error)")
+                        SunnyLogger.shared.error("RPC", "sendMessage error: \(error)")
                         return "Error sending message: \(error.localizedDescription)"
                     }
                 }
@@ -396,6 +398,7 @@ final class AppViewModel {
                 try await connectWithoutVoice()
             }
 
+            SunnyLogger.shared.attach(room: room)
             try await checkAgentConnected()
         } catch {
             errorHandler(error)
@@ -457,6 +460,7 @@ final class AppViewModel {
     }
 
     func disconnect() async {
+        SunnyLogger.shared.detach()
         await room.disconnect()
         resetState()
     }

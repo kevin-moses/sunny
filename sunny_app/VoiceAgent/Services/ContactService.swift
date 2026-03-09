@@ -1,8 +1,16 @@
+// Services/ContactService.swift
+//
+// Purpose: Client-side contact search using CNContactStore. Fetches all contacts and
+// filters by name match. Called by AppViewModel's "findContact" RPC handler.
+// Logs authorization status and result counts via SunnyLogger for cross-side debugging.
+//
+// Last modified: 2026-03-03
+
 @preconcurrency import Contacts
 import Foundation
 
-/// Service for managing contacts and contact searches
-/// This service provides client-side contact management while keeping contact data private
+/// Service for managing contacts and contact searches.
+/// Provides client-side contact management while keeping contact data private.
 final class ContactService: ObservableObject, Sendable {
     init() {}
 
@@ -16,7 +24,7 @@ final class ContactService: ObservableObject, Sendable {
 
             // Request authorization if needed
             let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-            print("[Contacts] Authorization status: \(authStatus.rawValue)")
+            SunnyLogger.shared.debug("Contacts", "Authorization status: \(authStatus.rawValue)")
 
             if authStatus == .denied || authStatus == .restricted {
                 throw ContactError.accessDenied
@@ -66,7 +74,8 @@ final class ContactService: ObservableObject, Sendable {
                 ]
             }
 
-            print("[Contacts] Found \(results.count) matching contacts for query: '\(query)'")
+            SunnyLogger.shared.info("Contacts", "Found \(results.count) matching contacts",
+                                    metadata: ["query": query])
             return results
         }.value
     }

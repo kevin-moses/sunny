@@ -60,14 +60,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		ACAEBA662DE6EE970072E93E /* Exceptions for "BroadcastExtension" folder in "BroadcastExtension" target */ = {
+		ACAEBA662DE6EE970072E93E = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
 			target = ACAEBA572DE6EE970072E93E /* BroadcastExtension */;
 		};
-		B577A91F2D15FDB800B59A0B /* Exceptions for "VoiceAgent" folder in "sunny" target */ = {
+		B577A91F2D15FDB800B59A0B = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				.env.example.xcconfig,
@@ -80,27 +80,9 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		ACAEBA5C2DE6EE970072E93E /* BroadcastExtension */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				ACAEBA662DE6EE970072E93E /* Exceptions for "BroadcastExtension" folder in "BroadcastExtension" target */,
-			);
-			path = BroadcastExtension;
-			sourceTree = "<group>";
-		};
-		ACC280282DEDDA1D0023C137 /* VoiceAgentTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = VoiceAgentTests;
-			sourceTree = "<group>";
-		};
-		B5B5E3B42D124AE00099C9BE /* VoiceAgent */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				B577A91F2D15FDB800B59A0B /* Exceptions for "VoiceAgent" folder in "sunny" target */,
-			);
-			path = VoiceAgent;
-			sourceTree = "<group>";
-		};
+		ACAEBA5C2DE6EE970072E93E /* BroadcastExtension */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (ACAEBA662DE6EE970072E93E, ); path = BroadcastExtension; sourceTree = "<group>"; };
+		ACC280282DEDDA1D0023C137 /* VoiceAgentTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = VoiceAgentTests; sourceTree = "<group>"; };
+		B5B5E3B42D124AE00099C9BE /* VoiceAgent */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (B577A91F2D15FDB800B59A0B, ); path = VoiceAgent; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -269,7 +251,7 @@
 					};
 				};
 			};
-			buildConfigurationList = B5B5E3AD2D124AE00099C9BE /* Build configuration list for PBXProject "VoiceAgent" */;
+			buildConfigurationList = B5B5E3AD2D124AE00099C9BE /* Build configuration list for PBXProject "sunny" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -720,7 +702,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		B5B5E3AD2D124AE00099C9BE /* Build configuration list for PBXProject "VoiceAgent" */ = {
+		B5B5E3AD2D124AE00099C9BE /* Build configuration list for PBXProject "sunny" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				B5B5E3BF2D124AE20099C9BE /* Debug */,
