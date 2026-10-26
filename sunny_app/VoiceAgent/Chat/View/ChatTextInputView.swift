@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A multiplatform view that shows the chat input text field and send button.
+/// A view that shows the chat input text field and send button.
 struct ChatTextInputView: View {
     @Environment(ChatViewModel.self) private var chatViewModel
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -16,65 +16,44 @@ struct ChatTextInputView: View {
         }
         .frame(minHeight: 12 * .grid)
         .frame(maxWidth: horizontalSizeClass == .regular ? 128 * .grid : 92 * .grid)
-        #if !os(visionOS)
-            .background(.bg2)
-        #endif
-            .clipShape(RoundedRectangle(cornerRadius: 6 * .grid))
-            .safeAreaPadding(.horizontal, 4 * .grid)
-            .safeAreaPadding(.bottom, 4 * .grid)
+        .background(.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 6 * .grid))
+        .safeAreaPadding(.horizontal, 4 * .grid)
+        .safeAreaPadding(.bottom, 4 * .grid)
     }
 
-    @ViewBuilder
     private func textField() -> some View {
         TextField("message.placeholder", text: $messageText, axis: .vertical)
-        #if os(iOS)
             .focused($keyboardFocus)
-        #endif
-        #if os(visionOS)
-        .textFieldStyle(.roundedBorder)
-        .hoverEffectDisabled()
-        #else
-        .textFieldStyle(.plain)
-        #endif
-        .lineLimit(3)
-        .submitLabel(.send)
-        .onSubmit {
-            // will be called on macOS/Simulator with hardware keyboard
-            Task {
-                await sendMessage()
-            }
-        }
-        .onChange(of: messageText.last?.isNewline ?? false) { _, submit in
-            // onSubmit won't be called by the submit key with software keybaord and .vertical TextField
-            if submit {
+            .textFieldStyle(.plain)
+            .lineLimit(3)
+            .submitLabel(.send)
+            .onSubmit {
+                // will be called on Simulator with hardware keyboard
                 Task {
                     await sendMessage()
                 }
             }
-        }
-        #if !os(visionOS)
-        .foregroundStyle(.fg1)
-        #endif
-        .padding()
+            .onChange(of: messageText.last?.isNewline ?? false) { _, submit in
+                // onSubmit won't be called by the submit key with software keybaord and .vertical TextField
+                if submit {
+                    Task {
+                        await sendMessage()
+                    }
+                }
+            }
+            .foregroundStyle(.fg1)
+            .padding()
     }
 
-    @ViewBuilder
     private func sendButton() -> some View {
         AsyncButton(action: sendMessage) {
             Image(systemName: "arrow.up")
                 .frame(width: 8 * .grid, height: 8 * .grid)
         }
-        #if os(iOS)
         .padding([.bottom, .trailing], 3 * .grid)
-        #else
-        .padding([.bottom, .trailing], 2 * .grid)
-        #endif
         .disabled(messageText.isEmpty)
-        #if os(visionOS)
-            .buttonStyle(.plain)
-        #else
-            .buttonStyle(RoundButtonStyle())
-        #endif
+        .buttonStyle(RoundButtonStyle())
     }
 
     private func sendMessage() async {

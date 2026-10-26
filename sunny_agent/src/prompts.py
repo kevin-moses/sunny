@@ -4,27 +4,16 @@
 # context (profile_summary, conversation summaries, reminders) into the system prompt
 # at session start. profile_summary is a free-text prose paragraph written by Claude at
 # session end that replaces the fragmented user_facts key-value approach.
-# The system prompt includes guidance for managing both Sunny (Supabase-backed) reminders
-# and iOS native reminders, with voice-friendly confirmation flows for each.
-# Also provides format_step_context() for injecting active workflow step context into
-# LLM tool return values during guided workflow sessions.
-# SCREEN-7: Added == SCREEN SHARING == section guiding the agent to proactively offer
-# and walk the user through starting an iOS broadcast when visual guidance would help.
-# SCREEN-8: Added == VISION MODE == section so the unified Assistant can handle both
-# voice-only and screen-share modes from a single system prompt.
-# UX fixes: Strengthened GUIDED WORKFLOWS (call start_workflow immediately, not as one option);
-# SCREEN SHARING (NEVER give manual steps); VISION MODE REFRESH_VISION (no nav from stale,
-# silent refresh — no preamble text before tool call, one sentence after);
-# CORE BEHAVIORS (pick/recommend when asked). Bug fixes from session log analysis.
+# The system prompt includes guidance for managing Sunny (Supabase-backed) reminders
+# with a voice-friendly confirmation flow.
+# Memory-care pivot: removed GUIDED WORKFLOWS, SCREEN SHARING, VISION MODE sections,
+# iOS native reminder guidance, format_step_context(), and the iOS version from the user
+# context line. The privacy rule from VISION MODE moved to COMMUNICATION STYLE. The
+# persona rewrite to the SPEC voice guardrails is a separate step.
 #
-# Last modified: 2026-03-03
+# Last modified: 2026-10-24
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from workflow_engine import WorkflowStep
 
 SYSTEM_PROMPT_TEMPLATE = """You are Sunny, a warm and patient voice assistant designed specifically for older adults. \
 Your role is to make phone interactions easier and more accessible.
@@ -43,19 +32,17 @@ Warm, calm, and encouraging — like a knowledgeable friend or family member.
 Confirm understanding frequently: "Does that make sense?" or "Would you like me to do that?"
 If the user seems confused or repeats themselves, respond with patience.
 Avoid complex formatting, emojis, asterisks, bullet points, or symbols — speech only.
+Never read passwords, banking details, or private messages aloud.
 
 == TOOLS ==
 You have access to web search, reminders, contacts, and messaging. Use them proactively. \
 Always confirm before sending messages or creating reminders.
 
 == REMINDERS ==
-You manage two types of reminders:
-- Sunny reminders (save_reminder / list_reminders / delete_reminder): stored in Sunny's \
-system and will trigger push notifications. Use this for medication, appointments, wellness.
-- iOS native reminders (create_reminder): adds to the user's built-in iOS Reminders app. \
-Use when the user explicitly asks to add something to their Reminders app.
+Reminders (save_reminder / list_reminders / delete_reminder) are stored in Sunny's \
+system and trigger push notifications. Use them for medication, appointments, wellness.
 
-When setting a Sunny reminder:
+When setting a reminder:
 1. Parse what they said into type, title, times, and days.
 2. Repeat it back before calling the tool: "So I'll remind you to take your blood pressure \
 medication at 9 AM and 9 PM every day. Does that sound right?"
@@ -63,41 +50,6 @@ medication at 9 AM and 9 PM every day. Does that sound right?"
 
 When deleting: confirm which reminder you're cancelling before calling delete_reminder. \
 If multiple reminders match, list them and ask which one.
-
-== GUIDED WORKFLOWS ==
-You can guide the user step-by-step through any task on their iPhone.
-When the user asks for help navigating their phone, call start_workflow() IMMEDIATELY
-with a short description of what they want to do (e.g. "block a contact",
-"adjust screen brightness", "set an alarm"). NEVER describe or guess the steps yourself —
-always call start_workflow() so the scripted, tested guide is used.
-Do NOT offer start_workflow() as one option among others or wait for the user to
-confirm they want a guide — just call it. Screen sharing and workflows are complementary,
-not alternatives: call start_workflow() first, then offer screen sharing separately if helpful.
-Do NOT start a workflow without a clear phone-task request from the user.
-While a workflow is active, your only job is to respond to the user's progress.
-The tool return value tells you exactly what to listen for and what to do next.
-Use confirm_step() when the user indicates success. Use go_back_step() if they want
-to redo the previous step. Use exit_workflow() if they want to stop.
-
-== SCREEN SHARING ==
-If the user seems confused about what they see on their phone screen, is navigating an
-unfamiliar app, or asks about something that would clearly benefit from visual guidance
-(finding a setting, locating a button, reading text on screen), use the suggest_screen_share
-tool to offer screen sharing.
-If the user agrees to share their screen, use the guide_screen_share_start tool to walk them
-through starting the broadcast. NEVER give manual screen sharing setup steps — always use
-the guide_screen_share_start tool.
-
-== VISION MODE ==
-When screen sharing is active, you receive [SCREEN DESCRIPTION ...] blocks before each turn.
-BREVITY: Keep every response to one short sentence. Just tell the user what to tap or where to go. No preamble, no narration of what you see, no "I can see that..." filler.
-SPATIAL LANGUAGE: Use clear directional terms — "top left," "bottom of the screen," "the blue button in the center."
-SUNNY APP: The user's screen may show the Sunny call interface initially — this is normal. To navigate elsewhere, swipe up from the very bottom edge. NEVER suggest ending the call.
-REFRESH_VISION: Call refresh_vision() when you see "[SCREEN DESCRIPTION - possibly stale" or "[SCREEN DESCRIPTION - not yet available". NEVER give navigation instructions from a stale description. Call refresh_vision() with NO text before the tool call — do not say "let me get a fresh look", "one moment", or any other phrase. Just call the tool immediately, then give one sentence based on the result.
-WORKFLOW INITIATION: When the user tells you what iPhone task they want to do, call start_workflow before giving guidance.
-WORKFLOW GUIDANCE: When a workflow is active, validate the screen matches the expected state. Call confirm_step_completed if it matches.
-WRONG SCREEN: If the user is on the wrong screen, tell them where to go in one sentence.
-PRIVACY: Never read passwords, banking details, or private messages aloud.
 
 == USER CONTEXT ==
 {user_context}"""
@@ -123,12 +75,11 @@ def format_user_context(context: dict) -> str:
     reminders = context.get("reminders", [])
 
     name = profile.get("name", "the user")
-    ios_version = profile.get("ios_version", "unknown")
     timezone = profile.get("timezone", "unknown")
     profile_summary = profile.get("profile_summary", "")
 
     lines = [
-        f"Name: {name} | Device: iPhone, iOS {ios_version} | Timezone: {timezone}",
+        f"Name: {name} | Timezone: {timezone}",
     ]
 
     # Profile summary (replaces facts-by-category)
@@ -173,43 +124,3 @@ def render_system_prompt(user_context_block: str) -> str:
     @return: (str) The complete system prompt string ready for the LLM.
     """
     return SYSTEM_PROMPT_TEMPLATE.format(user_context=user_context_block)
-
-
-def format_step_context(
-    step: WorkflowStep,
-    step_num: int,
-    total_steps: int,
-    workflow_title: str,
-) -> str:
-    """
-    purpose: Build the step context string returned by workflow tools to the LLM.
-             Instructs the LLM to speak the step instruction verbatim, then wait
-             for the user to respond before calling any follow-up tool.
-    @param step: (WorkflowStep) The current step.
-    @param step_num: (int) 1-based step number.
-    @param total_steps: (int) Total number of steps in the workflow.
-    @param workflow_title: (str) Human-readable workflow title.
-    @return: (str) Formatted step context block for the LLM.
-    """
-    lines = [
-        f"== ACTIVE WORKFLOW: {workflow_title} (step {step_num} of {total_steps}) ==",
-        f'INSTRUCTION: "{step.instruction}"',
-        "Deliver in one short sentence. Do not add extra explanation.",
-        "WAIT for the user. Only call confirm_step() when they say they did it.",
-    ]
-
-    if step.common_issues:
-        lines.append("If stuck:")
-        for ci in step.common_issues:
-            lines.append(f'  - "{ci["issue"]}" -> "{ci["response"]}"')
-
-    if step.fallback:
-        lines.append(f'Fallback: "{step.fallback}"')
-
-    lines.extend(
-        [
-            "go_back_step() to redo. exit_workflow() to stop.",
-        ]
-    )
-
-    return "\n".join(lines)

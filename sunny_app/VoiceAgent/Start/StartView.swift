@@ -26,10 +26,6 @@ struct StartView: View {
         .padding(.horizontal, horizontalSizeClass == .regular ? 32 * .grid : 16 * .grid)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaInset(edge: .bottom, content: tip)
-        #if os(visionOS)
-            .glassBackgroundEffect()
-            .frame(maxWidth: 175 * .grid)
-        #endif
     }
 
     // MARK: - Sub-views
@@ -58,10 +54,6 @@ struct StartView: View {
     /// Small helper text at the bottom of the screen.
     private func tip() -> some View {
         VStack(spacing: 2 * .grid) {
-            #if targetEnvironment(simulator)
-            Text("connect.simulator")
-                .foregroundStyle(.fgModerate)
-            #endif
             Text("connect.tip")
                 .foregroundStyle(.fg3)
         }
@@ -72,7 +64,6 @@ struct StartView: View {
     }
 
     /// Full-width connect button. Minimum height 60pt for senior tap target.
-    @ViewBuilder
     private func connectButton() -> some View {
         AsyncButton(action: viewModel.connect) {
             HStack {
@@ -93,10 +84,6 @@ struct StartView: View {
             }
             .frame(width: 58 * .grid, height: max(60, 11 * .grid))
         }
-        #if os(visionOS)
-        .buttonStyle(.borderedProminent)
-        .controlSize(.extraLarge)
-        #else
         .buttonStyle(
             ProminentButtonStyle(
                 accentColor: theme.accentColor,
@@ -104,7 +91,6 @@ struct StartView: View {
                 cornerRadius: theme.cornerRadius
             )
         )
-        #endif
         .accessibilityLabel("Talk to Sunny")
         .accessibilityHint("Double-tap to connect and start speaking")
     }

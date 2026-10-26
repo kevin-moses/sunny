@@ -8,7 +8,7 @@
 // real time, enabling cross-side failure diagnosis.
 //
 // Usage:
-//   SunnyLogger.shared.info("RPC", "createReminder called", metadata: ["caller": caller])
+//   SunnyLogger.shared.info("RPC", "findContact called", metadata: ["caller": caller])
 //   SunnyLogger.shared.error("Contacts", "Access denied")
 //
 // Last modified: 2026-03-03

@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-/// A multiplatform view that shows the message feed.
+/// A view that shows the message feed.
 struct ChatView: View {
     @Environment(ChatViewModel.self) private var viewModel
     @Environment(SunnyTheme.self) private var theme

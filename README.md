@@ -1,16 +1,11 @@
 # Sunny
-### A sunnier way to use your phone
-### The best UI is no UI
-Designed for accessibile phone interactions, seniors, folks with tech difficulties, disability users, and more
 
-Features/TODO:
-[x] Use livekit + openAI realtime for fast voice agent interactions
-[x] Swift UI for smooth voice calling with livekit SDK
-[x] Tavily for web search tool
-[x] Cartesia for a nice voice
-[ ] Use `EventKit` for reminders
-[ ] Integrate with contacts list
-[ ] Use `CallKit` to call people
-[ ] Get accurate directions, send to apple maps, use location
-[ ] Send a message to a contact
-[ ] Add sign-in
+A memory-care agent for seniors with MCI or early dementia who live alone, and the family members who coordinate their care. Caregivers set up the day; the senior confirms each task on whichever surface is closest (home display, phone, or voice); anything unconfirmed escalates to family before it is missed.
+
+See `notes/SPEC.md` for the POC feature spec and `notes/HANDOFF.md` for how the existing code maps onto it.
+
+## Repo layout
+
+- `sunny_agent/` - LiveKit voice agent (Deepgram STT, Claude Haiku, Cartesia TTS), Tavily web search
+- `sunny_app/` - iOS app (SwiftUI). The `sunny` target is the senior's phone surface; a caregiver target will be added to the same project
+- `supabase/` - database migrations and Edge Functions

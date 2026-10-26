@@ -2,9 +2,9 @@
 
 # Swift Voice Agent starter app
 
-This starter app template for [LiveKit Agents](https://docs.livekit.io/agents/overview/) provides a simple voice interface using the [LiveKit Swift SDK](https://github.com/livekit/client-sdk-swift). It supports [voice](https://docs.livekit.io/agents/start/voice-ai), [transcriptions](https://docs.livekit.io/agents/build/text/), [live video input](https://docs.livekit.io/agents/build/vision/#video), and [virtual avatars](https://docs.livekit.io/agents/integrations/avatar/).
+This starter app template for [LiveKit Agents](https://docs.livekit.io/agents/overview/) provides a simple voice interface using the [LiveKit Swift SDK](https://github.com/livekit/client-sdk-swift). It supports [voice](https://docs.livekit.io/agents/start/voice-ai), [transcriptions](https://docs.livekit.io/agents/build/text/), and [virtual avatars](https://docs.livekit.io/agents/integrations/avatar/).
 
-This template is compatible with iOS, iPadOS, macOS, and visionOS and is free for you to use or modify as you see fit.
+Sunny's app targets iOS and iPadOS only.
 
 <img src="./.github/assets/screenshot.png" alt="Voice Agent Screenshot" height="500">
 
@@ -30,18 +30,15 @@ Then, build and run the app from Xcode by opening `VoiceAgent.xcodeproj`. You ma
 
 This starter app has support for a number of features of the agents framework, and is configurable to easily enable or disable them in code based on your needs as you adapt this template to your own use case.
 
-### Text, video, and voice input
+### Text and voice input
 
-This app supports text, video, and/or voice input according to the needs of your agent. To update the features enabled in the app, edit `VoiceAgent/VoiceAgentApp.swift` and update `AgentFeatures.current` to include or exclude the features you need.
+This app supports text and/or voice input according to the needs of your agent. To update the features enabled in the app, edit `VoiceAgent/VoiceAgentApp.swift` and update `AgentFeatures.current` to include or exclude the features you need.
 
 By default, only voice and text input are enabled.
 
 Available input types:
 - `.voice`: Allows the user to speak to the agent using their microphone. **Requires microphone permissions.**
 - `.text`: Allows the user to type to the agent. See [the docs](https://docs.livekit.io/agents/build/text/) for more details.
-- `.video`: Allows the user to share their camera or screen to the agent. This requires a supported model like the Gemini Live API. See [the docs](https://docs.livekit.io/agents/build/vision/#video) for more details.
-
-If you have trouble with screensharing, refer to [the docs](https://docs.livekit.io/home/client/tracks/screenshare/) for more setup instructions.
 
 ### Preconnect audio buffer
 
@@ -63,7 +60,7 @@ In a production environment, you will be responsible for developing a solution t
 
 ## Running on Simulator
 
-To use this template with video (or screen sharing) input, you need to run the app on a physical device. Testing on the Simulator will still support voice and text modes, as well as virtual avatars.
+The Simulator supports voice and text modes, as well as virtual avatars.
 
 ## Submitting to the App Store
 

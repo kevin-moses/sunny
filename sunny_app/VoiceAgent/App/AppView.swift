@@ -1,10 +1,9 @@
 // App/AppView.swift
 //
 // Purpose: Root view for the Sunny app. Switches between StartView and the
-// interactive conversation views (voice/text/vision) based on AppViewModel state.
-// Hosts the ControlBar in a safeAreaInset (iOS) or ornament (visionOS).
-// Overlays ScreenShareStatusBanner at the top while screen sharing is active,
-// and shows error/reconnecting banners via the errors() helper.
+// interactive conversation views (voice/text) based on AppViewModel state.
+// Hosts the ControlBar in a bottom safeAreaInset. iOS only.
+// Shows error/reconnecting banners via the errors() helper.
 
 import SwiftUI
 
@@ -27,11 +26,6 @@ struct AppView: View {
                 start()
             }
 
-            if viewModel.isScreenShareEnabled {
-                ScreenShareStatusBanner()
-                    .zIndex(1)
-            }
-
             errors()
         }
         #if DEBUG
@@ -44,37 +38,20 @@ struct AppView: View {
                     .environment(theme)
             }
             .environment(\.namespace, namespace)
-        #if os(visionOS)
-            .ornament(attachmentAnchor: .scene(.bottom)) {
-                if viewModel.isInteractive {
-                    ControlBar()
-                        .glassBackgroundEffect()
-                }
-            }
-            .alert("warning.reconnecting", isPresented: .constant(viewModel.connectionState == .reconnecting)) {}
-            .alert(error?.localizedDescription ?? "error.title", isPresented: .constant(error != nil)) {
-                Button("error.ok") { error = nil }
-            }
-        #else
             .safeAreaInset(edge: .bottom) {
                 if viewModel.isInteractive, !keyboardFocus {
                     ControlBar()
                         .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
                 }
             }
-        #endif
             .background(SunnyColors.background)
             .animation(.default, value: viewModel.isInteractive)
             .animation(.default, value: viewModel.interactionMode)
-            .animation(.default, value: viewModel.isCameraEnabled)
-            .animation(.default, value: viewModel.isScreenShareEnabled)
             .animation(.default, value: error?.localizedDescription)
             .onAppear {
                 Dependencies.shared.errorHandler = { error = $0 }
             }
-        #if os(iOS)
             .sensoryFeedback(.impact, trigger: viewModel.isListening)
-        #endif
     }
 
     // MARK: - Sub-views
@@ -85,14 +62,6 @@ struct AppView: View {
 
     @ViewBuilder
     private func interactions() -> some View {
-        #if os(visionOS)
-        VisionInteractionView(keyboardFocus: $keyboardFocus)
-            .environment(chatViewModel)
-            .overlay(alignment: .bottom) {
-                agentListening()
-                    .padding(16 * .grid)
-            }
-        #else
         switch viewModel.interactionMode {
         case .text:
             TextInteractionView(keyboardFocus: $keyboardFocus)
@@ -104,12 +73,10 @@ struct AppView: View {
                         .padding()
                 }
         }
-        #endif
     }
 
     @ViewBuilder
     private func errors() -> some View {
-        #if !os(visionOS)
         if case .reconnecting = viewModel.connectionState {
             WarningView(warning: "warning.reconnecting")
         }
@@ -117,15 +84,11 @@ struct AppView: View {
         if let error {
             ErrorView(error: error) { self.error = nil }
         }
-        #endif
     }
 
     private func agentListening() -> some View {
         ZStack {
-            if chatViewModel.messages.isEmpty,
-               !viewModel.isCameraEnabled,
-               !viewModel.isScreenShareEnabled
-            {
+            if chatViewModel.messages.isEmpty {
                 AgentListeningView()
             }
         }
