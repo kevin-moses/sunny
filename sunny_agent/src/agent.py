@@ -1,20 +1,21 @@
 # agent.py
 # Purpose: LiveKit voice agent for Sunny, a memory-care assistant for seniors.
 # Implements a Deepgram STT -> Claude Haiku LLM -> Cartesia TTS pipeline via LiveKit Agents.
-# Loads per-user context from Supabase at session start, logs all conversation turns in
-# real time, and generates a post-session summary stored back to Supabase on shutdown.
-# Exposes tool functions for web search, contact lookup, and messaging (the latter two
-# delegated to the iOS app over LiveKit RPC), plus save_reminder, list_reminders, and
-# delete_reminder backed directly by the Supabase reminders table.
+# Loads the household's context (today's tasks, events, life profile, memory) from
+# Supabase at session start, logs all conversation turns in real time, and stores a
+# post-session summary on shutdown. Exposes tool functions for web search, contact
+# lookup, and messaging (the latter two delegated to the iOS app over LiveKit RPC), plus
+# task tools: list_today, confirm_task (shared confirm RPC, already-done guard),
+# create_reminder and cancel_reminder (senior-created reminders only).
 #
 # Error handling: STT garbage filter silences short/non-alphabetic transcripts; progressive
 # error recovery speaks escalating messages on LLM/STT/TTS failures; participant disconnect
 # and reconnect handlers log session end and greet returning users within 10 minutes;
 # agent_state_changed handler delivers a proactive greeting on session start.
 #
-# Session context (NOTIFY-1): resolve_session_context() reads trigger/reminder_id from
-# participant metadata. When trigger == "notification_tap" and a reminder_id is present,
-# the agent overrides the default greeting with a reminder-specific prompt.
+# Session context: resolve_session() reads household_id, trigger, task_instance_id and
+# device_id from participant metadata. When a
+# task instance triggered the session, the agent opens with that task's spoken prompt.
 # Session context is also persisted to the conversations row via create_conversation().
 #
 # Echo detection: _is_echo() and _normalize_for_echo() detect when STT transcribes the
@@ -23,14 +24,16 @@
 # user transcripts against the buffer and suppresses matches via session.interrupt().
 #
 # Memory-care pivot: screen share, vision, guided iPhone workflows, and the iOS EventKit
-# create_reminder tool were removed (out of scope for the memory-care POC).
+# reminder tool were removed (out of scope for the memory-care POC). Sessions are scoped
+# to a household on the new shared-state schema (notes/SCHEMA.md).
 #
-# Last modified: 2026-10-24 (removed screen share, workflows, and EventKit reminders)
+# Last modified: 2026-10-25 (household context and task tools on the new schema)
 
 import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -56,6 +59,7 @@ from supabase import AsyncClient
 from tavily import TavilyClient
 
 from config import (
+    DEFAULT_TIMEZONE,
     ECHO_DETECTION_WINDOW_S,
     LLM_MODEL,
     MAX_ENDPOINTING_DELAY,
@@ -70,12 +74,16 @@ from memory import (
     ConversationLogger,
     create_conversation,
     create_supabase_client,
-    load_user_context,
-    resolve_session_context,
-    resolve_user_id,
+    load_agent_context,
+    resolve_session,
 )
 from prompts import format_user_context, render_system_prompt
-from tools import db_delete_reminder, db_list_reminders, db_save_reminder
+from tools import (
+    db_cancel_senior_reminder,
+    db_confirm_task,
+    db_create_senior_reminder,
+    db_list_today,
+)
 
 logger = logging.getLogger("agent")
 
@@ -88,28 +96,29 @@ load_dotenv(".env")
 class Assistant(Agent):
     """
     purpose: Voice assistant agent for the senior. Exposes tools for web search,
-             Supabase-backed reminders, contact lookup, and SMS messaging over iOS RPC.
+             today's tasks (list, confirm), senior-created reminders, contact lookup,
+             and SMS messaging over iOS RPC.
     """
 
     def __init__(
         self,
         instructions: str,
-        user_id: str,
+        household_id: str | None,
         supabase: AsyncClient,
-        user_timezone: str = "America/New_York",
+        timezone: str = DEFAULT_TIMEZONE,
     ) -> None:
         """
         purpose: Initialize the Assistant with a pre-rendered system prompt and the
-                 Supabase client + user_id needed for the reminder CRUD tools.
+                 Supabase client + household needed for the task tools.
         @param instructions: (str) The fully rendered system prompt from render_system_prompt().
-        @param user_id: (str) UUID of the current user, used for all DB reminder operations.
-        @param supabase: (AsyncClient) Authenticated Supabase async client.
-        @param user_timezone: (str) IANA timezone from the user's profile, used for reminder storage.
+        @param household_id: (str | None) Household UUID; None disables the task tools.
+        @param supabase: (AsyncClient) Authenticated Supabase async client (service role).
+        @param timezone: (str) IANA timezone of the household, used to phrase dates.
         """
         super().__init__(instructions=instructions)
-        self._user_id = user_id
+        self._household_id = household_id
         self._supabase = supabase
-        self._user_timezone = user_timezone
+        self._timezone = timezone
         self.tavily_client = TavilyClient()
 
     @function_tool
@@ -230,98 +239,105 @@ class Assistant(Agent):
             logger.error(f"Error sending message: {e}")
             return "I'm sorry, I couldn't send that message. Please try again."
 
-    @function_tool
-    async def save_reminder(
-        self,
-        context: RunContext,
-        reminder_type: str,
-        title: str,
-        description: str,
-        times: list[str],
-        days: list[str],
+    async def _household_tool(
+        self, what: str, call: Callable[[str], Awaitable[str]]
     ) -> str:
         """
-        purpose: Save a reminder to Sunny's reminder system (Supabase), which will
-                 trigger push notifications at the scheduled time. Use for medication,
-                 appointments, exercise, or any recurring wellness reminders.
+        purpose: Shared guard for the task tools: needs a household, and turns any
+                 database error into a short spoken apology instead of a crash.
+        @param what: (str) What the tool does, for logs and the apology ("check today's schedule").
+        @param call: (Callable[[str], Awaitable[str]]) Coroutine factory taking the household id.
+        @return: (str) The helper's voice-friendly result, or a fallback message.
+        """
+        if not self._household_id:
+            return f"I can't {what} right now."
+        try:
+            return await call(self._household_id)
+        except Exception as e:
+            logger.error(f"Error trying to {what}: {e}")
+            return f"I'm sorry, I had trouble trying to {what}."
+
+    @function_tool
+    async def list_today(self, context: RunContext) -> str:
+        """
+        purpose: Read today's schedule and what has already been done, so questions like
+                 "Did I take my pills?" or "What's next today?" are answered from the
+                 household's live state rather than memory.
+
+        Returns:
+            Voice-friendly list of today's tasks with their status
+        """
+        return await self._household_tool(
+            "check today's schedule",
+            lambda h: db_list_today(self._supabase, h, self._timezone),
+        )
+
+    @function_tool
+    async def confirm_task(self, context: RunContext, task_name: str = "") -> str:
+        """
+        purpose: Record that the senior did a task ("I took them", "done"). Confirms the
+                 matching task on today's schedule, or the one due now when no name is
+                 given. If it was already confirmed, returns when, so the senior is never
+                 told to repeat a dose. Only call when the senior clearly says they did it.
 
         Args:
-            reminder_type: Category of reminder: 'medication'|'appointment'|'exercise'|'wellness_checkin'|'custom'
-            title: Short label for the reminder, e.g. "blood pressure medication"
-            description: Optional additional detail (use empty string if none)
-            times: 24-hour time strings, e.g. ["09:00", "21:00"]
-            days: Day abbreviations, e.g. ["mon","tue","wed","thu","fri","sat","sun"]
+            task_name: Name or part of the task's label, e.g. "morning pills"; empty for
+                       whatever is due now
+
+        Returns:
+            Voice-friendly confirmation, already-done note, or clarifying question
+        """
+        return await self._household_tool(
+            "record that",
+            lambda h: db_confirm_task(self._supabase, h, self._timezone, task_name),
+        )
+
+    @function_tool
+    async def create_reminder(
+        self,
+        context: RunContext,
+        title: str,
+        time: str,
+        on_date: str = "",
+        days: list[str] | None = None,
+    ) -> str:
+        """
+        purpose: Create a reminder the senior asked for, e.g. "remind me to call the
+                 plumber tomorrow at 10". Family caregivers can see it in their app.
+
+        Args:
+            title: What to remind them about, phrased to follow "remind you to", e.g. "call the plumber"
+            time: 24-hour time, e.g. "10:00"
+            on_date: Date "YYYY-MM-DD" for a one-time reminder; empty for a recurring one
+            days: For recurring reminders, day abbreviations like ["mon","wed"]; empty means every day
 
         Returns:
             Voice-friendly confirmation message
         """
-        logger.info(f"Saving reminder: {title} at {times} on {days}")
-        try:
-            return await db_save_reminder(
-                self._supabase,
-                self._user_id,
-                reminder_type,
-                title,
-                description,
-                times,
-                days,
-                self._user_timezone,
-            )
-        except Exception as e:
-            logger.error(f"Error saving reminder '{title}': {e}")
-            return "I'm sorry, I had trouble saving that reminder. Please try again."
+        logger.info(f"Creating senior reminder: {title} at {time} on {on_date or days}")
+        return await self._household_tool(
+            "save that reminder",
+            lambda h: db_create_senior_reminder(
+                self._supabase, h, self._timezone, title, time, on_date, days
+            ),
+        )
 
     @function_tool
-    async def list_reminders(self, context: RunContext) -> str:
+    async def cancel_reminder(self, context: RunContext, reminder_title: str) -> str:
         """
-        purpose: List all of the user's active reminders stored in Sunny's system.
-
-        Returns:
-            Voice-friendly string listing all active reminders, or a message if none exist
-        """
-        logger.info(f"Listing reminders for user {self._user_id}")
-        try:
-            return await db_list_reminders(self._supabase, self._user_id)
-        except Exception as e:
-            logger.error(f"Error listing reminders: {e}")
-            return "I'm sorry, I had trouble fetching your reminders. Please try again."
-
-    @function_tool
-    async def delete_reminder(self, context: RunContext, reminder_title: str) -> str:
-        """
-        purpose: Cancel an active reminder in Sunny's system by title.
-                 Uses a case-insensitive substring match. If multiple reminders match,
-                 lists them and asks the user to clarify.
+        purpose: Cancel a reminder the senior created earlier, by title. Reminders and
+                 tasks set up by family cannot be cancelled here.
 
         Args:
-            reminder_title: The name or partial name of the reminder to cancel
+            reminder_title: The name or part of the name of the reminder to cancel
 
         Returns:
             Voice-friendly confirmation, not-found message, or clarification request
         """
-        logger.info(
-            f"Deleting reminder matching '{reminder_title}' for user {self._user_id}"
+        return await self._household_tool(
+            "cancel that reminder",
+            lambda h: db_cancel_senior_reminder(self._supabase, h, reminder_title),
         )
-        try:
-            status, matches = await db_delete_reminder(
-                self._supabase, self._user_id, reminder_title
-            )
-            if status == "not_found":
-                return (
-                    f"I couldn't find a reminder matching '{reminder_title}'. "
-                    "Would you like me to list your reminders?"
-                )
-            if status == "deleted":
-                title = matches[0].get("title", reminder_title)
-                return f"Done, I've cancelled your {title} reminder."
-            # ambiguous
-            names = ", ".join(r.get("title", "") for r in matches)
-            return f"I found a few reminders that match: {names}. Which one would you like to cancel?"
-        except Exception as e:
-            logger.error(f"Error deleting reminder '{reminder_title}': {e}")
-            return (
-                "I'm sorry, I had trouble cancelling that reminder. Please try again."
-            )
 
 
 def _is_garbage_input(text: str) -> bool:
@@ -420,8 +436,8 @@ async def entrypoint(ctx: JobContext):
              UX parameters and real-time conversation logging.
              Also registers error recovery, STT garbage filter, participant reconnect,
              and proactive greeting handlers so the agent never goes silent.
-             When the session was triggered by a notification tap, a reminder-specific
-             initial greeting overrides the default welcome message.
+             When a task instance triggered the session, that task's spoken prompt
+             overrides the default welcome message.
     @param ctx: (JobContext) LiveKit job context providing room access and lifecycle hooks.
     """
     ctx.log_context_fields = {"room": ctx.room.name}
@@ -429,60 +445,50 @@ async def entrypoint(ctx: JobContext):
     # 1. Connect first — gives us access to participant metadata before building the prompt
     await ctx.connect()
 
-    # 2. Resolve user_id and session context from participant metadata (or fallbacks)
-    user_id = resolve_user_id(ctx.room)
-    session_ctx = resolve_session_context(ctx.room)
-    session_trigger = session_ctx.get("trigger", "app_open")
-    session_reminder_id = session_ctx.get("reminder_id")
-    session_adherence_log_id = session_ctx.get("adherence_log_id")
+    # 2. Resolve household and session context from participant metadata (or fallbacks)
+    session_ctx = resolve_session(ctx.room)
+    household_id = session_ctx["household_id"]
+    session_instance_id = session_ctx["task_instance_id"]
 
-    # 3. Init Supabase, load context, create conversation row with session context
+    # 3. Init Supabase; load household context and create the conversation row together
     supabase = await create_supabase_client()
-    raw_context = await load_user_context(supabase, user_id)
-    conversation_id = await create_conversation(
-        supabase,
-        user_id,
-        trigger=session_trigger,
-        reminder_id=session_reminder_id,
-        adherence_log_id=session_adherence_log_id,
+    raw_context, conversation_id = await asyncio.gather(
+        load_agent_context(supabase, household_id),
+        create_conversation(
+            supabase,
+            household_id,
+            trigger=session_ctx["trigger"],
+            task_instance_id=session_instance_id,
+            device_id=session_ctx["device_id"],
+        ),
     )
-    profile = raw_context.get("profile", {})
-    user_name = profile.get("name", "")
-    user_timezone = profile.get("timezone", "America/New_York")
-    existing_profile_summary = profile.get("profile_summary", "")
-    conv_logger = ConversationLogger(
-        supabase, user_id, conversation_id, existing_profile_summary
-    )
+    household = raw_context.get("household", {})
+    user_name = household.get("senior_preferred_name", "")
+    household_timezone = household.get("timezone", DEFAULT_TIMEZONE)
+    conv_logger = ConversationLogger(supabase, conversation_id)
 
-    # 4. Compute initial greeting override for notification-tap sessions
-    #    When a reminder notification is tapped, greet the user with context rather than
-    #    the generic welcome so the session feels like a purposeful check-in.
+    # 4. Task-triggered sessions open with the task's fixed spoken prompt
     name_part = f", {user_name}" if user_name else ""
     initial_greeting: str | None = None
-    if session_trigger == "notification_tap" and session_reminder_id:
-        reminders = raw_context.get("reminders", [])
-        matched_reminder = next(
-            (r for r in reminders if str(r.get("id", "")) == session_reminder_id),
+    if session_instance_id:
+        instance = next(
+            (
+                i
+                for i in raw_context.get("today", [])
+                if i.get("instance_id") == session_instance_id
+            ),
             None,
         )
-        if matched_reminder:
-            r_title = matched_reminder.get("title", "your reminder")
-            r_type = matched_reminder.get("type", "")
-            if r_type == "medication":
-                initial_greeting = (
-                    f"Hi{name_part}! It's time for your {r_title}. Did you take it?"
-                )
-            else:
-                initial_greeting = (
-                    f"Hi{name_part}! I'm checking in about your {r_title}. "
-                    "Is there anything you need help with?"
-                )
-            logger.info(f"Notification tap greeting: {initial_greeting!r}")
+        if instance and instance.get("state") not in ("confirmed", "resolved"):
+            initial_greeting = instance.get("spoken_prompt") or (
+                f"It's time for {instance.get('display_label', 'your task')}."
+            )
+            logger.info(f"Task prompt greeting: {initial_greeting!r}")
 
-    # 5. Render system prompt with injected user context
+    # 5. Render system prompt with injected household context
     context_block = format_user_context(raw_context)
     rendered_prompt = render_system_prompt(context_block)
-    logger.info(f"System prompt rendered for user_id={user_id}")
+    logger.info(f"System prompt rendered for household_id={household_id}")
 
     # 6. Build session with senior-optimized voice UX parameters
     session = AgentSession(
@@ -551,7 +557,9 @@ async def entrypoint(ctx: JobContext):
             return
         text = ev.transcript.strip()
         if _is_garbage_input(text):
-            logger.info(f"Ignoring garbage STT input (user={user_id}): {text!r}")
+            logger.info(
+                f"Ignoring garbage STT input (household={household_id}): {text!r}"
+            )
             session.interrupt()
             return
         # Echo detection: prune old entries and check for echo
@@ -562,7 +570,7 @@ async def entrypoint(ctx: JobContext):
             if now - ts < ECHO_DETECTION_WINDOW_S
         ]
         if _is_echo(text, _recent_agent_texts, now, ECHO_DETECTION_WINDOW_S):
-            logger.info(f"Ignoring echo STT input (user={user_id}): {text!r}")
+            logger.info(f"Ignoring echo STT input (household={household_id}): {text!r}")
             session.interrupt()
             return
 
@@ -577,7 +585,7 @@ async def entrypoint(ctx: JobContext):
         nonlocal consecutive_errors
         consecutive_errors += 1
         logger.error(
-            f"Session error #{consecutive_errors} (user={user_id}, "
+            f"Session error #{consecutive_errors} (household={household_id}, "
             f"conversation={conversation_id}): {ev.error}"
         )
         try:
@@ -595,8 +603,8 @@ async def entrypoint(ctx: JobContext):
                  but only if no conversation has occurred yet. If the user spoke before the
                  agent finished initializing, session.history will already contain messages
                  and the greeting is skipped to avoid overriding the response in progress.
-                 When initial_greeting is set (notification-tap sessions), uses the reminder-
-                 specific check-in message instead of the generic welcome.
+                 When initial_greeting is set (task-triggered sessions), speaks the task's
+                 fixed prompt instead of the generic welcome.
         @param ev: Event with .new_state (str) indicating the agent's new pipeline state.
         """
         nonlocal _greeted
@@ -627,7 +635,9 @@ async def entrypoint(ctx: JobContext):
             if isinstance(i, ChatMessage) and i.role == "assistant"
         ]
         last_topic = history[-1].text_content[:80] if history else ""
-        logger.info(f"Participant {participant.identity} disconnected (user={user_id})")
+        logger.info(
+            f"Participant {participant.identity} disconnected (household={household_id})"
+        )
         asyncio.create_task(conv_logger.finalize(session.history))  # noqa: RUF006
 
     # 13. Participant reconnect — greet returning user within 10-minute window
@@ -740,9 +750,9 @@ async def entrypoint(ctx: JobContext):
 
     _assistant = Assistant(
         instructions=rendered_prompt,
-        user_id=user_id,
+        household_id=household_id,
         supabase=supabase,
-        user_timezone=user_timezone,
+        timezone=household_timezone,
     )
 
     # 17. Start session — room is already connected, session.start() will not reconnect

@@ -2,6 +2,10 @@
 
 Written 2026-10-24 from a planning chat. Read this with `notes/SPEC.md`. Nothing in the codebase was changed; this is a map, not a refactor.
 
+## Status (2026-10-25)
+
+Phase 0 (removals) and the shared-state step are done on branch `memory-care-refactor`. The schema was rebuilt from scratch rather than evolved: `reminders`, `adherence_log`, `caregiver_links`, `users.profile_summary` and the caregiver Edge Functions no longer exist, so the "Keep, but refactor" rows below about them are historical. See `notes/SCHEMA.md` for what replaced them. Decisions since this note: the voice pipeline stays (no Gemini Live), parked features were removed rather than flagged, the app is iOS-only, the caregiver app will be a second target in the same Xcode project, and the scheduler runs as SQL under pg_cron.
+
 ## What changed in the product
 
 Sunny started as a voice-first phone concierge for seniors (see `notes/brief.md`). The new direction narrows the user and widens the surfaces:

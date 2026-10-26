@@ -5,16 +5,19 @@
 # Memory-care pivot: removed workflow retrieval (EMBEDDING_MODEL,
 # WORKFLOW_MATCH_THRESHOLD) and screen describer constants (DESCRIBE_*,
 # SCREEN_STALE_THRESHOLD_S) along with the features that used them.
+# Removed FALLBACK_USER_ID: sessions resolve a household (DEV_HOUSEHOLD_ID env for local dev).
+# Added DEFAULT_TIMEZONE, used only when no household context is available.
 #
-# Last modified: 2026-10-24
-
-FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001"
+# Last modified: 2026-10-25
 
 # Voice UX — tuned for senior speech patterns
 MIN_ENDPOINTING_DELAY: float = 1.0  # seniors often pause mid-thought
 MAX_ENDPOINTING_DELAY: float = 6.0
 MIN_INTERRUPTION_DURATION: float = 1.0  # ignore brief sounds like coughs or TV
 MIN_INTERRUPTION_WORDS: int = 2  # require 2+ words before treating as barge-in
+
+# Fallback when a session has no household context (households always have a timezone).
+DEFAULT_TIMEZONE = "America/New_York"
 
 STT_MODEL = "nova-3"
 STT_LANGUAGE = "multi"

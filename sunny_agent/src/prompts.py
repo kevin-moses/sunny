@@ -1,19 +1,30 @@
 # prompts.py
-# Purpose: System prompt template and user context formatting for the Sunny voice agent.
-# Provides the senior-optimized assistant persona and functions to inject per-user
-# context (profile_summary, conversation summaries, reminders) into the system prompt
-# at session start. profile_summary is a free-text prose paragraph written by Claude at
-# session end that replaces the fragmented user_facts key-value approach.
-# The system prompt includes guidance for managing Sunny (Supabase-backed) reminders
-# with a voice-friendly confirmation flow.
+# Purpose: System prompt template and household context formatting for the Sunny voice
+# agent. format_user_context() turns the get_agent_context RPC result (today's schedule,
+# as-needed medications, upcoming events, latest family message, life profile,
+# sensitive-topic playbook, agent memory, recent conversations) into the context block
+# injected into the system prompt at session start. Household facts are labeled by
+# source so caregiver-verified facts outrank things the senior said.
 # Memory-care pivot: removed GUIDED WORKFLOWS, SCREEN SHARING, VISION MODE sections,
-# iOS native reminder guidance, format_step_context(), and the iOS version from the user
-# context line. The privacy rule from VISION MODE moved to COMMUNICATION STYLE. The
-# persona rewrite to the SPEC voice guardrails is a separate step.
+# iOS native reminder guidance, format_step_context(), and the users.profile_summary
+# paragraph. The privacy rule from VISION MODE moved to COMMUNICATION STYLE. The REMINDERS
+# section became TASKS AND REMINDERS for the household task tools. The persona rewrite to
+# the SPEC voice guardrails is a separate step.
 #
-# Last modified: 2026-10-24
+# Last modified: 2026-10-25
 
 from __future__ import annotations
+
+from datetime import datetime
+
+from config import DEFAULT_TIMEZONE
+from tools import (
+    clock_for_voice,
+    describe_instance,
+    local_clock,
+    spoken_date,
+    to_local,
+)
 
 SYSTEM_PROMPT_TEMPLATE = """You are Sunny, a warm and patient voice assistant designed specifically for older adults. \
 Your role is to make phone interactions easier and more accessible.
@@ -35,91 +46,146 @@ Avoid complex formatting, emojis, asterisks, bullet points, or symbols — speec
 Never read passwords, banking details, or private messages aloud.
 
 == TOOLS ==
-You have access to web search, reminders, contacts, and messaging. Use them proactively. \
-Always confirm before sending messages or creating reminders.
+You have access to web search, today's schedule, reminders, contacts, and messaging. \
+Use them proactively. Always confirm before sending messages or creating reminders.
 
-== REMINDERS ==
-Reminders (save_reminder / list_reminders / delete_reminder) are stored in Sunny's \
-system and trigger push notifications. Use them for medication, appointments, wellness.
+== TASKS AND REMINDERS ==
+The household's schedule is set up by family. Answer questions about it from the \
+schedule below, or call list_today for the latest status.
+When the user says they did a task ("I took them", "done"), call confirm_task. If it \
+was already done, tell them when it was done; never suggest taking a medication again.
+When the user asks you to remind them of something, repeat it back first ("So I'll \
+remind you to call the plumber tomorrow at 10 AM. Is that right?") and call \
+create_reminder only after they agree.
+cancel_reminder only cancels reminders the user created; tasks set up by family can \
+only be changed by family.
 
-When setting a reminder:
-1. Parse what they said into type, title, times, and days.
-2. Repeat it back before calling the tool: "So I'll remind you to take your blood pressure \
-medication at 9 AM and 9 PM every day. Does that sound right?"
-3. Only call save_reminder AFTER the user confirms.
-
-When deleting: confirm which reminder you're cancelling before calling delete_reminder. \
-If multiple reminders match, list them and ask which one.
-
-== USER CONTEXT ==
+== HOUSEHOLD CONTEXT ==
 {user_context}"""
 
 
 def format_user_context(context: dict) -> str:
     """
-    purpose: Convert a get_user_context RPC response dict into a human-readable
-             block suitable for injection into the system prompt. Uses profile_summary
-             (a free-text prose paragraph) instead of the old facts-by-category table,
-             producing cleaner, less token-wasteful context for the LLM.
-    @param context: (dict) Response from the get_user_context RPC. Expected keys:
-                   profile (includes profile_summary), summaries, reminders.
-                   Pass {} for new users.
-    @return: (str) A formatted multi-line string describing what Sunny knows about
-             the user, or a brief fallback message if the context is empty.
+    purpose: Convert a get_agent_context RPC result into the household context block for
+             the system prompt.
+    @param context: (dict) Result of get_agent_context. Expected keys: household, today,
+                    as_needed, events, latest_message, life_profile, sensitive_topics,
+                    memory, recent_conversations. Pass {} when no household is known.
+    @return: (str) Multi-line context block, or a brief fallback when context is empty.
     """
     if not context:
-        return "No prior context available. This appears to be a new user."
+        return "No household context is available for this session."
 
-    profile = context.get("profile", {})
-    summaries = context.get("summaries", [])
-    reminders = context.get("reminders", [])
+    household = context.get("household", {})
+    tz = household.get("timezone", DEFAULT_TIMEZONE)
+    name = household.get("senior_preferred_name", "the user")
+    now_str = ""
+    if household.get("local_now"):
+        now = datetime.fromisoformat(household["local_now"])
+        now_str = f"{spoken_date(now)}, {clock_for_voice(now)}"
+    lines = [f"Name: {name} | Timezone: {tz} | Local time now: {now_str}"]
 
-    name = profile.get("name", "the user")
-    timezone = profile.get("timezone", "unknown")
-    profile_summary = profile.get("profile_summary", "")
-
-    lines = [
-        f"Name: {name} | Timezone: {timezone}",
-    ]
-
-    # Profile summary (replaces facts-by-category)
-    if profile_summary:
-        lines.append("")
-        lines.append(f"What Sunny knows about {name}:")
-        lines.append(profile_summary)
-
-    # Recent session summaries (last 5)
-    if summaries:
-        lines.append("")
-        lines.append("Recent conversations (last 5):")
-        for s in summaries[:5]:
-            summary_text = s.get("summary", "")
-            created_at = s.get("created_at", "")
-            if summary_text:
-                date_prefix = created_at[:10] if created_at else "unknown date"
-                lines.append(f"  - {date_prefix}: {summary_text}")
-
-    # Active reminders
-    if reminders:
-        lines.append("")
-        lines.append("Active reminders:")
-        for r in reminders:
-            title = r.get("title", "")
-            rtype = r.get("type", "")
-            description = r.get("description", "")
-            entry = f"  - {title}"
-            if rtype:
-                entry += f" ({rtype})"
-            if description:
-                entry += f": {description}"
+    today = context.get("today", [])
+    lines.append("")
+    if today:
+        lines.append("Today's schedule:")
+        for item in today:
+            entry = f"  - {describe_instance(item, tz)}"
+            if item.get("pill_description"):
+                entry += f" (pills: {item['pill_description']})"
+            if item.get("checklist_items"):
+                entry += f" (checklist: {', '.join(item['checklist_items'])})"
             lines.append(entry)
+    else:
+        lines.append("Today's schedule: nothing scheduled.")
+
+    as_needed = context.get("as_needed", [])
+    if as_needed:
+        lines.append("")
+        lines.append("As-needed medications (limits copied from the label by family):")
+        for med in as_needed:
+            limits = []
+            if med.get("max_per_day"):
+                limits.append(f"up to {med['max_per_day']} a day")
+            if med.get("min_hours_between"):
+                hours = float(med["min_hours_between"])
+                limits.append(f"at least {hours:g} hours apart")
+            taken = [local_clock(t, tz) for t in med.get("taken_today", [])]
+            taken_str = ", ".join(taken) if taken else "none"
+            lines.append(
+                f"  - {med.get('display_label', '')}: {', '.join(limits) or 'no limits on file'}. "
+                f"Taken today: {taken_str}."
+            )
+
+    events = context.get("events", [])
+    if events:
+        lines.append("")
+        lines.append("Upcoming events (next 7 days):")
+        for e in events:
+            starts = to_local(e["starts_at"], tz)
+            entry = f"  - {spoken_date(starts)}, {clock_for_voice(starts)}: {e.get('title', '')}"
+            if e.get("visitor_name"):
+                entry += f", with {e['visitor_name']}"
+            if e.get("place"):
+                entry += f", at {e['place']}"
+            lines.append(entry)
+
+    message = context.get("latest_message")
+    if message:
+        lines.append("")
+        body = message.get("body") or ("a photo" if message.get("has_photo") else "")
+        lines.append(
+            f"Latest family message, from {message.get('from', 'family')}: {body}"
+        )
+
+    profile = context.get("life_profile", [])
+    if profile:
+        lines.append("")
+        lines.append("Life profile (from family):")
+        for entry in profile:
+            detail = f": {entry['details']}" if entry.get("details") else ""
+            lines.append(
+                f"  - {entry.get('category', '')} - {entry.get('name', '')}{detail}"
+            )
+
+    topics = context.get("sensitive_topics", [])
+    if topics:
+        lines.append("")
+        lines.append("Sensitive topics (follow family's guidance exactly):")
+        for t in topics:
+            lines.append(
+                f"  - If asked about {t.get('topic', '')}: {t.get('guidance', '')}"
+            )
+
+    memory = context.get("memory", [])
+    if memory:
+        lines.append("")
+        lines.append(
+            "Remembered facts (family-verified facts outrank unverified ones):"
+        )
+        for m in memory:
+            label = (
+                "verified"
+                if m.get("verified")
+                else f"said by {m.get('source', 'senior')}, unverified"
+            )
+            lines.append(f"  - {m.get('fact', '')} ({label})")
+
+    conversations = context.get("recent_conversations", [])
+    if conversations:
+        lines.append("")
+        lines.append("Recent conversations:")
+        for c in conversations:
+            lines.append(
+                f"  - {str(c.get('started_at', ''))[:10]}: {c.get('summary', '')}"
+            )
 
     return "\n".join(lines)
 
 
 def render_system_prompt(user_context_block: str) -> str:
     """
-    purpose: Inject the formatted user context block into the system prompt template.
+    purpose: Inject the formatted household context block into the system prompt template.
     @param user_context_block: (str) Output of format_user_context().
     @return: (str) The complete system prompt string ready for the LLM.
     """
