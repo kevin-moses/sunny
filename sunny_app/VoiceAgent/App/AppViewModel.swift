@@ -12,6 +12,7 @@
 // on disconnect, forwarding structured iOS log entries to the agent server terminal in
 // real time so both iOS and Python logs are visible in the same timeline.
 
+import AVFAudio
 import Combine
 import Foundation
 import LiveKit
@@ -170,7 +171,11 @@ final class AppViewModel {
     ///
     /// purpose: Mute through the input mixer (no mute sound effect) and keep recording
     ///          prepared so the microphone starts without delay when a session connects.
+    ///          Preparing needs the microphone permission, so it only runs once that was
+    ///          granted (the home display and a first launch skip it; connecting asks for
+    ///          the permission). Real failures are shown.
     private func configureAudio() {
+        guard AVAudioApplication.shared.recordPermission == .granted else { return }
         Task {
             do {
                 try AudioManager.shared.set(microphoneMuteMode: .inputMixer) // don't play mute sound effect
@@ -298,31 +303,31 @@ final class AppViewModel {
         )
     }
 
-    /// Fetches LiveKit connection details, embedding notification context when present.
+    /// Fetches LiveKit connection details for a voice session.
     ///
-    /// purpose: When pendingNotificationContext is set (user tapped a reminder notification),
-    ///          bypass the sandbox TokenService and call the Supabase livekit-token function
-    ///          directly so that trigger/reminderId/adherenceLogId are embedded in participant
-    ///          metadata. The agent reads these to deliver a reminder-aware greeting.
-    ///          Falls back to the standard tokenService path for normal app-open sessions.
+    /// purpose: A paired senior device asks the livekit-token Edge Function, which checks
+    ///          the device's pairing and embeds its household in the participant metadata
+    ///          the agent reads. The trigger is "notification_tap" when the session comes
+    ///          from tapping a notification, otherwise "talk". An unpaired build (local
+    ///          development) falls back to the LiveKit sandbox TokenService.
     /// @return TokenService.ConnectionDetails with serverUrl and participantToken
     private func getConnection() async throws -> TokenService.ConnectionDetails {
-        let roomName = "room-\(Int.random(in: 1000 ... 9999))"
-        let participantName = "user-\(Int.random(in: 1000 ... 9999))"
+        let trigger = pendingNotificationContext?.trigger ?? "talk"
+        pendingNotificationContext = nil
 
-        if let context = pendingNotificationContext {
-            pendingNotificationContext = nil
-            return try await SunnyAPIClient.shared.fetchLiveKitToken(
-                roomName: roomName,
-                participantName: participantName,
-                notificationContext: context
-            )
+        if SunnyBackend.shared.pairedDevice != nil {
+            return try await SunnyBackend.shared.invoke("livekit-token", body: ["trigger": trigger])
         }
 
-        return try await tokenService.fetchConnectionDetails(
+        let roomName = "room-\(Int.random(in: 1000 ... 9999))"
+        let participantName = "user-\(Int.random(in: 1000 ... 9999))"
+        guard let details = try await tokenService.fetchConnectionDetails(
             roomName: roomName,
             participantName: participantName
-        )!
+        ) else {
+            throw SunnyBackendError.notPaired
+        }
+        return details
     }
 
     func disconnect() async {

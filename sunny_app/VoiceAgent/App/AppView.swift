@@ -1,7 +1,9 @@
 // App/AppView.swift
 //
-// Purpose: Root view for the Sunny app. Switches between StartView and the
-// interactive conversation views (voice/text) based on AppViewModel state.
+// Purpose: Root view for the Sunny app. An unpaired device shows PairingView; a paired
+// one shows its home surface (TodayView on the senior phone, DisplayView on the home
+// display) and switches to the interactive conversation views (voice/text) while a
+// session is live.
 // Hosts the ControlBar in a bottom safeAreaInset. iOS only.
 // Shows error/reconnecting banners via the errors() helper.
 
@@ -14,6 +16,7 @@ struct AppView: View {
     @State private var chatViewModel = ChatViewModel()
     @State private var error: Error?
     @State private var showDevSettings = false
+    @State private var pairedDevice = SunnyBackend.shared.pairedDevice
 
     @FocusState private var keyboardFocus: Bool
     @Namespace private var namespace
@@ -51,13 +54,24 @@ struct AppView: View {
             .onAppear {
                 Dependencies.shared.errorHandler = { error = $0 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .sunnyPairingLost)) { _ in
+                pairedDevice = nil
+            }
             .sensoryFeedback(.impact, trigger: viewModel.isListening)
     }
 
     // MARK: - Sub-views
 
+    @ViewBuilder
     private func start() -> some View {
-        StartView()
+        switch pairedDevice?.kind {
+        case .homeDisplay:
+            DisplayView(householdId: pairedDevice?.householdId ?? "")
+        case .seniorPhone:
+            TodayView(householdId: pairedDevice?.householdId ?? "")
+        case nil:
+            PairingView { pairedDevice = $0 }
+        }
     }
 
     @ViewBuilder

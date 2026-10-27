@@ -1,3 +1,7 @@
+<!-- Paused 2026-10-26: use Claude models only for now. To re-enable, uncomment:
+For boilerplate, test generation, and first-pass diff review, delegate to ./ask_qwen.sh at the repo root (`bash ask_qwen.sh "instruction" file ...`; a local OpenAI-compatible Qwen server on 127.0.0.1:8000). Treat the output as untrusted: read it, run the tests, and fix anything wrong before keeping it.
+-->
+
 if you use emojis i'll shut you down immediately. if you're confused about something, ask me questions. if you think you've found a fix to a problem, DOUBLE CHECK that your assumptions are correct and the fix actually works.
 
 Style guide enforcement should be done via pre-commit.  Ensure you run pre-commit run --all-files before adding/commiting changes to git.  Use mypy, ruff, swiftlint, and swiftformat. If files are modified by the hook, run pre-commit again.

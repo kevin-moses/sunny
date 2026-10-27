@@ -14,7 +14,7 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 /**
  * purpose: Create a Supabase client scoped to the caller of this request.
  * @param req: (Request) Incoming request; its Authorization header carries the user's JWT.
- * @return (SupabaseClient) Client whose queries run as the caller under RLS.
+ * @return: (SupabaseClient) Client whose queries run as the caller under RLS.
  */
 export function userClient(req: Request): SupabaseClient {
   const url = Deno.env.get("SUPABASE_URL");

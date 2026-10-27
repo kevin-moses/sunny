@@ -12,7 +12,7 @@ export const UUID_REGEX =
 
 /**
  * purpose: Headers for every response, including CORS for browser clients.
- * @return (HeadersInit) CORS and JSON content-type headers.
+ * @return: (HeadersInit) CORS and JSON content-type headers.
  */
 export function corsHeaders(): HeadersInit {
   return {
@@ -27,7 +27,7 @@ export function corsHeaders(): HeadersInit {
  * purpose: Wrap a payload in the { data, error: null } envelope.
  * @param data: (unknown) Response payload.
  * @param status: (number) HTTP status, default 200.
- * @return (Response) JSON response.
+ * @return: (Response) JSON response.
  */
 export function success(data: unknown, status = 200): Response {
   return new Response(JSON.stringify({ data, error: null }), {
@@ -41,7 +41,7 @@ export function success(data: unknown, status = 200): Response {
  * @param message: (string) Human-readable error message.
  * @param code: (string) Stable machine-readable error code.
  * @param status: (number) HTTP status, default 400.
- * @return (Response) JSON response.
+ * @return: (Response) JSON response.
  */
 export function error(message: string, code: string, status = 400): Response {
   return new Response(

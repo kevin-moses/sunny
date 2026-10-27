@@ -21,7 +21,9 @@ Design notes for the Supabase schema behind every surface. Source of truth for b
 | Task | `tasks` (schedule rule: `times`, `days_of_week`, `once_on`, `starts_on`/`ends_on`; window; wording; pill description; as-needed limits; checklist items; escalation policy) |
 | Task instance | `task_instances` (one row per task per scheduled time per local date) |
 | Escalation policy | `escalation_policies`, `escalation_steps`; fired steps recorded in `instance_escalations` |
-| Event | `events` |
+| Event (calendar) | `events` (local-time schedule with optional weekly repeat, soft delete), `event_notices` (day-of notices already sent) |
+| Google Calendar sync | `calendar_connections` (one per caregiver, refresh token in Vault), `calendar_event_links` (our event to the Google event, per connection) |
+| Background work | `jobs` (queue for calendar sync and agent jobs; see `notes/AGENT_RUNTIME.md`) |
 | Message | `family_messages` (the old `messages` name is avoided) |
 | Conversation log | `conversations`, `conversation_turns`, `agent_questions` (topic, outcome, tools; repeat counts are computed) |
 | Audit log | `audit_log` (written by triggers) |
@@ -60,14 +62,27 @@ All scheduling is SQL, run by `pg_cron` once a minute (`scheduler_tick`). Every 
 
 Default policies are seeded per household: **Medication** (0 min prompt, 15 min reprompt, 30 min on-call alert, 45 min all caregivers unless claimed) and **Prompt only** (0 min prompt). A task with no policy shows on the surfaces and in the digest but never notifies.
 
+## Calendar
+
+Events are the appointments and visits the display's Next up and the day clock show. The schedule is in household-local terms, like tasks: `starts_on` + `start_time` (+ optional `duration_minutes`), and an optional weekly repeat (`repeat_days`, ISO weekdays, until `repeat_until`). Occurrences are computed (`private.event_occurrences`), so 2 PM stays 2 PM local across DST. Repeats are weekly only; anything richer from Google will arrive as single events when pull sync is built.
+
+- **One write path.** `add_event`, `update_event`, `cancel_event` and `list_events` serve the agent, the caregiver app and voice. Callers are the backend or a caregiver who can edit; `created_via` records who (caregiver, agent, senior device). Cancelling is a soft delete (`deleted_at`) so the deletion can sync to Google; clients cannot hard-delete events.
+- **Day view.** `get_day_view(household)` is the day clock for every surface: weekday, date, part of day ("Thursday afternoon"; morning 5-12, afternoon 12-17, evening 17-21, night otherwise), today's tasks, today's events, Next up, and the coming week.
+- **Day-of notices.** `event_notice_tick` (pg_cron, every minute) queues an `event_notice` for every caregiver once per occurrence, at the household's `event_notice_time` (default 8:00), or right away for an event added later that day, as long as it has not started. The synced Google event carries a popup reminder at the same time.
+- **Google sync.** Each connected caregiver gets a Sunny-owned calendar in their Google account; edits to `events` queue `calendar_sync_event` jobs that push them. Details in `notes/AGENT_RUNTIME.md`.
+
+## Background jobs
+
+`jobs` is the queue for everything that runs outside a request (see `notes/AGENT_RUNTIME.md`). Kinds today: `calendar_sync_event` (push one event to one connection) and `agent_chat` (a caregiver's request to the agent). Caregivers can read their household's jobs, which is how a client reads the agent's reply; only the backend writes them. `households.background_paused` stops claims for a household.
+
 ## Privacy
 
 Conversation summaries, question text and turns all carry what the senior said, so caregivers can read them only when `households.share_transcripts` is true (agreed at onboarding). The digest reads them with the service role and reports topics and counts. Agent memory keeps its source fixed, and verifying a fact always records the caregiver who did it.
 
 ## Delivery
 
-`notification_outbox` is the only place notifications are queued. Surfaces read their own rows through Realtime (the display chimes on a new `senior_prompt`); a push sender Edge Function (not built yet) delivers APNs pushes and marks rows sent. Realtime is enabled on `task_instances`, `notification_outbox`, `events` and `family_messages`.
+`notification_outbox` is the only place notifications are queued: `senior_prompt` and `caregiver_alert` from the escalation ladder, and `event_notice` for day-of calendar events. Surfaces read their own rows through Realtime (the display chimes on a new `senior_prompt`); a push sender Edge Function (not built yet) delivers APNs pushes and marks rows sent. Realtime is enabled on `task_instances`, `notification_outbox`, `events` and `family_messages`.
 
 ## Not in this step
 
-Daily digest generation, the push sender, the caregiver API, storage buckets for photos and voice clips.
+Daily digest generation, the push sender, Google pull sync, storage buckets for photos and voice clips.

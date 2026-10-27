@@ -1,8 +1,9 @@
 // Services/SunnyAPIClient.swift
 //
 // HTTP client for Sunny's Supabase Edge Function REST API.
-// Handles: conversation history fetching (DEV logs), FCM device token registration,
-// and LiveKit token fetching with optional notification session context.
+// Handles: conversation history fetching (DEV logs) and FCM device token registration.
+// LiveKit tokens moved to SunnyBackend (2026-10-27); these endpoints predate the
+// memory-care backend and are replaced in the phone-surface step.
 //
 // Auth: Bearer token is hardcoded to the test user UUID for MVP.
 // TODO: Phase 3: replace with real JWT once auth is implemented.
@@ -22,30 +23,7 @@ actor SunnyAPIClient {
     private let baseURL = URL(string: "https://rlihlcgyjqyzkpzijtsp.supabase.co/functions/v1")!
     private let testUserId = "00000000-0000-0000-0000-000000000001"
 
-    private let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let value = try container.decode(String.self)
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let standard = ISO8601DateFormatter()
-            standard.formatOptions = [.withInternetDateTime]
-
-            if let date = fractional.date(from: value) {
-                return date
-            }
-            if let date = standard.date(from: value) {
-                return date
-            }
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Invalid ISO-8601 date: \(value)"
-            )
-        }
-        return decoder
-    }()
+    private let decoder = SunnyBackend.decoder
 
     /// Fetches a paginated list of conversations for the current user, newest first.
     ///
@@ -99,34 +77,6 @@ actor SunnyAPIClient {
         let url = baseURL.appending(path: "save-device-token")
         let body = try JSONEncoder().encode(DeviceTokenRequest(token: token, platform: "ios"))
         let _: DeviceTokenResponse = try await request(url: url, method: "POST", body: body)
-    }
-
-    /// Fetches LiveKit connection details from the Supabase edge function, embedding
-    /// optional notification session context in the participant metadata.
-    ///
-    /// purpose: Call livekit-token to obtain a signed JWT and server URL. When a
-    ///          NotificationContext is supplied the trigger, reminderId, and adherenceLogId
-    ///          are embedded in participant metadata so the agent can greet the user in context.
-    /// @param roomName: (String) LiveKit room identifier
-    /// @param participantName: (String) Participant display name for this session
-    /// @param notificationContext: (NotificationContext?) optional reminder tap context
-    /// @return TokenService.ConnectionDetails with serverUrl and participantToken
-    func fetchLiveKitToken(
-        roomName: String,
-        participantName: String,
-        notificationContext: NotificationContext? = nil
-    ) async throws -> TokenService.ConnectionDetails {
-        let url = baseURL.appending(path: "livekit-token")
-        let requestBody = LiveKitTokenRequest(
-            roomName: roomName,
-            participantName: participantName,
-            userId: testUserId,
-            trigger: notificationContext?.trigger,
-            reminderId: notificationContext?.reminderId,
-            adherenceLogId: notificationContext?.adherenceLogId
-        )
-        let body = try JSONEncoder().encode(requestBody)
-        return try await request(url: url, method: "POST", body: body)
     }
 
     /// Generic HTTP request helper that decodes the API response envelope.
@@ -249,13 +199,4 @@ private struct DeviceTokenRequest: Encodable {
 
 struct DeviceTokenResponse: Decodable {
     let saved: Bool
-}
-
-private struct LiveKitTokenRequest: Encodable {
-    let roomName: String
-    let participantName: String
-    let userId: String
-    let trigger: String?
-    let reminderId: String?
-    let adherenceLogId: String?
 }

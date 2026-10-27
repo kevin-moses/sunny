@@ -420,3 +420,13 @@ enabled = true
 # so the function still checks for a signed-in, paired device on every call.
 [functions.livekit-token]
 verify_jwt = true
+
+# Called by the database through pg_net with a shared secret header (Vault
+# 'sunny_jobs_secret' = SUNNY_JOBS_SECRET), not a user JWT; the function checks the secret.
+[functions.jobs-run]
+verify_jwt = false
+
+# Google redirects the browser to /callback without a JWT (the signed state proves who
+# started the flow); /start checks the caregiver's JWT itself.
+[functions.google-oauth]
+verify_jwt = false
