@@ -4,7 +4,7 @@
 // milestone end to end:
 //   setup              Create a dev caregiver and household (service role, once), plus
 //                      join codes for the senior phone and the home display. Saves the
-//                      caregiver's credentials to supabase/scripts/.dev.json (git-ignored).
+//                      caregiver's credentials (git-ignored, one file per project).
 //   chat "<message>"   Send a request to the household agent and wait for its reply.
 //                      Add --continue to continue the previous conversation.
 //   google             Print the Google consent link that connects this caregiver's
@@ -16,14 +16,18 @@
 // Usage (local stack):
 //   supabase status -o env > supabase/scripts/.env.local
 //   deno run -A --env-file=supabase/scripts/.env.local supabase/scripts/caregiver.ts setup
-// Reads API_URL, ANON_KEY (or PUBLISHABLE_KEY) and, for setup, SERVICE_ROLE_KEY (or
-// SECRET_KEY).
+// Usage (remote project):
+//   supabase projects api-keys --project-ref <ref> --reveal -o env > supabase/scripts/.env.remote
+//   echo 'SUPABASE_URL=https://<ref>.supabase.co' >> supabase/scripts/.env.remote
+//   deno run -A --env-file=supabase/scripts/.env.remote supabase/scripts/caregiver.ts setup
+// Reads the project URL, the publishable key and, for setup, the service-role key, under
+// the names either command above writes.
 //
-// Last modified: 2026-10-27
+// Last modified: 2026-10-28
 
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
-const DEV_FILE = new URL("./.dev.json", import.meta.url);
+const API_URL_NAMES = ["API_URL", "SUPABASE_URL"];
 
 interface DevState {
   email: string;
@@ -45,15 +49,30 @@ function env(...names: string[]): string {
   throw new Error(`Set one of: ${names.join(", ")}`);
 }
 
+let devFileCache: URL | undefined;
+
+/**
+ * purpose: The saved-caregiver file for the project the URL points at, resolved once.
+ * @return: (URL) .dev.json for a local stack, .dev.<project-ref>.json for a hosted one.
+ */
+function devFile(): URL {
+  if (!devFileCache) {
+    const host = new URL(env(...API_URL_NAMES)).hostname;
+    const local = host === "127.0.0.1" || host === "localhost";
+    devFileCache = new URL(local ? "./.dev.json" : `./.dev.${host.split(".")[0]}.json`, import.meta.url);
+  }
+  return devFileCache;
+}
+
 /**
  * purpose: Load the saved dev caregiver.
  * @return: (DevState) Credentials and household.
  */
 function loadState(): DevState {
   try {
-    return JSON.parse(Deno.readTextFileSync(DEV_FILE));
+    return JSON.parse(Deno.readTextFileSync(devFile()));
   } catch {
-    throw new Error("No supabase/scripts/.dev.json yet; run `setup` first.");
+    throw new Error(`No ${devFile().pathname} yet; run \`setup\` first.`);
   }
 }
 
@@ -62,7 +81,7 @@ function loadState(): DevState {
  * @param state: (DevState) Credentials and household.
  */
 function saveState(state: DevState): void {
-  Deno.writeTextFileSync(DEV_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
+  Deno.writeTextFileSync(devFile(), JSON.stringify(state, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -71,7 +90,8 @@ function saveState(state: DevState): void {
  * @return: (Promise<SupabaseClient>) Client acting as the caregiver.
  */
 async function signIn(state: DevState): Promise<SupabaseClient> {
-  const client = createClient(env("API_URL"), env("ANON_KEY", "PUBLISHABLE_KEY"), {
+  const key = env("ANON_KEY", "PUBLISHABLE_KEY", "SUPABASE_PUBLISHABLE_KEY");
+  const client = createClient(env(...API_URL_NAMES), key, {
     auth: { persistSession: false },
   });
   const { error } = await client.auth.signInWithPassword({ email: state.email, password: state.password });
@@ -113,11 +133,12 @@ async function setup(): Promise<void> {
     // first run: no saved caregiver yet
   }
   if (existing) {
-    console.log(`Already set up: household ${existing.household_id} (delete supabase/scripts/.dev.json to start over)`);
+    console.log(`Already set up: household ${existing.household_id} (delete ${devFile().pathname} to start over)`);
     await printCodes(await signIn(existing), existing.household_id);
     return;
   }
-  const admin = createClient(env("API_URL"), env("SERVICE_ROLE_KEY", "SECRET_KEY"), {
+  const adminKey = env("SERVICE_ROLE_KEY", "SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY");
+  const admin = createClient(env(...API_URL_NAMES), adminKey, {
     auth: { persistSession: false },
   });
   const email = `caregiver+${crypto.randomUUID().slice(0, 8)}@sunny.test`;
@@ -134,7 +155,7 @@ async function setup(): Promise<void> {
   if (error) throw new Error(error.message);
   const householdId = typeof household === "string" ? household : household.id;
   saveState({ email, password, household_id: householdId });
-  console.log(`Created household ${householdId} with a dev caregiver (saved to supabase/scripts/.dev.json)`);
+  console.log(`Created household ${householdId} with a dev caregiver (saved to ${devFile().pathname})`);
   await printCodes(client, householdId);
 }
 
