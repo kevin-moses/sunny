@@ -40,11 +40,14 @@ import type * as lib_policies from "../lib/policies.js";
 import type * as lib_schedule from "../lib/schedule.js";
 import type * as lib_secretBox from "../lib/secretBox.js";
 import type * as lib_text from "../lib/text.js";
+import type * as lib_twilio from "../lib/twilio.js";
 import type * as lib_time from "../lib/time.js";
 import type * as lib_today from "../lib/today.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as pairing from "../pairing.js";
+import type * as phone from "../phone.js";
 import type * as scheduler from "../scheduler.js";
+import type * as sms from "../sms.js";
 import type * as tasks from "../tasks.js";
 import type * as voice from "../voice.js";
 
@@ -88,10 +91,13 @@ declare const fullApi: ApiFromModules<{
   "lib/secretBox": typeof lib_secretBox;
   "lib/text": typeof lib_text;
   "lib/time": typeof lib_time;
+  "lib/twilio": typeof lib_twilio;
   "lib/today": typeof lib_today;
   "lib/validators": typeof lib_validators;
   pairing: typeof pairing;
+  phone: typeof phone;
   scheduler: typeof scheduler;
+  sms: typeof sms;
   tasks: typeof tasks;
   voice: typeof voice;
 }>;

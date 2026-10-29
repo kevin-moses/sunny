@@ -19,6 +19,8 @@
 // encrypted), calendarEventLinks (our event to the Google event, per connection) and
 // calendarSyncs (the pending push of one event to one connection; at most one row per key,
 // see lib/calendarSync.ts).
+// SMS: caregiver phone numbers live on householdMembers (phone, phoneVerifiedAt, pendingPhone);
+// phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
 //
 // Last modified: 2026-10-29
@@ -68,10 +70,27 @@ export default defineSchema({
     userId: v.string(),
     role: memberRole,
     displayName: v.string(),
+    // E.164 number. Reachable by SMS only when phoneVerifiedAt is also set (see phone.ts).
     phone: v.optional(v.string()),
+    phoneVerifiedAt: v.optional(v.number()),
+    // A number awaiting its texted code; becomes phone on confirmMyPhone.
+    pendingPhone: v.optional(v.string()),
   })
     .index("by_household_user", ["householdId", "userId"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // Inbound SMS: members by number (callers also check phoneVerifiedAt).
+    .index("by_phone", ["phone"]),
+
+  // The one outstanding phone verification per member: the code is stored hashed, with an
+  // expiry and a count of wrong guesses. Replaced on every resend.
+  phoneVerifications: defineTable({
+    householdId: v.id("households"),
+    userId: v.string(),
+    phone: v.string(),
+    codeHash: v.string(),
+    expiresAt: v.number(),
+    attempts: v.number(),
+  }).index("by_household_user", ["householdId", "userId"]),
 
   // Senior-side devices; userId is the Clerk user created for the device at pairing.
   devices: defineTable({

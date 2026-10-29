@@ -17,6 +17,10 @@
 //   codes              Print fresh join codes for the senior phone and the home display.
 //   google             Print the Google Calendar consent link (googleCalendar:connectUrl); open
 //                      it signed in as a Google test user. See notes/GOOGLE_CALENDAR_SETUP.md.
+//   phone <number>     Start verifying the dev caregiver's mobile number (households:setMyPhone):
+//                      10-digit US or +E.164. Sunny texts a 6-digit code to it (needs the
+//                      TWILIO_* variables on the deployment).
+//   confirm-phone <code>  Confirm that code (households:confirmMyPhone) and print the result.
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
 //   npx tsx scripts/caregiver.ts setup
@@ -24,6 +28,8 @@
 //   npx tsx scripts/caregiver.ts chat "Make it 12:30 instead" --continue
 //   npx tsx scripts/caregiver.ts day
 //   npx tsx scripts/caregiver.ts google
+//   npx tsx scripts/caregiver.ts phone 555-123-4567
+//   npx tsx scripts/caregiver.ts confirm-phone 123456
 //
 // Last modified: 2026-10-29
 
@@ -211,6 +217,44 @@ ${url}`);
 }
 
 /**
+ * purpose: Start verifying the dev caregiver's phone number; Sunny texts the code.
+ * @param number: (string) Number as typed.
+ */
+function startPhone(number: string): void {
+  const state = loadState();
+  const result = convexRun("households:setMyPhone", {
+    householdId: state.householdId,
+    phone: number,
+  }) as { phone: string; expiresAt: number };
+  console.log(
+    `Texted a code to ${result.phone}; it expires at ${new Date(result.expiresAt).toLocaleTimeString()}. ` +
+      "Run `confirm-phone <code>` next.",
+  );
+}
+
+/** Messages for each confirmMyPhone status. */
+const CONFIRM_MESSAGES: Record<string, (r: { phone?: string; attemptsLeft?: number }) => string> = {
+  verified: (r) => `Verified ${r.phone}. Sunny can now text you.`,
+  wrong_code: (r) => `Wrong code; ${r.attemptsLeft} attempts left.`,
+  expired: () => "That code expired; run `phone <number>` for a new one.",
+  locked: () => "Too many wrong codes; run `phone <number>` for a new one.",
+  none: () => "No verification is pending; run `phone <number>` first.",
+};
+
+/**
+ * purpose: Confirm the texted code for the dev caregiver's phone number.
+ * @param code: (string) The 6-digit code.
+ */
+function confirmPhone(code: string): void {
+  const state = loadState();
+  const result = convexRun("households:confirmMyPhone", {
+    householdId: state.householdId,
+    code,
+  }) as { status: string; phone?: string; attemptsLeft?: number };
+  console.log((CONFIRM_MESSAGES[result.status] ?? (() => JSON.stringify(result)))(result));
+}
+
+/**
  * purpose: Dispatch the command line.
  * @param argv: (string[]) Arguments after the script name.
  * @return: (Promise<void>) Resolves when the command finishes.
@@ -237,8 +281,18 @@ async function main(argv: string[]): Promise<void> {
     case "google":
       google();
       break;
+    case "phone":
+      if (!rest[0]) throw new Error("Usage: phone <number>");
+      startPhone(rest.join(" "));
+      break;
+    case "confirm-phone":
+      if (!rest[0]) throw new Error("Usage: confirm-phone <code>");
+      confirmPhone(rest[0]);
+      break;
     default:
-      console.log('Commands: setup | chat "<message>" [--continue] | day | codes | google');
+      console.log(
+        'Commands: setup | chat "<message>" [--continue] | day | codes | google | phone <number> | confirm-phone <code>',
+      );
   }
 }
 
