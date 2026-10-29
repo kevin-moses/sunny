@@ -137,14 +137,20 @@ describe("create", () => {
     const promptOnly = policies.find((p) => p.systemKey === "prompt_only");
     expect(medication?.name).toBe("Medication");
     expect(medication?.steps).toEqual([
-      { offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-      { offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-      { offsetMinutes: 30, action: "alert_on_call", skipIfClaimed: false },
-      { offsetMinutes: 45, action: "alert_all_caregivers", skipIfClaimed: true },
+      { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
+      { id: expect.any(String), offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
+      { id: expect.any(String), offsetMinutes: 30, action: "alert_on_call", skipIfClaimed: false },
+      {
+        id: expect.any(String),
+        offsetMinutes: 45,
+        action: "alert_all_caregivers",
+        skipIfClaimed: true,
+      },
     ]);
+    expect(new Set(medication?.steps.map((s) => s.id)).size).toBe(4);
     expect(promptOnly?.name).toBe("Prompt only");
     expect(promptOnly?.steps).toEqual([
-      { offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
+      { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
     ]);
   });
 

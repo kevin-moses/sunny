@@ -179,7 +179,12 @@ export function zonedInstant(date: string, time: string, timezone: string): numb
   // side of a transition whose instant is within a day of the wall time.
   const before = offsetAt(wall - PROBE_MS, timezone);
   const after = offsetAt(wall + PROBE_MS, timezone);
-  const roundTrips = (t: number) => offsetAt(t, timezone) === wall - t;
+  /**
+   * purpose: Whether an instant's local wall time in the zone equals the wall time asked for.
+   * @param t: (number) Candidate epoch ms.
+   * @return: (boolean) True when the instant round-trips to the wall time.
+   */
+  const roundTrips = (t: number): boolean => offsetAt(t, timezone) === wall - t;
   if (roundTrips(wall - after)) return wall - after;
   if (roundTrips(wall - before)) return wall - before;
   return wall - before;

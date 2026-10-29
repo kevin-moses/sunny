@@ -40,6 +40,31 @@ export interface DeviceActor {
 export type Actor = CaregiverActor | DeviceActor | { kind: "agent" } | { kind: "system" };
 
 /**
+ * purpose: The user id behind an actor, for audit and ownership columns.
+ * @param actor: (Actor) The actor.
+ * @return: (string | undefined) The Clerk user id; undefined for agent and system actors.
+ */
+export function actorUserId(actor: Actor): string | undefined {
+  return "userId" in actor ? actor.userId : undefined;
+}
+
+/**
+ * purpose: Load a household.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<Doc<"households">>) The household.
+ * @raises not_found when it does not exist.
+ */
+export async function loadHousehold(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Doc<"households">> {
+  const household = await ctx.db.get(householdId);
+  if (!household) throw appError("not_found", "Household not found");
+  return household;
+}
+
+/**
  * purpose: The signed-in user's id (the Clerk subject), if any.
  * @param ctx: (QueryCtx) Query or mutation context.
  * @return: (string | null) User id, or null when signed out.

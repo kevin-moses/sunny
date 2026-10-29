@@ -75,15 +75,34 @@ export const escalationAction = v.union(
 /** Type of escalationAction. */
 export type EscalationAction = Infer<typeof escalationAction>;
 
-/** One step of an escalation policy, at an offset from the due time. */
-export const escalationStep = v.object({
+/** The fields of an escalation step other than its id. */
+const escalationStepFields = {
   offsetMinutes: v.number(),
   action: escalationAction,
   // When true the step is skipped once a caregiver has claimed the instance.
   skipIfClaimed: v.boolean(),
-});
+};
+
+/**
+ * One stored step of an escalation policy, at an offset from the due time. The id is assigned
+ * by the server and stays with the step when a policy is edited, so a step already fired on an
+ * instance is recognised even when steps before it are added, removed or reordered.
+ */
+export const escalationStep = v.object({ id: v.string(), ...escalationStepFields });
 /** Type of escalationStep. */
 export type EscalationStep = Infer<typeof escalationStep>;
+
+/**
+ * A step as a client sends it. An id is optional: a step passed back with the id it was read
+ * with keeps it (updatePolicy); a step without one, or with an id the policy does not have,
+ * gets a new id.
+ */
+export const escalationStepInput = v.object({
+  id: v.optional(v.string()),
+  ...escalationStepFields,
+});
+/** Type of escalationStepInput. */
+export type EscalationStepInput = Infer<typeof escalationStepInput>;
 
 /** Who performed a change, for audit rows. */
 export const actorKind = v.union(

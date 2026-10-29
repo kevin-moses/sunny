@@ -9,7 +9,9 @@
 // Conventions: instants are epoch ms; household-local dates are "YYYY-MM-DD" and local
 // times "HH:MM"; weekdays are ISO numbers (1 = Monday); user ids are Clerk user ids
 // (the identity's subject). Uniqueness the SQL schema enforced is checked by the
-// mutations that write each table, using the indexes below.
+// mutations that write each table, using the indexes below. The scheduler tables carry the
+// household-scoped indexes the per-household tick and the resync paths read (active tasks,
+// instances by state, by task and state).
 // Not yet ported (later phases): background jobs and agent requests, Google Calendar
 // connections and links, storage for photos and voice clips.
 //
@@ -96,7 +98,8 @@ export default defineSchema({
     name: v.string(),
     // Stable key for the seeded defaults, so code never depends on the editable name.
     systemKey: v.optional(v.union(v.literal("medication"), v.literal("prompt_only"))),
-    // Ordered; a step's position is its index.
+    // Ordered; each step carries a stable id (instances record fired steps by id, so editing
+    // the ladder never makes a step look fired or unfired).
     steps: v.array(escalationStep),
   })
     .index("by_household", ["householdId"])
@@ -133,7 +136,7 @@ export default defineSchema({
     scheduleChangedAt: v.number(),
   })
     .index("by_household", ["householdId"])
-    .index("by_active", ["active"])
+    .index("by_household_active", ["householdId", "active"])
     .index("by_household_policy", ["householdId", "escalationPolicyId"]),
 
   taskInstances: defineTable({
@@ -154,12 +157,12 @@ export default defineSchema({
     // When the instance was created (escalation offsets count from the later of this and
     // windowStart). Explicit rather than _creationTime so tests can drive the clock.
     createdAt: v.number(),
-    // Escalation steps already handled, each once. action is a snapshot of the step as
-    // fired; notified is false for a step superseded by a later step of the same kind in
+    // Escalation steps already handled, each once, by the step's stable id. action is a
+    // snapshot of the step as fired; notified is false for a step superseded by a later step of the same kind in
     // the same tick.
     firedSteps: v.array(
       v.object({
-        position: v.number(),
+        stepId: v.string(),
         action: escalationAction,
         firedAt: v.number(),
         notified: v.boolean(),
@@ -168,8 +171,10 @@ export default defineSchema({
   })
     .index("by_task_date_time", ["taskId", "localDate", "scheduledTime"])
     .index("by_household_date", ["householdId", "localDate"])
-    .index("by_state_window_start", ["state", "windowStart"])
-    .index("by_state_window_end", ["state", "windowEnd"]),
+    // The scheduler tick reads one household's instances by state; resync deletes a task's
+    // or household's upcoming instances without scanning history.
+    .index("by_task_state", ["taskId", "state", "windowStart"])
+    .index("by_household_state", ["householdId", "state", "windowStart"]),
 
   // As-needed medication taken outside a scheduled instance.
   doseLog: defineTable({
@@ -197,6 +202,8 @@ export default defineSchema({
   })
     .index("by_recipient_user", ["recipientUserId"])
     .index("by_recipient_device", ["recipientDeviceId"])
+    // Deleting an instance deletes its notifications (the SQL foreign key cascaded).
+    .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
     .index("by_sent", ["sentAt"]),
 
@@ -230,7 +237,10 @@ export default defineSchema({
     createdVia: actorKind,
     createdBy: v.optional(v.string()),
     deletedAt: v.optional(v.number()),
-  }).index("by_household", ["householdId"]),
+  })
+    .index("by_household", ["householdId"])
+    // Live events: deletedAt is absent until cancelled.
+    .index("by_household_deleted", ["householdId", "deletedAt"]),
 
   // Occurrences already announced to caregivers (one notice per event per local date).
   eventNotices: defineTable({

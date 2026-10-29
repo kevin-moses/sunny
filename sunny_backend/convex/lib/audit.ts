@@ -7,6 +7,7 @@
 
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { actorUserId } from "./access";
 import type { Actor } from "./access";
 
 /** What to record for one audited change. */
@@ -26,11 +27,10 @@ export interface AuditEntry {
  * @return: (Promise<void>) Resolves when the row is written.
  */
 export async function audit(ctx: MutationCtx, entry: AuditEntry): Promise<void> {
-  const { actor } = entry;
   await ctx.db.insert("auditLog", {
     householdId: entry.householdId,
-    actorUserId: "userId" in actor ? actor.userId : undefined,
-    actorKind: actor.kind,
+    actorUserId: actorUserId(entry.actor),
+    actorKind: entry.actor.kind,
     action: entry.action,
     entity: entry.entity,
     entityId: entry.entityId,

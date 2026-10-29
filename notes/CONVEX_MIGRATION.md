@@ -58,6 +58,7 @@ Caregiver invites stay join codes too, redeemed by a signed-in caregiver through
 - Foreign keys and cascades become explicit: deleting a household runs an internal mutation that removes its rows table by table.
 - Every table that was audited by triggers is audited by `lib/audit.ts`, called from the mutations that change it.
 - Soft deletes stay where they had a reason (events, so cancellations sync to Google).
+- View-shaped results returned to the apps (`dayView`, `listEvents`, `instances.today`, `confirmDueTask`) use `null`, never a missing key, for absent optional values; raw document returns (`Doc<...>`) keep Convex's omitted-field shape.
 
 ## Reactivity and the clock
 

@@ -16,6 +16,7 @@ import {
   currentUserId,
   findDevice,
   findMember,
+  loadHousehold,
   myHouseholdIds,
   requireCaregiverAccount,
   requireEditor,
@@ -25,6 +26,8 @@ import {
 } from "./lib/access";
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
+import { resyncHouseholdTimezone } from "./lib/schedule";
+import { requireNonBlank } from "./lib/text";
 import { canonicalTimezone, isLocalTime } from "./lib/time";
 import { joinGrant, memberRole } from "./lib/validators";
 import type { DeviceKind, JoinGrant, MemberRole } from "./lib/validators";
@@ -34,18 +37,6 @@ const CODE_LENGTH = 8;
 const CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const CODE_ATTEMPTS = 10;
 const DEFAULT_CAREGIVER_NAME = "Caregiver";
-
-/**
- * purpose: Reject a blank string.
- * @param value: (string) Candidate.
- * @param label: (string) Field name for the error message.
- * @return: (string) The trimmed value.
- */
-function requireNonBlank(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) throw appError("invalid", `${label} cannot be blank`);
-  return trimmed;
-}
 
 /**
  * purpose: Validate an IANA timezone and return its canonical spelling.
@@ -206,9 +197,7 @@ export const get = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<Doc<"households">> => {
     await requireReader(ctx, args.householdId);
-    const household = await ctx.db.get(args.householdId);
-    if (!household) throw appError("not_found", "Household not found");
-    return household;
+    return await loadHousehold(ctx, args.householdId);
   },
 });
 
@@ -239,8 +228,7 @@ export const update = mutation({
   },
   handler: async (ctx, args): Promise<null> => {
     await requireEditor(ctx, args.householdId);
-    const household = await ctx.db.get(args.householdId);
-    if (!household) throw appError("not_found", "Household not found");
+    const household = await loadHousehold(ctx, args.householdId);
 
     const { householdId, ...fields } = args;
     const patch: Partial<Omit<Doc<"households">, "_id" | "_creationTime">> = {};
@@ -250,7 +238,11 @@ export const update = mutation({
     if (fields.seniorFullName !== undefined) patch.seniorFullName = fields.seniorFullName;
     if (fields.timezone !== undefined) {
       patch.timezone = requireTimezone(fields.timezone);
-      // wave 2 adds the schedule resync here
+      if (patch.timezone !== household.timezone) {
+        // The resync reads the household's zone, so write it before expanding.
+        await ctx.db.patch(householdId, { timezone: patch.timezone });
+        await resyncHouseholdTimezone(ctx, householdId, Date.now());
+      }
     }
     if (fields.onCallUserId !== undefined) {
       if (!(await findMember(ctx, householdId, fields.onCallUserId))) {
