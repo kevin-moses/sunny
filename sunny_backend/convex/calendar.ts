@@ -8,9 +8,11 @@
 // terms (see lib/occurrences.ts); cancelling is a soft delete (deletedAt). listEvents and
 // dayView are readable by caregivers of any role and by the household's paired device.
 // updateEvent takes `changes`: an absent key is unchanged, a key present as null clears the
-// field, and unknown keys are rejected by the validator.
+// field, and unknown keys are rejected by the validator. listOccurrencesCore and
+// householdWeek are shared helpers for the agent tools and briefing (lib/agentTools.ts,
+// lib/agentBriefing.ts).
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { v } from "convex/values";
 import type { ObjectType } from "convex/values";
@@ -30,7 +32,7 @@ import {
   liveEvents,
   occurrenceJson,
 } from "./lib/occurrences";
-import type { EventJson, EventWithNext } from "./lib/occurrences";
+import type { EventJson, EventWithNext, Occurrence, OccurrenceJson } from "./lib/occurrences";
 import {
   addDays,
   dateLabel,
@@ -326,6 +328,63 @@ export async function cancelEventCore(
 }
 
 /**
+ * purpose: Core of listEvents, reusable by agent tools: validate the range and return the
+ *          household's occurrences. The caller has already checked read access.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param from: (string) First local date, "YYYY-MM-DD".
+ * @param to: (string) Last local date (at most 92 days after from).
+ * @return: (Promise<OccurrenceJson[]>) Occurrences with their event definitions, earliest first.
+ * @raises invalid for malformed dates or a range that is reversed or longer than 92 days.
+ */
+export async function listOccurrencesCore(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  from: string,
+  to: string,
+): Promise<OccurrenceJson[]> {
+  if (!isLocalDate(from) || !isLocalDate(to)) throw appError("invalid", "Dates must be YYYY-MM-DD");
+  if (to < from || daysBetween(from, to) > MAX_LIST_RANGE_DAYS) {
+    throw appError("invalid", "Date range must be 0 to 92 days");
+  }
+  const household = await loadHousehold(ctx, householdId);
+  const occurrences = await householdOccurrences(ctx, householdId, household.timezone, from, to);
+  return occurrences.map(occurrenceJson);
+}
+
+/** A household with its local today and its occurrences from today through 7 days ahead. */
+export interface HouseholdWeek {
+  household: Doc<"households">;
+  today: string;
+  weekday: string;
+  week: Occurrence[];
+}
+
+/**
+ * purpose: Load a household and its occurrences from local today through today + 7 days
+ *          (the shared basis of dayView and the agent briefing).
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<HouseholdWeek>) The household, local date, weekday name and occurrences.
+ */
+export async function householdWeek(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  now: number,
+): Promise<HouseholdWeek> {
+  const household = await loadHousehold(ctx, householdId);
+  const today = localDate(now, household.timezone);
+  const week = expandOccurrences(
+    await liveEvents(ctx, householdId),
+    household.timezone,
+    today,
+    addDays(today, WEEK_DAYS),
+  );
+  return { household, today, weekday: weekdayName(today), week };
+}
+
+/**
  * purpose: Add an event: one-off on onDate, or weekly on repeatDays from onDate until
  *          repeatUntil. Times are household-local. Editor caregivers only.
  * @param householdId: (Id<"households">) Household.
@@ -391,14 +450,7 @@ export const listEvents = query({
   args: { householdId: v.id("households"), from: v.string(), to: v.string() },
   handler: async (ctx, { householdId, from, to }) => {
     await requireReader(ctx, householdId);
-    if (!isLocalDate(from) || !isLocalDate(to))
-      throw appError("invalid", "Dates must be YYYY-MM-DD");
-    if (to < from || daysBetween(from, to) > MAX_LIST_RANGE_DAYS) {
-      throw appError("invalid", "Date range must be 0 to 92 days");
-    }
-    const household = await loadHousehold(ctx, householdId);
-    const occurrences = await householdOccurrences(ctx, householdId, household.timezone, from, to);
-    return occurrences.map(occurrenceJson);
+    return await listOccurrencesCore(ctx, householdId, from, to);
   },
 });
 
@@ -421,17 +473,9 @@ export const dayView = query({
   args: { householdId: v.id("households"), minute: v.optional(v.number()) },
   handler: async (ctx, { householdId }) => {
     await requireReader(ctx, householdId);
-    const household = await loadHousehold(ctx, householdId);
     const now = Date.now();
+    const { household, today, weekday, week } = await householdWeek(ctx, householdId, now);
     const timezone = household.timezone;
-    const today = localDate(now, timezone);
-    const weekday = weekdayName(today);
-    const week = expandOccurrences(
-      await liveEvents(ctx, householdId),
-      timezone,
-      today,
-      addDays(today, WEEK_DAYS),
-    );
     const nextUp = week.find(
       (o) => (o.endsAt ?? o.startsAt + minutes(DEFAULT_DURATION_MINUTES)) > now,
     );
