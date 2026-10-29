@@ -11,6 +11,8 @@
 import type * as agent from "../agent.js";
 import type * as agentRequests from "../agentRequests.js";
 import type * as agentRuntime from "../agentRuntime.js";
+import type * as apns from "../apns.js";
+import type * as apnsTokens from "../apnsTokens.js";
 import type * as calendar from "../calendar.js";
 import type * as calendarFanOut from "../calendarFanOut.js";
 import type * as calendarPush from "../calendarPush.js";
@@ -24,6 +26,7 @@ import type * as lib_agentBriefing from "../lib/agentBriefing.js";
 import type * as lib_agentConfig from "../lib/agentConfig.js";
 import type * as lib_agentRequestState from "../lib/agentRequestState.js";
 import type * as lib_agentTools from "../lib/agentTools.js";
+import type * as lib_apnsPayload from "../lib/apnsPayload.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_base64 from "../lib/base64.js";
 import type * as lib_calendarSync from "../lib/calendarSync.js";
@@ -55,6 +58,8 @@ declare const fullApi: ApiFromModules<{
   agent: typeof agent;
   agentRequests: typeof agentRequests;
   agentRuntime: typeof agentRuntime;
+  apns: typeof apns;
+  apnsTokens: typeof apnsTokens;
   calendar: typeof calendar;
   calendarFanOut: typeof calendarFanOut;
   calendarPush: typeof calendarPush;
@@ -68,6 +73,7 @@ declare const fullApi: ApiFromModules<{
   "lib/agentConfig": typeof lib_agentConfig;
   "lib/agentRequestState": typeof lib_agentRequestState;
   "lib/agentTools": typeof lib_agentTools;
+  "lib/apnsPayload": typeof lib_apnsPayload;
   "lib/audit": typeof lib_audit;
   "lib/base64": typeof lib_base64;
   "lib/calendarSync": typeof lib_calendarSync;
