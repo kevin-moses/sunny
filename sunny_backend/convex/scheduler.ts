@@ -12,10 +12,12 @@
 // are skipped once claimed; inactive tasks never fire; and when several steps of one kind
 // (prompt, or caregiver alert) come due together only the latest, by its current position in
 // the policy, is sent. Each household runs in its own serializable transaction, so a slow or
-// overlapping tick conflicts only with writes to that household. The functions take `now` so
-// tests can drive the clock; tickHouseholdCore is the pure pass tests call directly.
+// overlapping tick conflicts only with writes to that household. The same per-household pass
+// also queues the day-of event notices (lib/eventNotices.ts, the port of event_notice_tick),
+// so there is no second per-minute cron. The functions take `now` so tests can drive the
+// clock; tickHouseholdCore is the pure pass tests call directly.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -23,6 +25,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { appError } from "./lib/errors";
+import { announceEvents } from "./lib/eventNotices";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12, minutes } from "./lib/time";
 import type { EscalationStep } from "./lib/validators";
@@ -39,6 +42,7 @@ export interface TickResult {
   stepsFired: number;
   escalated: number;
   missed: number;
+  noticed: number;
 }
 
 /** An escalation step that is due on an instance, and whether it is the one to send. */
@@ -259,12 +263,13 @@ async function closeWindows(
 
 /**
  * purpose: One scheduler pass over one household: expand, open windows, fire escalation steps,
- *          mark escalated, close windows. The pure core of tickHousehold, called directly by
- *          tests with an explicit clock.
+ *          mark escalated, close windows, announce day-of event notices. The pure core of
+ *          tickHousehold, called directly by tests with an explicit clock.
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms.
- * @return: (Promise<TickResult>) Counts of created, opened, fired (notified), escalated, missed.
+ * @return: (Promise<TickResult>) Counts of created, opened, fired (notified), escalated,
+ *          missed and noticed (event occurrences announced).
  */
 export async function tickHouseholdCore(
   ctx: MutationCtx,
@@ -276,7 +281,8 @@ export async function tickHouseholdCore(
   const stepsFired = await fireSteps(ctx, householdId, now);
   const escalated = await markEscalated(ctx, householdId);
   const missed = await closeWindows(ctx, householdId, now);
-  return { created, opened, stepsFired, escalated, missed };
+  const noticed = await announceEvents(ctx, householdId, now);
+  return { created, opened, stepsFired, escalated, missed, noticed };
 }
 
 /**
@@ -306,10 +312,10 @@ export const expand = internalMutation({
 
 /**
  * purpose: One scheduler pass for one household: expand, open windows, fire escalation steps,
- *          mark escalated, close windows, in one transaction. Scheduled by tick. Internal.
+ *          mark escalated, close windows, announce event notices, in one transaction. Scheduled by tick. Internal.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms shared by every household of one tick.
- * @return: (TickResult) Counts of created, opened, fired (notified), escalated and missed.
+ * @return: (TickResult) Counts of created, opened, fired (notified), escalated, missed and noticed.
  */
 export const tickHousehold = internalMutation({
   args: { householdId: v.id("households"), now: v.number() },

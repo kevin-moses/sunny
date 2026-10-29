@@ -142,7 +142,14 @@ async function tick(t: TestConvex, iso: string): Promise<TickResult> {
   const ids = await t.run(async (ctx) =>
     (await ctx.db.query("households").collect()).map((h) => h._id),
   );
-  const total: TickResult = { created: 0, opened: 0, stepsFired: 0, escalated: 0, missed: 0 };
+  const total: TickResult = {
+    created: 0,
+    opened: 0,
+    stepsFired: 0,
+    escalated: 0,
+    missed: 0,
+    noticed: 0,
+  };
   for (const householdId of ids) {
     const result = await t.mutation(internal.scheduler.tickHousehold, { householdId, now });
     for (const key of Object.keys(total) as Array<keyof TickResult>) total[key] += result[key];
