@@ -179,7 +179,9 @@ export const calendarConnectionStatus = v.union(
 /** Type of calendarConnectionStatus. */
 export type CalendarConnectionStatus = Infer<typeof calendarConnectionStatus>;
 
-/** Where a pending Google push is: waiting for the pool, or running now. */
-export const calendarSyncState = v.union(v.literal("queued"), v.literal("running"));
-/** Type of calendarSyncState. */
-export type CalendarSyncState = Infer<typeof calendarSyncState>;
+/** Where a pending Google push is (see lib/calendarSync.ts for the transitions). */
+export const calendarSyncState = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("dirty"),
+);

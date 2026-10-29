@@ -12,7 +12,7 @@
 // still valid) or a device user that exists before pairDevice runs cannot become a caregiver.
 // requireSenior stays keyed on the devices row.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
@@ -226,6 +226,28 @@ export async function requireCaregiverAccount(ctx: QueryCtx): Promise<string> {
     throw appError("forbidden", "Only a signed-in caregiver can do this");
   }
   return userId;
+}
+
+/**
+ * purpose: Require a user to be a caregiver of the household: a member, and not a device. Takes
+ *          the user id rather than reading auth, so internal queries called by actions can use
+ *          it (the action reads the identity and passes the subject).
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param userId: (string) User id to check.
+ * @return: (Promise<Doc<"householdMembers">>) The membership row.
+ * @raises forbidden for a device or a non-member.
+ */
+export async function requireCaregiverMember(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  userId: string,
+): Promise<Doc<"householdMembers">> {
+  const member = await findMember(ctx, householdId, userId);
+  if (!member || (await findDevice(ctx, userId))) {
+    throw appError("forbidden", "Only a caregiver of this household can do this");
+  }
+  return member;
 }
 
 /**

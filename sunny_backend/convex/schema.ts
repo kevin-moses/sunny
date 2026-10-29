@@ -235,10 +235,15 @@ export default defineSchema({
     error: v.optional(v.string()),
     // The OAuth refresh token as an encrypted box (lib/secretBox.ts). Never returned to clients.
     refreshToken: v.string(),
+    // The current access token as an encrypted box and when it expires (epoch ms), so a
+    // burst of pushes refreshes about once. Cleared on revoke and reconnect.
+    accessToken: v.optional(v.string()),
+    accessTokenExpiresAt: v.optional(v.number()),
     lastSyncedAt: v.optional(v.number()),
+    // Caregiver-safe note that some pushes failed after retries; cleared by the next success.
+    lastError: v.optional(v.string()),
   })
-    .index("by_household", ["householdId"])
-    .index("by_user", ["userId"])
+    .index("by_household_status", ["householdId", "status"])
     .index("by_household_user", ["householdId", "userId"]),
 
   // Our event to the Google event, per connection.
@@ -253,17 +258,30 @@ export default defineSchema({
     .index("by_connection", ["connectionId"]),
 
   // The pending push of one event to one connection; unique per (eventId, connectionId).
-  // queued = waiting for the workpool; running = the push action has read the event.
-  // dirty = the event changed while running, so push again when done.
+  // States and transitions: see lib/calendarSync.ts.
   calendarSyncs: defineTable({
-    householdId: v.id("households"),
     eventId: v.id("events"),
     connectionId: v.id("calendarConnections"),
     state: calendarSyncState,
-    dirty: v.boolean(),
+    // Set on every transition; the sweeper re-enqueues rows idle for too long.
+    updatedAt: v.number(),
+    // Pushes that failed after all retries; one delayed re-enqueue is allowed.
+    failures: v.optional(v.number()),
   })
     .index("by_event_connection", ["eventId", "connectionId"])
-    .index("by_connection", ["connectionId"]),
+    .index("by_connection", ["connectionId"])
+    .index("by_updated", ["updatedAt"]),
+
+  // Single-use OAuth nonces: connectUrl stores one, the callback consumes it. Expired rows
+  // are swept hourly (crons.ts).
+  oauthStates: defineTable({
+    nonce: v.string(),
+    userId: v.string(),
+    householdId: v.id("households"),
+    expiresAt: v.number(),
+  })
+    .index("by_nonce", ["nonce"])
+    .index("by_expires", ["expiresAt"]),
 
   auditLog: defineTable({
     householdId: v.id("households"),

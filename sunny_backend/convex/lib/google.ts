@@ -9,10 +9,12 @@
 // GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_OAUTH_STATE_SECRET.
 // Exports: CALENDAR_SCOPE, GoogleApiError, GoogleAccessRevoked, consentUrl, exchangeCode,
 // refreshAccessToken, createSunnyCalendar, calendarExists, upsertEvent, deleteEvent,
-// signState, verifyState.
+// signState, verifyState, revokeRefreshToken.
 //
 // Last modified: 2026-10-29
 
+import { fromBase64Url, toBase64Url } from "./base64";
+import { ConfigError } from "./errors";
 import type { GoogleEvent } from "./googleEvent";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -20,12 +22,17 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
-const STATE_TTL_SECONDS = 15 * 60;
+const STATE_TTL_SECONDS = 10 * 60;
+const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
 
-/** A Google API error; `retryable` for rate limits and server errors, `gone` when the
- *  calendar or event no longer exists (404 or 410). */
+/**
+ * purpose: A failed Google API response. `retryable` for rate limits and server errors,
+ *          `gone` when the calendar or event no longer exists (404 or 410).
+ * @param status: (number) HTTP status from Google.
+ * @param message: (string) Response body or summary.
+ */
 export class GoogleApiError extends Error {
   status: number;
   retryable: boolean;
@@ -47,7 +54,10 @@ export class GoogleApiError extends Error {
   }
 }
 
-/** The caregiver revoked Sunny's access (or the refresh token expired). */
+/**
+ * purpose: The caregiver revoked Sunny's access, or the refresh token expired.
+ * @param message: (string) Google's error description.
+ */
 export class GoogleAccessRevoked extends Error {
   /**
    * purpose: Signal that Google no longer honors the stored refresh token.
@@ -63,11 +73,11 @@ export class GoogleAccessRevoked extends Error {
  * purpose: Read a required environment variable at call time.
  * @param name: (string) Variable name.
  * @return: (string) Its value.
- * @raises Error when unset or empty.
+ * @raises ConfigError when unset or empty.
  */
 function env(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`Missing env var ${name}`);
+  if (!value) throw new ConfigError(`Missing env var ${name}`);
   return value;
 }
 
@@ -77,8 +87,14 @@ function env(name: string): string {
  * @param init: (RequestInit) fetch options.
  * @return: (Promise<Response>) The response.
  */
-function timedFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+async function timedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -135,7 +151,9 @@ async function tokenRequest(form: Record<string, string>): Promise<Record<string
 function emailFromIdToken(idToken: string | null): string | null {
   if (!idToken) return null;
   try {
-    const claims = JSON.parse(b64urlDecode(idToken.split(".")[1]!)) as { email?: unknown };
+    const claims = JSON.parse(new TextDecoder().decode(fromBase64Url(idToken.split(".")[1]!))) as {
+      email?: unknown;
+    };
     return typeof claims.email === "string" ? claims.email : null;
   } catch {
     return null;
@@ -166,7 +184,7 @@ async function emailFromUserinfo(accessToken: string): Promise<string | null> {
  * @return: (Promise<{accessToken, refreshToken, scopes, email}>) Tokens, the scopes
  *          actually granted, and the Google account email (from the ID token, else the
  *          userinfo endpoint, else null).
- * @raises GoogleApiError when Google returns no refresh token.
+ * @raises GoogleApiError when Google returns no refresh or access token.
  */
 export async function exchangeCode(
   code: string,
@@ -179,7 +197,10 @@ export async function exchangeCode(
   if (typeof body.refresh_token !== "string") {
     throw new GoogleApiError(400, "No refresh token returned");
   }
-  const accessToken = String(body.access_token);
+  if (typeof body.access_token !== "string") {
+    throw new GoogleApiError(502, "No access token returned");
+  }
+  const accessToken = body.access_token;
   const email =
     emailFromIdToken(typeof body.id_token === "string" ? body.id_token : null) ??
     (await emailFromUserinfo(accessToken));
@@ -203,10 +224,34 @@ export async function refreshAccessToken(
   refreshToken: string,
 ): Promise<{ accessToken: string; expiresAt: number }> {
   const body = await tokenRequest({ refresh_token: refreshToken, grant_type: "refresh_token" });
+  if (typeof body.access_token !== "string") {
+    throw new GoogleApiError(502, "No access token returned");
+  }
   return {
-    accessToken: String(body.access_token),
+    accessToken: body.access_token,
     expiresAt: Date.now() + Number(body.expires_in ?? 3600) * 1000,
   };
+}
+
+/**
+ * purpose: Revoke a refresh token at Google (the grant ends and its access tokens stop
+ *          working). Best effort: failures are logged, never thrown.
+ * @param refreshToken: (string) The plain refresh token.
+ * @return: (Promise<boolean>) Whether Google accepted the revocation.
+ */
+export async function revokeRefreshToken(refreshToken: string): Promise<boolean> {
+  try {
+    const res = await timedFetch(REVOKE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: refreshToken }),
+    });
+    if (!res.ok) console.error(`Google token revoke answered ${res.status}`);
+    return res.ok;
+  } catch (e) {
+    console.error(`Google token revoke failed: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
 }
 
 /**
@@ -343,30 +388,6 @@ export async function deleteEvent(
 // ---------------------------------------------------------------------------
 
 /**
- * purpose: Base64url-encode bytes without padding.
- * @param bytes: (Uint8Array) Input bytes.
- * @return: (string) Base64url text.
- */
-function b64url(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-/**
- * purpose: Decode base64url text (padding optional) to a UTF-8 string.
- * @param text: (string) Base64url input.
- * @return: (string) Decoded text.
- * @raises Error when the input is not valid base64.
- */
-function b64urlDecode(text: string): string {
-  const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
-  const bin = atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), "="));
-  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
-}
-
-/**
  * purpose: HMAC-SHA256 of a message with GOOGLE_OAUTH_STATE_SECRET.
  * @param message: (string) Text to sign.
  * @return: (Promise<string>) Base64url signature.
@@ -380,7 +401,7 @@ async function hmac(message: string): Promise<string> {
     ["sign"],
   );
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
-  return b64url(new Uint8Array(sig));
+  return toBase64Url(new Uint8Array(sig));
 }
 
 /**
@@ -397,20 +418,28 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /**
- * purpose: Sign the caregiver and household into a short-lived OAuth state.
+ * purpose: Sign the caregiver, household and a single-use nonce into a short-lived OAuth
+ *          state. The caller stores the nonce so the callback can consume it once.
  * @param userId: (string) Caregiver's user id.
  * @param householdId: (string) Household id.
+ * @param nonce: (string) Random single-use value.
  * @param now: (number) Current time in ms (tests pass a fixed clock).
- * @return: (Promise<string>) "payload.signature", valid for 15 minutes.
+ * @return: (Promise<string>) "payload.signature", valid for 10 minutes.
  */
 export async function signState(
   userId: string,
   householdId: string,
+  nonce: string,
   now: number = Date.now(),
 ): Promise<string> {
-  const payload = b64url(
+  const payload = toBase64Url(
     new TextEncoder().encode(
-      JSON.stringify({ u: userId, h: householdId, e: Math.floor(now / 1000) + STATE_TTL_SECONDS }),
+      JSON.stringify({
+        u: userId,
+        h: householdId,
+        n: nonce,
+        e: Math.floor(now / 1000) + STATE_TTL_SECONDS,
+      }),
     ),
   );
   return `${payload}.${await hmac(payload)}`;
@@ -420,21 +449,27 @@ export async function signState(
  * purpose: Verify a state from the OAuth callback.
  * @param state: (string) State parameter returned by Google.
  * @param now: (number) Current time in ms.
- * @return: (Promise<{userId, householdId} | null>) Decoded state, or null if forged,
+ * @return: (Promise<{userId, householdId, nonce} | null>) Decoded state, or null if forged,
  *          malformed or expired.
  */
 export async function verifyState(
   state: string,
   now: number = Date.now(),
-): Promise<{ userId: string; householdId: string } | null> {
+): Promise<{ userId: string; householdId: string; nonce: string } | null> {
   const [payload, signature, extra] = state.split(".");
   if (!payload || !signature || extra !== undefined) return null;
   if (!safeEqual(await hmac(payload), signature)) return null;
   try {
-    const data = JSON.parse(b64urlDecode(payload)) as { u?: unknown; h?: unknown; e?: unknown };
+    const data = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as {
+      u?: unknown;
+      h?: unknown;
+      n?: unknown;
+      e?: unknown;
+    };
     if (typeof data.e !== "number" || data.e * 1000 < now) return null;
     if (typeof data.u !== "string" || typeof data.h !== "string") return null;
-    return { userId: data.u, householdId: data.h };
+    if (typeof data.n !== "string") return null;
+    return { userId: data.u, householdId: data.h, nonce: data.n };
   } catch {
     return null;
   }

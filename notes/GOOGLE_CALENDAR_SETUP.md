@@ -33,7 +33,7 @@ npx convex env set GOOGLE_OAUTH_STATE_SECRET "$(openssl rand -hex 32)"
 npx convex env set CALENDAR_TOKEN_KEY "$(openssl rand -base64 32)"
 ```
 
-`CALENDAR_TOKEN_KEY` encrypts the stored refresh tokens. Keep a copy somewhere safe: if it changes or is lost, every caregiver has to reconnect Google.
+`CALENDAR_TOKEN_KEY` encrypts the stored refresh tokens. Keep a copy somewhere safe: stored tokens carry no key id, so rotating or losing the key makes them unreadable and every caregiver has to reconnect Google Calendar (Sunny marks such connections with a reconnect message).
 
 ## 5. Connect
 

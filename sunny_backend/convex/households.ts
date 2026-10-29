@@ -10,9 +10,10 @@
 // from an orphaned previous owner (see registerPushToken). pairDevice stores the pairing time
 // and the client's retry nonce on the device row so /pair can answer a retry whose first
 // response was lost (findRecentPairing); listDevices never returns the nonce.
-// Google Calendar: update re-pushes every live event when the timezone, event notice time or
-// senior's preferred name actually changes; removeMember drops the removed caregiver's Google
-// connections, links and pending syncs (lib/calendarSync.ts).
+// Google Calendar: update schedules a re-push of the events (lib/calendarSync.ts, chunked, not
+// inline) when the timezone, event notice time or senior's preferred name actually changes or
+// a pause ends; removeMember drops the removed caregiver's Google connections, links and
+// pending syncs and revokes their grants.
 //
 // Last modified: 2026-10-29
 
@@ -274,8 +275,11 @@ export const update = mutation({
     if (fields.backgroundPaused !== undefined) patch.backgroundPaused = fields.backgroundPaused;
 
     await ctx.db.patch(householdId, patch);
-    // These three shape every Google event (zone, reminder minutes, description).
+    // These three shape every Google event (zone, reminder minutes, description); resuming from
+    // pause pushes everything the pause skipped.
+    const resumed = fields.backgroundPaused === false && household.backgroundPaused;
     if (
+      resumed ||
       (patch.timezone !== undefined && patch.timezone !== household.timezone) ||
       (patch.eventNoticeTime !== undefined &&
         patch.eventNoticeTime !== household.eventNoticeTime) ||

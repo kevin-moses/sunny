@@ -1,6 +1,6 @@
 // lib/google.test.ts
 // Purpose: Tests for the Google OAuth and Calendar client with global fetch mocked (no
-// network): consent URL, signed OAuth state (round trip, tampered, expired, wrong secret),
+// network): consent URL, signed OAuth state (round trip with nonce, tampered, expired, wrong secret), revoking a token,
 // error mapping (401, 403 forbidden vs rate limit, 404/410 gone, 429/5xx retryable,
 // invalid_grant to GoogleAccessRevoked), code exchange parsing, token refresh, calendar
 // creation and existence, event upsert (replace vs create vs concurrent create), delete of a
@@ -19,6 +19,7 @@ import {
   deleteEvent,
   exchangeCode,
   refreshAccessToken,
+  revokeRefreshToken,
   signState,
   upsertEvent,
   verifyState,
@@ -114,33 +115,34 @@ describe("signState and verifyState", () => {
   const now = Date.UTC(2026, 9, 29, 12, 0, 0);
 
   test("round trips the user and household", async () => {
-    const state = await signState("user_1", "house_1", now);
+    const state = await signState("user_1", "house_1", "nonce_1", now);
     expect(await verifyState(state, now + 1000)).toEqual({
       userId: "user_1",
       householdId: "house_1",
+      nonce: "nonce_1",
     });
   });
 
-  test("is valid just under 15 minutes and expired after", async () => {
-    const state = await signState("u", "h", now);
-    expect(await verifyState(state, now + 14 * 60_000 + 59_000)).not.toBeNull();
-    expect(await verifyState(state, now + 15 * 60_000 + 2000)).toBeNull();
+  test("is valid just under 10 minutes and expired after", async () => {
+    const state = await signState("u", "h", "n", now);
+    expect(await verifyState(state, now + 9 * 60_000 + 59_000)).not.toBeNull();
+    expect(await verifyState(state, now + 10 * 60_000 + 2000)).toBeNull();
   });
 
   test("a tampered payload is rejected", async () => {
-    const [, sig] = (await signState("u", "h", now)).split(".");
-    const forgedPayload = btoa(JSON.stringify({ u: "evil", h: "h", e: 9_999_999_999 }));
+    const [, sig] = (await signState("u", "h", "n", now)).split(".");
+    const forgedPayload = btoa(JSON.stringify({ u: "evil", h: "h", n: "n", e: 9_999_999_999 }));
     expect(await verifyState(`${forgedPayload}.${sig}`, now)).toBeNull();
   });
 
   test("a tampered signature is rejected", async () => {
-    const [payload, sig] = (await signState("u", "h", now)).split(".");
+    const [payload, sig] = (await signState("u", "h", "n", now)).split(".");
     const flipped = (sig![0] === "A" ? "B" : "A") + sig!.slice(1);
     expect(await verifyState(`${payload}.${flipped}`, now)).toBeNull();
   });
 
   test("a different secret is rejected", async () => {
-    const state = await signState("u", "h", now);
+    const state = await signState("u", "h", "n", now);
     process.env.GOOGLE_OAUTH_STATE_SECRET = "another-secret";
     expect(await verifyState(state, now)).toBeNull();
   });
@@ -153,7 +155,7 @@ describe("signState and verifyState", () => {
 
   test("missing secret gives a clear error", async () => {
     delete process.env.GOOGLE_OAUTH_STATE_SECRET;
-    await expect(signState("u", "h", now)).rejects.toThrow("GOOGLE_OAUTH_STATE_SECRET");
+    await expect(signState("u", "h", "n", now)).rejects.toThrow("GOOGLE_OAUTH_STATE_SECRET");
   });
 });
 
@@ -211,6 +213,12 @@ describe("exchangeCode", () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
+  test("a response without a string access_token is an error", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, { refresh_token: "rt" }));
+    const e = (await rejection(exchangeCode("c"))) as GoogleApiError;
+    expect(e.message).toContain("No access token");
+  });
+
   test("falls back to userinfo when the id_token has no email", async () => {
     fetchMock
       .mockResolvedValueOnce(
@@ -254,6 +262,13 @@ describe("exchangeCode", () => {
 });
 
 describe("refreshAccessToken", () => {
+  test("a response without a string access_token is an error", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, { access_token: 5 }));
+    const e = (await rejection(refreshAccessToken("rt"))) as GoogleApiError;
+    expect(e).toBeInstanceOf(GoogleApiError);
+    expect(e.message).toContain("No access token");
+  });
+
   test("returns the access token and its expiry", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     fetchMock.mockResolvedValueOnce(json(200, { access_token: "fresh", expires_in: 3600 }));
@@ -417,5 +432,42 @@ describe("deleteEvent", () => {
     fetchMock.mockResolvedValueOnce(json(429));
     const e = (await rejection(deleteEvent("at", "cal", "abc"))) as GoogleApiError;
     expect(e.retryable).toBe(true);
+  });
+});
+
+describe("revokeRefreshToken", () => {
+  test("posts the token to Google's revoke endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(json(200));
+    expect(await revokeRefreshToken("rt")).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://oauth2.googleapis.com/revoke");
+    expect(new URLSearchParams(String(init.body)).get("token")).toBe("rt");
+  });
+
+  test("a refusal or a network error is logged and returns false", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fetchMock.mockResolvedValueOnce(json(400, { error: "invalid_token" }));
+    expect(await revokeRefreshToken("rt")).toBe(false);
+    fetchMock.mockRejectedValueOnce(new Error("offline"));
+    expect(await revokeRefreshToken("rt")).toBe(false);
+    expect(errorSpy).toHaveBeenCalledTimes(2);
+    errorSpy.mockRestore();
+  });
+});
+
+describe("request timeout", () => {
+  test("aborts a request that takes longer than 15 seconds and clears the timer", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal!.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const pending = rejection(refreshAccessToken("rt"));
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect((await pending) as Error).toMatchObject({ message: "aborted" });
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
   });
 });

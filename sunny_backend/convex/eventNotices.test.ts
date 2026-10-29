@@ -11,25 +11,11 @@
 //
 // Last modified: 2026-10-29
 
-import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import schema from "./schema";
-
-/** Every non-test module in the backend, for the convex-test harness. */
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
-
-/** The convex-test harness type. */
-type TestConvex = ReturnType<typeof makeBackend>;
-
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
-function makeBackend() {
-  return convexTest(schema, modules);
-}
+import { createFamilyHousehold, insertEvent, makeBackend } from "./testing.helpers";
+import type { TestConvex } from "./testing.helpers";
 
 /** A household with Pat (primary), Max (member), Val (viewer) and one paired device. */
 interface Fixture {
@@ -44,25 +30,7 @@ interface Fixture {
  */
 async function setup(timezone = "America/New_York"): Promise<Fixture> {
   const t = makeBackend();
-  const pat = t.withIdentity({ subject: "pat" });
-  const householdId = await pat.mutation(api.households.create, {
-    seniorPreferredName: "Mom",
-    timezone,
-    caregiverDisplayName: "Pat",
-  });
-  for (const [user, grants] of [
-    ["max", "caregiver_member"],
-    ["val", "caregiver_viewer"],
-  ] as const) {
-    const { code } = await pat.mutation(api.households.createJoinCode, { householdId, grants });
-    await t.withIdentity({ subject: user }).mutation(api.households.redeemJoinCode, { code });
-  }
-  const { code } = await pat.mutation(api.households.createJoinCode, {
-    householdId,
-    grants: "senior_phone",
-  });
-  await t.mutation(internal.households.pairDevice, { code, userId: "phone" });
-  return { t, householdId };
+  return { t, householdId: await createFamilyHousehold(t, timezone) };
 }
 
 /**
@@ -75,14 +43,7 @@ async function addEvent(
   f: Fixture,
   fields: Partial<Doc<"events">> & { title: string; startsOn: string; startTime: string },
 ): Promise<Id<"events">> {
-  return await f.t.run(
-    async (ctx) =>
-      await ctx.db.insert("events", {
-        householdId: f.householdId,
-        createdVia: "caregiver",
-        ...fields,
-      }),
-  );
+  return await insertEvent(f.t, f.householdId, fields);
 }
 
 /**

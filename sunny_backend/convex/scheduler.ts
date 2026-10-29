@@ -312,10 +312,12 @@ export const expand = internalMutation({
 
 /**
  * purpose: One scheduler pass for one household: expand, open windows, fire escalation steps,
- *          mark escalated, close windows, announce event notices, in one transaction. Scheduled by tick. Internal.
+ *          mark escalated, close windows, announce event notices, in one transaction. Scheduled
+ *          by tick. Internal.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms shared by every household of one tick.
- * @return: (TickResult) Counts of created, opened, fired (notified), escalated, missed and noticed.
+ * @return: (TickResult) Counts of created, opened, fired (notified), escalated, missed and
+ *          noticed.
  */
 export const tickHousehold = internalMutation({
   args: { householdId: v.id("households"), now: v.number() },

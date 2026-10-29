@@ -5,7 +5,7 @@
     "moduleResolution": "Bundler",
     "skipLibCheck": true,
     "target": "ESNext",
-    "lib": ["ES2023", "dom"],
+    "lib": ["ES2023"],
     "module": "ESNext",
     "isolatedModules": true,
     "noEmit": true,

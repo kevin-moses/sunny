@@ -1,15 +1,22 @@
 // googleCalendar.ts
 // Purpose: A caregiver's Google Calendar connection, ported from the google-oauth Edge
 // Function and the connection RPCs. `connectUrl` (a public action, member caregivers only,
-// never a device) returns Google's consent URL carrying a signed state naming the caregiver
-// and household. Google redirects the browser to GET /google/callback (routed in http.ts):
-// `callback` verifies the state, exchanges the code, requires CALENDAR_SCOPE, reuses the
-// caregiver's existing Sunny calendar if it still exists (else creates one), encrypts the
-// refresh token, saves the connection through the internal `saveConnection` mutation (which
-// reactivates it and queues a push of every live event, plus cancelled events still linked),
-// and answers with a small HTML page. `myConnections` lists the caller's own connections
+// never a device) returns Google's consent URL carrying a signed state naming the caregiver,
+// the household and a single-use nonce (stored in oauthStates, 10 minute TTL, swept hourly).
+// Google redirects the browser to GET /google/callback (routed in http.ts): `callback`
+// verifies the state, consumes the nonce (a second use shows the "link expired" page),
+// exchanges the code, requires CALENDAR_SCOPE, reuses the caregiver's existing Sunny calendar
+// if it still exists (else creates one), encrypts the refresh token, saves the connection
+// through the internal `saveConnection` mutation (which reactivates it and schedules a
+// chunked push of the events that can still occur, plus cancelled events still linked), and
+// answers with a small HTML page. Every failure, including misconfiguration, ends on a page.
+// A grant that ends up unused (rejected callback, replaced or dropped connection) is revoked
+// at Google by `revokeGrant`, best effort. `myConnections` lists the caller's own connections
 // without any token field; `disconnect` removes the caller's own connection, its links and
 // pending syncs, and leaves the Google calendar as it is.
+// Known residue: the state is not bound to the browser that started the flow, so someone who
+// is handed a fresh consent link and completes it connects their Google account to the
+// caregiver who created the link; the nonce limits that to one use inside 10 minutes.
 // The refresh token is encrypted in the callback action (lib/secretBox.ts) and the mutation
 // stores the box: mutations must be deterministic and cannot rely on WebCrypto.
 // Env (read by lib/google.ts): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
@@ -23,29 +30,43 @@ import type { Id } from "./_generated/dataModel";
 import {
   action,
   httpAction,
+  internalAction,
   internalMutation,
   internalQuery,
   mutation,
   query,
 } from "./_generated/server";
-import { findDevice, findMember, isDeviceIdentity, requireCaregiverAccount } from "./lib/access";
+import {
+  isDeviceIdentity,
+  loadHousehold,
+  requireCaregiverAccount,
+  requireCaregiverMember,
+} from "./lib/access";
+import { toBase64Url } from "./lib/base64";
 import { audit } from "./lib/audit";
-import { dropConnection, queueConnectionBackfill } from "./lib/calendarSync";
-import { appError } from "./lib/errors";
+import {
+  deleteLinks,
+  dropConnection,
+  queueConnectionBackfill,
+  scheduleGrantRevoke,
+} from "./lib/calendarSync";
+import { appError, isAppError } from "./lib/errors";
 import {
   CALENDAR_SCOPE,
   calendarExists,
   consentUrl,
   createSunnyCalendar,
   exchangeCode,
+  revokeRefreshToken,
   signState,
   verifyState,
 } from "./lib/google";
-import { encryptSecret } from "./lib/secretBox";
+import { decryptSecret, encryptSecret } from "./lib/secretBox";
 import type { CalendarConnectionStatus } from "./lib/validators";
 
 /** A connection as shown to its owner; no token fields. */
-export interface ConnectionView {
+interface ConnectionView {
+  lastError: string | null;
   id: Id<"calendarConnections">;
   accountEmail: string | null;
   status: CalendarConnectionStatus;
@@ -70,9 +91,7 @@ interface CallbackContext {
 export const assertCaregiver = internalQuery({
   args: { householdId: v.id("households"), userId: v.string() },
   handler: async (ctx, { householdId, userId }): Promise<null> => {
-    if ((await findDevice(ctx, userId)) || !(await findMember(ctx, householdId, userId))) {
-      throw appError("forbidden", "Only a caregiver of this household can connect Google");
-    }
+    await requireCaregiverMember(ctx, householdId, userId);
     return null;
   },
 });
@@ -95,7 +114,89 @@ export const connectUrl = action({
       householdId,
       userId: identity.subject,
     });
-    return consentUrl(await signState(identity.subject, householdId));
+    const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(24)));
+    await ctx.runMutation(internal.googleCalendar.createOauthState, {
+      nonce,
+      userId: identity.subject,
+      householdId,
+    });
+    return consentUrl(await signState(identity.subject, householdId, nonce));
+  },
+});
+
+/** How long a started connect flow stays valid. */
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+/** Expired oauthStates rows deleted per sweep. */
+const OAUTH_SWEEP_BATCH = 200;
+
+/**
+ * purpose: Remember a single-use OAuth nonce for a connect flow that is starting.
+ * @param nonce: (string) Random value signed into the state.
+ * @param userId: (string) Caregiver who started the flow.
+ * @param householdId: (Id<"households">) Household being connected.
+ * @return: (null)
+ */
+export const createOauthState = internalMutation({
+  args: { nonce: v.string(), userId: v.string(), householdId: v.id("households") },
+  handler: async (ctx, args): Promise<null> => {
+    await ctx.db.insert("oauthStates", { ...args, expiresAt: Date.now() + OAUTH_STATE_TTL_MS });
+    return null;
+  },
+});
+
+/**
+ * purpose: Use up an OAuth nonce: deletes it and says whether it was valid, i.e. it exists, has
+ *          not expired, and was issued to this caregiver for this household.
+ * @param nonce: (string) Nonce from the verified state.
+ * @param userId: (string) Caregiver named in the state.
+ * @param householdId: (Id<"households">) Household named in the state.
+ * @return: (boolean) True the first time within the TTL, false otherwise.
+ */
+export const consumeOauthState = internalMutation({
+  args: { nonce: v.string(), userId: v.string(), householdId: v.id("households") },
+  handler: async (ctx, { nonce, userId, householdId }): Promise<boolean> => {
+    const row = await ctx.db
+      .query("oauthStates")
+      .withIndex("by_nonce", (q) => q.eq("nonce", nonce))
+      .unique();
+    if (!row) return false;
+    await ctx.db.delete(row._id);
+    return row.userId === userId && row.householdId === householdId && row.expiresAt >= Date.now();
+  },
+});
+
+/**
+ * purpose: Cron entry: delete expired OAuth nonces (one batch per run).
+ * @return: (number) Rows deleted.
+ */
+export const sweepOauthStates = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<number> => {
+    const expired = await ctx.db
+      .query("oauthStates")
+      .withIndex("by_expires", (q) => q.lt("expiresAt", Date.now()))
+      .take(OAUTH_SWEEP_BATCH);
+    for (const row of expired) await ctx.db.delete(row._id);
+    return expired.length;
+  },
+});
+
+/**
+ * purpose: Revoke a Google grant (best effort): decrypts the stored refresh token and asks
+ *          Google to revoke it. Never throws; failures are logged.
+ * @param refreshToken: (string) The encrypted refresh token of a dropped or replaced connection.
+ * @return: (boolean) Whether Google accepted the revocation.
+ */
+export const revokeGrant = internalAction({
+  args: { refreshToken: v.string() },
+  handler: async (_ctx, { refreshToken }): Promise<boolean> => {
+    try {
+      return await revokeRefreshToken(await decryptSecret(refreshToken));
+    } catch (e) {
+      console.error(`Could not revoke Google grant: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
   },
 });
 
@@ -104,14 +205,15 @@ export const connectUrl = action({
  *          existing Sunny calendar id.
  * @param householdId: (Id<"households">) Household.
  * @param userId: (string) Caregiver.
- * @return: (CallbackContext | null) Null when the household is gone or the user is not a
- *          member (state tokens outlive membership by up to 15 minutes).
+ * @return: (CallbackContext) The facts.
+ * @raises forbidden when the user is no longer a caregiver of the household (a state token
+ *         outlives membership by up to 15 minutes); not_found when the household is gone.
  */
 export const callbackContext = internalQuery({
   args: { householdId: v.id("households"), userId: v.string() },
-  handler: async (ctx, { householdId, userId }): Promise<CallbackContext | null> => {
-    const household = await ctx.db.get(householdId);
-    if (!household || !(await findMember(ctx, householdId, userId))) return null;
+  handler: async (ctx, { householdId, userId }): Promise<CallbackContext> => {
+    await requireCaregiverMember(ctx, householdId, userId);
+    const household = await loadHousehold(ctx, householdId);
     const existing = await ctx.db
       .query("calendarConnections")
       .withIndex("by_household_user", (q) => q.eq("householdId", householdId).eq("userId", userId))
@@ -146,15 +248,16 @@ export const saveConnection = internalMutation({
     refreshToken: v.string(),
   },
   handler: async (ctx, args): Promise<Id<"calendarConnections">> => {
-    if (!(await findMember(ctx, args.householdId, args.userId))) {
-      throw appError("forbidden", "Not a caregiver in this household");
-    }
+    await requireCaregiverMember(ctx, args.householdId, args.userId);
     const fields = {
       accountEmail: args.accountEmail ?? undefined,
       externalCalendarId: args.externalCalendarId,
       refreshToken: args.refreshToken,
       status: "active" as const,
       error: undefined,
+      // A new grant: the cached access token belongs to the old one.
+      accessToken: undefined,
+      accessTokenExpiresAt: undefined,
     };
     const existing = await ctx.db
       .query("calendarConnections")
@@ -166,13 +269,13 @@ export const saveConnection = internalMutation({
     if (existing) {
       // A different calendar means the old links point nowhere.
       if (existing.externalCalendarId !== args.externalCalendarId) {
-        const links = await ctx.db
-          .query("calendarEventLinks")
-          .withIndex("by_connection", (q) => q.eq("connectionId", existing._id))
-          .collect();
-        for (const link of links) await ctx.db.delete(link._id);
+        await deleteLinks(ctx, existing._id);
       }
       await ctx.db.patch(existing._id, fields);
+      if (existing.refreshToken !== args.refreshToken) {
+        // The new grant replaces the old one, which would otherwise stay valid at Google.
+        await scheduleGrantRevoke(ctx, existing.refreshToken);
+      }
       connectionId = existing._id;
     } else {
       connectionId = await ctx.db.insert("calendarConnections", {
@@ -220,7 +323,12 @@ function page(title: string, message: string, status = 200): Response {
     `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
   return new Response(body, {
     status,
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    },
   });
 }
 
@@ -238,29 +346,39 @@ export const callback = httpAction(async (ctx, request) => {
       400,
     );
   }
-  const state = await verifyState(url.searchParams.get("state") ?? "");
-  const code = url.searchParams.get("code");
-  if (!state || !code) {
-    return page("Link expired", "This link has expired. Start again from the Sunny app.", 400);
-  }
-
+  // A refresh token issued by Google that this request does not end up saving.
+  let unusedGrant: string | null = null;
   try {
+    const state = await verifyState(url.searchParams.get("state") ?? "");
+    const code = url.searchParams.get("code");
+    if (!state || !code) {
+      return page("Link expired", "This link has expired. Start again from the Sunny app.", 400);
+    }
+    const householdId = state.householdId as Id<"households">;
+    const fresh = await ctx.runMutation(internal.googleCalendar.consumeOauthState, {
+      nonce: state.nonce,
+      userId: state.userId,
+      householdId,
+    });
+    if (!fresh) {
+      return page("Link expired", "This link has expired. Start again from the Sunny app.", 400);
+    }
+
     const tokens = await exchangeCode(code);
+    unusedGrant = tokens.refreshToken;
     if (!tokens.scopes.includes(CALENDAR_SCOPE)) {
+      await revokeRefreshToken(tokens.refreshToken);
+      unusedGrant = null;
       return page(
         "Permission needed",
         "Sunny needs permission to manage the calendar it creates. Start again and allow it.",
         400,
       );
     }
-    const householdId = state.householdId as Id<"households">;
     const known = await ctx.runQuery(internal.googleCalendar.callbackContext, {
       householdId,
       userId: state.userId,
     });
-    if (!known) {
-      return page("Not allowed", "You are not a caregiver in this household.", 403);
-    }
     const calendarId =
       known.existingCalendarId &&
       (await calendarExists(tokens.accessToken, known.existingCalendarId))
@@ -273,11 +391,16 @@ export const callback = httpAction(async (ctx, request) => {
       externalCalendarId: calendarId,
       refreshToken: await encryptSecret(tokens.refreshToken),
     });
+    unusedGrant = null;
     return page(
       "Google Calendar connected",
       `"${known.seniorPreferredName} (Sunny)" is now in your Google Calendar and stays up to date. You can close this page.`,
     );
   } catch (e) {
+    if (unusedGrant !== null) await revokeRefreshToken(unusedGrant);
+    if (isAppError(e, "forbidden") || isAppError(e, "not_found")) {
+      return page("Not allowed", "You are not a caregiver in this household.", 403);
+    }
     console.error(`google callback failed: ${e instanceof Error ? e.message : String(e)}`);
     return page(
       "Something went wrong",
@@ -298,7 +421,7 @@ export const myConnections = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, { householdId }): Promise<ConnectionView[]> => {
     const userId = await requireCaregiverAccount(ctx);
-    if (!(await findMember(ctx, householdId, userId))) throw appError("forbidden", "Not allowed");
+    await requireCaregiverMember(ctx, householdId, userId);
     const rows = await ctx.db
       .query("calendarConnections")
       .withIndex("by_household_user", (q) => q.eq("householdId", householdId).eq("userId", userId))
@@ -309,6 +432,7 @@ export const myConnections = query({
       status: c.status,
       error: c.error ?? null,
       lastSyncedAt: c.lastSyncedAt ?? null,
+      lastError: c.lastError ?? null,
     }));
   },
 });

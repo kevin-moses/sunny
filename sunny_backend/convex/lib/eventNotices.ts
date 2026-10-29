@@ -16,7 +16,7 @@
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
-import { expandOccurrences, liveEvents } from "./occurrences";
+import { householdOccurrences } from "./occurrences";
 import type { Occurrence } from "./occurrences";
 import { formatTime12, localDate, localTime } from "./time";
 
@@ -60,39 +60,51 @@ export async function announceEvents(
   if (!household) return 0;
   if (localTime(now, household.timezone) < household.eventNoticeTime) return 0;
   const today = localDate(now, household.timezone);
-  const upcoming = expandOccurrences(
-    await liveEvents(ctx, householdId),
-    household.timezone,
-    today,
-    today,
+  const upcoming = (
+    await householdOccurrences(ctx, householdId, household.timezone, today, today)
   ).filter((o) => o.startsAt > now);
   if (upcoming.length === 0) return 0;
+  // No index lists one household's notices for a day, so look each event up (in parallel)
+  // and diff against the set already announced.
+  const announced = new Set(
+    (
+      await Promise.all(
+        upcoming.map((o) =>
+          ctx.db
+            .query("eventNotices")
+            .withIndex("by_event_date", (q) => q.eq("eventId", o.event._id).eq("localDate", today))
+            .first(),
+        ),
+      )
+    )
+      .filter((notice) => notice !== null)
+      .map((notice) => notice.eventId),
+  );
+  const due = upcoming.filter((o) => !announced.has(o.event._id));
+  if (due.length === 0) return 0;
   const members = await ctx.db
     .query("householdMembers")
     .withIndex("by_household_user", (q) => q.eq("householdId", householdId))
     .collect();
-  let announced = 0;
-  for (const occurrence of upcoming) {
-    const eventId = occurrence.event._id;
-    const seen = await ctx.db
-      .query("eventNotices")
-      .withIndex("by_event_date", (q) => q.eq("eventId", eventId).eq("localDate", today))
-      .first();
-    if (seen) continue;
-    await ctx.db.insert("eventNotices", { eventId, localDate: today });
-    const { title, body, payload } = noticeContent(household, occurrence);
-    for (const member of members) {
-      await ctx.db.insert("notificationOutbox", {
-        householdId,
-        kind: "event_notice",
-        eventId,
-        recipientUserId: member.userId,
-        title,
-        body,
-        payload,
-      });
-    }
-    announced += 1;
-  }
-  return announced;
+  await Promise.all(
+    due.map(async (occurrence) => {
+      const eventId = occurrence.event._id;
+      await ctx.db.insert("eventNotices", { eventId, localDate: today });
+      const { title, body, payload } = noticeContent(household, occurrence);
+      await Promise.all(
+        members.map((member) =>
+          ctx.db.insert("notificationOutbox", {
+            householdId,
+            kind: "event_notice",
+            eventId,
+            recipientUserId: member.userId,
+            title,
+            body,
+            payload,
+          }),
+        ),
+      );
+    }),
+  );
+  return due.length;
 }
