@@ -3,14 +3,20 @@
 // household, its settings, caregiver members and roles, one-time join codes (invite a
 // caregiver, pair a device), paired devices, and push tokens. Access rules that RLS
 // enforced are enforced here with lib/access (viewers read only, editors change data,
-// primaries manage members). Device codes are redeemed by the internal pairDevice
-// mutation, called from the /pair HTTP action once a Clerk user exists for the device.
+// primaries manage members). Device codes are checked by the internal checkDeviceCode query
+// and redeemed by the internal pairDevice mutation, both called from the /pair HTTP action
+// (pairing.ts) around the creation of the device's Clerk user. Removing a device also drops
+// its push tokens and schedules deletion of its Clerk user. A push token may be taken over
+// from an orphaned previous owner (see registerPushToken). pairDevice stores the pairing time
+// and the client's retry nonce on the device row so /pair can answer a retry whose first
+// response was lost (findRecentPairing); listDevices never returns the nonce.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import {
   currentUserId,
@@ -37,6 +43,8 @@ const CODE_LENGTH = 8;
 const CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const CODE_ATTEMPTS = 10;
 const DEFAULT_CAREGIVER_NAME = "Caregiver";
+/** How long after pairing a retry with the same nonce is answered with a fresh ticket. */
+export const PAIRING_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * purpose: Validate an IANA timezone and return its canonical spelling.
@@ -450,15 +458,38 @@ export const redeemJoinCode = mutation({
 });
 
 /**
+ * purpose: Check that a code can be redeemed by a device, without redeeming it. Internal: the
+ *          /pair HTTP action calls it before creating a Clerk user, so bad codes never cost a
+ *          Clerk call. Unknown, used, expired and caregiver codes all give the same error.
+ * @param code: (string) The code; trimmed and case-insensitive.
+ * @return: (null)
+ * @raises not_found when the code cannot be redeemed by a device.
+ */
+export const checkDeviceCode = internalQuery({
+  args: { code: v.string() },
+  handler: async (ctx, args): Promise<null> => {
+    const row = await loadRedeemableCode(ctx, args.code, Date.now());
+    if (!isDeviceGrant(row.grants)) throw invalidCodeError();
+    return null;
+  },
+});
+
+/**
  * purpose: Pair a device using a device code. Internal: the /pair HTTP action calls it after
  *          creating the device's Clerk user.
  * @param code: (string) The code; trimmed and case-insensitive.
  * @param userId: (string) Clerk user id created for the device.
  * @param name: (string, optional) Device name.
+ * @param pairingNonce: (string, optional) Client retry nonce, stored for findRecentPairing.
  * @return: ({householdId, deviceId, kind}) The pairing.
  */
 export const pairDevice = internalMutation({
-  args: { code: v.string(), userId: v.string(), name: v.optional(v.string()) },
+  args: {
+    code: v.string(),
+    userId: v.string(),
+    name: v.optional(v.string()),
+    pairingNonce: v.optional(v.string()),
+  },
   handler: async (
     ctx,
     args,
@@ -480,6 +511,8 @@ export const pairDevice = internalMutation({
       userId: args.userId,
       kind: row.grants,
       name: args.name,
+      pairedAt: now,
+      pairingNonce: args.pairingNonce,
     });
     await ctx.db.patch(row._id, { redeemedBy: args.userId, redeemedAt: now });
     return { householdId: row.householdId, deviceId, kind: row.grants };
@@ -487,23 +520,66 @@ export const pairDevice = internalMutation({
 });
 
 /**
- * purpose: The household's paired devices.
- * @param householdId: (Id<"households">) Household.
- * @return: (Doc<"devices">[]) Devices. Readers only.
+ * purpose: Find the device that already redeemed a code, for a /pair retry whose first
+ *          response was lost. Matches only when the code was redeemed by a device that still
+ *          exists, whose stored pairingNonce equals the one given, and which was paired within
+ *          PAIRING_RETRY_WINDOW_MS. Internal.
+ * @param code: (string) The code; trimmed and case-insensitive.
+ * @param pairingNonce: (string) The nonce the client sent.
+ * @param now: (number, optional) Epoch ms; defaults to the current time.
+ * @return: ({userId, householdId, deviceId, kind} | null) The pairing, or null.
  */
-export const listDevices = query({
-  args: { householdId: v.id("households") },
-  handler: async (ctx, args): Promise<Doc<"devices">[]> => {
-    await requireReader(ctx, args.householdId);
-    return await ctx.db
-      .query("devices")
-      .withIndex("by_household", (q) => q.eq("householdId", args.householdId))
-      .collect();
+export const findRecentPairing = internalQuery({
+  args: { code: v.string(), pairingNonce: v.string(), now: v.optional(v.number()) },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    userId: string;
+    householdId: Id<"households">;
+    deviceId: Id<"devices">;
+    kind: DeviceKind;
+  } | null> => {
+    const row = await ctx.db
+      .query("joinCodes")
+      .withIndex("by_code", (q) => q.eq("code", args.code.trim().toUpperCase()))
+      .unique();
+    if (!row || row.redeemedBy === undefined || !isDeviceGrant(row.grants)) return null;
+    const device = await findDevice(ctx, row.redeemedBy);
+    if (!device || device.pairingNonce === undefined) return null;
+    if (device.pairingNonce !== args.pairingNonce) return null;
+    const age = (args.now ?? Date.now()) - (device.pairedAt ?? 0);
+    if (age < 0 || age > PAIRING_RETRY_WINDOW_MS) return null;
+    return {
+      userId: device.userId,
+      householdId: device.householdId,
+      deviceId: device._id,
+      kind: row.grants,
+    };
   },
 });
 
 /**
- * purpose: Unpair a device. Editors only. (Phase 2 also deletes the device's Clerk user.)
+ * purpose: The household's paired devices.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Omit<Doc<"devices">, "pairingNonce">[]) Devices, without the pairing retry nonce.
+ *          Readers only.
+ */
+export const listDevices = query({
+  args: { householdId: v.id("households") },
+  handler: async (ctx, args): Promise<Omit<Doc<"devices">, "pairingNonce">[]> => {
+    await requireReader(ctx, args.householdId);
+    const rows = await ctx.db
+      .query("devices")
+      .withIndex("by_household", (q) => q.eq("householdId", args.householdId))
+      .collect();
+    return rows.map(({ pairingNonce: _nonce, ...device }) => device);
+  },
+});
+
+/**
+ * purpose: Unpair a device. Editors only. Also deletes the device's push tokens and schedules
+ *          deletion of its Clerk user (best effort, see pairing.deleteClerkUser).
  * @param householdId: (Id<"households">) Household.
  * @param deviceId: (Id<"devices">) Device to remove.
  * @return: (null)
@@ -517,13 +593,38 @@ export const removeDevice = mutation({
       throw appError("not_found", "Device not found");
     }
     await ctx.db.delete(device._id);
+    const tokens = await ctx.db
+      .query("pushTokens")
+      .withIndex("by_user", (q) => q.eq("userId", device.userId))
+      .collect();
+    for (const token of tokens) await ctx.db.delete(token._id);
+    await ctx.scheduler.runAfter(0, internal.pairing.deleteClerkUser, { userId: device.userId });
     return null;
   },
 });
 
 /**
+ * purpose: Whether a user no longer belongs to any household: no devices row and no
+ *          householdMembers rows.
+ * @param ctx: (QueryCtx) Context.
+ * @param userId: (string) User id.
+ * @return: (Promise<boolean>) True when the user is orphaned.
+ */
+async function isOrphanedUser(ctx: QueryCtx, userId: string): Promise<boolean> {
+  if (await findDevice(ctx, userId)) return false;
+  const member = await ctx.db
+    .query("householdMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  return member === null;
+}
+
+/**
  * purpose: Register a push token for the signed-in user. Re-registering one's own token is a
- *          no-op; a token already registered to another user is rejected, never taken over.
+ *          no-op. A token registered to another user is taken over only when that previous
+ *          owner is orphaned (no device row and no memberships): re-pairing creates a new
+ *          Clerk user, and an unpaired device cannot always clean up its old token. Otherwise
+ *          it is rejected.
  * @param token: (string) Push token.
  * @return: (null)
  * @raises forbidden when the token belongs to another account.
@@ -537,11 +638,14 @@ export const registerPushToken = mutation({
       .query("pushTokens")
       .withIndex("by_token", (q) => q.eq("token", token))
       .unique();
-    // The app unregisters its token on sign-out, so a live foreign token is not ours to take.
     if (!existing) {
       await ctx.db.insert("pushTokens", { userId, token });
     } else if (existing.userId !== userId) {
-      throw appError("forbidden", "This push token belongs to another account");
+      // A live owner's token is not ours to take; an orphaned owner's is.
+      if (!(await isOrphanedUser(ctx, existing.userId))) {
+        throw appError("forbidden", "This push token belongs to another account");
+      }
+      await ctx.db.patch(existing._id, { userId });
     }
     return null;
   },

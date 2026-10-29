@@ -1,6 +1,6 @@
 # prompts.py
 # Purpose: System prompt template and household context formatting for the Sunny voice
-# agent. format_user_context() turns the get_agent_context RPC result (today's schedule,
+# agent. format_user_context() turns the agent:getContext result (today's schedule,
 # as-needed medications, upcoming events, latest family message, life profile,
 # sensitive-topic playbook, agent memory, recent conversations) into the context block
 # injected into the system prompt at session start. Household facts are labeled by
@@ -10,8 +10,9 @@
 # paragraph. The privacy rule from VISION MODE moved to COMMUNICATION STYLE. The REMINDERS
 # section became TASKS AND REMINDERS for the household task tools. The persona rewrite to
 # the SPEC voice guardrails is a separate step.
+# Convex migration (2026-10-29): context keys are camelCase and instants are epoch ms.
 #
-# Last modified: 2026-10-25
+# Last modified: 2026-10-29
 
 from __future__ import annotations
 
@@ -66,11 +67,11 @@ only be changed by family.
 
 def format_user_context(context: dict) -> str:
     """
-    purpose: Convert a get_agent_context RPC result into the household context block for
+    purpose: Convert an agent:getContext result into the household context block for
              the system prompt.
-    @param context: (dict) Result of get_agent_context. Expected keys: household, today,
-                    as_needed, events, latest_message, life_profile, sensitive_topics,
-                    memory, recent_conversations. Pass {} when no household is known.
+    @param context: (dict) Result of agent:getContext. Expected keys: household, today,
+                    asNeeded, events, latestMessage, lifeProfile, sensitiveTopics,
+                    memory, recentConversations. Pass {} when no household is known.
     @return: (str) Multi-line context block, or a brief fallback when context is empty.
     """
     if not context:
@@ -78,10 +79,10 @@ def format_user_context(context: dict) -> str:
 
     household = context.get("household", {})
     tz = household.get("timezone", DEFAULT_TIMEZONE)
-    name = household.get("senior_preferred_name", "the user")
+    name = household.get("seniorPreferredName", "the user")
     now_str = ""
-    if household.get("local_now"):
-        now = datetime.fromisoformat(household["local_now"])
+    if household.get("localNow"):
+        now = datetime.fromisoformat(household["localNow"])
         now_str = f"{spoken_date(now)}, {clock_for_voice(now)}"
     lines = [f"Name: {name} | Timezone: {tz} | Local time now: {now_str}"]
 
@@ -91,29 +92,29 @@ def format_user_context(context: dict) -> str:
         lines.append("Today's schedule:")
         for item in today:
             entry = f"  - {describe_instance(item, tz)}"
-            if item.get("pill_description"):
-                entry += f" (pills: {item['pill_description']})"
-            if item.get("checklist_items"):
-                entry += f" (checklist: {', '.join(item['checklist_items'])})"
+            if item.get("pillDescription"):
+                entry += f" (pills: {item['pillDescription']})"
+            if item.get("checklistItems"):
+                entry += f" (checklist: {', '.join(item['checklistItems'])})"
             lines.append(entry)
     else:
         lines.append("Today's schedule: nothing scheduled.")
 
-    as_needed = context.get("as_needed", [])
+    as_needed = context.get("asNeeded", [])
     if as_needed:
         lines.append("")
         lines.append("As-needed medications (limits copied from the label by family):")
         for med in as_needed:
             limits = []
-            if med.get("max_per_day"):
-                limits.append(f"up to {med['max_per_day']} a day")
-            if med.get("min_hours_between"):
-                hours = float(med["min_hours_between"])
+            if med.get("maxPerDay"):
+                limits.append(f"up to {med['maxPerDay']} a day")
+            if med.get("minHoursBetween"):
+                hours = float(med["minHoursBetween"])
                 limits.append(f"at least {hours:g} hours apart")
-            taken = [local_clock(t, tz) for t in med.get("taken_today", [])]
+            taken = [local_clock(t, tz) for t in med.get("takenToday", [])]
             taken_str = ", ".join(taken) if taken else "none"
             lines.append(
-                f"  - {med.get('display_label', '')}: {', '.join(limits) or 'no limits on file'}. "
+                f"  - {med.get('displayLabel', '')}: {', '.join(limits) or 'no limits on file'}. "
                 f"Taken today: {taken_str}."
             )
 
@@ -122,23 +123,23 @@ def format_user_context(context: dict) -> str:
         lines.append("")
         lines.append("Upcoming events (next 7 days):")
         for e in events:
-            starts = to_local(e["starts_at"], tz)
+            starts = to_local(e["startsAt"], tz)
             entry = f"  - {spoken_date(starts)}, {clock_for_voice(starts)}: {e.get('title', '')}"
-            if e.get("visitor_name"):
-                entry += f", with {e['visitor_name']}"
+            if e.get("visitorName"):
+                entry += f", with {e['visitorName']}"
             if e.get("place"):
                 entry += f", at {e['place']}"
             lines.append(entry)
 
-    message = context.get("latest_message")
+    message = context.get("latestMessage")
     if message:
         lines.append("")
-        body = message.get("body") or ("a photo" if message.get("has_photo") else "")
+        body = message.get("body") or ("a photo" if message.get("hasPhoto") else "")
         lines.append(
             f"Latest family message, from {message.get('from', 'family')}: {body}"
         )
 
-    profile = context.get("life_profile", [])
+    profile = context.get("lifeProfile", [])
     if profile:
         lines.append("")
         lines.append("Life profile (from family):")
@@ -148,7 +149,7 @@ def format_user_context(context: dict) -> str:
                 f"  - {entry.get('category', '')} - {entry.get('name', '')}{detail}"
             )
 
-    topics = context.get("sensitive_topics", [])
+    topics = context.get("sensitiveTopics", [])
     if topics:
         lines.append("")
         lines.append("Sensitive topics (follow family's guidance exactly):")
@@ -171,14 +172,14 @@ def format_user_context(context: dict) -> str:
             )
             lines.append(f"  - {m.get('fact', '')} ({label})")
 
-    conversations = context.get("recent_conversations", [])
+    conversations = context.get("recentConversations", [])
     if conversations:
         lines.append("")
         lines.append("Recent conversations:")
         for c in conversations:
-            lines.append(
-                f"  - {str(c.get('started_at', ''))[:10]}: {c.get('summary', '')}"
-            )
+            started = c.get("startedAt")
+            day = to_local(started, tz).date().isoformat() if started else ""
+            lines.append(f"  - {day}: {c.get('summary', '')}")
 
     return "\n".join(lines)
 

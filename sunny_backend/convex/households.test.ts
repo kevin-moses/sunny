@@ -2,19 +2,30 @@
 // Purpose: Tests for households.ts with convex-test: creation and defaults, access control
 // for every public function (non-members, viewers, devices), role rules for join codes,
 // single-use and 24 hour expiry of codes, caregiver and device redemption, member removal
-// and the on-call rule, push token ownership, the device identity claim, and the last-primary guard. These stand in for the pgTAP grant and
-// RLS checks of the Supabase test suite.
+// and the on-call rule, push token ownership (a live owner's token is protected, an orphaned
+// owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
+// the device identity claim, and the last-primary guard. These stand in for the pgTAP grant
+// and RLS checks of the Supabase test suite.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal, api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
 /** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+// Fake timers keep jobs scheduled by one test (removeDevice) from running during another.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** A valid household timezone used across tests. */
 const NY = "America/New_York";
@@ -839,6 +850,37 @@ describe("devices", () => {
     ).rejects.toMatchObject({ data: { code: "not_found" } });
   });
 
+  test("removing a device deletes its push tokens and schedules its Clerk user deletion", async () => {
+    const savedKey = process.env.CLERK_SECRET_KEY;
+    process.env.CLERK_SECRET_KEY = "sk_test_fake";
+    const fetchMock = vi.fn(async () => Response.json({ deleted: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      const deviceId = await pairDevice(t, householdId, "device_1");
+      const asA = t.withIdentity({ subject: "user_a" });
+      await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
+        token: "dev_tok",
+      });
+      await asA.mutation(api.households.registerPushToken, { token: "a_tok" });
+
+      await asA.mutation(api.households.removeDevice, { householdId, deviceId });
+
+      const tokens = await t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+      expect(tokens.map((r) => r.token)).toEqual(["a_tok"]);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://api.clerk.com/v1/users/device_1");
+      expect(init.method).toBe("DELETE");
+    } finally {
+      vi.unstubAllGlobals();
+      if (savedKey === undefined) delete process.env.CLERK_SECRET_KEY;
+      else process.env.CLERK_SECRET_KEY = savedKey;
+    }
+  });
+
   test("a device of another household is not found", async () => {
     const t = makeBackend();
     const first = await createHousehold(t);
@@ -888,8 +930,9 @@ describe("push tokens", () => {
     expect(await owners(t, "tok_1")).toEqual(["user_a"]);
   });
 
-  test("a token registered to another user is not taken over", async () => {
+  test("a token owned by a live caregiver is not taken over", async () => {
     const t = makeBackend();
+    await createHousehold(t);
     await t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {
       token: "tok_1",
     });
@@ -901,6 +944,67 @@ describe("push tokens", () => {
       data: { code: "forbidden", message: "This push token belongs to another account" },
     });
     expect(await owners(t, "tok_1")).toEqual(["user_a"]);
+  });
+
+  test("a token owned by a paired device is not taken over", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await pairDevice(t, householdId, "device_1");
+    await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+    await expect(
+      t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
+        token: "tok_1",
+      }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    expect(await owners(t, "tok_1")).toEqual(["device_1"]);
+  });
+
+  test("a token owned by an orphaned user is taken over without a duplicate row", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const deviceId = await pairDevice(t, householdId, "device_1");
+    await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+    // The old device row is gone but its token row survived (it could not unregister).
+    await t.run(async (ctx) => await ctx.db.delete(deviceId));
+
+    await t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+
+    expect(await owners(t, "tok_1")).toEqual(["device_2"]);
+  });
+
+  test("a token owned by a user who left every household is taken over", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addCaregiver(t, householdId, "user_b", "caregiver_member");
+    await t.withIdentity({ subject: "user_b" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+    await t.withIdentity({ subject: "user_b" }).mutation(api.households.removeMember, {
+      householdId,
+      userId: "user_b",
+    });
+    await t.withIdentity({ subject: "user_c" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+    expect(await owners(t, "tok_1")).toEqual(["user_c"]);
+  });
+
+  test("a caregiver signed in but not yet in any household counts as orphaned", async () => {
+    // Accepted behavior: such a user owns no household, so their token can be taken over.
+    const t = makeBackend();
+    await t.withIdentity({ subject: "user_new" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+    await t.withIdentity({ subject: "user_c" }).mutation(api.households.registerPushToken, {
+      token: "tok_1",
+    });
+    expect(await owners(t, "tok_1")).toEqual(["user_c"]);
   });
 
   test("unregister removes only the caller's own token", async () => {

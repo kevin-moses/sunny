@@ -14,7 +14,7 @@ dependencies = [
     "numpy<2",
     "python-dotenv",
     "tavily-python>=0.7.12",
-    "supabase>=2.10.0",
+    "httpx>=0.27",
 ]
 
 [dependency-groups]
@@ -57,8 +57,8 @@ warn_return_any = false
 warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
-# src.* uses supabase's recursive JSON union type (int | float | Sequence[JSON] |
-# Mapping[str, JSON]) and third-party SDK union types that mypy can't fully narrow.
-# Ignored until the codebase adds explicit cast() or isinstance() guards.
+# These modules use dynamic Convex JSON payloads and third-party SDK union types that
+# mypy can't fully narrow. Ignored until the codebase adds explicit cast() or
+# isinstance() guards.
 module = ["src.memory", "src.tools", "src.agent"]
 ignore_errors = true

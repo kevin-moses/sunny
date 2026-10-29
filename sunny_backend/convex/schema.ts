@@ -15,7 +15,7 @@
 // Not yet ported (later phases): background jobs and agent requests, Google Calendar
 // connections and links, storage for photos and voice clips.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -70,6 +70,10 @@ export default defineSchema({
     kind: deviceKind,
     name: v.optional(v.string()),
     lastSeenAt: v.optional(v.number()),
+    // Set by /pair: when the device was paired and the client's retry nonce. Never returned
+    // to clients (listDevices strips pairingNonce).
+    pairedAt: v.optional(v.number()),
+    pairingNonce: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
     .index("by_household", ["householdId"]),

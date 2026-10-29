@@ -13,8 +13,10 @@
     "format:check": "prettier --check convex"
   },
   "dependencies": {
+    "@convex-dev/rate-limiter": "^0.4.2",
     "convex": "^1.48.0",
-    "convex-helpers": "^0.1.129"
+    "convex-helpers": "^0.1.129",
+    "livekit-server-sdk": "^2.19.2"
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
