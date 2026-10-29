@@ -85,16 +85,18 @@ Each phase ends with its tests passing, `npx convex dev --once` deploying cleanl
    - **Wave 1:** package scaffold, the shared-state schema (jobs and calendar-sync tables arrive with their phases), `lib/time.ts`, `lib/access.ts`, `lib/audit.ts`, `lib/today.ts`, default policies, households, members, join codes, internal `pairDevice`, push tokens. Time and household tests.
    - **Wave 2, in parallel:** (a) tasks, escalation policies (seeded ones cannot be deleted or re-keyed), instance RPCs (confirm, confirmDueTask, snooze, claim, senior reminders, dose log), expansion, the scheduler tick and `crons.ts`, the household timezone resync (only when the zone actually changes), ported from `scheduler.test.sql`; (b) events CRUD, occurrences, `listEvents`, `dayView`, ported from the calendar half of `calendar_jobs.test.sql`.
    - **Wave 3:** merge, `/simplify`, TLM review, pre-commit, commit.
-2. **Devices and voice** (in progress, two parallel agents): `/pair` with Clerk device users and rate limiting, `voice.livekitToken` action (same participant metadata as the Edge Function), `agent:*` functions (`getContext`, `today`, `confirmDueTask`, `createSeniorReminder`, `cancelSeniorReminder`, `startConversation`, `logTurn`, `finishConversation`), and the Python agent moved from supabase-py to the Convex HTTP API.
+2. **Devices and voice** (done 2026-10-29, commit `50c34d3`; verified against the dev deployment `enduring-ostrich-959` with the real Clerk and LiveKit instances): `/pair` with Clerk device users and rate limiting, `voice.livekitToken` action (same participant metadata as the Edge Function), `agent:*` functions (`getContext`, `today`, `confirmDueTask`, `createSeniorReminder`, `cancelSeniorReminder`, `startConversation`, `logTurn`, `finishConversation`), and the Python agent moved from supabase-py to the Convex HTTP API.
 3. **Agent runtime.** `agentRequests`, the Workflow port of `ManagedAgentsRuntime`, `agent_tools` port, `setup_managed_agent` and `caregiver` scripts against Convex.
 4. **Calendar sync.** OAuth HTTP actions, encrypted tokens, `calendarSyncs` + Workpool push, day-of event notices, household resync rules.
 5. **Delivery.** APNs push sender over the outbox (and Live Activity updates), Twilio caregiver alerts with "reply 1 to claim", Resend daily digest.
-6. **Cutover.** App on Convex (with the RN agents), delete `supabase/`, rewrite `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md`, Convex Cloud prod deployment, BAA confirmed with Convex, Clerk and Twilio.
+6. **Cutover.** App on Convex (done early, 2026-10-29: `sunny_app` uses Clerk + Convex and no longer depends on Supabase), delete `supabase/`, rewrite `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md`, Convex Cloud prod deployment, BAA confirmed with Convex, Clerk and Twilio.
 
 ## What the React Native app needs from this
 
-- `sunny_backend/convex/_generated/api` for typed calls. Import it with a relative path (`../sunny_backend/convex/_generated/api`) and add `sunny_backend` to Metro's `watchFolders`, or make the repo an npm workspace. Pick one with the RN agents before phase 6.
-- Env: `EXPO_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`.
+This is now implemented in `sunny_app` (see its README); the contract is kept here for reference.
+
+- `sunny_backend/convex/_generated/api` for typed calls: the app imports its type only (`import type`) and calls through `anyApi`, so Metro never bundles backend files. Regenerate `_generated` after backend changes.
+- Env: `EXPO_PUBLIC_CONVEX_URL` and `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` are optional overrides; `sunny_app/src/config.ts` defaults to the dev deployment and the dev Clerk instance (`sharing-robin-1599`).
 - Surfaces subscribe to `calendar.dayView({ householdId, minute })` and `notifications.myOutbox({})` instead of polling; Done calls `tasks.confirmDueTask`.
 - Call `households.unregisterPushToken` on sign-out. A token registered to another live account is refused; one left behind by an unpaired device is taken over.
 - Pairing: POST `{ code, name?, pairingNonce? }` to `<CONVEX_SITE_URL>/pair`, then sign in to Clerk with the returned `ticket`. The app should generate a random `pairingNonce` (16 to 128 characters) once per pairing attempt and resend the same value on every retry of that attempt. If the first response is lost, a retry with the same code and nonce within 10 minutes returns a fresh ticket for the same device user instead of 404; without a nonce, or after 10 minutes, a used code stays 404. A 429 means too many failed attempts; wait for `Retry-After`. Voice: call the `voice.livekitToken` action (same `{ serverUrl, participantToken }` response the app reads today).
@@ -105,5 +107,5 @@ Each phase ends with its tests passing, `npx convex dev --once` deploying cleanl
 - Nothing in the current Supabase project needs migrating (no pilot data). If that's wrong, phase 6 gains an export and import step, and Google connections must be redone (tokens are in Vault).
 - Convex Cloud, not self-hosted.
 - Claude Managed Agents stays the agent runtime (ported, not replaced by `@convex-dev/agent`).
-- A Clerk application exists with a JWT template named `convex`; its issuer goes in `CLERK_JWT_ISSUER_DOMAIN`.
+- Clerk application `app_3LNerhAMfPjrTkqutGAhqN7eOhU` (dev instance `https://sharing-robin-1599.clerk.accounts.dev`, set as `CLERK_JWT_ISSUER_DOMAIN`) has the `convex` JWT template. Email is optional at sign-up and passwords are off, so `/pair` can create device users with no identifier; caregivers sign in with Google, Apple or an email code. Production needs its own Google and Apple OAuth credentials.
 - Convex env vars needed on real deployments: `CLERK_JWT_ISSUER_DOMAIN`, `CLERK_SECRET_KEY` (device users and sign-in tokens), `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_SERVER_URL`, `SUNNY_AGENT_KEY` (shared with the voice agent, which also needs `CONVEX_URL`).

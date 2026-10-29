@@ -1,42 +1,35 @@
 // sunny_app/src/voice/voiceToken.ts
 //
-// Purpose: Token source for the voice session. Calls the livekit-token Supabase Edge
-// Function (which checks the device pairing and embeds the household in the participant
-// metadata the agent reads) and maps its { serverUrl, participantToken } response to what
-// LiveKit's useSession expects.
+// Purpose: Token source for the voice session: calls the voice.livekitToken Convex action and
+// maps its { serverUrl, participantToken } response to what LiveKit's useSession expects.
 //
-// The source is a non-caching TokenSource.literal, so LiveKit calls the function on every
-// fetch, but the function only calls the backend when it has to:
-//   - While a start is in flight (beginStart ... the token fetch) it fetches a fresh token
-//     for that start's request (trigger plus optional task instance) and then resets the
-//     request to the Talk request. Each fetch mints a new room, so only starts pay for it.
-//   - If the start was cancelled (its AbortSignal fired) by the time the response arrives, it
-//     throws StartCancelledError so LiveKit never connects with the token.
-//   - Outside a start, LiveKit also calls the function un-awaited from end() and when the room
-//     disconnects by itself (a rejection there would be an unhandled promise rejection), and
-//     uses the result only to pre-warm a connection. Those calls get the last successful
-//     response. The very first such call (LiveKit's prepareConnection on mount, whose
-//     rejection LiveKit catches) performs a real fetch.
+// Non-caching TokenSource.literal; the backend is called only when it has to be. A start in
+// flight (beginStart ... the token fetch) fetches a fresh token for its request (each fetch
+// mints a new room) and then resets the request to Talk; a start cancelled by its AbortSignal
+// throws StartCancelledError so LiveKit never connects. Background calls (LiveKit calls the
+// function un-awaited from end() and on a self-disconnect, only to pre-warm) reuse the last
+// successful response; the very first one (prepareConnection on mount) does a real fetch.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { TokenSource } from 'livekit-client';
 
-import { invokeFunction } from '../backend/api';
+import { callAction } from '../backend/api';
+import { api, type TaskInstanceId } from '../backend/convexApi';
 
-/** Why a session is being started; matches the livekit-token function's triggers. */
+/** Why a session is being started; matches the voice.livekitToken action's triggers. */
 type VoiceTrigger = 'talk' | 'notification_tap';
 
 /** What starts a voice session. */
 export interface SessionRequest {
   trigger: VoiceTrigger;
-  taskInstanceId?: string;
+  taskInstanceId?: TaskInstanceId;
 }
 
 /** Request used for the Talk button and whenever no other session is being started. */
 export const TALK_REQUEST: SessionRequest = { trigger: 'talk' };
 
-/** The livekit-token function's response data, reduced to what LiveKit needs. */
+/** The voice.livekitToken response, reduced to what LiveKit needs. */
 interface LiveKitTokenResponse {
   serverUrl: string;
   participantToken: string;
@@ -86,9 +79,10 @@ export function createTokenSource(): VoiceTokenSource {
    * @return: (Promise<LiveKitTokenResponse>) the token response
    */
   const fetchToken = async (request: SessionRequest): Promise<LiveKitTokenResponse> => {
-    const body: Record<string, unknown> = { trigger: request.trigger };
-    if (request.taskInstanceId) body.taskInstanceId = request.taskInstanceId;
-    const response = await invokeFunction<LiveKitTokenResponse>('livekit-token', body);
+    const response = await callAction(api.voice.livekitToken, {
+      trigger: request.trigger,
+      ...(request.taskInstanceId ? { taskInstanceId: request.taskInstanceId } : {}),
+    });
     lastResponse = { serverUrl: response.serverUrl, participantToken: response.participantToken };
     return lastResponse;
   };

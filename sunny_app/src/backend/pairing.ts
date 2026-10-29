@@ -1,223 +1,376 @@
 // sunny_app/src/backend/pairing.ts
 //
-// Purpose: This device's pairing with a household. A device signs in anonymously with
-// Supabase Auth (no account for the senior), redeems a caregiver's join code once, and
-// reads back its devices row (household and kind); the pairing is kept in AsyncStorage.
-// The Keychain session survives an app reinstall but AsyncStorage does not, and
-// devices.user_id is unique, so pair() and restorePairing() first look for an existing
-// devices row for the session and adopt it instead of redeeming again (this also recovers
-// from a redeem whose response was lost). A duplicate-key rejection gets a friendly message.
-// Losing the pairing (a caregiver removed the device, unpair in dev settings, or Auth
-// definitively rejecting the session, which supabase-js reports as SIGNED_OUT; never a
-// network error) forgets it and notifies subscribers so the app returns to the pairing
-// screen. A 403 from get_day_view also unpairs (done by the day hook). unpair() deletes the
-// user's push_tokens rows, signs out locally, and only then notifies subscribers.
+// Purpose: This device's pairing with a household, on Convex + Clerk. pair(code) POSTs
+// { code, pairingNonce } to the backend's /pair HTTP action and signs in to Clerk with the
+// returned ticket; Convex auth then follows reactively.
 //
-// Last modified: 2026-10-28
+// Same-nonce retry: the nonce is created when a code is first tried and kept with the code in
+// AsyncStorage until pairing succeeds. Submitting the SAME code again within 10 minutes resends
+// the SAME nonce, so a lost response recovers (a fresh ticket for the same device) instead of 404.
+//
+// Pairing rule (decidePairing): no pairing is stored locally. "Unpaired" means Clerk has loaded
+// and has no session; a Convex auth blip (Clerk cannot mint the "convex" JWT: offline, network
+// error, Clerk 5xx) never shows the code screen. With a Clerk session but no Convex auth the app
+// keeps the last device seen in this run (in memory only) or shows the loading view, so an
+// offline cold start stays on the loading view until Clerk and Convex answer. A device is paired
+// when households.mine has an entry with a deviceKind; signed in but no such entry (the device
+// was removed, or a caregiver account is signed in) means "removed": the app unpairs it, retrying
+// with a capped backoff (removalRetryDelay) until the session is gone. unpair() unregisters the
+// stored push token first (the device row survives a local unpair, so the server could not
+// reclaim the token later) and never rejects.
+//
+// Last modified: 2026-10-29
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getClerkInstance } from '@clerk/expo';
+import type { FunctionReturnType } from 'convex/server';
+import * as Crypto from 'expo-crypto';
 
-import { errorMessage } from '../errors';
+import { CONVEX_SITE_URL } from '../config';
 import { logger } from '../logging/logger';
-import { deleteOwnPushTokens } from '../notifications/push';
-import { BackendError, callRpc } from './api';
-import { supabase } from './supabase';
+import { unregisterStoredPushToken } from '../notifications/push';
+import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE } from './api';
+import { api, type HouseholdId } from './convexApi';
+
+/** One entry of the households.mine query. */
+export type MineEntry = FunctionReturnType<typeof api.households.mine>[number];
 
 /** What kind of senior device this is, as recorded by the join code. */
-type DeviceKind = 'senior_phone' | 'home_display';
+type DeviceKind = NonNullable<MineEntry['deviceKind']>;
 
 /** This device's pairing with a household. */
 export interface PairedDevice {
-  householdId: string;
+  householdId: HouseholdId;
   kind: DeviceKind;
 }
 
-const PAIRING_KEY = 'sunny.pairedDevice';
-const DEVICE_KINDS: readonly string[] = ['senior_phone', 'home_display'];
-const listeners = new Set<() => void>();
+/** What the app should show, as decided by decidePairing. */
+export type PairingDecision =
+  | { state: 'loading'; notice?: string }
+  | { state: 'unpaired' }
+  | { state: 'paired'; device: PairedDevice }
+  | { state: 'removed' };
 
-/**
- * purpose: Validate and narrow a parsed value to a PairedDevice.
- * @param value: (unknown) A parsed JSON value.
- * @return: (PairedDevice | null) The pairing, or null when the shape is wrong.
- */
-function toPairedDevice(value: unknown): PairedDevice | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const { householdId, kind } = value as Record<string, unknown>;
-  if (typeof householdId !== 'string' || householdId === '') return null;
-  if (typeof kind !== 'string' || !DEVICE_KINDS.includes(kind)) return null;
-  return { householdId, kind: kind as DeviceKind };
+/** The pending pairing attempt kept until pairing succeeds. */
+interface PairingAttempt {
+  code: string;
+  nonce: string;
+  createdAt: number;
+}
+
+const ATTEMPT_KEY = 'sunny.pairingAttempt';
+/** The server accepts a retry with the same nonce for 10 minutes. */
+const NONCE_TTL_MS = 10 * 60 * 1000;
+/** How long /pair may take, request and response body together, before it is abandoned. */
+const PAIR_TIMEOUT_MS = 20_000;
+/** Shown when the ticket sign-in does not complete. */
+const SIGN_IN_FAILED_MESSAGE = 'Could not finish connecting this device. Please try again.';
+/** Shown when /pair did not answer within PAIR_TIMEOUT_MS. */
+const PAIR_TIMEOUT_MESSAGE = 'Connecting took too long. Please try again.';
+/** Calm one-line notice under the loading view when the backend cannot be reached. */
+export const UNREACHABLE_NOTICE = "Can't reach Sunny right now. Retrying...";
+/** Delays before each retry of a removal unpair; the last one repeats. */
+const REMOVAL_RETRY_DELAYS_MS = [2000, 5000, 15_000, 30_000];
+/** The unpair run in progress, shared by concurrent unpair() and awaited by pair(). */
+let unpairRun: Promise<void> | null = null;
+
+/** Everything decidePairing looks at. */
+export interface PairingInputs {
+  /** Clerk has finished loading. */
+  clerkLoaded: boolean;
+  /** Clerk has a signed-in session. */
+  clerkSignedIn: boolean;
+  /** Convex has finished establishing (or rejecting) the session. */
+  convexLoading: boolean;
+  /** Convex has confirmed the session. */
+  convexAuthenticated: boolean;
+  /** The households.mine result; undefined while it is skipped, loading or failed. */
+  mine: MineEntry[] | undefined;
+  /** The households.mine query failed. */
+  mineFailed: boolean;
+  /** The last paired device seen in this app run (memory only), or null. */
+  lastDevice: PairedDevice | null;
 }
 
 /**
- * purpose: Load the saved pairing.
- * @return: (Promise<PairedDevice | null>) The pairing, or null when this device is unpaired.
+ * purpose: Derive what the app should show from the Clerk session, Convex auth and the
+ *          households.mine result. Only Clerk decides "unpaired": a Convex auth failure with a
+ *          Clerk session is treated as a transient connection problem. A signed-in account
+ *          without a device entry (the device was removed, or a caregiver session) is "removed"
+ *          and gets signed out.
+ * @param inputs: (PairingInputs) The auth state, the mine result and the last device seen.
+ * @return: (PairingDecision) loading (not settled; may carry a notice when the backend is
+ *          unreachable), unpaired (Clerk loaded without a session: show the pairing screen),
+ *          paired (an entry has a deviceKind, or mine is unavailable and a device was seen
+ *          earlier in this run), or removed (the caller should unpair).
  */
-export async function loadPairedDevice(): Promise<PairedDevice | null> {
-  const raw = await AsyncStorage.getItem(PAIRING_KEY);
+export function decidePairing(inputs: PairingInputs): PairingDecision {
+  const { clerkLoaded, clerkSignedIn, convexLoading, convexAuthenticated, mine, lastDevice } =
+    inputs;
+  if (!clerkLoaded) return { state: 'loading' };
+  if (!clerkSignedIn) return { state: 'unpaired' };
+  const unavailable = (notice: boolean): PairingDecision =>
+    lastDevice !== null
+      ? { state: 'paired', device: lastDevice }
+      : notice
+        ? { state: 'loading', notice: UNREACHABLE_NOTICE }
+        : { state: 'loading' };
+  if (!convexAuthenticated) return unavailable(!convexLoading);
+  if (mine === undefined) return unavailable(inputs.mineFailed);
+  const entry = mine.find((e) => e.deviceKind !== null);
+  if (entry === undefined || entry.deviceKind === null) return { state: 'removed' };
+  return { state: 'paired', device: { householdId: entry.household._id, kind: entry.deviceKind } };
+}
+
+/**
+ * purpose: Update the remembered device after a decision: remember a paired device, forget it
+ *          once the device is unpaired or removed, otherwise keep it.
+ * @param decision: (PairingDecision) The latest decision.
+ * @param last: (PairedDevice | null) The device remembered so far.
+ * @return: (PairedDevice | null) The device to remember; `last` itself when nothing changed.
+ */
+export function rememberDevice(
+  decision: PairingDecision,
+  last: PairedDevice | null,
+): PairedDevice | null {
+  if (decision.state === 'paired') {
+    const same =
+      last !== null &&
+      last.householdId === decision.device.householdId &&
+      last.kind === decision.device.kind;
+    return same ? last : decision.device;
+  }
+  return decision.state === 'loading' ? last : null;
+}
+
+/**
+ * purpose: Delay before retrying an unpair that did not end the session.
+ * @param attempt: (number) Zero-based retry number.
+ * @return: (number) Milliseconds: 2 s, 5 s, 15 s, then 30 s for every later retry.
+ */
+export function removalRetryDelay(attempt: number): number {
+  const last = REMOVAL_RETRY_DELAYS_MS.length - 1;
+  return REMOVAL_RETRY_DELAYS_MS[Math.min(Math.max(attempt, 0), last)] ?? 30_000;
+}
+
+/**
+ * purpose: Make a random pairing nonce from a CSPRNG (Hermes has no crypto.getRandomValues).
+ * @return: (string) A random UUID (36 characters, within the server's 16 to 128 limit).
+ */
+function makeNonce(): string {
+  return Crypto.randomUUID();
+}
+
+/**
+ * purpose: Read the pending pairing attempt.
+ * @return: (Promise<PairingAttempt | null>) The attempt, or null when none is stored or it is
+ *          malformed.
+ */
+async function loadAttempt(): Promise<PairingAttempt | null> {
+  const raw = await AsyncStorage.getItem(ATTEMPT_KEY);
   if (raw === null) return null;
   try {
-    return toPairedDevice(JSON.parse(raw));
+    const { code, nonce, createdAt } = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof code !== 'string' || typeof nonce !== 'string' || typeof createdAt !== 'number') {
+      return null;
+    }
+    return { code, nonce, createdAt };
   } catch {
     return null;
   }
 }
 
 /**
- * purpose: Call every pairing-lost subscriber.
+ * purpose: Get the nonce to send for a code: the stored one when the same code was tried
+ *          within the last 10 minutes (so a retry after a lost response is recognized),
+ *          otherwise a new one, which is stored.
+ * @param code: (string) The cleaned join code.
+ * @param now: (number) Current time in epoch milliseconds.
+ * @return: (Promise<string>) The nonce.
  */
-function notifyPairingLost(): void {
-  listeners.forEach((listener) => listener());
-}
-
-/**
- * purpose: Subscribe to the pairing being lost.
- * @param listener: (() => void) Called when the pairing is dropped.
- * @return: (() => void) Function that removes the subscription.
- */
-export function subscribePairingLost(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/**
- * purpose: Return the signed-in user's id, signing in anonymously if there is no session.
- * @return: (Promise<string>) The Auth user id.
- * @raises: Error when anonymous sign-in fails.
- */
-async function ensureUserId(): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  if (data.session) return data.session.user.id;
-  const { data: signedIn, error } = await supabase.auth.signInAnonymously();
-  if (error || !signedIn.user) {
-    throw new Error(error?.message ?? 'Could not start a session. Check the internet connection.');
+export async function nonceForCode(code: string, now: number = Date.now()): Promise<string> {
+  const attempt = await loadAttempt();
+  if (attempt !== null && attempt.code === code && now - attempt.createdAt < NONCE_TTL_MS) {
+    return attempt.nonce;
   }
-  return signedIn.user.id;
+  const fresh: PairingAttempt = { code, nonce: makeNonce(), createdAt: now };
+  await AsyncStorage.setItem(ATTEMPT_KEY, JSON.stringify(fresh));
+  return fresh.nonce;
 }
 
 /**
- * purpose: Read the devices row of a user and narrow it to a pairing.
- * @param userId: (string) The Auth user id.
- * @return: (Promise<PairedDevice | null>) The pairing, or null when the user has no device row.
- * @raises: Error when the read fails.
+ * purpose: Read the sign-in ticket from a parsed /pair success body.
+ * @param value: (unknown) The parsed JSON.
+ * @return: (string | null) The ticket, or null when it is missing or empty.
  */
-async function readOwnDevice(userId: string): Promise<PairedDevice | null> {
-  const { data, error } = await supabase
-    .from('devices')
-    .select('household_id, kind')
-    .eq('user_id', userId);
-  if (error) throw new Error(error.message);
-  const row = (data as { household_id: string; kind: string }[] | null)?.[0];
-  return row ? toPairedDevice({ householdId: row.household_id, kind: row.kind }) : null;
+function readTicket(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { ticket } = value as Record<string, unknown>;
+  return typeof ticket === 'string' && ticket !== '' ? ticket : null;
 }
 
 /**
- * purpose: Save a pairing for the next launch.
- * @param device: (PairedDevice) The pairing.
- * @return: (Promise<PairedDevice>) The same pairing.
+ * purpose: Turn a failed /pair answer into a BackendError carrying the server's message.
+ * @param status: (number) The HTTP status.
+ * @param body: (unknown) The parsed JSON body, or null when it was missing or unreadable.
+ * @return: (BackendError) Error with body.error.message (generic when absent) and the status.
  */
-async function savePairing(device: PairedDevice): Promise<PairedDevice> {
-  await AsyncStorage.setItem(PAIRING_KEY, JSON.stringify(device));
-  return device;
+export function pairErrorFromBody(status: number, body: unknown): BackendError {
+  const message = (body as { error?: { message?: unknown } } | null)?.error?.message;
+  return new BackendError(
+    typeof message === 'string' && message !== '' ? message : GENERIC_ERROR_MESSAGE,
+    status,
+  );
 }
 
 /**
- * purpose: Tell whether an error is Postgres rejecting a duplicate key (23505), which
- *          PostgREST reports as HTTP 409 with a "duplicate key" message.
+ * purpose: Tell whether a thrown value is a fetch abort (the timeout firing).
  * @param error: (unknown) The thrown value.
- * @return: (boolean) True for a duplicate-key rejection.
+ * @return: (boolean) True for an error named AbortError.
  */
-function isDuplicateKeyError(error: unknown): boolean {
-  if (!(error instanceof BackendError)) return false;
-  return error.status === 409 || /23505|duplicate key/i.test(error.message);
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === 'AbortError';
 }
 
 /**
- * purpose: Adopt the devices row of the current session when this app has no saved pairing
- *          (for example after a reinstall: the Keychain session survives, AsyncStorage does
- *          not). Never throws; a failure is treated as unpaired.
- * @return: (Promise<PairedDevice | null>) The restored and saved pairing, or null when there
- *          is no session or no device row.
+ * purpose: Read a response body as JSON.
+ * @param response: (Response) The response.
+ * @return: (Promise<unknown>) The parsed body, or null when it is not JSON.
+ * @raises: The abort error, so a timeout while reading is not mistaken for a bad body.
  */
-export async function restorePairing(): Promise<PairedDevice | null> {
+async function readJson(response: Response): Promise<unknown> {
   try {
-    const { data } = await supabase.auth.getSession();
-    const userId = data.session?.user.id;
-    if (!userId) return null;
-    const device = await readOwnDevice(userId);
-    return device ? await savePairing(device) : null;
+    return await response.json();
   } catch (e) {
-    logger.warning('Pairing', `Could not restore the pairing: ${errorMessage(e)}`);
+    if (isAbortError(e)) throw e;
     return null;
   }
 }
 
 /**
- * purpose: Pair this device with a household: sign in anonymously if needed, adopt an
- *          existing device row of this session, otherwise redeem the join code and read the
- *          row back.
- * @param code: (string) The 8-character join code (case, spaces and dashes ignored).
- * @return: (Promise<PairedDevice>) The pairing, also saved for the next launch.
- * @raises: Error with a message safe to show when the code is rejected or no device row exists.
+ * purpose: POST the code and nonce to /pair. The timeout covers the response body too.
+ * @param code: (string) The cleaned join code.
+ * @param nonce: (string) The pairing nonce.
+ * @return: (Promise<string>) The Clerk sign-in ticket.
+ * @raises: BackendError with the server's message on a 4xx/5xx answer, the timeout message
+ *          (status 0) when it took too long, or the offline message (status 0) when the
+ *          request fails.
  */
-export async function pair(code: string): Promise<PairedDevice> {
-  const cleaned = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const userId = await ensureUserId();
-  let device = await readOwnDevice(userId);
-  if (!device) {
-    try {
-      await callRpc<string>('redeem_join_code', { p_code: cleaned });
-    } catch (e) {
-      if (!isDuplicateKeyError(e)) throw e;
-      // A device row appeared meanwhile (for example a redeem whose response was lost).
-      device = await readOwnDevice(userId);
-      if (!device) throw new Error('This device is already connected to a family.');
-    }
-    device ??= await readOwnDevice(userId);
+async function requestPairing(code: string, nonce: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAIR_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${CONVEX_SITE_URL}/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, pairingNonce: nonce }),
+      signal: controller.signal,
+    });
+    const body = await readJson(response);
+    if (!response.ok) throw pairErrorFromBody(response.status, body);
+    const ticket = readTicket(body);
+    if (ticket === null) throw new BackendError(GENERIC_ERROR_MESSAGE, response.status);
+    return ticket;
+  } catch (e) {
+    if (e instanceof BackendError) throw e;
+    throw new BackendError(isAbortError(e) ? PAIR_TIMEOUT_MESSAGE : OFFLINE_ERROR_MESSAGE, 0);
+  } finally {
+    clearTimeout(timer);
   }
-  if (!device) throw new Error('This device is not connected to a family yet.');
-  return savePairing(device);
 }
 
 /**
- * purpose: Forget the saved pairing.
- * @return: (Promise<boolean>) True when there was a saved pairing to forget.
+ * purpose: Describe a thrown value for a log line.
+ * @param e: (unknown) The thrown value.
+ * @return: (string) Its message, or "error".
  */
-async function removeSavedPairing(): Promise<boolean> {
-  if ((await AsyncStorage.getItem(PAIRING_KEY)) === null) return false;
-  await AsyncStorage.removeItem(PAIRING_KEY);
-  return true;
+function describe(e: unknown): string {
+  return e instanceof Error ? e.message : 'error';
 }
 
 /**
- * purpose: Forget the pairing and the session (the caregiver can pair the device again)
- *          and tell subscribers to show the pairing screen. Order: delete this user's push
- *          tokens (they need the session), forget the saved pairing, wait for the local sign
- *          out, then notify subscribers once, so the pairing screen never starts a new
- *          sign-in while the old session is still being removed.
+ * purpose: Run one cleanup step, logging instead of throwing.
+ * @param label: (string) What the step does, for the log line.
+ * @param step: (() => Promise<unknown>) The step.
+ * @return: (Promise<void>) Always resolves.
  */
-export async function unpair(): Promise<void> {
-  await deleteOwnPushTokens();
-  const wasPaired = await removeSavedPairing();
-  await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
-  if (wasPaired) notifyPairingLost();
+async function attempt(label: string, step: () => Promise<unknown>): Promise<void> {
+  try {
+    await step();
+  } catch (e) {
+    logger.warning('Pairing', `Unpair step failed (${label}): ${describe(e)}`);
+  }
 }
 
 /**
- * purpose: React to Auth reporting SIGNED_OUT: forget the saved pairing and notify.
+ * purpose: Sign in to Clerk with a sign-in ticket and make that session the active one. Any
+ *          existing session is signed out first.
+ * @param ticket: (string) The ticket from /pair.
+ * @raises: BackendError when the sign-in does not complete.
  */
-async function handleSignedOut(): Promise<void> {
-  // unpair() removes the saved pairing before it signs out and notifies after the sign out,
-  // so when this runs because of unpair() the key is already gone and this does nothing;
-  // otherwise subscribers would be notified twice for one unpair.
-  if (await removeSavedPairing()) notifyPairingLost();
+async function signInWithTicket(ticket: string): Promise<void> {
+  const clerk = getClerkInstance();
+  try {
+    if (!clerk.client) throw new Error('Clerk client is not ready');
+    if (clerk.session) {
+      // The new session replaces a stale one, so a failing sign out must not fail the pairing.
+      await clerk.signOut().catch((e: unknown) => {
+        logger.warning('Pairing', `Stale session sign out failed: ${describe(e)}`);
+      });
+    }
+    const signIn = await clerk.client.signIn.create({ strategy: 'ticket', ticket });
+    if (signIn.status !== 'complete' || !signIn.createdSessionId) {
+      throw new Error(`Sign-in ended with status ${signIn.status}`);
+    }
+    await clerk.setActive({ session: signIn.createdSessionId });
+  } catch (e) {
+    logger.warning('Pairing', `Ticket sign-in failed: ${describe(e)}`);
+    throw new BackendError(SIGN_IN_FAILED_MESSAGE, 0);
+  }
 }
 
-// supabase-js emits SIGNED_OUT only when the session is gone for good (a definitive
-// refresh failure or an explicit sign out), never for network errors. The callback must
-// not call back into supabase.auth, so it only touches AsyncStorage.
-supabase.auth.onAuthStateChange((event) => {
-  if (event === 'SIGNED_OUT') void handleSignedOut();
-});
+/**
+ * purpose: Pair this device: redeem the join code at /pair (resending the same nonce on a retry
+ *          of the same code) and sign in to Clerk with the returned ticket. The reactive Convex
+ *          auth and households.mine take over from there.
+ * @param code: (string) The 8-character join code (case, spaces and dashes ignored).
+ * @return: (Promise<void>) Resolves once the Clerk session is active.
+ * @raises: BackendError with a message safe to show when the code is rejected, the network
+ *          fails, or the sign-in does not complete (the nonce is kept so a retry works).
+ */
+export async function pair(code: string): Promise<void> {
+  if (unpairRun !== null) await unpairRun;
+  const cleaned = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const nonce = await nonceForCode(cleaned);
+  const ticket = await requestPairing(cleaned, nonce);
+  await signInWithTicket(ticket);
+  await AsyncStorage.removeItem(ATTEMPT_KEY);
+}
+
+/**
+ * purpose: Run the unpair steps: with a session, unregister the push token while still signed
+ *          in, then forget the pending attempt and sign out of Clerk. Every step is isolated, so
+ *          a failure never stops the sign out.
+ * @return: (Promise<void>) Always resolves; failures are logged.
+ */
+async function runUnpair(): Promise<void> {
+  let hasSession = false;
+  await attempt('read session', async () => {
+    hasSession = Boolean(getClerkInstance().session);
+  });
+  if (hasSession) await attempt('unregister push token', unregisterStoredPushToken);
+  await attempt('clear pairing attempt', () => AsyncStorage.removeItem(ATTEMPT_KEY));
+  if (hasSession) await attempt('sign out', () => getClerkInstance().signOut());
+}
+
+/**
+ * purpose: Forget the session so the device can be paired again; Convex auth then reports
+ *          unauthenticated and the app shows the pairing screen. Concurrent calls share one run.
+ * @return: (Promise<void>) Resolves when the steps are done; never rejects.
+ */
+export function unpair(): Promise<void> {
+  unpairRun ??= runUnpair().finally(() => {
+    unpairRun = null;
+  });
+  return unpairRun;
+}

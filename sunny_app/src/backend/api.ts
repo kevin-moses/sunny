@@ -1,30 +1,29 @@
 // sunny_app/src/backend/api.ts
 //
-// Purpose: Typed calls to Sunny's backend as the paired device: Postgres RPCs through
-// PostgREST (callRpc) and Edge Functions (invokeFunction, which unwraps Sunny's
-// { data, error: { message, code } } envelope). Every failure is a BackendError with a
-// message safe to show and the HTTP status (0 for network failures), so callers can
-// detect, for example, a 403 meaning the device was removed from its household.
+// Purpose: Typed calls to Sunny's Convex backend as the signed-in device (callMutation,
+// callAction) and the error they throw. Every failure is a BackendError with a message safe to
+// show and an HTTP-like status so callers can branch on it (for example 404 for a stale task
+// instance). The backend throws ConvexError with data { code, message }; the code maps to a
+// status below (the table is typed by the backend's AppErrorCode, so a new code is a compile
+// error). Anything else (network failure, an unexpected server error, whose details Convex
+// hides) is status 0 with a generic or offline message.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
-import {
-  FunctionsFetchError,
-  FunctionsHttpError,
-  FunctionsRelayError,
-} from '@supabase/supabase-js';
+import { ConvexError } from 'convex/values';
+import type { FunctionArgs, FunctionReference, FunctionReturnType } from 'convex/server';
 
-import { errorMessage } from '../errors';
-import { supabase } from './supabase';
+import type { AppErrorCode, AppErrorData } from '../../../sunny_backend/convex/lib/errors';
+import { convex } from './convex';
 
-/** An error from the Sunny backend, with a message safe to show and the HTTP status. */
+/** An error from the Sunny backend, with a message safe to show and a status. */
 export class BackendError extends Error {
   readonly status: number;
 
   /**
    * purpose: Create a backend error.
    * @param message: (string) Message safe to show to the user.
-   * @param status: (number) HTTP status; 0 when the request never got a response.
+   * @param status: (number) HTTP-like status; 0 when there is no meaningful status.
    */
   constructor(message: string, status: number) {
     super(message);
@@ -33,74 +32,96 @@ export class BackendError extends Error {
   }
 }
 
-/** Shape of Sunny's Edge Function response envelope. */
-interface Envelope<T> {
-  data?: T | null;
-  error?: { message?: string; code?: string } | null;
-}
+/** Status for each application error code the backend throws. */
+const STATUS_BY_CODE: Record<AppErrorCode, number> = {
+  unauthenticated: 401,
+  forbidden: 403,
+  not_found: 404,
+  invalid: 400,
+  limit: 429,
+};
+
+/** Message used when a failure carries nothing safe to show. */
+export const GENERIC_ERROR_MESSAGE = 'Something went wrong. Please try again.';
+
+/** Message used for unauthenticated and forbidden errors instead of the server's text. */
+export const NOT_CONNECTED_MESSAGE = 'This device is no longer connected to a family.';
 
 /**
- * purpose: Call a Postgres RPC as this device.
- * @param name: (string) RPC name, for example "get_day_view".
- * @param params: (Record<string, unknown>) Named arguments.
- * @return: (Promise<T>) The RPC result.
- * @raises: BackendError carrying the HTTP status when the call fails.
+ * Messages of known connection failures: React Native's fetch (whatwg-fetch) rejects with
+ * "Network request failed" / "Network request timed out", browsers with "Failed to fetch", and
+ * the Convex client fails an action in flight when its socket drops with the third one.
  */
-export async function callRpc<T>(name: string, params: Record<string, unknown>): Promise<T> {
-  const { data, error, status } = await supabase.rpc(name, params);
-  if (error) {
-    throw new BackendError(error.message || `Request failed (${status})`, status);
+const NETWORK_MESSAGES = [
+  'Network request failed',
+  'Network request timed out',
+  'Failed to fetch',
+  'Connection lost while action was in flight',
+];
+
+/** Message used when the request never reached the backend. */
+export const OFFLINE_ERROR_MESSAGE = 'Could not reach Sunny. Check the internet connection.';
+
+/**
+ * purpose: Convert anything thrown by a Convex call into a BackendError.
+ * @param error: (unknown) The thrown value.
+ * @return: (BackendError) The same error when it already is one; for a ConvexError the
+ *          status of its code (0 for an unknown code) with the server's message, except that
+ *          unauthenticated and forbidden show NOT_CONNECTED_MESSAGE; otherwise status 0 with
+ *          the offline message for a known connection failure or the generic message.
+ */
+export function toBackendError(error: unknown): BackendError {
+  if (error instanceof BackendError) return error;
+  if (error instanceof ConvexError) {
+    const data = error.data as Partial<AppErrorData> | undefined;
+    const known = typeof data?.code === 'string' && data.code in STATUS_BY_CODE;
+    const status = known ? STATUS_BY_CODE[data.code as AppErrorCode] : 0;
+    const calm = status === 401 || status === 403;
+    return new BackendError(
+      calm ? NOT_CONNECTED_MESSAGE : data?.message || GENERIC_ERROR_MESSAGE,
+      status,
+    );
   }
-  return data as T;
+  if (error instanceof Error && NETWORK_MESSAGES.some((m) => error.message.includes(m))) {
+    return new BackendError(OFFLINE_ERROR_MESSAGE, 0);
+  }
+  return new BackendError(GENERIC_ERROR_MESSAGE, 0);
 }
 
 /**
- * purpose: Read the message of a failed Edge Function response. Sunny's functions answer
- *          errors with a non-2xx status and a { data, error: { message, code } } body.
- * @param response: (unknown) The Response held in the error context.
- * @param status: (number) The HTTP status, used in the fallback message.
- * @return: (Promise<string>) body.error.message, or "Request failed (<status>)" when the
- *          body is missing or unreadable.
+ * purpose: Run a mutation as this device.
+ * @param reference: (FunctionReference<'mutation'>) The mutation, for example
+ *        api.households.registerPushToken.
+ * @param args: (FunctionArgs) The mutation's arguments.
+ * @return: (Promise<FunctionReturnType>) The mutation's result.
+ * @raises: BackendError when the call fails.
  */
-async function readErrorMessage(response: unknown, status: number): Promise<string> {
-  const fallback = `Request failed (${status})`;
-  if (!(response instanceof Response)) return fallback;
+export async function callMutation<M extends FunctionReference<'mutation'>>(
+  reference: M,
+  args: FunctionArgs<M>,
+): Promise<FunctionReturnType<M>> {
   try {
-    const body = (await response.json()) as Envelope<unknown> | null;
-    return body?.error?.message || fallback;
-  } catch {
-    return fallback;
+    return await convex.mutation(reference, args);
+  } catch (e) {
+    throw toBackendError(e);
   }
 }
 
 /**
- * purpose: Convert an error returned by supabase.functions.invoke into a BackendError.
- * @param error: (unknown) The error from invoke.
- * @return: (Promise<BackendError>) Error carrying the server's message and status.
+ * purpose: Run an action as this device.
+ * @param reference: (FunctionReference<'action'>) The action, for example
+ *        api.voice.livekitToken.
+ * @param args: (FunctionArgs) The action's arguments.
+ * @return: (Promise<FunctionReturnType>) The action's result.
+ * @raises: BackendError when the call fails.
  */
-async function toBackendError(error: unknown): Promise<BackendError> {
-  if (error instanceof FunctionsHttpError || error instanceof FunctionsRelayError) {
-    const response: unknown = error.context;
-    const status = response instanceof Response ? response.status : 500;
-    return new BackendError(await readErrorMessage(response, status), status);
+export async function callAction<A extends FunctionReference<'action'>>(
+  reference: A,
+  args: FunctionArgs<A>,
+): Promise<FunctionReturnType<A>> {
+  try {
+    return await convex.action(reference, args);
+  } catch (e) {
+    throw toBackendError(e);
   }
-  if (error instanceof FunctionsFetchError) {
-    return new BackendError('Could not reach Sunny. Check the internet connection.', 0);
-  }
-  return new BackendError(errorMessage(error, 'Request failed'), 0);
-}
-
-/**
- * purpose: Call an Edge Function as this device and unwrap its { data, error } envelope.
- * @param name: (string) Function name, for example "livekit-token".
- * @param body: (Record<string, unknown>) JSON body.
- * @return: (Promise<T>) The envelope's `data` payload.
- * @raises: BackendError with the server's message when the call or the envelope fails.
- */
-export async function invokeFunction<T>(name: string, body: Record<string, unknown>): Promise<T> {
-  const { data, error } = await supabase.functions.invoke<Envelope<T>>(name, { body });
-  if (error) throw await toBackendError(error);
-  if (data?.error) throw new BackendError(data.error.message ?? 'Request failed', 400);
-  if (data?.data === undefined || data.data === null) throw new BackendError('Empty response', 500);
-  return data.data;
 }

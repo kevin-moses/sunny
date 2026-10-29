@@ -1,31 +1,38 @@
 // sunny_app/App.tsx
 //
-// Purpose: Root of the Sunny app. Loads this device's pairing (the saved one, else the one
-// restored from an existing session's devices row; a load failure counts as unpaired, and an
-// unpaired start discards a stale notification tap), then shows PairingScreen
-// when unpaired, TodayScreen on the senior phone, or DisplayScreen on the home display;
-// while a voice conversation is live it shows ConversationScreen instead. The day view is
-// loaded here, for the paired household, so it survives a conversation. Shows a
-// "Trying to reconnect" warning and voice errors as banners. In __DEV__ builds a small
-// floating DEV pill opens the developer settings sheet. Provider order: SafeAreaProvider
-// > ThemeProvider > VoiceProvider.
+// Purpose: Root of the Sunny app. Without a Clerk publishable key it shows a configuration
+// error screen. Otherwise it wraps the app in ClerkProvider (session in the Keychain via
+// Clerk's token cache) and ConvexProviderWithClerk (one client, Clerk "convex" JWT template),
+// then follows usePairing: a calm "Connecting..." view (with a one-line notice when the backend
+// cannot be reached) while Clerk, Convex auth or households.mine load and while a removed
+// device is being unpaired, PairingScreen when Clerk has no session,
+// otherwise the paired home: TodayScreen on the senior phone or DisplayScreen on the home
+// display, or ConversationScreen while a voice conversation is live. The paired home is keyed
+// by household and owns the day view so it survives a conversation. The pairing is not stored
+// locally, so an offline cold start shows "Connecting..." until Clerk and Convex answer.
+// Stale notification taps are discarded while unpaired. Shows a "Trying to reconnect"
+// warning and voice errors as banners; __DEV__ builds add a DEV pill for developer settings.
+// Provider order: SafeAreaProvider > ThemeProvider > ClerkProvider > ConvexProviderWithClerk >
+// VoiceProvider.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
+import { ClerkProvider, useAuth } from '@clerk/expo';
+import { tokenCache } from '@clerk/expo/token-cache';
+import { ConvexProviderWithClerk } from 'convex/react-clerk';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import {
-  loadPairedDevice,
-  restorePairing,
-  subscribePairingLost,
-  type PairedDevice,
-} from './src/backend/pairing';
+import { convex } from './src/backend/convex';
+import type { PairedDevice } from './src/backend/pairing';
+import { usePairing } from './src/backend/usePairing';
 import { Banner } from './src/components/Banner';
+import { CLERK_PUBLISHABLE_KEY } from './src/config';
 import { useDayView } from './src/day/useDayView';
 import { discardStaleLaunchTap } from './src/notifications/push';
+import { ConfigErrorScreen } from './src/screens/ConfigErrorScreen';
 import { DevSettingsSheet } from './src/screens/DevSettingsSheet';
 import { DisplayScreen } from './src/screens/DisplayScreen';
 import { PairingScreen } from './src/screens/PairingScreen';
@@ -103,20 +110,19 @@ function DevTools() {
 }
 
 /**
- * purpose: The app shell inside the voice provider: pairing or home, banners, dev tools.
- * @param props: ({ paired, onPaired }) The pairing (null when unpaired) and the pairing callback.
+ * purpose: The app shell inside the voice provider: pairing screen or paired home, banners,
+ *          dev tools.
+ * @param props: ({ paired }) The pairing, or null when the device is unpaired.
  * @return: (JSX.Element) The shell.
  */
-function Shell({
-  paired,
-  onPaired,
-}: {
-  paired: PairedDevice | null;
-  onPaired: (device: PairedDevice) => void;
-}) {
+function Shell({ paired }: { paired: PairedDevice | null }) {
   return (
     <View style={styles.root}>
-      {paired === null ? <PairingScreen onPaired={onPaired} /> : <PairedHome paired={paired} />}
+      {paired === null ? (
+        <PairingScreen />
+      ) : (
+        <PairedHome key={paired.householdId} paired={paired} />
+      )}
       <Banners />
       {__DEV__ && <DevTools />}
     </View>
@@ -124,34 +130,53 @@ function Shell({
 }
 
 /**
- * purpose: Load the saved pairing, follow pairing loss, and host the voice provider.
- * @return: (JSX.Element) A blank background until the pairing has loaded, then the shell.
+ * purpose: A calm placeholder while the connection or the pairing is being established.
+ * @param props: ({ notice }) An optional one-line message shown under "Connecting...".
+ * @return: (JSX.Element) The view.
+ */
+function LoadingView({ notice }: { notice?: string }) {
+  return (
+    <View style={[styles.root, styles.loading]}>
+      <Text style={styles.loadingText}>Connecting...</Text>
+      {notice !== undefined && <Text style={styles.loadingNotice}>{notice}</Text>}
+    </View>
+  );
+}
+
+/**
+ * purpose: Follow the device's pairing (usePairing) and host the voice provider.
+ * @return: (JSX.Element) The loading view, or the shell for an unpaired or paired device.
  */
 function Root() {
-  // undefined until the saved pairing has loaded, then the pairing or null when unpaired.
-  const [paired, setPaired] = useState<PairedDevice | null | undefined>(undefined);
+  const pairing = usePairing();
+  const unpaired = pairing.state === 'unpaired';
 
   useEffect(() => {
-    let active = true;
-    loadPairedDevice()
-      .then(async (saved) => saved ?? (await restorePairing()))
-      .catch(() => null)
-      .then((device) => {
-        if (device === null) discardStaleLaunchTap();
-        if (active) setPaired(device);
-      });
-    const unsubscribe = subscribePairingLost(() => setPaired(null));
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
+    if (unpaired) discardStaleLaunchTap();
+  }, [unpaired]);
 
-  if (paired === undefined) return <View style={styles.root} />;
+  if (pairing.state === 'loading') return <LoadingView notice={pairing.notice} />;
+  if (pairing.state === 'removed') return <LoadingView />;
+  const paired = pairing.state === 'paired' ? pairing.device : null;
   return (
     <VoiceProvider pairedDevice={paired}>
-      <Shell paired={paired} onPaired={setPaired} />
+      <Shell paired={paired} />
     </VoiceProvider>
+  );
+}
+
+/**
+ * purpose: Provide Clerk and Convex to the app, wired together so Convex calls carry the
+ *          device's Clerk session.
+ * @return: (JSX.Element) The provider tree around Root.
+ */
+function BackendProviders() {
+  return (
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} tokenCache={tokenCache}>
+      <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
+        <Root />
+      </ConvexProviderWithClerk>
+    </ClerkProvider>
   );
 }
 
@@ -164,7 +189,7 @@ export default function App() {
     <SafeAreaProvider>
       <ThemeProvider>
         <StatusBar style="dark" />
-        <Root />
+        {CLERK_PUBLISHABLE_KEY === '' ? <ConfigErrorScreen /> : <BackendProviders />}
       </ThemeProvider>
     </SafeAreaProvider>
   );
@@ -172,6 +197,9 @@ export default function App() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: BACKGROUND },
+  loading: { alignItems: 'center', justifyContent: 'center' },
+  loadingText: { fontSize: 20, color: colors.secondaryText },
+  loadingNotice: { marginTop: 8, fontSize: 16, color: colors.secondaryText },
   banners: { position: 'absolute', left: 0, right: 0, gap: 8 },
   pill: {
     position: 'absolute',

@@ -5,7 +5,7 @@
 // (+/- steppers; no slider package is installed), reset to defaults, and unpair the
 // device so it can be paired again with a new code.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
