@@ -1,0 +1,27 @@
+{
+  "name": "sunny_backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sunny's Convex backend: shared household state, scheduler, agent runtime and integrations.",
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev",
+    "deploy": "convex deploy",
+    "typecheck": "tsc --noEmit -p convex",
+    "test": "vitest run",
+    "format": "prettier --write convex",
+    "format:check": "prettier --check convex"
+  },
+  "dependencies": {
+    "convex": "^1.48.0",
+    "convex-helpers": "^0.1.129"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
+    "@types/node": "^22.20.5",
+    "convex-test": "^0.0.66",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

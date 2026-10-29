@@ -1,0 +1,104 @@
+# Convex Migration Plan
+
+Written 2026-10-28. Moves Sunny's backend from Supabase (Postgres, RLS, pg_cron, Edge Functions) to Convex. The app is being ported to React Native (Expo) in parallel on `rn-refactor`; this work happens on `worktree-convex-migration` and only touches `sunny_backend/`, `sunny_agent/` and `notes/`, so the two never edit the same files.
+
+Behavior does not change. `notes/SPEC.md` is still the product, and `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md` describe the behavior each Convex module must keep. Both are rewritten for Convex at cutover.
+
+## Why
+
+Picked over staying on Supabase for: reactive queries (every surface is a live view of one state, no polling or re-fetch on row diffs), schema in TypeScript, faster agent iteration, durable workflows for long agent runs (`awaitEvent` for "ask Sarah and tell Mom"), and the Resend and Twilio components. Step-by-step navigation and high-frequency location writes are deferred until that feature is built.
+
+## Target architecture
+
+| Piece | Supabase today | Convex |
+| --- | --- | --- |
+| Backend code | `supabase/migrations/*.sql`, `supabase/functions/*` | `sunny_backend/convex/*` (one npm package, its own `package.json`) |
+| Auth | Supabase Auth: caregivers by email/Apple, devices anonymous | Clerk for everyone, through `convex/react-clerk` in the app. Devices get a Clerk user created at pairing (below) |
+| Access rules | RLS policies and `private.*` helpers | Explicit checks in every public function through `lib/access.ts`; anything backend-only is an `internal*` function |
+| Scheduler | `scheduler_tick`, `event_notice_tick` under pg_cron | `crons.ts` calling internal mutations every minute |
+| Realtime | `supabase_realtime` publication (unused; app polled every 30 s) | Reactive queries: the app subscribes to `dayView`, `outbox`, etc. |
+| Job queue | `jobs` table, pg_net dispatch, sweep, leases | `@convex-dev/workflow` for agent runs, `@convex-dev/workpool` for calendar pushes; a small `jobs` table remains for what caregivers read (agent replies) |
+| Agent runtime | `jobs-run` Edge Function polling Managed Agents | The same `AgentRuntime` contract inside a Workflow: each poll and tool call is a step |
+| Google tokens | Vault | AES-GCM encrypted in `calendarConnections`, key in a Convex env var |
+| Edge Functions | `livekit-token`, `google-oauth`, `jobs-run` | Convex actions and HTTP actions (`http.ts`) |
+| Push delivery | `notification_outbox` (sender not built) | Same outbox table; sender is an action using Expo push (the app is Expo) |
+| Email, SMS | Not built | `@convex-dev/resend` (digest, alerts), `@convex-dev/twilio` (alerts, replies) |
+| Python voice agent | supabase-py with the service role key | Convex HTTP API (`/api/query`, `/api/mutation`) on `agent:*` functions that require `SUNNY_AGENT_KEY` |
+| Tests | pgTAP (`supabase/tests/*.sql`, ~150 assertions) | `convex-test` + Vitest in `sunny_backend/convex/*.test.ts` |
+| Hosting | Supabase Cloud | Convex Cloud (dev and prod deployments) |
+
+## Identity and access
+
+**Caregivers** sign in with Clerk (Sign in with Apple, email). Convex is configured with Clerk's issuer and `applicationID: "convex"`. `ctx.auth.getUserIdentity().subject` (the Clerk user id) is the user key stored in `householdMembers.userId`, `devices.userId`, `pushTokens.userId` and so on.
+
+**Senior devices** keep the join-code flow. Clerk has no anonymous users, so pairing creates one:
+
+1. The device (signed out) POSTs the code to the HTTP action `/pair`, which is rate limited per client because it is unauthenticated.
+2. The action redeems the code in a mutation (single use, 24 h expiry, unchanged rules), creates a Clerk user for the device through Clerk's Backend API (`public_metadata.sunny_kind = "device"`), records the `devices` row with that user id, and creates a Clerk sign-in token.
+3. The app signs in with Clerk's `ticket` strategy. From then on the device is an ordinary Clerk session, so `convex/react-clerk` works the same on every surface.
+4. Unpairing deletes the device row and the Clerk user.
+
+Caregiver invites stay join codes too, redeemed by a signed-in caregiver through the `households.redeemJoinCode` mutation.
+
+**Device claim.** The Clerk JWT template `convex` maps `public_metadata.sunny_kind` into a `sunny_kind` claim. Every caregiver check rejects identities with `sunny_kind = "device"`, so a device's login can never act as a caregiver, even after it is unpaired or if pairing failed halfway. This replaces Supabase's `is_anonymous` claim.
+
+**Last primary.** A household always keeps at least one primary caregiver: the last one cannot be demoted or removed. (The SQL did not guard this.)
+
+**Access rules** replace RLS. `lib/access.ts` resolves the caller once (`caregiver` with roles per household, `senior_device` bound to one household, or none) and exposes `requireReader`, `requireEditor`, `requirePrimary`, `requireSenior`. Every public query and mutation calls one of them first; the test suite has an access test per public function, the same way pgTAP checked grants.
+
+**Backend callers** are internal functions (crons, workflows, other functions) and the voice agent. The agent calls public `agent:*` functions whose first argument is `agentKey`, checked in constant time against `SUNNY_AGENT_KEY`. The household always comes from the LiveKit participant metadata the token action wrote, never from the model.
+
+**Clock.** Only backend callers may pass `now` (internal functions and `agent:*`), exactly as `p_now` worked. Public functions use `Date.now()`.
+
+## Data model conventions
+
+- Instants are epoch milliseconds (`number`). Household-local dates are `"YYYY-MM-DD"` strings, local times `"HH:MM"`. Weekdays are ISO numbers, 1 = Monday.
+- Timezone math lives in `lib/time.ts` (IANA zones through `Intl`, no dependency) and is tested across both New York DST changes, the same cases the SQL tests covered.
+- Uniqueness the database used to enforce (one instance per task, local date and time; one join code per value; one connection per caregiver) becomes an index lookup inside the writing mutation. Convex mutations are serializable, so check-then-insert is safe.
+- Foreign keys and cascades become explicit: deleting a household runs an internal mutation that removes its rows table by table.
+- Every table that was audited by triggers is audited by `lib/audit.ts`, called from the mutations that change it.
+- Soft deletes stay where they had a reason (events, so cancellations sync to Google).
+
+## Reactivity and the clock
+
+Convex queries re-run when data they read changes, not when time passes. Two rules follow:
+
+1. State changes driven by time (upcoming to due, escalation, missed) stay in the per-minute scheduler mutation, so surfaces update when it writes.
+2. Views that depend on the current time (`dayView`'s "Thursday afternoon" header and Next up) take a `minute` argument the client bumps every minute. The server still uses its own `Date.now()`; the argument only makes the subscription re-run.
+
+## Long-running work
+
+- **Agent requests.** `agent_chat` becomes a Workflow: start or continue the Managed Agents session (step), then loop: poll the session (action step), run each pending tool call (mutation step, recorded once, so a retry never adds an event twice), send results (action step), `step.sleep` between polls. The reply is written to the caregiver-visible `agentRequests` row, which the app subscribes to.
+- **Waiting on people** (`wait_for_reply`, next milestone): the workflow `awaitEvent`s; the Twilio inbound webhook or an in-app reply calls `sendEvent`.
+- **Calendar pushes.** A `calendarSyncs` table holds at most one pending push per event and connection (the old dedupe key); a Workpool runs them with retries and backoff, one at a time per key.
+- **Pause switch.** `households.backgroundPaused` is checked by every workflow step and workpool job before it acts, so a caregiver "stop" still covers everything.
+- **Workflow versioning.** Changing a workflow's steps breaks runs in flight. Agent runs are short today (30-minute cap). Before `wait_for_reply` ships, workflows get a version field and old versions are kept until their runs drain.
+
+## Phases
+
+Each phase ends with its tests passing, `npx convex dev --once` deploying cleanly, pre-commit green, `/simplify` and the TLM reviewer run. Sonnet subagents write the code; the lead session writes briefs, reviews and merges. Parallel subagents each get their own git worktree, branched from this one.
+
+1. **Foundation** (this branch, started), in three waves:
+   - **Wave 1 (in progress):** package scaffold, the shared-state schema (jobs and calendar-sync tables arrive with their phases), `lib/time.ts`, `lib/access.ts`, `lib/audit.ts`, `lib/today.ts`, default policies, households, members, join codes, internal `pairDevice`, push tokens. Time and household tests.
+   - **Wave 2, in parallel:** (a) tasks, escalation policies (seeded ones cannot be deleted or re-keyed), instance RPCs (confirm, confirmDueTask, snooze, claim, senior reminders, dose log), expansion, the scheduler tick and `crons.ts`, the household timezone resync (only when the zone actually changes), ported from `scheduler.test.sql`; (b) events CRUD, occurrences, `listEvents`, `dayView`, ported from the calendar half of `calendar_jobs.test.sql`.
+   - **Wave 3:** merge, `/simplify`, TLM review, pre-commit, commit.
+2. **Devices and voice.** `/pair` with Clerk device users, `livekitToken` action, `agent:*` functions, the Python agent moved from supabase-py to the Convex HTTP API (`memory.py`, `tools.py`), agent context assembly.
+3. **Agent runtime.** `agentRequests`, the Workflow port of `ManagedAgentsRuntime`, `agent_tools` port, `setup_managed_agent` and `caregiver` scripts against Convex.
+4. **Calendar sync.** OAuth HTTP actions, encrypted tokens, `calendarSyncs` + Workpool push, day-of event notices, household resync rules.
+5. **Delivery.** Expo push sender over the outbox, Twilio caregiver alerts with "reply 1 to claim", Resend daily digest.
+6. **Cutover.** App on Convex (with the RN agents), delete `supabase/`, rewrite `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md`, Convex Cloud prod deployment, BAA confirmed with Convex, Clerk and Twilio.
+
+## What the React Native app needs from this
+
+- `sunny_backend/convex/_generated/api` for typed calls. Import it with a relative path (`../sunny_backend/convex/_generated/api`) and add `sunny_backend` to Metro's `watchFolders`, or make the repo an npm workspace. Pick one with the RN agents before phase 6.
+- Env: `EXPO_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`.
+- Surfaces subscribe to `calendar.dayView({ householdId, minute })` and `notifications.myOutbox({})` instead of polling; Done calls `tasks.confirmDueTask`.
+- Call `households.unregisterPushToken` on sign-out. A token registered to another account is refused rather than taken over.
+- The Clerk JWT template must be named `convex` and include `"sunny_kind": "{{user.public_metadata.sunny_kind}}"`.
+
+## Assumptions to confirm
+
+- Nothing in the current Supabase project needs migrating (no pilot data). If that's wrong, phase 6 gains an export and import step, and Google connections must be redone (tokens are in Vault).
+- Convex Cloud, not self-hosted.
+- Claude Managed Agents stays the agent runtime (ported, not replaced by `@convex-dev/agent`).
+- A Clerk application exists with a JWT template named `convex`; its issuer goes in `CLERK_JWT_ISSUER_DOMAIN`.
