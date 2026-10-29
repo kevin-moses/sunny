@@ -14,6 +14,7 @@ struct DevSettingsView: View {
                     typographySection()
                     geometrySection()
                     resetSection()
+                    pairingSection()
                 }
                 .navigationTitle("Dev Settings")
                 .navigationBarTitleDisplayMode(.inline)
@@ -166,6 +167,21 @@ struct DevSettingsView: View {
         Section {
             Button("Reset to Defaults", role: .destructive) {
                 theme.resetToDefaults()
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+}
+
+extension DevSettingsView {
+    /// Forget this device's household pairing so it can be paired again with a new code.
+    func pairingSection() -> some View {
+        Section("Pairing") {
+            Button("Unpair this device", role: .destructive) {
+                Task {
+                    await SunnyBackend.shared.unpair()
+                    dismiss()
+                }
             }
             .frame(maxWidth: .infinity, alignment: .center)
         }

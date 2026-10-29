@@ -1,23 +1,23 @@
-# Sunny Edge Functions (API-1)
+# Sunny Edge Functions
 
-All client-facing data access for iOS/web runs through these Supabase Edge Functions.
+Most app traffic does not need an Edge Function: the caregiver app and the senior surfaces sign in with Supabase Auth and use PostgREST and the RPCs directly, with row level security scoping every row to the caller's household (see `notes/SCHEMA.md`). Edge Functions are only for work that needs a server secret.
 
-## Required secrets
+## Functions
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+| Function | Method | Body | Response (`data`) |
+|---|---|---|---|
+| `livekit-token` | `POST` | `{ trigger?: 'talk' \| 'scheduled_prompt' \| 'notification_tap', taskInstanceId?: uuid }` | `{ serverUrl, roomName, participantName, participantToken }` |
+| `google-oauth/start` | `POST` | `{ household_id }` (caregiver JWT) | `{ url }`: Google consent page |
+| `google-oauth/callback` | `GET` | Google redirect (`code`, `state`) | HTML page |
+| `jobs-run` | `POST` | `{ job_id }` with header `x-sunny-jobs-secret` | `202`, work continues in the background |
 
-## Endpoints
+`livekit-token` requires the caller's Supabase JWT and a paired device (`public.devices`). It embeds `{ household_id, device_id, trigger, task_instance_id? }` in the participant metadata the agent reads.
 
-| Function | Methods | Path | Params / Body | Response (`data`) |
-|---|---|---|---|---|
-| `get-user-profile` | `GET`, `OPTIONS` | `/functions/v1/get-user-profile` | Header: `Authorization: Bearer <uuid-or-token>` | `{ user, facts, reminders, recent_summaries }` |
-| `get-conversations` | `GET`, `OPTIONS` | `/functions/v1/get-conversations` | Query: `limit` (default `20`), `offset` (default `0`) | `{ conversations, total }` |
-| `get-messages` | `GET`, `OPTIONS` | `/functions/v1/get-messages` | Query: `conversation_id=<uuid>` | `{ messages, conversation: { summary, sentiment, topics } }` |
-| `manage-reminders` | `GET`, `POST`, `DELETE`, `OPTIONS` | `/functions/v1/manage-reminders` | `POST` body: `{ type, title, description?, schedule: { times, days } }`; `DELETE` query: `reminder_id=<uuid>` | `GET: { reminders }`, `POST: { reminder }`, `DELETE: { deleted: true }` |
-| `save-device-token` | `POST`, `OPTIONS` | `/functions/v1/save-device-token` | Body: `{ token: string, platform: 'ios'|'web' }` | `{ saved: true }` |
+`google-oauth` connects a caregiver's Google account and creates Sunny's own calendar there (see `notes/GOOGLE_CALENDAR_SETUP.md`). `jobs-run` is called only by the database (pg_net) to run a queued background job: calendar pushes and agent requests on Claude Managed Agents (see `notes/AGENT_RUNTIME.md`). Both have `verify_jwt = false` in `config.toml` and check their own credentials.
 
-All responses are wrapped as:
+Shared code: `_shared/admin.ts` (service-role client), `_shared/google.ts` (Google OAuth and Calendar API), `_shared/agent_tools.ts` and `_shared/agent_config.ts` (the household agent's tools and prompt). Unit tests: `deno test -A supabase/functions/tests`.
+
+All responses use the envelope:
 
 ```json
 { "data": "...", "error": null }
@@ -29,61 +29,12 @@ or
 { "data": null, "error": { "message": "...", "code": "..." } }
 ```
 
-## Deploy
+## Secrets
 
-```bash
-supabase functions deploy get-user-profile
-supabase functions deploy get-conversations
-supabase functions deploy get-messages
-supabase functions deploy manage-reminders
-supabase functions deploy save-device-token
-```
+See `.env.example`. Locally, copy it to `.env` and run `supabase functions serve --env-file supabase/functions/.env`; remotely, `supabase secrets set`. `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are provided automatically. The database finds `jobs-run` through two Vault secrets, `sunny_functions_url` and `sunny_jobs_secret` (local values in `supabase/seed.sql`).
 
-## Local serve
+## Planned
 
-```bash
-supabase functions serve
-```
-
-## Example curl (test user)
-
-Test user ID: `00000000-0000-0000-0000-000000000001`
-
-```bash
-# get-user-profile
-curl -i "http://127.0.0.1:54321/functions/v1/get-user-profile" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001"
-
-# get-conversations
-curl -i "http://127.0.0.1:54321/functions/v1/get-conversations?limit=20&offset=0" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001"
-
-# get-messages
-curl -i "http://127.0.0.1:54321/functions/v1/get-messages?conversation_id=<conversation-uuid>" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001"
-
-# manage-reminders GET
-curl -i "http://127.0.0.1:54321/functions/v1/manage-reminders" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001"
-
-# manage-reminders POST
-curl -i -X POST "http://127.0.0.1:54321/functions/v1/manage-reminders" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "medication",
-    "title": "Take blood pressure medicine",
-    "description": "With breakfast",
-    "schedule": { "times": ["08:00"], "days": ["mon","tue","wed","thu","fri","sat","sun"] }
-  }'
-
-# manage-reminders DELETE
-curl -i -X DELETE "http://127.0.0.1:54321/functions/v1/manage-reminders?reminder_id=<reminder-uuid>" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001"
-
-# save-device-token
-curl -i -X POST "http://127.0.0.1:54321/functions/v1/save-device-token" \
-  -H "Authorization: Bearer 00000000-0000-0000-0000-000000000001" \
-  -H "Content-Type: application/json" \
-  -d '{ "token": "device-token-value", "platform": "ios" }'
-```
+- Push sender: delivers unsent `notification_outbox` rows over APNs and marks them sent
+- Daily digest
+- Google pull sync (Google to Sunny)

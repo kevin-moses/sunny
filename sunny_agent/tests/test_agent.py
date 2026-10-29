@@ -2,58 +2,45 @@
 # Purpose: Behavioral evaluation tests for the Sunny voice agent.
 # Uses LiveKit's AgentSession test harness and an LLM judge to verify that the
 # agent responds appropriately to user inputs, calls the correct tools, and
-# handles errors gracefully. Tests cover persona, web search, workflow detection,
-# grounding, refusal of harmful requests, and echo detection (SCREEN-7).
-# Updated for WF-4: WorkflowEngine now takes a Supabase AsyncClient; find_workflow
-# and resolve_workflow are async and patched with AsyncMock in the test helper.
-# SCREEN-7: Added unit tests for suggest_screen_share and guide_screen_share_start tools.
+# handles errors gracefully. Tests cover persona, web search, grounding, refusal
+# of harmful requests, and echo detection.
+# Memory-care pivot: removed workflow and screen share tests along with those features.
+# Agent and judge LLM switched from OpenAI gpt-4o-mini to Claude Haiku (LLM_MODEL).
 #
-# Last modified: 2026-03-02
+# Last modified: 2026-10-24
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-from livekit.agents import AgentSession, RunContext, llm, mock_tools
-from livekit.plugins import openai
+from livekit.agents import AgentSession, llm, mock_tools
+from livekit.plugins import anthropic
 
 from agent import Assistant
-from workflow_engine import WorkflowEngine
-
-_WORKFLOW_INSTRUCTIONS = (
-    "You are Sunny, a warm and helpful voice assistant for older adults. "
-    "When the user asks for help with a task on their iPhone, you MUST call the "
-    "start_workflow() tool with a short description of what they want to do. "
-    "NEVER describe the steps yourself — always call start_workflow()."
-)
+from config import LLM_MODEL
 
 
 def _llm() -> llm.LLM:
-    return openai.LLM(model="gpt-4o-mini")
+    """
+    purpose: Build the LLM used both as the agent under test and as the judge.
+             Uses the production model (Claude Haiku) so evals match real behavior.
+    @return: (llm.LLM) Anthropic LLM instance for LLM_MODEL.
+    """
+    return anthropic.LLM(model=LLM_MODEL)
 
 
 def _make_assistant(
     instructions: str = "You are Sunny, a warm and helpful voice assistant for older adults.",
 ) -> Assistant:
     """
-    purpose: Build a minimal Assistant instance suitable for unit tests.
-             WorkflowEngine is constructed with a stub AsyncClient; find_workflow and
-             resolve_workflow are replaced with AsyncMocks so no external services
-             (Supabase, OpenAI) are contacted during tests.
+    purpose: Build a minimal Assistant instance suitable for unit tests. Uses a
+             MagicMock Supabase client so no external services are contacted.
     @param instructions: (str) Optional system prompt override. Defaults to minimal Sunny persona.
-                         Pass _WORKFLOW_INSTRUCTIONS for tests that exercise start_workflow.
     @return: (Assistant) Test-ready assistant instance.
     """
-    stub_supabase = MagicMock()
-    engine = WorkflowEngine(supabase=stub_supabase)
-    # Patch async methods so tests don't hit the network
-    engine.find_workflow = AsyncMock(return_value=("", "", False))
-    engine.resolve_workflow = AsyncMock(return_value=None)
     return Assistant(
         instructions=instructions,
-        user_id="00000000-0000-0000-0000-000000000001",
+        household_id=None,
         supabase=MagicMock(),
-        engine=engine,
-        ios_version="18",
     )
 
 
@@ -159,23 +146,6 @@ async def test_web_search_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workflow_phone_task() -> None:
-    """Evaluation of the agent's ability to detect a phone help request and call start_workflow."""
-    async with (
-        _llm() as llm,
-        AgentSession(llm=llm) as session,
-    ):
-        await session.start(_make_assistant(instructions=_WORKFLOW_INSTRUCTIONS))
-
-        result = await session.run(
-            user_input="Can you help me block someone on my phone?"
-        )
-
-        # Agent should detect a phone task and call start_workflow
-        result.expect.next_event().is_function_call(name="start_workflow")
-
-
-@pytest.mark.asyncio
 async def test_grounding() -> None:
     """Evaluation of the agent's ability to refuse to answer when it doesn't know something."""
     async with (
@@ -231,7 +201,7 @@ async def test_refuses_harmful_request() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SCREEN-7: Echo detection unit tests
+# Echo detection unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -341,36 +311,3 @@ class TestIsEcho:
         from agent import _is_echo
 
         assert _is_echo("Hi Kevin I would be happy to help", [], 105.0, 15.0) is False
-
-
-# ---------------------------------------------------------------------------
-# SCREEN-7: Screen share UX tool unit tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_suggest_screen_share_returns_verbal_prompt() -> None:
-    """
-    purpose: Verify suggest_screen_share returns a non-empty verbal string
-             mentioning screen sharing.
-    """
-    agent = _make_assistant()
-    ctx = MagicMock(spec=RunContext)
-    result = await agent.suggest_screen_share(ctx)
-    assert isinstance(result, str)
-    assert "screen" in result.lower()
-    assert len(result) > 20
-
-
-@pytest.mark.asyncio
-async def test_guide_screen_share_start_returns_step_by_step() -> None:
-    """
-    purpose: Verify guide_screen_share_start returns a non-empty step-by-step
-             verbal script covering the broadcast start flow.
-    """
-    agent = _make_assistant()
-    ctx = MagicMock(spec=RunContext)
-    result = await agent.guide_screen_share_start(ctx)
-    assert isinstance(result, str)
-    assert "broadcast" in result.lower() or "start" in result.lower()
-    assert len(result) > 40

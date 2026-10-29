@@ -1,5 +1,5 @@
+@testable import sunny
 import Testing
-@testable import VoiceAgent
 
 @MainActor
 struct ChatViewModelTests {

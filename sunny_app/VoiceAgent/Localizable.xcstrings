@@ -54,24 +54,13 @@
         }
       }
     },
-    "connect.simulator" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Running on Simulator, camera and screen sharing will be unavailable."
-          }
-        }
-      }
-    },
     "connect.start" : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Start call"
+            "value" : "Talk to Sunny"
           }
         }
       }
@@ -174,16 +163,7 @@
     "Settings" : {
 
     },
-    "Start screen share" : {
-
-    },
-    "Stop screen share" : {
-
-    },
     "Summary" : {
-
-    },
-    "Sunny can see your screen" : {
 
     },
     "Sunny is listening" : {
@@ -199,12 +179,6 @@
 
     },
     "Talk to Sunny" : {
-
-    },
-    "Turn off camera" : {
-
-    },
-    "Turn on camera" : {
 
     },
     "Typography" : {

@@ -46,14 +46,6 @@ struct VoiceAgentApp: App {
                     _ = await NotificationService.shared.requestPermission()
                 }
         }
-        #if os(macOS)
-        .defaultSize(width: 900, height: 900)
-        #endif
-        #if os(visionOS)
-        .windowStyle(.plain)
-        .windowResizability(.contentMinSize)
-        .defaultSize(width: 1500, height: 500)
-        #endif
     }
 }
 
@@ -127,7 +119,6 @@ struct AgentFeatures: OptionSet {
 
     static let voice = Self(rawValue: 1 << 0)
     static let text = Self(rawValue: 1 << 1)
-    static let video = Self(rawValue: 1 << 2)
 
     static let current: Self = [.voice, .text]
 }

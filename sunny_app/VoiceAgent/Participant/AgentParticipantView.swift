@@ -16,7 +16,7 @@ struct AgentParticipantView: View {
         ZStack {
             if let avatarCameraTrack = viewModel.avatarCameraTrack {
                 SwiftUIVideoView(avatarCameraTrack)
-                    .clipShape(RoundedRectangle(cornerRadius: .cornerRadiusPerPlatform))
+                    .clipShape(RoundedRectangle(cornerRadius: .cornerRadiusSmall))
                     .aspectRatio(avatarCameraTrack.aspectRatio, contentMode: .fit)
                     .padding(.horizontal, avatarCameraTrack.aspectRatio == 1 ? 4 * .grid : .zero)
                     .shadow(radius: 20, y: 10)

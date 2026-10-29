@@ -1,30 +1,30 @@
 # prompts.py
-# Purpose: System prompt template and user context formatting for the Sunny voice agent.
-# Provides the senior-optimized assistant persona and functions to inject per-user
-# context (profile_summary, conversation summaries, reminders) into the system prompt
-# at session start. profile_summary is a free-text prose paragraph written by Claude at
-# session end that replaces the fragmented user_facts key-value approach.
-# The system prompt includes guidance for managing both Sunny (Supabase-backed) reminders
-# and iOS native reminders, with voice-friendly confirmation flows for each.
-# Also provides format_step_context() for injecting active workflow step context into
-# LLM tool return values during guided workflow sessions.
-# SCREEN-7: Added == SCREEN SHARING == section guiding the agent to proactively offer
-# and walk the user through starting an iOS broadcast when visual guidance would help.
-# SCREEN-8: Added == VISION MODE == section so the unified Assistant can handle both
-# voice-only and screen-share modes from a single system prompt.
-# UX fixes: Strengthened GUIDED WORKFLOWS (call start_workflow immediately, not as one option);
-# SCREEN SHARING (NEVER give manual steps); VISION MODE REFRESH_VISION (no nav from stale,
-# silent refresh — no preamble text before tool call, one sentence after);
-# CORE BEHAVIORS (pick/recommend when asked). Bug fixes from session log analysis.
+# Purpose: System prompt template and household context formatting for the Sunny voice
+# agent. format_user_context() turns the get_agent_context RPC result (today's schedule,
+# as-needed medications, upcoming events, latest family message, life profile,
+# sensitive-topic playbook, agent memory, recent conversations) into the context block
+# injected into the system prompt at session start. Household facts are labeled by
+# source so caregiver-verified facts outrank things the senior said.
+# Memory-care pivot: removed GUIDED WORKFLOWS, SCREEN SHARING, VISION MODE sections,
+# iOS native reminder guidance, format_step_context(), and the users.profile_summary
+# paragraph. The privacy rule from VISION MODE moved to COMMUNICATION STYLE. The REMINDERS
+# section became TASKS AND REMINDERS for the household task tools. The persona rewrite to
+# the SPEC voice guardrails is a separate step.
 #
-# Last modified: 2026-03-03
+# Last modified: 2026-10-25
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import datetime
 
-if TYPE_CHECKING:
-    from workflow_engine import WorkflowStep
+from config import DEFAULT_TIMEZONE
+from tools import (
+    clock_for_voice,
+    describe_instance,
+    local_clock,
+    spoken_date,
+    to_local,
+)
 
 SYSTEM_PROMPT_TEMPLATE = """You are Sunny, a warm and patient voice assistant designed specifically for older adults. \
 Your role is to make phone interactions easier and more accessible.
@@ -43,173 +43,150 @@ Warm, calm, and encouraging — like a knowledgeable friend or family member.
 Confirm understanding frequently: "Does that make sense?" or "Would you like me to do that?"
 If the user seems confused or repeats themselves, respond with patience.
 Avoid complex formatting, emojis, asterisks, bullet points, or symbols — speech only.
+Never read passwords, banking details, or private messages aloud.
 
 == TOOLS ==
-You have access to web search, reminders, contacts, and messaging. Use them proactively. \
-Always confirm before sending messages or creating reminders.
+You have access to web search, today's schedule, reminders, contacts, and messaging. \
+Use them proactively. Always confirm before sending messages or creating reminders.
 
-== REMINDERS ==
-You manage two types of reminders:
-- Sunny reminders (save_reminder / list_reminders / delete_reminder): stored in Sunny's \
-system and will trigger push notifications. Use this for medication, appointments, wellness.
-- iOS native reminders (create_reminder): adds to the user's built-in iOS Reminders app. \
-Use when the user explicitly asks to add something to their Reminders app.
+== TASKS AND REMINDERS ==
+The household's schedule is set up by family. Answer questions about it from the \
+schedule below, or call list_today for the latest status.
+When the user says they did a task ("I took them", "done"), call confirm_task. If it \
+was already done, tell them when it was done; never suggest taking a medication again.
+When the user asks you to remind them of something, repeat it back first ("So I'll \
+remind you to call the plumber tomorrow at 10 AM. Is that right?") and call \
+create_reminder only after they agree.
+cancel_reminder only cancels reminders the user created; tasks set up by family can \
+only be changed by family.
 
-When setting a Sunny reminder:
-1. Parse what they said into type, title, times, and days.
-2. Repeat it back before calling the tool: "So I'll remind you to take your blood pressure \
-medication at 9 AM and 9 PM every day. Does that sound right?"
-3. Only call save_reminder AFTER the user confirms.
-
-When deleting: confirm which reminder you're cancelling before calling delete_reminder. \
-If multiple reminders match, list them and ask which one.
-
-== GUIDED WORKFLOWS ==
-You can guide the user step-by-step through any task on their iPhone.
-When the user asks for help navigating their phone, call start_workflow() IMMEDIATELY
-with a short description of what they want to do (e.g. "block a contact",
-"adjust screen brightness", "set an alarm"). NEVER describe or guess the steps yourself —
-always call start_workflow() so the scripted, tested guide is used.
-Do NOT offer start_workflow() as one option among others or wait for the user to
-confirm they want a guide — just call it. Screen sharing and workflows are complementary,
-not alternatives: call start_workflow() first, then offer screen sharing separately if helpful.
-Do NOT start a workflow without a clear phone-task request from the user.
-While a workflow is active, your only job is to respond to the user's progress.
-The tool return value tells you exactly what to listen for and what to do next.
-Use confirm_step() when the user indicates success. Use go_back_step() if they want
-to redo the previous step. Use exit_workflow() if they want to stop.
-
-== SCREEN SHARING ==
-If the user seems confused about what they see on their phone screen, is navigating an
-unfamiliar app, or asks about something that would clearly benefit from visual guidance
-(finding a setting, locating a button, reading text on screen), use the suggest_screen_share
-tool to offer screen sharing.
-If the user agrees to share their screen, use the guide_screen_share_start tool to walk them
-through starting the broadcast. NEVER give manual screen sharing setup steps — always use
-the guide_screen_share_start tool.
-
-== VISION MODE ==
-When screen sharing is active, you receive [SCREEN DESCRIPTION ...] blocks before each turn.
-BREVITY: Keep every response to one short sentence. Just tell the user what to tap or where to go. No preamble, no narration of what you see, no "I can see that..." filler.
-SPATIAL LANGUAGE: Use clear directional terms — "top left," "bottom of the screen," "the blue button in the center."
-SUNNY APP: The user's screen may show the Sunny call interface initially — this is normal. To navigate elsewhere, swipe up from the very bottom edge. NEVER suggest ending the call.
-REFRESH_VISION: Call refresh_vision() when you see "[SCREEN DESCRIPTION - possibly stale" or "[SCREEN DESCRIPTION - not yet available". NEVER give navigation instructions from a stale description. Call refresh_vision() with NO text before the tool call — do not say "let me get a fresh look", "one moment", or any other phrase. Just call the tool immediately, then give one sentence based on the result.
-WORKFLOW INITIATION: When the user tells you what iPhone task they want to do, call start_workflow before giving guidance.
-WORKFLOW GUIDANCE: When a workflow is active, validate the screen matches the expected state. Call confirm_step_completed if it matches.
-WRONG SCREEN: If the user is on the wrong screen, tell them where to go in one sentence.
-PRIVACY: Never read passwords, banking details, or private messages aloud.
-
-== USER CONTEXT ==
+== HOUSEHOLD CONTEXT ==
 {user_context}"""
 
 
 def format_user_context(context: dict) -> str:
     """
-    purpose: Convert a get_user_context RPC response dict into a human-readable
-             block suitable for injection into the system prompt. Uses profile_summary
-             (a free-text prose paragraph) instead of the old facts-by-category table,
-             producing cleaner, less token-wasteful context for the LLM.
-    @param context: (dict) Response from the get_user_context RPC. Expected keys:
-                   profile (includes profile_summary), summaries, reminders.
-                   Pass {} for new users.
-    @return: (str) A formatted multi-line string describing what Sunny knows about
-             the user, or a brief fallback message if the context is empty.
+    purpose: Convert a get_agent_context RPC result into the household context block for
+             the system prompt.
+    @param context: (dict) Result of get_agent_context. Expected keys: household, today,
+                    as_needed, events, latest_message, life_profile, sensitive_topics,
+                    memory, recent_conversations. Pass {} when no household is known.
+    @return: (str) Multi-line context block, or a brief fallback when context is empty.
     """
     if not context:
-        return "No prior context available. This appears to be a new user."
+        return "No household context is available for this session."
 
-    profile = context.get("profile", {})
-    summaries = context.get("summaries", [])
-    reminders = context.get("reminders", [])
+    household = context.get("household", {})
+    tz = household.get("timezone", DEFAULT_TIMEZONE)
+    name = household.get("senior_preferred_name", "the user")
+    now_str = ""
+    if household.get("local_now"):
+        now = datetime.fromisoformat(household["local_now"])
+        now_str = f"{spoken_date(now)}, {clock_for_voice(now)}"
+    lines = [f"Name: {name} | Timezone: {tz} | Local time now: {now_str}"]
 
-    name = profile.get("name", "the user")
-    ios_version = profile.get("ios_version", "unknown")
-    timezone = profile.get("timezone", "unknown")
-    profile_summary = profile.get("profile_summary", "")
-
-    lines = [
-        f"Name: {name} | Device: iPhone, iOS {ios_version} | Timezone: {timezone}",
-    ]
-
-    # Profile summary (replaces facts-by-category)
-    if profile_summary:
-        lines.append("")
-        lines.append(f"What Sunny knows about {name}:")
-        lines.append(profile_summary)
-
-    # Recent session summaries (last 5)
-    if summaries:
-        lines.append("")
-        lines.append("Recent conversations (last 5):")
-        for s in summaries[:5]:
-            summary_text = s.get("summary", "")
-            created_at = s.get("created_at", "")
-            if summary_text:
-                date_prefix = created_at[:10] if created_at else "unknown date"
-                lines.append(f"  - {date_prefix}: {summary_text}")
-
-    # Active reminders
-    if reminders:
-        lines.append("")
-        lines.append("Active reminders:")
-        for r in reminders:
-            title = r.get("title", "")
-            rtype = r.get("type", "")
-            description = r.get("description", "")
-            entry = f"  - {title}"
-            if rtype:
-                entry += f" ({rtype})"
-            if description:
-                entry += f": {description}"
+    today = context.get("today", [])
+    lines.append("")
+    if today:
+        lines.append("Today's schedule:")
+        for item in today:
+            entry = f"  - {describe_instance(item, tz)}"
+            if item.get("pill_description"):
+                entry += f" (pills: {item['pill_description']})"
+            if item.get("checklist_items"):
+                entry += f" (checklist: {', '.join(item['checklist_items'])})"
             lines.append(entry)
+    else:
+        lines.append("Today's schedule: nothing scheduled.")
+
+    as_needed = context.get("as_needed", [])
+    if as_needed:
+        lines.append("")
+        lines.append("As-needed medications (limits copied from the label by family):")
+        for med in as_needed:
+            limits = []
+            if med.get("max_per_day"):
+                limits.append(f"up to {med['max_per_day']} a day")
+            if med.get("min_hours_between"):
+                hours = float(med["min_hours_between"])
+                limits.append(f"at least {hours:g} hours apart")
+            taken = [local_clock(t, tz) for t in med.get("taken_today", [])]
+            taken_str = ", ".join(taken) if taken else "none"
+            lines.append(
+                f"  - {med.get('display_label', '')}: {', '.join(limits) or 'no limits on file'}. "
+                f"Taken today: {taken_str}."
+            )
+
+    events = context.get("events", [])
+    if events:
+        lines.append("")
+        lines.append("Upcoming events (next 7 days):")
+        for e in events:
+            starts = to_local(e["starts_at"], tz)
+            entry = f"  - {spoken_date(starts)}, {clock_for_voice(starts)}: {e.get('title', '')}"
+            if e.get("visitor_name"):
+                entry += f", with {e['visitor_name']}"
+            if e.get("place"):
+                entry += f", at {e['place']}"
+            lines.append(entry)
+
+    message = context.get("latest_message")
+    if message:
+        lines.append("")
+        body = message.get("body") or ("a photo" if message.get("has_photo") else "")
+        lines.append(
+            f"Latest family message, from {message.get('from', 'family')}: {body}"
+        )
+
+    profile = context.get("life_profile", [])
+    if profile:
+        lines.append("")
+        lines.append("Life profile (from family):")
+        for entry in profile:
+            detail = f": {entry['details']}" if entry.get("details") else ""
+            lines.append(
+                f"  - {entry.get('category', '')} - {entry.get('name', '')}{detail}"
+            )
+
+    topics = context.get("sensitive_topics", [])
+    if topics:
+        lines.append("")
+        lines.append("Sensitive topics (follow family's guidance exactly):")
+        for t in topics:
+            lines.append(
+                f"  - If asked about {t.get('topic', '')}: {t.get('guidance', '')}"
+            )
+
+    memory = context.get("memory", [])
+    if memory:
+        lines.append("")
+        lines.append(
+            "Remembered facts (family-verified facts outrank unverified ones):"
+        )
+        for m in memory:
+            label = (
+                "verified"
+                if m.get("verified")
+                else f"said by {m.get('source', 'senior')}, unverified"
+            )
+            lines.append(f"  - {m.get('fact', '')} ({label})")
+
+    conversations = context.get("recent_conversations", [])
+    if conversations:
+        lines.append("")
+        lines.append("Recent conversations:")
+        for c in conversations:
+            lines.append(
+                f"  - {str(c.get('started_at', ''))[:10]}: {c.get('summary', '')}"
+            )
 
     return "\n".join(lines)
 
 
 def render_system_prompt(user_context_block: str) -> str:
     """
-    purpose: Inject the formatted user context block into the system prompt template.
+    purpose: Inject the formatted household context block into the system prompt template.
     @param user_context_block: (str) Output of format_user_context().
     @return: (str) The complete system prompt string ready for the LLM.
     """
     return SYSTEM_PROMPT_TEMPLATE.format(user_context=user_context_block)
-
-
-def format_step_context(
-    step: WorkflowStep,
-    step_num: int,
-    total_steps: int,
-    workflow_title: str,
-) -> str:
-    """
-    purpose: Build the step context string returned by workflow tools to the LLM.
-             Instructs the LLM to speak the step instruction verbatim, then wait
-             for the user to respond before calling any follow-up tool.
-    @param step: (WorkflowStep) The current step.
-    @param step_num: (int) 1-based step number.
-    @param total_steps: (int) Total number of steps in the workflow.
-    @param workflow_title: (str) Human-readable workflow title.
-    @return: (str) Formatted step context block for the LLM.
-    """
-    lines = [
-        f"== ACTIVE WORKFLOW: {workflow_title} (step {step_num} of {total_steps}) ==",
-        f'INSTRUCTION: "{step.instruction}"',
-        "Deliver in one short sentence. Do not add extra explanation.",
-        "WAIT for the user. Only call confirm_step() when they say they did it.",
-    ]
-
-    if step.common_issues:
-        lines.append("If stuck:")
-        for ci in step.common_issues:
-            lines.append(f'  - "{ci["issue"]}" -> "{ci["response"]}"')
-
-    if step.fallback:
-        lines.append(f'Fallback: "{step.fallback}"')
-
-    lines.extend(
-        [
-            "go_back_step() to redo. exit_workflow() to stop.",
-        ]
-    )
-
-    return "\n".join(lines)

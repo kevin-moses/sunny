@@ -9,15 +9,12 @@ description = "Simple voice AI assistant built with LiveKit Agents for Python"
 requires-python = ">=3.9"
 
 dependencies = [
-    "livekit-agents[openai,anthropic,turn-detector,silero,cartesia,deepgram,google]~=1.2",
+    "livekit-agents[anthropic,turn-detector,silero,cartesia,deepgram]~=1.2",
     "livekit-plugins-noise-cancellation~=0.2",
     "numpy<2",
-    "openai>=1.0.0",
     "python-dotenv",
     "tavily-python>=0.7.12",
     "supabase>=2.10.0",
-    "pyyaml>=6.0",
-    "Pillow>=10.0.0",
 ]
 
 [dependency-groups]
@@ -63,5 +60,5 @@ warn_unused_ignores = false
 # src.* uses supabase's recursive JSON union type (int | float | Sequence[JSON] |
 # Mapping[str, JSON]) and third-party SDK union types that mypy can't fully narrow.
 # Ignored until the codebase adds explicit cast() or isinstance() guards.
-module = ["src.memory", "src.tools", "src.workflow_engine", "src.agent"]
+module = ["src.memory", "src.tools", "src.agent"]
 ignore_errors = true
