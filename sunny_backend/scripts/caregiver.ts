@@ -15,12 +15,15 @@
 //                      Add --continue to continue the previous conversation.
 //   day                Print the day view (calendar:dayView) as the displays see it.
 //   codes              Print fresh join codes for the senior phone and the home display.
+//   google             Print the Google Calendar consent link (googleCalendar:connectUrl); open
+//                      it signed in as a Google test user. See notes/GOOGLE_CALENDAR_SETUP.md.
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
 //   npx tsx scripts/caregiver.ts setup
 //   npx tsx scripts/caregiver.ts chat "Add lunch with Sarah on Friday at noon"
 //   npx tsx scripts/caregiver.ts chat "Make it 12:30 instead" --continue
 //   npx tsx scripts/caregiver.ts day
+//   npx tsx scripts/caregiver.ts google
 //
 // Last modified: 2026-10-29
 
@@ -198,6 +201,16 @@ function day(): void {
 }
 
 /**
+ * purpose: Print the Google Calendar consent link for the dev caregiver.
+ */
+function google(): void {
+  const state = loadState();
+  const url = convexRun("googleCalendar:connectUrl", { householdId: state.householdId });
+  console.log(`Open this link signed in as a Google test user:
+${url}`);
+}
+
+/**
  * purpose: Dispatch the command line.
  * @param argv: (string[]) Arguments after the script name.
  * @return: (Promise<void>) Resolves when the command finishes.
@@ -221,8 +234,11 @@ async function main(argv: string[]): Promise<void> {
     case "codes":
       printCodes(loadState().householdId);
       break;
+    case "google":
+      google();
+      break;
     default:
-      console.log('Commands: setup | chat "<message>" [--continue] | day | codes');
+      console.log('Commands: setup | chat "<message>" [--continue] | day | codes | google');
   }
 }
 

@@ -15,8 +15,11 @@
 // Agent requests: a caregiver message to the household agent (agentRequests, the row the app
 // subscribes to) and the tool calls the agent made for it (agentToolCalls, recorded once so a
 // retried workflow step never repeats a calendar write).
-// Not yet ported (later phases): calendar sync jobs, Google Calendar
-// connections and links, storage for photos and voice clips.
+// Google Calendar: calendarConnections (one per caregiver per household, refresh token stored
+// encrypted), calendarEventLinks (our event to the Google event, per connection) and
+// calendarSyncs (the pending push of one event to one connection; at most one row per key,
+// see lib/calendarSync.ts).
+// Not yet ported (later phases): storage for photos and voice clips.
 //
 // Last modified: 2026-10-29
 
@@ -24,6 +27,8 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
   actorKind,
+  calendarConnectionStatus,
+  calendarSyncState,
   agentRequestStatus,
   confirmVia,
   deviceKind,
@@ -215,6 +220,50 @@ export default defineSchema({
     .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
     .index("by_sent", ["sentAt"]),
+
+  // A caregiver's Google account connection; Sunny keeps its own secondary calendar there.
+  calendarConnections: defineTable({
+    householdId: v.id("households"),
+    // Clerk user id of the caregiver who connected.
+    userId: v.string(),
+    provider: v.literal("google"),
+    accountEmail: v.optional(v.string()),
+    // The Sunny-owned calendar created in the caregiver's account.
+    externalCalendarId: v.string(),
+    status: calendarConnectionStatus,
+    // Caregiver-readable reason when status is not active.
+    error: v.optional(v.string()),
+    // The OAuth refresh token as an encrypted box (lib/secretBox.ts). Never returned to clients.
+    refreshToken: v.string(),
+    lastSyncedAt: v.optional(v.number()),
+  })
+    .index("by_household", ["householdId"])
+    .index("by_user", ["userId"])
+    .index("by_household_user", ["householdId", "userId"]),
+
+  // Our event to the Google event, per connection.
+  calendarEventLinks: defineTable({
+    eventId: v.id("events"),
+    connectionId: v.id("calendarConnections"),
+    externalEventId: v.string(),
+    etag: v.optional(v.string()),
+    syncedAt: v.number(),
+  })
+    .index("by_event_connection", ["eventId", "connectionId"])
+    .index("by_connection", ["connectionId"]),
+
+  // The pending push of one event to one connection; unique per (eventId, connectionId).
+  // queued = waiting for the workpool; running = the push action has read the event.
+  // dirty = the event changed while running, so push again when done.
+  calendarSyncs: defineTable({
+    householdId: v.id("households"),
+    eventId: v.id("events"),
+    connectionId: v.id("calendarConnections"),
+    state: calendarSyncState,
+    dirty: v.boolean(),
+  })
+    .index("by_event_connection", ["eventId", "connectionId"])
+    .index("by_connection", ["connectionId"]),
 
   auditLog: defineTable({
     householdId: v.id("households"),

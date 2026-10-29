@@ -10,6 +10,9 @@
 // from an orphaned previous owner (see registerPushToken). pairDevice stores the pairing time
 // and the client's retry nonce on the device row so /pair can answer a retry whose first
 // response was lost (findRecentPairing); listDevices never returns the nonce.
+// Google Calendar: update re-pushes every live event when the timezone, event notice time or
+// senior's preferred name actually changes; removeMember drops the removed caregiver's Google
+// connections, links and pending syncs (lib/calendarSync.ts).
 //
 // Last modified: 2026-10-29
 
@@ -30,6 +33,7 @@ import {
   requireReader,
   requireUserId,
 } from "./lib/access";
+import { dropMemberConnections, resyncHouseholdCalendars } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
 import { resyncHouseholdTimezone } from "./lib/schedule";
@@ -270,6 +274,16 @@ export const update = mutation({
     if (fields.backgroundPaused !== undefined) patch.backgroundPaused = fields.backgroundPaused;
 
     await ctx.db.patch(householdId, patch);
+    // These three shape every Google event (zone, reminder minutes, description).
+    if (
+      (patch.timezone !== undefined && patch.timezone !== household.timezone) ||
+      (patch.eventNoticeTime !== undefined &&
+        patch.eventNoticeTime !== household.eventNoticeTime) ||
+      (patch.seniorPreferredName !== undefined &&
+        patch.seniorPreferredName !== household.seniorPreferredName)
+    ) {
+      await resyncHouseholdCalendars(ctx, householdId);
+    }
     return null;
   },
 });
@@ -351,6 +365,8 @@ export const removeMember = mutation({
     if (!member) throw appError("not_found", "Member not found");
     if (member.role === "primary") await assertNotLastPrimary(ctx, args.householdId);
     await ctx.db.delete(member._id);
+    // Their Google connection (and token) goes with them.
+    await dropMemberConnections(ctx, args.householdId, args.userId);
 
     const household = await ctx.db.get(args.householdId);
     if (household && household.onCallUserId === args.userId) {

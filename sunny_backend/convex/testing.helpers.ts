@@ -1,11 +1,12 @@
 // testing.helpers.ts
 // Purpose: Shared helpers for the backend tests (agentRequests, agentRuntime, agentTools):
-// the convex-test harness with every backend module and the workflow component registered,
+// the convex-test harness with every backend module and the workflow and workpool components registered,
 // creating a household through the real households.create, and inserting agent request rows.
 // The name has two dots, so Convex does not treat this file as a function module.
 //
 // Last modified: 2026-10-29
 
+import workpoolTest from "@convex-dev/workpool/test";
 import workflowTest from "@convex-dev/workflow/test";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
@@ -23,6 +24,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./**/*.helpe
 export function makeBackend() {
   const t = convexTest(schema, modules);
   workflowTest.register(t);
+  workpoolTest.register(t, "calendarSyncPool");
   return t;
 }
 

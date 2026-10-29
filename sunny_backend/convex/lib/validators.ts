@@ -169,3 +169,17 @@ export const toolCall = v.object({
 });
 /** Type of toolCall. */
 export type ToolCall = Infer<typeof toolCall>;
+
+/** Health of a caregiver's Google Calendar connection. */
+export const calendarConnectionStatus = v.union(
+  v.literal("active"),
+  v.literal("revoked"),
+  v.literal("error"),
+);
+/** Type of calendarConnectionStatus. */
+export type CalendarConnectionStatus = Infer<typeof calendarConnectionStatus>;
+
+/** Where a pending Google push is: waiting for the pool, or running now. */
+export const calendarSyncState = v.union(v.literal("queued"), v.literal("running"));
+/** Type of calendarSyncState. */
+export type CalendarSyncState = Infer<typeof calendarSyncState>;

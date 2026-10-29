@@ -1,6 +1,6 @@
 # Google Calendar setup
 
-One-time setup of the Google Cloud project behind "Connect Google Calendar". Sunny asks only for `calendar.app.created` (create its own calendars and manage events in them), plus `openid email` to show which account is connected.
+One-time setup of the Google Cloud project behind "Connect Google Calendar" (Convex backend). Sunny asks only for `calendar.app.created` (create its own calendars and manage events in them), plus `openid email` to show which account is connected.
 
 ## 1. Project and API
 
@@ -18,25 +18,28 @@ Testing-mode limits: refresh tokens expire after 7 days, so a test caregiver rec
 ## 3. OAuth client
 
 1. **Google Auth Platform > Clients > Create client**, type **Web application**, name **Sunny backend**.
-2. **Authorized redirect URIs**, add both:
-   - `http://localhost:54321/functions/v1/google-oauth/callback` (local stack)
-   - `https://rlihlcgyjqyzkpzijtsp.supabase.co/functions/v1/google-oauth/callback` (remote)
+2. **Authorized redirect URIs**, add: `https://enduring-ostrich-959.convex.site/google/callback` (the dev deployment's HTTP actions URL, `.convex.site`, not `.convex.cloud`). A production deployment has its own `.convex.site` URL; add it too when you deploy.
 3. **Create**, then copy the **Client ID** and **Client secret**.
 
-## 4. Secrets
+## 4. Environment variables
 
-Local: put them in `supabase/functions/.env` (git-ignored) as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` and restart `supabase functions serve`.
-
-Remote (when deploying):
+Set them on the Convex deployment from `sunny_backend/` (add `--prod` for production). Sunny does not need a `.env` file for these:
 
 ```bash
-supabase secrets set --project-ref rlihlcgyjqyzkpzijtsp GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... GOOGLE_REDIRECT_URI=https://rlihlcgyjqyzkpzijtsp.supabase.co/functions/v1/google-oauth/callback GOOGLE_OAUTH_STATE_SECRET=$(openssl rand -hex 32)
+npx convex env set GOOGLE_CLIENT_ID <client id>
+npx convex env set GOOGLE_CLIENT_SECRET <client secret>
+npx convex env set GOOGLE_REDIRECT_URI https://enduring-ostrich-959.convex.site/google/callback
+npx convex env set GOOGLE_OAUTH_STATE_SECRET "$(openssl rand -hex 32)"
+npx convex env set CALENDAR_TOKEN_KEY "$(openssl rand -base64 32)"
 ```
+
+`CALENDAR_TOKEN_KEY` encrypts the stored refresh tokens. Keep a copy somewhere safe: if it changes or is lost, every caregiver has to reconnect Google.
 
 ## 5. Connect
 
 ```bash
-deno run -A --env-file=supabase/scripts/.env.local supabase/scripts/caregiver.ts google
+cd sunny_backend
+npx tsx scripts/caregiver.ts google
 ```
 
-Open the printed link signed in as a test user, allow access, and a calendar named "Mom (Sunny)" appears in Google Calendar with every Sunny event, each with a popup reminder on the morning of the event.
+Open the printed link signed in as a test user, allow access, and a calendar named "Mom (Sunny)" appears in Google Calendar with every Sunny event, each with a popup reminder on the morning of the event. Later edits are pushed automatically (a few seconds apart at most; repeated edits merge). The app can list the connection with `googleCalendar:myConnections` and remove it with `googleCalendar:disconnect`; the Google calendar itself is left in place.

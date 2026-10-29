@@ -10,7 +10,8 @@
 // updateEvent takes `changes`: an absent key is unchanged, a key present as null clears the
 // field, and unknown keys are rejected by the validator. listOccurrencesCore and
 // householdWeek are shared helpers for the agent tools and briefing (lib/agentTools.ts,
-// lib/agentBriefing.ts).
+// lib/agentBriefing.ts). Every write core queues a Google push for the household's active
+// connections (lib/calendarSync.ts); an update that changes no stored field queues nothing.
 //
 // Last modified: 2026-10-29
 
@@ -22,6 +23,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { actorUserId, loadHousehold, requireEditor, requireReader } from "./lib/access";
 import type { Actor } from "./lib/access";
 import { audit } from "./lib/audit";
+import { queueEventSync } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import {
   assertEventNotPast,
@@ -58,6 +60,20 @@ const REPEAT_DAYS_MESSAGE = "Repeat days must be weekdays 1 (Monday) to 7 (Sunda
 const MAX_LIST_RANGE_DAYS = 92;
 const WEEK_DAYS = 7;
 const DEFAULT_DURATION_MINUTES = 30;
+
+/** Stored event fields whose change is pushed to Google. */
+const EVENT_FIELD_KEYS = [
+  "title",
+  "label",
+  "startsOn",
+  "startTime",
+  "durationMinutes",
+  "place",
+  "visitorName",
+  "notes",
+  "repeatDays",
+  "repeatUntil",
+] as const;
 
 /** Fields a new event is created from (everything but the household). */
 const addEventFields = {
@@ -243,6 +259,7 @@ export async function addEventCore(
   });
   const event = (await ctx.db.get(id))!;
   await auditEvent(ctx, actor, "insert", event);
+  await queueEventSync(ctx, id);
   return eventWithNext(event, household.timezone, now);
 }
 
@@ -299,6 +316,10 @@ export async function updateEventCore(
   await ctx.db.patch(eventId, fields);
   const event = (await ctx.db.get(eventId))!;
   await auditEvent(ctx, actor, "update", event);
+  // An update that changes nothing is not pushed to Google (queue_event_sync's rule).
+  if (EVENT_FIELD_KEYS.some((k) => JSON.stringify(current[k]) !== JSON.stringify(event[k]))) {
+    await queueEventSync(ctx, eventId);
+  }
   return eventWithNext(event, household.timezone, now);
 }
 
@@ -324,6 +345,7 @@ export async function cancelEventCore(
   await ctx.db.patch(eventId, { deletedAt: now });
   const event = (await ctx.db.get(eventId))!;
   await auditEvent(ctx, actor, "cancel", event);
+  await queueEventSync(ctx, eventId);
   return eventJson(event);
 }
 
