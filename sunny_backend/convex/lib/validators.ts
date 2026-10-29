@@ -146,3 +146,14 @@ export const questionOutcome = v.union(
   v.literal("routed"),
   v.literal("unsure"),
 );
+
+/** Where a caregiver's request to the household agent stands. */
+export const agentRequestStatus = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+  v.literal("cancelled"),
+);
+/** Type of agentRequestStatus. */
+export type AgentRequestStatus = Infer<typeof agentRequestStatus>;
