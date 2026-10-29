@@ -7,5 +7,5 @@ See `notes/SPEC.md` for the POC feature spec and `notes/HANDOFF.md` for how the 
 ## Repo layout
 
 - `sunny_agent/` - LiveKit voice agent (Deepgram STT, Claude Haiku, Cartesia TTS), Tavily web search
-- `sunny_app/` - iOS app (SwiftUI). The `sunny` target is the senior's phone surface; a caregiver target will be added to the same project
+- `sunny_app/` - iOS app (React Native / Expo, LiveKit React Native SDK). The senior's phone surface and the iPad home display stub; see `sunny_app/README.md`
 - `supabase/` - database migrations and Edge Functions
