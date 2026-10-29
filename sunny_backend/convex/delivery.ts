@@ -25,13 +25,13 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import type { ApnsResult } from "./apns";
+import type { ApnsResult } from "./lib/apnsPayload";
 import { ConfigError } from "./lib/errors";
 import { MAX_ATTEMPTS, requeueStuckDeliveries, resolveRoute } from "./lib/delivery";
 import type { Route } from "./lib/delivery";
+import type { SmsResult } from "./lib/twilio";
 import { deliveryChannel } from "./lib/validators";
 import type { DeliveryChannel } from "./lib/validators";
-import type { SmsResult } from "./sms";
 
 /** The outcome of a delivery run, returned by the action. */
 export type DeliveryOutcome = "sent" | "skipped" | "failed" | "settled" | "missing";

@@ -14,6 +14,8 @@
 // inline) when the timezone, event notice time or senior's preferred name actually changes or
 // a pause ends; removeMember drops the removed caregiver's Google connections, links and
 // pending syncs and revokes their grants.
+// Phone numbers: setMyPhone and confirmMyPhone (phone.ts) are re-exported here; listMembers
+// reports phoneVerified and hides numbers from paired devices.
 //
 // Last modified: 2026-10-29
 
@@ -50,6 +52,15 @@ const CODE_ATTEMPTS = 10;
 const DEFAULT_CAREGIVER_NAME = "Caregiver";
 /** How long after pairing a retry with the same nonce is answered with a fresh ticket. */
 export const PAIRING_RETRY_WINDOW_MS = 10 * 60 * 1000;
+
+/** A household member as listMembers returns it, with the phone fields gated by who asks. */
+export type MemberView = Omit<
+  Doc<"householdMembers">,
+  "phone" | "phoneVerifiedAt" | "pendingPhone"
+> &
+  Partial<Pick<Doc<"householdMembers">, "phone" | "phoneVerifiedAt" | "pendingPhone">> & {
+    phoneVerified: boolean;
+  };
 
 /**
  * purpose: Validate an IANA timezone and return its canonical spelling.
@@ -295,18 +306,29 @@ export const update = mutation({
 /**
  * purpose: The household's caregivers.
  * @param householdId: (Id<"households">) Household.
- * @return: (Doc<"householdMembers">[]) Members. Readers only.
+ * @return: (MemberView[]) Members, each with phoneVerified (true only for a verified number).
+ *          The number itself (phone, pendingPhone, phoneVerifiedAt) is left out for a paired
+ *          device. Readers only.
  */
 export const listMembers = query({
   args: { householdId: v.id("households") },
-  handler: async (ctx, args): Promise<Doc<"householdMembers">[]> => {
-    await requireReader(ctx, args.householdId);
-    return await ctx.db
+  handler: async (ctx, args): Promise<MemberView[]> => {
+    const actor = await requireReader(ctx, args.householdId);
+    const members = await ctx.db
       .query("householdMembers")
       .withIndex("by_household_user", (q) => q.eq("householdId", args.householdId))
       .collect();
+    return members.map((m) => {
+      const { phone, phoneVerifiedAt, pendingPhone, ...rest } = m;
+      const view: MemberView = { ...rest, phoneVerified: phone !== undefined && !!phoneVerifiedAt };
+      if (actor.kind === "caregiver") Object.assign(view, { phone, phoneVerifiedAt, pendingPhone });
+      return view;
+    });
   },
 });
+
+/** Caregiver phone verification, implemented in phone.ts (households.setMyPhone, confirmMyPhone). */
+export { confirmMyPhone, setMyPhone } from "./phone";
 
 /**
  * purpose: Reject a change that would leave the household without a primary caregiver. Call

@@ -25,8 +25,12 @@ import { makeBackend } from "./testing.helpers";
 
 const modelMock = vi.hoisted(() => vi.fn());
 
-vi.mock("./apns", async () => (await import("./deliveryMocks.helpers")).apnsModule());
-vi.mock("./sms", async () => (await import("./deliveryMocks.helpers")).smsModule());
+vi.mock("./apns", async (original) =>
+  (await import("./deliveryMocks.helpers")).apnsModule(await original()),
+);
+vi.mock("./sms", async (original) =>
+  (await import("./deliveryMocks.helpers")).smsModule(await original()),
+);
 vi.mock("./lib/digestModel", () => ({
   composeWithClaude: modelMock,
   DIGEST_MODEL: "claude-haiku-5-5",

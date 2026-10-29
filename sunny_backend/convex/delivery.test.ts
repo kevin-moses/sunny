@@ -26,8 +26,12 @@ import type { DeliveryFixture } from "./deliveryMocks.helpers";
 import { insertNotification, MAX_ATTEMPTS, STUCK_AFTER_MS } from "./lib/delivery";
 import { createHousehold, makeBackend } from "./testing.helpers";
 
-vi.mock("./apns", async () => (await import("./deliveryMocks.helpers")).apnsModule());
-vi.mock("./sms", async () => (await import("./deliveryMocks.helpers")).smsModule());
+vi.mock("./apns", async (original) =>
+  (await import("./deliveryMocks.helpers")).apnsModule(await original()),
+);
+vi.mock("./sms", async (original) =>
+  (await import("./deliveryMocks.helpers")).smsModule(await original()),
+);
 
 const NOW = Date.parse("2026-11-02T15:00:00Z");
 

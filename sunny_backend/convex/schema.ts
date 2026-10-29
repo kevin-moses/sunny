@@ -21,6 +21,8 @@
 // see lib/calendarSync.ts).
 // Delivery and the daily digest: notificationOutbox delivery bookkeeping and the digests
 // table (one row per household and local date).
+// SMS: caregiver phone numbers live on householdMembers (phone, phoneVerifiedAt, pendingPhone);
+// phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
 //
 // Last modified: 2026-10-29
@@ -73,14 +75,27 @@ export default defineSchema({
     userId: v.string(),
     role: memberRole,
     displayName: v.string(),
+    // E.164 number. Reachable by SMS only when phoneVerifiedAt is also set (see phone.ts).
     phone: v.optional(v.string()),
-    // Set when the phone number was verified (part B, SMS). Added here only so delivery
-    // compiles; the SMS work owns this field. A member is reachable by SMS only when both
-    // phone and phoneVerifiedAt are set.
     phoneVerifiedAt: v.optional(v.number()),
+    // A number awaiting its texted code; becomes phone on confirmMyPhone.
+    pendingPhone: v.optional(v.string()),
   })
     .index("by_household_user", ["householdId", "userId"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // Inbound SMS: members by number (callers also check phoneVerifiedAt).
+    .index("by_phone", ["phone"]),
+
+  // The one outstanding phone verification per member: the code is stored hashed, with an
+  // expiry and a count of wrong guesses. Replaced on every resend.
+  phoneVerifications: defineTable({
+    householdId: v.id("households"),
+    userId: v.string(),
+    phone: v.string(),
+    codeHash: v.string(),
+    expiresAt: v.number(),
+    attempts: v.number(),
+  }).index("by_household_user", ["householdId", "userId"]),
 
   // Senior-side devices; userId is the Clerk user created for the device at pairing.
   devices: defineTable({

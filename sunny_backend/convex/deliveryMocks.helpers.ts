@@ -46,8 +46,9 @@ export function resetProviderMocks(): void {
  * purpose: The ./apns module with send replaced by the mock.
  * @return: (object) The mocked module.
  */
-export function apnsModule() {
+export function apnsModule(original: object = {}) {
   return {
+    ...original,
     send: internalActionGeneric({
       args: {
         tokens: v.array(v.string()),
@@ -64,8 +65,9 @@ export function apnsModule() {
  * purpose: The ./sms module with send replaced by the mock.
  * @return: (object) The mocked module.
  */
-export function smsModule() {
+export function smsModule(original: object = {}) {
   return {
+    ...original,
     send: internalActionGeneric({
       args: { to: v.string(), body: v.string() },
       handler: async (_ctx, args) => await providerMocks.smsSend(args),
