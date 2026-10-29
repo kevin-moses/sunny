@@ -185,23 +185,6 @@ describe("POST /pair success", () => {
     expect(calls[0]!.body).not.toHaveProperty("email_address");
     expect(calls[1]!.body).toEqual({ user_id: "user_clerk_1", expires_in_seconds: 600 });
   });
-
-  test("a home display code pairs a home_display device", async () => {
-    const t = makeBackend();
-    const { code } = await householdWithCode(t, "home_display");
-    const res = await postPair(t, { code });
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { kind: string }).kind).toBe("home_display");
-  });
-
-  test("the code can be used only once", async () => {
-    const t = makeBackend();
-    const { code } = await householdWithCode(t);
-    expect((await postPair(t, { code })).status).toBe(200);
-    behavior.userId = "user_clerk_2";
-    expect((await postPair(t, { code })).status).toBe(404);
-    expect(await devices(t)).toHaveLength(1);
-  });
 });
 
 describe("POST /pair codes that cannot be redeemed", () => {

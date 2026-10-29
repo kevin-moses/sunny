@@ -86,40 +86,21 @@ describe("request", () => {
     expect(id).toBeTruthy();
   });
 
-  test("a viewer is refused", async () => {
-    const t = makeBackend();
-    const householdId = await createTeam(t);
-    await expect(
-      t
-        .withIdentity({ subject: "user_viewer" })
-        .mutation(api.agentRequests.request, { householdId, message: "hi" }),
-    ).rejects.toThrow(/forbidden/);
-  });
-
-  test("an outsider and a signed-out caller are refused", async () => {
-    const t = makeBackend();
-    const householdId = await createTeam(t);
-    await expect(
-      t
-        .withIdentity({ subject: "stranger" })
-        .mutation(api.agentRequests.request, { householdId, message: "hi" }),
-    ).rejects.toThrow(/forbidden/);
-    await expect(
-      t.mutation(api.agentRequests.request, { householdId, message: "hi" }),
-    ).rejects.toThrow(/unauthenticated/);
-  });
-
-  test("a paired senior device is refused", async () => {
+  test.each([
+    ["a viewer", { subject: "user_viewer" }, /forbidden/],
+    ["an outsider", { subject: "stranger" }, /forbidden/],
+    ["a paired senior device", { subject: "device_1", sunny_kind: "device" }, /forbidden/],
+    ["a signed-out caller", null, /unauthenticated/],
+  ])("%s is refused", async (_name, identity, error) => {
     const t = makeBackend();
     const householdId = await createTeam(t);
     await t.run(async (ctx) => {
       await ctx.db.insert("devices", { householdId, userId: "device_1", kind: "senior_phone" });
     });
+    const caller = identity === null ? t : t.withIdentity(identity);
     await expect(
-      t
-        .withIdentity({ subject: "device_1", sunny_kind: "device" })
-        .mutation(api.agentRequests.request, { householdId, message: "hi" }),
-    ).rejects.toThrow(/forbidden/);
+      caller.mutation(api.agentRequests.request, { householdId, message: "hi" }),
+    ).rejects.toThrow(error);
   });
 
   test("rejects an empty or blank message", async () => {
@@ -186,7 +167,7 @@ describe("request", () => {
   });
 
   describe("continuing", () => {
-    test("continues a succeeded request that has a session", async () => {
+    test("continues a succeeded request that has a session and copies its session id", async () => {
       const t = makeBackend();
       const householdId = await createTeam(t);
       const earlier = await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
@@ -197,18 +178,6 @@ describe("request", () => {
       });
       const row = await t.run(async (ctx) => await ctx.db.get(id));
       expect(row?.continueRequestId).toBe(earlier);
-    });
-
-    test("copies the earlier session id onto the new request", async () => {
-      const t = makeBackend();
-      const householdId = await createTeam(t);
-      const earlier = await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
-      const id = await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
-        householdId,
-        message: "more",
-        continueRequestId: earlier,
-      });
-      const row = await t.run(async (ctx) => await ctx.db.get(id));
       expect(row?.sessionId).toBe("s1");
     });
 

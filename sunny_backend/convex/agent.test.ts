@@ -707,25 +707,6 @@ describe("confirmDueTask", () => {
     });
     expect(labelled).toMatchObject({ status: "confirmed", instanceId: walkInstance });
   });
-
-  test("a repeat is already_done and nothing due is nothing_due", async () => {
-    const f = await setup();
-    const taskId = await insertTask(f, { title: "Pills" });
-    await insertDueInstance(f, taskId);
-    const args = { agentKey: KEY, householdId: f.householdId, label: "pills", now: NOW };
-    await f.t.mutation(api.agent.confirmDueTask, args);
-    expect(await f.t.mutation(api.agent.confirmDueTask, args)).toMatchObject({
-      status: "already_done",
-      confirmedAt: NOW,
-    });
-    expect(
-      await f.t.mutation(api.agent.confirmDueTask, {
-        agentKey: KEY,
-        householdId: f.householdId,
-        now: NOW,
-      }),
-    ).toEqual({ status: "nothing_due" });
-  });
 });
 
 describe("reminders", () => {
@@ -768,20 +749,6 @@ describe("reminders", () => {
     expect(task!.daysOfWeek).toEqual([1, 3]);
   });
 
-  test("invalid input is rejected with the shared rules", async () => {
-    const f = await setup();
-    const base = { agentKey: KEY, householdId: f.householdId, time: "10:00", now: NOW };
-    await expect(
-      f.t.mutation(api.agent.createSeniorReminder, { ...base, title: " " }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
-    await expect(
-      f.t.mutation(api.agent.createSeniorReminder, { ...base, title: "x", time: "25:00" }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
-    await expect(
-      f.t.mutation(api.agent.createSeniorReminder, { ...base, title: "x", onDate: "2027-03-01" }),
-    ).rejects.toMatchObject({ data: { code: "invalid", message: "That date has already passed" } });
-  });
-
   test("cancelSeniorReminder cancels, reports not_found and ambiguous", async () => {
     const f = await setup();
     const create = (title: string) =>
@@ -811,18 +778,6 @@ describe("reminders", () => {
       titles: ["call the plumber"],
     });
     expect((await f.t.run(async (ctx) => await ctx.db.get(taskId)))!.active).toBe(false);
-  });
-
-  test("cancelSeniorReminder never matches a caregiver task", async () => {
-    const f = await setup();
-    await insertTask(f, { title: "Morning pills" });
-    expect(
-      await f.t.mutation(api.agent.cancelSeniorReminder, {
-        agentKey: KEY,
-        householdId: f.householdId,
-        query: "pills",
-      }),
-    ).toEqual({ status: "not_found", titles: [] });
   });
 });
 

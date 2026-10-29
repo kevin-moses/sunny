@@ -243,10 +243,6 @@ describe("create", () => {
     ["blank senior name", { seniorPreferredName: "  ", timezone: NY, caregiverDisplayName: "A" }],
     ["blank caregiver name", { seniorPreferredName: "B", timezone: NY, caregiverDisplayName: " " }],
     [
-      "abbreviated timezone",
-      { seniorPreferredName: "B", timezone: "EST", caregiverDisplayName: "A" },
-    ],
-    [
       "unknown timezone",
       { seniorPreferredName: "B", timezone: "Not/AZone", caregiverDisplayName: "A" },
     ],

@@ -2,3 +2,5 @@ node_modules/
 .env.local
 .convex/
 scripts/.dev-state.json
+coverage/
+.vitest/

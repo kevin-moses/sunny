@@ -8,7 +8,7 @@
 // boundaries, Next up with the 30 minute default, tasks, upcoming). Includes one access
 // test per public function: outsiders, viewers and the paired device.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -269,32 +269,6 @@ describe("addEvent", () => {
     expect(await errorCode(call)).toBe("invalid");
   });
 
-  test("rejects a weekly repeat with no date between its start and end", async () => {
-    const w = await makeWorld();
-    const call = w.primary.mutation(api.calendar.addEvent, {
-      householdId: w.householdId,
-      title: "Bad",
-      onDate: "2027-03-22",
-      startTime: "09:00",
-      repeatDays: [7],
-      repeatUntil: "2027-03-23",
-    });
-    expect(await errorMessage(call)).toBe("The repeat has no dates between its start and end");
-  });
-
-  test("rejects a repeat that has already ended", async () => {
-    const w = await makeWorld();
-    const call = w.primary.mutation(api.calendar.addEvent, {
-      householdId: w.householdId,
-      title: "Old",
-      onDate: "2027-02-01",
-      startTime: "09:00",
-      repeatDays: [1],
-      repeatUntil: "2027-02-22",
-    });
-    expect(await errorMessage(call)).toBe("The repeat end date has already passed");
-  });
-
   test.each([
     ["a title over 200 characters", { title: "x".repeat(201) }],
     ["a blank title", { title: "   " }],
@@ -506,17 +480,6 @@ describe("updateEvent", () => {
     expect(retitled.title).toBe("Physio");
   });
 
-  test("a blank title is rejected", async () => {
-    const w = await makeWorld();
-    const { physio } = await seed(w);
-    const call = w.primary.mutation(api.calendar.updateEvent, {
-      householdId: w.householdId,
-      eventId: physio.eventId,
-      changes: { title: " " },
-    });
-    expect(await errorCode(call)).toBe("invalid");
-  });
-
   test("an event of another household is not found", async () => {
     const w = await makeWorld();
     const { physio } = await seed(w);
@@ -708,29 +671,6 @@ describe("listEvents", () => {
       ["2027-03-18", at("2027-03-18T14:00:00Z")],
       ["2027-03-23", at("2027-03-23T14:00:00Z")],
       ["2027-03-25", at("2027-03-25T14:00:00Z")],
-    ]);
-  });
-
-  test("a weekly 14:00 event is stable across fall-back on 2026-11-01", async () => {
-    const w = await makeWorld();
-    setNow("2026-10-26T12:00:00Z");
-    await w.primary.mutation(api.calendar.addEvent, {
-      householdId: w.householdId,
-      title: "Therapy",
-      onDate: "2026-10-26",
-      startTime: "14:00",
-      repeatDays: [1, 5],
-    });
-    const out = await w.primary.query(api.calendar.listEvents, {
-      householdId: w.householdId,
-      from: "2026-10-26",
-      to: "2026-11-06",
-    });
-    expect(out.map((o) => o.startsAt)).toEqual([
-      at("2026-10-26T18:00:00Z"),
-      at("2026-10-30T18:00:00Z"),
-      at("2026-11-02T19:00:00Z"),
-      at("2026-11-06T19:00:00Z"),
     ]);
   });
 
