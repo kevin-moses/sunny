@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "sunny",
+    "slug": "sunny",
+    "scheme": "sunny",
+    "version": "1.0.0",
+    "platforms": ["ios"],
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FAE6CC"
+    },
+    "ios": {
+      "bundleIdentifier": "com.kmsunny.sunny",
+      "appleTeamId": "YKS87YND73",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Sunny listens when you press Talk so you can ask questions and confirm your day.",
+        "UIBackgroundModes": ["audio"],
+        "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
+        "UISupportedInterfaceOrientations~ipad": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationPortraitUpsideDown",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ],
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      },
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.com.kmsunny.sunny"]
+      }
+    },
+    "plugins": [
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc",
+      "expo-notifications",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Sunny looks up people in your contacts when you ask it to message someone."
+        }
+      ],
+      "expo-secure-store",
+      "expo-font"
+    ]
+  }
+}

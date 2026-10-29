@@ -6,6 +6,10 @@ Written 2026-10-24 from a planning chat. Read this with `notes/SPEC.md`. Nothing
 
 Phase 0 (removals) and the shared-state step are done on branch `memory-care-refactor`. The schema was rebuilt from scratch rather than evolved: `reminders`, `adherence_log`, `caregiver_links`, `users.profile_summary` and the caregiver Edge Functions no longer exist, so the "Keep, but refactor" rows below about them are historical. See `notes/SCHEMA.md` for what replaced them. Decisions since this note: the voice pipeline stays (no Gemini Live), parked features were removed rather than flagged, the app is iOS-only, the caregiver app will be a second target in the same Xcode project, and the scheduler runs as SQL under pg_cron.
 
+## Status (2026-10-28)
+
+`sunny_app` was rewritten from SwiftUI to React Native (Expo SDK 57, LiveKit React Native SDK) on branch `rn-refactor`. Supabase stays the backend. Push moved from Firebase/FCM to raw APNs tokens in `push_tokens` (expo-notifications). The caregiver app is no longer planned as a second Xcode target. The widget and Live Activity will be native Swift extensions added to the Expo project (for example with `@bacons/apple-targets`), because their Done button must call the backend from the extension. References below to `sunny_app/VoiceAgent` and Xcode targets are historical.
+
 ## What changed in the product
 
 Sunny started as a voice-first phone concierge for seniors (see `notes/brief.md`). The new direction narrows the user and widens the surfaces:
