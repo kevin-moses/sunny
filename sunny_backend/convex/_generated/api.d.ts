@@ -9,14 +9,20 @@
  */
 
 import type * as agent from "../agent.js";
+import type * as agentRequests from "../agentRequests.js";
+import type * as agentRuntime from "../agentRuntime.js";
 import type * as calendar from "../calendar.js";
 import type * as crons from "../crons.js";
 import type * as households from "../households.js";
 import type * as http from "../http.js";
 import type * as instances from "../instances.js";
 import type * as lib_access from "../lib/access.js";
+import type * as lib_agentBriefing from "../lib/agentBriefing.js";
+import type * as lib_agentConfig from "../lib/agentConfig.js";
+import type * as lib_agentTools from "../lib/agentTools.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_errors from "../lib/errors.js";
+import type * as lib_managedAgents from "../lib/managedAgents.js";
 import type * as lib_occurrences from "../lib/occurrences.js";
 import type * as lib_policies from "../lib/policies.js";
 import type * as lib_schedule from "../lib/schedule.js";
@@ -37,14 +43,20 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agent: typeof agent;
+  agentRequests: typeof agentRequests;
+  agentRuntime: typeof agentRuntime;
   calendar: typeof calendar;
   crons: typeof crons;
   households: typeof households;
   http: typeof http;
   instances: typeof instances;
   "lib/access": typeof lib_access;
+  "lib/agentBriefing": typeof lib_agentBriefing;
+  "lib/agentConfig": typeof lib_agentConfig;
+  "lib/agentTools": typeof lib_agentTools;
   "lib/audit": typeof lib_audit;
   "lib/errors": typeof lib_errors;
+  "lib/managedAgents": typeof lib_managedAgents;
   "lib/occurrences": typeof lib_occurrences;
   "lib/policies": typeof lib_policies;
   "lib/schedule": typeof lib_schedule;
@@ -86,4 +98,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+  workflow: import("@convex-dev/workflow/_generated/component.js").ComponentApi<"workflow">;
 };

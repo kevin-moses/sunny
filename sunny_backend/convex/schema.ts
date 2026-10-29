@@ -12,7 +12,10 @@
 // mutations that write each table, using the indexes below. The scheduler tables carry the
 // household-scoped indexes the per-household tick and the resync paths read (active tasks,
 // instances by state, by task and state).
-// Not yet ported (later phases): background jobs and agent requests, Google Calendar
+// Agent requests: a caregiver message to the household agent (agentRequests, the row the app
+// subscribes to) and the tool calls the agent made for it (agentToolCalls, recorded once so a
+// retried workflow step never repeats a calendar write).
+// Not yet ported (later phases): calendar sync jobs, Google Calendar
 // connections and links, storage for photos and voice clips.
 //
 // Last modified: 2026-10-29
@@ -21,6 +24,7 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
   actorKind,
+  agentRequestStatus,
   confirmVia,
   deviceKind,
   escalationAction,
@@ -318,4 +322,36 @@ export default defineSchema({
     outcome: questionOutcome,
     toolsUsed: v.array(v.string()),
   }).index("by_household_asked", ["householdId", "askedAt"]),
+
+  // A caregiver's request to the household agent. Run by the agentRuntime workflow.
+  agentRequests: defineTable({
+    householdId: v.id("households"),
+    // Clerk user id of the requesting caregiver.
+    requestedBy: v.string(),
+    message: v.string(),
+    // Earlier succeeded request whose Managed Agents session this one continues.
+    continueRequestId: v.optional(v.id("agentRequests")),
+    status: agentRequestStatus,
+    workflowId: v.optional(v.string()),
+    sessionId: v.optional(v.string()),
+    reply: v.optional(v.string()),
+    error: v.optional(v.string()),
+    finishedAt: v.optional(v.number()),
+  })
+    // Newest first (creation time is the implicit last index field).
+    .index("by_household", ["householdId"])
+    .index("by_household_status", ["householdId", "status"]),
+
+  // One row per tool call the agent made for a request, with the result that was (or will be)
+  // sent back. Written in the same transaction as the tool's effect.
+  agentToolCalls: defineTable({
+    requestId: v.id("agentRequests"),
+    // Managed Agents event id of the agent.custom_tool_use.
+    toolUseId: v.string(),
+    name: v.string(),
+    input: v.record(v.string(), v.any()),
+    text: v.string(),
+    isError: v.boolean(),
+    sentAt: v.optional(v.number()),
+  }).index("by_request_tool", ["requestId", "toolUseId"]),
 });
