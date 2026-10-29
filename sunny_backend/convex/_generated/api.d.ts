@@ -8,9 +8,11 @@
  * @module
  */
 
+import type * as agent from "../agent.js";
 import type * as calendar from "../calendar.js";
 import type * as crons from "../crons.js";
 import type * as households from "../households.js";
+import type * as http from "../http.js";
 import type * as instances from "../instances.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_audit from "../lib/audit.js";
@@ -22,8 +24,10 @@ import type * as lib_text from "../lib/text.js";
 import type * as lib_time from "../lib/time.js";
 import type * as lib_today from "../lib/today.js";
 import type * as lib_validators from "../lib/validators.js";
+import type * as pairing from "../pairing.js";
 import type * as scheduler from "../scheduler.js";
 import type * as tasks from "../tasks.js";
+import type * as voice from "../voice.js";
 
 import type {
   ApiFromModules,
@@ -32,9 +36,11 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  agent: typeof agent;
   calendar: typeof calendar;
   crons: typeof crons;
   households: typeof households;
+  http: typeof http;
   instances: typeof instances;
   "lib/access": typeof lib_access;
   "lib/audit": typeof lib_audit;
@@ -46,8 +52,10 @@ declare const fullApi: ApiFromModules<{
   "lib/time": typeof lib_time;
   "lib/today": typeof lib_today;
   "lib/validators": typeof lib_validators;
+  pairing: typeof pairing;
   scheduler: typeof scheduler;
   tasks: typeof tasks;
+  voice: typeof voice;
 }>;
 
 /**
@@ -76,4 +84,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+};

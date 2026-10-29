@@ -3,14 +3,18 @@
 // household, its settings, caregiver members and roles, one-time join codes (invite a
 // caregiver, pair a device), paired devices, and push tokens. Access rules that RLS
 // enforced are enforced here with lib/access (viewers read only, editors change data,
-// primaries manage members). Device codes are redeemed by the internal pairDevice
-// mutation, called from the /pair HTTP action once a Clerk user exists for the device.
+// primaries manage members). Device codes are checked by the internal checkDeviceCode query
+// and redeemed by the internal pairDevice mutation, both called from the /pair HTTP action
+// (pairing.ts) around the creation of the device's Clerk user. Removing a device also drops
+// its push tokens and schedules deletion of its Clerk user. A push token may be taken over
+// from an orphaned previous owner (see registerPushToken).
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import {
   currentUserId,
@@ -450,6 +454,23 @@ export const redeemJoinCode = mutation({
 });
 
 /**
+ * purpose: Check that a code can be redeemed by a device, without redeeming it. Internal: the
+ *          /pair HTTP action calls it before creating a Clerk user, so bad codes never cost a
+ *          Clerk call. Unknown, used, expired and caregiver codes all give the same error.
+ * @param code: (string) The code; trimmed and case-insensitive.
+ * @return: (null)
+ * @raises not_found when the code cannot be redeemed by a device.
+ */
+export const checkDeviceCode = internalQuery({
+  args: { code: v.string() },
+  handler: async (ctx, args): Promise<null> => {
+    const row = await loadRedeemableCode(ctx, args.code, Date.now());
+    if (!isDeviceGrant(row.grants)) throw invalidCodeError();
+    return null;
+  },
+});
+
+/**
  * purpose: Pair a device using a device code. Internal: the /pair HTTP action calls it after
  *          creating the device's Clerk user.
  * @param code: (string) The code; trimmed and case-insensitive.
@@ -503,7 +524,8 @@ export const listDevices = query({
 });
 
 /**
- * purpose: Unpair a device. Editors only. (Phase 2 also deletes the device's Clerk user.)
+ * purpose: Unpair a device. Editors only. Also deletes the device's push tokens and schedules
+ *          deletion of its Clerk user (best effort, see pairing.deleteClerkUser).
  * @param householdId: (Id<"households">) Household.
  * @param deviceId: (Id<"devices">) Device to remove.
  * @return: (null)
@@ -517,13 +539,38 @@ export const removeDevice = mutation({
       throw appError("not_found", "Device not found");
     }
     await ctx.db.delete(device._id);
+    const tokens = await ctx.db
+      .query("pushTokens")
+      .withIndex("by_user", (q) => q.eq("userId", device.userId))
+      .collect();
+    for (const token of tokens) await ctx.db.delete(token._id);
+    await ctx.scheduler.runAfter(0, internal.pairing.deleteClerkUser, { userId: device.userId });
     return null;
   },
 });
 
 /**
+ * purpose: Whether a user no longer belongs to any household: no devices row and no
+ *          householdMembers rows.
+ * @param ctx: (QueryCtx) Context.
+ * @param userId: (string) User id.
+ * @return: (Promise<boolean>) True when the user is orphaned.
+ */
+async function isOrphanedUser(ctx: QueryCtx, userId: string): Promise<boolean> {
+  if (await findDevice(ctx, userId)) return false;
+  const member = await ctx.db
+    .query("householdMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  return member === null;
+}
+
+/**
  * purpose: Register a push token for the signed-in user. Re-registering one's own token is a
- *          no-op; a token already registered to another user is rejected, never taken over.
+ *          no-op. A token registered to another user is taken over only when that previous
+ *          owner is orphaned (no device row and no memberships): re-pairing creates a new
+ *          Clerk user, and an unpaired device cannot always clean up its old token. Otherwise
+ *          it is rejected.
  * @param token: (string) Push token.
  * @return: (null)
  * @raises forbidden when the token belongs to another account.
@@ -537,11 +584,14 @@ export const registerPushToken = mutation({
       .query("pushTokens")
       .withIndex("by_token", (q) => q.eq("token", token))
       .unique();
-    // The app unregisters its token on sign-out, so a live foreign token is not ours to take.
     if (!existing) {
       await ctx.db.insert("pushTokens", { userId, token });
     } else if (existing.userId !== userId) {
-      throw appError("forbidden", "This push token belongs to another account");
+      // A live owner's token is not ours to take; an orphaned owner's is.
+      if (!(await isOrphanedUser(ctx, existing.userId))) {
+        throw appError("forbidden", "This push token belongs to another account");
+      }
+      await ctx.db.patch(existing._id, { userId });
     }
     return null;
   },
