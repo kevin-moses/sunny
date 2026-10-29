@@ -12,7 +12,9 @@
 // Lost response: the client may send a random `pairingNonce` (16 to 128 characters). It is
 // stored on the device row with the pairing time. If the response is lost and the client
 // retries with the same code and nonce within 10 minutes, /pair answers with a fresh sign-in
-// token for the same device user (same 200 body) instead of 404. A missing or different
+// token for the same device user (same 200 body) instead of 404. If that user has no
+// username (created before the fix) one is patched on first: the user is read with GET and
+// only patched when the username is empty, so an existing username is never changed. A missing or different
 // nonce, a deleted device or a late retry keeps the 404.
 //
 // Rate limits: an overall bucket (300/min) is spent on every request. Failed code checks
@@ -25,8 +27,15 @@
 //
 // Clerk Backend API (Bearer CLERK_SECRET_KEY):
 //   POST   https://api.clerk.com/v1/users            create a user; fields used: public_metadata
-//          { sunny_kind: "device" }, external_id, skip_password_requirement. No email,
-//          phone, username or password. See https://clerk.com/docs/reference/backend/user/create-user
+//          { sunny_kind: "device" }, external_id, skip_password_requirement, and a random
+//          username "device_<32 hex>". No email, phone or password. Clerk refuses to sign in
+//          with a ticket for a user that has no identifier at all, so the username is that
+//          identifier (optional usernames must be enabled on the Clerk instance). A 422
+//          "form_identifier_exists" (username taken) is retried once with a new username.
+//          See https://clerk.com/docs/reference/backend/user/create-user
+//   GET    https://api.clerk.com/v1/users/{user_id}  read a user (retry path: has a username?)
+//   PATCH  https://api.clerk.com/v1/users/{user_id}  { username } for device users created
+//          before the username fix, so a retrying device can finish pairing
 //   DELETE https://api.clerk.com/v1/users/{user_id}  delete a user
 //   POST   https://api.clerk.com/v1/sign_in_tokens   { user_id, expires_in_seconds }; the
 //          response token is the "ticket" for the app's ticket sign-in strategy. See
@@ -52,6 +61,8 @@ const MIN_NONCE_LENGTH = 16;
 const MAX_NONCE_LENGTH = 128;
 const MAX_IP_KEY_LENGTH = 64;
 const CLERK_TIMEOUT_MS = 8000;
+const USERNAME_PREFIX = "device_";
+const USERNAME_TAKEN_CODE = "form_identifier_exists";
 
 /**
  * Requests per minute: every request spends pairOverall; only failed code checks spend the
@@ -190,21 +201,82 @@ async function clerkFetch(
 }
 
 /**
- * purpose: Create the Clerk user for a device: no identifiers, tagged sunny_kind "device".
+ * purpose: A random device username valid under Clerk's rules (letters, digits, underscore,
+ *          4 to 64 characters, not numeric only): "device_" plus 32 lowercase hex characters.
+ * @return: (string) The username.
+ */
+function newDeviceUsername(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${USERNAME_PREFIX}${hex}`;
+}
+
+/**
+ * purpose: Whether a Clerk response is the 422 "that username is taken" error.
+ * @param res: (Response) The Clerk response (its body is read from a clone).
+ * @return: (Promise<boolean>) True for a taken-identifier 422.
+ */
+async function isUsernameTaken(res: Response): Promise<boolean> {
+  if (res.status !== 422) return false;
+  try {
+    const body = (await res.clone().json()) as { errors?: Array<{ code?: unknown }> };
+    return (body.errors ?? []).some((e) => e.code === USERNAME_TAKEN_CODE);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * purpose: One POST /users attempt for a device user with a fresh username.
+ * @param secret: (string) Clerk secret key.
+ * @return: (Promise<Response>) The Clerk response.
+ */
+async function postDeviceUser(secret: string): Promise<Response> {
+  return await clerkFetch(secret, "POST", "/users", {
+    external_id: `device-${crypto.randomUUID()}`,
+    username: newDeviceUsername(),
+    public_metadata: { sunny_kind: "device" },
+    skip_password_requirement: true,
+  });
+}
+
+/**
+ * purpose: Create the Clerk user for a device: a random username (Clerk needs one identifier
+ *          to issue a sign-in ticket), no email, phone or password, tagged sunny_kind "device".
+ *          A taken username is retried once with a new one.
  * @param secret: (string) Clerk secret key.
  * @return: (Promise<string>) The new Clerk user id.
  * @raises Error when Clerk rejects the request.
  */
 async function createDeviceUser(secret: string): Promise<string> {
-  const res = await clerkFetch(secret, "POST", "/users", {
-    external_id: `device-${crypto.randomUUID()}`,
-    public_metadata: { sunny_kind: "device" },
-    skip_password_requirement: true,
-  });
+  let res = await postDeviceUser(secret);
+  if (await isUsernameTaken(res)) res = await postDeviceUser(secret);
   if (!res.ok) throw new Error(`Clerk create user failed with status ${res.status}`);
   const user = (await res.json()) as { id?: unknown };
   if (typeof user.id !== "string") throw new Error("Clerk create user returned no id");
   return user.id;
+}
+
+/**
+ * purpose: Make sure a device's Clerk user has a username, so a sign-in ticket works. Users
+ *          created before the username fix have none. The user is read first so an existing
+ *          username is never overwritten; a taken new username is retried once.
+ * @param secret: (string) Clerk secret key.
+ * @param userId: (string) Clerk user id.
+ * @return: (Promise<void>)
+ * @raises Error when Clerk fails to read or patch the user.
+ */
+async function ensureDeviceUsername(secret: string, userId: string): Promise<void> {
+  const path = `/users/${encodeURIComponent(userId)}`;
+  const got = await clerkFetch(secret, "GET", path);
+  if (!got.ok) throw new Error(`Clerk get user failed with status ${got.status}`);
+  const user = (await got.json()) as { username?: unknown };
+  if (typeof user.username === "string" && user.username !== "") return;
+  let res = await clerkFetch(secret, "PATCH", path, { username: newDeviceUsername() });
+  if (await isUsernameTaken(res)) {
+    res = await clerkFetch(secret, "PATCH", path, { username: newDeviceUsername() });
+  }
+  if (!res.ok) throw new Error(`Clerk set username failed with status ${res.status}`);
 }
 
 /**
@@ -335,7 +407,8 @@ function convexErrorResponse(e: unknown): Response {
 /**
  * purpose: Answer a /pair retry whose first response was lost: when the code was already
  *          redeemed by a device with the same pairingNonce within 10 minutes, mint a fresh
- *          sign-in token for that device's existing Clerk user. Creates no user or device.
+ *          sign-in token for that device's existing Clerk user (adding a username first when
+ *          it has none). Creates no user or device.
  * @param ctx: (ActionCtx) Action context.
  * @param secret: (string) Clerk secret key.
  * @param parsed: (PairRequest) The request.
@@ -354,6 +427,7 @@ async function retryLostPairing(
   });
   if (found === null) return null;
   try {
+    await ensureDeviceUsername(secret, found.userId);
     const ticket = await createSignInToken(secret, found.userId);
     const { userId: _userId, ...paired } = found;
     return jsonResponse({ ticket, ...paired });

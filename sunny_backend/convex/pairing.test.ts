@@ -1,12 +1,12 @@
 // convex/pairing.test.ts
 // Purpose: Tests for the /pair HTTP action (pairing.ts) with convex-test and a stubbed global
 // fetch standing in for Clerk's Backend API: the success path (ticket, device row, Clerk
-// calls and fields), codes that cannot be redeemed (unknown, used, expired, caregiver) which
+// calls and fields incl. the random device username and the taken-username retry), codes that cannot be redeemed (unknown, used, expired, caregiver) which
 // give 404 without ever calling Clerk, cleanup when pairDevice fails (Clerk user deleted),
 // rollback when the sign-in token fails (including a rollback that itself throws), Clerk
 // network errors (502, nothing left behind), request validation, the overall bucket and the
 // failed-attempt buckets (global and per-IP, 429 with Retry-After), the lost-response retry
-// with pairingNonce (same Clerk user, wrong nonce and late retry give 404), no-store
+// with pairingNonce (same Clerk user, username patched on when missing, wrong nonce and late retry give 404), no-store
 // caching, a missing CLERK_SECRET_KEY (500), clientIp header parsing, and the best-effort
 // deleteClerkUser action. No real network calls are made.
 //
@@ -39,6 +39,12 @@ interface ClerkBehavior {
   deleteStatus?: number;
   /** Reject the create-user fetch as a network error. */
   createUserNetworkError?: boolean;
+  /** Statuses for successive create-user calls (422 bodies carry form_identifier_exists). */
+  createUserStatuses?: number[];
+  /** The username the existing user has on GET /users/{id}; unset means none. */
+  existingUsername?: string;
+  /** Status for PATCH /users/{id}. */
+  patchStatus?: number;
   /** Runs when a sign-in token is requested, before the reply. */
   onSignInToken?: () => Promise<void>;
 }
@@ -67,7 +73,15 @@ function stubClerk(): void {
       const reply = (status: number, json: unknown) => Response.json(json, { status });
       if (init?.method === "POST" && path === "/users") {
         if (behavior.createUserNetworkError) throw new TypeError("fetch failed");
-        return reply(behavior.createUserStatus ?? 200, { id: behavior.userId });
+        const status = behavior.createUserStatuses?.shift() ?? behavior.createUserStatus ?? 200;
+        if (status === 422) return reply(422, { errors: [{ code: "form_identifier_exists" }] });
+        return reply(status, { id: behavior.userId });
+      }
+      if (init?.method === "GET" && path.startsWith("/users/")) {
+        return reply(200, { id: behavior.userId, username: behavior.existingUsername ?? null });
+      }
+      if (init?.method === "PATCH" && path.startsWith("/users/")) {
+        return reply(behavior.patchStatus ?? 200, { id: behavior.userId });
       }
       if (init?.method === "POST" && path === "/sign_in_tokens") {
         await behavior.onSignInToken?.();
@@ -183,6 +197,7 @@ describe("POST /pair success", () => {
       skip_password_requirement: true,
     });
     expect(calls[0]!.body).not.toHaveProperty("email_address");
+    expect(calls[0]!.body!.username).toMatch(/^device_[0-9a-f]{32}$/);
     expect(calls[1]!.body).toEqual({ user_id: "user_clerk_1", expires_in_seconds: 600 });
   });
 });
@@ -279,10 +294,34 @@ describe("POST /pair failures after the Clerk user exists", () => {
     expect(open.map((c) => c.code)).toContain(code);
   });
 
+  test("a taken username is retried once with a different username", async () => {
+    const t = makeBackend();
+    const { code } = await householdWithCode(t);
+    behavior.createUserStatuses = [422, 200];
+
+    const res = await postPair(t, { code });
+
+    expect(res.status).toBe(200);
+    const creates = calls.filter((c) => c.method === "POST" && c.path === "/users");
+    expect(creates).toHaveLength(2);
+    expect(creates[1]!.body!.username).toMatch(/^device_[0-9a-f]{32}$/);
+    expect(creates[1]!.body!.username).not.toBe(creates[0]!.body!.username);
+  });
+
+  test("two taken usernames in a row give 502 and pair nothing", async () => {
+    const t = makeBackend();
+    const { code } = await householdWithCode(t);
+    behavior.createUserStatuses = [422, 422];
+    const res = await postPair(t, { code });
+    expect(res.status).toBe(502);
+    expect(calls.filter((c) => c.path === "/users")).toHaveLength(2);
+    expect(await devices(t)).toHaveLength(0);
+  });
+
   test("a Clerk create failure gives 502 and pairs nothing", async () => {
     const t = makeBackend();
     const { code } = await householdWithCode(t);
-    behavior.createUserStatus = 422;
+    behavior.createUserStatus = 400;
     const res = await postPair(t, { code });
     expect(res.status).toBe(502);
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /users"]);
@@ -455,16 +494,61 @@ describe("POST /pair lost-response retry", () => {
     const firstBody = (await first.json()) as Record<string, string>;
     calls = [];
     behavior.userId = "user_clerk_2";
+    behavior.existingUsername = "device_abc12345";
 
     const retry = await postPair(t, { code, pairingNonce: NONCE });
 
     expect(retry.status).toBe(200);
     expect(await retry.json()).toEqual(firstBody);
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /sign_in_tokens"]);
-    expect(calls[0]!.body).toMatchObject({ user_id: "user_clerk_1" });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /users/user_clerk_1",
+      "POST /sign_in_tokens",
+    ]);
+    expect(calls[1]!.body).toMatchObject({ user_id: "user_clerk_1" });
     const rows = await devices(t);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ userId: "user_clerk_1", pairingNonce: NONCE });
+  });
+
+  test("a retry patches a username onto a user that has none", async () => {
+    const t = makeBackend();
+    const { code } = await householdWithCode(t);
+    await postPair(t, { code, pairingNonce: NONCE });
+    calls = [];
+
+    const retry = await postPair(t, { code, pairingNonce: NONCE });
+
+    expect(retry.status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /users/user_clerk_1",
+      "PATCH /users/user_clerk_1",
+      "POST /sign_in_tokens",
+    ]);
+    expect(calls[1]!.body!.username).toMatch(/^device_[0-9a-f]{32}$/);
+  });
+
+  test("a retry does not patch a user that already has a username", async () => {
+    const t = makeBackend();
+    const { code } = await householdWithCode(t);
+    await postPair(t, { code, pairingNonce: NONCE });
+    calls = [];
+    behavior.existingUsername = "device_abc12345";
+
+    expect((await postPair(t, { code, pairingNonce: NONCE })).status).toBe(200);
+
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /users/user_clerk_1",
+      "POST /sign_in_tokens",
+    ]);
+  });
+
+  test("a failed username patch on retry gives 502 and keeps the device", async () => {
+    const t = makeBackend();
+    const { code } = await householdWithCode(t);
+    await postPair(t, { code, pairingNonce: NONCE });
+    behavior.patchStatus = 500;
+    expect((await postPair(t, { code, pairingNonce: NONCE })).status).toBe(502);
+    expect(await devices(t)).toHaveLength(1);
   });
 
   test("a different nonce gets 404", async () => {
