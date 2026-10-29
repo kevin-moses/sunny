@@ -9,13 +9,15 @@
 // already started is not. Cancelled events are never announced and notices already queued
 // stay. Like the SQL, the pass does not look at backgroundPaused. It runs inside the
 // household's own tickHousehold mutation (scheduler.ts), so there is no second cron and no
-// global transaction. Times are household-local, so DST and zones far from UTC follow the
+// global transaction. Rows are inserted through insertNotification (lib/delivery.ts), which
+// enqueues their delivery. Times are household-local, so DST and zones far from UTC follow the
 // household's zone.
 //
 // Last modified: 2026-10-29
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { insertNotification } from "./delivery";
 import { householdOccurrences } from "./occurrences";
 import type { Occurrence } from "./occurrences";
 import { formatTime12, localDate, localTime } from "./time";
@@ -93,7 +95,7 @@ export async function announceEvents(
       const { title, body, payload } = noticeContent(household, occurrence);
       await Promise.all(
         members.map((member) =>
-          ctx.db.insert("notificationOutbox", {
+          insertNotification(ctx, {
             householdId,
             kind: "event_notice",
             eventId,

@@ -9,8 +9,9 @@
 // over-long reminder titles are rejected. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
+import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -29,7 +30,9 @@ const AGENT = { kind: "agent" } as const;
  * @return: The convex-test harness typed with the schema.
  */
 function makeBackend() {
-  return convexTest(schema, modules);
+  const t = convexTest(schema, modules);
+  workpoolTest.register(t, "deliveryPool");
+  return t;
 }
 
 /** The convex-test harness type. */

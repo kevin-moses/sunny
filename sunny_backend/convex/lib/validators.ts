@@ -3,7 +3,7 @@
 // by function arguments, so a type such as a task state or a local date has one
 // definition. Mirrors the Postgres enums from the Supabase schema.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { v, type Infer } from "convex/values";
 
@@ -119,9 +119,30 @@ export const notificationKind = v.union(
   v.literal("senior_prompt"),
   v.literal("caregiver_alert"),
   v.literal("event_notice"),
+  v.literal("digest"),
 );
 /** Type of notificationKind. */
 export type NotificationKind = Infer<typeof notificationKind>;
+
+/** How an outbox row was (or was not) delivered: APNs push, SMS, or no reachable address. */
+export const deliveryChannel = v.union(v.literal("apns"), v.literal("sms"), v.literal("none"));
+/** Type of deliveryChannel. */
+export type DeliveryChannel = Infer<typeof deliveryChannel>;
+
+/** Where a household's daily digest for one local date stands (see digest.ts). */
+export const digestStatus = v.union(
+  v.literal("pending"),
+  v.literal("sent"),
+  v.literal("no_recipients"),
+  v.literal("failed"),
+);
+/** Type of digestStatus. */
+export type DigestStatus = Infer<typeof digestStatus>;
+
+/** Which path produced a digest's text: the model, or the deterministic template. */
+export const digestSource = v.union(v.literal("claude"), v.literal("template"));
+/** Type of digestSource. */
+export type DigestSource = Infer<typeof digestSource>;
 
 /** Who sent a message. */
 export const messageSender = v.union(v.literal("caregiver"), v.literal("senior"));

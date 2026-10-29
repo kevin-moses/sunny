@@ -3,7 +3,8 @@
 // the unauthenticated /pair HTTP action (see pairing.ts), the workflow component that
 // runs caregiver requests to the household agent (see agentRuntime.ts), and a workpool
 // ("calendarSyncPool") that runs Google Calendar pushes with retry and bounded parallelism
-// (see lib/calendarSync.ts).
+// (see lib/calendarSync.ts), and "deliveryPool", which delivers notification outbox rows by
+// APNs or SMS and composes the daily digest (see lib/delivery.ts).
 //
 // Last modified: 2026-10-29
 
@@ -16,5 +17,6 @@ const app = defineApp();
 app.use(rateLimiter);
 app.use(workflow);
 app.use(workpool, { name: "calendarSyncPool" });
+app.use(workpool, { name: "deliveryPool" });
 
 export default app;

@@ -14,7 +14,9 @@
 // the policy, is sent. Each household runs in its own serializable transaction, so a slow or
 // overlapping tick conflicts only with writes to that household. The same per-household pass
 // also queues the day-of event notices (lib/eventNotices.ts, the port of event_notice_tick),
-// so there is no second per-minute cron. The functions take `now` so tests can drive the
+// so there is no second per-minute cron. It also queues the household's daily digest once its
+// digestTime passes (lib/digest.ts), and every outbox row goes through insertNotification
+// (lib/delivery.ts), which enqueues its delivery. The functions take `now` so tests can drive the
 // clock; tickHouseholdCore is the pure pass tests call directly.
 //
 // Last modified: 2026-10-29
@@ -25,6 +27,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { appError } from "./lib/errors";
+import { insertNotification } from "./lib/delivery";
+import { queueDigestIfDue } from "./lib/digest";
 import { announceEvents } from "./lib/eventNotices";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12, minutes } from "./lib/time";
@@ -148,7 +152,7 @@ async function queueNotifications(
       .withIndex("by_household", (q) => q.eq("householdId", instance.householdId))
       .collect();
     for (const device of devices) {
-      await ctx.db.insert("notificationOutbox", { ...row, recipientDeviceId: device._id });
+      await insertNotification(ctx, { ...row, recipientDeviceId: device._id });
     }
     return;
   }
@@ -162,8 +166,7 @@ async function queueNotifications(
       step.action === "alert_all_caregivers" ||
       member.userId === onCall ||
       (onCall === undefined && member.role === "primary");
-    if (wanted)
-      await ctx.db.insert("notificationOutbox", { ...row, recipientUserId: member.userId });
+    if (wanted) await insertNotification(ctx, { ...row, recipientUserId: member.userId });
   }
 }
 
@@ -263,7 +266,7 @@ async function closeWindows(
 
 /**
  * purpose: One scheduler pass over one household: expand, open windows, fire escalation steps,
- *          mark escalated, close windows, announce day-of event notices. The pure core of
+ *          mark escalated, close windows, announce day-of event notices, queue the daily digest when due. The pure core of
  *          tickHousehold, called directly by tests with an explicit clock.
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household.
@@ -282,6 +285,7 @@ export async function tickHouseholdCore(
   const escalated = await markEscalated(ctx, householdId);
   const missed = await closeWindows(ctx, householdId, now);
   const noticed = await announceEvents(ctx, householdId, now);
+  await queueDigestIfDue(ctx, householdId, now);
   return { created, opened, stepsFired, escalated, missed, noticed };
 }
 

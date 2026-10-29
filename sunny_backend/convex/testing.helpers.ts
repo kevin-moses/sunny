@@ -28,6 +28,7 @@ export function makeBackend() {
   const t = convexTest(schema, modules);
   workflowTest.register(t);
   workpoolTest.register(t, "calendarSyncPool");
+  workpoolTest.register(t, "deliveryPool");
   return t;
 }
 

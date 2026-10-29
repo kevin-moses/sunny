@@ -19,6 +19,8 @@
 // encrypted), calendarEventLinks (our event to the Google event, per connection) and
 // calendarSyncs (the pending push of one event to one connection; at most one row per key,
 // see lib/calendarSync.ts).
+// Delivery and the daily digest: notificationOutbox delivery bookkeeping and the digests
+// table (one row per household and local date).
 // Not yet ported (later phases): storage for photos and voice clips.
 //
 // Last modified: 2026-10-29
@@ -31,7 +33,10 @@ import {
   calendarSyncState,
   agentRequestStatus,
   confirmVia,
+  deliveryChannel,
   deviceKind,
+  digestSource,
+  digestStatus,
   escalationAction,
   escalationStep,
   instanceState,
@@ -69,6 +74,10 @@ export default defineSchema({
     role: memberRole,
     displayName: v.string(),
     phone: v.optional(v.string()),
+    // Set when the phone number was verified (part B, SMS). Added here only so delivery
+    // compiles; the SMS work owns this field. A member is reachable by SMS only when both
+    // phone and phoneVerifiedAt are set.
+    phoneVerifiedAt: v.optional(v.number()),
   })
     .index("by_household_user", ["householdId", "userId"])
     .index("by_user", ["userId"]),
@@ -201,7 +210,10 @@ export default defineSchema({
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
 
   // The only place notifications are queued; surfaces subscribe to their own rows and the
-  // push sender delivers and marks them sent. Exactly one recipient per row.
+  // delivery action (delivery.ts) sends them by APNs (device recipients) or SMS (member
+  // recipients). Exactly one recipient per row. Insert through lib/delivery.ts
+  // insertNotification so the delivery job is enqueued. A row is settled once it is sent,
+  // skipped (no reachable address) or failed for good; settledAt is absent until then.
   notificationOutbox: defineTable({
     householdId: v.id("households"),
     kind: notificationKind,
@@ -213,13 +225,42 @@ export default defineSchema({
     body: v.string(),
     payload: v.record(v.string(), v.any()),
     sentAt: v.optional(v.number()),
+    // Delivery bookkeeping. channel is the route taken ("none" when skipped); attempts counts
+    // delivery runs; lastError is internal detail (never shown to clients); skippedReason says
+    // why a row with no reachable address was finished without sending; failedAt is set when
+    // delivery gave up.
+    channel: v.optional(deliveryChannel),
+    attempts: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    skippedReason: v.optional(v.string()),
+    failedAt: v.optional(v.number()),
+    settledAt: v.optional(v.number()),
   })
     .index("by_recipient_user", ["recipientUserId"])
     .index("by_recipient_device", ["recipientDeviceId"])
     // Deleting an instance deletes its notifications (the SQL foreign key cascaded).
     .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
-    .index("by_sent", ["sentAt"]),
+    .index("by_sent", ["sentAt"])
+    // The sweeper reads unsettled rows older than a cutoff (settledAt = undefined, then
+    // creation time).
+    .index("by_settled", ["settledAt"]),
+
+  // One row per household per local date: the daily digest (digest.ts). status is pending
+  // until the text is composed and its SMS rows are queued.
+  digests: defineTable({
+    householdId: v.id("households"),
+    localDate: v.string(),
+    status: digestStatus,
+    // Which path produced the text, and the text itself (set when composed).
+    source: v.optional(digestSource),
+    text: v.optional(v.string()),
+    // Outbox rows queued (verified phones at the time of sending).
+    recipients: v.optional(v.number()),
+    error: v.optional(v.string()),
+  })
+    .index("by_household_date", ["householdId", "localDate"])
+    .index("by_status", ["status"]),
 
   // A caregiver's Google account connection; Sunny keeps its own secondary calendar there.
   calendarConnections: defineTable({
