@@ -1,44 +1,32 @@
 # memory.py
-# Purpose: Supabase integration for per-session household context and conversation logging.
-# Handles: async Supabase client init, resolving the household and session trigger from
+# Purpose: Convex integration for per-session household context and conversation logging.
+# Handles: resolving the household and session trigger from
 # LiveKit participant metadata (resolve_session), loading the household context via the
-# get_agent_context RPC, real-time turn logging to conversation_turns, and a one-to-two
-# sentence post-session summary written to the conversations row.
+# agent:getContext query, real-time turn logging (agent:logTurn), and a one-to-two
+# sentence post-session summary stored when the conversation is finished
+# (agent:finishConversation, which also sets the end time).
 #
 # Memory-care pivot (2026-10-25): sessions are scoped to a household instead of a user.
 # The LLM-rewritten users.profile_summary paragraph was removed: it mixed caregiver facts
 # with things the senior said and broke the memory-hygiene rule in notes/SPEC.md. Facts
 # now live in agent_memory with a source and verified flag (written by later agent tools).
 # Session context carries task_instance_id instead of reminder_id/adherence_log_id.
+# Convex migration (2026-10-29): replaced supabase-py with ConvexClient (convex_client.py).
 #
-# Last modified: 2026-10-25
+# Last modified: 2026-10-29
 
 import json
 import logging
 import os
-from datetime import datetime, timezone
 
 from anthropic import AsyncAnthropic
 from livekit import rtc
 from livekit.agents.llm import ChatContext, ChatMessage
-from supabase import AsyncClient, acreate_client
 
 from config import SUMMARY_MAX_TOKENS, SUMMARY_MODEL
+from convex_client import ConvexClient
 
 logger = logging.getLogger("agent.memory")
-
-
-async def create_supabase_client() -> AsyncClient:
-    """
-    purpose: Initialize an async Supabase client from environment variables.
-             Uses the service role key: the agent acts for the backend and passes the
-             household explicitly to every query and RPC.
-    @return: (AsyncClient) Authenticated Supabase async client.
-    @raises: KeyError if SUPABASE_URL or SUPABASE_SECRET_KEY are not set.
-    """
-    url = os.environ["SUPABASE_URL"]
-    key = os.environ["SUPABASE_SECRET_KEY"]
-    return await acreate_client(url, key)
 
 
 def resolve_session(room: rtc.Room) -> dict:
@@ -79,23 +67,21 @@ def resolve_session(room: rtc.Room) -> dict:
     }
 
 
-async def load_agent_context(client: AsyncClient, household_id: str | None) -> dict:
+async def load_agent_context(client: ConvexClient, household_id: str | None) -> dict:
     """
-    purpose: Load the household context for this session with the get_agent_context RPC:
+    purpose: Load the household context for this session with the agent:getContext query:
              household profile and local time, today's task instances, as-needed meds,
              upcoming events, latest family message, life profile, sensitive topics,
              memory, and recent conversation summaries. Returns {} on any error.
-    @param client: (AsyncClient) Supabase async client.
-    @param household_id: (str | None) Household UUID; None returns {}.
-    @return: (dict) Context dict as returned by get_agent_context, or {}.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str | None) Household id; None returns {}.
+    @return: (dict) Context dict as returned by agent:getContext (camelCase keys, epoch-ms
+             instants), or {}.
     """
     if not household_id:
         return {}
     try:
-        result = await client.rpc(
-            "get_agent_context", {"p_household_id": household_id}
-        ).execute()
-        data = result.data
+        data = await client.query("agent:getContext", {"householdId": household_id})
         if isinstance(data, dict):
             logger.info(f"Loaded agent context for household {household_id}")
             return data
@@ -106,32 +92,34 @@ async def load_agent_context(client: AsyncClient, household_id: str | None) -> d
 
 
 async def create_conversation(
-    client: AsyncClient,
+    client: ConvexClient,
     household_id: str | None,
     trigger: str = "talk",
     task_instance_id: str | None = None,
     device_id: str | None = None,
 ) -> str:
     """
-    purpose: Insert a conversations row for this session and return its UUID.
-    @param client: (AsyncClient) Supabase async client.
-    @param household_id: (str | None) Household UUID; None skips logging.
+    purpose: Start a conversation record for this session and return its id.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str | None) Household id; None skips logging.
     @param trigger: (str) What started the session: 'talk', 'scheduled_prompt',
                     'notification_tap', ...
     @param task_instance_id: (str | None) Task instance that triggered the session, if any.
     @param device_id: (str | None) Paired device the senior is talking through, if known.
-    @return: (str) UUID of the new conversation, or "" when skipped or on failure.
+    @return: (str) Id of the new conversation, or "" when skipped or on failure.
     """
     if not household_id:
         return ""
     try:
-        row: dict = {"household_id": household_id, "trigger": trigger}
-        if task_instance_id:
-            row["task_instance_id"] = task_instance_id
-        if device_id:
-            row["device_id"] = device_id
-        result = await client.table("conversations").insert(row).execute()
-        conversation_id = result.data[0]["id"]
+        conversation_id = await client.mutation(
+            "agent:startConversation",
+            {
+                "householdId": household_id,
+                "deviceId": device_id or None,
+                "trigger": trigger,
+                "taskInstanceId": task_instance_id or None,
+            },
+        )
         logger.info(
             f"Created conversation {conversation_id} for household {household_id} "
             f"(trigger={trigger})"
@@ -145,14 +133,14 @@ async def create_conversation(
 class ConversationLogger:
     """
     purpose: Owns a single session's conversation record: logs each turn as it happens
-             and, at session end, stores a short summary on the conversations row.
+             and, at session end, stores a short summary with the conversation.
     """
 
-    def __init__(self, client: AsyncClient, conversation_id: str) -> None:
+    def __init__(self, client: ConvexClient, conversation_id: str) -> None:
         """
         purpose: Initialize the logger for one conversation.
-        @param client: (AsyncClient) Supabase async client.
-        @param conversation_id: (str) UUID of the conversations row, or "" to disable logging.
+        @param client: (ConvexClient) Convex client.
+        @param conversation_id: (str) Id of the conversation, or "" to disable logging.
         """
         self._client = client
         self._conversation_id = conversation_id
@@ -160,7 +148,7 @@ class ConversationLogger:
 
     async def log_message(self, role: str, content: str) -> None:
         """
-        purpose: Insert one conversation turn. Warns on error rather than raising so the
+        purpose: Log one conversation turn. Warns on error rather than raising so the
                  voice pipeline is never disrupted.
         @param role: (str) "user" or "assistant".
         @param content: (str) Text of the turn.
@@ -168,16 +156,13 @@ class ConversationLogger:
         if not self._conversation_id:
             return
         try:
-            await (
-                self._client.table("conversation_turns")
-                .insert(
-                    {
-                        "conversation_id": self._conversation_id,
-                        "role": role,
-                        "content": content,
-                    }
-                )
-                .execute()
+            await self._client.mutation(
+                "agent:logTurn",
+                {
+                    "conversationId": self._conversation_id,
+                    "role": role,
+                    "content": content,
+                },
             )
         except Exception as e:
             logger.warning(
@@ -186,8 +171,8 @@ class ConversationLogger:
 
     async def finalize(self, chat_history: ChatContext) -> None:
         """
-        purpose: Called when the session ends. Sets ended_at, generates a short summary
-                 of the transcript, and stores it on the conversations row. Idempotent:
+        purpose: Called when the session ends. Generates a short summary of the transcript
+                 and finishes the conversation (which sets its end time). Idempotent:
                  the disconnect handler and the shutdown callback may both call it.
         @param chat_history: (ChatContext) AgentSession.history; only user/assistant
                              ChatMessage items are used.
@@ -204,20 +189,16 @@ class ConversationLogger:
             and item.text_content
         ]
 
-        update: dict = {"ended_at": datetime.now(timezone.utc).isoformat()}
+        summary: str | None = None
         if transcript_lines:
-            summary = await self._generate_summary("\n".join(transcript_lines))
-            if summary:
-                update["summary"] = summary
+            summary = await self._generate_summary("\n".join(transcript_lines)) or None
         else:
             logger.info("No transcript content to summarize")
 
         try:
-            await (
-                self._client.table("conversations")
-                .update(update)
-                .eq("id", self._conversation_id)
-                .execute()
+            await self._client.mutation(
+                "agent:finishConversation",
+                {"conversationId": self._conversation_id, "summary": summary},
             )
             logger.info(f"Session finalized for conversation {self._conversation_id}")
         except Exception as e:
@@ -228,7 +209,7 @@ class ConversationLogger:
     async def _generate_summary(self, transcript: str) -> str:
         """
         purpose: Ask Claude for a short factual summary of the session, stored on the
-                 conversations row and shown to the agent in later sessions. Uses
+                 conversation and shown to the agent in later sessions. Uses
                  AsyncAnthropic so finalization never blocks the event loop.
         @param transcript: (str) Newline-joined "ROLE: content" lines from the session.
         @return: (str) One or two plain sentences, or "" on failure.

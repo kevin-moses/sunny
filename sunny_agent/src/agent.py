@@ -2,10 +2,10 @@
 # Purpose: LiveKit voice agent for Sunny, a memory-care assistant for seniors.
 # Implements a Deepgram STT -> Claude Haiku LLM -> Cartesia TTS pipeline via LiveKit Agents.
 # Loads the household's context (today's tasks, events, life profile, memory) from
-# Supabase at session start, logs all conversation turns in real time, and stores a
+# Convex at session start, logs all conversation turns in real time, and stores a
 # post-session summary on shutdown. Exposes tool functions for web search, contact
 # lookup, and messaging (the latter two delegated to the iOS app over LiveKit RPC), plus
-# task tools: list_today, confirm_task (shared confirm RPC, already-done guard),
+# task tools: list_today, confirm_task (shared confirm function, already-done guard),
 # create_reminder and cancel_reminder (senior-created reminders only).
 #
 # Error handling: STT garbage filter silences short/non-alphabetic transcripts; progressive
@@ -26,8 +26,9 @@
 # Memory-care pivot: screen share, vision, guided iPhone workflows, and the iOS EventKit
 # reminder tool were removed (out of scope for the memory-care POC). Sessions are scoped
 # to a household on the new shared-state schema (notes/SCHEMA.md).
+# Convex migration (2026-10-29): supabase-py replaced by ConvexClient (convex_client.py).
 #
-# Last modified: 2026-10-25 (household context and task tools on the new schema)
+# Last modified: 2026-10-29 (Convex backend)
 
 import asyncio
 import json
@@ -55,7 +56,6 @@ from livekit.agents import (
 from livekit.agents.llm import ChatMessage, function_tool
 from livekit.plugins import anthropic, cartesia, deepgram, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-from supabase import AsyncClient
 from tavily import TavilyClient
 
 from config import (
@@ -70,10 +70,10 @@ from config import (
     STT_MODEL,
     TTS_VOICE,
 )
+from convex_client import ConvexClient, create_convex_client
 from memory import (
     ConversationLogger,
     create_conversation,
-    create_supabase_client,
     load_agent_context,
     resolve_session,
 )
@@ -86,9 +86,6 @@ from tools import (
 )
 
 logger = logging.getLogger("agent")
-
-# Suppress noisy HTTP/2 header compression debug logs from the Supabase client transport
-logging.getLogger("hpack").setLevel(logging.WARNING)
 
 load_dotenv(".env")
 
@@ -104,20 +101,20 @@ class Assistant(Agent):
         self,
         instructions: str,
         household_id: str | None,
-        supabase: AsyncClient,
+        convex: ConvexClient,
         timezone: str = DEFAULT_TIMEZONE,
     ) -> None:
         """
         purpose: Initialize the Assistant with a pre-rendered system prompt and the
-                 Supabase client + household needed for the task tools.
+                 Convex client + household needed for the task tools.
         @param instructions: (str) The fully rendered system prompt from render_system_prompt().
-        @param household_id: (str | None) Household UUID; None disables the task tools.
-        @param supabase: (AsyncClient) Authenticated Supabase async client (service role).
+        @param household_id: (str | None) Household id; None disables the task tools.
+        @param convex: (ConvexClient) Convex client carrying the agent key.
         @param timezone: (str) IANA timezone of the household, used to phrase dates.
         """
         super().__init__(instructions=instructions)
         self._household_id = household_id
-        self._supabase = supabase
+        self._convex = convex
         self._timezone = timezone
         self.tavily_client = TavilyClient()
 
@@ -269,7 +266,7 @@ class Assistant(Agent):
         """
         return await self._household_tool(
             "check today's schedule",
-            lambda h: db_list_today(self._supabase, h, self._timezone),
+            lambda h: db_list_today(self._convex, h, self._timezone),
         )
 
     @function_tool
@@ -289,7 +286,7 @@ class Assistant(Agent):
         """
         return await self._household_tool(
             "record that",
-            lambda h: db_confirm_task(self._supabase, h, self._timezone, task_name),
+            lambda h: db_confirm_task(self._convex, h, self._timezone, task_name),
         )
 
     @function_tool
@@ -318,7 +315,7 @@ class Assistant(Agent):
         return await self._household_tool(
             "save that reminder",
             lambda h: db_create_senior_reminder(
-                self._supabase, h, self._timezone, title, time, on_date, days
+                self._convex, h, self._timezone, title, time, on_date, days
             ),
         )
 
@@ -336,7 +333,7 @@ class Assistant(Agent):
         """
         return await self._household_tool(
             "cancel that reminder",
-            lambda h: db_cancel_senior_reminder(self._supabase, h, reminder_title),
+            lambda h: db_cancel_senior_reminder(self._convex, h, reminder_title),
         )
 
 
@@ -431,7 +428,7 @@ def prewarm(proc: JobProcess):
 async def entrypoint(ctx: JobContext):
     """
     purpose: Main session entrypoint. Connects to the room first so participant
-             metadata is available, then loads user context from Supabase, builds
+             metadata is available, then loads user context from Convex, builds
              the system prompt, and starts the voice pipeline with senior-optimized
              UX parameters and real-time conversation logging.
              Also registers error recovery, STT garbage filter, participant reconnect,
@@ -450,12 +447,12 @@ async def entrypoint(ctx: JobContext):
     household_id = session_ctx["household_id"]
     session_instance_id = session_ctx["task_instance_id"]
 
-    # 3. Init Supabase; load household context and create the conversation row together
-    supabase = await create_supabase_client()
+    # 3. Init Convex; load household context and create the conversation row together
+    convex = create_convex_client()
     raw_context, conversation_id = await asyncio.gather(
-        load_agent_context(supabase, household_id),
+        load_agent_context(convex, household_id),
         create_conversation(
-            supabase,
+            convex,
             household_id,
             trigger=session_ctx["trigger"],
             task_instance_id=session_instance_id,
@@ -463,9 +460,9 @@ async def entrypoint(ctx: JobContext):
         ),
     )
     household = raw_context.get("household", {})
-    user_name = household.get("senior_preferred_name", "")
+    user_name = household.get("seniorPreferredName", "")
     household_timezone = household.get("timezone", DEFAULT_TIMEZONE)
-    conv_logger = ConversationLogger(supabase, conversation_id)
+    conv_logger = ConversationLogger(convex, conversation_id)
 
     # 4. Task-triggered sessions open with the task's fixed spoken prompt
     name_part = f", {user_name}" if user_name else ""
@@ -475,13 +472,13 @@ async def entrypoint(ctx: JobContext):
             (
                 i
                 for i in raw_context.get("today", [])
-                if i.get("instance_id") == session_instance_id
+                if i.get("instanceId") == session_instance_id
             ),
             None,
         )
         if instance and instance.get("state") not in ("confirmed", "resolved"):
-            initial_greeting = instance.get("spoken_prompt") or (
-                f"It's time for {instance.get('display_label', 'your task')}."
+            initial_greeting = instance.get("spokenPrompt") or (
+                f"It's time for {instance.get('displayLabel', 'your task')}."
             )
             logger.info(f"Task prompt greeting: {initial_greeting!r}")
 
@@ -516,7 +513,7 @@ async def entrypoint(ctx: JobContext):
     @session.on("conversation_item_added")
     def _on_item_added(ev: ConversationItemAddedEvent):
         """
-        purpose: Handle conversation_item_added events to log each turn to Supabase,
+        purpose: Handle conversation_item_added events to log each turn to Convex,
                  reset the error streak counter on any successful assistant reply,
                  and buffer assistant text for echo detection.
         @param ev: (ConversationItemAddedEvent) Event containing the new ChatMessage.
@@ -734,9 +731,11 @@ async def entrypoint(ctx: JobContext):
     async def _on_shutdown():
         """
         purpose: Finalize the conversation record as a safety fallback for clean shutdowns
-                 (job process killed, server restart, etc.) when no disconnect event fires.
+                 (job process killed, server restart, etc.) when no disconnect event fires,
+                 then close the Convex HTTP client.
         """
         await conv_logger.finalize(session.history)
+        await convex.aclose()
 
     async def _log_usage():
         """
@@ -751,7 +750,7 @@ async def entrypoint(ctx: JobContext):
     _assistant = Assistant(
         instructions=rendered_prompt,
         household_id=household_id,
-        supabase=supabase,
+        convex=convex,
         timezone=household_timezone,
     )
 

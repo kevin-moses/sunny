@@ -1,20 +1,21 @@
 # tools.py
 # Purpose: Async helpers behind the agent's task tools, plus voice-friendly time and date
-# formatting shared with prompts.py. Every decision lives in the database RPCs the other
-# surfaces also use: get_today (today's schedule), confirm_due_task (which task "Done"
-# means and the already-done guard), create_senior_reminder and cancel_senior_reminder
-# (senior-created reminders only). These helpers only call the RPC and phrase the result
-# for voice. They contain no LiveKit imports; the @function_tool methods on Assistant in
+# formatting shared with prompts.py. Every decision lives in the Convex agent:* functions the
+# other surfaces also use: agent:today (today's schedule), agent:confirmDueTask (which task
+# "Done" means and the already-done guard), agent:createSeniorReminder and
+# agent:cancelSeniorReminder (senior-created reminders only). These helpers only call the
+# function and phrase the result for voice. Instants arrive as epoch milliseconds. They contain no LiveKit imports; the @function_tool methods on Assistant in
 # agent.py call them.
 #
 # Memory-care pivot (2026-10-25): replaced reminders-table CRUD with household task RPCs.
+# Convex migration (2026-10-29): RPCs became Convex calls; timestamps are epoch ms.
 #
-# Last modified: 2026-10-25
+# Last modified: 2026-10-29
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from supabase import AsyncClient
+from convex_client import ConvexClient
 
 _DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _DONE_STATES = {"confirmed", "resolved"}
@@ -63,14 +64,16 @@ def format_days_for_voice(days: list[str]) -> str:
     return "on " + ", ".join(d.capitalize() for d in _DAY_ORDER if d in day_set)
 
 
-def to_local(iso_timestamp: str, tz: str) -> datetime:
+def to_local(epoch_ms: float, tz: str) -> datetime:
     """
-    purpose: Convert an ISO timestamp from Postgres to the household's local time.
-    @param iso_timestamp: (str) ISO 8601 timestamp with offset.
+    purpose: Convert a Convex instant (epoch milliseconds) to the household's local time.
+    @param epoch_ms: (float) Milliseconds since the Unix epoch.
     @param tz: (str) IANA timezone of the household.
     @return: (datetime) Aware datetime in the household timezone.
     """
-    return datetime.fromisoformat(iso_timestamp).astimezone(ZoneInfo(tz))
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).astimezone(
+        ZoneInfo(tz)
+    )
 
 
 def clock_for_voice(moment: datetime) -> str:
@@ -91,28 +94,28 @@ def spoken_date(day: date) -> str:
     return f"{day.strftime('%A, %B')} {day.day}"
 
 
-def local_clock(iso_timestamp: str, tz: str) -> str:
+def local_clock(epoch_ms: float, tz: str) -> str:
     """
-    purpose: Spoken local time of an ISO timestamp in the household timezone.
-    @param iso_timestamp: (str) ISO 8601 timestamp with offset.
+    purpose: Spoken local time of an instant in the household timezone.
+    @param epoch_ms: (float) Milliseconds since the Unix epoch.
     @param tz: (str) IANA timezone of the household.
     @return: (str) e.g. "8:10 AM".
     """
-    return clock_for_voice(to_local(iso_timestamp, tz))
+    return clock_for_voice(to_local(epoch_ms, tz))
 
 
 def describe_instance(item: dict, tz: str) -> str:
     """
     purpose: Describe one of today's task instances for voice.
-    @param item: (dict) Entry from get_today / get_agent_context()['today'].
+    @param item: (dict) Entry from agent:today / agent:getContext()['today'] (camelCase keys).
     @param tz: (str) IANA timezone of the household.
     @return: (str) e.g. "8 AM, Morning pills: done at 8:10 AM".
     """
-    label = item.get("display_label", "")
-    when = format_time_for_voice(item.get("scheduled_time", ""))
+    label = item.get("displayLabel", "")
+    when = format_time_for_voice(item.get("scheduledTime", ""))
     state = item.get("state", "")
-    if state in _DONE_STATES and item.get("confirmed_at"):
-        status = f"done at {local_clock(item['confirmed_at'], tz)}"
+    if state in _DONE_STATES and item.get("confirmedAt"):
+        status = f"done at {local_clock(item['confirmedAt'], tz)}"
     elif state in ("due", "escalated"):
         status = "due now"
     elif state == "missed":
@@ -122,62 +125,59 @@ def describe_instance(item: dict, tz: str) -> str:
     return f"{when}, {label}: {status}"
 
 
-async def db_list_today(client: AsyncClient, household_id: str, tz: str) -> str:
+async def db_list_today(client: ConvexClient, household_id: str, tz: str) -> str:
     """
     purpose: Describe today's schedule and what has been done, for voice.
-    @param client: (AsyncClient) Supabase async client (service role).
-    @param household_id: (str) Household UUID.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str) Household id.
     @param tz: (str) IANA timezone of the household.
     @return: (str) Voice-friendly listing of today's tasks, or a message if there are none.
     """
-    result = await client.rpc("get_today", {"p_household_id": household_id}).execute()
-    items = result.data or []
+    items = await client.query("agent:today", {"householdId": household_id}) or []
     if not items:
         return "There is nothing on the schedule for today."
     return "Today: " + "; ".join(describe_instance(i, tz) for i in items) + "."
 
 
 async def db_confirm_task(
-    client: AsyncClient, household_id: str, tz: str, task_name: str
+    client: ConvexClient, household_id: str, tz: str, task_name: str
 ) -> str:
     """
-    purpose: Confirm one of today's tasks by voice through confirm_due_task, which picks
+    purpose: Confirm one of today's tasks by voice through agent:confirmDueTask, which picks
              the task (the due one when no name is given) and guards against confirming
              twice. Phrases each outcome for the agent.
-    @param client: (AsyncClient) Supabase async client (service role).
-    @param household_id: (str) Household UUID.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str) Household id.
     @param tz: (str) IANA timezone of the household.
     @param task_name: (str) Name or part of the task's label, or "" for whatever is due.
     @return: (str) Voice-friendly outcome: confirmed, already done, nothing due, not
              found, not due yet, or a clarifying question.
     """
-    result = await client.rpc(
-        "confirm_due_task",
-        {
-            "p_household_id": household_id,
-            "p_via": "voice",
-            "p_label": task_name or None,
-        },
-    ).execute()
-    r = result.data or {}
+    r = (
+        await client.mutation(
+            "agent:confirmDueTask",
+            {"householdId": household_id, "label": task_name or None},
+        )
+        or {}
+    )
     status = r.get("status")
-    label = r.get("display_label", task_name)
+    label = r.get("displayLabel", task_name)
     if status == "confirmed":
-        return f"Confirmed: {label} at {local_clock(r['confirmed_at'], tz)}."
+        return f"Confirmed: {label} at {local_clock(r['confirmedAt'], tz)}."
     if status == "already_done":
-        return f"Already done: {label} was confirmed at {local_clock(r['confirmed_at'], tz)}."
+        return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
     if status == "nothing_due":
         return "Nothing is due right now."
     if status == "not_due_yet":
-        return f"{label} is not due until {format_time_for_voice(r['scheduled_time'])}."
+        return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
     if status == "ambiguous":
-        options = "; ".join(describe_instance(o, tz) for o in r.get("options", []))
+        options = "; ".join(describe_instance(o, tz) for o in r.get("options") or [])
         return f"Several tasks match: {options}. Ask which one they mean."
     return f"I don't see {task_name} on today's schedule."
 
 
 async def db_create_senior_reminder(
-    client: AsyncClient,
+    client: ConvexClient,
     household_id: str,
     tz: str,
     title: str,
@@ -186,11 +186,11 @@ async def db_create_senior_reminder(
     days: list[str] | None = None,
 ) -> str:
     """
-    purpose: Create a reminder the senior asked for through create_senior_reminder, which
+    purpose: Create a reminder the senior asked for through agent:createSeniorReminder, which
              sets the senior-created defaults (prompt-only policy, wording, window).
              One-off when on_date is given, otherwise recurring on days (every day if empty).
-    @param client: (AsyncClient) Supabase async client (service role).
-    @param household_id: (str) Household UUID.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str) Household id.
     @param tz: (str) IANA timezone of the household, used to phrase the date.
     @param title: (str) What to remind them about, e.g. "call the plumber".
     @param time: (str) 24-hour "HH:MM".
@@ -199,16 +199,16 @@ async def db_create_senior_reminder(
     @return: (str) Voice-friendly confirmation.
     """
     day_list = [d.lower() for d in (days or []) if d.lower() in _DAY_ORDER]
-    await client.rpc(
-        "create_senior_reminder",
+    await client.mutation(
+        "agent:createSeniorReminder",
         {
-            "p_household_id": household_id,
-            "p_title": title,
-            "p_time": time,
-            "p_on_date": on_date or None,
-            "p_days": [_DAY_ORDER.index(d) + 1 for d in day_list] or None,
+            "householdId": household_id,
+            "title": title,
+            "time": time,
+            "onDate": on_date or None,
+            "days": [_DAY_ORDER.index(d) + 1 for d in day_list] or None,
         },
-    ).execute()
+    )
 
     spoken_time = format_time_for_voice(time)
     if not on_date:
@@ -226,22 +226,24 @@ async def db_create_senior_reminder(
 
 
 async def db_cancel_senior_reminder(
-    client: AsyncClient, household_id: str, title_query: str
+    client: ConvexClient, household_id: str, title_query: str
 ) -> str:
     """
-    purpose: Cancel a reminder the senior created through cancel_senior_reminder.
+    purpose: Cancel a reminder the senior created through agent:cancelSeniorReminder.
              Caregiver-created tasks are never matched.
-    @param client: (AsyncClient) Supabase async client (service role).
-    @param household_id: (str) Household UUID.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str) Household id.
     @param title_query: (str) Name or part of the reminder's title.
     @return: (str) Voice-friendly outcome: cancelled, not found, or a clarifying question.
     """
-    result = await client.rpc(
-        "cancel_senior_reminder",
-        {"p_household_id": household_id, "p_query": title_query},
-    ).execute()
-    r = result.data or {}
-    titles = r.get("titles", [])
+    r = (
+        await client.mutation(
+            "agent:cancelSeniorReminder",
+            {"householdId": household_id, "query": title_query},
+        )
+        or {}
+    )
+    titles = r.get("titles") or []
     if r.get("status") == "cancelled":
         return f"Cancelled the reminder to {titles[0]}."
     if r.get("status") == "ambiguous":
