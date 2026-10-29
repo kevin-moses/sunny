@@ -39,6 +39,7 @@ import {
   questionOutcome,
   taskCreator,
   taskType,
+  toolCall,
 } from "./lib/validators";
 
 export default defineSchema({
@@ -333,25 +334,34 @@ export default defineSchema({
     continueRequestId: v.optional(v.id("agentRequests")),
     status: agentRequestStatus,
     workflowId: v.optional(v.string()),
+    // Known up front for a continuation (copied from the earlier request), set after the
+    // session starts otherwise. At most one in-progress request may use a session.
     sessionId: v.optional(v.string()),
+    // user.message events the session had before this request's message was posted.
+    baselineUserMessages: v.optional(v.number()),
     reply: v.optional(v.string()),
+    // Caregiver-safe failure text; shown in the app.
     error: v.optional(v.string()),
+    // Raw failure detail (SDK errors, env var names, ids). Never returned by agentRequests.
+    errorDetail: v.optional(v.string()),
     finishedAt: v.optional(v.number()),
   })
     // Newest first (creation time is the implicit last index field).
     .index("by_household", ["householdId"])
-    .index("by_household_status", ["householdId", "status"]),
+    .index("by_household_status", ["householdId", "status"])
+    .index("by_session", ["sessionId", "status"]),
 
   // One row per tool call the agent made for a request, with the result that was (or will be)
   // sent back. Written in the same transaction as the tool's effect.
   agentToolCalls: defineTable({
     requestId: v.id("agentRequests"),
-    // Managed Agents event id of the agent.custom_tool_use.
-    toolUseId: v.string(),
-    name: v.string(),
-    input: v.record(v.string(), v.any()),
+    // toolUseId (Managed Agents event id of the agent.custom_tool_use), name and input.
+    ...toolCall.fields,
     text: v.string(),
     isError: v.boolean(),
     sentAt: v.optional(v.number()),
-  }).index("by_request_tool", ["requestId", "toolUseId"]),
+  })
+    .index("by_request_tool", ["requestId", "toolUseId"])
+    // Calls whose result was sent: sentAt is absent until then, so gt(0) selects the sent ones.
+    .index("by_request_sent", ["requestId", "sentAt"]),
 });

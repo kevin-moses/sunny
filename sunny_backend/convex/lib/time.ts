@@ -298,7 +298,8 @@ export function formatTime12(time: string): string {
   return `${h % 12 === 0 ? 12 : h % 12}:${pad(m)} ${h < 12 ? "AM" : "PM"}`;
 }
 
-const WEEKDAY_NAMES = [
+/** English weekday names, Monday first (index = ISO weekday - 1). */
+export const WEEKDAY_NAMES = [
   "Monday",
   "Tuesday",
   "Wednesday",

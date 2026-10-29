@@ -13,7 +13,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 
 /** Default per-session spend cap, in US cents. */
-export const DEFAULT_BUDGET_CENTS = 100;
+const DEFAULT_BUDGET_CENTS = 100;
+
+/** Per-attempt timeout of an API request (the SDK default is 10 minutes). */
+const REQUEST_TIMEOUT_MS = 30_000;
+/** Retries of 408/409/429/5xx and connection errors, done by the SDK itself (its default is 2). */
+const MAX_RETRIES = 2;
 
 /** The fields of session events this runtime reads. */
 export interface SessionEvent {
@@ -45,26 +50,15 @@ export interface AgentConfig {
   apiKey: string;
   agentId: string;
   environmentId: string;
-  budgetCents: string;
-}
-
-/** Thrown when required environment variables are not set; the message names them. */
-export class MissingConfigError extends Error {
-  /**
-   * purpose: Build the error.
-   * @param missing: (string[]) Names of the unset variables.
-   */
-  constructor(missing: string[]) {
-    super(`The agent is not configured: set ${missing.join(", ")} on the Convex deployment`);
-    this.name = "MissingConfigError";
-  }
+  budgetCents: number;
 }
 
 /**
  * purpose: Read the agent configuration from the environment.
  * @param env: (Record<string, string | undefined>) Environment to read; defaults to process.env.
  * @return: (AgentConfig) The configuration.
- * @raises MissingConfigError when ANTHROPIC_API_KEY, SUNNY_AGENT_ID or SUNNY_ENVIRONMENT_ID is unset.
+ * @raises Error naming the unset variables when ANTHROPIC_API_KEY, SUNNY_AGENT_ID or
+ *         SUNNY_ENVIRONMENT_ID is missing.
  */
 export function readAgentConfig(
   env: Record<string, string | undefined> = process.env,
@@ -78,22 +72,27 @@ export function readAgentConfig(
     ["SUNNY_ENVIRONMENT_ID", environmentId],
   ]
     .filter(([, value]) => !value)
-    .map(([name]) => name as string);
-  if (!apiKey || !agentId || !environmentId) throw new MissingConfigError(missing);
+    .map(([name]) => name);
+  if (!apiKey || !agentId || !environmentId) {
+    throw new Error(
+      `The agent is not configured: set ${missing.join(", ")} on the Convex deployment`,
+    );
+  }
   const cents = Number(env.SUNNY_AGENT_SESSION_BUDGET_CENTS || DEFAULT_BUDGET_CENTS);
-  const budget = Number.isInteger(cents) && cents > 0 ? cents : DEFAULT_BUDGET_CENTS;
-  return { apiKey, agentId, environmentId, budgetCents: String(budget) };
+  const budgetCents = Number.isInteger(cents) && cents > 0 ? cents : DEFAULT_BUDGET_CENTS;
+  return { apiKey, agentId, environmentId, budgetCents };
 }
 
 /**
- * purpose: An Anthropic client for the configured API key.
+ * purpose: An Anthropic client; the one place clients are built.
+ * @param apiKey: (string, optional) Key to use; defaults to ANTHROPIC_API_KEY.
  * @return: (Anthropic) The client.
- * @raises MissingConfigError when ANTHROPIC_API_KEY is unset.
+ * @raises Error when no key is available.
  */
-function client(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new MissingConfigError(["ANTHROPIC_API_KEY"]);
-  return new Anthropic({ apiKey });
+function client(apiKey: string | undefined = process.env.ANTHROPIC_API_KEY): Anthropic {
+  if (!apiKey)
+    throw new Error("The agent is not configured: set ANTHROPIC_API_KEY on the Convex deployment");
+  return new Anthropic({ apiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: MAX_RETRIES });
 }
 
 /**
@@ -116,12 +115,15 @@ export async function createSession(
   config: AgentConfig,
   params: { title: string; requestId: string; householdId: string; text: string },
 ): Promise<string> {
-  const session = await new Anthropic({ apiKey: config.apiKey }).beta.sessions.create({
+  const session = await client(config.apiKey).beta.sessions.create({
     agent: config.agentId,
     environment_id: config.environmentId,
     title: params.title,
     metadata: { request_id: params.requestId, household_id: params.householdId },
-    budget: { type: "limit", max_list_cost: { amount: config.budgetCents, currency: "USD" } },
+    budget: {
+      type: "limit",
+      max_list_cost: { amount: String(config.budgetCents), currency: "USD" },
+    },
     initial_events: [userMessage(params.text)],
   });
   return session.id;
@@ -155,20 +157,28 @@ export async function sendToolResults(sessionId: string, results: ToolResult[]):
 /**
  * purpose: Read a session's status.
  * @param sessionId: (string) Session id.
+ * @param signal: (AbortSignal, optional) Aborts the request (and its retries).
  * @return: (Promise<SessionStatus>) The status.
  */
-export async function getSessionStatus(sessionId: string): Promise<SessionStatus> {
-  return (await client().beta.sessions.retrieve(sessionId)).status;
+export async function getSessionStatus(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionStatus> {
+  return (await client().beta.sessions.retrieve(sessionId, null, { signal })).status;
 }
 
 /**
  * purpose: List every event of a session in server order.
  * @param sessionId: (string) Session id.
+ * @param signal: (AbortSignal, optional) Aborts the request (and its retries).
  * @return: (Promise<SessionEvent[]>) All events.
  */
-export async function listSessionEvents(sessionId: string): Promise<SessionEvent[]> {
+export async function listSessionEvents(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionEvent[]> {
   const all: SessionEvent[] = [];
-  for await (const event of client().beta.sessions.events.list(sessionId)) {
+  for await (const event of client().beta.sessions.events.list(sessionId, null, { signal })) {
     all.push(event as unknown as SessionEvent);
   }
   return all;
@@ -187,14 +197,28 @@ export function pendingToolUses(events: SessionEvent[]): SessionEvent[] {
 }
 
 /**
+ * purpose: How many user.message events a session has.
+ * @param events: (SessionEvent[]) Session events in server order.
+ * @return: (number) The count; used as the baseline before posting a new message.
+ */
+export function countUserMessages(events: SessionEvent[]): number {
+  return events.filter((e) => e.type === "user.message").length;
+}
+
+/**
  * purpose: Decide whether the turn started by the latest user message has finished.
  * @param events: (SessionEvent[]) Session events in server order.
+ * @param baseline: (number) How many user.message events existed before this request's
+ *        message was posted (0 for a new session). A turn only counts once more than
+ *        `baseline` user messages are visible, because the event list can lag and would
+ *        otherwise show the previous turn's reply.
  * @return: (TurnState) "replied" with the agent's text when the session idled at end of
  *         turn after the latest user message; "stopped" for any other idle stop (budget
- *         reached, refusal, retries exhausted); "running" while it is still working or
- *         waiting on tool results.
+ *         reached, refusal, retries exhausted); "running" while it is still working, is
+ *         waiting on tool results, or the new message is not visible yet.
  */
-export function finishedTurn(events: SessionEvent[]): TurnState {
+export function finishedTurn(events: SessionEvent[], baseline = 0): TurnState {
+  if (countUserMessages(events) <= baseline) return { state: "running" };
   const lastUser = events.findLastIndex((e) => e.type === "user.message");
   const after = events.slice(lastUser + 1);
   const idle = after.findLast((e) => e.type === "session.status_idle");

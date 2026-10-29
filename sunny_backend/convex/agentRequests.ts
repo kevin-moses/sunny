@@ -8,7 +8,9 @@
 //
 // Rules ported from request_agent_chat: message trimmed to 1 to 4000 characters; at most 5
 // requests queued or running per household ("limit"); a request may continue only a
-// succeeded request of the same household that has a session ("not_found" otherwise).
+// succeeded request of the same household that has a session ("not_found" otherwise), and only
+// while no other request is in progress in that session ("limit"). A continuation copies the
+// session id onto its row up front.
 //
 // Last modified: 2026-10-29
 
@@ -18,18 +20,20 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { workflow } from "./agentRuntime";
-import { requireEditor } from "./lib/access";
+import { requireEditor, type CaregiverActor } from "./lib/access";
+import { isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { audit } from "./lib/audit";
 import { appError } from "./lib/errors";
+import { requireMaxLength, requireNonBlank } from "./lib/text";
 import type { AgentRequestStatus } from "./lib/validators";
 
 /** Longest message a caregiver may send the agent. */
-export const MAX_MESSAGE_LENGTH = 4000;
+const MAX_MESSAGE_LENGTH = 4000;
 /** Most requests a household may have queued or running at once. */
-export const MAX_IN_PROGRESS = 5;
+const MAX_IN_PROGRESS = 5;
 /** Default and largest page size of `list`. */
-export const DEFAULT_LIST_LIMIT = 20;
-export const MAX_LIST_LIMIT = 100;
+const DEFAULT_LIST_LIMIT = 20;
+const MAX_LIST_LIMIT = 100;
 
 /** A request as the caregiver app sees it (absent fields are null). */
 export interface AgentRequestView {
@@ -69,17 +73,16 @@ function toView(row: Doc<"agentRequests">): AgentRequestView {
  * purpose: Load a request and check the caller may edit its household.
  * @param ctx: (QueryCtx) Context.
  * @param requestId: (Id<"agentRequests">) The request.
- * @return: (Promise<Doc<"agentRequests">>) The row.
+ * @return: (Promise<{ row, actor }>) The row and the calling editor.
  * @raises not_found when it does not exist; forbidden when the caller is not an editor.
  */
 async function loadForEditor(
   ctx: QueryCtx,
   requestId: Id<"agentRequests">,
-): Promise<Doc<"agentRequests">> {
+): Promise<{ row: Doc<"agentRequests">; actor: CaregiverActor }> {
   const row = await ctx.db.get(requestId);
   if (!row) throw appError("not_found", "Request not found");
-  await requireEditor(ctx, row.householdId);
-  return row;
+  return { row, actor: await requireEditor(ctx, row.householdId) };
 }
 
 /**
@@ -103,17 +106,20 @@ async function countInProgress(ctx: QueryCtx, householdId: Id<"households">): Pr
 }
 
 /**
- * purpose: Check that a request may continue another: same household, succeeded, with a session.
+ * purpose: Check that a request may continue another: same household, succeeded, with a
+ *          session, and no other request in progress in that session (two requests must never
+ *          drive one session at once).
  * @param ctx: (MutationCtx) Context.
  * @param householdId: (Id<"households">) Household of the new request.
  * @param continueRequestId: (Id<"agentRequests">) The earlier request.
- * @raises not_found otherwise.
+ * @return: (Promise<string>) The session id to continue.
+ * @raises not_found when the earlier request cannot be continued; limit when the session is busy.
  */
 async function requireContinuable(
   ctx: MutationCtx,
   householdId: Id<"households">,
   continueRequestId: Id<"agentRequests">,
-): Promise<void> {
+): Promise<string> {
   const earlier = await ctx.db.get(continueRequestId);
   if (
     !earlier ||
@@ -123,6 +129,14 @@ async function requireContinuable(
   ) {
     throw appError("not_found", "Nothing to continue (the earlier request must have finished)");
   }
+  for (const status of ["queued", "running"] as const) {
+    const busy = await ctx.db
+      .query("agentRequests")
+      .withIndex("by_session", (q) => q.eq("sessionId", earlier.sessionId).eq("status", status))
+      .first();
+    if (busy) throw appError("limit", "Sunny is still working on that conversation");
+  }
+  return earlier.sessionId;
 }
 
 /**
@@ -141,21 +155,23 @@ export const request = mutation({
   },
   handler: async (ctx, args): Promise<Id<"agentRequests">> => {
     const actor = await requireEditor(ctx, args.householdId);
-    const message = args.message.trim();
-    if (message.length === 0 || message.length > MAX_MESSAGE_LENGTH) {
-      throw appError("invalid", `Message must be 1 to ${MAX_MESSAGE_LENGTH} characters`);
-    }
+    const message = requireMaxLength(
+      requireNonBlank(args.message, "Message"),
+      MAX_MESSAGE_LENGTH,
+      "Message",
+    );
     if ((await countInProgress(ctx, args.householdId)) >= MAX_IN_PROGRESS) {
       throw appError("limit", "Too many agent requests in progress");
     }
-    if (args.continueRequestId) {
-      await requireContinuable(ctx, args.householdId, args.continueRequestId);
-    }
+    const sessionId = args.continueRequestId
+      ? await requireContinuable(ctx, args.householdId, args.continueRequestId)
+      : undefined;
     const requestId = await ctx.db.insert("agentRequests", {
       householdId: args.householdId,
       requestedBy: actor.userId,
       message,
       continueRequestId: args.continueRequestId,
+      sessionId,
       status: "queued",
     });
     const workflowId = await workflow.start(
@@ -185,7 +201,7 @@ export const request = mutation({
 export const get = query({
   args: { requestId: v.id("agentRequests") },
   handler: async (ctx, { requestId }): Promise<AgentRequestView> => {
-    return toView(await loadForEditor(ctx, requestId));
+    return toView((await loadForEditor(ctx, requestId)).row);
   },
 });
 
@@ -199,7 +215,8 @@ export const list = query({
   args: { householdId: v.id("households"), limit: v.optional(v.number()) },
   handler: async (ctx, { householdId, limit }): Promise<AgentRequestView[]> => {
     await requireEditor(ctx, householdId);
-    const count = Math.min(Math.max(Math.floor(limit ?? DEFAULT_LIST_LIMIT), 1), MAX_LIST_LIMIT);
+    const wanted = limit !== undefined && Number.isFinite(limit) ? limit : DEFAULT_LIST_LIMIT;
+    const count = Math.min(Math.max(Math.floor(wanted), 1), MAX_LIST_LIMIT);
     const rows = await ctx.db
       .query("agentRequests")
       .withIndex("by_household", (q) => q.eq("householdId", householdId))
@@ -218,13 +235,10 @@ export const list = query({
 export const cancel = mutation({
   args: { requestId: v.id("agentRequests") },
   handler: async (ctx, { requestId }): Promise<null> => {
-    const row = await loadForEditor(ctx, requestId);
-    if (row.status !== "queued" && row.status !== "running") {
-      throw appError("invalid", "This request has already finished");
-    }
-    const actor = await requireEditor(ctx, row.householdId);
+    const { row, actor } = await loadForEditor(ctx, requestId);
+    if (!isInProgress(row.status)) throw appError("invalid", "This request has already finished");
     if (row.workflowId) await workflow.cancel(ctx, row.workflowId as WorkflowId);
-    await ctx.db.patch(requestId, { status: "cancelled", finishedAt: Date.now() });
+    await transitionRequest(ctx, requestId, { status: "cancelled" });
     await audit(ctx, {
       householdId: row.householdId,
       actor,

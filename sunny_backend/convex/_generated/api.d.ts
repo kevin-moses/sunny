@@ -19,6 +19,7 @@ import type * as instances from "../instances.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_agentBriefing from "../lib/agentBriefing.js";
 import type * as lib_agentConfig from "../lib/agentConfig.js";
+import type * as lib_agentRequestState from "../lib/agentRequestState.js";
 import type * as lib_agentTools from "../lib/agentTools.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_errors from "../lib/errors.js";
@@ -53,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   "lib/access": typeof lib_access;
   "lib/agentBriefing": typeof lib_agentBriefing;
   "lib/agentConfig": typeof lib_agentConfig;
+  "lib/agentRequestState": typeof lib_agentRequestState;
   "lib/agentTools": typeof lib_agentTools;
   "lib/audit": typeof lib_audit;
   "lib/errors": typeof lib_errors;

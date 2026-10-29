@@ -157,3 +157,15 @@ export const agentRequestStatus = v.union(
 );
 /** Type of agentRequestStatus. */
 export type AgentRequestStatus = Infer<typeof agentRequestStatus>;
+
+/**
+ * One custom tool call the agent made: the Managed Agents event id, tool name and input. The
+ * input is JSON text, not a Convex object, so model-chosen keys can never fail validation.
+ */
+export const toolCall = v.object({
+  toolUseId: v.string(),
+  name: v.string(),
+  input: v.string(),
+});
+/** Type of toolCall. */
+export type ToolCall = Infer<typeof toolCall>;

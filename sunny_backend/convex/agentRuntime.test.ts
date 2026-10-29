@@ -13,14 +13,20 @@
 //
 // Last modified: 2026-10-29
 
-import { convexTest } from "convex-test";
-import workflowTest from "@convex-dev/workflow/test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { MAX_REQUEST_AGE_MS, PAUSE_RECHECK_MS, pollUntil, TIMEOUT_ERROR } from "./agentRuntime";
+import {
+  MAX_REQUEST_AGE_MS,
+  PAUSE_RECHECK_MS,
+  PAUSED_TIMEOUT_ERROR,
+  pollUntil,
+  TIMEOUT_ERROR,
+} from "./agentRuntime";
+import { GENERIC_ERROR } from "./lib/agentRequestState";
+import { isInProgress } from "./lib/agentRequestState";
 import type { SessionEvent } from "./lib/managedAgents";
-import schema from "./schema";
+import { createHousehold, insertRequest, makeBackend, type TestConvex } from "./testing.helpers";
 
 const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -44,9 +50,6 @@ vi.mock("./lib/agentTools", () => ({
   AGENT_TOOLS: [],
   executeAgentTool: mocks.executeAgentTool,
 }));
-
-/** Every non-test module in the backend, for the convex-test harness. */
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const ENV_NAMES = ["ANTHROPIC_API_KEY", "SUNNY_AGENT_ID", "SUNNY_ENVIRONMENT_ID"] as const;
 let savedEnv: Record<string, string | undefined> = {};
@@ -84,32 +87,6 @@ afterEach(() => {
 });
 
 /**
- * purpose: A fresh in-memory backend with the workflow component registered.
- * @return: The convex-test harness typed with the schema.
- */
-function makeBackend() {
-  const t = convexTest(schema, modules);
-  workflowTest.register(t);
-  return t;
-}
-
-/** The convex-test harness type, with the schema's table types. */
-type TestConvex = ReturnType<typeof makeBackend>;
-
-/**
- * purpose: Create a household owned by user_a.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Id<"households">>) The household.
- */
-async function createHousehold(t: TestConvex): Promise<Id<"households">> {
-  return await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
-    seniorPreferredName: "Margaret",
-    timezone: "America/New_York",
-    caregiverDisplayName: "Anna",
-  });
-}
-
-/**
  * purpose: Create a household and queue a request through the public API.
  * @param t: (TestConvex) Harness.
  * @param extra: ({ continueRequestId }) Optional continuation.
@@ -143,7 +120,7 @@ async function drain(t: TestConvex): Promise<void> {
     while (!finished) await vi.advanceTimersByTimeAsync(250);
     const open = await t.run(async (ctx) => {
       const rows = await ctx.db.query("agentRequests").collect();
-      return rows.filter((r) => r.status === "queued" || r.status === "running").length;
+      return rows.filter((r) => isInProgress(r.status)).length;
     });
     if (open === 0) return;
     await vi.advanceTimersByTimeAsync(1_100);
@@ -229,7 +206,7 @@ describe("workflow end to end", () => {
     expect(args[0]).toMatchObject({ agentId: "agent_test", environmentId: "env_test" });
     expect(args[1]).toMatchObject({ requestId, householdId });
     expect(args[1].text).toMatch(
-      /^Household briefing:[\s\S]*\n\nCaregiver's request:\nAdd lunch at noon$/,
+      /^Household briefing \(from Sunny's records\):[\s\S]*\n\nCaregiver's request:\nAdd lunch at noon$/,
     );
   });
 
@@ -256,18 +233,25 @@ describe("workflow end to end", () => {
     expect(calls[0]!.sentAt).toBeTypeOf("number");
   });
 
-  test("a continued request posts to the earlier session instead of creating one", async () => {
+  test("a continued request posts to the earlier session and ignores the stale reply", async () => {
     const t = makeBackend();
-    scriptEvents(repliedOnly);
+    const oldTurn: SessionEvent[] = [
+      { id: "u0", type: "user.message" },
+      { id: "m0", type: "agent.message", content: [{ type: "text", text: "Old answer" }] },
+      { id: "i0", type: "session.status_idle", stop_reason: { type: "end_turn" } },
+    ];
+    const newTurn: SessionEvent[] = [
+      ...oldTurn,
+      { id: "u1", type: "user.message" },
+      { id: "m1", type: "agent.message", content: [{ type: "text", text: "New answer" }] },
+      { id: "i1", type: "session.status_idle", stop_reason: { type: "end_turn" } },
+    ];
+    // 1: baseline read before posting; 2: the new message is not visible yet (lag); 3: it is.
+    scriptEvents(oldTurn, oldTurn, newTurn);
     const householdId = await createHousehold(t);
-    const earlier = await t.run(async (ctx) => {
-      return await ctx.db.insert("agentRequests", {
-        householdId,
-        requestedBy: "user_a",
-        message: "first",
-        status: "succeeded",
-        sessionId: "sess_old",
-      });
+    const earlier = await insertRequest(t, householdId, {
+      status: "succeeded",
+      sessionId: "sess_old",
     });
     const requestId = await t
       .withIdentity({ subject: "user_a" })
@@ -276,6 +260,7 @@ describe("workflow end to end", () => {
         message: "and also dinner",
         continueRequestId: earlier,
       });
+    expect(await getRequest(t, requestId)).toMatchObject({ sessionId: "sess_old" });
     await drain(t);
     expect(mocks.createSession).not.toHaveBeenCalled();
     expect(mocks.sendUserMessage).toHaveBeenCalledTimes(1);
@@ -285,7 +270,9 @@ describe("workflow end to end", () => {
     );
     expect(await getRequest(t, requestId)).toMatchObject({
       status: "succeeded",
+      reply: "New answer",
       sessionId: "sess_old",
+      baselineUserMessages: 1,
     });
   });
 
@@ -299,7 +286,8 @@ describe("workflow end to end", () => {
     await drain(t);
     const row = await getRequest(t, requestId);
     expect(row?.status).toBe("failed");
-    expect(row?.error).toBe("The agent stopped without finishing (budget_exceeded)");
+    expect(row?.error).toBe(GENERIC_ERROR);
+    expect(row?.errorDetail).toBe("The agent stopped without finishing (budget_exceeded)");
     expect(row?.reply).toBeUndefined();
   });
 
@@ -310,7 +298,8 @@ describe("workflow end to end", () => {
     await drain(t);
     const row = await getRequest(t, requestId);
     expect(row?.status).toBe("failed");
-    expect(row?.error).toBe("Agent session sess_1 terminated");
+    expect(row?.error).toBe(GENERIC_ERROR);
+    expect(row?.errorDetail).toBe("Agent session sess_1 terminated");
   });
 
   test("missing environment fails clearly without calling the API", async () => {
@@ -321,20 +310,22 @@ describe("workflow end to end", () => {
     await drain(t);
     const row = await getRequest(t, requestId);
     expect(row?.status).toBe("failed");
-    expect(row?.error).toBe(
+    expect(row?.error).toBe(GENERIC_ERROR);
+    expect(row?.errorDetail).toBe(
       "The agent is not configured: set SUNNY_AGENT_ID, SUNNY_ENVIRONMENT_ID on the Convex deployment",
     );
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
 
-  test("an API error while creating the session fails the request with its message", async () => {
+  test("an API error while creating the session fails with the generic message and keeps the detail", async () => {
     const t = makeBackend();
     mocks.createSession.mockRejectedValue(new Error("529 overloaded"));
     const { requestId } = await startRequest(t);
     await drain(t);
     expect(await getRequest(t, requestId)).toMatchObject({
       status: "failed",
-      error: "529 overloaded",
+      error: GENERIC_ERROR,
+      errorDetail: "529 overloaded",
     });
   });
 
@@ -366,7 +357,7 @@ describe("workflow end to end", () => {
     expect(mocks.createSession).toHaveBeenCalledTimes(1);
   });
 
-  test("a request older than 30 minutes fails with the timeout error", async () => {
+  test("a request paused past 30 minutes fails with the paused timeout error", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     await t.run(async (ctx) => await ctx.db.patch(householdId, { backgroundPaused: true }));
@@ -378,7 +369,7 @@ describe("workflow end to end", () => {
     await drain(t);
     expect(await getRequest(t, requestId)).toMatchObject({
       status: "failed",
-      error: TIMEOUT_ERROR,
+      error: PAUSED_TIMEOUT_ERROR,
     });
     expect(mocks.createSession).not.toHaveBeenCalled();
   });
@@ -401,19 +392,14 @@ describe("step functions", () => {
    */
   async function runningRequest(t: TestConvex) {
     const householdId = await createHousehold(t);
-    const requestId = await t.run(async (ctx) => {
-      return await ctx.db.insert("agentRequests", {
-        householdId,
-        requestedBy: "user_a",
-        message: "hi",
-        status: "running",
-        sessionId: "sess_1",
-      });
+    const requestId = await insertRequest(t, householdId, {
+      status: "running",
+      sessionId: "sess_1",
     });
     return { householdId, requestId };
   }
 
-  const call = { toolUseId: "tu1", name: "add_event", input: { title: "Lunch" } };
+  const call = { toolUseId: "tu1", name: "add_event", input: JSON.stringify({ title: "Lunch" }) };
 
   test("executeToolCalls runs a call once and keeps the stored result on repeat", async () => {
     const t = makeBackend();
@@ -438,7 +424,7 @@ describe("step functions", () => {
     const { requestId, householdId } = await runningRequest(t);
     await t.mutation(internal.agentRuntime.executeToolCalls, {
       requestId,
-      calls: [{ ...call, input: { household_id: "someone_else" } }],
+      calls: [{ ...call, input: JSON.stringify({ household_id: "someone_else" }) }],
     });
     expect(mocks.executeAgentTool.mock.calls[0]![1]).toBe(householdId);
   });
@@ -515,6 +501,10 @@ describe("step functions", () => {
     );
     expect(first).toBeTypeOf("number");
     expect(second).toBe(first);
+    expect(await t.query(internal.agentRuntime.pollInputs, { requestId })).toEqual({
+      sent: ["tu1"],
+      baseline: 0,
+    });
   });
 
   test("finishRequest does not overwrite a cancelled request", async () => {
@@ -542,7 +532,8 @@ describe("step functions", () => {
       });
       expect(await getRequest(t, requestId)).toMatchObject({
         status: "failed",
-        error: "The agent run failed: boom",
+        error: GENERIC_ERROR,
+        errorDetail: "The workflow failed: boom",
       });
     });
 
@@ -571,29 +562,144 @@ describe("step functions", () => {
   });
 });
 
+describe("hardening", () => {
+  /**
+   * purpose: A running request with a session.
+   * @param t: (TestConvex) Harness.
+   * @return: The ids.
+   */
+  async function running(t: TestConvex) {
+    const householdId = await createHousehold(t);
+    const requestId = await insertRequest(t, householdId, {
+      status: "running",
+      sessionId: "sess_1",
+    });
+    return { householdId, requestId };
+  }
+
+  test("tool input with keys Convex would reject still runs, parsed from JSON text", async () => {
+    const t = makeBackend();
+    const { requestId } = await running(t);
+    const input = JSON.stringify({ $bad: 1, "": 2, title: "x" });
+    await t.mutation(internal.agentRuntime.executeToolCalls, {
+      requestId,
+      calls: [{ toolUseId: "tu9", name: "add_event", input }],
+    });
+    expect(mocks.executeAgentTool.mock.calls[0]![3]).toEqual({ $bad: 1, "": 2, title: "x" });
+    const rows = await t.run(async (ctx) => await ctx.db.query("agentToolCalls").collect());
+    expect(rows[0]!.input).toBe(input);
+  });
+
+  test("the gate reports expired, and expiredWhilePaused when the household is paused", async () => {
+    const t = makeBackend();
+    const { requestId, householdId } = await running(t);
+    expect(await t.query(internal.agentRuntime.gate, { requestId })).toBe("go");
+    vi.setSystemTime(Date.now() + MAX_REQUEST_AGE_MS + 1);
+    expect(await t.query(internal.agentRuntime.gate, { requestId })).toBe("expired");
+    await t.run(async (ctx) => await ctx.db.patch(householdId, { backgroundPaused: true }));
+    expect(await t.query(internal.agentRuntime.gate, { requestId })).toBe("expiredWhilePaused");
+  });
+
+  test("pollInputs fails the request when too many sent calls would be dropped", async () => {
+    const t = makeBackend();
+    const { requestId } = await running(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 501; i++) {
+        await ctx.db.insert("agentToolCalls", {
+          requestId,
+          toolUseId: `tu${i}`,
+          name: "get_calendar",
+          input: "{}",
+          text: "[]",
+          isError: false,
+          sentAt: 1,
+        });
+      }
+    });
+    await expect(t.query(internal.agentRuntime.pollInputs, { requestId })).rejects.toThrow(
+      /tool calls sent/,
+    );
+  });
+
+  test("recordSession on a missing request warns instead of failing", async () => {
+    const t = makeBackend();
+    const { requestId } = await running(t);
+    await t.run(async (ctx) => await ctx.db.delete(requestId));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await t.mutation(internal.agentRuntime.recordSession, { requestId, sessionId: "s" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  test("a poll step stops hanging API calls at its hard limit and reports running", async () => {
+    const t = makeBackend();
+    const { requestId } = await running(t);
+    mocks.getSessionStatus.mockImplementation(
+      (_id: string, signal?: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const result = t.action(internal.agentRuntime.pollSession, { requestId, sessionId: "sess_1" });
+    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1);
+    expect(await result).toEqual({ kind: "running" });
+  });
+
+  test("failures log their detail and keep it off the caregiver-facing error", async () => {
+    const t = makeBackend();
+    const { requestId } = await running(t);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    await t.mutation(internal.agentRuntime.finishRequest, {
+      requestId,
+      status: "failed",
+      error: GENERIC_ERROR,
+      detail: "secret detail",
+    });
+    expect(log.mock.calls[0]![0]).toContain("secret detail");
+    log.mockRestore();
+    const view = await t.withIdentity({ subject: "user_a" }).query(api.agentRequests.get, {
+      requestId,
+    });
+    expect(view.error).toBe(GENERIC_ERROR);
+    expect(JSON.stringify(view)).not.toContain("secret detail");
+  });
+});
+
 describe("pollUntil", () => {
   test("returns running when the session never goes idle within the window", async () => {
     mocks.getSessionStatus.mockResolvedValue("running");
-    await expect(pollUntil("s", new Set(), 0, 1)).resolves.toEqual({ kind: "running" });
+    await expect(pollUntil("s", { sent: new Set(), baseline: 0 }, 0)).resolves.toEqual({
+      kind: "running",
+    });
     expect(mocks.listSessionEvents).not.toHaveBeenCalled();
+  });
+
+  test("backs off between reads: 1 s, 2 s, 4 s, then up to 5 s", async () => {
+    mocks.getSessionStatus.mockResolvedValue("running");
+    const result = pollUntil("s", { sent: new Set(), baseline: 0 }, 12_000);
+    await vi.advanceTimersByTimeAsync(12_000);
+    await expect(result).resolves.toEqual({ kind: "running" });
+    expect(mocks.getSessionStatus).toHaveBeenCalledTimes(4);
   });
 
   test("returns running when idle but the turn is waiting on results already sent", async () => {
     scriptEvents(needsTools);
-    await expect(pollUntil("s", new Set(["tu1"]), 0, 1)).resolves.toEqual({ kind: "running" });
+    await expect(pollUntil("s", { sent: new Set(["tu1"]), baseline: 0 }, 0)).resolves.toEqual({
+      kind: "running",
+    });
   });
 
   test("returns the unanswered calls with name and input", async () => {
     scriptEvents(needsTools);
-    await expect(pollUntil("s", new Set(), 0, 1)).resolves.toEqual({
+    await expect(pollUntil("s", { sent: new Set(), baseline: 0 }, 0)).resolves.toEqual({
       kind: "tools",
-      calls: [{ toolUseId: "tu1", name: "add_event", input: { title: "Lunch" } }],
+      calls: [{ toolUseId: "tu1", name: "add_event", input: JSON.stringify({ title: "Lunch" }) }],
     });
   });
 
   test("returns replied, failed for stopped, and failed for terminated", async () => {
     scriptEvents(repliedOnly);
-    await expect(pollUntil("s", new Set(), 0, 1)).resolves.toEqual({
+    await expect(pollUntil("s", { sent: new Set(), baseline: 0 }, 0)).resolves.toEqual({
       kind: "replied",
       reply: "All set.",
     });
@@ -601,11 +707,14 @@ describe("pollUntil", () => {
       userMessage,
       { id: "i", type: "session.status_idle", stop_reason: { type: "refusal" } },
     ]);
-    await expect(pollUntil("s", new Set(), 0, 1)).resolves.toEqual({
+    await expect(pollUntil("s", { sent: new Set(), baseline: 0 }, 0)).resolves.toEqual({
       kind: "failed",
-      error: "The agent stopped without finishing (refusal)",
+      error: GENERIC_ERROR,
+      detail: "The agent stopped without finishing (refusal)",
     });
     mocks.getSessionStatus.mockResolvedValue("terminated");
-    await expect(pollUntil("s", new Set(), 0, 1)).resolves.toMatchObject({ kind: "failed" });
+    await expect(pollUntil("s", { sent: new Set(), baseline: 0 }, 0)).resolves.toMatchObject({
+      kind: "failed",
+    });
   });
 });

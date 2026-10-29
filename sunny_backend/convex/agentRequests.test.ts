@@ -10,15 +10,10 @@
 //
 // Last modified: 2026-10-29
 
-import { convexTest } from "convex-test";
-import workflowTest from "@convex-dev/workflow/test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import schema from "./schema";
-
-/** Every non-test module in the backend, for the convex-test harness. */
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+import { createHousehold, insertRequest, makeBackend, type TestConvex } from "./testing.helpers";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -29,29 +24,12 @@ afterEach(() => {
 });
 
 /**
- * purpose: A fresh in-memory backend with the workflow component registered.
- * @return: The convex-test harness typed with the schema.
- */
-function makeBackend() {
-  const t = convexTest(schema, modules);
-  workflowTest.register(t);
-  return t;
-}
-
-/** The convex-test harness type, with the schema's table types. */
-type TestConvex = ReturnType<typeof makeBackend>;
-
-/**
- * purpose: Create a household owned by user_a and add a member and a viewer through invites.
+ * purpose: Create a household owned by user_a with a member and a viewer.
  * @param t: (TestConvex) Harness.
  * @return: (Promise<Id<"households">>) The household.
  */
-async function createHousehold(t: TestConvex): Promise<Id<"households">> {
-  const householdId = await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
-    seniorPreferredName: "Margaret",
-    timezone: "America/New_York",
-    caregiverDisplayName: "Anna",
-  });
+async function createTeam(t: TestConvex): Promise<Id<"households">> {
+  const householdId = await createHousehold(t);
   await addMember(t, householdId, "user_member", "member");
   await addMember(t, householdId, "user_viewer", "viewer");
   return householdId;
@@ -75,39 +53,10 @@ async function addMember(
   });
 }
 
-/**
- * purpose: Insert a request row directly.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param fields: (object) Overrides: status, sessionId, reply and so on.
- * @return: (Promise<Id<"agentRequests">>) The request.
- */
-async function insertRequest(
-  t: TestConvex,
-  householdId: Id<"households">,
-  fields: Partial<{
-    status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
-    sessionId: string;
-    reply: string;
-    error: string;
-    finishedAt: number;
-  }> = {},
-): Promise<Id<"agentRequests">> {
-  return await t.run(async (ctx) => {
-    return await ctx.db.insert("agentRequests", {
-      householdId,
-      requestedBy: "user_a",
-      message: "hello",
-      status: "queued",
-      ...fields,
-    });
-  });
-}
-
 describe("request", () => {
   test("queues a request, starts its workflow and audits it", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await t
       .withIdentity({ subject: "user_a" })
       .mutation(api.agentRequests.request, { householdId, message: "  Add lunch at noon  " });
@@ -130,7 +79,7 @@ describe("request", () => {
 
   test("a member caregiver may request", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await t
       .withIdentity({ subject: "user_member" })
       .mutation(api.agentRequests.request, { householdId, message: "hi" });
@@ -139,7 +88,7 @@ describe("request", () => {
 
   test("a viewer is refused", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     await expect(
       t
         .withIdentity({ subject: "user_viewer" })
@@ -149,7 +98,7 @@ describe("request", () => {
 
   test("an outsider and a signed-out caller are refused", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     await expect(
       t
         .withIdentity({ subject: "stranger" })
@@ -162,7 +111,7 @@ describe("request", () => {
 
   test("a paired senior device is refused", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     await t.run(async (ctx) => {
       await ctx.db.insert("devices", { householdId, userId: "device_1", kind: "senior_phone" });
     });
@@ -175,7 +124,7 @@ describe("request", () => {
 
   test("rejects an empty or blank message", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const asA = t.withIdentity({ subject: "user_a" });
     await expect(
       asA.mutation(api.agentRequests.request, { householdId, message: "   " }),
@@ -187,7 +136,7 @@ describe("request", () => {
 
   test("accepts exactly 4000 characters and rejects 4001", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const asA = t.withIdentity({ subject: "user_a" });
     await expect(
       asA.mutation(api.agentRequests.request, { householdId, message: "a".repeat(4000) }),
@@ -199,7 +148,7 @@ describe("request", () => {
 
   test("allows five in progress and refuses the sixth with a limit error", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     await insertRequest(t, householdId, { status: "running" });
     await insertRequest(t, householdId, { status: "running" });
     const asA = t.withIdentity({ subject: "user_a" });
@@ -213,7 +162,7 @@ describe("request", () => {
 
   test("finished requests do not count toward the limit", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     for (const status of ["succeeded", "failed", "cancelled"] as const) {
       for (let i = 0; i < 3; i++) await insertRequest(t, householdId, { status });
     }
@@ -226,12 +175,8 @@ describe("request", () => {
 
   test("the limit is per household", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const other = await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
-      seniorPreferredName: "Bob",
-      timezone: "America/New_York",
-      caregiverDisplayName: "Anna",
-    });
+    const householdId = await createTeam(t);
+    const other = await createHousehold(t, { seniorName: "Bob" });
     for (let i = 0; i < 5; i++) await insertRequest(t, other, { status: "queued" });
     await expect(
       t
@@ -243,7 +188,7 @@ describe("request", () => {
   describe("continuing", () => {
     test("continues a succeeded request that has a session", async () => {
       const t = makeBackend();
-      const householdId = await createHousehold(t);
+      const householdId = await createTeam(t);
       const earlier = await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
       const id = await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
         householdId,
@@ -254,11 +199,63 @@ describe("request", () => {
       expect(row?.continueRequestId).toBe(earlier);
     });
 
+    test("copies the earlier session id onto the new request", async () => {
+      const t = makeBackend();
+      const householdId = await createTeam(t);
+      const earlier = await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
+      const id = await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+        householdId,
+        message: "more",
+        continueRequestId: earlier,
+      });
+      const row = await t.run(async (ctx) => await ctx.db.get(id));
+      expect(row?.sessionId).toBe("s1");
+    });
+
+    test.each(["queued", "running"] as const)(
+      "refuses a continuation while another %s request uses the session",
+      async (status) => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const earlier = await insertRequest(t, householdId, {
+          status: "succeeded",
+          sessionId: "s1",
+        });
+        await insertRequest(t, householdId, { status, sessionId: "s1" });
+        await expect(
+          t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+            householdId,
+            message: "more",
+            continueRequestId: earlier,
+          }),
+        ).rejects.toThrow(/still working on that conversation/);
+      },
+    );
+
+    test("two continuations of the same request cannot both start", async () => {
+      const t = makeBackend();
+      const householdId = await createTeam(t);
+      const earlier = await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
+      const asA = t.withIdentity({ subject: "user_a" });
+      await asA.mutation(api.agentRequests.request, {
+        householdId,
+        message: "first",
+        continueRequestId: earlier,
+      });
+      await expect(
+        asA.mutation(api.agentRequests.request, {
+          householdId,
+          message: "second",
+          continueRequestId: earlier,
+        }),
+      ).rejects.toThrow(/limit/);
+    });
+
     test.each(["queued", "running", "failed", "cancelled"] as const)(
       "refuses to continue a %s request",
       async (status) => {
         const t = makeBackend();
-        const householdId = await createHousehold(t);
+        const householdId = await createTeam(t);
         const earlier = await insertRequest(t, householdId, { status, sessionId: "s1" });
         await expect(
           t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
@@ -272,7 +269,7 @@ describe("request", () => {
 
     test("refuses to continue a succeeded request without a session", async () => {
       const t = makeBackend();
-      const householdId = await createHousehold(t);
+      const householdId = await createTeam(t);
       const earlier = await insertRequest(t, householdId, { status: "succeeded" });
       await expect(
         t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
@@ -285,12 +282,8 @@ describe("request", () => {
 
     test("refuses to continue another household's request", async () => {
       const t = makeBackend();
-      const householdId = await createHousehold(t);
-      const other = await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
-        seniorPreferredName: "Bob",
-        timezone: "America/New_York",
-        caregiverDisplayName: "Anna",
-      });
+      const householdId = await createTeam(t);
+      const other = await createHousehold(t, { seniorName: "Bob" });
       const earlier = await insertRequest(t, other, { status: "succeeded", sessionId: "s1" });
       await expect(
         t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
@@ -306,7 +299,7 @@ describe("request", () => {
 describe("get and list", () => {
   test("get returns a view with null for absent fields", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await insertRequest(t, householdId);
     const view = await t.withIdentity({ subject: "user_member" }).query(api.agentRequests.get, {
       requestId: id,
@@ -329,7 +322,7 @@ describe("get and list", () => {
 
   test("get returns the reply of a succeeded request", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await insertRequest(t, householdId, {
       status: "succeeded",
       reply: "Done.",
@@ -343,7 +336,7 @@ describe("get and list", () => {
 
   test("get refuses viewers and outsiders", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await insertRequest(t, householdId);
     for (const subject of ["user_viewer", "stranger"]) {
       await expect(
@@ -354,7 +347,7 @@ describe("get and list", () => {
 
   test("get reports not_found for a deleted request", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await insertRequest(t, householdId);
     await t.run(async (ctx) => await ctx.db.delete(id));
     await expect(
@@ -364,12 +357,8 @@ describe("get and list", () => {
 
   test("list returns newest first and only this household's requests", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const other = await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
-      seniorPreferredName: "Bob",
-      timezone: "America/New_York",
-      caregiverDisplayName: "Anna",
-    });
+    const householdId = await createTeam(t);
+    const other = await createHousehold(t, { seniorName: "Bob" });
     const first = await insertRequest(t, householdId);
     const second = await insertRequest(t, householdId);
     await insertRequest(t, other);
@@ -381,7 +370,7 @@ describe("get and list", () => {
 
   test("list honours the limit and clamps it to 1..100", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     for (let i = 0; i < 3; i++) await insertRequest(t, householdId);
     const asA = t.withIdentity({ subject: "user_a" });
     expect(await asA.query(api.agentRequests.list, { householdId, limit: 2 })).toHaveLength(2);
@@ -389,9 +378,22 @@ describe("get and list", () => {
     expect(await asA.query(api.agentRequests.list, { householdId, limit: 1000 })).toHaveLength(3);
   });
 
+  test.each([Number.NaN, Number.POSITIVE_INFINITY])(
+    "list falls back to the default for a non-finite limit (%s)",
+    async (limit) => {
+      const t = makeBackend();
+      const householdId = await createTeam(t);
+      for (let i = 0; i < 3; i++) await insertRequest(t, householdId);
+      const rows = await t
+        .withIdentity({ subject: "user_a" })
+        .query(api.agentRequests.list, { householdId, limit });
+      expect(rows).toHaveLength(3);
+    },
+  );
+
   test("list refuses viewers", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     await expect(
       t.withIdentity({ subject: "user_viewer" }).query(api.agentRequests.list, { householdId }),
     ).rejects.toThrow(/forbidden/);
@@ -401,7 +403,7 @@ describe("get and list", () => {
 describe("cancel", () => {
   test("cancels a queued request started through request", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const asA = t.withIdentity({ subject: "user_a" });
     const id = await asA.mutation(api.agentRequests.request, { householdId, message: "hi" });
     await asA.mutation(api.agentRequests.cancel, { requestId: id });
@@ -412,7 +414,7 @@ describe("cancel", () => {
 
   test("cancels a running request without a workflow id", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await insertRequest(t, householdId, { status: "running" });
     await t.withIdentity({ subject: "user_member" }).mutation(api.agentRequests.cancel, {
       requestId: id,
@@ -425,7 +427,7 @@ describe("cancel", () => {
     "refuses to cancel a %s request",
     async (status) => {
       const t = makeBackend();
-      const householdId = await createHousehold(t);
+      const householdId = await createTeam(t);
       const id = await insertRequest(t, householdId, { status });
       await expect(
         t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.cancel, { requestId: id }),
@@ -435,7 +437,7 @@ describe("cancel", () => {
 
   test("refuses viewers and outsiders", async () => {
     const t = makeBackend();
-    const householdId = await createHousehold(t);
+    const householdId = await createTeam(t);
     const id = await insertRequest(t, householdId, { status: "running" });
     for (const subject of ["user_viewer", "stranger"]) {
       await expect(

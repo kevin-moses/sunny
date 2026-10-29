@@ -11,6 +11,7 @@
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
+import { findMember } from "./access";
 import { localDateTime } from "./time";
 
 /**
@@ -28,15 +29,7 @@ export async function buildBriefing(
   now: number,
 ): Promise<string> {
   const { household, weekday, week } = await householdWeek(ctx, householdId, now);
-  const member =
-    requestedBy === null
-      ? null
-      : await ctx.db
-          .query("householdMembers")
-          .withIndex("by_household_user", (q) =>
-            q.eq("householdId", householdId).eq("userId", requestedBy),
-          )
-          .unique();
+  const member = requestedBy === null ? null : await findMember(ctx, householdId, requestedBy);
   const events = week.map(
     (o) => `- ${o.localDate} ${o.event.startTime} ${o.event.title} (event_id ${o.event._id})`,
   );

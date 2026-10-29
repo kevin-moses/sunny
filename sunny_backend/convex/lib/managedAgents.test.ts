@@ -10,8 +10,8 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  countUserMessages,
   finishedTurn,
-  MissingConfigError,
   pendingToolUses,
   readAgentConfig,
   type SessionEvent,
@@ -159,6 +159,37 @@ describe("finishedTurn", () => {
   });
 });
 
+describe("finishedTurn with a baseline", () => {
+  const oldTurn = [userMessage("u1"), agentMessage("Old answer"), idle("end_turn", "i1")];
+
+  test("counts user messages", () => {
+    expect(countUserMessages(oldTurn)).toBe(1);
+    expect(countUserMessages([])).toBe(0);
+  });
+
+  test("is running while the new message is not visible yet", () => {
+    expect(finishedTurn(oldTurn, 1)).toEqual({ state: "running" });
+  });
+
+  test("is running for a new session whose first message is not visible yet", () => {
+    expect(finishedTurn([])).toEqual({ state: "running" });
+  });
+
+  test("replies once the new message and its answer are visible", () => {
+    const events = [
+      ...oldTurn,
+      userMessage("u2"),
+      agentMessage("New answer"),
+      idle("end_turn", "i2"),
+    ];
+    expect(finishedTurn(events, 1)).toEqual({ state: "replied", reply: "New answer" });
+  });
+
+  test("is running when the new message is visible but unanswered", () => {
+    expect(finishedTurn([...oldTurn, userMessage("u2")], 1)).toEqual({ state: "running" });
+  });
+});
+
 describe("readAgentConfig", () => {
   const full = {
     ANTHROPIC_API_KEY: "key",
@@ -171,24 +202,24 @@ describe("readAgentConfig", () => {
       apiKey: "key",
       agentId: "agent_1",
       environmentId: "env_1",
-      budgetCents: "100",
+      budgetCents: 100,
     });
   });
 
   test("uses a valid budget override", () => {
     expect(readAgentConfig({ ...full, SUNNY_AGENT_SESSION_BUDGET_CENTS: "250" }).budgetCents).toBe(
-      "250",
+      250,
     );
   });
 
   test.each(["0", "-5", "1.5", "abc"])("falls back to 100 for budget %s", (value) => {
     expect(readAgentConfig({ ...full, SUNNY_AGENT_SESSION_BUDGET_CENTS: value }).budgetCents).toBe(
-      "100",
+      100,
     );
   });
 
   test("names every missing variable", () => {
-    expect(() => readAgentConfig({ SUNNY_AGENT_ID: "agent_1" })).toThrow(MissingConfigError);
+    expect(() => readAgentConfig({ SUNNY_AGENT_ID: "agent_1" })).toThrow(/not configured/);
     expect(() => readAgentConfig({ SUNNY_AGENT_ID: "agent_1" })).toThrow(
       /ANTHROPIC_API_KEY, SUNNY_ENVIRONMENT_ID/,
     );

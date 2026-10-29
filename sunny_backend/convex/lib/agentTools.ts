@@ -1,13 +1,14 @@
 // lib/agentTools.ts
-// Purpose: The household agent's custom tools: their definitions (sent to Managed Agents
-// by the agent setup script; copied verbatim from supabase/functions/_shared/agent_tools.ts)
-// and their execution inside a Convex mutation. Each tool is a thin wrapper over the
-// calendar cores (addEventCore, updateEventCore, cancelEventCore, listOccurrencesCore) that
-// the caregiver app also uses, so every write goes through the same validation, audit and
-// "not in the past" rules, with the actor { kind: "agent" }. The household always comes
-// from the caller (the request row), never from the model's input, and the cores refuse
-// events of any other household. Bad input and application errors become tool errors the
-// model can read and fix; anything else is rethrown.
+// Purpose: The household agent's custom tools: their definitions (sent to Managed Agents by
+// scripts/setup_managed_agent.ts; they must match the deployed agent, so re-run that script
+// after changing them) and their execution inside a Convex mutation. Each tool is a thin
+// wrapper over the calendar cores (addEventCore, updateEventCore, cancelEventCore,
+// listOccurrencesCore) that the caregiver app also uses, so every write goes through the same
+// validation, audit and "not in the past" rules, with the actor { kind: "agent" }. The
+// household always comes from the caller (the request row), never from the model's input, and
+// the cores refuse events of any other household. Bad input and application errors become
+// tool errors the model can read and fix; anything else is rethrown. A result over
+// MAX_TOOL_RESULT_CHARS becomes a tool error asking for a narrower request.
 //
 // get_calendar result: a JSON array of occurrences, earliest first, each
 // { event_id, title, label, starts_on, start_time, duration_minutes, place, visitor_name,
@@ -16,18 +17,27 @@
 //
 // Last modified: 2026-10-29
 
+import type Anthropic from "@anthropic-ai/sdk";
 import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { addEventCore, cancelEventCore, listOccurrencesCore, updateEventCore } from "../calendar";
 import type { AddEventArgs, EventChanges } from "../calendar";
 import type { Actor } from "./access";
-import type { AppErrorData } from "./errors";
+import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
+import { requireNonBlank } from "./text";
+import { WEEKDAY_NAMES } from "./time";
 
-const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+/** Longest tool result sent to the model; larger results become a tool error, never truncated JSON. */
+export const MAX_TOOL_RESULT_CHARS = 50_000;
+
+/** Weekday names as the model writes them: mon..sun (index = ISO weekday - 1). */
+const WEEKDAYS = WEEKDAY_NAMES.map((name) => name.slice(0, 3).toLowerCase());
+/** The actor recorded on every change the agent makes. */
 const AGENT_ACTOR: Actor = { kind: "agent" };
 
+/** JSON-schema properties shared by add_event and the `changes` of update_event. */
 const EVENT_FIELDS = {
   title: {
     type: "string",
@@ -62,7 +72,7 @@ const EVENT_FIELDS = {
 };
 
 /** Custom tool definitions for the Managed Agents agent config. */
-export const AGENT_TOOLS = [
+export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["tools"]> = [
   {
     type: "custom",
     name: "get_calendar",
@@ -115,34 +125,26 @@ export const AGENT_TOOLS = [
   },
 ];
 
-/** Bad tool input; the message goes back to the model so it can fix the call. */
-class ToolInputError extends Error {}
-
 /**
- * purpose: Read a required, non-blank string field.
- * @param input: (Record<string, unknown>) Tool input.
- * @param key: (string) Field name.
- * @return: (string) The value.
- * @raises ToolInputError when missing, blank or not a string.
- */
-function requireString(input: Record<string, unknown>, key: string): string {
-  const value = input[key];
-  if (typeof value !== "string" || !value.trim()) {
-    throw new ToolInputError(`${key} is missing or malformed`);
-  }
-  return value;
-}
-
-/**
- * purpose: Read an optional string field that may be null (null means clear on update).
+ * purpose: Read a string field of tool input. Required fields must be non-blank strings;
+ *          optional fields may also be null (null means clear on update) or blank.
  * @param value: (unknown) The field's value.
  * @param key: (string) Field name, for the error message.
- * @return: (string | null) The string, or null.
- * @raises ToolInputError for any other type.
+ * @param optional: (boolean) Whether null is allowed (and blank is kept as is).
+ * @return: (string | null) The string (trimmed when required), or null.
+ * @raises invalid (an application error the model can read) for anything else.
  */
-function nullableString(value: unknown, key: string): string | null {
-  if (value === null || typeof value === "string") return value;
-  throw new ToolInputError(`${key} must be a string`);
+function stringField(value: unknown, key: string, optional: true): string | null;
+function stringField(value: unknown, key: string, optional?: false): string;
+function stringField(value: unknown, key: string, optional = false): string | null {
+  if (optional && value === null) return null;
+  if (typeof value !== "string") {
+    throw appError(
+      "invalid",
+      optional ? `${key} must be a string` : `${key} is missing or malformed`,
+    );
+  }
+  return optional ? value : requireNonBlank(value, key);
 }
 
 /**
@@ -152,46 +154,46 @@ function nullableString(value: unknown, key: string): string | null {
  *          dates, times, lengths and ranges are validated by the core.
  * @param fields: (Record<string, unknown>) title, date, start_time, repeat_weekdays, ...
  * @return: (EventChanges) onDate, startTime, repeatDays (1 = Monday .. 7 = Sunday), ...
- * @raises ToolInputError for an unknown field or a value of the wrong type.
+ * @raises invalid for an unknown field or a value of the wrong type.
  */
 export function toEventChanges(fields: Record<string, unknown>): EventChanges {
   const out: EventChanges = {};
   for (const [key, value] of Object.entries(fields)) {
     switch (key) {
       case "title":
-        out.title = requireString(fields, key);
+        out.title = stringField(value, key);
         break;
       case "date":
-        out.onDate = requireString(fields, key);
+        out.onDate = stringField(value, key);
         break;
       case "start_time":
-        out.startTime = requireString(fields, key);
+        out.startTime = stringField(value, key);
         break;
       case "label":
       case "place":
       case "notes":
-        out[key] = nullableString(value, key);
+        out[key] = stringField(value, key, true);
         break;
       case "visitor_name":
-        out.visitorName = nullableString(value, key);
+        out.visitorName = stringField(value, key, true);
         break;
       case "repeat_until":
-        out.repeatUntil = nullableString(value, key);
+        out.repeatUntil = stringField(value, key, true);
         break;
       case "duration_minutes":
-        if (value !== null && typeof value !== "number") {
-          throw new ToolInputError("duration_minutes must be a whole number");
+        if (value !== null && !Number.isInteger(value)) {
+          throw appError("invalid", "duration_minutes must be a whole number");
         }
-        out.durationMinutes = value;
+        out.durationMinutes = value as number | null;
         break;
       case "repeat_weekdays":
         if (!Array.isArray(value) || value.some((d) => !WEEKDAYS.includes(String(d)))) {
-          throw new ToolInputError("repeat_weekdays must be a list of mon..sun");
+          throw appError("invalid", "repeat_weekdays must be a list of mon..sun");
         }
         out.repeatDays = value.length ? value.map((d) => WEEKDAYS.indexOf(String(d)) + 1) : null;
         break;
       default:
-        throw new ToolInputError(`Unknown field ${key}`);
+        throw appError("invalid", `Unknown field ${key}`);
     }
   }
   return out;
@@ -202,13 +204,13 @@ export function toEventChanges(fields: Record<string, unknown>): EventChanges {
  *          nulls treated as absent, and title, date and start time required.
  * @param input: (Record<string, unknown>) add_event input.
  * @return: (AddEventArgs) Arguments for addEventCore.
- * @raises ToolInputError when a required field is missing or a field is unknown.
+ * @raises invalid when a required field is missing or a field is unknown.
  */
 function toAddArgs(input: Record<string, unknown>): AddEventArgs {
   const mapped = toEventChanges(input);
   const { title, onDate, startTime } = mapped;
   if (title === undefined || onDate === undefined || startTime === undefined) {
-    throw new ToolInputError("title, date and start_time are required");
+    throw appError("invalid", "title, date and start_time are required");
   }
   const present = Object.fromEntries(
     Object.entries(mapped).filter(([, value]) => value !== null && value !== undefined),
@@ -221,12 +223,15 @@ function toAddArgs(input: Record<string, unknown>): AddEventArgs {
  * @param ctx: (MutationCtx) Context (to normalize the id).
  * @param input: (Record<string, unknown>) Tool input.
  * @return: (Id<"events">) The event id.
- * @raises ToolInputError when missing or not an id of the events table.
+ * @raises invalid when missing or not an id of the events table.
  */
 function eventIdOf(ctx: MutationCtx, input: Record<string, unknown>): Id<"events"> {
-  const id = ctx.db.normalizeId("events", requireString(input, "event_id"));
+  const id = ctx.db.normalizeId("events", stringField(input.event_id, "event_id"));
   if (id === null) {
-    throw new ToolInputError("event_id is not a valid event id; use an event_id from get_calendar");
+    throw appError(
+      "invalid",
+      "event_id is not a valid event id; use an event_id from get_calendar",
+    );
   }
   return id;
 }
@@ -277,8 +282,8 @@ async function runTool(
 ): Promise<unknown> {
   switch (name) {
     case "get_calendar": {
-      const from = requireString(input, "from_date");
-      const to = requireString(input, "to_date");
+      const from = stringField(input.from_date, "from_date");
+      const to = stringField(input.to_date, "to_date");
       return (await listOccurrencesCore(ctx, householdId, from, to)).map(occurrenceForModel);
     }
     case "add_event":
@@ -287,7 +292,7 @@ async function runTool(
       const eventId = eventIdOf(ctx, input);
       const changes = input.changes;
       if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
-        throw new ToolInputError("changes must be an object");
+        throw appError("invalid", "changes must be an object");
       }
       return await updateEventCore(
         ctx,
@@ -326,9 +331,15 @@ export async function executeAgentTool(
   try {
     const result = await runTool(ctx, householdId, name, input, now);
     if (result === undefined) return { text: `Unknown tool ${name}`, isError: true };
-    return { text: JSON.stringify(result), isError: false };
+    const text = JSON.stringify(result);
+    if (text.length > MAX_TOOL_RESULT_CHARS) {
+      return {
+        text: `Error: The result is too large (${text.length} characters). Ask for a shorter date range.`,
+        isError: true,
+      };
+    }
+    return { text, isError: false };
   } catch (e) {
-    if (e instanceof ToolInputError) return { text: `Error: ${e.message}`, isError: true };
     if (e instanceof ConvexError) {
       const data = e.data as Partial<AppErrorData> | undefined;
       if (typeof data?.message === "string")

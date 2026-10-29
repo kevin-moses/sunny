@@ -9,32 +9,22 @@
 //
 // Last modified: 2026-10-29
 
-import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { AGENT_MODEL, AGENT_NAME, AGENT_SYSTEM_PROMPT } from "./lib/agentConfig";
 import { buildBriefing } from "./lib/agentBriefing";
-import { AGENT_TOOLS, executeAgentTool, toEventChanges } from "./lib/agentTools";
-import schema from "./schema";
-
-/** Every non-test module in the backend, for the convex-test harness. */
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+import {
+  AGENT_TOOLS,
+  executeAgentTool,
+  MAX_TOOL_RESULT_CHARS,
+  toEventChanges,
+} from "./lib/agentTools";
+import { createHousehold, makeBackend, type TestConvex } from "./testing.helpers";
 
 const NY = "America/New_York";
 /** Monday 2027-03-01, 07:00 in New York (EST). */
 const NOW = Date.parse("2027-03-01T12:00:00Z");
-
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
-function makeBackend() {
-  return convexTest(schema, modules);
-}
-
-/** The convex-test harness type. */
-type TestConvex = ReturnType<typeof makeBackend>;
 
 /** A harness with two households, each with one primary caregiver. */
 interface World {
@@ -49,15 +39,12 @@ interface World {
  */
 async function makeWorld(): Promise<World> {
   const t = makeBackend();
-  const a = await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
-    seniorPreferredName: "Margaret",
+  const a = await createHousehold(t, { timezone: NY });
+  const b = await createHousehold(t, {
+    subject: "user_b",
+    seniorName: "Walter",
+    caregiverName: "Ben",
     timezone: NY,
-    caregiverDisplayName: "Anna",
-  });
-  const b = await t.withIdentity({ subject: "user_b" }).mutation(api.households.create, {
-    seniorPreferredName: "Walter",
-    timezone: NY,
-    caregiverDisplayName: "Ben",
   });
   return { t, a, b };
 }
@@ -115,7 +102,7 @@ afterEach(() => {
 
 describe("definitions", () => {
   test("exposes the four tools with their snake_case names", () => {
-    expect(AGENT_TOOLS.map((x) => x.name)).toEqual([
+    expect(AGENT_TOOLS.map((x) => ("name" in x ? x.name : x.type))).toEqual([
       "get_calendar",
       "add_event",
       "update_event",
@@ -165,6 +152,7 @@ describe("toEventChanges", () => {
     [{ repeat_weekdays: ["funday"] }, "repeat_weekdays"],
     [{ repeat_weekdays: "mon" }, "repeat_weekdays"],
     [{ duration_minutes: "ten" }, "duration_minutes"],
+    [{ duration_minutes: 1.5 }, "duration_minutes must be a whole number"],
     [{ place: 5 }, "place must be a string"],
     [{ title: null }, "title is missing"],
   ])("rejects %j", (fields, message) => {
@@ -452,6 +440,27 @@ describe("get_calendar", () => {
     const result = await tool(t, a, "get_calendar", input);
     expect(result.isError).toBe(true);
     expect(result.text).toContain(message);
+  });
+});
+
+describe("oversized results", () => {
+  test("get_calendar over the cap is a tool error asking for a shorter range", async () => {
+    const { t, a } = await makeWorld();
+    for (let i = 0; i < 60; i++) {
+      await addViaTool(t, a, {
+        title: `Event ${i}`,
+        date: "2027-03-04",
+        start_time: "14:00",
+        notes: "n".repeat(1000),
+      });
+    }
+    const result = await tool(t, a, "get_calendar", {
+      from_date: "2027-03-01",
+      to_date: "2027-03-31",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Ask for a shorter date range");
+    expect(result.text.length).toBeLessThan(MAX_TOOL_RESULT_CHARS);
   });
 });
 

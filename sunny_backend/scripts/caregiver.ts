@@ -5,6 +5,9 @@
 // admin identity, so no sign-in is needed). The household id and the last request id are
 // kept in scripts/.dev-state.json (git-ignored). Not part of the deployed backend.
 //
+// Dev only: `--identity` impersonates any user, so the script refuses to run unless
+// CONVEX_DEPLOYMENT in sunny_backend/.env.local starts with "dev:" (only that one line is read).
+//
 //   setup              Create a dev household (once) with the dev caregiver as primary, and
 //                      print join codes for the senior phone and the home display.
 //   chat "<message>"   Send a request to the household agent (agentRequests:request), then
@@ -26,8 +29,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BACKEND_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
-const STATE_FILE = join(dirname(fileURLToPath(import.meta.url)), ".dev-state.json");
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const BACKEND_DIR = join(SCRIPT_DIR, "..");
+const STATE_FILE = join(SCRIPT_DIR, ".dev-state.json");
 const POLL_MS = 2_000;
 const GIVE_UP_MS = 35 * 60_000;
 
@@ -37,6 +41,23 @@ const DEV_IDENTITY = {
   issuer: "https://sunny.dev.local",
   name: "Dev Caregiver",
 };
+
+/**
+ * purpose: Refuse to run against anything but a dev deployment. Reads only the
+ *          CONVEX_DEPLOYMENT line of sunny_backend/.env.local and never prints other contents.
+ * @raises Error when the file or line is missing or the deployment does not start with "dev:".
+ */
+function requireDevDeployment(): void {
+  const envFile = join(BACKEND_DIR, ".env.local");
+  const text = existsSync(envFile) ? readFileSync(envFile, "utf8") : "";
+  const match = /^CONVEX_DEPLOYMENT=["']?([^\s"'#]*)/m.exec(text);
+  if (!match || !match[1]!.startsWith("dev:")) {
+    throw new Error(
+      "This script impersonates a user, so it only runs against a dev deployment: set " +
+        "CONVEX_DEPLOYMENT=dev:... in sunny_backend/.env.local (run `npx convex dev` once).",
+    );
+  }
+}
 
 /** What the script remembers between runs. */
 interface DevState {
@@ -50,6 +71,13 @@ interface RequestView {
   reply: string | null;
   error: string | null;
 }
+
+/** What to print for each finished status; queued and running keep waiting. */
+const FINISHED_MESSAGES: Record<string, (view: RequestView) => string> = {
+  succeeded: (view) => `\nSunny: ${view.reply}`,
+  failed: (view) => `\nThe agent request failed: ${view.error}`,
+  cancelled: () => "\nThe request was cancelled.",
+};
 
 /**
  * purpose: Call a backend function as the dev caregiver.
@@ -147,21 +175,16 @@ async function chat(message: string, continueConversation: boolean): Promise<voi
   const started = Date.now();
   while (Date.now() - started < GIVE_UP_MS) {
     const view = convexRun("agentRequests:get", { requestId }) as RequestView;
-    if (view.status === "succeeded") {
-      console.log(`\nSunny: ${view.reply}`);
-      return;
-    }
-    if (view.status === "failed") {
-      console.log(`\nThe agent request failed: ${view.error}`);
-      return;
-    }
-    if (view.status === "cancelled") {
-      console.log("\nThe request was cancelled.");
+    const render = FINISHED_MESSAGES[view.status];
+    if (render) {
+      console.log(render(view));
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
-  console.log("Still running after 35 minutes; check agentRequests in the dashboard.");
+  console.log(
+    `Still running after ${GIVE_UP_MS / 60_000} minutes; check agentRequests in the dashboard.`,
+  );
 }
 
 /**
@@ -181,6 +204,7 @@ function day(): void {
  */
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
+  if (command !== undefined) requireDevDeployment();
   switch (command) {
     case "setup":
       setup();

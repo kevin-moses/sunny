@@ -1,15 +1,18 @@
 // lib/agentConfig.ts
-// Purpose: The household agent's Managed Agents configuration (name, model, system
-// prompt), copied verbatim from supabase/functions/_shared/agent_config.ts so the existing
-// Managed Agents agent stays valid. The agent works for caregivers in the background: it
-// reads and changes the senior's calendar through the custom tools in agentTools.ts and has
-// no shell, files or web access.
+// Purpose: The household agent's Managed Agents configuration (name, model, system prompt).
+// It must match the deployed Managed Agents agent; re-run scripts/setup_managed_agent.ts after
+// changing it. The agent works for caregivers in the background: it reads and changes the
+// senior's calendar through the custom tools in agentTools.ts and has no shell, files or web
+// access.
 //
 // Last modified: 2026-10-29
 
+/** Display name of the Managed Agents agent. */
 export const AGENT_NAME = "Sunny household agent";
+/** Model the agent runs on. */
 export const AGENT_MODEL = "claude-opus-5-5";
 
+/** System prompt: the agent's role, how to read the briefing, calendar rules and reply style. */
 export const AGENT_SYSTEM_PROMPT = `You are Sunny's household agent. Sunny helps an older adult with memory difficulties stay oriented, and helps the family members who care for them. In this job you act for a caregiver: they send you a request in writing and you carry it out with your tools, then reply briefly.
 
 Each request starts with a household briefing from Sunny's records: the senior's name, the household's timezone, the current local date and time, and the coming week's events. Treat the briefing and tool results as the truth about the household.

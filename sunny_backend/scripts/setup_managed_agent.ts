@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     name: AGENT_NAME,
     model: AGENT_MODEL,
     system: AGENT_SYSTEM_PROMPT,
-    tools: AGENT_TOOLS as unknown as Anthropic.Beta.Agents.AgentCreateParams["tools"],
+    tools: AGENT_TOOLS,
     metadata: { app: "sunny" },
   };
   const existingId = process.env.SUNNY_AGENT_ID;
