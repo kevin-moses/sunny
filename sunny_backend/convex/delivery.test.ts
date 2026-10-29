@@ -24,7 +24,7 @@ import {
 } from "./deliveryMocks.helpers";
 import type { DeliveryFixture } from "./deliveryMocks.helpers";
 import { insertNotification, MAX_ATTEMPTS, STUCK_AFTER_MS } from "./lib/delivery";
-import { createHousehold, makeBackend } from "./testing.helpers";
+import { addInstance, createHousehold, makeBackend } from "./testing.helpers";
 
 vi.mock("./apns", async (original) =>
   (await import("./deliveryMocks.helpers")).apnsModule(await original()),
@@ -63,44 +63,6 @@ async function deliver(f: DeliveryFixture, outboxId: Id<"notificationOutbox">) {
   return await f.t.action(internal.delivery.deliver, { outboxId });
 }
 
-/**
- * purpose: Insert a task and an instance in the given state, for rows tied to an instance.
- * @param f: (DeliveryFixture) Fixture.
- * @param state: (string) Instance state.
- * @return: (Promise<Id<"taskInstances">>) The instance.
- */
-async function insertInstance(
-  f: DeliveryFixture,
-  state: "due" | "confirmed" | "missed" | "escalated",
-): Promise<Id<"taskInstances">> {
-  return await f.t.run(async (ctx) => {
-    const taskId = await ctx.db.insert("tasks", {
-      householdId: f.householdId,
-      type: "medication",
-      title: "Pills",
-      displayLabel: "Pills",
-      spokenPrompt: "Time for pills.",
-      checklistItems: [],
-      times: ["08:00"],
-      windowMinutes: 60,
-      createdByKind: "caregiver",
-      active: true,
-      scheduleChangedAt: 0,
-    });
-    return await ctx.db.insert("taskInstances", {
-      taskId,
-      householdId: f.householdId,
-      localDate: "2026-11-02",
-      scheduledTime: "08:00",
-      windowStart: 0,
-      windowEnd: 1,
-      state,
-      createdAt: 0,
-      firedSteps: [],
-    });
-  });
-}
-
 describe("APNs routing", () => {
   test("a device row is pushed to every token of the device's user", async () => {
     const f = await setup();
@@ -110,13 +72,16 @@ describe("APNs routing", () => {
       expect.objectContaining({ tokens: ["tok-1", "tok-2"], title: "Title", body: "Body" }),
     );
     expect(await outboxRow(f, id)).toMatchObject({ channel: "apns", attempts: 1 });
-    expect((await outboxRow(f, id)).sentAt).toBeGreaterThanOrEqual(NOW);
+    expect((await outboxRow(f, id)).state).toBe("sent");
     expect((await outboxRow(f, id)).settledAt).toBeGreaterThanOrEqual(NOW);
   });
 
   test("the payload carries task_instance_id when the row has an instance", async () => {
     const f = await setup();
-    const taskInstanceId = await insertInstance(f, "due");
+    const taskInstanceId = await addInstance(f.t, f.householdId, "Pills", {
+      state: "due",
+      localDate: "2026-11-02",
+    });
     const id = await insertOutbox(f, {
       kind: "senior_prompt",
       recipientDeviceId: f.deviceId,
@@ -166,8 +131,8 @@ describe("APNs routing", () => {
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("skipped");
     expect(await outboxRow(f, id)).toMatchObject({
-      channel: "none",
-      skippedReason: "tokens_unregistered",
+      state: "skipped",
+      detail: "tokens_unregistered",
     });
     expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toHaveLength(
       0,
@@ -183,8 +148,8 @@ describe("APNs routing", () => {
     expect(await deliver(f, id)).toBe("skipped");
     expect(providerMocks.apnsSend).not.toHaveBeenCalled();
     expect(await outboxRow(f, id)).toMatchObject({
-      channel: "none",
-      skippedReason: "no_push_tokens",
+      state: "skipped",
+      detail: "no_push_tokens",
     });
     expect((await outboxRow(f, id)).settledAt).toBeDefined();
   });
@@ -194,7 +159,7 @@ describe("APNs routing", () => {
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     await f.t.run(async (ctx) => await ctx.db.delete(f.deviceId));
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("device_removed");
+    expect((await outboxRow(f, id)).detail).toBe("device_removed");
     expect(providerMocks.apnsSend).not.toHaveBeenCalled();
   });
 
@@ -211,7 +176,7 @@ describe("APNs routing", () => {
     );
     const id = await insertOutbox(f, { recipientDeviceId: otherDevice });
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("device_removed");
+    expect((await outboxRow(f, id)).detail).toBe("device_removed");
   });
 
   test("a retryable failure throws, keeps the row open and counts the attempt", async () => {
@@ -235,17 +200,16 @@ describe("APNs routing", () => {
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     await expect(deliver(f, id)).rejects.toThrow(/will retry/);
     const row = await outboxRow(f, id);
-    expect(row.settledAt).toBeUndefined();
+    expect(row.state).toBe("pending");
     expect(row).toMatchObject({
       attempts: 1,
-      channel: "apns",
-      lastError: expect.stringContaining("429 TooManyRequests"),
+      detail: expect.stringContaining("429 TooManyRequests"),
     });
 
     resetProviderMocks();
     expect(await deliver(f, id)).toBe("sent");
     expect(await outboxRow(f, id)).toMatchObject({ attempts: 2 });
-    expect((await outboxRow(f, id)).sentAt).toBeDefined();
+    expect((await outboxRow(f, id)).state).toBe("sent");
   });
 
   test("a permanent failure settles the row as failed without a retry", async () => {
@@ -262,20 +226,22 @@ describe("APNs routing", () => {
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("failed");
     const row = await outboxRow(f, id);
-    expect(row.failedAt).toBeGreaterThanOrEqual(NOW);
-    expect(row.sentAt).toBeUndefined();
-    expect(row.lastError).toBe("400 BadDeviceToken");
+    expect(row).toMatchObject({ state: "failed", detail: "400 BadDeviceToken" });
+    expect(row.channel).toBeUndefined();
   });
 
-  test("a configuration error is not retried and fails the row", async () => {
+  test("a configuration result is not retried and fails the row", async () => {
     const f = await setup();
-    providerMocks.apnsSend.mockRejectedValue(new Error("APNs is not configured: set APNS_KEY"));
+    providerMocks.apnsSend.mockResolvedValue({
+      results: [],
+      configError: "APNs is not configured: set APNS_KEY",
+    });
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
-    await expect(deliver(f, id)).rejects.toThrow(/not configured/);
-    const row = await outboxRow(f, id);
-    expect(row.failedAt).toBeDefined();
-    expect(row.settledAt).toBeDefined();
-    expect(row.lastError).toMatch(/not configured/);
+    expect(await deliver(f, id)).toBe("failed");
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "failed",
+      detail: "APNs is not configured: set APNS_KEY",
+    });
     expect(providerMocks.apnsSend).toHaveBeenCalledTimes(1);
   });
 
@@ -285,8 +251,8 @@ describe("APNs routing", () => {
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     await expect(deliver(f, id)).rejects.toThrow(/socket hang up/);
     const row = await outboxRow(f, id);
-    expect(row.settledAt).toBeUndefined();
-    expect(row.lastError).toMatch(/socket hang up/);
+    expect(row.state).toBe("pending");
+    expect(row.detail).toMatch(/socket hang up/);
   });
 });
 
@@ -304,7 +270,7 @@ describe("SMS routing", () => {
       body: "Today: Physio\nAt 3 PM.",
     });
     expect(await outboxRow(f, id)).toMatchObject({ channel: "sms", attempts: 1 });
-    expect((await outboxRow(f, id)).sentAt).toBeGreaterThanOrEqual(NOW);
+    expect((await outboxRow(f, id)).state).toBe("sent");
   });
 
   test("a caregiver alert gets the reply hint and other kinds do not", async () => {
@@ -317,19 +283,6 @@ describe("SMS routing", () => {
       "Title\nBody\nReply 1 if you're on it.",
     );
     expect(providerMocks.smsSend.mock.calls[1]![0].body).toBe("Title\nBody");
-  });
-
-  test("the app's tap wording is dropped from a caregiver alert text", async () => {
-    const f = await setup();
-    const id = await insertOutbox(f, {
-      kind: "caregiver_alert",
-      recipientUserId: "pat",
-      body: "Due at 8:00 AM. Tap to claim it.",
-    });
-    await deliver(f, id);
-    expect(providerMocks.smsSend.mock.calls[0]![0].body).toBe(
-      "Title\nDue at 8:00 AM.\nReply 1 if you're on it.",
-    );
   });
 
   test("a digest row is texted like any member row", async () => {
@@ -348,8 +301,8 @@ describe("SMS routing", () => {
     expect(await deliver(f, id)).toBe("skipped");
     expect(providerMocks.smsSend).not.toHaveBeenCalled();
     expect(await outboxRow(f, id)).toMatchObject({
-      channel: "none",
-      skippedReason: "no_verified_phone",
+      state: "skipped",
+      detail: "no_verified_phone",
     });
   });
 
@@ -366,7 +319,7 @@ describe("SMS routing", () => {
     });
     const id = await insertOutbox(f, { recipientUserId: "pat" });
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("no_verified_phone");
+    expect((await outboxRow(f, id)).detail).toBe("no_verified_phone");
   });
 
   test("a member who left the household is never texted", async () => {
@@ -382,7 +335,7 @@ describe("SMS routing", () => {
       await ctx.db.delete(member._id);
     });
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("recipient_left");
+    expect((await outboxRow(f, id)).detail).toBe("recipient_left");
     expect(providerMocks.smsSend).not.toHaveBeenCalled();
   });
 
@@ -391,7 +344,7 @@ describe("SMS routing", () => {
     await createHousehold(f.t, { subject: "zed" });
     const id = await insertOutbox(f, { recipientUserId: "zed" });
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("recipient_left");
+    expect((await outboxRow(f, id)).detail).toBe("recipient_left");
   });
 
   test("a retryable SMS failure throws and keeps the row open", async () => {
@@ -401,9 +354,9 @@ describe("SMS routing", () => {
     await expect(deliver(f, id)).rejects.toThrow(/will retry/);
     expect(await outboxRow(f, id)).toMatchObject({
       attempts: 1,
-      lastError: expect.stringContaining("503 busy"),
+      detail: expect.stringContaining("503 busy"),
     });
-    expect((await outboxRow(f, id)).settledAt).toBeUndefined();
+    expect((await outboxRow(f, id)).state).toBe("pending");
   });
 
   test("a permanent SMS failure settles the row as failed", async () => {
@@ -415,16 +368,24 @@ describe("SMS routing", () => {
     });
     const id = await insertOutbox(f, { recipientUserId: "pat" });
     expect(await deliver(f, id)).toBe("failed");
-    expect(await outboxRow(f, id)).toMatchObject({ lastError: "21211 bad number" });
-    expect((await outboxRow(f, id)).failedAt).toBeGreaterThanOrEqual(NOW);
+    expect(await outboxRow(f, id)).toMatchObject({ detail: "21211 bad number" });
+    expect((await outboxRow(f, id)).state).toBe("failed");
   });
 
-  test("an SMS configuration error is not retried and fails the row", async () => {
+  test("an SMS configuration result is not retried and fails the row", async () => {
     const f = await setup();
-    providerMocks.smsSend.mockRejectedValue(new Error("SMS is not configured: set TWILIO_SID"));
+    providerMocks.smsSend.mockResolvedValue({
+      ok: false,
+      retryable: false,
+      config: true,
+      error: "SMS is not configured: set TWILIO_ACCOUNT_SID",
+    });
     const id = await insertOutbox(f, { recipientUserId: "pat" });
-    await expect(deliver(f, id)).rejects.toThrow(/not configured/);
-    expect((await outboxRow(f, id)).failedAt).toBeDefined();
+    expect(await deliver(f, id)).toBe("failed");
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "failed",
+      detail: "SMS is not configured: set TWILIO_ACCOUNT_SID",
+    });
     expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
   });
 });
@@ -434,7 +395,7 @@ describe("other rows", () => {
     const f = await setup();
     const id = await insertOutbox(f);
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("no_recipient");
+    expect((await outboxRow(f, id)).detail).toBe("no_recipient");
   });
 
   test("a settled row is not sent again", async () => {
@@ -457,26 +418,32 @@ describe("other rows", () => {
     const id = await insertOutbox(f, { recipientUserId: "pat", attempts: MAX_ATTEMPTS });
     expect(await deliver(f, id)).toBe("failed");
     expect(providerMocks.smsSend).not.toHaveBeenCalled();
-    expect((await outboxRow(f, id)).failedAt).toBeDefined();
+    expect((await outboxRow(f, id)).state).toBe("failed");
   });
 });
 
 describe("stale content", () => {
   test("a caregiver alert for an instance confirmed meanwhile is skipped", async () => {
     const f = await setup();
-    const taskInstanceId = await insertInstance(f, "confirmed");
+    const taskInstanceId = await addInstance(f.t, f.householdId, "Pills", {
+      state: "confirmed",
+      localDate: "2026-11-02",
+    });
     const id = await insertOutbox(f, {
       kind: "caregiver_alert",
       recipientUserId: "pat",
       taskInstanceId,
     });
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("instance_closed");
+    expect((await outboxRow(f, id)).detail).toBe("instance_closed");
   });
 
   test("a caregiver alert for a missed instance is still sent", async () => {
     const f = await setup();
-    const taskInstanceId = await insertInstance(f, "missed");
+    const taskInstanceId = await addInstance(f.t, f.householdId, "Pills", {
+      state: "missed",
+      localDate: "2026-11-02",
+    });
     const id = await insertOutbox(f, {
       kind: "caregiver_alert",
       recipientUserId: "pat",
@@ -487,19 +454,25 @@ describe("stale content", () => {
 
   test("a senior prompt for an instance that is no longer open is skipped", async () => {
     const f = await setup();
-    const taskInstanceId = await insertInstance(f, "missed");
+    const taskInstanceId = await addInstance(f.t, f.householdId, "Pills", {
+      state: "missed",
+      localDate: "2026-11-02",
+    });
     const id = await insertOutbox(f, {
       kind: "senior_prompt",
       recipientDeviceId: f.deviceId,
       taskInstanceId,
     });
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("instance_closed");
+    expect((await outboxRow(f, id)).detail).toBe("instance_closed");
   });
 
   test("a row whose instance is gone is skipped", async () => {
     const f = await setup();
-    const taskInstanceId = await insertInstance(f, "due");
+    const taskInstanceId = await addInstance(f.t, f.householdId, "Pills", {
+      state: "due",
+      localDate: "2026-11-02",
+    });
     const id = await insertOutbox(f, {
       kind: "senior_prompt",
       recipientDeviceId: f.deviceId,
@@ -507,7 +480,7 @@ describe("stale content", () => {
     });
     await f.t.run(async (ctx) => await ctx.db.delete(taskInstanceId));
     expect(await deliver(f, id)).toBe("skipped");
-    expect((await outboxRow(f, id)).skippedReason).toBe("instance_gone");
+    expect((await outboxRow(f, id)).detail).toBe("instance_gone");
   });
 });
 
@@ -531,8 +504,8 @@ describe("completion handler", () => {
       context: { outboxId: id },
       result: { kind: "failed", error: "retries exhausted" },
     });
-    expect(await outboxRow(f, id)).toMatchObject({ lastError: "retries exhausted" });
-    expect((await outboxRow(f, id)).failedAt).toBeGreaterThanOrEqual(NOW);
+    expect(await outboxRow(f, id)).toMatchObject({ detail: "retries exhausted" });
+    expect((await outboxRow(f, id)).state).toBe("failed");
     expect((await outboxRow(f, id)).settledAt).toBeGreaterThanOrEqual(NOW);
   });
 
@@ -545,7 +518,7 @@ describe("completion handler", () => {
       context: { outboxId: id },
       result: { kind: "failed", error: "late" },
     });
-    expect((await outboxRow(f, id)).failedAt).toBeUndefined();
+    expect((await outboxRow(f, id)).state).toBe("sent");
   });
 
   test("success, cancellation and a deleted row change nothing", async () => {
@@ -561,7 +534,7 @@ describe("completion handler", () => {
         result,
       });
     }
-    expect((await outboxRow(f, id)).settledAt).toBeUndefined();
+    expect((await outboxRow(f, id)).state).toBe("pending");
     await f.t.run(async (ctx) => await ctx.db.delete(id));
     await f.t.mutation(internal.delivery.onDeliveryComplete, {
       workId: WORK_ID,
@@ -575,7 +548,11 @@ describe("sweeper", () => {
   test("re-enqueues only unsettled rows older than the cutoff", async () => {
     const f = await setup();
     const old = await insertOutbox(f, { recipientUserId: "pat" });
-    const settled = await insertOutbox(f, { recipientUserId: "pat", settledAt: NOW });
+    const settled = await insertOutbox(f, {
+      recipientUserId: "pat",
+      state: "sent",
+      settledAt: NOW,
+    });
     vi.setSystemTime(NOW + STUCK_AFTER_MS + 1_000);
     const young = await insertOutbox(f, { recipientUserId: "pat" });
     expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(1);
@@ -589,7 +566,7 @@ describe("sweeper", () => {
     vi.setSystemTime(NOW + STUCK_AFTER_MS + 1_000);
     await f.t.mutation(internal.delivery.sweepStuck, {});
     await drivePool(f, id);
-    expect((await outboxRow(f, id)).sentAt).toBeDefined();
+    expect((await outboxRow(f, id)).state).toBe("sent");
   });
 
   test("does nothing when every row is young or settled", async () => {
@@ -606,7 +583,7 @@ describe("sweeper", () => {
  * @return: (Promise<void>) Resolves when settled or after a bounded number of rounds.
  */
 async function drivePool(f: DeliveryFixture, id: Id<"notificationOutbox">): Promise<void> {
-  for (let i = 0; i < 100 && (await outboxRow(f, id)).settledAt === undefined; i++) {
+  for (let i = 0; i < 100 && (await outboxRow(f, id)).state === "pending"; i++) {
     let finished = false;
     void f.t.finishInProgressScheduledFunctions().then(() => {
       finished = true;
@@ -633,7 +610,7 @@ describe("insertNotification", () => {
     await drivePool(f, id);
     expect(providerMocks.apnsSend).toHaveBeenCalledTimes(1);
     expect(await outboxRow(f, id)).toMatchObject({ channel: "apns" });
-    expect((await outboxRow(f, id)).sentAt).toBeDefined();
+    expect((await outboxRow(f, id)).state).toBe("sent");
   });
 
   test("a retryable failure is retried by the workpool until it succeeds", async () => {
@@ -654,7 +631,7 @@ describe("insertNotification", () => {
     );
     await drivePool(f, id);
     expect(providerMocks.smsSend).toHaveBeenCalledTimes(2);
-    expect((await outboxRow(f, id)).sentAt).toBeDefined();
+    expect((await outboxRow(f, id)).state).toBe("sent");
     expect((await outboxRow(f, id)).attempts).toBe(2);
   });
 });

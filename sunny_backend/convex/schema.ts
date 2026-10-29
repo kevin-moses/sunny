@@ -19,8 +19,8 @@
 // encrypted), calendarEventLinks (our event to the Google event, per connection) and
 // calendarSyncs (the pending push of one event to one connection; at most one row per key,
 // see lib/calendarSync.ts).
-// Delivery and the daily digest: notificationOutbox delivery bookkeeping and the digests
-// table (one row per household and local date).
+// Delivery (notificationOutbox state) and the daily digest (digests, one row per household and
+// local date).
 // SMS: caregiver phone numbers live on householdMembers (phone, phoneVerifiedAt, pendingPhone);
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
@@ -48,6 +48,7 @@ import {
   memorySource,
   messageSender,
   notificationKind,
+  outboxState,
   questionOutcome,
   taskCreator,
   taskType,
@@ -68,6 +69,8 @@ export default defineSchema({
     shareTranscripts: v.boolean(),
     // Caregiver "stop": no background work for the household runs while true.
     backgroundPaused: v.boolean(),
+    // Local date of the latest digest row, so ticks after the day's digest skip the lookup.
+    lastDigestDate: v.optional(v.string()),
   }),
 
   householdMembers: defineTable({
@@ -224,11 +227,10 @@ export default defineSchema({
     note: v.optional(v.string()),
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
 
-  // The only place notifications are queued; surfaces subscribe to their own rows and the
-  // delivery action (delivery.ts) sends them by APNs (device recipients) or SMS (member
-  // recipients). Exactly one recipient per row. Insert through lib/delivery.ts
-  // insertNotification so the delivery job is enqueued. A row is settled once it is sent,
-  // skipped (no reachable address) or failed for good; settledAt is absent until then.
+  // The only place notifications are queued (insert with lib/delivery.ts insertNotification,
+  // which enqueues delivery). One recipient per row: a device gets APNs, a member gets SMS.
+  // state leaves "pending" once; settledAt is then set, channel only when sent, and detail holds
+  // the skip reason or an internal error (never returned to clients).
   notificationOutbox: defineTable({
     householdId: v.id("households"),
     kind: notificationKind,
@@ -239,39 +241,29 @@ export default defineSchema({
     title: v.string(),
     body: v.string(),
     payload: v.record(v.string(), v.any()),
-    sentAt: v.optional(v.number()),
-    // Delivery bookkeeping. channel is the route taken ("none" when skipped); attempts counts
-    // delivery runs; lastError is internal detail (never shown to clients); skippedReason says
-    // why a row with no reachable address was finished without sending; failedAt is set when
-    // delivery gave up.
+    state: outboxState,
     channel: v.optional(deliveryChannel),
-    attempts: v.optional(v.number()),
-    lastError: v.optional(v.string()),
-    skippedReason: v.optional(v.string()),
-    failedAt: v.optional(v.number()),
     settledAt: v.optional(v.number()),
+    // Delivery runs started, capped so the sweeper never loops on one row.
+    attempts: v.optional(v.number()),
+    detail: v.optional(v.string()),
   })
     .index("by_recipient_user", ["recipientUserId"])
     .index("by_recipient_device", ["recipientDeviceId"])
     // Deleting an instance deletes its notifications (the SQL foreign key cascaded).
     .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
-    .index("by_sent", ["sentAt"])
-    // The sweeper reads unsettled rows older than a cutoff (settledAt = undefined, then
-    // creation time).
-    .index("by_settled", ["settledAt"]),
+    // The sweeper reads pending rows older than a cutoff (state, then creation time).
+    .index("by_state", ["state"]),
 
-  // One row per household per local date: the daily digest (digest.ts). status is pending
-  // until the text is composed and its SMS rows are queued.
+  // One row per household per local date: the daily digest (digest.ts). pending until the text
+  // is composed and its SMS rows are queued; source records which path wrote the text.
   digests: defineTable({
     householdId: v.id("households"),
     localDate: v.string(),
     status: digestStatus,
-    // Which path produced the text, and the text itself (set when composed).
     source: v.optional(digestSource),
     text: v.optional(v.string()),
-    // Outbox rows queued (verified phones at the time of sending).
-    recipients: v.optional(v.number()),
     error: v.optional(v.string()),
   })
     .index("by_household_date", ["householdId", "localDate"])

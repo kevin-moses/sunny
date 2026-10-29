@@ -5,8 +5,8 @@
 // headers, the ES256 provider token (claims, PEM parsing, signing with WebCrypto, and a module
 // scope cache refreshed after 50 minutes), and the mapping from an APNs response to a per-token
 // outcome. Configuration problems raise ConfigError with the prefix "APNs is not configured".
-// Exports: APNS_NOT_CONFIGURED, ApnsConfig, ApnsOutcome, ApnsResult, loadApnsConfig, apnsHost,
-// buildPayload, buildHeaders, jwtClaims, normalizePem, signProviderToken, getProviderToken,
+// Exports: APNS_NOT_CONFIGURED, ApnsConfig, ApnsOutcome, ApnsResult, ApnsSendResult, loadApnsConfig, apnsHost,
+// buildPayload, buildHeaders, jwtClaims, signProviderToken, getProviderToken,
 // resetProviderTokenCache, mapOutcome, failureResult.
 //
 // Last modified: 2026-10-29
@@ -35,7 +35,14 @@ export type ApnsConfig = {
 /** Result category for one token. */
 export type ApnsOutcome = "sent" | "unregistered" | "failed";
 
-/** Per-token result returned by internal.apns.send. */
+/**
+ * What internal.apns.send returns: one result per token, or `configError` (the message, starting
+ * "APNs is not configured") with no results when the configuration is missing or invalid. It is
+ * returned rather than thrown because an error thrown across an action call loses its class.
+ */
+export type ApnsSendResult = { results: ApnsResult[]; configError?: string };
+
+/** Per-token result inside an ApnsSendResult. */
 export type ApnsResult = {
   token: string;
   outcome: ApnsOutcome;
@@ -139,7 +146,7 @@ export function jwtClaims(teamId: string, nowSeconds: number): { iss: string; ia
  * @param raw: (string) Key text.
  * @return: (string) PEM text with real newlines.
  */
-export function normalizePem(raw: string): string {
+function normalizePem(raw: string): string {
   return raw.replace(/\\n/g, "\n").trim();
 }
 

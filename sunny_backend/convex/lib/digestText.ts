@@ -1,23 +1,21 @@
 // lib/digestText.ts
-// Purpose: The words of the daily digest, with no I/O: the deterministic template (the
-// fallback, and the only path for a quiet day or when nobody can receive it), the strict
-// prompt for the model, the facts rendered as prompt text, and the validation of the model's
-// reply. The digest is 1 to 5 plain lines under MAX_CHARS characters, written only from the
-// day's logged facts, with no advice and no feelings (notes/SPEC.md "Daily digest"). A quiet
-// day (nothing logged: no confirmed, resolved, missed or escalated task, no dose, no question)
-// still sends a one-line message, "<name>: quiet day, nothing was logged.", so a silent phone
-// never has to be read as "the system is down"; it is built from the template, never the model.
-// The template clips every line to LINE_MAX so five lines stay under MAX_CHARS.
+// Purpose: The words of the daily digest. Pure parts: the deterministic template (fallback, and
+// the only path for a quiet day), the strict prompt, the facts rendered as prompt text, and
+// validation of the model's reply (1 to 5 plain lines under 600 characters, no markup). A quiet
+// day (nothing logged) still sends "<name>: quiet day, nothing was logged." so a silent phone is
+// not read as a broken system. The one network call, composeWithClaude, sits at the end so tests
+// can replace it.
 //
 // Last modified: 2026-10-29
 
+import { client } from "./managedAgents";
 import type { DigestFacts, TaskFact } from "./digestFacts";
 
 /** A digest reply (or template) is at most this many characters. */
-export const MAX_CHARS = 600;
+const MAX_CHARS = 600;
 
 /** The most lines in a digest. */
-export const MAX_LINES = 5;
+const MAX_LINES = 5;
 
 /** Template lines are clipped to this length, so MAX_LINES lines fit in MAX_CHARS. */
 const LINE_MAX = 115;
@@ -217,4 +215,39 @@ export function validateDigestReply(reply: string): string | null {
     if (!PLAIN_CHARS.test(line) || MARKUP.test(line) || LIST_START.test(line)) return null;
   }
   return text;
+}
+
+/** The model that writes the digest. */
+const DIGEST_MODEL = "claude-haiku-5-5";
+
+/** Per-attempt timeout of the model request. */
+const DIGEST_TIMEOUT_MS = 20_000;
+
+/** Output budget; 5 short lines need far less. */
+const MAX_OUTPUT_TOKENS = 300;
+
+/**
+ * purpose: Ask the model for the digest text under DIGEST_SYSTEM_PROMPT. The caller validates
+ *          the reply and falls back to the template on any error.
+ * @param factsMessage: (string) The facts rendered by factsForPrompt.
+ * @return: (Promise<string>) The model's text reply.
+ * @raises ConfigError when ANTHROPIC_API_KEY is unset; Error when the request fails or the
+ *         reply has no text.
+ */
+export async function composeWithClaude(factsMessage: string): Promise<string> {
+  const response = await client(undefined, {
+    timeout: DIGEST_TIMEOUT_MS,
+    maxRetries: 1,
+  }).messages.create({
+    model: DIGEST_MODEL,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    system: DIGEST_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: factsMessage }],
+  });
+  const reply = response.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("")
+    .trim();
+  if (reply === "") throw new Error("The model returned no text");
+  return reply;
 }

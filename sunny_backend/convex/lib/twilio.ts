@@ -19,7 +19,10 @@
 //
 // Last modified: 2026-10-29
 
+import { toBase64 } from "./base64";
 import { ConfigError } from "./errors";
+import { isTimeoutError, timedFetch } from "./http";
+import { constantTimeEqual } from "./secretBox";
 
 const TWILIO_API = "https://api.twilio.com/2010-04-01";
 const SEND_TIMEOUT_MS = 10_000;
@@ -27,9 +30,13 @@ const SEND_TIMEOUT_MS = 10_000;
 /** The URL Twilio calls for inbound SMS unless TWILIO_WEBHOOK_URL overrides it. */
 export const DEFAULT_WEBHOOK_URL = "https://enduring-ostrich-959.convex.site/twilio/sms";
 
-/** Outcome of sending one SMS: the Twilio message sid, or why it failed and whether to retry. */
+/**
+ * Outcome of sending one SMS: the Twilio message sid, or why it failed and whether to retry.
+ * `config` marks a missing or invalid Twilio configuration (never retryable), returned rather
+ * than thrown because an error thrown across a Convex action call loses its class.
+ */
 export type SmsResult =
-  { ok: true; sid: string } | { ok: false; retryable: boolean; error: string };
+  { ok: true; sid: string } | { ok: false; retryable: boolean; error: string; config?: true };
 
 /** The Twilio credentials and sender number. */
 export interface TwilioConfig {
@@ -150,10 +157,8 @@ export async function sendTwilioSms(
   body: string,
 ): Promise<SmsResult> {
   if (!isE164(to)) return { ok: false, retryable: false, error: "Destination is not E.164" };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
-    const response = await fetch(
+    const response = await timedFetch(
       `${TWILIO_API}/Accounts/${encodeURIComponent(config.accountSid)}/Messages.json`,
       {
         method: "POST",
@@ -162,8 +167,8 @@ export async function sendTwilioSms(
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({ To: to, From: config.fromNumber, Body: body }),
-        signal: controller.signal,
       },
+      SEND_TIMEOUT_MS,
     );
     if (!response.ok) {
       const retryable = response.status === 429 || response.status >= 500;
@@ -178,12 +183,10 @@ export async function sendTwilioSms(
     return {
       ok: false,
       retryable: true,
-      error: controller.signal.aborted
+      error: isTimeoutError(e)
         ? "Twilio did not answer in time"
         : `Twilio request failed: ${errorName(e)}`,
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -214,23 +217,7 @@ export async function twilioSignature(
     ["sign"],
   );
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data)));
-  return btoa(String.fromCharCode(...mac));
-}
-
-/**
- * purpose: Compare two strings without leaking where they differ.
- * @param a: (string) First string.
- * @param b: (string) Second string.
- * @return: (boolean) True when equal.
- */
-export function constantTimeEqual(a: string, b: string): boolean {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  }
-  return diff === 0;
+  return toBase64(mac);
 }
 
 /**

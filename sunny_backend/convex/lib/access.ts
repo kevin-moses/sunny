@@ -267,3 +267,15 @@ export async function myHouseholdIds(ctx: QueryCtx): Promise<Id<"households">[]>
   if (device) ids.add(device.householdId);
   return [...ids];
 }
+
+/**
+ * purpose: A member's phone number when it is verified, the only case where SMS may be sent
+ *          to it (and an inbound text from it trusted).
+ * @param member: (Pick<Doc<"householdMembers">, "phone" | "phoneVerifiedAt">) The member.
+ * @return: (string | undefined) The E.164 number, or undefined when there is none or it is unverified.
+ */
+export function verifiedPhone(
+  member: Pick<Doc<"householdMembers">, "phone" | "phoneVerifiedAt">,
+): string | undefined {
+  return member.phoneVerifiedAt === undefined ? undefined : member.phone;
+}

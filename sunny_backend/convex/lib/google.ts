@@ -15,7 +15,9 @@
 
 import { fromBase64Url, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
+import { timedFetch } from "./http";
 import type { GoogleEvent } from "./googleEvent";
+import { constantTimeEqual } from "./secretBox";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -82,19 +84,13 @@ function env(name: string): string {
 }
 
 /**
- * purpose: fetch with the standard request timeout.
+ * purpose: fetch with Google's request timeout.
  * @param url: (string) Request URL.
  * @param init: (RequestInit) fetch options.
  * @return: (Promise<Response>) The response.
  */
-async function timedFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
+function googleFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return timedFetch(url, init, REQUEST_TIMEOUT_MS);
 }
 
 /**
@@ -123,7 +119,7 @@ export function consentUrl(state: string): string {
  * @raises GoogleAccessRevoked on invalid_grant; GoogleApiError on other failures.
  */
 async function tokenRequest(form: Record<string, string>): Promise<Record<string, unknown>> {
-  const res = await timedFetch(TOKEN_URL, {
+  const res = await googleFetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -167,7 +163,7 @@ function emailFromIdToken(idToken: string | null): string | null {
  */
 async function emailFromUserinfo(accessToken: string): Promise<string | null> {
   try {
-    const res = await timedFetch(USERINFO_URL, {
+    const res = await googleFetch(USERINFO_URL, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok) return null;
@@ -241,7 +237,7 @@ export async function refreshAccessToken(
  */
 export async function revokeRefreshToken(refreshToken: string): Promise<boolean> {
   try {
-    const res = await timedFetch(REVOKE_URL, {
+    const res = await googleFetch(REVOKE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ token: refreshToken }),
@@ -269,7 +265,7 @@ async function calendarRequest(
   path: string,
   body?: unknown,
 ): Promise<Record<string, unknown> | null> {
-  const res = await timedFetch(`${CALENDAR_API}${path}`, {
+  const res = await googleFetch(`${CALENDAR_API}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -405,19 +401,6 @@ async function hmac(message: string): Promise<string> {
 }
 
 /**
- * purpose: Constant-time string comparison (length is not secret).
- * @param a: (string) First value.
- * @param b: (string) Second value.
- * @return: (boolean) Whether they are equal.
- */
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-/**
  * purpose: Sign the caregiver, household and a single-use nonce into a short-lived OAuth
  *          state. The caller stores the nonce so the callback can consume it once.
  * @param userId: (string) Caregiver's user id.
@@ -458,7 +441,7 @@ export async function verifyState(
 ): Promise<{ userId: string; householdId: string; nonce: string } | null> {
   const [payload, signature, extra] = state.split(".");
   if (!payload || !signature || extra !== undefined) return null;
-  if (!safeEqual(await hmac(payload), signature)) return null;
+  if (!constantTimeEqual(await hmac(payload), signature)) return null;
   try {
     const data = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as {
       u?: unknown;

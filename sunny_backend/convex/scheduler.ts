@@ -26,9 +26,9 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { queueDigestIfDue } from "./digest";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
-import { queueDigestIfDue } from "./lib/digest";
 import { announceEvents } from "./lib/eventNotices";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12, minutes } from "./lib/time";
@@ -137,7 +137,7 @@ async function queueNotifications(
     body: isPrompt
       ? task.spokenPrompt
       : step.action === "alert_on_call"
-        ? `${dueAt} Tap to claim it.`
+        ? dueAt
         : `${dueAt} No one has claimed it yet.`,
     payload: {
       taskId: task._id,
@@ -284,8 +284,10 @@ export async function tickHouseholdCore(
   const stepsFired = await fireSteps(ctx, householdId, now);
   const escalated = await markEscalated(ctx, householdId);
   const missed = await closeWindows(ctx, householdId, now);
-  const noticed = await announceEvents(ctx, householdId, now);
-  await queueDigestIfDue(ctx, householdId, now);
+  const household = await ctx.db.get(householdId);
+  if (!household) return { created, opened, stepsFired, escalated, missed, noticed: 0 };
+  const noticed = await announceEvents(ctx, household, now);
+  await queueDigestIfDue(ctx, household, now);
   return { created, opened, stepsFired, escalated, missed, noticed };
 }
 

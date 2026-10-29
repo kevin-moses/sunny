@@ -4,9 +4,10 @@
 // SMS, and a caregiver can answer an escalation alert from the phone.
 //
 // Outbound: internal.sms.send({ to, body }) is the contract for the outbox dispatcher. It
-// returns { ok: true, sid } or { ok: false, retryable, error } and throws only for missing
-// configuration (message starts "SMS is not configured"). retryable is true for a network
-// error, timeout, 429 or 5xx, false for any other Twilio rejection.
+// returns { ok: true, sid } or { ok: false, retryable, error }; missing configuration comes
+// back as { ok: false, retryable: false, config: true, error } (an error thrown across an
+// action call loses its class). retryable is true for a network error, timeout, 429 or 5xx,
+// false for any other Twilio rejection.
 //
 // Inbound: POST /twilio/sms (http.ts) validates X-Twilio-Signature (403 without a valid
 // one), then handleInbound decides the reply, which goes back as TwiML. Only verified member
@@ -30,6 +31,7 @@ import type { MutationCtx } from "./_generated/server";
 import { findMember } from "./lib/access";
 import type { CaregiverActor } from "./lib/access";
 import { audit } from "./lib/audit";
+import { ConfigError } from "./lib/errors";
 import { claimInstance } from "./instances";
 import {
   isE164,
@@ -95,13 +97,21 @@ export function parseCommand(body: string): SmsCommand {
  * purpose: Send one SMS. The contract for the notification dispatcher.
  * @param to: (string) Destination, E.164.
  * @param body: (string) Message text.
- * @return: (SmsResult) { ok: true, sid } or { ok: false, retryable, error }.
- * @raises Error "SMS is not configured: ..." when the Twilio environment is incomplete.
+ * @return: (SmsResult) { ok: true, sid } or { ok: false, retryable, error }; config: true
+ *          when the Twilio environment is incomplete.
  */
 export const send = internalAction({
   args: { to: v.string(), body: v.string() },
   handler: async (_ctx, args): Promise<SmsResult> => {
-    const result = await sendTwilioSms(twilioConfig(), args.to, args.body);
+    let config;
+    try {
+      config = twilioConfig();
+    } catch (e) {
+      if (e instanceof ConfigError)
+        return { ok: false, retryable: false, config: true, error: e.message };
+      throw e;
+    }
+    const result = await sendTwilioSms(config, args.to, args.body);
     if (!result.ok) {
       console.error(`sms: send failed (retryable: ${result.retryable}): ${result.error}`);
     }

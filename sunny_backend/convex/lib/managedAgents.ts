@@ -11,6 +11,7 @@
 // Last modified: 2026-10-29
 
 import Anthropic from "@anthropic-ai/sdk";
+import { ConfigError } from "./errors";
 
 /** Default per-session spend cap, in US cents. */
 const DEFAULT_BUDGET_CENTS = 100;
@@ -86,13 +87,25 @@ export function readAgentConfig(
 /**
  * purpose: An Anthropic client; the one place clients are built.
  * @param apiKey: (string, optional) Key to use; defaults to ANTHROPIC_API_KEY.
+ * @param options: ({ timeout?, maxRetries? }, optional) Per-attempt timeout in ms and SDK
+ *        retries; default to the agent runtime's.
  * @return: (Anthropic) The client.
- * @raises Error when no key is available.
+ * @raises ConfigError when no key is available.
  */
-function client(apiKey: string | undefined = process.env.ANTHROPIC_API_KEY): Anthropic {
-  if (!apiKey)
-    throw new Error("The agent is not configured: set ANTHROPIC_API_KEY on the Convex deployment");
-  return new Anthropic({ apiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: MAX_RETRIES });
+export function client(
+  apiKey: string | undefined = process.env.ANTHROPIC_API_KEY,
+  options: { timeout?: number; maxRetries?: number } = {},
+): Anthropic {
+  if (!apiKey) {
+    throw new ConfigError(
+      "The agent is not configured: set ANTHROPIC_API_KEY on the Convex deployment",
+    );
+  }
+  return new Anthropic({
+    apiKey,
+    timeout: options.timeout ?? REQUEST_TIMEOUT_MS,
+    maxRetries: options.maxRetries ?? MAX_RETRIES,
+  });
 }
 
 /**

@@ -11,7 +11,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_WEBHOOK_URL,
-  constantTimeEqual,
   escapeXml,
   isE164,
   normalizePhone,
@@ -300,12 +299,6 @@ describe("Twilio signature", () => {
       ["Media", "b"],
     ]);
     expect(await twilioSignature(URL_, a, "tok")).toBe(await twilioSignature(URL_, b, "tok"));
-  });
-
-  test("constantTimeEqual compares by content and length", () => {
-    expect(constantTimeEqual("abc", "abc")).toBe(true);
-    expect(constantTimeEqual("abc", "abd")).toBe(false);
-    expect(constantTimeEqual("abc", "abcd")).toBe(false);
   });
 });
 

@@ -1,21 +1,10 @@
 // lib/delivery.ts
 // Purpose: Queueing and routing of notification delivery. Every outbox row is inserted through
-// insertNotification, which also enqueues the delivery action (delivery.ts) on the workpool
-// "deliveryPool" (modest parallelism, retries with backoff for retryable failures). This file
-// is the one place the routing table lives:
-//   recipientDeviceId -> APNs to every push token of the device's user (data carries
-//                        task_instance_id when the row has a task instance)
-//   recipientUserId   -> SMS to the member's verified phone; title and body become one short
-//                        text, and a caregiver_alert gets "Reply 1 if you're on it." appended
-//   neither           -> skipped ("no_recipient")
-// A row with no reachable address is finished, not retried: skippedReason says why
-// (no_push_tokens, no_verified_phone, device_removed, recipient_left, instance_gone,
-// instance_closed, no_recipient). Membership and the device are re-checked at send time, so a
-// recipient who left the household never gets a row delivered. A prompt or alert for an
-// instance that was confirmed (or, for a prompt, is no longer open) while the row waited is
-// skipped as stale. Rows are settled (settledAt) when sent, skipped or failed for good; the
-// sweeper (requeueStuckDeliveries, from the cron) enqueues rows left unsettled for 15 minutes,
-// at most MAX_ATTEMPTS delivery runs per row.
+// insertNotification, which enqueues delivery.deliver on the workpool "deliveryPool".
+// Routing: a device recipient gets APNs to every push token of its user; a member recipient
+// gets an SMS at the verified phone (title and body on separate lines, a caregiver_alert ends
+// with the reply hint). Membership, device and content are re-checked at send time; a row with
+// no reachable address or stale content is skipped, with the reason in `detail`.
 //
 // Last modified: 2026-10-29
 
@@ -23,6 +12,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { verifiedPhone } from "./access";
 
 /** Deliveries that may run at the same time across all households. */
 const MAX_PARALLEL_DELIVERIES = 10;
@@ -37,11 +27,11 @@ export const deliveryPool = new Workpool(components.deliveryPool, {
   defaultRetryBehavior: DELIVERY_RETRY,
 });
 
-/** A row unsettled this long (ms) is assumed lost and enqueued again by the sweeper. */
+/** A row pending this long (ms) is assumed lost and enqueued again by the sweeper. */
 export const STUCK_AFTER_MS = 15 * 60 * 1000;
 
-/** Rows (and digests) the sweeper re-enqueues per run. */
-const SWEEP_BATCH = 100;
+/** Rows the sweeper re-enqueues per run. */
+export const SWEEP_BATCH = 100;
 
 /** Delivery runs after which a row is given up on, so the sweeper never loops on one. */
 export const MAX_ATTEMPTS = 12;
@@ -50,20 +40,12 @@ export const MAX_ATTEMPTS = 12;
 const SMS_MAX_CHARS = 1_500;
 
 /** Appended to a caregiver_alert SMS: the reply the inbound SMS handler understands. */
-export const CAREGIVER_ALERT_SUFFIX = "Reply 1 if you're on it.";
+const CAREGIVER_ALERT_SUFFIX = "Reply 1 if you're on it.";
 
 /** The fields of an outbox row the caller provides; delivery bookkeeping starts empty. */
 export type NewNotification = Omit<
   Doc<"notificationOutbox">,
-  | "_id"
-  | "_creationTime"
-  | "sentAt"
-  | "channel"
-  | "attempts"
-  | "lastError"
-  | "skippedReason"
-  | "failedAt"
-  | "settledAt"
+  "_id" | "_creationTime" | "state" | "channel" | "settledAt" | "attempts" | "detail"
 >;
 
 /** Where to send an outbox row, decided at send time. */
@@ -79,8 +61,8 @@ export type Route =
   | { kind: "skip"; reason: string };
 
 /**
- * purpose: Insert an outbox row and enqueue its delivery. Every code path that notifies
- *          someone goes through here.
+ * purpose: Insert a pending outbox row and enqueue its delivery. Every code path that
+ *          notifies someone goes through here.
  * @param ctx: (MutationCtx) Context.
  * @param row: (NewNotification) The row to insert.
  * @return: (Promise<Id<"notificationOutbox">>) The new row.
@@ -89,7 +71,7 @@ export async function insertNotification(
   ctx: MutationCtx,
   row: NewNotification,
 ): Promise<Id<"notificationOutbox">> {
-  const outboxId = await ctx.db.insert("notificationOutbox", row);
+  const outboxId = await ctx.db.insert("notificationOutbox", { ...row, state: "pending" });
   await queueDelivery(ctx, outboxId);
   return outboxId;
 }
@@ -100,10 +82,7 @@ export async function insertNotification(
  * @param outboxId: (Id<"notificationOutbox">) The row.
  * @return: (Promise<void>) Resolves when enqueued.
  */
-export async function queueDelivery(
-  ctx: MutationCtx,
-  outboxId: Id<"notificationOutbox">,
-): Promise<void> {
+async function queueDelivery(ctx: MutationCtx, outboxId: Id<"notificationOutbox">): Promise<void> {
   await deliveryPool.enqueueAction(
     ctx,
     internal.delivery.deliver,
@@ -113,32 +92,14 @@ export async function queueDelivery(
 }
 
 /**
- * purpose: Enqueue the compose-and-send action for a digests row.
- * @param ctx: (MutationCtx) Context.
- * @param digestId: (Id<"digests">) The row.
- * @return: (Promise<void>) Resolves when enqueued.
- */
-export async function enqueueDigest(ctx: MutationCtx, digestId: Id<"digests">): Promise<void> {
-  await deliveryPool.enqueueAction(
-    ctx,
-    internal.digest.compose,
-    { digestId },
-    { onComplete: internal.digest.onComposeComplete, context: { digestId } },
-  );
-}
-
-/**
  * purpose: The SMS text of a row: title and body on separate lines, the reply hint for a
  *          caregiver alert, capped at SMS_MAX_CHARS.
  * @param row: (Doc<"notificationOutbox">) The row.
  * @return: (string) The text.
  */
-export function smsText(row: Doc<"notificationOutbox">): string {
-  const isAlert = row.kind === "caregiver_alert";
-  // The app wording "Tap to claim it." means nothing in a text; the reply hint replaces it.
-  const body = isAlert ? row.body.replace(/\s*Tap to claim it\.?/i, "").trim() : row.body;
-  const parts = [row.title, body];
-  if (isAlert) parts.push(CAREGIVER_ALERT_SUFFIX);
+function smsText(row: Doc<"notificationOutbox">): string {
+  const parts = [row.title, row.body];
+  if (row.kind === "caregiver_alert") parts.push(CAREGIVER_ALERT_SUFFIX);
   return parts
     .filter((p) => p.length > 0)
     .join("\n")
@@ -165,6 +126,9 @@ async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promi
   return null;
 }
 
+/** Push tokens read per device user. */
+const MAX_TOKENS_PER_USER = 20;
+
 /**
  * purpose: The APNs route of a device-addressed row.
  * @param ctx: (QueryCtx) Context.
@@ -184,7 +148,7 @@ async function deviceRoute(
   const tokens = await ctx.db
     .query("pushTokens")
     .withIndex("by_user", (q) => q.eq("userId", device.userId))
-    .collect();
+    .take(MAX_TOKENS_PER_USER);
   if (tokens.length === 0) return { kind: "skip", reason: "no_push_tokens" };
   const data: Record<string, string> = { notification_id: row._id, kind: row.kind };
   if (row.taskInstanceId !== undefined) data["task_instance_id"] = row.taskInstanceId;
@@ -216,10 +180,9 @@ async function memberRoute(
     )
     .unique();
   if (!member) return { kind: "skip", reason: "recipient_left" };
-  if (member.phone === undefined || member.phoneVerifiedAt === undefined) {
-    return { kind: "skip", reason: "no_verified_phone" };
-  }
-  return { kind: "sms", to: member.phone, body: smsText(row) };
+  const to = verifiedPhone(member);
+  if (to === undefined) return { kind: "skip", reason: "no_verified_phone" };
+  return { kind: "sms", to, body: smsText(row) };
 }
 
 /**
@@ -239,24 +202,20 @@ export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">
 }
 
 /**
- * purpose: Enqueue again the outbox rows and pending digests that have stayed unsettled for
- *          STUCK_AFTER_MS (the job was lost or its action died). A duplicate run is harmless:
- *          a settled row ends at once, and delivery runs are capped by MAX_ATTEMPTS.
+ * purpose: Enqueue again the outbox rows left pending for STUCK_AFTER_MS (the job was lost or
+ *          its action died). A duplicate run is harmless: a settled row ends at once, and
+ *          delivery runs are capped by MAX_ATTEMPTS.
  * @param ctx: (MutationCtx) Context.
  * @param now: (number) Epoch ms.
- * @return: (Promise<number>) Rows and digests re-enqueued (at most one batch of each).
+ * @return: (Promise<number>) Rows re-enqueued (at most SWEEP_BATCH per run).
  */
 export async function requeueStuckDeliveries(ctx: MutationCtx, now: number): Promise<number> {
-  const cutoff = now - STUCK_AFTER_MS;
   const rows = await ctx.db
     .query("notificationOutbox")
-    .withIndex("by_settled", (q) => q.eq("settledAt", undefined).lt("_creationTime", cutoff))
+    .withIndex("by_state", (q) =>
+      q.eq("state", "pending").lt("_creationTime", now - STUCK_AFTER_MS),
+    )
     .take(SWEEP_BATCH);
   for (const row of rows) await queueDelivery(ctx, row._id);
-  const digests = await ctx.db
-    .query("digests")
-    .withIndex("by_status", (q) => q.eq("status", "pending").lt("_creationTime", cutoff))
-    .take(SWEEP_BATCH);
-  for (const digest of digests) await enqueueDigest(ctx, digest._id);
-  return rows.length + digests.length;
+  return rows.length;
 }

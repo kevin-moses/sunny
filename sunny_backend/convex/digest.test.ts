@@ -1,6 +1,6 @@
 // digest.test.ts
 // Purpose: Tests for the daily digest (digest.ts, lib/digest.ts, lib/digestFacts.ts,
-// lib/digestText.ts). The model (lib/digestModel) and the providers are mocked, so nothing
+// lib/digestText.ts). The model call (composeWithClaude) and the providers are mocked, so nothing
 // leaves the process. Covers: timing from the scheduler tick (before and at digestTime, once
 // per local date, the next day again, a zone far from UTC, a DST day with digestTime in the
 // skipped hour, paused households, households created after the day's digest time); fact
@@ -21,7 +21,7 @@ import { deliveryFixture, providerMocks, resetProviderMocks } from "./deliveryMo
 import type { DeliveryFixture } from "./deliveryMocks.helpers";
 import { factsForPrompt, templateDigest, validateDigestReply } from "./lib/digestText";
 import type { DigestFacts } from "./lib/digestFacts";
-import { makeBackend } from "./testing.helpers";
+import { addInstance, makeBackend } from "./testing.helpers";
 
 const modelMock = vi.hoisted(() => vi.fn());
 
@@ -31,9 +31,9 @@ vi.mock("./apns", async (original) =>
 vi.mock("./sms", async (original) =>
   (await import("./deliveryMocks.helpers")).smsModule(await original()),
 );
-vi.mock("./lib/digestModel", () => ({
+vi.mock("./lib/digestText", async (original) => ({
+  ...(await original()),
   composeWithClaude: modelMock,
-  DIGEST_MODEL: "claude-haiku-5-5",
 }));
 
 /** 07:00 New York on Mon 2 Nov 2026 (EST): the household is created before its digest time. */
@@ -122,59 +122,19 @@ async function digestRows(f: DeliveryFixture): Promise<Doc<"notificationOutbox">
   return rows.filter((r) => r.kind === "digest");
 }
 
-/** Fields of a task instance to insert for facts tests. */
-interface InstanceSpec {
-  label: string;
-  localDate?: string;
-  scheduledTime: string;
-  windowStart: number;
-  state: Doc<"taskInstances">["state"];
-  confirmedAt?: number;
-  confirmedVia?: Doc<"taskInstances">["confirmedVia"];
-  confirmedBy?: string;
-  claimedBy?: string;
-  alerted?: boolean;
-}
-
 /**
- * purpose: Insert a task with one instance.
+ * purpose: Insert a task instance on the digest's local day (2 Nov 2026).
  * @param f: (DeliveryFixture) Fixture.
- * @param spec: (InstanceSpec) The instance.
- * @return: (Promise<void>) Resolves when inserted.
+ * @param label: (string) Task display label.
+ * @param fields: (Parameters<typeof addInstance>[3]) Instance overrides.
+ * @return: (Promise<Id<"taskInstances">>) The instance.
  */
-async function addInstance(f: DeliveryFixture, spec: InstanceSpec): Promise<void> {
-  await f.t.run(async (ctx) => {
-    const taskId = await ctx.db.insert("tasks", {
-      householdId: f.householdId,
-      type: "medication",
-      title: spec.label,
-      displayLabel: spec.label,
-      spokenPrompt: "Time.",
-      checklistItems: [],
-      times: [spec.scheduledTime],
-      windowMinutes: 60,
-      createdByKind: "caregiver",
-      active: true,
-      scheduleChangedAt: 0,
-    });
-    await ctx.db.insert("taskInstances", {
-      taskId,
-      householdId: f.householdId,
-      localDate: spec.localDate ?? "2026-11-02",
-      scheduledTime: spec.scheduledTime,
-      windowStart: spec.windowStart,
-      windowEnd: spec.windowStart + 3_600_000,
-      state: spec.state,
-      confirmedAt: spec.confirmedAt,
-      confirmedVia: spec.confirmedVia,
-      confirmedBy: spec.confirmedBy,
-      claimedBy: spec.claimedBy,
-      createdAt: 0,
-      firedSteps: spec.alerted
-        ? [{ stepId: "s2", action: "alert_on_call", firedAt: 1, notified: true }]
-        : [],
-    });
-  });
+function addDayInstance(
+  f: DeliveryFixture,
+  label: string,
+  fields: Parameters<typeof addInstance>[3] = {},
+) {
+  return addInstance(f.t, f.householdId, label, { localDate: "2026-11-02", ...fields });
 }
 
 /**
@@ -285,6 +245,19 @@ describe("timing", () => {
     expect(await digests(f)).toHaveLength(1);
   });
 
+  test("the household remembers the day's digest and later ticks skip the lookup", async () => {
+    const f = await setup();
+    await tick(f, DIGEST_TIME);
+    const household = await f.t.run(async (ctx) => await ctx.db.get(f.householdId));
+    expect(household?.lastDigestDate).toBe("2026-11-02");
+    // With the digest row gone, only lastDigestDate stops a second one being recorded.
+    await f.t.run(async (ctx) => {
+      for (const d of await ctx.db.query("digests").collect()) await ctx.db.delete(d._id);
+    });
+    await tick(f, DIGEST_TIME + 60_000);
+    expect(await digests(f)).toHaveLength(0);
+  });
+
   test("a household created after that day's digest time gets none that day", async () => {
     vi.setSystemTime(DIGEST_TIME + 3_600_000);
     const f = await setup();
@@ -300,15 +273,13 @@ describe("facts", () => {
     await addQuestion(f, Date.parse("2026-11-03T04:30:00Z"), "in the day");
     await addQuestion(f, Date.parse("2026-11-03T05:30:00Z"), "next day");
     await addQuestion(f, Date.parse("2026-11-02T04:30:00Z"), "previous day");
-    await addInstance(f, {
-      label: "Yesterday pills",
+    await addDayInstance(f, "Yesterday pills", {
       localDate: "2026-11-01",
       scheduledTime: "08:00",
       windowStart: 1,
       state: "missed",
     });
-    await addInstance(f, {
-      label: "Today pills",
+    await addDayInstance(f, "Today pills", {
       scheduledTime: "08:00",
       windowStart: 2,
       state: "missed",
@@ -323,16 +294,14 @@ describe("facts", () => {
 
   test("tasks, resolutions, claims, doses and questions are all reported", async () => {
     const f = await setup();
-    await addInstance(f, {
-      label: "Morning pills",
+    await addDayInstance(f, "Morning pills", {
       scheduledTime: "08:00",
       windowStart: 1,
       state: "confirmed",
       confirmedAt: Date.parse("2026-11-02T13:05:00Z"),
       confirmedVia: "voice",
     });
-    await addInstance(f, {
-      label: "Lunch pills",
+    await addDayInstance(f, "Lunch pills", {
       scheduledTime: "12:00",
       windowStart: 2,
       state: "resolved",
@@ -340,16 +309,14 @@ describe("facts", () => {
       confirmedVia: "caregiver",
       confirmedBy: "pat",
     });
-    await addInstance(f, {
-      label: "Evening pills",
+    await addDayInstance(f, "Evening pills", {
       scheduledTime: "18:00",
       windowStart: 3,
       state: "missed",
-      alerted: true,
+      firedSteps: [{ stepId: "s2", action: "alert_on_call", firedAt: 1, notified: true }],
       claimedBy: "pat",
     });
-    await addInstance(f, {
-      label: "Walk",
+    await addDayInstance(f, "Walk", {
       scheduledTime: "15:00",
       windowStart: 4,
       state: "upcoming",
@@ -400,8 +367,7 @@ describe("facts", () => {
 
   test("a deleted task's instance is left out", async () => {
     const f = await setup();
-    await addInstance(f, {
-      label: "Gone",
+    await addDayInstance(f, "Gone", {
       scheduledTime: "08:00",
       windowStart: 1,
       state: "missed",
@@ -416,13 +382,8 @@ describe("facts", () => {
   test("load returns null for a digest that is no longer pending", async () => {
     const f = await setup();
     const digestId = await pendingDigest(f);
-    await f.t.run(async (ctx) => await ctx.db.patch(digestId, { status: "sent" }));
+    await f.t.run(async (ctx) => await ctx.db.patch(digestId, { status: "done" }));
     expect(await load(f, digestId)).toBeNull();
-  });
-
-  test("the recipient count is the members with a verified phone", async () => {
-    const f = await setup();
-    expect((await load(f, await pendingDigest(f)))?.recipients).toBe(2);
   });
 });
 
@@ -433,8 +394,7 @@ describe("compose", () => {
    * @return: (Promise<void>) Resolves when added.
    */
   async function addActivity(f: DeliveryFixture): Promise<void> {
-    await addInstance(f, {
-      label: "Morning pills",
+    await addDayInstance(f, "Morning pills", {
       scheduledTime: "08:00",
       windowStart: 1,
       state: "confirmed",
@@ -452,10 +412,9 @@ describe("compose", () => {
     expect(modelMock.mock.calls[0]![0]).toContain("<facts>");
     const row = (await digests(f))[0]!;
     expect(row).toMatchObject({
-      status: "sent",
+      status: "done",
       source: "claude",
       text: GOOD_REPLY,
-      recipients: 2,
     });
     const rows = await digestRows(f);
     expect(rows.map((r) => r.recipientUserId).sort()).toEqual(["max", "pat"]);
@@ -490,7 +449,7 @@ describe("compose", () => {
     const row = (await digests(f))[0]!;
     expect(row.source).toBe("template");
     expect(row.text).toBe("Confirmed: Morning pills at 8:05 AM (voice).");
-    expect(row.status).toBe("sent");
+    expect(row.status).toBe("done");
   });
 
   test("a model API error falls back to the template", async () => {
@@ -509,7 +468,7 @@ describe("compose", () => {
     expect(await digestRows(f)).toHaveLength(2);
   });
 
-  test("with no verified phone nothing is queued and the model is not called", async () => {
+  test("with no verified phone the digest is still composed and nothing is queued", async () => {
     const f = await setup();
     await addActivity(f);
     await f.t.run(async (ctx) => {
@@ -518,8 +477,7 @@ describe("compose", () => {
       }
     });
     await compose(f, await pendingDigest(f));
-    expect(modelMock).not.toHaveBeenCalled();
-    expect((await digests(f))[0]).toMatchObject({ status: "no_recipients", recipients: 0 });
+    expect((await digests(f))[0]).toMatchObject({ status: "done", source: "claude" });
     expect(await digestRows(f)).toHaveLength(0);
   });
 
@@ -575,13 +533,13 @@ describe("completion handler", () => {
       result: { kind: "success", returnValue: "claude" },
     });
     expect((await digests(f))[0]?.status).toBe("pending");
-    await f.t.run(async (ctx) => await ctx.db.patch(digestId, { status: "sent" }));
+    await f.t.run(async (ctx) => await ctx.db.patch(digestId, { status: "done" }));
     await f.t.mutation(internal.digest.onComposeComplete, {
       workId: WORK_ID,
       context: { digestId },
       result: { kind: "failed", error: "late" },
     });
-    expect((await digests(f))[0]?.status).toBe("sent");
+    expect((await digests(f))[0]?.status).toBe("done");
   });
 });
 
@@ -597,8 +555,7 @@ describe("sweeper", () => {
 describe("end to end", () => {
   test("a tick at digestTime ends with texts to the verified phones", async () => {
     const f = await setup();
-    await addInstance(f, {
-      label: "Morning pills",
+    await addDayInstance(f, "Morning pills", {
       scheduledTime: "08:00",
       windowStart: 1,
       state: "confirmed",
@@ -616,7 +573,7 @@ describe("end to end", () => {
       await vi.advanceTimersByTimeAsync(1_100);
     }
     expect(providerMocks.smsSend).toHaveBeenCalledTimes(2);
-    expect((await digests(f))[0]).toMatchObject({ status: "sent", source: "claude" });
+    expect((await digests(f))[0]).toMatchObject({ status: "done", source: "claude" });
   });
 });
 

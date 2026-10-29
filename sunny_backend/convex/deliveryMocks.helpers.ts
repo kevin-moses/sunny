@@ -14,7 +14,7 @@ import { internalActionGeneric } from "convex/server";
 import { v } from "convex/values";
 import { vi } from "vitest";
 import type { Doc, Id } from "./_generated/dataModel";
-import { createFamilyHousehold } from "./testing.helpers";
+import { createFamilyHousehold, setPhone } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
 /** The mocked providers, shared by the test file and the mocked modules. */
@@ -56,7 +56,11 @@ export function apnsModule(original: object = {}) {
         body: v.string(),
         data: v.optional(v.record(v.string(), v.string())),
       },
-      handler: async (_ctx, args) => await providerMocks.apnsSend(args),
+      handler: async (_ctx, args) => {
+        // Tests may script a bare per-token array or a full { results, configError }.
+        const reply = await providerMocks.apnsSend(args);
+        return Array.isArray(reply) ? { results: reply } : reply;
+      },
     }),
   };
 }
@@ -101,22 +105,11 @@ export async function deliveryFixture(
       .first())!;
     await ctx.db.insert("pushTokens", { userId: "phone", token: "tok-1" });
     await ctx.db.insert("pushTokens", { userId: "phone", token: "tok-2" });
-    const phones: Array<[string, string, number | undefined]> = [
-      ["pat", "+15550000001", 1],
-      ["max", "+15550000002", 1],
-      ["val", "+15550000003", undefined],
-    ];
-    for (const [userId, phone, phoneVerifiedAt] of phones) {
-      const member = (await ctx.db
-        .query("householdMembers")
-        .withIndex("by_household_user", (q) =>
-          q.eq("householdId", householdId).eq("userId", userId),
-        )
-        .unique())!;
-      await ctx.db.patch(member._id, { phone, phoneVerifiedAt });
-    }
     return device._id;
   });
+  await setPhone(t, householdId, "pat", "+15550000001");
+  await setPhone(t, householdId, "max", "+15550000002");
+  await setPhone(t, householdId, "val", "+15550000003", false);
   return { t, householdId, deviceId };
 }
 
@@ -135,6 +128,7 @@ export async function insertOutbox(
       await ctx.db.insert("notificationOutbox", {
         householdId: f.householdId,
         kind: "event_notice",
+        state: "pending",
         title: "Title",
         body: "Body",
         payload: {},

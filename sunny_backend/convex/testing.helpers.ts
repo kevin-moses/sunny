@@ -283,3 +283,81 @@ export async function pendingScheduled(t: TestConvex): Promise<string[]> {
     return rows.filter((r) => r.state.kind === "pending").map((r) => r.name);
   });
 }
+
+/**
+ * purpose: Set a member's phone number, verified or not, directly.
+ * @param t: (TestConvex) Harness.
+ * @param householdId: (Id<"households">) Household.
+ * @param userId: (string) Member.
+ * @param phone: (string) E.164 number.
+ * @param verified: (boolean) Whether to set phoneVerifiedAt (to the current clock).
+ * @param displayName: (string, optional) New display name for the member.
+ * @return: (Promise<void>) Resolves when written.
+ */
+export async function setPhone(
+  t: TestConvex,
+  householdId: Id<"households">,
+  userId: string,
+  phone: string,
+  verified = true,
+  displayName?: string,
+): Promise<void> {
+  await t.run(async (ctx) => {
+    const member = await ctx.db
+      .query("householdMembers")
+      .withIndex("by_household_user", (q) => q.eq("householdId", householdId).eq("userId", userId))
+      .unique();
+    await ctx.db.patch(member!._id, {
+      phone,
+      phoneVerifiedAt: verified ? Date.now() : undefined,
+      ...(displayName === undefined ? {} : { displayName }),
+    });
+  });
+}
+
+/**
+ * purpose: Insert a task and one of its instances directly. Defaults: local date 2026-10-29,
+ *          scheduled 08:00, a two hour window around the current clock, state "escalated".
+ * @param t: (TestConvex) Harness.
+ * @param householdId: (Id<"households">) Household.
+ * @param label: (string) Task display label.
+ * @param fields: (object) Overrides for any instance field except the ids.
+ * @return: (Promise<Id<"taskInstances">>) The instance.
+ */
+export async function addInstance(
+  t: TestConvex,
+  householdId: Id<"households">,
+  label: string,
+  fields: Partial<
+    Omit<Doc<"taskInstances">, "_id" | "_creationTime" | "taskId" | "householdId">
+  > = {},
+): Promise<Id<"taskInstances">> {
+  const windowStart = fields.windowStart ?? Date.now() - 60 * 60 * 1000;
+  return await t.run(async (ctx) => {
+    const taskId = await ctx.db.insert("tasks", {
+      householdId,
+      type: "medication",
+      title: label,
+      displayLabel: label,
+      spokenPrompt: `Time for ${label}.`,
+      checklistItems: [],
+      times: [fields.scheduledTime ?? "08:00"],
+      windowMinutes: 60,
+      createdByKind: "caregiver",
+      active: true,
+      scheduleChangedAt: 0,
+    });
+    return await ctx.db.insert("taskInstances", {
+      localDate: "2026-10-29",
+      scheduledTime: "08:00",
+      windowEnd: windowStart + 2 * 60 * 60 * 1000,
+      state: "escalated",
+      createdAt: windowStart,
+      firedSteps: [],
+      ...fields,
+      taskId,
+      householdId,
+      windowStart,
+    });
+  });
+}

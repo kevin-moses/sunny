@@ -1,11 +1,12 @@
 // lib/secretBox.test.ts
 // Purpose: Tests for AES-256-GCM secret encryption: round trip, fresh IV per message, the
-// versioned format, tampering, a wrong key, and a missing or malformed key.
+// versioned format, tampering, a wrong key, and a missing or malformed key; and the constant-time
+// string compare.
 //
 // Last modified: 2026-10-29
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { decryptSecret, encryptSecret } from "./secretBox";
+import { constantTimeEqual, decryptSecret, encryptSecret } from "./secretBox";
 
 /**
  * purpose: Base64 of 32 bytes all set to one value, as a test key.
@@ -93,5 +94,13 @@ describe("secretBox", () => {
   test("non-base64 key gives a clear error", async () => {
     process.env.CALENDAR_TOKEN_KEY = "!!!not base64!!!";
     await expect(encryptSecret("x")).rejects.toThrow("32 bytes");
+  });
+});
+
+describe("constantTimeEqual", () => {
+  test("compares by content and length", () => {
+    expect(constantTimeEqual("abc", "abc")).toBe(true);
+    expect(constantTimeEqual("abc", "abd")).toBe(false);
+    expect(constantTimeEqual("abc", "abcd")).toBe(false);
   });
 });

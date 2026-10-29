@@ -49,17 +49,16 @@ export function noticeContent(
  *          eventNotices row and one outbox row per household member. Idempotent per
  *          (event, local date).
  * @param ctx: (MutationCtx) Mutation context.
- * @param householdId: (Id<"households">) Household.
+ * @param household: (Doc<"households">) The household, as the tick already read it.
  * @param now: (number) Epoch ms.
  * @return: (Promise<number>) Occurrences announced.
  */
 export async function announceEvents(
   ctx: MutationCtx,
-  householdId: Id<"households">,
+  household: Doc<"households">,
   now: number,
 ): Promise<number> {
-  const household = await ctx.db.get(householdId);
-  if (!household) return 0;
+  const householdId = household._id;
   if (localTime(now, household.timezone) < household.eventNoticeTime) return 0;
   const today = localDate(now, household.timezone);
   const upcoming = (

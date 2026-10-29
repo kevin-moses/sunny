@@ -7,10 +7,9 @@
 //
 // Last modified: 2026-10-29
 
-import { convexTest } from "convex-test";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
-import schema from "./schema";
+import { makeBackend } from "./testing.helpers";
 import { resetProviderTokenCache } from "./lib/apnsPayload";
 
 /** One scripted response for a fake request. */
@@ -62,8 +61,6 @@ vi.mock("node:http2", async () => {
   };
 });
 
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./**/*.helpers.ts"]);
-
 /**
  * purpose: Set the APNs environment variables with a freshly generated key.
  * @param overrides: (Record<string, string | undefined>) Variables to override or unset.
@@ -97,14 +94,24 @@ beforeEach(async () => {
 });
 
 /**
- * purpose: Run internal.apns.send.
+ * purpose: Run internal.apns.send and return the whole result.
  * @param tokens: (string[]) Device tokens.
  * @param data: (Record<string, string>) Optional custom keys.
- * @return: (Promise<unknown>) The action result.
+ * @return: The action result: per-token results and an optional configError.
+ */
+async function runFull(tokens: string[], data?: Record<string, string>) {
+  const t = makeBackend();
+  return await t.action(internal.apns.send, { tokens, title: "Title", body: "Body", data });
+}
+
+/**
+ * purpose: Run internal.apns.send and return the per-token results.
+ * @param tokens: (string[]) Device tokens.
+ * @param data: (Record<string, string>) Optional custom keys.
+ * @return: (Promise<ApnsResult[]>) One result per token.
  */
 async function run(tokens: string[], data?: Record<string, string>) {
-  const t = convexTest(schema, modules);
-  return await t.action(internal.apns.send, { tokens, title: "Title", body: "Body", data });
+  return (await runFull(tokens, data)).results;
 }
 
 describe("apns.send", () => {
@@ -151,7 +158,7 @@ describe("apns.send", () => {
       { status: 503, body: JSON.stringify({ reason: "ServiceUnavailable" }) },
       { status: 403, body: JSON.stringify({ reason: "InvalidProviderToken" }) },
     ];
-    const res = (await run(["a", "b", "c", "d", "e"])) as {
+    const res = (await run(["a", "b", "c", "d", "e"])) as unknown as {
       token: string;
       outcome: string;
       retryable: boolean;
@@ -168,7 +175,7 @@ describe("apns.send", () => {
 
   test("a timeout is a retryable failure and does not affect other tokens", async () => {
     state.scripts = [{ hang: true }, { status: 200 }];
-    const res = (await run(["slow", "ok"])) as {
+    const res = (await run(["slow", "ok"])) as unknown as {
       outcome: string;
       retryable: boolean;
       reason: string | null;
@@ -184,7 +191,7 @@ describe("apns.send", () => {
 
   test("a connection error is a retryable failure", async () => {
     state.scripts = [{ error: "ECONNRESET" }];
-    const res = (await run(["a"])) as {
+    const res = (await run(["a"])) as unknown as {
       outcome: string;
       retryable: boolean;
       reason: string | null;
@@ -198,23 +205,25 @@ describe("apns.send", () => {
   });
 
   test.each(["APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8"])(
-    "throws a recognisable config error when %s is missing",
+    "returns a recognisable config error when %s is missing",
     async (name) => {
       await setEnv({ [name]: undefined });
-      await expect(run(["a"])).rejects.toThrow("APNs is not configured");
+      const res = await runFull(["a"]);
+      expect(res.results).toEqual([]);
+      expect(res.configError).toContain("APNs is not configured");
       expect(state.sessions).toHaveLength(0);
     },
   );
 
-  test("throws a config error for a bad PEM", async () => {
+  test("returns a config error for a bad PEM", async () => {
     await setEnv({ APNS_KEY_P8: "not a pem" });
-    await expect(run(["a"])).rejects.toThrow("APNs is not configured");
+    expect((await runFull(["a"])).configError).toContain("APNs is not configured");
   });
 });
 
 describe("apnsTokens.deleteTokens", () => {
   test("deletes the listed tokens only and ignores unknown ones", async () => {
-    const t = convexTest(schema, modules);
+    const t = makeBackend();
     await t.run(async (ctx) => {
       await ctx.db.insert("pushTokens", { userId: "u1", token: "a" });
       await ctx.db.insert("pushTokens", { userId: "u1", token: "b" });

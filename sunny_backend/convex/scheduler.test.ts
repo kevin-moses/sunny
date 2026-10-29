@@ -397,7 +397,7 @@ describe("escalation ladder", () => {
     expect(alerts[0]).toMatchObject({
       recipientUserId: "pat",
       title: "Mom hasn't confirmed Morning pills",
-      body: "Due at 8:00 AM. Tap to claim it.",
+      body: "Due at 8:00 AM.",
     });
     expect((await reload(f.t, i1)).state).toBe("escalated");
 
@@ -937,6 +937,7 @@ describe("bounded task deletion", () => {
             title: "t",
             body: "b",
             payload: {},
+            state: "pending",
           });
         }
       }

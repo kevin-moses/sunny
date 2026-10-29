@@ -21,7 +21,13 @@ import {
   VIEWER_REPLY,
   parseCommand,
 } from "./sms";
-import { createFamilyHousehold, createHousehold, makeBackend } from "./testing.helpers";
+import {
+  addInstance,
+  createFamilyHousehold,
+  createHousehold,
+  makeBackend,
+  setPhone,
+} from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 import { DEFAULT_WEBHOOK_URL, twilioSignature } from "./lib/twilio";
 
@@ -142,13 +148,16 @@ describe("send action", () => {
     });
   });
 
-  test("throws a message starting with 'SMS is not configured' without credentials", async () => {
+  test("returns a non-retryable config result without credentials", async () => {
     vi.stubEnv("TWILIO_ACCOUNT_SID", "");
     stub(201, { sid: "SM1" });
     const t = makeBackend();
-    await expect(t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).rejects.toThrow(
-      /SMS is not configured/,
-    );
+    expect(await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).toEqual({
+      ok: false,
+      retryable: false,
+      config: true,
+      error: "SMS is not configured: set TWILIO_ACCOUNT_SID",
+    });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -160,35 +169,6 @@ interface Fixture {
 }
 
 /**
- * purpose: Mark a member's number as verified (or not) directly.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Member.
- * @param phone: (string) E.164 number.
- * @param verified: (boolean) Whether to set phoneVerifiedAt.
- * @return: (Promise<void>)
- */
-async function setPhone(
-  t: TestConvex,
-  householdId: Id<"households">,
-  userId: string,
-  phone: string,
-  verified = true,
-): Promise<void> {
-  await t.run(async (ctx) => {
-    const member = await ctx.db
-      .query("householdMembers")
-      .withIndex("by_household_user", (q) => q.eq("householdId", householdId).eq("userId", userId))
-      .unique();
-    await ctx.db.patch(member!._id, {
-      phone,
-      phoneVerifiedAt: verified ? START : undefined,
-      displayName: userId === "max" ? "Max" : member!.displayName,
-    });
-  });
-}
-
-/**
  * purpose: Build the family household with Pat and Max's numbers verified.
  * @return: (Promise<Fixture>) The fixture.
  */
@@ -196,51 +176,8 @@ async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
   await setPhone(t, householdId, "pat", PAT_PHONE);
-  await setPhone(t, householdId, "max", MAX_PHONE);
+  await setPhone(t, householdId, "max", MAX_PHONE, true, "Max");
   return { t, householdId };
-}
-
-/**
- * purpose: Insert a task and one of its instances in the given state.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param label: (string) Task display label.
- * @param fields: (object) Overrides for the instance state and claimedBy.
- * @return: (Promise<Id<"taskInstances">>) The instance.
- */
-async function addInstance(
-  t: TestConvex,
-  householdId: Id<"households">,
-  label: string,
-  fields: Partial<Pick<Doc<"taskInstances">, "state" | "claimedBy">> = {},
-): Promise<Id<"taskInstances">> {
-  return await t.run(async (ctx) => {
-    const taskId = await ctx.db.insert("tasks", {
-      householdId,
-      type: "medication",
-      title: label,
-      displayLabel: label,
-      spokenPrompt: `Time for ${label}.`,
-      checklistItems: [],
-      times: ["08:00"],
-      windowMinutes: 60,
-      createdByKind: "caregiver",
-      active: true,
-      scheduleChangedAt: START,
-    });
-    return await ctx.db.insert("taskInstances", {
-      taskId,
-      householdId,
-      localDate: "2026-10-29",
-      scheduledTime: "08:00",
-      windowStart: START - HOUR_MS,
-      windowEnd: START + HOUR_MS,
-      state: fields.state ?? "escalated",
-      claimedBy: fields.claimedBy,
-      createdAt: START - HOUR_MS,
-      firedSteps: [],
-    });
-  });
 }
 
 /**
@@ -268,6 +205,7 @@ async function addAlert(
       title: "alert",
       body: "alert",
       payload: {},
+      state: "sent",
     });
   });
 }

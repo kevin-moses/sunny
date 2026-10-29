@@ -124,18 +124,23 @@ export const notificationKind = v.union(
 /** Type of notificationKind. */
 export type NotificationKind = Infer<typeof notificationKind>;
 
-/** How an outbox row was (or was not) delivered: APNs push, SMS, or no reachable address. */
-export const deliveryChannel = v.union(v.literal("apns"), v.literal("sms"), v.literal("none"));
+/** Where an outbox row stands: waiting, delivered, finished without a reachable address, or given up. */
+export const outboxState = v.union(
+  v.literal("pending"),
+  v.literal("sent"),
+  v.literal("skipped"),
+  v.literal("failed"),
+);
+/** Type of outboxState. */
+export type OutboxState = Infer<typeof outboxState>;
+
+/** The channel a notification was sent on. */
+export const deliveryChannel = v.union(v.literal("apns"), v.literal("sms"));
 /** Type of deliveryChannel. */
 export type DeliveryChannel = Infer<typeof deliveryChannel>;
 
 /** Where a household's daily digest for one local date stands (see digest.ts). */
-export const digestStatus = v.union(
-  v.literal("pending"),
-  v.literal("sent"),
-  v.literal("no_recipients"),
-  v.literal("failed"),
-);
+export const digestStatus = v.union(v.literal("pending"), v.literal("done"), v.literal("failed"));
 /** Type of digestStatus. */
 export type DigestStatus = Infer<typeof digestStatus>;
 

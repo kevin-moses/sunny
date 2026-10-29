@@ -34,6 +34,7 @@ import { loadHousehold } from "./lib/access";
 import { appError } from "./lib/errors";
 import { householdOccurrences } from "./lib/occurrences";
 import { addDays, localDate, localDateTime, localMidnight } from "./lib/time";
+import { constantTimeEqual } from "./lib/secretBox";
 import { todayInstances } from "./lib/today";
 import type { TodayEntry } from "./lib/today";
 import type { ConfirmVia } from "./lib/validators";
@@ -91,23 +92,6 @@ export interface AgentContext {
   sensitiveTopics: Array<{ topic: string; guidance: string }>;
   memory: Array<{ fact: string; source: string; verified: boolean; notedAt: number }>;
   recentConversations: Array<{ startedAt: number; summary: string }>;
-}
-
-/**
- * purpose: Compare two strings without leaking where they differ: every character of the
- *          longer one is visited and length differences count as a mismatch.
- * @param a: (string) First string.
- * @param b: (string) Second string.
- * @return: (boolean) True when equal.
- */
-function constantTimeEqual(a: string, b: string): boolean {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  }
-  return diff === 0;
 }
 
 /**

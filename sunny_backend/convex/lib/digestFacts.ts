@@ -68,7 +68,7 @@ export interface DigestFacts {
  * @param timezone: (string) IANA zone.
  * @return: ({ start: number; end: number }) Local midnight to the next local midnight.
  */
-export function dayRange(localDate: string, timezone: string): { start: number; end: number } {
+function dayRange(localDate: string, timezone: string): { start: number; end: number } {
   return {
     start: zonedInstant(localDate, "00:00", timezone),
     end: zonedInstant(addDays(localDate, 1), "00:00", timezone),
@@ -114,14 +114,19 @@ async function taskFacts(
       i.state === "escalated",
   );
   logged.sort((a, b) => a.windowStart - b.windowStart);
-  const labels = new Map<Id<"tasks">, string | null>();
+  const taskIds = [...new Set(logged.map((i) => i.taskId))];
+  const labels = new Map<Id<"tasks">, string | undefined>(
+    await Promise.all(
+      taskIds.map(
+        async (id) =>
+          [id, (await ctx.db.get(id))?.displayLabel] as [Id<"tasks">, string | undefined],
+      ),
+    ),
+  );
   const facts: TaskFact[] = [];
   for (const instance of logged) {
-    if (!labels.has(instance.taskId)) {
-      labels.set(instance.taskId, (await ctx.db.get(instance.taskId))?.displayLabel ?? null);
-    }
     const label = labels.get(instance.taskId);
-    if (label === null || label === undefined) continue;
+    if (label === undefined) continue;
     const state = instance.state as TaskOutcome;
     const fact: TaskFact = {
       label,
@@ -157,26 +162,27 @@ async function doseFacts(
     .query("tasks")
     .withIndex("by_household", (q) => q.eq("householdId", household._id))
     .collect();
-  const facts: DoseFact[] = [];
-  for (const task of tasks.filter((t) => t.times.length === 0)) {
-    const doses = await ctx.db
-      .query("doseLog")
-      .withIndex("by_household_task_taken", (q) =>
-        q
-          .eq("householdId", household._id)
-          .eq("taskId", task._id)
-          .gte("takenAt", range.start)
-          .lt("takenAt", range.end),
-      )
-      .take(DAY_READ_CAP);
-    if (doses.length > 0) {
-      facts.push({
-        label: task.displayLabel,
-        times: doses.map((d) => formatTime12(localTime(d.takenAt, household.timezone))),
-      });
-    }
-  }
-  return facts;
+  const perTask = await Promise.all(
+    tasks
+      .filter((t) => t.times.length === 0)
+      .map(async (task) => {
+        const doses = await ctx.db
+          .query("doseLog")
+          .withIndex("by_household_task_taken", (q) =>
+            q
+              .eq("householdId", household._id)
+              .eq("taskId", task._id)
+              .gte("takenAt", range.start)
+              .lt("takenAt", range.end),
+          )
+          .take(DAY_READ_CAP);
+        return {
+          label: task.displayLabel,
+          times: doses.map((d) => formatTime12(localTime(d.takenAt, household.timezone))),
+        };
+      }),
+  );
+  return perTask.filter((d) => d.times.length > 0);
 }
 
 /**
@@ -185,7 +191,7 @@ async function doseFacts(
  * @param questions: (Doc<"agentQuestions">[]) The day's questions.
  * @return: (Pick<DigestFacts, "questionCount" | "unanswered" | "routed" | "repeats">) Facts.
  */
-export function questionFacts(
+function questionFacts(
   questions: Doc<"agentQuestions">[],
 ): Pick<DigestFacts, "questionCount" | "unanswered" | "routed" | "repeats"> {
   const counts = new Map<string, number>();
@@ -236,11 +242,15 @@ export async function gatherDigestFacts(
       q.eq("householdId", household._id).gte("askedAt", range.start).lt("askedAt", range.end),
     )
     .take(DAY_READ_CAP);
+  const [tasks, doses] = await Promise.all([
+    taskFacts(ctx, household, localDate, names),
+    doseFacts(ctx, household, range),
+  ]);
   return {
     seniorName: household.seniorPreferredName,
     localDate,
-    tasks: await taskFacts(ctx, household, localDate, names),
-    doses: await doseFacts(ctx, household, range),
+    tasks,
+    doses,
     ...questionFacts(questions),
   };
 }

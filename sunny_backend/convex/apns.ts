@@ -3,10 +3,10 @@
 // Purpose: Apple Push Notification sender. APNs only accepts HTTP/2, which fetch does not speak
 // in Convex, so this "use node" file uses node:http2: one session per send call, reused for all
 // tokens, closed at the end, with a 10 second timeout per request. Payload, headers, provider
-// token and outcome mapping live in lib/apnsPayload.ts. Per-token failures are returned, never
-// thrown; only missing or invalid configuration throws (message starts with "APNs is not
-// configured"). The companion deleteTokens mutation is in apnsTokens.ts because a "use node"
-// file may only hold actions.
+// token and outcome mapping live in lib/apnsPayload.ts. Nothing is thrown for a push: per-token
+// failures and a missing or invalid configuration (configError, message starts with "APNs is
+// not configured") are returned. The companion deleteTokens mutation is in apnsTokens.ts
+// because a "use node" file may only hold actions.
 // Exports: send (internalAction).
 //
 // Last modified: 2026-10-29
@@ -24,7 +24,8 @@ import {
   loadApnsConfig,
   mapOutcome,
 } from "./lib/apnsPayload";
-import type { ApnsConfig, ApnsResult } from "./lib/apnsPayload";
+import { ConfigError } from "./lib/errors";
+import type { ApnsConfig, ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -96,8 +97,8 @@ function sendOne(
  * @param title: (string) Alert title.
  * @param body: (string) Alert body.
  * @param data: (Record<string, string>) Optional custom keys (snake_case), e.g. task_instance_id.
- * @return: (ApnsResult[]) One result per token, in order.
- * @raises ConfigError ("APNs is not configured...") when the key, team id or key text is invalid.
+ * @return: (ApnsSendResult) One result per token, in order, or configError when the key, team id
+ *          or key text is missing or invalid.
  */
 export const send = internalAction({
   args: {
@@ -106,18 +107,26 @@ export const send = internalAction({
     body: v.string(),
     data: v.optional(v.record(v.string(), v.string())),
   },
-  handler: async (_ctx, args): Promise<ApnsResult[]> => {
-    const config = loadApnsConfig();
-    const providerToken = await getProviderToken(config, Math.floor(Date.now() / 1000));
-    if (args.tokens.length === 0) return [];
+  handler: async (_ctx, args): Promise<ApnsSendResult> => {
+    let config: ApnsConfig;
+    let providerToken: string;
+    try {
+      config = loadApnsConfig();
+      providerToken = await getProviderToken(config, Math.floor(Date.now() / 1000));
+    } catch (e) {
+      if (e instanceof ConfigError) return { results: [], configError: e.message };
+      throw e;
+    }
+    if (args.tokens.length === 0) return { results: [] };
     const payload = buildPayload(args.title, args.body, args.data);
     const session = connect(`https://${apnsHost(config.environment)}`);
     // A session-level error also surfaces on each pending request's own error event.
     session.on("error", () => {});
     try {
-      return await Promise.all(
+      const results = await Promise.all(
         args.tokens.map((t) => sendOne(session, config, providerToken, t, payload, args.data)),
       );
+      return { results };
     } finally {
       session.close();
     }

@@ -20,7 +20,8 @@ import { mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { requireCaregiverAccount, requireCaregiverMember } from "./lib/access";
 import { appError } from "./lib/errors";
-import { constantTimeEqual, normalizePhone, twilioConfig } from "./lib/twilio";
+import { constantTimeEqual } from "./lib/secretBox";
+import { normalizePhone, twilioConfig } from "./lib/twilio";
 
 export const CODE_TTL_MS = 10 * MINUTE;
 export const MAX_CODE_ATTEMPTS = 5;
