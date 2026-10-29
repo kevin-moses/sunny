@@ -2,9 +2,10 @@
 // Purpose: Queueing and routing of notification delivery. Every outbox row is inserted through
 // insertNotification, which enqueues delivery.deliver on the workpool "deliveryPool".
 // Routing: a device recipient gets APNs to every push token of its user; a member recipient
-// gets an SMS at the verified phone (title and body on separate lines, a caregiver_alert ends
-// with the reply hint). Membership, device and content are re-checked at send time; a row with
-// no reachable address or stale content is skipped, with the reason in `detail`.
+// gets an SMS at the verified phone (title and body on separate lines; a caregiver_alert for a
+// member who can claim ends with the reply hint). Membership, device and content are re-checked
+// at send time; a row with no reachable address or stale content is skipped, with the reason in
+// `detail`. A row a run started less than 5 minutes ago is leased: the sweeper leaves it alone.
 //
 // Last modified: 2026-10-29
 
@@ -29,6 +30,9 @@ export const deliveryPool = new Workpool(components.deliveryPool, {
 
 /** A row pending this long (ms) is assumed lost and enqueued again by the sweeper. */
 export const STUCK_AFTER_MS = 15 * 60 * 1000;
+
+/** A row whose run started this recently (ms) is leased, and the sweeper skips it. */
+const LEASE_MS = 5 * 60 * 1000;
 
 /** Rows the sweeper re-enqueues per run. */
 export const SWEEP_BATCH = 100;
@@ -57,8 +61,11 @@ export type Route =
       body: string;
       data: Record<string, string>;
     }
-  | { kind: "sms"; to: string; body: string }
+  | { kind: "sms"; to: string; body: string; retryOnTimeout: boolean }
   | { kind: "skip"; reason: string };
+
+/** A route that sends something. */
+export type SendRoute = Exclude<Route, { kind: "skip" }>;
 
 /**
  * purpose: Insert a pending outbox row and enqueue its delivery. Every code path that
@@ -93,13 +100,14 @@ async function queueDelivery(ctx: MutationCtx, outboxId: Id<"notificationOutbox"
 
 /**
  * purpose: The SMS text of a row: title and body on separate lines, the reply hint for a
- *          caregiver alert, capped at SMS_MAX_CHARS.
+ *          caregiver alert to someone who can claim it, capped at SMS_MAX_CHARS.
  * @param row: (Doc<"notificationOutbox">) The row.
+ * @param canClaim: (boolean) Whether the recipient may claim tasks (viewers may not).
  * @return: (string) The text.
  */
-function smsText(row: Doc<"notificationOutbox">): string {
+function smsText(row: Doc<"notificationOutbox">, canClaim: boolean): string {
   const parts = [row.title, row.body];
-  if (row.kind === "caregiver_alert") parts.push(CAREGIVER_ALERT_SUFFIX);
+  if (row.kind === "caregiver_alert" && canClaim) parts.push(CAREGIVER_ALERT_SUFFIX);
   return parts
     .filter((p) => p.length > 0)
     .join("\n")
@@ -182,7 +190,13 @@ async function memberRoute(
   if (!member) return { kind: "skip", reason: "recipient_left" };
   const to = verifiedPhone(member);
   if (to === undefined) return { kind: "skip", reason: "no_verified_phone" };
-  return { kind: "sms", to, body: smsText(row) };
+  // A timed-out text may still have been delivered; only an alert is worth a possible repeat.
+  return {
+    kind: "sms",
+    to,
+    body: smsText(row, member.role !== "viewer"),
+    retryOnTimeout: row.kind === "caregiver_alert",
+  };
 }
 
 /**
@@ -203,7 +217,8 @@ export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">
 
 /**
  * purpose: Enqueue again the outbox rows left pending for STUCK_AFTER_MS (the job was lost or
- *          its action died). A duplicate run is harmless: a settled row ends at once, and
+ *          its action died, or a configuration problem held them) unless a run started within
+ *          LEASE_MS. A duplicate run is harmless: a settled row ends at once, and
  *          delivery runs are capped by MAX_ATTEMPTS.
  * @param ctx: (MutationCtx) Context.
  * @param now: (number) Epoch ms.
@@ -216,6 +231,7 @@ export async function requeueStuckDeliveries(ctx: MutationCtx, now: number): Pro
       q.eq("state", "pending").lt("_creationTime", now - STUCK_AFTER_MS),
     )
     .take(SWEEP_BATCH);
-  for (const row of rows) await queueDelivery(ctx, row._id);
-  return rows.length;
+  const idle = rows.filter((r) => (r.attemptStartedAt ?? 0) <= now - LEASE_MS);
+  for (const row of idle) await queueDelivery(ctx, row._id);
+  return idle.length;
 }

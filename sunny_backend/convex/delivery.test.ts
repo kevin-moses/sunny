@@ -24,13 +24,13 @@ import {
 } from "./deliveryMocks.helpers";
 import type { DeliveryFixture } from "./deliveryMocks.helpers";
 import { insertNotification, MAX_ATTEMPTS, STUCK_AFTER_MS } from "./lib/delivery";
-import { addInstance, createHousehold, makeBackend } from "./testing.helpers";
+import { addInstance, createHousehold, makeBackend, setPhone } from "./testing.helpers";
 
 vi.mock("./apns", async (original) =>
   (await import("./deliveryMocks.helpers")).apnsModule(await original()),
 );
-vi.mock("./sms", async (original) =>
-  (await import("./deliveryMocks.helpers")).smsModule(await original()),
+vi.mock("./lib/twilio", async (original) =>
+  (await import("./deliveryMocks.helpers")).twilioModule(await original()),
 );
 
 const NOW = Date.parse("2026-11-02T15:00:00Z");
@@ -230,19 +230,54 @@ describe("APNs routing", () => {
     expect(row.channel).toBeUndefined();
   });
 
-  test("a configuration result is not retried and fails the row", async () => {
+  test("a configuration result leaves the row pending with the detail, without a retry", async () => {
     const f = await setup();
     providerMocks.apnsSend.mockResolvedValue({
       results: [],
       configError: "APNs is not configured: set APNS_KEY",
     });
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
-    expect(await deliver(f, id)).toBe("failed");
+    expect(await deliver(f, id)).toBe("config");
     expect(await outboxRow(f, id)).toMatchObject({
-      state: "failed",
+      state: "pending",
+      attempts: 1,
       detail: "APNs is not configured: set APNS_KEY",
     });
     expect(providerMocks.apnsSend).toHaveBeenCalledTimes(1);
+  });
+
+  test("once configured, the sweeper delivers a row that was held by configuration", async () => {
+    const f = await setup();
+    providerMocks.apnsSend.mockResolvedValueOnce({
+      results: [],
+      configError: "APNs is not configured",
+    });
+    const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+    await deliver(f, id);
+    vi.setSystemTime(NOW + STUCK_AFTER_MS + 1_000);
+    expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(1);
+    await drivePool(f, id);
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", attempts: 2 });
+  });
+
+  test("a permanent APNs failure that is not configuration stays failed", async () => {
+    const f = await setup();
+    providerMocks.apnsSend.mockResolvedValue([
+      {
+        token: "tok-1",
+        outcome: "failed",
+        status: 400,
+        reason: "BadDeviceToken",
+        retryable: false,
+      },
+    ]);
+    const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+    expect(await deliver(f, id)).toBe("failed");
+    expect(await outboxRow(f, id)).toMatchObject({ state: "failed" });
+    // The token is kept: only 410 Unregistered deletes tokens.
+    expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toHaveLength(
+      2,
+    );
   });
 
   test("an unexpected error is recorded and rethrown for a retry", async () => {
@@ -372,7 +407,7 @@ describe("SMS routing", () => {
     expect((await outboxRow(f, id)).state).toBe("failed");
   });
 
-  test("an SMS configuration result is not retried and fails the row", async () => {
+  test("an SMS configuration result leaves the row pending with the detail", async () => {
     const f = await setup();
     providerMocks.smsSend.mockResolvedValue({
       ok: false,
@@ -381,12 +416,71 @@ describe("SMS routing", () => {
       error: "SMS is not configured: set TWILIO_ACCOUNT_SID",
     });
     const id = await insertOutbox(f, { recipientUserId: "pat" });
-    expect(await deliver(f, id)).toBe("failed");
+    expect(await deliver(f, id)).toBe("config");
     expect(await outboxRow(f, id)).toMatchObject({
-      state: "failed",
+      state: "pending",
       detail: "SMS is not configured: set TWILIO_ACCOUNT_SID",
     });
     expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+  });
+
+  test("a configuration problem cannot hold a row past MAX_ATTEMPTS", async () => {
+    const f = await setup();
+    providerMocks.smsSend.mockResolvedValue({
+      ok: false,
+      retryable: false,
+      config: true,
+      error: "SMS is not configured",
+    });
+    const id = await insertOutbox(f, { recipientUserId: "pat", attempts: MAX_ATTEMPTS - 1 });
+    expect(await deliver(f, id)).toBe("config");
+    expect(await deliver(f, id)).toBe("failed");
+    expect((await outboxRow(f, id)).state).toBe("failed");
+  });
+
+  test.each(["digest", "event_notice"] as const)(
+    "a timed-out %s text is not retried, since it may have been delivered",
+    async (kind) => {
+      const f = await setup();
+      providerMocks.smsSend.mockResolvedValue({
+        ok: false,
+        retryable: true,
+        timedOut: true,
+        error: "Twilio did not answer in time",
+      });
+      const id = await insertOutbox(f, { kind, recipientUserId: "pat" });
+      expect(await deliver(f, id)).toBe("failed");
+      const row = await outboxRow(f, id);
+      expect(row.state).toBe("failed");
+      expect(row.detail).toContain("may have been delivered");
+      expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test("a timed-out caregiver alert is retried", async () => {
+    const f = await setup();
+    providerMocks.smsSend.mockResolvedValue({
+      ok: false,
+      retryable: true,
+      timedOut: true,
+      error: "Twilio did not answer in time",
+    });
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "pat" });
+    await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+    expect((await outboxRow(f, id)).state).toBe("pending");
+  });
+
+  test("a viewer's caregiver alert has no reply hint, a member's does", async () => {
+    const f = await setup();
+    await setPhone(f.t, f.householdId, "val", "+15550000003");
+    const viewer = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "val" });
+    const member = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "max" });
+    await deliver(f, viewer);
+    await deliver(f, member);
+    expect(providerMocks.smsSend.mock.calls[0]![0].body).toBe("Title\nBody");
+    expect(providerMocks.smsSend.mock.calls[1]![0].body).toBe(
+      "Title\nBody\nReply 1 if you're on it.",
+    );
   });
 });
 
@@ -558,6 +652,18 @@ describe("sweeper", () => {
     expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(1);
     expect(old).not.toBe(young);
     expect(settled).not.toBe(old);
+  });
+
+  test("a row a delivery run started within the last 5 minutes is leased and skipped", async () => {
+    const f = await setup();
+    await insertOutbox(f, {
+      recipientUserId: "pat",
+      attemptStartedAt: NOW + STUCK_AFTER_MS - 60_000,
+    });
+    const idle = await insertOutbox(f, { recipientUserId: "max", attemptStartedAt: NOW });
+    vi.setSystemTime(NOW + STUCK_AFTER_MS + 1_000);
+    expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(1);
+    expect(idle).toBeDefined();
   });
 
   test("a swept row is delivered by the workpool", async () => {

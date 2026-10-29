@@ -14,7 +14,7 @@
 // inline) when the timezone, event notice time or senior's preferred name actually changes or
 // a pause ends; removeMember drops the removed caregiver's Google connections, links and
 // pending syncs and revokes their grants.
-// Phone numbers: setMyPhone and confirmMyPhone (phone.ts) are re-exported here; listMembers
+// Phone numbers: setMyPhone, confirmMyPhone and clearMyPhone (phone.ts) are re-exported here; listMembers
 // reports phoneVerified and hides numbers from paired devices.
 //
 // Last modified: 2026-10-29
@@ -40,6 +40,7 @@ import { dropMemberConnections, resyncHouseholdCalendars } from "./lib/calendarS
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
 import { resyncHouseholdTimezone } from "./lib/schedule";
+import { isValidDeviceToken } from "./lib/apnsPayload";
 import { requireNonBlank } from "./lib/text";
 import { canonicalTimezone, isLocalTime } from "./lib/time";
 import { joinGrant, memberRole } from "./lib/validators";
@@ -264,7 +265,8 @@ export const update = mutation({
       patch.timezone = requireTimezone(fields.timezone);
       if (patch.timezone !== household.timezone) {
         // The resync reads the household's zone, so write it before expanding.
-        await ctx.db.patch(householdId, { timezone: patch.timezone });
+        // The digest's local date changes with the zone, so forget the remembered one.
+        await ctx.db.patch(householdId, { timezone: patch.timezone, lastDigestDate: undefined });
         await resyncHouseholdTimezone(ctx, householdId, Date.now());
       }
     }
@@ -327,8 +329,8 @@ export const listMembers = query({
   },
 });
 
-/** Caregiver phone verification, implemented in phone.ts (households.setMyPhone, confirmMyPhone). */
-export { confirmMyPhone, setMyPhone } from "./phone";
+/** Caregiver phone verification, implemented in phone.ts. */
+export { clearMyPhone, confirmMyPhone, setMyPhone } from "./phone";
 
 /**
  * purpose: Reject a change that would leave the household without a primary caregiver. Call
@@ -667,15 +669,17 @@ async function isOrphanedUser(ctx: QueryCtx, userId: string): Promise<boolean> {
  *          owner is orphaned (no device row and no memberships): re-pairing creates a new
  *          Clerk user, and an unpaired device cannot always clean up its old token. Otherwise
  *          it is rejected.
- * @param token: (string) Push token.
+ * @param token: (string) Push token (64 to 200 hex characters).
  * @return: (null)
- * @raises forbidden when the token belongs to another account.
+ * @raises invalid for a token that is not hex of that length; forbidden when the token belongs
+ *         to another account.
  */
 export const registerPushToken = mutation({
   args: { token: v.string() },
   handler: async (ctx, args): Promise<null> => {
     const userId = await requireUserId(ctx);
     const token = requireNonBlank(args.token, "Token");
+    if (!isValidDeviceToken(token)) throw appError("invalid", "That is not a valid push token");
     const existing = await ctx.db
       .query("pushTokens")
       .withIndex("by_token", (q) => q.eq("token", token))

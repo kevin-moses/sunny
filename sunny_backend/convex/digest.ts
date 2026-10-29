@@ -1,10 +1,10 @@
 // digest.ts
 // Purpose: The household's daily digest. queueDigestIfDue (called by the scheduler tick) records
 // a digests row once local time reaches digestTime, unique per household and local date, and
-// enqueues `compose` on the delivery workpool. `compose` asks Claude Haiku for the text
-// (lib/digestText.ts) and falls back to the deterministic template on any failure, invalid
-// reply or quiet day; `complete` then stores the text and the path that wrote it and inserts
-// one "digest" outbox row per member with a verified phone. Rules: a paused household gets no
+// enqueues `compose` on the delivery workpool. `compose` writes the not-done and alert lines
+// from the template, asks Claude Haiku for the rest (lib/digestText.ts), and falls back to the
+// whole template on any failure, invalid reply or quiet day; `complete` then stores the text and
+// the path that wrote it and inserts one "digest" outbox row per member with a verified phone. Rules: a paused household gets no
 // digest until resumed; a household created after that day's digest time gets none that day.
 //
 // Last modified: 2026-10-29
@@ -21,7 +21,9 @@ import { gatherDigestFacts } from "./lib/digestFacts";
 import {
   composeWithClaude,
   factsForPrompt,
+  fixedLines,
   isQuietDay,
+  modelBudget,
   templateDigest,
   validateDigestReply,
 } from "./lib/digestText";
@@ -31,9 +33,18 @@ import type { DigestSource } from "./lib/validators";
 
 /** What `load` returns: the day's facts rendered for composing. */
 export interface DigestInput {
+  /** Nothing at all was logged. */
   quiet: boolean;
+  /** The whole digest as the template writes it. */
   template: string;
+  /** The lines the model never writes (not done, alerts). */
+  fixed: string[];
+  /** The facts the model may write about. */
   factsMessage: string;
+  /** Lines and characters left for the model, and whether it has anything to write about. */
+  maxLines: number;
+  maxChars: number;
+  hasMore: boolean;
 }
 
 /**
@@ -123,7 +134,9 @@ export const load = internalQuery({
     return {
       quiet: isQuietDay(facts),
       template: templateDigest(facts),
+      fixed: fixedLines(facts),
       factsMessage: factsForPrompt(facts),
+      ...modelBudget(facts),
     };
   },
 });
@@ -165,22 +178,28 @@ export const complete = internalMutation({
 });
 
 /**
- * purpose: Choose the digest text: the template for a quiet day; otherwise the model's
- *          validated reply, falling back to the template on any API or configuration error
- *          or invalid output.
+ * purpose: Choose the digest text. A quiet day, or a day with nothing for the model to write
+ *          about, uses the template. Otherwise the fixed lines (not done, alerts) come first
+ *          and the model's validated reply follows; any API or configuration error or invalid
+ *          reply falls back to the whole template.
  * @param input: (DigestInput) The loaded inputs.
  * @return: (Promise<{ text: string; source: DigestSource }>) The text and the path used.
  */
 async function chooseText(input: DigestInput): Promise<{ text: string; source: DigestSource }> {
   const fallback = { text: input.template, source: "template" as const };
-  if (input.quiet) return fallback;
+  if (input.quiet || !input.hasMore) return fallback;
   try {
-    const reply = validateDigestReply(await composeWithClaude(input.factsMessage));
+    const limits = `Write at most ${input.maxLines} lines and ${input.maxChars} characters in total.`;
+    const reply = validateDigestReply(
+      await composeWithClaude(`${input.factsMessage}\n\n${limits}`),
+      input.factsMessage,
+      input,
+    );
     if (reply === null) {
       console.error("Digest: the model reply was invalid; using the template");
       return fallback;
     }
-    return { text: reply, source: "claude" };
+    return { text: [...input.fixed, reply].join("\n"), source: "claude" };
   } catch (e) {
     console.error(`Digest: the model call failed; using the template (${String(e)})`);
     return fallback;

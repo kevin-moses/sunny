@@ -1,8 +1,9 @@
 // lib/apnsPayload.test.ts
 // Purpose: Tests for the pure APNs helpers: configuration loading and errors, host selection,
 // payload and header building, ES256 provider token header, claims and signature (verified with
-// the matching public key), PEM handling (literal "\n" escapes, bad PEM), the 50 minute cache
-// window, and outcome mapping for each status and reason.
+// the matching public key), PEM handling (literal "\n" escapes, bad PEM), the 30 minute iat
+// bucket, device token validation, the 4 KB payload cap, and outcome mapping for each status
+// and reason (only 410 means unregistered).
 //
 // Last modified: 2026-10-29
 
@@ -10,6 +11,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { fromBase64Url } from "./base64";
 import {
   apnsHost,
+  isValidDeviceToken,
   buildHeaders,
   buildPayload,
   getProviderToken,
@@ -61,10 +63,21 @@ function config(): ApnsConfig {
 }
 
 describe("loadApnsConfig", () => {
-  test("defaults to development and the app bundle id", () => {
-    const c = loadApnsConfig({ APNS_KEY_ID: "k", APNS_TEAM_ID: "t", APNS_KEY_P8: "p" });
+  test("defaults to the app bundle id", () => {
+    const c = loadApnsConfig({
+      APNS_KEY_ID: "k",
+      APNS_TEAM_ID: "t",
+      APNS_KEY_P8: "p",
+      APNS_ENVIRONMENT: "development",
+    });
     expect(c.environment).toBe("development");
     expect(c.bundleId).toBe("com.kmsunny.sunny");
+  });
+
+  test("throws when the environment is not set", () => {
+    expect(() => loadApnsConfig({ APNS_KEY_ID: "k", APNS_TEAM_ID: "t", APNS_KEY_P8: "p" })).toThrow(
+      /APNs is not configured: APNS_ENVIRONMENT/,
+    );
   });
 
   test("accepts production and a custom bundle id", () => {
@@ -84,6 +97,7 @@ describe("loadApnsConfig", () => {
       APNS_KEY_ID: "k",
       APNS_TEAM_ID: "t",
       APNS_KEY_P8: "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+      APNS_ENVIRONMENT: "development",
     });
     expect(c.keyPem).toBe("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----");
   });
@@ -131,6 +145,28 @@ describe("buildPayload", () => {
   test("data cannot override aps", () => {
     const p = JSON.parse(buildPayload("T", "B", { aps: "evil" }));
     expect(p.aps.alert).toEqual({ title: "T", body: "B" });
+  });
+});
+
+describe("device tokens and payload size", () => {
+  test("accepts 64 to 200 hex characters only", () => {
+    expect(isValidDeviceToken("a".repeat(64))).toBe(true);
+    expect(isValidDeviceToken("AB12".repeat(50))).toBe(true);
+    expect(isValidDeviceToken("a".repeat(63))).toBe(false);
+    expect(isValidDeviceToken("a".repeat(201))).toBe(false);
+    expect(isValidDeviceToken(`${"a".repeat(63)}/`)).toBe(false);
+    expect(isValidDeviceToken("")).toBe(false);
+  });
+
+  test("a long body is cut so the payload stays under 4 KB", () => {
+    const payload = buildPayload("Title", "x".repeat(10_000), { task_instance_id: "i" });
+    expect(new TextEncoder().encode(payload).length).toBeLessThanOrEqual(4096);
+    expect(JSON.parse(payload).aps.alert.title).toBe("Title");
+    expect(JSON.parse(payload).aps.alert.body.length).toBeGreaterThan(2000);
+  });
+
+  test("a short body is left alone", () => {
+    expect(JSON.parse(buildPayload("T", "short")).aps.alert.body).toBe("short");
   });
 });
 
@@ -184,6 +220,7 @@ describe("provider token", () => {
       APNS_KEY_ID: "k",
       APNS_TEAM_ID: "t",
       APNS_KEY_P8: pem.replace(/\n/g, "\\n"),
+      APNS_ENVIRONMENT: "development",
     });
     expect((await signProviderToken(escaped, 1)).split(".")).toHaveLength(3);
   });
@@ -201,12 +238,24 @@ describe("provider token", () => {
     );
   });
 
-  test("is cached inside the 50 minute window and refreshed after it", async () => {
-    const first = await getProviderToken(config(), 1000);
-    expect(await getProviderToken(config(), 1000 + 49 * 60)).toBe(first);
-    const refreshed = await getProviderToken(config(), 1000 + 50 * 60);
-    expect(refreshed).not.toBe(first);
-    expect(JSON.parse(atob(refreshed.split(".")[1]!)).iat).toBe(1000 + 50 * 60);
+  test("iat is the start of the 30 minute bucket and the token is reused inside it", async () => {
+    const first = await getProviderToken(config(), 3600 + 100);
+    expect(JSON.parse(atob(first.split(".")[1]!)).iat).toBe(3600);
+    expect(await getProviderToken(config(), 3600 + 1799)).toBe(first);
+  });
+
+  test("is re-signed when the bucket changes", async () => {
+    const first = await getProviderToken(config(), 3600 + 100);
+    const next = await getProviderToken(config(), 3600 + 1800);
+    expect(next).not.toBe(first);
+    expect(JSON.parse(atob(next.split(".")[1]!)).iat).toBe(3600 + 1800);
+  });
+
+  test("two containers signing in the same bucket share claims", async () => {
+    const a = await getProviderToken(config(), 7200 + 5);
+    resetProviderTokenCache();
+    const b = await getProviderToken(config(), 7200 + 1000);
+    expect(a.split(".")[1]).toBe(b.split(".")[1]);
   });
 
   test("is re-signed when the key id changes", async () => {
@@ -227,13 +276,20 @@ describe("mapOutcome", () => {
     });
   });
 
+  test("410 is unregistered and not retryable", () => {
+    expect(mapOutcome("t", 410, "Unregistered")).toMatchObject({
+      outcome: "unregistered",
+      retryable: false,
+      reason: "Unregistered",
+    });
+  });
+
   test.each([
-    [410, "Unregistered"],
     [400, "BadDeviceToken"],
     [400, "DeviceTokenNotForTopic"],
-  ])("%i %s is unregistered and not retryable", (status, reason) => {
+  ])("%i %s is a permanent failure, not an unregistered token", (status, reason) => {
     expect(mapOutcome("t", status, reason)).toMatchObject({
-      outcome: "unregistered",
+      outcome: "failed",
       retryable: false,
       reason,
     });

@@ -6,7 +6,7 @@
 // Last modified: 2026-10-29
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { constantTimeEqual, decryptSecret, encryptSecret } from "./secretBox";
+import { constantTimeEqual, decryptSecret, encryptSecret, hmacHex } from "./secretBox";
 
 /**
  * purpose: Base64 of 32 bytes all set to one value, as a test key.
@@ -102,5 +102,26 @@ describe("constantTimeEqual", () => {
     expect(constantTimeEqual("abc", "abc")).toBe(true);
     expect(constantTimeEqual("abc", "abd")).toBe(false);
     expect(constantTimeEqual("abc", "abcd")).toBe(false);
+  });
+});
+
+describe("hmacHex", () => {
+  test("is deterministic, 64 hex characters, and differs by label and message", async () => {
+    const a = await hmacHex("sunny-phone-code", "u|+15551234567|123456");
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(await hmacHex("sunny-phone-code", "u|+15551234567|123456")).toBe(a);
+    expect(await hmacHex("other-label", "u|+15551234567|123456")).not.toBe(a);
+    expect(await hmacHex("sunny-phone-code", "u|+15551234567|123457")).not.toBe(a);
+  });
+
+  test("changes with the key material", async () => {
+    const a = await hmacHex("sunny-phone-code", "m");
+    process.env.CALENDAR_TOKEN_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
+    expect(await hmacHex("sunny-phone-code", "m")).not.toBe(a);
+  });
+
+  test("a missing key is a ConfigError", async () => {
+    delete process.env.CALENDAR_TOKEN_KEY;
+    await expect(hmacHex("sunny-phone-code", "m")).rejects.toThrow("CALENDAR_TOKEN_KEY");
   });
 });

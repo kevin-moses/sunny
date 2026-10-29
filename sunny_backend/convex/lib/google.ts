@@ -16,6 +16,7 @@
 import { fromBase64Url, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
 import { timedFetch } from "./http";
+import type { TimedResponse } from "./http";
 import type { GoogleEvent } from "./googleEvent";
 import { constantTimeEqual } from "./secretBox";
 
@@ -87,9 +88,9 @@ function env(name: string): string {
  * purpose: fetch with Google's request timeout.
  * @param url: (string) Request URL.
  * @param init: (RequestInit) fetch options.
- * @return: (Promise<Response>) The response.
+ * @return: (Promise<TimedResponse>) The response with its body read.
  */
-function googleFetch(url: string, init: RequestInit = {}): Promise<Response> {
+function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse> {
   return timedFetch(url, init, REQUEST_TIMEOUT_MS);
 }
 
@@ -128,7 +129,12 @@ async function tokenRequest(form: Record<string, string>): Promise<Record<string
       ...form,
     }),
   });
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  let body: Record<string, unknown> = {};
+  try {
+    body = res.json() as Record<string, unknown>;
+  } catch {
+    // A non-JSON error page leaves the body empty.
+  }
   if (!res.ok) {
     if (body.error === "invalid_grant") {
       throw new GoogleAccessRevoked(String(body.error_description ?? "invalid_grant"));
@@ -167,7 +173,7 @@ async function emailFromUserinfo(accessToken: string): Promise<string | null> {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok) return null;
-    const info = (await res.json()) as { email?: unknown };
+    const info = res.json() as { email?: unknown };
     return typeof info.email === "string" ? info.email : null;
   } catch {
     return null;
@@ -273,8 +279,8 @@ async function calendarRequest(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!res.ok) throw new GoogleApiError(res.status, await res.text());
-  return res.status === 204 ? null : ((await res.json()) as Record<string, unknown>);
+  if (!res.ok) throw new GoogleApiError(res.status, res.text);
+  return res.status === 204 ? null : (res.json() as Record<string, unknown>);
 }
 
 /**

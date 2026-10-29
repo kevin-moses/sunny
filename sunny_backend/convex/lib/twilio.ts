@@ -22,21 +22,22 @@
 import { toBase64 } from "./base64";
 import { ConfigError } from "./errors";
 import { isTimeoutError, timedFetch } from "./http";
+import type { TimedResponse } from "./http";
 import { constantTimeEqual } from "./secretBox";
 
 const TWILIO_API = "https://api.twilio.com/2010-04-01";
 const SEND_TIMEOUT_MS = 10_000;
 
-/** The URL Twilio calls for inbound SMS unless TWILIO_WEBHOOK_URL overrides it. */
-export const DEFAULT_WEBHOOK_URL = "https://enduring-ostrich-959.convex.site/twilio/sms";
-
 /**
  * Outcome of sending one SMS: the Twilio message sid, or why it failed and whether to retry.
- * `config` marks a missing or invalid Twilio configuration (never retryable), returned rather
- * than thrown because an error thrown across a Convex action call loses its class.
+ * `config` marks a missing or invalid Twilio configuration, returned rather than thrown because
+ * an error thrown across a Convex action call loses its class. `timedOut` marks a request that
+ * got no answer in time: Twilio may still have sent it, so callers decide whether a retry could
+ * duplicate the text.
  */
 export type SmsResult =
-  { ok: true; sid: string } | { ok: false; retryable: boolean; error: string; config?: true };
+  | { ok: true; sid: string }
+  | { ok: false; retryable: boolean; error: string; config?: true; timedOut?: true };
 
 /** The Twilio credentials and sender number. */
 export interface TwilioConfig {
@@ -98,11 +99,34 @@ export function twilioConfig(): TwilioConfig {
 }
 
 /**
- * purpose: The exact public URL Twilio calls, which signature validation needs.
- * @return: (string) TWILIO_WEBHOOK_URL, else the default Convex site URL.
+ * purpose: The exact public URL Twilio calls, which signature validation needs. It must equal,
+ *          character for character, the webhook URL pasted into the Twilio console.
+ * @return: (string | null) TWILIO_WEBHOOK_URL, or null when unset (the webhook then refuses).
  */
-export function webhookUrl(): string {
-  return process.env["TWILIO_WEBHOOK_URL"] || DEFAULT_WEBHOOK_URL;
+export function webhookUrl(): string | null {
+  return process.env["TWILIO_WEBHOOK_URL"] || null;
+}
+
+/**
+ * purpose: The country codes (digits, no "+") whose numbers Sunny will text, from
+ *          SMS_ALLOWED_COUNTRY_CODES (comma separated); "1" (US and Canada) when unset.
+ * @return: (string[]) Allowed country codes.
+ */
+function allowedCountryCodes(): string[] {
+  const raw: string = process.env["SMS_ALLOWED_COUNTRY_CODES"] || "1";
+  return raw
+    .split(",")
+    .map((code: string) => code.trim().replace(/^\+/, ""))
+    .filter((code: string) => /^\d+$/.test(code));
+}
+
+/**
+ * purpose: Whether an E.164 number is in an allowed country (SMS_ALLOWED_COUNTRY_CODES).
+ * @param phone: (string) E.164 number.
+ * @return: (boolean) True when it starts with an allowed country code.
+ */
+export function isAllowedCountry(phone: string): boolean {
+  return allowedCountryCodes().some((code) => phone.startsWith(`+${code}`));
 }
 
 /**
@@ -117,13 +141,13 @@ function redactNumbers(text: string): string {
 
 /**
  * purpose: Describe a failed Twilio response without echoing phone numbers.
- * @param response: (Response) The non-2xx response.
- * @return: (Promise<string>) For example "Twilio 400 (code 21211): The 'To' number [number] ...".
+ * @param response: (TimedResponse) The non-2xx response.
+ * @return: (string) For example "Twilio 400 (code 21211): The 'To' number [number] ...".
  */
-async function describeFailure(response: Response): Promise<string> {
+function describeFailure(response: TimedResponse): string {
   let detail = "";
   try {
-    const body = (await response.json()) as { code?: unknown; message?: unknown };
+    const body = response.json() as { code?: unknown; message?: unknown };
     const code = typeof body.code === "number" ? ` (code ${body.code})` : "";
     const message = typeof body.message === "string" ? `: ${redactNumbers(body.message)}` : "";
     detail = `${code}${message}`;
@@ -172,22 +196,40 @@ export async function sendTwilioSms(
     );
     if (!response.ok) {
       const retryable = response.status === 429 || response.status >= 500;
-      return { ok: false, retryable, error: await describeFailure(response) };
+      return { ok: false, retryable, error: describeFailure(response) };
     }
-    const json = (await response.json()) as { sid?: unknown };
+    const json = response.json() as { sid?: unknown };
     if (typeof json.sid !== "string") {
       return { ok: false, retryable: false, error: "Twilio accepted the message without a sid" };
     }
     return { ok: true, sid: json.sid };
   } catch (e) {
-    return {
-      ok: false,
-      retryable: true,
-      error: isTimeoutError(e)
-        ? "Twilio did not answer in time"
-        : `Twilio request failed: ${errorName(e)}`,
-    };
+    if (isTimeoutError(e)) {
+      return { ok: false, retryable: true, timedOut: true, error: "Twilio did not answer in time" };
+    }
+    return { ok: false, retryable: true, error: `Twilio request failed: ${errorName(e)}` };
   }
+}
+
+/**
+ * purpose: Send one SMS with the Twilio settings from the environment. A missing or invalid
+ *          configuration comes back as a config result, never as a throw. Call this directly
+ *          from actions; there is no extra action hop.
+ * @param to: (string) Destination, E.164.
+ * @param body: (string) Message text.
+ * @return: (Promise<SmsResult>) The message sid, or the failure.
+ */
+export async function sendSmsFromEnv(to: string, body: string): Promise<SmsResult> {
+  let config: TwilioConfig;
+  try {
+    config = twilioConfig();
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      return { ok: false, retryable: false, config: true, error: e.message };
+    }
+    throw e;
+  }
+  return await sendTwilioSms(config, to, body);
 }
 
 /**
@@ -239,12 +281,27 @@ export async function validateTwilioSignature(
 }
 
 /**
+ * purpose: Remove characters XML 1.0 forbids (control characters other than tab, newline and
+ *          carriage return, and DEL), so a reply can never make the TwiML invalid.
+ * @param text: (string) Raw text.
+ * @return: (string) Text without those characters.
+ */
+function stripControlChars(text: string): string {
+  return Array.from(text)
+    .filter((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
+    })
+    .join("");
+}
+
+/**
  * purpose: Escape text for an XML element body.
  * @param text: (string) Raw text.
- * @return: (string) Text with & < > " ' escaped.
+ * @return: (string) Text without control characters and with & < > " ' escaped.
  */
 export function escapeXml(text: string): string {
-  return text
+  return stripControlChars(text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

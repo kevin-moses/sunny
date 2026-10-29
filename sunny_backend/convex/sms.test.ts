@@ -1,26 +1,21 @@
 // convex/sms.test.ts
-// Purpose: Tests for the SMS channel (sms.ts) with convex-test and a stubbed global fetch
-// (Twilio is never called). The send action: success, 4xx, 429, 5xx, network error, timeout
-// and missing configuration. The inbound webhook POST /twilio/sms: signature valid, invalid,
-// missing, signed for a different URL, the TWILIO_WEBHOOK_URL override, and no auth token
-// configured; STOP/HELP get an empty response. Claiming by reply: "1" and "on it" variants,
-// the newest alert wins, skipping closed instances, already claimed by someone else or by
-// the sender, nothing open, alerts older than 24 hours, alerts for other recipients or other
-// kinds, unverified and unknown numbers, viewers, a number shared across households, the
-// audit row that records via "sms", and TwiML escaping of names.
+// Purpose: Tests for the inbound SMS webhook (sms.ts) with convex-test and a stubbed global
+// fetch (Twilio is never called). The webhook: signature valid, invalid, missing (checked before
+// the body is read), signed for a different URL or token, 503 without the auth token or without
+// TWILIO_WEBHOOK_URL (no default), STOP/HELP and unknown numbers get an empty response, a
+// repeated MessageSid replays the stored reply and claims nothing twice, and the handled-text
+// sweep. Claiming by reply: only the single newest alert actually texted (state sent, channel
+// sms) in the last 24 hours is used, never an older one; open tasks are claimed (with the sms
+// audit row), claimed ones say who is on it, closed ones say so; other kinds, unsent rows,
+// other recipients, unverified numbers, viewers, a number shared across households, and many
+// other rows after the alert; TwiML escaping of names.
 //
 // Last modified: 2026-10-29
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-  HELP_REPLY,
-  NOTHING_OPEN_REPLY,
-  UNKNOWN_NUMBER_REPLY,
-  VIEWER_REPLY,
-  parseCommand,
-} from "./sms";
+import { CLOSED_REPLY, HELP_REPLY, NOTHING_OPEN_REPLY, VIEWER_REPLY, parseCommand } from "./sms";
 import {
   addInstance,
   createFamilyHousehold,
@@ -29,12 +24,16 @@ import {
   setPhone,
 } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
-import { DEFAULT_WEBHOOK_URL, twilioSignature } from "./lib/twilio";
+import { twilioSignature } from "./lib/twilio";
 
 const START = Date.parse("2026-10-29T15:00:00Z");
 const HOUR_MS = 60 * 60 * 1000;
 const PAT_PHONE = "+15551110001";
 const MAX_PHONE = "+15551110002";
+const WEBHOOK_URL = "https://example.test/twilio/sms";
+
+/** Counter so every post gets its own MessageSid unless a test reuses one. */
+let sidCounter = 0;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -42,7 +41,7 @@ beforeEach(() => {
   vi.stubEnv("TWILIO_ACCOUNT_SID", "AC1");
   vi.stubEnv("TWILIO_AUTH_TOKEN", "tok");
   vi.stubEnv("TWILIO_FROM_NUMBER", "+15550009999");
-  vi.stubEnv("TWILIO_WEBHOOK_URL", "");
+  vi.stubEnv("TWILIO_WEBHOOK_URL", WEBHOOK_URL);
 });
 
 afterEach(() => {
@@ -71,97 +70,6 @@ describe("parseCommand", () => {
   });
 });
 
-describe("send action", () => {
-  /** Stub fetch with a fixed Twilio answer. */
-  function stub(status: number, body: unknown): void {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json(body, { status })),
-    );
-  }
-
-  test("returns the sid on success", async () => {
-    stub(201, { sid: "SM42" });
-    const t = makeBackend();
-    expect(await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).toEqual({
-      ok: true,
-      sid: "SM42",
-    });
-  });
-
-  test("a 4xx comes back as not retryable", async () => {
-    stub(400, { code: 21211, message: "Invalid 'To' Phone Number" });
-    const t = makeBackend();
-    const result = await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" });
-    expect(result).toMatchObject({ ok: false, retryable: false });
-  });
-
-  test("a 429 comes back as retryable", async () => {
-    stub(429, { code: 20429, message: "Too many requests" });
-    const t = makeBackend();
-    expect(await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).toMatchObject({
-      ok: false,
-      retryable: true,
-    });
-  });
-
-  test("a 5xx comes back as retryable", async () => {
-    stub(503, {});
-    const t = makeBackend();
-    expect(await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).toMatchObject({
-      ok: false,
-      retryable: true,
-    });
-  });
-
-  test("a network error comes back as retryable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Promise.reject(new TypeError("fetch failed"))),
-    );
-    const t = makeBackend();
-    expect(await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).toMatchObject({
-      ok: false,
-      retryable: true,
-    });
-  });
-
-  test("a hung Twilio request times out as retryable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        (_url: string, init: RequestInit) =>
-          new Promise((_resolve, reject) => {
-            init.signal?.addEventListener("abort", () =>
-              reject(new DOMException("aborted", "AbortError")),
-            );
-          }),
-      ),
-    );
-    const t = makeBackend();
-    const pending = t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" });
-    await vi.advanceTimersByTimeAsync(10_001);
-    expect(await pending).toEqual({
-      ok: false,
-      retryable: true,
-      error: "Twilio did not answer in time",
-    });
-  });
-
-  test("returns a non-retryable config result without credentials", async () => {
-    vi.stubEnv("TWILIO_ACCOUNT_SID", "");
-    stub(201, { sid: "SM1" });
-    const t = makeBackend();
-    expect(await t.action(internal.sms.send, { to: PAT_PHONE, body: "hi" })).toEqual({
-      ok: false,
-      retryable: false,
-      config: true,
-      error: "SMS is not configured: set TWILIO_ACCOUNT_SID",
-    });
-    expect(fetch).not.toHaveBeenCalled();
-  });
-});
-
 /** The household fixture: Pat (primary) and Max (member) with verified numbers, Val viewer. */
 interface Fixture {
   t: TestConvex;
@@ -187,6 +95,7 @@ async function setup(): Promise<Fixture> {
  * @param recipientUserId: (string) Recipient.
  * @param instanceId: (Id<"taskInstances">) Instance the alert is about.
  * @param kind: ("caregiver_alert" | "event_notice") Row kind.
+ * @param delivery: (object) State and channel; defaults to texted (sent by sms).
  * @return: (Promise<void>)
  */
 async function addAlert(
@@ -195,6 +104,10 @@ async function addAlert(
   recipientUserId: string,
   instanceId: Id<"taskInstances">,
   kind: "caregiver_alert" | "event_notice" = "caregiver_alert",
+  delivery: Pick<Doc<"notificationOutbox">, "state" | "channel"> = {
+    state: "sent",
+    channel: "sms",
+  },
 ): Promise<void> {
   await t.run(async (ctx) => {
     await ctx.db.insert("notificationOutbox", {
@@ -205,7 +118,7 @@ async function addAlert(
       title: "alert",
       body: "alert",
       payload: {},
-      state: "sent",
+      ...delivery,
     });
   });
 }
@@ -215,24 +128,30 @@ async function addAlert(
  * @param t: (TestConvex) Harness.
  * @param from: (string) Sender number.
  * @param body: (string) Message text.
- * @param options: ({sign, signedUrl, signature}) sign false omits the header; signedUrl is the
- *        URL the signature covers; signature overrides the computed value.
+ * @param options: ({sign, signedUrl, signature, sid}) sign false omits the header; signedUrl is
+ *        the URL the signature covers; signature overrides the computed value; sid is the
+ *        MessageSid (a fresh one per post by default).
  * @return: (Promise<Response>) The response.
  */
 async function post(
   t: TestConvex,
   from: string,
   body: string,
-  options: { sign?: boolean; signedUrl?: string; signature?: string } = {},
+  options: { sign?: boolean; signedUrl?: string; signature?: string; sid?: string } = {},
 ): Promise<Response> {
-  const params = new URLSearchParams({ From: from, To: "+15550009999", Body: body });
+  sidCounter += 1;
+  const params = new URLSearchParams({
+    From: from,
+    To: "+15550009999",
+    Body: body,
+    MessageSid: options.sid ?? `SM${sidCounter}`,
+  });
   const headers: Record<string, string> = {
     "Content-Type": "application/x-www-form-urlencoded",
   };
   if (options.sign !== false) {
     headers["X-Twilio-Signature"] =
-      options.signature ??
-      (await twilioSignature(options.signedUrl ?? DEFAULT_WEBHOOK_URL, params, "tok"));
+      options.signature ?? (await twilioSignature(options.signedUrl ?? WEBHOOK_URL, params, "tok"));
   }
   return await t.fetch("/twilio/sms", { method: "POST", headers, body: params.toString() });
 }
@@ -303,7 +222,7 @@ describe("inbound webhook signature", () => {
     expect(response.status).toBe(403);
   });
 
-  test("TWILIO_WEBHOOK_URL changes the URL the signature must cover", async () => {
+  test("TWILIO_WEBHOOK_URL is the URL the signature must cover", async () => {
     const { t } = await setup();
     vi.stubEnv("TWILIO_WEBHOOK_URL", "https://example.test/hook");
     expect((await post(t, PAT_PHONE, "1")).status).toBe(403);
@@ -314,8 +233,53 @@ describe("inbound webhook signature", () => {
 
   test("without an auth token the webhook is 503", async () => {
     const { t } = await setup();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubEnv("TWILIO_AUTH_TOKEN", "");
     expect((await post(t, PAT_PHONE, "1")).status).toBe(503);
+    errorSpy.mockRestore();
+  });
+
+  test("without TWILIO_WEBHOOK_URL the webhook is 503 and logs why", async () => {
+    const { t } = await setup();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.stubEnv("TWILIO_WEBHOOK_URL", "");
+    expect((await post(t, PAT_PHONE, "1")).status).toBe(503);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("TWILIO_WEBHOOK_URL"));
+    errorSpy.mockRestore();
+  });
+
+  test("a repeated MessageSid replays the reply and claims nothing again", async () => {
+    const { t, householdId } = await setup();
+    const id = await addInstance(t, householdId, "Morning pills");
+    await addAlert(t, householdId, "pat", id);
+    const first = await messageOf(await post(t, PAT_PHONE, "1", { sid: "SMdup" }));
+    const second = await messageOf(await post(t, PAT_PHONE, "1", { sid: "SMdup" }));
+    expect(first).toContain("Thanks, Pat");
+    expect(second).toBe(first);
+    const claims = await t.run(async (ctx) =>
+      (await ctx.db.query("auditLog").collect()).filter((r) => r.action === "claim_via"),
+    );
+    expect(claims).toHaveLength(1);
+  });
+
+  test("a different MessageSid is handled separately", async () => {
+    const { t, householdId } = await setup();
+    const id = await addInstance(t, householdId, "Morning pills");
+    await addAlert(t, householdId, "pat", id);
+    await post(t, PAT_PHONE, "1", { sid: "SMa" });
+    expect(await messageOf(await post(t, PAT_PHONE, "1", { sid: "SMb" }))).toContain(
+      "already on it",
+    );
+  });
+
+  test("sweepInbound deletes handled-text records past their expiry only", async () => {
+    const { t } = await setup();
+    await post(t, PAT_PHONE, "hello", { sid: "SMold" });
+    vi.setSystemTime(START + 25 * HOUR_MS);
+    await post(t, PAT_PHONE, "hello", { sid: "SMnew" });
+    expect(await t.mutation(internal.sms.sweepInbound, {})).toBe(1);
+    const left = await t.run(async (ctx) => await ctx.db.query("smsInbound").collect());
+    expect(left.map((r) => r.messageSid)).toEqual(["SMnew"]);
   });
 
   test("STOP and HELP get an empty response and claim nothing", async () => {
@@ -369,19 +333,46 @@ describe("claiming by reply", () => {
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("Evening pills");
     expect(await claimedBy(t, newer)).toBe("pat");
     expect(await claimedBy(t, older)).toBeUndefined();
-    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("Morning pills");
-    expect(await claimedBy(t, older)).toBe("pat");
+    // A second reply is about the same newest alert; the older one is never used instead.
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("already on it, Pat");
+    expect(await claimedBy(t, older)).toBeUndefined();
   });
 
-  test("a closed newest alert is skipped for an older open one", async () => {
+  test("a closed newest alert is reported closed and never falls through to an older one", async () => {
     const { t, householdId } = await setup();
     const open = await addInstance(t, householdId, "Morning pills");
     const done = await addInstance(t, householdId, "Evening pills", { state: "confirmed" });
     await addAlert(t, householdId, "pat", open);
     vi.setSystemTime(START + HOUR_MS);
     await addAlert(t, householdId, "pat", done);
-    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("Morning pills");
-    expect(await claimedBy(t, open)).toBe("pat");
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
+      `${CLOSED_REPLY}: Evening pills for Mom.`,
+    );
+    expect(await claimedBy(t, open)).toBeUndefined();
+  });
+
+  test("alerts that were never texted do not count", async () => {
+    const { t, householdId } = await setup();
+    const id = await addInstance(t, householdId, "Morning pills");
+    await addAlert(t, householdId, "pat", id, "caregiver_alert", { state: "pending" });
+    await addAlert(t, householdId, "pat", id, "caregiver_alert", { state: "failed" });
+    await addAlert(t, householdId, "pat", id, "caregiver_alert", { state: "skipped" });
+    await addAlert(t, householdId, "pat", id, "caregiver_alert", {
+      state: "sent",
+      channel: "apns",
+    });
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
+      NOTHING_OPEN_REPLY.replace(/'/g, "&apos;"),
+    );
+    expect(await claimedBy(t, id)).toBeUndefined();
+  });
+
+  test("many other rows after the alert do not hide it", async () => {
+    const { t, householdId } = await setup();
+    const id = await addInstance(t, householdId, "Morning pills");
+    await addAlert(t, householdId, "pat", id);
+    for (let i = 0; i < 60; i++) await addAlert(t, householdId, "pat", id, "event_notice");
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("on it: Morning pills");
   });
 
   test("a repeated alert row for one instance claims it once", async () => {
@@ -425,7 +416,7 @@ describe("claiming by reply", () => {
     const id = await addInstance(t, householdId, "Morning pills", { state: "confirmed" });
     await addAlert(t, householdId, "pat", id);
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
-      NOTHING_OPEN_REPLY.replace(/'/g, "&apos;"),
+      `${CLOSED_REPLY}: Morning pills for Mom.`,
     );
   });
 
@@ -481,7 +472,7 @@ describe("claiming by reply", () => {
       const id = await addInstance(t, householdId, "Morning pills", { state });
       await addAlert(t, householdId, "pat", id);
       expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
-        NOTHING_OPEN_REPLY.replace(/'/g, "&apos;"),
+        `${CLOSED_REPLY}: Morning pills for Mom.`,
       );
       expect(await claimedBy(t, id)).toBeUndefined();
     },
@@ -492,23 +483,25 @@ describe("claiming by reply", () => {
     await setPhone(t, householdId, "pat", PAT_PHONE, false);
     const id = await addInstance(t, householdId, "Morning pills");
     await addAlert(t, householdId, "pat", id);
-    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(UNKNOWN_NUMBER_REPLY);
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBeNull();
     expect(await claimedBy(t, id)).toBeUndefined();
   });
 
-  test("an unknown number gets the generic reply and no household data", async () => {
+  test("an unknown number gets an empty response and no household data", async () => {
     const { t, householdId } = await setup();
     const id = await addInstance(t, householdId, "Morning pills");
     await addAlert(t, householdId, "pat", id);
-    const reply = await messageOf(await post(t, "+15559998888", "1"));
-    expect(reply).toBe(UNKNOWN_NUMBER_REPLY);
-    expect(reply).not.toMatch(/Mom|Pat|pills/);
-    expect(await messageOf(await post(t, "+15559998888", "hello"))).toBe(UNKNOWN_NUMBER_REPLY);
+    const response = await post(t, "+15559998888", "1");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+    );
+    expect(await messageOf(await post(t, "+15559998888", "hello"))).toBeNull();
   });
 
   test("a malformed From is treated as unknown", async () => {
     const { t } = await setup();
-    expect(await messageOf(await post(t, "not-a-number", "1"))).toBe(UNKNOWN_NUMBER_REPLY);
+    expect(await messageOf(await post(t, "not-a-number", "1"))).toBeNull();
   });
 
   test("a viewer cannot claim", async () => {
@@ -546,9 +539,11 @@ describe("claiming by reply", () => {
     );
     expect(await claimedBy(t, inSecond)).toBe("pat");
     expect(await claimedBy(t, inFirst)).toBeUndefined();
+    // The older alert in the other household is not used once the newest is taken.
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
-      "Thanks, Pat. You&apos;re on it: Morning pills for Mom.",
+      "You&apos;re already on it, Patricia: Insulin for Dad.",
     );
+    expect(await claimedBy(t, inFirst)).toBeUndefined();
   });
 
   test("escapes XML characters in names and labels", async () => {

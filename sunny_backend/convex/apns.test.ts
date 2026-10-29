@@ -12,14 +12,24 @@ import { internal } from "./_generated/api";
 import { makeBackend } from "./testing.helpers";
 import { resetProviderTokenCache } from "./lib/apnsPayload";
 
+/** A valid device token: 64 hex characters ending in the given suffix. */
+const tok = (suffix: string): string => suffix.padStart(64, "0");
+
 /** One scripted response for a fake request. */
-type Script = { status?: number; body?: string; error?: string; hang?: boolean };
+type Script = {
+  status?: number;
+  body?: string;
+  error?: string;
+  hang?: boolean;
+  closeOnly?: boolean;
+};
 
 const state = vi.hoisted(() => ({
   scripts: [] as unknown[],
   sessions: [] as {
     url: string;
     closed: boolean;
+    destroyed: boolean;
     requests: { headers: unknown; body: string }[];
   }[],
 }));
@@ -29,9 +39,17 @@ vi.mock("node:http2", async () => {
   return {
     connect: (url: string) => {
       const session = Object.assign(new Emitter(), {
-        info: { url, closed: false, requests: [] as { headers: unknown; body: string }[] },
+        info: {
+          url,
+          closed: false,
+          destroyed: false,
+          requests: [] as { headers: unknown; body: string }[],
+        },
         close() {
           this.info.closed = true;
+        },
+        destroy() {
+          this.info.destroyed = true;
         },
         request(headers: unknown) {
           const script = (state.scripts.shift() ?? { status: 200 }) as Script;
@@ -44,6 +62,7 @@ vi.mock("node:http2", async () => {
             end(body: string) {
               session.info.requests.push({ headers, body });
               if (script.hang) return;
+              if (script.closeOnly) return setTimeout(() => req.emit("close"), 0);
               setTimeout(() => {
                 if (script.error) return req.emit("error", new Error(script.error));
                 req.emit("response", { ":status": script.status });
@@ -77,7 +96,7 @@ async function setEnv(overrides: Record<string, string | undefined> = {}): Promi
     APNS_TEAM_ID: "TEAM",
     APNS_KEY_P8: pem,
     APNS_BUNDLE_ID: undefined,
-    APNS_ENVIRONMENT: undefined,
+    APNS_ENVIRONMENT: "development",
     ...overrides,
   };
   for (const [k, v] of Object.entries(env)) {
@@ -116,16 +135,16 @@ async function run(tokens: string[], data?: Record<string, string>) {
 
 describe("apns.send", () => {
   test("sends with the expected host, headers and payload", async () => {
-    const res = await run(["tok1"], { task_instance_id: "inst1" });
+    const res = await run([tok("1")], { task_instance_id: "inst1" });
     expect(res).toEqual([
-      { token: "tok1", outcome: "sent", status: 200, reason: null, retryable: false },
+      { token: tok("1"), outcome: "sent", status: 200, reason: null, retryable: false },
     ]);
     const session = state.sessions[0]!;
     expect(session.url).toBe("https://api.sandbox.push.apple.com");
     const req = session.requests[0]!;
     expect(req.headers).toMatchObject({
       ":method": "POST",
-      ":path": "/3/device/tok1",
+      ":path": `/3/device/${tok("1")}`,
       "apns-topic": "com.kmsunny.sunny",
       "apns-push-type": "alert",
       "apns-priority": "10",
@@ -139,12 +158,12 @@ describe("apns.send", () => {
 
   test("uses the production host when configured", async () => {
     await setEnv({ APNS_ENVIRONMENT: "production" });
-    await run(["tok1"]);
+    await run([tok("1")]);
     expect(state.sessions[0]!.url).toBe("https://api.push.apple.com");
   });
 
   test("reuses one session for all tokens and closes it", async () => {
-    await run(["a", "b", "c"]);
+    await run([tok("a"), tok("b"), tok("c")]);
     expect(state.sessions).toHaveLength(1);
     expect(state.sessions[0]!.requests).toHaveLength(3);
     expect(state.sessions[0]!.closed).toBe(true);
@@ -158,24 +177,24 @@ describe("apns.send", () => {
       { status: 503, body: JSON.stringify({ reason: "ServiceUnavailable" }) },
       { status: 403, body: JSON.stringify({ reason: "InvalidProviderToken" }) },
     ];
-    const res = (await run(["a", "b", "c", "d", "e"])) as unknown as {
+    const res = (await run([tok("a"), tok("b"), tok("c"), tok("d"), tok("e")])) as unknown as {
       token: string;
       outcome: string;
       retryable: boolean;
       reason: string | null;
     }[];
     expect(res.map((r) => [r.token, r.outcome, r.retryable, r.reason])).toEqual([
-      ["a", "sent", false, null],
-      ["b", "unregistered", false, "Unregistered"],
-      ["c", "unregistered", false, "BadDeviceToken"],
-      ["d", "failed", true, "ServiceUnavailable"],
-      ["e", "failed", false, "InvalidProviderToken"],
+      [tok("a"), "sent", false, null],
+      [tok("b"), "unregistered", false, "Unregistered"],
+      [tok("c"), "failed", false, "BadDeviceToken"],
+      [tok("d"), "failed", true, "ServiceUnavailable"],
+      [tok("e"), "failed", false, "InvalidProviderToken"],
     ]);
   });
 
   test("a timeout is a retryable failure and does not affect other tokens", async () => {
     state.scripts = [{ hang: true }, { status: 200 }];
-    const res = (await run(["slow", "ok"])) as unknown as {
+    const res = (await run([tok("a"), tok("b")])) as unknown as {
       outcome: string;
       retryable: boolean;
       reason: string | null;
@@ -191,12 +210,50 @@ describe("apns.send", () => {
 
   test("a connection error is a retryable failure", async () => {
     state.scripts = [{ error: "ECONNRESET" }];
-    const res = (await run(["a"])) as unknown as {
+    const res = (await run([tok("a")])) as unknown as {
       outcome: string;
       retryable: boolean;
       reason: string | null;
     }[];
     expect(res[0]!).toMatchObject({ outcome: "failed", retryable: true, reason: "ECONNRESET" });
+  });
+
+  test("a successful send closes the session gracefully", async () => {
+    await run([tok("a")]);
+    expect(state.sessions[0]).toMatchObject({ closed: true, destroyed: false });
+  });
+
+  test("a timeout destroys the session", async () => {
+    state.scripts = [{ hang: true }];
+    await run([tok("a")]);
+    expect(state.sessions[0]!.destroyed).toBe(true);
+  });
+
+  test("a stream that closes without a response settles as a retryable failure", async () => {
+    state.scripts = [{ closeOnly: true }];
+    const res = await run([tok("a")]);
+    expect(res[0]).toMatchObject({ outcome: "failed", retryable: true, reason: "Closed" });
+  });
+
+  test("an invalid token is a permanent failure and sends no request", async () => {
+    const res = await run(["../etc/passwd", tok("a")]);
+    expect(res[0]).toMatchObject({ outcome: "failed", retryable: false, reason: "InvalidToken" });
+    expect(res[1]!.outcome).toBe("sent");
+    expect(state.sessions[0]!.requests).toHaveLength(1);
+  });
+
+  test("DeviceTokenNotForTopic is a permanent failure, not an unregistered token", async () => {
+    state.scripts = [{ status: 400, body: JSON.stringify({ reason: "DeviceTokenNotForTopic" }) }];
+    const res = await run([tok("a")]);
+    expect(res[0]).toMatchObject({ outcome: "failed", retryable: false });
+  });
+
+  test("a long body is cut to fit the payload limit", async () => {
+    const t = makeBackend();
+    await t.action(internal.apns.send, { tokens: [tok("a")], title: "T", body: "x".repeat(9000) });
+    expect(
+      new TextEncoder().encode(state.sessions[0]!.requests[0]!.body).length,
+    ).toBeLessThanOrEqual(4096);
   });
 
   test("an empty token list opens no session", async () => {
@@ -208,16 +265,23 @@ describe("apns.send", () => {
     "returns a recognisable config error when %s is missing",
     async (name) => {
       await setEnv({ [name]: undefined });
-      const res = await runFull(["a"]);
+      const res = await runFull([tok("a")]);
       expect(res.results).toEqual([]);
       expect(res.configError).toContain("APNs is not configured");
       expect(state.sessions).toHaveLength(0);
     },
   );
 
+  test.each([undefined, "staging"])("returns a config error for environment %s", async (env) => {
+    await setEnv({ APNS_ENVIRONMENT: env });
+    const res = await runFull([tok("a")]);
+    expect(res.configError).toContain("APNS_ENVIRONMENT");
+    expect(state.sessions).toHaveLength(0);
+  });
+
   test("returns a config error for a bad PEM", async () => {
     await setEnv({ APNS_KEY_P8: "not a pem" });
-    expect((await runFull(["a"])).configError).toContain("APNs is not configured");
+    expect((await runFull([tok("a")])).configError).toContain("APNs is not configured");
   });
 });
 

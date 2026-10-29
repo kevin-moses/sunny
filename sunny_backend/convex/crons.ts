@@ -1,12 +1,13 @@
 // crons.ts
 // Purpose: Recurring jobs. The scheduler tick runs every minute: it schedules one
 // tickHousehold per household, each of which expands task instances, opens and closes
-// confirmation windows and fires escalation steps (scheduler.ts). Replaces
-// the pg_cron job `sunny-scheduler-tick`; a history cleanup is not needed because Convex
-// does not keep per-run rows. Google Calendar housekeeping: every 10 minutes sweepStuckSyncs
-// re-enqueues sync rows idle for 15 minutes (calendarFanOut.ts); every 10 minutes sweepStuck (delivery.ts) re-enqueues notification
-// deliveries and daily digests left unsettled for 15 minutes; hourly sweepOauthStates
-// deletes expired OAuth nonces (googleCalendar.ts).
+// confirmation windows and fires escalation steps (scheduler.ts). Replaces the pg_cron job
+// `sunny-scheduler-tick`; a history cleanup is not needed because Convex does not keep per-run
+// rows. Every 10 minutes: sweepStuckSyncs re-enqueues Google sync rows idle for 15 minutes
+// (calendarFanOut.ts) and sweepStuck re-enqueues notification deliveries and daily digests
+// left pending for 15 minutes (delivery.ts). Hourly: sweepOauthStates deletes expired OAuth
+// nonces (googleCalendar.ts), phone.sweepExpired deletes expired phone verifications and
+// sms.sweepInbound deletes handled-text records past their expiry.
 //
 // Last modified: 2026-10-29
 
@@ -23,6 +24,8 @@ crons.interval(
   {},
 );
 crons.interval("sweep stuck deliveries", { minutes: 10 }, internal.delivery.sweepStuck, {});
+crons.interval("sweep expired phone verifications", { hours: 1 }, internal.phone.sweepExpired, {});
+crons.interval("sweep handled inbound texts", { hours: 1 }, internal.sms.sweepInbound, {});
 crons.interval(
   "sweep expired oauth states",
   { hours: 1 },

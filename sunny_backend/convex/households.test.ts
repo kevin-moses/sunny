@@ -30,6 +30,11 @@ afterEach(() => {
 /** A valid household timezone used across tests. */
 const NY = "America/New_York";
 
+/** Valid APNs device tokens: 64 hex characters. */
+const TOK_1 = "1".repeat(64);
+const DEV_TOK = "d".repeat(64);
+const A_TOK = "a".repeat(64);
+
 /**
  * purpose: A fresh in-memory backend.
  * @return: The convex-test harness typed with the schema.
@@ -252,6 +257,19 @@ describe("create", () => {
       t.withIdentity({ subject: "user_a" }).mutation(api.households.create, args),
     ).rejects.toMatchObject({ data: { code: "invalid" } });
   });
+
+  test.each(["tok_1", "g".repeat(64), "a".repeat(63), "a".repeat(201), `${"a".repeat(63)}/`])(
+    "registerPushToken rejects %j, which is not 64 to 200 hex characters",
+    async (token) => {
+      const t = makeBackend();
+      await expect(
+        t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, { token }),
+      ).rejects.toMatchObject({ data: { code: "invalid" } });
+      expect(await t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toHaveLength(
+        0,
+      );
+    },
+  );
 });
 
 describe("mine", () => {
@@ -857,14 +875,14 @@ describe("devices", () => {
       const deviceId = await pairDevice(t, householdId, "device_1");
       const asA = t.withIdentity({ subject: "user_a" });
       await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
-        token: "dev_tok",
+        token: DEV_TOK,
       });
-      await asA.mutation(api.households.registerPushToken, { token: "a_tok" });
+      await asA.mutation(api.households.registerPushToken, { token: A_TOK });
 
       await asA.mutation(api.households.removeDevice, { householdId, deviceId });
 
       const tokens = await t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
-      expect(tokens.map((r) => r.token)).toEqual(["a_tok"]);
+      expect(tokens.map((r) => r.token)).toEqual([A_TOK]);
       await t.finishAllScheduledFunctions(vi.runAllTimers);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -921,25 +939,25 @@ describe("push tokens", () => {
   test("registering is idempotent for the same user", async () => {
     const t = makeBackend();
     const asA = t.withIdentity({ subject: "user_a" });
-    await asA.mutation(api.households.registerPushToken, { token: "tok_1" });
-    await asA.mutation(api.households.registerPushToken, { token: "tok_1" });
-    expect(await owners(t, "tok_1")).toEqual(["user_a"]);
+    await asA.mutation(api.households.registerPushToken, { token: TOK_1 });
+    await asA.mutation(api.households.registerPushToken, { token: TOK_1 });
+    expect(await owners(t, TOK_1)).toEqual(["user_a"]);
   });
 
   test("a token owned by a live caregiver is not taken over", async () => {
     const t = makeBackend();
     await createHousehold(t);
     await t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
     await expect(
       t.withIdentity({ subject: "user_b" }).mutation(api.households.registerPushToken, {
-        token: "tok_1",
+        token: TOK_1,
       }),
     ).rejects.toMatchObject({
       data: { code: "forbidden", message: "This push token belongs to another account" },
     });
-    expect(await owners(t, "tok_1")).toEqual(["user_a"]);
+    expect(await owners(t, TOK_1)).toEqual(["user_a"]);
   });
 
   test("a token owned by a paired device is not taken over", async () => {
@@ -947,14 +965,14 @@ describe("push tokens", () => {
     const householdId = await createHousehold(t);
     await pairDevice(t, householdId, "device_1");
     await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
     await expect(
       t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
-        token: "tok_1",
+        token: TOK_1,
       }),
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
-    expect(await owners(t, "tok_1")).toEqual(["device_1"]);
+    expect(await owners(t, TOK_1)).toEqual(["device_1"]);
   });
 
   test("a token owned by an orphaned user is taken over without a duplicate row", async () => {
@@ -962,16 +980,16 @@ describe("push tokens", () => {
     const householdId = await createHousehold(t);
     const deviceId = await pairDevice(t, householdId, "device_1");
     await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
     // The old device row is gone but its token row survived (it could not unregister).
     await t.run(async (ctx) => await ctx.db.delete(deviceId));
 
     await t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
 
-    expect(await owners(t, "tok_1")).toEqual(["device_2"]);
+    expect(await owners(t, TOK_1)).toEqual(["device_2"]);
   });
 
   test("a token owned by a user who left every household is taken over", async () => {
@@ -979,52 +997,52 @@ describe("push tokens", () => {
     const householdId = await createHousehold(t);
     await addCaregiver(t, householdId, "user_b", "caregiver_member");
     await t.withIdentity({ subject: "user_b" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
     await t.withIdentity({ subject: "user_b" }).mutation(api.households.removeMember, {
       householdId,
       userId: "user_b",
     });
     await t.withIdentity({ subject: "user_c" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
-    expect(await owners(t, "tok_1")).toEqual(["user_c"]);
+    expect(await owners(t, TOK_1)).toEqual(["user_c"]);
   });
 
   test("a caregiver signed in but not yet in any household counts as orphaned", async () => {
     // Accepted behavior: such a user owns no household, so their token can be taken over.
     const t = makeBackend();
     await t.withIdentity({ subject: "user_new" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
     await t.withIdentity({ subject: "user_c" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
-    expect(await owners(t, "tok_1")).toEqual(["user_c"]);
+    expect(await owners(t, TOK_1)).toEqual(["user_c"]);
   });
 
   test("unregister removes only the caller's own token", async () => {
     const t = makeBackend();
     await t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
     await t.withIdentity({ subject: "user_b" }).mutation(api.households.unregisterPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
-    expect(await owners(t, "tok_1")).toEqual(["user_a"]);
+    expect(await owners(t, TOK_1)).toEqual(["user_a"]);
     await t.withIdentity({ subject: "user_a" }).mutation(api.households.unregisterPushToken, {
-      token: "tok_1",
+      token: TOK_1,
     });
-    expect(await owners(t, "tok_1")).toEqual([]);
+    expect(await owners(t, TOK_1)).toEqual([]);
   });
 
   test("both require sign in and a non-blank token", async () => {
     const t = makeBackend();
     await expect(
-      t.mutation(api.households.registerPushToken, { token: "tok_1" }),
+      t.mutation(api.households.registerPushToken, { token: TOK_1 }),
     ).rejects.toMatchObject({ data: { code: "unauthenticated" } });
     await expect(
-      t.mutation(api.households.unregisterPushToken, { token: "tok_1" }),
+      t.mutation(api.households.unregisterPushToken, { token: TOK_1 }),
     ).rejects.toMatchObject({ data: { code: "unauthenticated" } });
     await expect(
       t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {

@@ -2,11 +2,15 @@
 // Purpose: Delivery of notificationOutbox rows (routing: lib/delivery.ts). The workpool runs
 // `deliver` for each inserted row: `begin` re-checks the row and returns the route, the action
 // calls APNs or SMS, `record` stores the outcome. Contracts worth knowing:
-// - APNs counts a row as sent when any token was accepted; tokens APNs reports unregistered are
-//   deleted. A retryable failure is thrown so the workpool retries with backoff; everything
-//   else, including a configuration problem returned by the sender, ends the row as failed.
-// - Retries exhausted ends the row as failed (onDeliveryComplete). A settled row is never
-//   delivered again, so a duplicate job from the sweeper is harmless.
+// - APNs counts a row as sent when any token was accepted; only tokens APNs reports unregistered
+//   are deleted. A retryable failure is thrown so the workpool retries with backoff; other
+//   failures end the row as failed.
+// - A configuration problem returned by a sender leaves the row pending with the detail
+//   recorded, so the sweeper retries after the configuration is fixed (bounded by MAX_ATTEMPTS).
+// - An SMS that timed out is retried only for a caregiver_alert; for other kinds the text may
+//   already have been delivered, so the row is failed rather than risk a duplicate.
+// - begin stamps attemptStartedAt (a lease the sweeper respects). Retries exhausted ends the row
+//   as failed (onDeliveryComplete). A settled row is never delivered again.
 //
 // Last modified: 2026-10-29
 
@@ -19,16 +23,16 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { requeueStuckDigests } from "./digest";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import { MAX_ATTEMPTS, requeueStuckDeliveries, resolveRoute } from "./lib/delivery";
-import type { Route } from "./lib/delivery";
-import type { SmsResult } from "./lib/twilio";
+import type { SendRoute } from "./lib/delivery";
+import { sendSmsFromEnv } from "./lib/twilio";
 import { deliveryChannel } from "./lib/validators";
 
 /** The outcome of a delivery run, returned by the action. */
-export type DeliveryOutcome = "sent" | "skipped" | "failed" | "settled" | "missing";
+export type DeliveryOutcome = "sent" | "skipped" | "failed" | "config" | "settled" | "missing";
 
 /** What `begin` tells the action to do. */
 export type BeginResult =
-  { kind: "done"; outcome: DeliveryOutcome } | { kind: "send"; route: Route };
+  { kind: "done"; outcome: DeliveryOutcome } | { kind: "send"; route: SendRoute };
 
 /**
  * purpose: Finish a row: set its final state and the time.
@@ -49,7 +53,7 @@ async function settle(
 /**
  * purpose: Start a delivery run: stop at once for a missing or settled row, fail a row that
  *          has used up MAX_ATTEMPTS, skip a row with no reachable address, otherwise count the
- *          attempt and return the route.
+ *          attempt, take the lease and return the route.
  * @param outboxId: (Id<"notificationOutbox">) The row.
  * @return: (BeginResult) done with the outcome, or send with the route.
  */
@@ -69,7 +73,7 @@ export const begin = internalMutation({
       await settle(ctx, row, { state: "skipped", detail: route.reason });
       return { kind: "done", outcome: "skipped" };
     }
-    await ctx.db.patch(outboxId, { attempts: attempts + 1 });
+    await ctx.db.patch(outboxId, { attempts: attempts + 1, attemptStartedAt: Date.now() });
     return { kind: "send", route };
   },
 });
@@ -125,14 +129,14 @@ function apnsDetail(results: ApnsResult[]): string {
  * purpose: Send a row by APNs and record the result, deleting unregistered tokens.
  * @param ctx: (ActionCtx) Context.
  * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (Route) An apns route.
+ * @param route: (SendRoute) An apns route.
  * @return: (Promise<DeliveryOutcome>) The outcome.
  * @raises Error for a retryable failure.
  */
 async function sendApns(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
-  route: Extract<Route, { kind: "apns" }>,
+  route: Extract<SendRoute, { kind: "apns" }>,
 ): Promise<DeliveryOutcome> {
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     tokens: route.tokens,
@@ -143,10 +147,10 @@ async function sendApns(
   if (configError !== undefined) {
     await ctx.runMutation(internal.delivery.record, {
       outboxId,
-      outcome: "failed",
+      outcome: "retry",
       detail: configError,
     });
-    return "failed";
+    return "config";
   }
   const dead = results.filter((r) => r.outcome === "unregistered").map((r) => r.token);
   if (dead.length > 0) await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
@@ -171,32 +175,39 @@ async function sendApns(
 }
 
 /**
- * purpose: Send a row by SMS and record the result.
+ * purpose: Send a row by SMS and record the result. A configuration problem leaves the row
+ *          pending; a timeout is retried only when the route allows it.
  * @param ctx: (ActionCtx) Context.
  * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (Route) An sms route.
+ * @param route: (SendRoute) An sms route.
  * @return: (Promise<DeliveryOutcome>) The outcome.
  * @raises Error for a retryable failure.
  */
 async function sendSms(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
-  route: Extract<Route, { kind: "sms" }>,
+  route: Extract<SendRoute, { kind: "sms" }>,
 ): Promise<DeliveryOutcome> {
-  const result: SmsResult = await ctx.runAction(internal.sms.send, {
-    to: route.to,
-    body: route.body,
-  });
+  const result = await sendSmsFromEnv(route.to, route.body);
   if (result.ok) {
     await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "sent", channel: "sms" });
     return "sent";
   }
-  if (result.retryable) throw new Error(`SMS delivery failed, will retry: ${result.error}`);
-  await ctx.runMutation(internal.delivery.record, {
-    outboxId,
-    outcome: "failed",
-    detail: result.error,
-  });
+  if (result.config) {
+    await ctx.runMutation(internal.delivery.record, {
+      outboxId,
+      outcome: "retry",
+      detail: result.error,
+    });
+    return "config";
+  }
+  if (result.retryable && (!result.timedOut || route.retryOnTimeout)) {
+    throw new Error(`SMS delivery failed, will retry: ${result.error}`);
+  }
+  const detail = result.timedOut
+    ? `${result.error}; not retried, the text may have been delivered`
+    : result.error;
+  await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "failed", detail });
   return "failed";
 }
 
@@ -205,14 +216,14 @@ async function sendSms(
  *          workpool retries and the row shows why.
  * @param ctx: (ActionCtx) Context.
  * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (Route) An apns or sms route.
+ * @param route: (SendRoute) An apns or sms route.
  * @return: (Promise<DeliveryOutcome>) The outcome.
  * @raises The original error when worth retrying.
  */
 async function runRoute(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
-  route: Extract<Route, { kind: "apns" | "sms" }>,
+  route: SendRoute,
 ): Promise<DeliveryOutcome> {
   try {
     return route.kind === "apns"
@@ -236,7 +247,6 @@ export const deliver = internalAction({
   handler: async (ctx, { outboxId }): Promise<DeliveryOutcome> => {
     const start: BeginResult = await ctx.runMutation(internal.delivery.begin, { outboxId });
     if (start.kind === "done") return start.outcome;
-    if (start.route.kind === "skip") return "skipped";
     return await runRoute(ctx, outboxId, start.route);
   },
 });

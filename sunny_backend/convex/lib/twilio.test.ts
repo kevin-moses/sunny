@@ -4,16 +4,19 @@
 // request shape, the mapping of Twilio responses to { ok, retryable } (2xx, 4xx, 429, 5xx,
 // network error, timeout), phone number redaction in error text, X-Twilio-Signature
 // computation and validation (valid, tampered, missing, URL and token sensitivity, repeated
-// parameters), and TwiML escaping.
+// parameters), TwiML escaping (control characters stripped), sendSmsFromEnv (including the
+// config result and the timedOut flag), the webhook URL (no default), and the allowed country
+// codes.
 //
 // Last modified: 2026-10-29
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-  DEFAULT_WEBHOOK_URL,
   escapeXml,
+  isAllowedCountry,
   isE164,
   normalizePhone,
+  sendSmsFromEnv,
   sendTwilioSms,
   twilioConfig,
   twilioSignature,
@@ -97,11 +100,109 @@ describe("twilioConfig and webhookUrl", () => {
     expect(() => twilioConfig()).toThrow(/^SMS is not configured: TWILIO_FROM_NUMBER/);
   });
 
-  test("webhookUrl defaults and can be overridden", () => {
+  test("webhookUrl has no default: null when unset, the variable when set", () => {
     vi.stubEnv("TWILIO_WEBHOOK_URL", "");
-    expect(webhookUrl()).toBe(DEFAULT_WEBHOOK_URL);
+    expect(webhookUrl()).toBeNull();
     vi.stubEnv("TWILIO_WEBHOOK_URL", "https://example.test/twilio/sms");
     expect(webhookUrl()).toBe("https://example.test/twilio/sms");
+  });
+});
+
+describe("isAllowedCountry", () => {
+  test("allows only +1 by default", () => {
+    vi.stubEnv("SMS_ALLOWED_COUNTRY_CODES", "");
+    expect(isAllowedCountry("+15551234567")).toBe(true);
+    expect(isAllowedCountry("+442071838750")).toBe(false);
+    expect(isAllowedCountry("+8613800138000")).toBe(false);
+  });
+
+  test("SMS_ALLOWED_COUNTRY_CODES lists the allowed codes", () => {
+    vi.stubEnv("SMS_ALLOWED_COUNTRY_CODES", "1, +44");
+    expect(isAllowedCountry("+442071838750")).toBe(true);
+    expect(isAllowedCountry("+15551234567")).toBe(true);
+    expect(isAllowedCountry("+4915112345678")).toBe(false);
+  });
+
+  test("garbage entries allow nothing", () => {
+    vi.stubEnv("SMS_ALLOWED_COUNTRY_CODES", "abc,");
+    expect(isAllowedCountry("+15551234567")).toBe(false);
+  });
+});
+
+describe("sendSmsFromEnv", () => {
+  beforeEach(() => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "AC1");
+    vi.stubEnv("TWILIO_AUTH_TOKEN", "tok");
+    vi.stubEnv("TWILIO_FROM_NUMBER", "+15550001111");
+  });
+
+  test("sends with the environment's settings", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ sid: "SM42" }, { status: 201 })),
+    );
+    expect(await sendSmsFromEnv("+15551234567", "hi")).toEqual({ ok: true, sid: "SM42" });
+  });
+
+  test("returns a non-retryable config result instead of throwing", async () => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await sendSmsFromEnv("+15551234567", "hi")).toEqual({
+      ok: false,
+      retryable: false,
+      config: true,
+      error: "SMS is not configured: set TWILIO_ACCOUNT_SID",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("a timeout is retryable and flagged timedOut", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }),
+      ),
+    );
+    const pending = sendSmsFromEnv("+15551234567", "hi");
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await pending).toEqual({
+      ok: false,
+      retryable: true,
+      timedOut: true,
+      error: "Twilio did not answer in time",
+    });
+    vi.useRealTimers();
+  });
+
+  test("the timeout also covers reading the response body", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise((resolve) => {
+            const body = new ReadableStream({
+              start(controller) {
+                init.signal?.addEventListener("abort", () =>
+                  controller.error(new DOMException("aborted", "AbortError")),
+                );
+              },
+            });
+            resolve(new Response(body, { status: 201 }));
+          }),
+      ),
+    );
+    const pending = sendSmsFromEnv("+15551234567", "hi");
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await pending).toMatchObject({ ok: false, retryable: true, timedOut: true });
+    vi.useRealTimers();
   });
 });
 
@@ -199,6 +300,7 @@ describe("sendTwilioSms", () => {
     expect(await pending).toEqual({
       ok: false,
       retryable: true,
+      timedOut: true,
       error: "Twilio did not answer in time",
     });
   });
@@ -303,6 +405,11 @@ describe("Twilio signature", () => {
 });
 
 describe("TwiML", () => {
+  test("control characters are removed, tab and newline kept", () => {
+    expect(escapeXml("a\u0007b\u0000c\u007Fd\te\nf\r")).toBe("abcd\te\nf\r");
+    expect(twiml("Hi \u001B[31mthere")).toContain("<Message>Hi [31mthere</Message>");
+  });
+
   test("escapeXml escapes the five XML characters", () => {
     expect(escapeXml(`<a href="x">Tom & 'Jerry'</a>`)).toBe(
       "&lt;a href=&quot;x&quot;&gt;Tom &amp; &apos;Jerry&apos;&lt;/a&gt;",

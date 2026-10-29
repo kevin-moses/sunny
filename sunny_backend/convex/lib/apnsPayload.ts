@@ -1,13 +1,14 @@
 // lib/apnsPayload.ts
-// Purpose: Pure helpers for the Apple Push Notification sender (apns.ts), kept free of node:http2
-// so they can be unit tested: configuration from the environment (APNS_KEY_ID, APNS_TEAM_ID,
-// APNS_KEY_P8, APNS_BUNDLE_ID, APNS_ENVIRONMENT), host selection, the alert payload and request
-// headers, the ES256 provider token (claims, PEM parsing, signing with WebCrypto, and a module
-// scope cache refreshed after 50 minutes), and the mapping from an APNs response to a per-token
-// outcome. Configuration problems raise ConfigError with the prefix "APNs is not configured".
-// Exports: APNS_NOT_CONFIGURED, ApnsConfig, ApnsOutcome, ApnsResult, ApnsSendResult, loadApnsConfig, apnsHost,
-// buildPayload, buildHeaders, jwtClaims, signProviderToken, getProviderToken,
-// resetProviderTokenCache, mapOutcome, failureResult.
+// Purpose: Pure helpers for the Apple Push Notification sender (apns.ts), kept free of
+// node:http2 so they can be unit tested: configuration from the environment (APNS_KEY_ID,
+// APNS_TEAM_ID, APNS_KEY_P8, APNS_ENVIRONMENT which must be set, optional APNS_BUNDLE_ID), host
+// selection, device token validation, the alert payload (capped to 4 KB) and request headers,
+// the ES256 provider token (signed with an iat from a 30-minute bucket so containers share
+// claims, re-signed when the bucket changes), and the mapping from an APNs response to a
+// per-token outcome. Configuration problems raise ConfigError ("APNs is not configured").
+// Exports: APNS_NOT_CONFIGURED, ApnsConfig, ApnsOutcome, ApnsResult, ApnsSendResult,
+// loadApnsConfig, apnsHost, isValidDeviceToken, buildPayload, buildHeaders, jwtClaims,
+// signProviderToken, getProviderToken, resetProviderTokenCache, mapOutcome, failureResult.
 //
 // Last modified: 2026-10-29
 
@@ -21,7 +22,8 @@ const SANDBOX_HOST = "api.sandbox.push.apple.com";
 const PRODUCTION_HOST = "api.push.apple.com";
 const DEFAULT_BUNDLE_ID = "com.kmsunny.sunny";
 const EXPIRATION_SECONDS = 3 * 60 * 60;
-const TOKEN_MAX_AGE_SECONDS = 50 * 60;
+const TOKEN_BUCKET_SECONDS = 30 * 60;
+const MAX_PAYLOAD_BYTES = 4096;
 
 /** Resolved APNs configuration. */
 export type ApnsConfig = {
@@ -64,10 +66,10 @@ export function loadApnsConfig(env: Record<string, string | undefined> = process
   if (!keyId) throw new ConfigError(`${APNS_NOT_CONFIGURED}: APNS_KEY_ID is missing`);
   if (!teamId) throw new ConfigError(`${APNS_NOT_CONFIGURED}: APNS_TEAM_ID is missing`);
   if (!keyRaw) throw new ConfigError(`${APNS_NOT_CONFIGURED}: APNS_KEY_P8 is missing`);
-  const environment = (env.APNS_ENVIRONMENT?.trim() || "development").toLowerCase();
+  const environment = (env.APNS_ENVIRONMENT?.trim() ?? "").toLowerCase();
   if (environment !== "development" && environment !== "production") {
     throw new ConfigError(
-      `${APNS_NOT_CONFIGURED}: APNS_ENVIRONMENT must be "development" or "production"`,
+      `${APNS_NOT_CONFIGURED}: APNS_ENVIRONMENT must be set to "development" or "production"`,
     );
   }
   return {
@@ -89,18 +91,33 @@ export function apnsHost(environment: "development" | "production"): string {
 }
 
 /**
+ * purpose: Whether a string looks like an APNs device token (hex, 64 to 200 characters). Checked
+ *          before a token is stored and before it becomes part of a request path.
+ * @param token: (string) Candidate token.
+ * @return: (boolean) True for 64 to 200 hex characters.
+ */
+export function isValidDeviceToken(token: string): boolean {
+  return /^[0-9a-fA-F]{64,200}$/.test(token);
+}
+
+/**
  * purpose: Build the JSON body of an alert push. Data keys stay as given (snake_case) and
  *          cannot override the aps dictionary.
  * @param title: (string) Alert title.
  * @param body: (string) Alert body.
  * @param data: (Record<string, string>) Optional custom keys.
- * @return: (string) Serialized payload.
+ * @return: (string) Serialized payload, with the body cut so it stays under 4 KB.
  */
 export function buildPayload(title: string, body: string, data?: Record<string, string>): string {
-  return JSON.stringify({
-    ...data,
-    aps: { alert: { title, body }, sound: "default" },
-  });
+  const encode = (text: string): string =>
+    JSON.stringify({ ...data, aps: { alert: { title, body: text }, sound: "default" } });
+  let text = body;
+  let payload = encode(text);
+  while (new TextEncoder().encode(payload).length > MAX_PAYLOAD_BYTES && text.length > 0) {
+    text = text.slice(0, Math.floor(text.length * 0.8));
+    payload = encode(text);
+  }
+  return payload;
 }
 
 /**
@@ -199,26 +216,23 @@ export async function signProviderToken(config: ApnsConfig, nowSeconds: number):
   return `${signingInput}.${toBase64Url(new Uint8Array(sig))}`;
 }
 
-let cached: { cacheKey: string; token: string; issuedAt: number } | null = null;
+let cached: { cacheKey: string; token: string } | null = null;
 
 /**
- * purpose: The provider token, reusing the cached one until it is 50 minutes old (APNs rejects
+ * purpose: The provider token. Its iat is the start of the current 30-minute bucket, so every
+ *          container signs identical claims and a token is at most 30 minutes old (APNs rejects
  *          tokens older than an hour and throttles refreshes more often than every 20 minutes).
+ *          The signed token is reused until the bucket changes.
  * @param config: (ApnsConfig) Configuration.
  * @param nowSeconds: (number) Current Unix time in seconds.
  * @return: (Promise<string>) The compact JWT.
  */
 export async function getProviderToken(config: ApnsConfig, nowSeconds: number): Promise<string> {
-  const cacheKey = `${config.keyId}|${config.teamId}|${config.keyPem}`;
-  if (
-    cached &&
-    cached.cacheKey === cacheKey &&
-    nowSeconds - cached.issuedAt < TOKEN_MAX_AGE_SECONDS
-  ) {
-    return cached.token;
-  }
-  const token = await signProviderToken(config, nowSeconds);
-  cached = { cacheKey, token, issuedAt: nowSeconds };
+  const issuedAt = Math.floor(nowSeconds / TOKEN_BUCKET_SECONDS) * TOKEN_BUCKET_SECONDS;
+  const cacheKey = `${config.keyId}|${config.teamId}|${config.keyPem}|${issuedAt}`;
+  if (cached && cached.cacheKey === cacheKey) return cached.token;
+  const token = await signProviderToken(config, issuedAt);
+  cached = { cacheKey, token };
   return token;
 }
 
@@ -235,14 +249,13 @@ export function resetProviderTokenCache(): void {
  * @param token: (string) Device token.
  * @param status: (number) HTTP status.
  * @param reason: (string | null) APNs `reason` from the body, if any.
- * @return: (ApnsResult) Outcome: 200 sent; 410 or 400 BadDeviceToken/DeviceTokenNotForTopic
- *          unregistered; 429 and 5xx failed retryable; other statuses failed not retryable.
+ * @return: (ApnsResult) Outcome: 200 sent; 410 unregistered (the only status whose token is
+ *          deleted); 429 and 5xx failed retryable; other statuses, including 400 BadDeviceToken
+ *          and DeviceTokenNotForTopic, failed not retryable.
  */
 export function mapOutcome(token: string, status: number, reason: string | null): ApnsResult {
   if (status === 200) return { token, outcome: "sent", status, reason, retryable: false };
-  const badToken =
-    status === 400 && (reason === "BadDeviceToken" || reason === "DeviceTokenNotForTopic");
-  if (status === 410 || badToken) {
+  if (status === 410) {
     return { token, outcome: "unregistered", status, reason, retryable: false };
   }
   const retryable = status === 429 || status >= 500;

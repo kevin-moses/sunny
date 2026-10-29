@@ -13,11 +13,11 @@
 // (prompt, or caregiver alert) come due together only the latest, by its current position in
 // the policy, is sent. Each household runs in its own serializable transaction, so a slow or
 // overlapping tick conflicts only with writes to that household. The same per-household pass
-// also queues the day-of event notices (lib/eventNotices.ts, the port of event_notice_tick),
-// so there is no second per-minute cron. It also queues the household's daily digest once its
-// digestTime passes (lib/digest.ts), and every outbox row goes through insertNotification
-// (lib/delivery.ts), which enqueues its delivery. The functions take `now` so tests can drive the
-// clock; tickHouseholdCore is the pure pass tests call directly.
+// also queues the day-of event notices (lib/eventNotices.ts, the port of event_notice_tick) and
+// the household's daily digest once its digestTime passes (digest.ts), so there is no second
+// per-minute cron. Every outbox row goes through insertNotification (lib/delivery.ts), which
+// enqueues its delivery. The functions take `now` so tests can drive the clock;
+// tickHouseholdCore is the pure pass tests call directly.
 //
 // Last modified: 2026-10-29
 
@@ -266,8 +266,9 @@ async function closeWindows(
 
 /**
  * purpose: One scheduler pass over one household: expand, open windows, fire escalation steps,
- *          mark escalated, close windows, announce day-of event notices, queue the daily digest when due. The pure core of
- *          tickHousehold, called directly by tests with an explicit clock.
+ *          mark escalated, close windows, announce day-of event notices, queue the daily digest
+ *          when due. The pure core of tickHousehold, called directly by tests with an explicit
+ *          clock.
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms.

@@ -9,7 +9,8 @@
 // box unreadable and every caregiver must reconnect Google Calendar.
 // Also home of constantTimeEqual, the one constant-time string compare (signatures, codes,
 // keys).
-// Exports: encryptSecret, decryptSecret, SecretUnreadable, constantTimeEqual.
+// Also hmacHex, an HMAC under a key derived from the same material for a named purpose.
+// Exports: encryptSecret, decryptSecret, SecretUnreadable, constantTimeEqual, hmacHex.
 //
 // Last modified: 2026-10-29
 
@@ -33,11 +34,11 @@ export class SecretUnreadable extends Error {
 }
 
 /**
- * purpose: Import the AES key from CALENDAR_TOKEN_KEY.
- * @return: (Promise<Awaited<ReturnType<typeof crypto.subtle.importKey>>>) AES-GCM key.
+ * purpose: Read CALENDAR_TOKEN_KEY as bytes.
+ * @return: (Uint8Array<ArrayBuffer>) The 32 key bytes.
  * @raises ConfigError when the variable is missing, not base64, or not 32 bytes.
  */
-async function loadKey(): Promise<Awaited<ReturnType<typeof crypto.subtle.importKey>>> {
+function loadKeyBytes(): Uint8Array<ArrayBuffer> {
   const raw = process.env.CALENDAR_TOKEN_KEY;
   if (!raw) throw new ConfigError("Missing env var CALENDAR_TOKEN_KEY");
   let bytes: Uint8Array<ArrayBuffer>;
@@ -49,7 +50,44 @@ async function loadKey(): Promise<Awaited<ReturnType<typeof crypto.subtle.import
   if (bytes.length !== KEY_BYTES) {
     throw new ConfigError("CALENDAR_TOKEN_KEY must be base64 of 32 bytes");
   }
-  return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return bytes;
+}
+
+/**
+ * purpose: Import the AES key from CALENDAR_TOKEN_KEY.
+ * @return: (Promise<Awaited<ReturnType<typeof crypto.subtle.importKey>>>) AES-GCM key.
+ * @raises ConfigError when the variable is missing, not base64, or not 32 bytes.
+ */
+async function loadKey(): Promise<Awaited<ReturnType<typeof crypto.subtle.importKey>>> {
+  return crypto.subtle.importKey("raw", loadKeyBytes(), { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
+}
+
+/**
+ * purpose: HMAC-SHA256 of a message under a key derived (HKDF-SHA256, the label as info) from
+ *          CALENDAR_TOKEN_KEY, so each use of the key material has its own independent key and
+ *          no new environment variable is needed.
+ * @param label: (string) What the derived key is for, e.g. "sunny-phone-code".
+ * @param message: (string) The text to authenticate.
+ * @return: (Promise<string>) Lowercase hex MAC.
+ * @raises ConfigError when CALENDAR_TOKEN_KEY is missing or malformed.
+ */
+export async function hmacHex(label: string, message: string): Promise<string> {
+  const enc = new TextEncoder();
+  const material = await crypto.subtle.importKey("raw", loadKeyBytes(), "HKDF", false, [
+    "deriveKey",
+  ]);
+  const key = await crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: enc.encode(label) },
+    material,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(message)));
+  return Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**

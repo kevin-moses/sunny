@@ -21,6 +21,7 @@ import {
   buildPayload,
   failureResult,
   getProviderToken,
+  isValidDeviceToken,
   loadApnsConfig,
   mapOutcome,
 } from "./lib/apnsPayload";
@@ -28,6 +29,7 @@ import { ConfigError } from "./lib/errors";
 import type { ApnsConfig, ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const CONNECT_TIMEOUT_MS = 10_000;
 
 /**
  * purpose: Send one push on an open session and map the response.
@@ -48,8 +50,17 @@ function sendOne(
   data: Record<string, string> | undefined,
 ): Promise<ApnsResult> {
   return new Promise((resolve) => {
+    if (!isValidDeviceToken(token)) {
+      resolve({ token, outcome: "failed", status: 0, reason: "InvalidToken", retryable: false });
+      return;
+    }
     let settled = false;
-    const finish = (result: ApnsResult) => {
+    /**
+     * purpose: Settle this request's promise once, with the first result.
+     * @param result: (ApnsResult) The outcome.
+     * @return: (void)
+     */
+    const finish = (result: ApnsResult): void => {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -84,6 +95,8 @@ function sendOne(
         finish(mapOutcome(token, status, reason));
       });
       req.on("error", (e: Error) => finish(failureResult(token, e.message)));
+      // A stream closed without a response or an error (session torn down) must not hang.
+      req.on("close", () => finish(failureResult(token, "Closed")));
       req.end(body);
     } catch (e) {
       finish(failureResult(token, e instanceof Error ? e.message : "Request failed"));
@@ -122,13 +135,28 @@ export const send = internalAction({
     const session = connect(`https://${apnsHost(config.environment)}`);
     // A session-level error also surfaces on each pending request's own error event.
     session.on("error", () => {});
+    const connectTimer = setTimeout(
+      () => session.destroy(new Error("connect timeout")),
+      CONNECT_TIMEOUT_MS,
+    );
+    session.once("connect", () => clearTimeout(connectTimer));
+    let broken = false;
     try {
       const results = await Promise.all(
         args.tokens.map((t) => sendOne(session, config, providerToken, t, payload, args.data)),
       );
+      broken = results.some((r) => r.outcome === "failed" && r.retryable);
+      for (const r of results) {
+        if (r.outcome === "failed")
+          console.error(`apns: ${r.token.slice(0, 8)} ${r.status} ${r.reason}`);
+      }
       return { results };
     } finally {
-      session.close();
+      clearTimeout(connectTimer);
+      // After a timeout or connection error the session is not trusted; otherwise close it
+      // gracefully.
+      if (broken) session.destroy();
+      else session.close();
     }
   },
 });

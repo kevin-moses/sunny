@@ -1,12 +1,12 @@
 // lib/digestFacts.ts
 // Purpose: Gather the facts of one household-local day for the daily digest, from logged data
-// only (see notes/SPEC.md "Daily digest"): task instances of that local date that were
-// confirmed (with time and how), resolved by a caregiver, missed, or escalated (with who
-// claimed them), as-needed doses taken that day, and the senior's questions asked that day
-// (unanswered, routed to family, and repeat counts by topic). "That day" is the household's
-// local day, from local midnight to the next local midnight, so a DST day is 23 or 25 hours
-// long and a zone far from UTC still gets its own calendar day. Nothing from other days is
-// read. Lists are capped so a busy day stays within one query.
+// only (see notes/SPEC.md "Daily digest"): task instances of that local date in every state
+// (confirmed with time and how, resolved by a caregiver, missed, escalated with who claimed
+// them, and still open because due or upcoming), as-needed doses taken that day, and the
+// senior's questions asked that day (unanswered, routed to family, repeat counts by topic).
+// "That day" is the household's local day, from local midnight to the next local midnight, so a
+// DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
+// Nothing from other days is read. Lists are capped so a busy day stays within one query.
 //
 // Last modified: 2026-10-29
 
@@ -18,8 +18,8 @@ import type { ConfirmVia } from "./validators";
 /** The most task instances, questions and doses read for one day. */
 const DAY_READ_CAP = 200;
 
-/** How a logged task instance ended its day. */
-export type TaskOutcome = "confirmed" | "resolved" | "missed" | "escalated";
+/** How a task instance stands at digest time ("open" is due or upcoming). */
+export type TaskOutcome = "confirmed" | "resolved" | "missed" | "escalated" | "open";
 
 /** One task instance of the day. */
 export interface TaskFact {
@@ -86,8 +86,8 @@ function nameOf(names: Map<string, string>, userId: string | undefined): string 
 }
 
 /**
- * purpose: The task facts of the local day: confirmed, resolved, missed and escalated
- *          instances (upcoming and merely due ones are not logged outcomes).
+ * purpose: The task facts of the local day, one per instance: confirmed, resolved, missed,
+ *          escalated, or open (due or upcoming).
  * @param ctx: (QueryCtx) Context.
  * @param household: (Doc<"households">) The household.
  * @param localDate: (string) The local day.
@@ -106,14 +106,7 @@ async function taskFacts(
       q.eq("householdId", household._id).eq("localDate", localDate),
     )
     .take(DAY_READ_CAP);
-  const logged = instances.filter(
-    (i) =>
-      i.state === "confirmed" ||
-      i.state === "resolved" ||
-      i.state === "missed" ||
-      i.state === "escalated",
-  );
-  logged.sort((a, b) => a.windowStart - b.windowStart);
+  const logged = [...instances].sort((a, b) => a.windowStart - b.windowStart);
   const taskIds = [...new Set(logged.map((i) => i.taskId))];
   const labels = new Map<Id<"tasks">, string | undefined>(
     await Promise.all(
@@ -127,7 +120,8 @@ async function taskFacts(
   for (const instance of logged) {
     const label = labels.get(instance.taskId);
     if (label === undefined) continue;
-    const state = instance.state as TaskOutcome;
+    const state: TaskOutcome =
+      instance.state === "upcoming" || instance.state === "due" ? "open" : instance.state;
     const fact: TaskFact = {
       label,
       scheduledAt: formatTime12(instance.scheduledTime),
@@ -203,6 +197,11 @@ function questionFacts(
     .filter(([, count]) => count > 1)
     .map(([topic, count]) => ({ topic, count }))
     .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic));
+  /**
+   * purpose: The distinct questions with one outcome, trailing punctuation removed.
+   * @param outcome: (string) The outcome to select.
+   * @return: (string[]) Question texts.
+   */
   const topicsWith = (outcome: string): string[] => [
     ...new Set(
       questions

@@ -3,7 +3,7 @@
 // (delivery.test.ts, digest.test.ts), so APNs, SMS and the model are never called. Test files
 // register the module mocks with vi.mock, whose factories import from here:
 //   vi.mock("./apns", async () => (await import("./deliveryMocks.helpers")).apnsModule());
-//   vi.mock("./sms", async () => (await import("./deliveryMocks.helpers")).smsModule());
+//   vi.mock("./lib/twilio", async (orig) => (await import("./deliveryMocks.helpers")).twilioModule(await orig()));
 // The fixture helpers build a household (Pat primary, Max member, Val viewer, one paired
 // device "phone") with push tokens and verified phones, and insert outbox rows directly.
 // The name has two dots, so Convex does not treat this file as a function module.
@@ -66,16 +66,14 @@ export function apnsModule(original: object = {}) {
 }
 
 /**
- * purpose: The ./sms module with send replaced by the mock.
+ * purpose: The ./lib/twilio module with sendSmsFromEnv replaced by the mock.
+ * @param original: (object) The real module, kept for everything else it exports.
  * @return: (object) The mocked module.
  */
-export function smsModule(original: object = {}) {
+export function twilioModule(original: object = {}) {
   return {
     ...original,
-    send: internalActionGeneric({
-      args: { to: v.string(), body: v.string() },
-      handler: async (_ctx, args) => await providerMocks.smsSend(args),
-    }),
+    sendSmsFromEnv: async (to: string, body: string) => await providerMocks.smsSend({ to, body }),
   };
 }
 
