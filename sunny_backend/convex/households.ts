@@ -25,6 +25,7 @@ import {
 } from "./lib/access";
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
+import { resyncHouseholdTimezone } from "./lib/schedule";
 import { canonicalTimezone, isLocalTime } from "./lib/time";
 import { joinGrant, memberRole } from "./lib/validators";
 import type { DeviceKind, JoinGrant, MemberRole } from "./lib/validators";
@@ -250,7 +251,11 @@ export const update = mutation({
     if (fields.seniorFullName !== undefined) patch.seniorFullName = fields.seniorFullName;
     if (fields.timezone !== undefined) {
       patch.timezone = requireTimezone(fields.timezone);
-      // wave 2 adds the schedule resync here
+      if (patch.timezone !== household.timezone) {
+        // The resync reads the household's zone, so write it before expanding.
+        await ctx.db.patch(householdId, { timezone: patch.timezone });
+        await resyncHouseholdTimezone(ctx, householdId, Date.now());
+      }
     }
     if (fields.onCallUserId !== undefined) {
       if (!(await findMember(ctx, householdId, fields.onCallUserId))) {

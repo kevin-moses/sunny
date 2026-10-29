@@ -9,7 +9,8 @@
 // Conventions: instants are epoch ms; household-local dates are "YYYY-MM-DD" and local
 // times "HH:MM"; weekdays are ISO numbers (1 = Monday); user ids are Clerk user ids
 // (the identity's subject). Uniqueness the SQL schema enforced is checked by the
-// mutations that write each table, using the indexes below.
+// mutations that write each table, using the indexes below. The scheduler tables carry the
+// indexes the tick and the resync paths read (by state and window, by task and state).
 // Not yet ported (later phases): background jobs and agent requests, Google Calendar
 // connections and links, storage for photos and voice clips.
 //
@@ -169,7 +170,10 @@ export default defineSchema({
     .index("by_task_date_time", ["taskId", "localDate", "scheduledTime"])
     .index("by_household_date", ["householdId", "localDate"])
     .index("by_state_window_start", ["state", "windowStart"])
-    .index("by_state_window_end", ["state", "windowEnd"]),
+    .index("by_state_window_end", ["state", "windowEnd"])
+    // Resync deletes a task's or household's upcoming instances without scanning history.
+    .index("by_task_state", ["taskId", "state", "windowStart"])
+    .index("by_household_state", ["householdId", "state", "windowStart"]),
 
   // As-needed medication taken outside a scheduled instance.
   doseLog: defineTable({
@@ -197,6 +201,8 @@ export default defineSchema({
   })
     .index("by_recipient_user", ["recipientUserId"])
     .index("by_recipient_device", ["recipientDeviceId"])
+    // Deleting an instance deletes its notifications (the SQL foreign key cascaded).
+    .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
     .index("by_sent", ["sentAt"]),
 
