@@ -96,3 +96,6 @@ build/
 .LSOverride
 supabase/scripts/.dev*.json
 supabase/scripts/.env.*
+
+# Apple push (APNs) auth keys and other private keys
+*.p8
