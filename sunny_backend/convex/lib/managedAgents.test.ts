@@ -1,6 +1,6 @@
 // lib/managedAgents.test.ts
 // Purpose: Tests for the pure parts of lib/managedAgents.ts, ported from the behavior of
-// supabase/functions/jobs-run/agent.ts: pendingToolUses (calls without a result) and
+// the former Supabase jobs-run agent function: pendingToolUses (calls without a result) and
 // finishedTurn (running while the session works or waits for tool results, replied at end of
 // turn with the joined agent text or "Done.", stopped for any other idle reason, and only the
 // turn after the latest user message counts), plus readAgentConfig (missing variables are

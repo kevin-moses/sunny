@@ -3,7 +3,7 @@
 // agent runtime (agentRuntime.ts), plus the two pure functions that read a session's event
 // list: pendingToolUses (custom tool calls still waiting for a result) and finishedTurn
 // (whether the turn started by the latest user message has ended, and how). Ported from
-// supabase/functions/jobs-run/agent.ts with the logic unchanged. Everything that touches the
+// the former Supabase jobs-run agent function with the logic unchanged. Everything that touches the
 // network lives in the wrapper functions so tests can replace this module wholesale and never
 // call the real API. Env: ANTHROPIC_API_KEY, SUNNY_AGENT_ID, SUNNY_ENVIRONMENT_ID, and
 // optionally SUNNY_AGENT_SESSION_BUDGET_CENTS (default 100). See notes/AGENT_RUNTIME.md.

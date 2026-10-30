@@ -1,8 +1,8 @@
 # Convex Migration Plan
 
-Written 2026-10-28. Moves Sunny's backend from Supabase (Postgres, RLS, pg_cron, Edge Functions) to Convex. The React Native (Expo) app landed on main on 2026-10-29 and is merged into this branch; it still talks to Supabase until phase 6. This work happens on `worktree-convex-migration` and touches `sunny_backend/`, `sunny_agent/` and `notes/`; `sunny_app/` changes wait for phase 6.
+Written 2026-10-28. Moves Sunny's backend from Supabase (Postgres, RLS, pg_cron, Edge Functions) to Convex. The React Native (Expo) app landed on main on 2026-10-29 and is merged into this branch; it now runs on Clerk and Convex. This work happens on `worktree-convex-migration`.
 
-Behavior does not change. `notes/SPEC.md` is still the product, and `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md` describe the behavior each Convex module must keep. Both are rewritten for Convex at cutover.
+Behavior does not change. `notes/SPEC.md` is still the product, and `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md` describe the behavior each Convex module must keep. Both were rewritten for Convex in phase 6; the Supabase-era file names mentioned in this plan no longer exist in the repo.
 
 ## Why
 
@@ -100,7 +100,11 @@ Each phase ends with its tests passing, `npx convex dev --once` deploying cleanl
      - APNs: `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8` (set it with `npx convex env set APNS_KEY_P8 --from-file <key.p8>`), `APNS_ENVIRONMENT` (development for dev builds), optional `APNS_BUNDLE_ID`.
      - Twilio: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_WEBHOOK_URL`.
      - Optional: `SMS_ALLOWED_COUNTRY_CODES`.
-6. **Cutover.** App on Convex (done early, 2026-10-29: `sunny_app` uses Clerk + Convex and no longer depends on Supabase), delete `supabase/`, rewrite `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md`, Convex Cloud prod deployment, BAA confirmed with Convex, Clerk and Twilio.
+6. **Cutover** (in progress, 2026-10-29).
+   - **Done:** the app runs on Clerk and Convex and no longer depends on Supabase. `supabase/` is removed (migrations, Edge Functions, seed, pgTAP tests, scripts) along with its .gitignore entries; comments that cited its files now describe the history in words. `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md` are rewritten for Convex and `notes/HANDOFF.md` is now the code map of the current repo. `scripts/caregiver.ts phone` waits for the verification text to go out (new `phone.myPhoneStatus` query) and reports a send failure.
+   - **Open:**
+     - Convex Cloud production deployment (separate Clerk production instance, Google and Apple OAuth credentials, redirect URIs, env vars). A runbook is to be added.
+     - BAAs confirmed with Convex, Clerk, Twilio (and the other vendors that touch household data) before real pilot data.
 
 ## What the React Native app needs from this
 

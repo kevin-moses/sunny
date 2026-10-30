@@ -14,7 +14,7 @@
 // inline) when the timezone, event notice time or senior's preferred name actually changes or
 // a pause ends; removeMember drops the removed caregiver's Google connections, links and
 // pending syncs and revokes their grants.
-// Phone numbers: setMyPhone, confirmMyPhone and clearMyPhone (phone.ts) are re-exported here; listMembers
+// Phone numbers: setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus (phone.ts) are re-exported here; listMembers
 // reports phoneVerified and hides numbers from paired devices.
 //
 // Last modified: 2026-10-29
@@ -330,7 +330,7 @@ export const listMembers = query({
 });
 
 /** Caregiver phone verification, implemented in phone.ts. */
-export { clearMyPhone, confirmMyPhone, setMyPhone } from "./phone";
+export { clearMyPhone, confirmMyPhone, myPhoneStatus, setMyPhone } from "./phone";
 
 /**
  * purpose: Reject a change that would leave the household without a primary caregiver. Call

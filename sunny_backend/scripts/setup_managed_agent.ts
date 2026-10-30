@@ -5,7 +5,7 @@
 // SUNNY_AGENT_ID set to publish a new agent version after changing the prompt or tools in
 // convex/lib/agentConfig.ts and convex/lib/agentTools.ts; running sessions keep the version
 // they started with. The agent gets only Sunny's custom tools (no shell, files or web), and
-// its environment allows no outbound network. Port of supabase/scripts/setup_managed_agent.ts.
+// its environment allows no outbound network. Port of the former Supabase setup script.
 // Not part of the deployed backend.
 //
 // Usage (from sunny_backend/, with ANTHROPIC_API_KEY in the env file):

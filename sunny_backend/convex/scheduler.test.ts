@@ -1,6 +1,6 @@
 // scheduler.test.ts
 // Purpose: Tests for the scheduler (scheduler.ts, lib/schedule.ts), ported from the scheduler
-// half of supabase/tests/scheduler.test.sql: expansion across the March 2027 and November
+// half of the former Supabase scheduler tests: expansion across the March 2027 and November
 // 2026 New York DST changes, idempotence, no back-fill, the escalation ladder (prompt,
 // reprompt, on-call alert, all-caregiver alert skipped once claimed), missed windows, audit of
 // every state change, snooze, tasks added mid-window, bursts after a gap, inactive tasks,

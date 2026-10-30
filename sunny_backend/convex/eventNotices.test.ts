@@ -1,7 +1,7 @@
 // eventNotices.test.ts
 // Purpose: Tests for the day-of event notices (lib/eventNotices.ts, run from the per-household
 // scheduler tick), ported from the "Day-of notices" section of
-// supabase/tests/calendar_jobs.test.sql and extended: nothing before the household's notice
+// the former Supabase calendar job tests and extended: nothing before the household's notice
 // time, announcement at the notice time, events later that day versus already started, an
 // event added after the notice time announced on the next tick, once per occurrence, a weekly
 // repeat giving one notice per day, cancelled events, every member (not devices) receiving one

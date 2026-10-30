@@ -8,7 +8,8 @@
 // locking, expiry, resend, a failed send and a still-sending status, code length cap, the send
 // rate limits (burst, per caregiver and number without one caregiver spending another's budget,
 // per caregiver and household per day), member-only access, texting not configured,
-// clearMyPhone, the hourly sweep, and the verified phone in listMembers and the phone index.
+// clearMyPhone, myPhoneStatus (none, sending, sent, send_failed, expired, members only),
+// the hourly sweep, and the verified phone in listMembers and the phone index.
 //
 // Last modified: 2026-10-29
 
@@ -337,6 +338,71 @@ describe("setMyPhone", () => {
     await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
     await t.action(internal.phone.sendCode, { verificationId: oldRow!._id });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("myPhoneStatus", () => {
+  test("is none before any number is added", async () => {
+    const { t, householdId } = await setup();
+    const pat = t.withIdentity({ subject: "pat" });
+    expect(await pat.query(api.households.myPhoneStatus, { householdId })).toEqual({
+      status: "none",
+    });
+  });
+
+  test("is sending until the text is made, then sent with the pending number", async () => {
+    const { t, householdId } = await setup();
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
+    expect(await pat.query(api.households.myPhoneStatus, { householdId })).toEqual({
+      status: "sending",
+    });
+    await queuedTexts(t);
+    expect(await pat.query(api.households.myPhoneStatus, { householdId })).toEqual({
+      status: "sent",
+      phone: "+15551234567",
+      expiresAt: Date.now() + CODE_TTL_MS,
+    });
+  });
+
+  test("reports a failed send with its reason", async () => {
+    const { t, householdId } = await setup();
+    fetchMock.mockResolvedValue(Response.json({ code: 21211, message: "bad" }, { status: 400 }));
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
+    await queuedTexts(t);
+    expect(await pat.query(api.households.myPhoneStatus, { householdId })).toEqual({
+      status: "send_failed",
+      error: "Twilio 400 (code 21211): bad",
+    });
+  });
+
+  test("is expired once the code has expired", async () => {
+    const { t, householdId } = await setup();
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
+    await queuedTexts(t);
+    vi.advanceTimersByTime(CODE_TTL_MS + 1);
+    expect(await pat.query(api.households.myPhoneStatus, { householdId })).toEqual({
+      status: "expired",
+    });
+  });
+
+  test("shows each member only their own verification", async () => {
+    const { t, householdId } = await setup();
+    await t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
+    expect(
+      await t.withIdentity({ subject: "max" }).query(api.households.myPhoneStatus, { householdId }),
+    ).toEqual({ status: "none" });
+  });
+
+  test("rejects a non-member", async () => {
+    const { t, householdId } = await setup();
+    await expect(
+      t.withIdentity({ subject: "stranger" }).query(api.households.myPhoneStatus, { householdId }),
+    ).rejects.toThrow(/forbidden/);
   });
 });
 

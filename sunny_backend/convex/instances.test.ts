@@ -1,6 +1,6 @@
 // instances.test.ts
 // Purpose: Tests for instances.ts, ported from the instance half of
-// supabase/tests/scheduler.test.sql: confirm (device, caregiver, agent, early and late, the
+// the former Supabase scheduler tests: confirm (device, caregiver, agent, early and late, the
 // already-done guard), snooze, claim, today, confirmDueTask ("Done": no label, label,
 // ambiguous, not found, already done, not due yet, prefer what is due now), senior reminders
 // (create, recurring, cancel, blank query, past date) and dose logging. Also one access test

@@ -19,7 +19,9 @@
 //                      it signed in as a Google test user. See notes/GOOGLE_CALENDAR_SETUP.md.
 //   phone <number>     Start verifying the dev caregiver's mobile number (households:setMyPhone):
 //                      10-digit US or +E.164. Sunny texts a 6-digit code to it (needs the
-//                      TWILIO_* variables on the deployment).
+//                      TWILIO_* variables on the deployment). Waits up to 30 seconds for
+//                      the text to go out (households:myPhoneStatus) and prints either
+//                      "Texted a code" or the send failure reason.
 //   confirm-phone <code>  Confirm that code (households:confirmMyPhone) and print the result.
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
@@ -216,20 +218,49 @@ function google(): void {
 ${url}`);
 }
 
+/** How long `phone` waits for the code text to go out, and how often it checks. */
+const PHONE_WAIT_MS = 30_000;
+const PHONE_POLL_MS = 1_000;
+
+/** Shape of households:myPhoneStatus. */
+interface PhoneStatus {
+  status: "none" | "expired" | "sending" | "sent" | "send_failed";
+  phone?: string;
+  expiresAt?: number;
+  error?: string;
+}
+
 /**
- * purpose: Start verifying the dev caregiver's phone number; Sunny texts the code.
+ * purpose: Start verifying the dev caregiver's phone number; Sunny texts the code. Waits
+ *          briefly for the send to finish so a failure is reported instead of hidden.
  * @param number: (string) Number as typed.
+ * @return: (Promise<void>) Resolves when the outcome is printed.
  */
-function startPhone(number: string): void {
+async function startPhone(number: string): Promise<void> {
   const state = loadState();
-  const result = convexRun("households:setMyPhone", {
-    householdId: state.householdId,
-    phone: number,
-  }) as { phone: string; expiresAt: number };
-  console.log(
-    `Texted a code to ${result.phone}; it expires at ${new Date(result.expiresAt).toLocaleTimeString()}. ` +
-      "Run `confirm-phone <code>` next.",
-  );
+  convexRun("households:setMyPhone", { householdId: state.householdId, phone: number });
+  const deadline = Date.now() + PHONE_WAIT_MS;
+  let status: PhoneStatus = { status: "sending" };
+  while (status.status === "sending" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, PHONE_POLL_MS));
+    status = convexRun("households:myPhoneStatus", {
+      householdId: state.householdId,
+    }) as PhoneStatus;
+  }
+  if (status.status === "sent") {
+    console.log(
+      `Texted a code to ${status.phone}; it expires at ${new Date(status.expiresAt ?? 0).toLocaleTimeString()}. ` +
+        "Run `confirm-phone <code>` next.",
+    );
+  } else if (status.status === "send_failed") {
+    console.log(`The code text could not be sent: ${status.error}`);
+  } else if (status.status === "sending") {
+    console.log(
+      "The code text is still being sent; check your phone, then run `confirm-phone <code>`.",
+    );
+  } else {
+    console.log(`No code is pending (${status.status}); run \`phone <number>\` again.`);
+  }
 }
 
 /** Messages for each confirmMyPhone status. */
@@ -283,7 +314,7 @@ async function main(argv: string[]): Promise<void> {
       break;
     case "phone":
       if (!rest[0]) throw new Error("Usage: phone <number>");
-      startPhone(rest.join(" "));
+      await startPhone(rest.join(" "));
       break;
     case "confirm-phone":
       if (!rest[0]) throw new Error("Usage: confirm-phone <code>");

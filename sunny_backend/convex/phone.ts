@@ -10,8 +10,10 @@
 // an hour, so one caregiver cannot use up another's budget for a number), and per day for each
 // caregiver and each household. confirmMyPhone makes the number the member's phone with
 // phoneVerifiedAt set; clearMyPhone removes it; sweepExpired (hourly) deletes stale rows.
-// setMyPhone, confirmMyPhone and clearMyPhone are re-exported by households.ts. Wrong guesses
-// are returned as a status, not thrown, so the attempt count is saved.
+// myPhoneStatus (a read-only query) tells the caller whether the code text is still being sent,
+// went out, or failed (with the sanitized failure reason), so a client can wait for the send.
+// setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus are re-exported by households.ts.
+// Wrong guesses are returned as a status, not thrown, so the attempt count is saved.
 //
 // Last modified: 2026-10-29
 
@@ -19,7 +21,13 @@ import { MINUTE, HOUR, RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalAction, internalMutation, internalQuery, mutation } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { requireCaregiverAccount, requireCaregiverMember } from "./lib/access";
 import { ConfigError, appError } from "./lib/errors";
@@ -53,6 +61,14 @@ export type ConfirmPhoneResult =
   | { status: "sending" }
   | { status: "send_failed" }
   | { status: "none" };
+
+/** Result of myPhoneStatus. */
+export type MyPhoneStatus =
+  | { status: "none" }
+  | { status: "expired" }
+  | { status: "sending" }
+  | { status: "sent"; phone: string; expiresAt: number }
+  | { status: "send_failed"; error: string };
 
 /**
  * purpose: A random 6-digit code, zero padded.
@@ -245,6 +261,35 @@ export const sendCode = internalAction({
       `Sunny code: ${code}. It expires in 10 minutes. Reply STOP to opt out.`,
     );
     return result.ok ? null : await fail(result.error);
+  },
+});
+
+/**
+ * purpose: Where the caller's own phone verification stands, without changing anything: lets a
+ *          client wait for the code text to go out. Reveals no code and no number beyond the
+ *          caller's own pending one.
+ * @param householdId: (Id<"households">) Household the caller belongs to.
+ * @return: (MyPhoneStatus) "none" (nothing pending), "expired", "sending" (code text not sent
+ *          yet), "sent" (with the pending number and expiry) or "send_failed" (with the
+ *          sanitized reason recorded by the send action).
+ * @raises forbidden for a non-member or device.
+ */
+export const myPhoneStatus = query({
+  args: { householdId: v.id("households") },
+  handler: async (ctx, args): Promise<MyPhoneStatus> => {
+    const userId = await requireCaregiverAccount(ctx);
+    await requireCaregiverMember(ctx, args.householdId, userId);
+    const row = await ctx.db
+      .query("phoneVerifications")
+      .withIndex("by_household_user", (q) =>
+        q.eq("householdId", args.householdId).eq("userId", userId),
+      )
+      .unique();
+    if (!row) return { status: "none" };
+    if (Date.now() >= row.expiresAt) return { status: "expired" };
+    if (row.sendError !== undefined) return { status: "send_failed", error: row.sendError };
+    if (row.codeHash === undefined) return { status: "sending" };
+    return { status: "sent", phone: row.phone, expiresAt: row.expiresAt };
   },
 });
 
