@@ -5,11 +5,20 @@
 // the household's local time, so nothing here converts timezones; calendar arithmetic
 // uses UTC dates purely as a day counter.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-30
 
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
 
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+/** Full weekday names, Sunday first (index matches Date.getUTCDay). */
+export const WEEKDAYS = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
 const MS_PER_DAY = 86_400_000;
 
 /**
@@ -80,7 +89,7 @@ export function displayTime(localTime: string): string {
  * @param localDate: (string) Date from the backend.
  * @return: (number | null) Milliseconds at UTC midnight, or null when invalid.
  */
-function parseLocalDate(localDate: string): number | null {
+export function parseLocalDate(localDate: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
   if (match === null) return null;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
