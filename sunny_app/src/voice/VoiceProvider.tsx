@@ -5,7 +5,7 @@
 // state and tracks, transcript). An unpaired device gets an idle useVoice() and nothing
 // else; for a paired device an inner provider owns the session:
 //   - Token: useSession with a non-caching token source (voiceToken.ts) that calls the
-//     livekit-token Edge Function on every session start. The request (trigger 'talk' for
+//     voice.livekitToken Convex action on every session start. The request (trigger 'talk' for
 //     the Talk button, 'notification_tap' with an optional taskInstanceId for a tapped
 //     push) is handed to the token source right before session.start(); the token source
 //     resets it after use and calls the backend only for a start in flight. A tapped push
@@ -24,7 +24,7 @@
 //   - The iOS audio session is configured and activated by registerGlobals() in index.ts
 //     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import {
   SessionProvider,
@@ -105,7 +105,8 @@ function toVoiceConnectionState(state: ConnectionState, starting: boolean): Voic
 
 /**
  * purpose: Tell whether a failed notification-tap start should be retried as a Talk start:
- *          the livekit-token function answered 404 (the task instance no longer exists).
+ *          the voice.livekitToken action answered not_found (404), meaning the task instance
+ *          no longer exists.
  * @param request: (SessionRequest) the request that failed
  * @param error: (unknown) the failure
  * @return: (boolean) true when a plain Talk retry is appropriate

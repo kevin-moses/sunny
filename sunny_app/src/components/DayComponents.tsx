@@ -6,7 +6,7 @@
 // `scale` prop so the display can use much larger type than the phone. Calm, high
 // contrast, no motion.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -38,7 +38,7 @@ export function OrientationHeader({ day, scale = 1 }: ScaleProps & { day: DayVie
           { fontSize: 24 * scale, fontWeight: '500', color: colors.secondaryText },
         ]}
       >
-        {day.date_label}
+        {day.dateLabel}
       </Text>
     </View>
   );
@@ -73,7 +73,7 @@ function SectionTitle({ text, scale = 1 }: ScaleProps & { text: string }) {
  */
 function eventDetails(event: EventOccurrence, when: string): string {
   const parts = [when];
-  if (event.visitor_name) parts.push(`with ${event.visitor_name}`);
+  if (event.visitorName) parts.push(`with ${event.visitorName}`);
   if (event.place) parts.push(`at ${event.place}`);
   return parts.join(' ');
 }
@@ -81,7 +81,7 @@ function eventDetails(event: EventOccurrence, when: string): string {
 /**
  * purpose: The next event and who or where it involves.
  * @param props: ({ event: EventOccurrence, today: string, scale?: number }) The event, the
- *        day view's local_date (for the when text), and the size multiplier.
+ *        day view's localDate (for the when text), and the size multiplier.
  * @return: (JSX.Element) The card.
  */
 export function NextUpCard({
@@ -203,7 +203,7 @@ function toRow(item: AgendaItem): AgendaRowData {
   if (item.kind === 'event') {
     return {
       icon: 'calendar',
-      time: displayTime(item.event.start_time),
+      time: displayTime(item.event.startTime),
       text: item.event.label,
       done: false,
       highlighted: false,
@@ -212,8 +212,8 @@ function toRow(item: AgendaItem): AgendaRowData {
   const done = isDone(item.task);
   return {
     icon: done ? 'checkmark.circle.fill' : 'circle',
-    time: displayTime(item.task.scheduled_time),
-    text: item.task.display_label,
+    time: displayTime(item.task.scheduledTime),
+    text: item.task.displayLabel,
     done,
     highlighted: isDue(item.task),
   };
@@ -245,7 +245,7 @@ export function AgendaList({ items, scale = 1 }: ScaleProps & { items: AgendaIte
  * purpose: The coming week's events; renders nothing when there are none. The label and
  *          the when text sit side by side and wrap onto two lines when too narrow.
  * @param props: ({ events: EventOccurrence[], today: string, scale?: number }) The events,
- *        the day view's local_date, and the size multiplier.
+ *        the day view's localDate, and the size multiplier.
  * @return: (JSX.Element | null) The list.
  */
 export function UpcomingList({

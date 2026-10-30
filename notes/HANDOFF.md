@@ -1,101 +1,110 @@
-# Handoff: Sunny -> Memory-Care Agent
+# Handoff: code map
 
-Written 2026-10-24 from a planning chat. Read this with `notes/SPEC.md`. Nothing in the codebase was changed; this is a map, not a refactor.
+A map of the current repo for someone picking it up. Product behavior: `notes/SPEC.md`. Tables: `notes/SCHEMA.md`. Background work: `notes/AGENT_RUNTIME.md`. How the backend moved from Supabase to Convex, and what is still open: `notes/CONVEX_MIGRATION.md`. Google setup: `notes/GOOGLE_CALENDAR_SETUP.md`. The original voice concierge brief is `notes/brief.md` (historical).
 
-## Status (2026-10-25)
+Going live with real families: `notes/PRODUCTION.md`.
 
-Phase 0 (removals) and the shared-state step are done on branch `memory-care-refactor`. The schema was rebuilt from scratch rather than evolved: `reminders`, `adherence_log`, `caregiver_links`, `users.profile_summary` and the caregiver Edge Functions no longer exist, so the "Keep, but refactor" rows below about them are historical. See `notes/SCHEMA.md` for what replaced them. Decisions since this note: the voice pipeline stays (no Gemini Live), parked features were removed rather than flagged, the app is iOS-only, the caregiver app will be a second target in the same Xcode project, and the scheduler runs as SQL under pg_cron.
+Sunny is a memory-care agent for seniors with MCI or early dementia who live alone, and the family who coordinate their care. One shared state behind every surface: caregivers schedule the day, the senior confirms on whatever is closest (home display, phone, voice), anything unconfirmed escalates to family, and a daily digest closes the loop. The agent is a tool, not a companion.
 
-## Status (2026-10-28)
+## Repo layout
 
-`sunny_app` was rewritten from SwiftUI to React Native (Expo SDK 57, LiveKit React Native SDK) on branch `rn-refactor`. Supabase stays the backend. Push moved from Firebase/FCM to raw APNs tokens in `push_tokens` (expo-notifications). The caregiver app is no longer planned as a second Xcode target. The widget and Live Activity will be native Swift extensions added to the Expo project (for example with `@bacons/apple-targets`), because their Done button must call the backend from the extension. References below to `sunny_app/VoiceAgent` and Xcode targets are historical.
+| Folder | What it is |
+| --- | --- |
+| `sunny_backend/` | Convex backend (TypeScript): schema, access rules, scheduler, agent runtime, integrations, tests, dev scripts |
+| `sunny_app/` | React Native / Expo (SDK 57) iOS app: the senior's phone (Today view, Talk) and the iPad home display stub. Clerk sign-in, Convex subscriptions, LiveKit voice |
+| `sunny_agent/` | LiveKit Python voice agent (Deepgram STT, Claude Haiku, Cartesia TTS, Tavily search) that reads and writes household state through Convex |
+| `notes/` | Specs and design notes |
 
-## What changed in the product
+Removed and not coming back: screen share and vision, guided workflows, EventKit reminders, the Swift app, and Supabase (the `supabase/` directory was deleted in phase 6).
 
-Sunny started as a voice-first phone concierge for seniors (see `notes/brief.md`). The new direction narrows the user and widens the surfaces:
+## sunny_backend
 
-- **Users:** seniors with MCI or early dementia living alone, and the adult children who coordinate their care. The caregiver is the buyer and the one who sets everything up.
-- **Surfaces:** one shared state behind four views: a caregiver iOS app, an e-ink home display (Done and Talk buttons), the senior's phone (widget, Live Activity, one-screen app), and voice.
-- **Core loop:** caregiver schedules the day, senior confirms on whatever is closest, anything unconfirmed escalates to family before it is missed, and a daily digest closes the loop.
-- **Agent stance:** a full personal agent that answers anything (web search, errands, questions about their own life), but a tool, not a companion. No persona, no small talk, never starts talking without a task behind it.
+Entry points (all in `convex/`; each module's header describes its contracts):
 
-## Decisions made in the planning chat
+| Feature | Where |
+| --- | --- |
+| Schema and enums | `schema.ts`, `lib/validators.ts` |
+| Auth config (Clerk issuer, `applicationID: "convex"`) | `auth.config.ts` |
+| Access rules (`requireReader`, `requireEditor`, `requirePrimary`, `requireSenior`, device claim) | `lib/access.ts` |
+| Households, members, roles, join codes, devices, push tokens | `households.ts` |
+| Device pairing over HTTP (`POST /pair`, Clerk device users, rate limits) | `pairing.ts`, `http.ts` |
+| Tasks and escalation policies | `tasks.ts`, `lib/policies.ts` |
+| Task instances (confirm, snooze, claim, dose log, senior reminders) | `instances.ts` |
+| Scheduler tick (expand, open and close windows, escalation) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
+| Calendar events, occurrences, day view (`calendar.dayView`) | `calendar.ts`, `lib/occurrences.ts`, `lib/today.ts`, `lib/eventNotices.ts` |
+| Time zones | `lib/time.ts` |
+| Google Calendar connect, push, sweepers | `googleCalendar.ts`, `calendarPush.ts`, `calendarFanOut.ts`, `lib/calendarSync.ts`, `lib/google.ts`, `lib/googleEvent.ts`, `lib/secretBox.ts` |
+| Notification delivery (APNs, SMS) | `delivery.ts`, `apns.ts`, `apnsTokens.ts`, `lib/delivery.ts`, `lib/apnsPayload.ts`, `lib/twilio.ts` |
+| Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
+| Daily digest | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts` |
+| Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` |
+| Functions the Python voice agent calls (`agent:*`) | `agent.ts` |
+| LiveKit room token for a senior device | `voice.ts` |
+| Components (rate limiter, workflow, two workpools) | `convex.config.ts` |
+| Test helpers | `testing.helpers.ts`, `*.helpers.ts`, `*.test.ts` beside each module |
 
-These came from the user's review comments and override anything older in `notes/brief.md` or the Phase tickets.
+Run locally (from `sunny_backend/`):
 
-1. **Tool, not friend.** Positioned against companion products like Sam (withsam.com) and ElliQ. Success is confirmations and answers, not minutes spent talking.
-2. **Open questions are in scope.** The household data model is the agent's context, not its boundary. The agent answers anything, using household state first, then general knowledge and tools.
-3. **Going out is passive.** The senior will not tell the system they are leaving. The display shows a fixed "Going out? Wallet · Keys · Glasses · Phone" line. A door sensor cue is a later-stage option. No "Going out" button.
-4. **A separate Talk button.** Not a long-press on Done. Own shape, color and label; one press listens until they stop talking.
-5. **Medication questions: facts first, their decision.** The agent says what was taken today and the label's as-needed limits, then lets the senior decide. Caregivers are alerted only past a limit, for repeated symptoms, or if the senior asked. It never invents a dose.
-6. **Memory hygiene.** Facts the senior states are stored as unverified and never overwrite caregiver-verified facts.
+```bash
+npm install
+npx convex dev            # watches convex/, deploys to the dev deployment, regenerates convex/_generated
+npm run typecheck         # tsc for convex/ and scripts/
+npm test                  # vitest + convex-test (no network; Twilio, Google, APNs and Managed Agents are stubbed)
+npx prettier --check convex scripts
+```
 
-## Existing code against the new spec
+The dev deployment is `enduring-ostrich-959` (`https://enduring-ostrich-959.convex.cloud`, HTTP actions at `.convex.site`). Dev scripts refuse to run unless `CONVEX_DEPLOYMENT` in `sunny_backend/.env.local` starts with `dev:`.
 
-### Keep, mostly as is
+Scripts (not part of the deployed backend):
+- `scripts/caregiver.ts` is a command-line stand-in for the caregiver app, acting as a fixed dev caregiver through `convex run --identity`. Commands: `setup` (create a dev household and print join codes), `chat "<message>" [--continue]` (request to the household agent), `day`, `codes`, `google` (consent link), `phone <number>` (waits for the text to go out, then prints "Texted a code" or the failure reason), `confirm-phone <code>`. Run as `npx tsx scripts/caregiver.ts <command>`; it keeps the household id in a git-ignored `scripts/.dev-state.json`.
+- `scripts/setup_managed_agent.ts` creates or updates the Managed Agents agent and environment; run once per Anthropic workspace and again after changing `lib/agentConfig.ts` or `lib/agentTools.ts`: `npx tsx --env-file=.env.local scripts/setup_managed_agent.ts`. It prints the `npx convex env set` commands for the ids.
 
-| Existing piece | Where | Maps to in SPEC |
-| --- | --- | --- |
-| LiveKit voice pipeline, provider switch | `sunny_agent/src/agent.py`, `providers.py` | Voice transport. The display and phone both join a LiveKit room on Talk |
-| Senior-tuned endpointing and interruption constants | `sunny_agent/src/config.py` | Voice guardrails (slow speech, pauses) |
-| STT garbage filter, echo detection, progressive error recovery | `agent.py` helpers (`_is_garbage_input`, `_is_echo`, `_recovery_message`) | Voice robustness |
-| Tavily web search tool | `Assistant.web_search` | Open questions |
-| Contacts and messaging tools over iOS RPC | `find_contact`, `send_message` | Small errands ("Tell Sarah I'm home") |
-| Conversation and message logging | `memory.py` `ConversationLogger`, `conversations` and `messages` tables | Conversation log (needs topic, outcome, repeat count) |
-| Session-context trigger from a notification tap (NOTIFY-1) | `memory.resolve_session_context`, migration 008 | Scheduled prompt and voice confirm |
-| FCM device tokens, caregiver devices | migrations 003 and 006, `save-device-token`, `caregiver-register` | Fan-out to phone and caregiver app |
+Environment (set on the Convex deployment with `npx convex env set`, never in a committed file):
 
-### Keep, but refactor
+| Area | Variables |
+| --- | --- |
+| Auth and devices | `CLERK_JWT_ISSUER_DOMAIN`, `CLERK_SECRET_KEY` |
+| Voice | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_SERVER_URL`, `SUNNY_AGENT_KEY` (shared with the Python agent) |
+| Agent runtime | `ANTHROPIC_API_KEY`, `SUNNY_AGENT_ID`, `SUNNY_ENVIRONMENT_ID`, optional `SUNNY_AGENT_SESSION_BUDGET_CENTS` |
+| Google Calendar | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `GOOGLE_OAUTH_STATE_SECRET`, `CALENDAR_TOKEN_KEY` (also keys phone codes) |
+| APNs | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8`, `APNS_ENVIRONMENT`, optional `APNS_BUNDLE_ID` |
+| SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_WEBHOOK_URL`, optional `SMS_ALLOWED_COUNTRY_CODES` |
 
-| Existing piece | Problem against SPEC | Direction |
-| --- | --- | --- |
-| `reminders` table and `tools.py` reminder CRUD | Types are medication, appointment, exercise, wellness_checkin, custom. No confirmation window, display label, spoken prompt, pill description, as-needed limits, created_by or escalation policy | Evolve into the SPEC `Task` entity. Add a migration rather than a new table so existing tools keep working during the move |
-| `adherence_log` | Statuses are pending, confirmed, skipped, missed, escalated. No confirmed_by, confirmed_via or resolved state. Only covers reminders | Evolve into `Task instance`: add `upcoming`, `due`, `resolved`, `confirmed_by`, `confirmed_via`, and make it cover every task type |
-| `caregiver_links` | No household concept, no roles or on-call; `caregiver_user_id` has no FK; RLS policy is permissive (`USING (true)`) | Add `households` with roles (primary, member, viewer) and on-call. Tighten RLS before any real pilot data |
-| `users.profile_summary` (one LLM-merged prose paragraph) | Mixes caregiver facts and things the senior said, and is rewritten by the model every session. Breaks memory hygiene | Split into a caregiver-owned `life_profile` and an `agent_memory` table of facts with source, date and verified flag. Keep `profile_summary` only as a derived cache, if at all |
-| `prompts.py` system prompt | Persona ("warm and patient", "like a knowledgeable friend"), frequent check-ins ("Does that make sense?", "Would you like me to do that?"). The brief also suggests "Do you need help with anything else?" All conflict with the voice guardrails | Rewrite around SPEC guardrails: capable, not chatty; no persona; answer then stop; household facts first; never say "you already asked" |
-| Proactive greeting on session start | `agent_state_changed` handler greets on every session; returning-user greeting within 10 minutes | Speak first only when a task triggered the session (scheduled prompt, reprompt). On a Talk press, just listen |
-| `agent.py` (1,370 lines) | One `Assistant` class carries voice, reminders, workflows, screen share and vision | Split by concern before adding the scheduler, policy check and memory tools: tools, policy, context assembly, session wiring |
-| iOS app (`sunny_app/VoiceAgent`) | Built as a "Tap and Speak" call screen with chat, conversation log and screen share views | Becomes the senior phone surface: one-screen Today view, WidgetKit widget, Live Activity. The caregiver app is a separate target or app |
-| Caregiver Edge Functions (`caregiver-dashboard`, `caregiver-reminders`, `caregiver-settings`, `caregiver-conversations`) | Written for a web dashboard MVP (CG-1) | Reuse as the caregiver app's API; extend for households, Today timeline, mark done for them, claim |
+## sunny_app
 
-### Park for the POC
+Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `usePairing.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`. Full explanation of pairing and setup: `sunny_app/README.md`.
 
-These are outside the SPEC's scope. Recommend keeping the code but not loading these tools in memory-care mode (a config flag), rather than deleting.
+Run: `npm install`, then `npm run ios -- --device` for the first development build (Expo Go does not work; voice needs a physical iPhone), then `npm start`. Checks: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (jest).
 
-- Screen share and vision: `screen_capture.py`, `screen_describer.py`, `BroadcastExtension/`, SCREEN-1 to SCREEN-9 in `Sunny-Phase3-Tickets.md`
-- Guided iPhone workflows: `workflow_engine.py`, `workflows/wf0` scraper, migration 004, WF tickets
-- iOS native Reminders via EventKit (`create_reminder`): the SPEC keeps one schedule in shared state, so a second reminder system confuses the senior and the caregiver
+Environment: all optional, with defaults for the dev deployment and dev Clerk instance. `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, `EXPO_PUBLIC_CONVEX_URL`, `EXPO_PUBLIC_CONVEX_SITE_URL` in a git-ignored `.env.local`. The Clerk instance needs a JWT template named `convex` that maps `public_metadata.sunny_kind` to a `sunny_kind` claim.
 
-### Not built yet
+The app imports only the type of the backend's generated API; after backend changes, regenerate `sunny_backend/convex/_generated` (`npx convex dev` or `npx convex codegen`).
 
-- Households, roles, on-call; life profile; agent memory with verification; sensitive-topic playbook
-- Events (visits, appointments with who is coming) and senior-facing messages. Note the existing `messages` table holds conversation turns, so senior messages need a different name (for example `family_messages`)
-- Scheduler that expands tasks into daily instances at local midnight, with timezone and DST handling. `get_due_reminders` exists as an RPC, but no scheduled Edge Function was found in `supabase/functions`
-- Escalation ladder with claim (ADHERENCE-2 and CG-2 are not in the repo)
-- Daily digest (`caregiver_links.notify_daily_summary` exists; nothing sends it)
-- Realtime fan-out: Supabase Realtime or a WebSocket channel for the display, APNs pushes for the widget and Live Activity
-- E-ink display client and firmware (hardware choice is open)
-- Policy check step in the answering loop (routing rules, medication limits, scam and distress flags)
-- Agent tools: weather, read calendar and events, create senior-created task, log self-reported dose
+Not built: the caregiver app, the e-ink display client, widget and Live Activity (native Swift extensions to add to the Expo project).
 
-## Suggested refactor order
+## sunny_agent
 
-Follows the SPEC build order and keeps the agent working at every step.
+LiveKit Python worker. `src/agent.py` (the `Assistant` and `entrypoint`), `src/prompts.py` (system prompt and household context formatting), `src/tools.py` (task and reminder helpers and spoken-time formatting; web search is `Assistant.web_search` in `agent.py`), `src/memory.py` (household resolution from participant metadata and conversation logging), `src/convex_client.py` (HTTP client for the `agent:*` Convex functions), `src/config.py` (senior-tuned endpointing constants).
 
-1. Branch from `main` once the open `gemini-switch` work (uncommitted changes to `agent.py`, `config.py`, `screen_describer.py`, new `providers.py`) is committed or stashed by the user
-2. Migrations: households and roles; evolve `reminders` to tasks and `adherence_log` to task instances; add events, family messages, life profile, agent memory. Tighten RLS
-3. Scheduler and escalation Edge Functions, plus caregiver API changes; test with the existing iOS app as the only client
-4. Split `agent.py`; add a memory-care mode flag that drops screen share, workflows and EventKit tools
-5. Rewrite `prompts.py` to the SPEC guardrails; add context assembly from tasks, events, life profile and memory
-6. Phone surface: Today view, widget, Live Activity
-7. E-ink display client
-8. Daily digest
+Run (from `sunny_agent/`): `uv sync`, `uv run python src/agent.py download-files` once, then `uv run python src/agent.py dev` (or `console` to talk in the terminal). Tests: `uv run pytest -q` (some tests are LLM-judged and need `ANTHROPIC_API_KEY`). Type and lint: `uv run mypy src/ --ignore-missing-imports`, ruff (via pre-commit).
 
-## Open questions for the user
+Environment (`sunny_agent/.env`, git-ignored; copy from `.env.example`): `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`, `TAVILY_API_KEY`, `CONVEX_URL`, `SUNNY_AGENT_KEY` (must equal the value on the Convex deployment), optional `DEV_HOUSEHOLD_ID` (used when the session has no household in its metadata).
 
-- Does the caregiver experience stay a web dashboard for the pilot, or become an iOS app as the SPEC says?
-- Is the senior phone app still the existing `sunny_app` target, with a Talk button, or display-only voice for the POC?
-- Which e-ink hardware, and does it run its own LiveKit client or relay audio through a hub?
-- Keep the Gemini Live realtime provider from `gemini-switch`, or the Deepgram, Haiku, Cartesia pipeline? The pipeline gives tighter control over templated prompts and the policy check
-- Park screen share and workflows behind a flag (recommended) or remove them from this repo?
+## Checks
+
+Style is enforced by pre-commit: `uv tool run pre-commit run --all-files` from the repo root (ruff, ruff-format and mypy for `sunny_agent`; prettier and tsc for `sunny_backend/convex`; prettier, eslint and tsc for `sunny_app`). Run `npm install` in `sunny_app` and `sunny_backend` first. Before committing, run `/simplify` and the TLM code reviewer (see `CLAUDE.md`).
+
+## Where each product feature lives
+
+| SPEC feature | Where |
+| --- | --- |
+| Shared state, caregiver roles, on-call | `households.ts`, `lib/access.ts` |
+| Tasks, escalation ladder, claim | `tasks.ts`, `instances.ts`, `scheduler.ts` |
+| Day clock and Next up | `calendar.dayView`, `sunny_app/src/day` |
+| Calendar events, Google sync | `calendar.ts`, `googleCalendar.ts`, `calendarPush.ts` |
+| Done button, widget, voice confirm | `instances.confirmDueTask` (button via the app, voice via `agent.confirmDueTask`) |
+| Voice (Talk) | `voice.ts`, `sunny_agent`, `sunny_app/src/voice` |
+| Caregiver requests to the agent | `agentRequests.ts`, `agentRuntime.ts` |
+| Alerts to family | `delivery.ts` (APNs and SMS), `sms.ts` (reply to claim) |
+| Daily digest | `digest.ts` |
+| Life profile, playbook, agent memory, family messages | Tables exist; read by `agent.getContext`; no caregiver write path yet |

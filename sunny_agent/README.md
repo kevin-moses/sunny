@@ -27,7 +27,7 @@ cd agent-starter-python
 uv sync
 ```
 
-Set up the environment by copying `.env.example` to `.env.local` and filling in the required values:
+Set up the environment by copying `.env.example` to `.env` and filling in the required values:
 
 - `LIVEKIT_URL`: Use [LiveKit Cloud](https://cloud.livekit.io/) or [run your own](https://docs.livekit.io/home/self-hosting/)
 - `LIVEKIT_API_KEY`
@@ -35,11 +35,14 @@ Set up the environment by copying `.env.example` to `.env.local` and filling in 
 - `ANTHROPIC_API_KEY`: [Get a key](https://console.anthropic.com/settings/keys)
 - `DEEPGRAM_API_KEY`: [Get a key](https://console.deepgram.com/) or use your [preferred STT provider](https://docs.livekit.io/agents/integrations/stt/)
 - `CARTESIA_API_KEY`: [Get a key](https://play.cartesia.ai/keys) or use your [preferred TTS provider](https://docs.livekit.io/agents/integrations/tts/)
+- `CONVEX_URL`: The Convex deployment URL (the agent calls its HTTP API for household state and conversation logging)
+- `SUNNY_AGENT_KEY`: Shared secret the Convex `agent:*` functions check; must match the value set on the Convex deployment
+- `DEV_HOUSEHOLD_ID` (optional): Household id used when a session has no household in its token metadata (local dev)
 
 You can load the LiveKit environment automatically using the [LiveKit CLI](https://docs.livekit.io/home/cli/cli-setup):
 
 ```bash
-lk app env -w .env.local
+lk app env -w .env
 ```
 
 ## Run the agent

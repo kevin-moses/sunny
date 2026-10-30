@@ -1,7 +1,7 @@
 // sunny_app/src/notifications/push.ts
 //
 // Purpose: Push notifications for the paired senior device. There is no FCM: the raw APNs
-// device token is read with expo-notifications and stored in the Supabase push_tokens table
+// device token is read with expo-notifications and stored in Convex (households.registerPushToken)
 // so the backend can send APNs pushes directly.
 //
 // Behavior:
@@ -9,45 +9,46 @@
 //     entry and sound while the app is open.
 //   - Registration (usePushNotifications): about 1 second after mounting (letting the first
 //     screen settle) notification permission is requested (alert, sound, badge); if granted,
-//     the APNs token is upserted as { user_id, token } with onConflict 'token' (RLS allows a
-//     user to write rows with their own user_id). The token is registered again whenever the
-//     OS rotates it (addPushTokenListener).
+//     the APNs token is registered with the backend. The token is registered again whenever
+//     the OS rotates it (addPushTokenListener), and the previous one is then unregistered. The last token that registered successfully
+//     is kept in AsyncStorage so unpairing can unregister it before the session is signed out.
 //   - Taps: a tap while the app is running (warm) and the tap that launched the app (cold
 //     start, handled once) call onTap, which starts a voice session with trigger
 //     'notification_tap'.
 //   - The hook is meant to be mounted only for a paired device. discardStaleLaunchTap()
 //     drops a launch tap that arrived while the device was unpaired.
-//   - Unpairing: deleteOwnPushTokens() removes this user's push_tokens rows before the
-//     session is signed out. The upsert uses onConflict 'token' and RLS blocks updating a row
-//     owned by another (earlier anonymous) user, so without this a re-paired device could
-//     never re-register its unchanged APNs token.
-//   - Known limitation: when the session is lost for good (a definitive refresh-token
-//     failure) there is no session left to delete with, so the old rows stay and the
-//     re-paired device's upsert is rejected by RLS (logged as "token owned by a previous
-//     device session"). The future push sender should drop tokens that APNs reports invalid,
-//     or a server-side cleanup should handle it.
+//   - Unpairing: unregisterStoredPushToken() removes the remembered token (bounded by a short
+//     timeout so an offline device can still unpair). If it cannot run, the backend lets a
+//     re-paired device take over a token whose previous owner is gone (an orphaned user).
 //
 // Notification payload contract (the push sender must follow it):
-//   data: { "task_instance_id": "<uuid of the task_instances row that prompted the push>" }
-//   task_instance_id is optional. When it is a string it is forwarded to the livekit-token
-//   function as taskInstanceId so the agent opens the conversation in the context of that
-//   task.
+//   data: { "task_instance_id": "<id of the taskInstances row that prompted the push>" }
+//   task_instance_id is optional. When it is a string it is forwarded to voice.livekitToken
+//   as taskInstanceId so the agent opens the conversation in the context of that task.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { useEffect, useRef } from 'react';
 
-import { supabase } from '../backend/supabase';
+import { callMutation } from '../backend/api';
+import { api, type TaskInstanceId } from '../backend/convexApi';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 
 /** Delay before asking for notification permission after mounting, in milliseconds. */
 const PERMISSION_DELAY_MS = 1000;
 
+/** AsyncStorage key of the last push token that registered successfully. */
+const PUSH_TOKEN_KEY = 'sunny.pushToken';
+
+/** Longest unregistering may delay unpairing, in milliseconds. */
+const UNREGISTER_TIMEOUT_MS = 4000;
+
 /** What a tapped notification asks the voice layer to do. */
 export interface NotificationTap {
-  taskInstanceId?: string;
+  taskInstanceId?: TaskInstanceId;
 }
 
 Notifications.setNotificationHandler({
@@ -66,23 +67,58 @@ Notifications.setNotificationHandler({
  */
 function parseNotificationTap(data: Record<string, unknown> | null | undefined): NotificationTap {
   const value = data?.task_instance_id;
-  return typeof value === 'string' && value !== '' ? { taskInstanceId: value } : {};
+  return typeof value === 'string' && value !== ''
+    ? { taskInstanceId: value as TaskInstanceId }
+    : {};
 }
 
 /**
- * purpose: Delete the signed-in user's own push_tokens rows (RLS allows a user to delete rows
- *          with their own user_id). Called before signing out on unpair. Never throws.
+ * purpose: Wait for a promise, but no longer than a timeout.
+ * @param work: (Promise<unknown>) The work to wait for.
+ * @param ms: (number) Longest wait in milliseconds.
+ * @return: (Promise<boolean>) True if the work finished, false if the timeout passed first;
+ *          rejects if the work rejects first.
+ */
+async function waitAtMost(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([work.then(() => true), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * purpose: Ask the backend to unregister a push token, giving up after UNREGISTER_TIMEOUT_MS.
+ * @param token: (string) The token.
+ * @return: (Promise<boolean>) True if the backend confirmed in time; false on timeout.
+ * @raises: BackendError when the call fails.
+ */
+async function unregisterToken(token: string): Promise<boolean> {
+  return waitAtMost(
+    callMutation(api.households.unregisterPushToken, { token }),
+    UNREGISTER_TIMEOUT_MS,
+  );
+}
+
+/**
+ * purpose: Unregister the remembered push token and forget it once the backend confirmed.
+ *          Called before signing out on unpair, while the session can still authenticate the
+ *          call. Never throws, and gives up after UNREGISTER_TIMEOUT_MS so an offline device
+ *          is not stuck unpairing; the token is then kept remembered.
  * @return: (Promise<void>) resolves when done; failures are logged
  */
-export async function deleteOwnPushTokens(): Promise<void> {
+export async function unregisterStoredPushToken(): Promise<void> {
   try {
-    const { data } = await supabase.auth.getSession();
-    const userId = data.session?.user.id;
-    if (!userId) return;
-    const { error } = await supabase.from('push_tokens').delete().eq('user_id', userId);
-    if (error) logger.warning('Push', `Failed to delete push tokens: ${error.message}`);
+    const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+    if (token === null) return;
+    if (await unregisterToken(token)) await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
+    else logger.warning('Push', 'Timed out unregistering the push token');
   } catch (e) {
-    logger.warning('Push', `Failed to delete push tokens: ${errorMessage(e)}`);
+    logger.warning('Push', `Failed to unregister the push token: ${errorMessage(e)}`);
   }
 }
 
@@ -96,31 +132,29 @@ export function discardStaleLaunchTap(): void {
 }
 
 /**
- * purpose: Store an APNs device token for the signed-in user in push_tokens.
+ * purpose: Register an APNs device token for the signed-in device and remember it. When the
+ *          OS rotated the token, best-effort unregister the previously remembered one.
  * @param token: (string) the raw APNs device token
- * @return: (Promise<void>) resolves when stored; failures are logged, not thrown
+ * @return: (Promise<void>) resolves when registered; failures are logged, not thrown
  */
-async function upsertPushToken(token: string): Promise<void> {
-  const { data } = await supabase.auth.getSession();
-  const userId = data.session?.user.id;
-  if (!userId) {
-    logger.warning('Push', 'No signed-in user; push token not stored');
-    return;
-  }
-  const { error } = await supabase
-    .from('push_tokens')
-    .upsert({ user_id: userId, token }, { onConflict: 'token' });
-  if (!error) {
-    logger.info('Push', 'Push token stored');
-  } else if (error.code === '42501' || /row-level security/i.test(error.message)) {
-    logger.error('Push', 'Push token not stored: token owned by a previous device session');
-  } else {
-    logger.error('Push', `Failed to store push token: ${error.message}`);
+export async function registerPushToken(token: string): Promise<void> {
+  try {
+    const previous = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+    await callMutation(api.households.registerPushToken, { token });
+    await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
+    logger.info('Push', 'Push token registered');
+    if (previous !== null && previous !== token) {
+      await unregisterToken(previous).catch((e: unknown) =>
+        logger.warning('Push', `Failed to unregister the old push token: ${errorMessage(e)}`),
+      );
+    }
+  } catch (e) {
+    logger.error('Push', `Failed to register the push token: ${errorMessage(e)}`);
   }
 }
 
 /**
- * purpose: Ask for notification permission, then read and store the APNs token.
+ * purpose: Ask for notification permission, then read and register the APNs token.
  * @return: (Promise<void>) resolves when done; does nothing when permission is refused
  */
 async function registerForPush(): Promise<void> {
@@ -132,7 +166,7 @@ async function registerForPush(): Promise<void> {
     return;
   }
   const deviceToken = await Notifications.getDevicePushTokenAsync();
-  if (typeof deviceToken.data === 'string') await upsertPushToken(deviceToken.data);
+  if (typeof deviceToken.data === 'string') await registerPushToken(deviceToken.data);
 }
 
 /**
@@ -170,7 +204,7 @@ export function usePushNotifications(onTap: (tap: NotificationTap) => void): voi
       );
     }, PERMISSION_DELAY_MS);
     const subscription = Notifications.addPushTokenListener((token) => {
-      if (typeof token.data === 'string') void upsertPushToken(token.data);
+      if (typeof token.data === 'string') void registerPushToken(token.data);
     });
     return () => {
       clearTimeout(timer);

@@ -1,0 +1,420 @@
+// convex/phone.ts
+// Purpose: Caregiver phone numbers and their verification. setMyPhone normalizes a number to
+// E.164, requires an allowed country (SMS_ALLOWED_COUNTRY_CODES, default "1"), stores it as the
+// member's pendingPhone and schedules sendCode with only the verification id: the action makes
+// the 6-digit code, stores its HMAC (key derived from CALENDAR_TOKEN_KEY, label
+// "sunny-phone-code", bound to user and number) and texts it, so the code is never in a
+// scheduled-function argument or a table. A failed send is saved on the row as a caregiver-safe
+// sendError (generic, or "That number cannot receive texts." when Twilio rejects the number
+// itself) plus the raw text in sendErrorDetail, which no public function returns (it is also
+// logged). confirmMyPhone reports "send_failed". Codes expire after 10 minutes and allow 5 wrong guesses.
+// Sending is limited per caregiver (burst of 3, then one a minute), per caregiver and number (3
+// an hour, so one caregiver cannot use up another's budget for a number), and per day for each
+// caregiver and each household. confirmMyPhone makes the number the member's phone with
+// phoneVerifiedAt set; clearMyPhone removes it; sweepExpired (hourly) deletes stale rows.
+// myPhoneStatus (a read-only query) tells the caller whether the code text is still being sent,
+// went out, or failed (with the caregiver-safe reason), so a client can wait for the send.
+// Its "expired" is computed from Date.now() inside a query, which Convex does not re-run as time
+// passes: a subscribed client should compare the returned expiresAt with its own clock.
+// setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus are re-exported by households.ts
+// (the canonical public name is households.myPhoneStatus).
+// Wrong guesses are returned as a status, not thrown, so the attempt count is saved.
+//
+// Last modified: 2026-10-29
+
+import { MINUTE, HOUR, RateLimiter } from "@convex-dev/rate-limiter";
+import { v } from "convex/values";
+import { components, internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import { requireCaregiverAccount, requireCaregiverMember } from "./lib/access";
+import { ConfigError, appError } from "./lib/errors";
+import { constantTimeEqual, hmacHex } from "./lib/secretBox";
+import { isAllowedCountry, normalizePhone, sendSmsFromEnv, twilioConfig } from "./lib/twilio";
+
+export const CODE_TTL_MS = 10 * MINUTE;
+export const MAX_CODE_ATTEMPTS = 5;
+const CODE_LENGTH = 6;
+const MAX_CODE_INPUT = 16;
+const CODE_KEY_LABEL = "sunny-phone-code";
+const SWEEP_BATCH = 200;
+
+/**
+ * Verification text sends: per caregiver a burst of 3 then 1 a minute; per caregiver and number
+ * 3 an hour; per caregiver 10 a day and per household 20 a day.
+ */
+const rateLimiter = new RateLimiter(components.rateLimiter, {
+  phoneCodePerUser: { kind: "token bucket", rate: 1, period: MINUTE, capacity: 3 },
+  phoneCodePerUserNumber: { kind: "token bucket", rate: 3, period: HOUR, capacity: 3 },
+  phoneCodePerUserDay: { kind: "fixed window", rate: 10, period: 24 * HOUR },
+  phoneCodePerHouseholdDay: { kind: "fixed window", rate: 20, period: 24 * HOUR },
+});
+
+/** Result of confirmMyPhone; every status but "verified" leaves the number unverified. */
+export type ConfirmPhoneResult =
+  | { status: "verified"; phone: string }
+  | { status: "wrong_code"; attemptsLeft: number }
+  | { status: "expired" }
+  | { status: "locked" }
+  | { status: "sending" }
+  | { status: "send_failed" }
+  | { status: "none" };
+
+/** Shown when the code text could not be sent for any reason but a rejected number. */
+export const SEND_FAILED_MESSAGE = "The code text could not be sent. Try again later.";
+/** Shown when Twilio rejects the destination number itself. */
+export const BAD_NUMBER_MESSAGE = "That number cannot receive texts.";
+/** Twilio error codes meaning the destination number is invalid or not a mobile number. */
+const BAD_NUMBER_PATTERN = /\(code (21211|21614)\)/;
+
+/** Result of myPhoneStatus. */
+export type MyPhoneStatus =
+  | { status: "none" }
+  | { status: "expired" }
+  | { status: "sending" }
+  | { status: "sent"; phone: string; expiresAt: number }
+  | { status: "send_failed"; error: string };
+
+/**
+ * purpose: A random 6-digit code, zero padded.
+ * @return: (string) Digits only.
+ */
+function randomCode(): string {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+  return String(n % 10 ** CODE_LENGTH).padStart(CODE_LENGTH, "0");
+}
+
+/**
+ * purpose: HMAC a code for storage, bound to the user and number so a stolen hash cannot be
+ *          replayed for another member. The key is derived from CALENDAR_TOKEN_KEY.
+ * @param userId: (string) Member's user id.
+ * @param phone: (string) E.164 number being verified.
+ * @param code: (string) The code.
+ * @return: (Promise<string>) Hex HMAC-SHA256.
+ * @raises ConfigError when CALENDAR_TOKEN_KEY is missing or malformed.
+ */
+async function hashCode(userId: string, phone: string, code: string): Promise<string> {
+  return await hmacHex(CODE_KEY_LABEL, `${userId}|${phone}|${code}`);
+}
+
+/**
+ * purpose: The member's outstanding verification row, if any.
+ * @param ctx: (MutationCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param userId: (string) Member's user id.
+ * @return: (Promise<Doc<"phoneVerifications"> | null>) The row, or null.
+ */
+async function findVerification(
+  ctx: MutationCtx,
+  householdId: Id<"households">,
+  userId: string,
+): Promise<Doc<"phoneVerifications"> | null> {
+  return await ctx.db
+    .query("phoneVerifications")
+    .withIndex("by_household_user", (q) => q.eq("householdId", householdId).eq("userId", userId))
+    .unique();
+}
+
+/**
+ * purpose: Spend the send rate limits for a caregiver, a caregiver's number, and the day.
+ * @param ctx: (MutationCtx) Context.
+ * @param userId: (string) Caregiver's user id.
+ * @param householdId: (Id<"households">) Caregiver's household.
+ * @param phone: (string) E.164 number.
+ * @return: (Promise<void>)
+ * @raises limit when any bucket is empty.
+ */
+async function spendSendLimits(
+  ctx: MutationCtx,
+  userId: string,
+  householdId: Id<"households">,
+  phone: string,
+): Promise<void> {
+  const results = [
+    await rateLimiter.limit(ctx, "phoneCodePerUser", { key: userId }),
+    await rateLimiter.limit(ctx, "phoneCodePerUserNumber", { key: `${userId}|${phone}` }),
+    await rateLimiter.limit(ctx, "phoneCodePerUserDay", { key: userId }),
+    await rateLimiter.limit(ctx, "phoneCodePerHouseholdDay", { key: householdId }),
+  ];
+  if (results.some((r) => !r.ok)) {
+    throw appError("limit", "Too many verification texts; wait a while and try again");
+  }
+}
+
+/**
+ * purpose: Start verifying the caller's phone number: store it as pending and schedule the
+ *          code text. Any caregiver member (including viewers) may add a number for themselves.
+ *          A resend replaces the earlier verification (a new row, so a late send for the old
+ *          one does nothing) and resets the attempt count.
+ * @param householdId: (Id<"households">) Household the caller belongs to.
+ * @param phone: (string) Number as typed; E.164, or a 10-digit US number.
+ * @return: ({phone, expiresAt}) The normalized number and when the code expires.
+ * @raises forbidden for a non-member or device; invalid for a bad number, a country that is
+ *         not allowed, or when texting is not set up; limit when sending too often.
+ */
+export const setMyPhone = mutation({
+  args: { householdId: v.id("households"), phone: v.string() },
+  handler: async (ctx, args): Promise<{ phone: string; expiresAt: number }> => {
+    const userId = await requireCaregiverAccount(ctx);
+    const member = await requireCaregiverMember(ctx, args.householdId, userId);
+    const phone = normalizePhone(args.phone);
+    if (phone === null) {
+      throw appError("invalid", "Enter a mobile number like 555-123-4567, or +country code");
+    }
+    if (!isAllowedCountry(phone)) {
+      throw appError("invalid", "Sunny cannot text numbers in that country yet");
+    }
+    try {
+      twilioConfig();
+    } catch {
+      throw appError("invalid", "Text messages are not available yet");
+    }
+    await spendSendLimits(ctx, userId, args.householdId, phone);
+
+    const existing = await findVerification(ctx, args.householdId, userId);
+    if (existing) await ctx.db.delete(existing._id);
+    const expiresAt = Date.now() + CODE_TTL_MS;
+    const verificationId = await ctx.db.insert("phoneVerifications", {
+      householdId: args.householdId,
+      userId,
+      phone,
+      expiresAt,
+      attempts: 0,
+    });
+    await ctx.db.patch(member._id, { pendingPhone: phone });
+    await ctx.scheduler.runAfter(0, internal.phone.sendCode, { verificationId });
+    return { phone, expiresAt };
+  },
+});
+
+/**
+ * purpose: The user and number a verification is for. Internal; read by sendCode.
+ * @param verificationId: (Id<"phoneVerifications">) The verification.
+ * @return: ({userId, phone} | null) Null when the row is gone (replaced, cleared or swept).
+ */
+export const verificationTarget = internalQuery({
+  args: { verificationId: v.id("phoneVerifications") },
+  handler: async (ctx, { verificationId }): Promise<{ userId: string; phone: string } | null> => {
+    const row = await ctx.db.get(verificationId);
+    return row ? { userId: row.userId, phone: row.phone } : null;
+  },
+});
+
+/**
+ * purpose: Store the HMAC of a freshly made code on its verification. Internal.
+ * @param verificationId: (Id<"phoneVerifications">) The verification.
+ * @param codeHash: (string) HMAC of the code.
+ * @return: (boolean) False when the row is gone, so the code must not be sent.
+ */
+export const storeCode = internalMutation({
+  args: { verificationId: v.id("phoneVerifications"), codeHash: v.string() },
+  handler: async (ctx, { verificationId, codeHash }): Promise<boolean> => {
+    const row = await ctx.db.get(verificationId);
+    if (!row) return false;
+    await ctx.db.patch(verificationId, {
+      codeHash,
+      sendError: undefined,
+      sendErrorDetail: undefined,
+    });
+    return true;
+  },
+});
+
+/**
+ * purpose: Record that the code text could not be sent, for confirmMyPhone and myPhoneStatus
+ *          to report. Internal.
+ * @param verificationId: (Id<"phoneVerifications">) The verification.
+ * @param error: (string) Caregiver-safe reason, returned to the caller as is.
+ * @param detail: (string) Raw failure text (configuration or Twilio); never returned to clients.
+ * @return: (null)
+ */
+export const markSendFailed = internalMutation({
+  args: { verificationId: v.id("phoneVerifications"), error: v.string(), detail: v.string() },
+  handler: async (ctx, { verificationId, error, detail }): Promise<null> => {
+    if (await ctx.db.get(verificationId)) {
+      await ctx.db.patch(verificationId, { sendError: error, sendErrorDetail: detail });
+    }
+    return null;
+  },
+});
+
+/**
+ * purpose: Make the code, store its HMAC and text it. Only the verification id travels in the
+ *          scheduled arguments. A failure (configuration, Twilio) is saved on the row: a safe
+ *          message for the caregiver and the raw text for the logs.
+ * @param verificationId: (Id<"phoneVerifications">) The verification.
+ * @return: (null)
+ */
+export const sendCode = internalAction({
+  args: { verificationId: v.id("phoneVerifications") },
+  handler: async (ctx, { verificationId }): Promise<null> => {
+    const target = await ctx.runQuery(internal.phone.verificationTarget, { verificationId });
+    if (target === null) return null;
+    /**
+     * purpose: Save a send failure on the verification and log the raw text.
+     * @param error: (string) Caregiver-safe reason.
+     * @param detail: (string) Raw failure text.
+     * @return: (Promise<null>) Always null.
+     */
+    const fail = async (error: string, detail: string): Promise<null> => {
+      console.error(`Phone verification code text failed: ${detail}`);
+      await ctx.runMutation(internal.phone.markSendFailed, { verificationId, error, detail });
+      return null;
+    };
+    const code = randomCode();
+    let codeHash: string;
+    try {
+      codeHash = await hashCode(target.userId, target.phone, code);
+    } catch (e) {
+      if (e instanceof ConfigError) return await fail(SEND_FAILED_MESSAGE, e.message);
+      throw e;
+    }
+    if (!(await ctx.runMutation(internal.phone.storeCode, { verificationId, codeHash }))) {
+      return null;
+    }
+    const result = await sendSmsFromEnv(
+      target.phone,
+      `Sunny code: ${code}. It expires in 10 minutes. Reply STOP to opt out.`,
+    );
+    if (result.ok) return null;
+    return await fail(
+      BAD_NUMBER_PATTERN.test(result.error) ? BAD_NUMBER_MESSAGE : SEND_FAILED_MESSAGE,
+      result.error,
+    );
+  },
+});
+
+/**
+ * purpose: Where the caller's own phone verification stands, without changing anything: lets a
+ *          client wait for the code text to go out. Reveals no code and no number beyond the
+ *          caller's own pending one.
+ * @param householdId: (Id<"households">) Household the caller belongs to.
+ * @return: (MyPhoneStatus) "none" (nothing pending), "expired", "sending" (code text not sent
+ *          yet), "sent" (with the pending number and expiry) or "send_failed" (with the
+ *          caregiver-safe reason recorded by the send action). "expired" is computed from the
+ *          server clock when the query runs and is not re-pushed as time passes, so a
+ *          subscribed client should compare expiresAt with its own clock.
+ * @raises forbidden for a non-member or device.
+ */
+export const myPhoneStatus = query({
+  args: { householdId: v.id("households") },
+  handler: async (ctx, args): Promise<MyPhoneStatus> => {
+    const userId = await requireCaregiverAccount(ctx);
+    await requireCaregiverMember(ctx, args.householdId, userId);
+    const row = await ctx.db
+      .query("phoneVerifications")
+      .withIndex("by_household_user", (q) =>
+        q.eq("householdId", args.householdId).eq("userId", userId),
+      )
+      .unique();
+    if (!row) return { status: "none" };
+    if (Date.now() >= row.expiresAt) return { status: "expired" };
+    if (row.sendError !== undefined) return { status: "send_failed", error: row.sendError };
+    if (row.codeHash === undefined) return { status: "sending" };
+    return { status: "sent", phone: row.phone, expiresAt: row.expiresAt };
+  },
+});
+
+/**
+ * purpose: Check the texted code. A correct code (before expiry, within 5 wrong guesses)
+ *          makes the pending number the member's verified phone. A wrong code counts an
+ *          attempt; the fifth wrong guess locks the code until a new one is sent.
+ * @param householdId: (Id<"households">) Household the caller belongs to.
+ * @param code: (string) The 6-digit code as typed.
+ * @return: (ConfirmPhoneResult) "verified" with the number, "wrong_code" with attempts left,
+ *          "expired", "locked", "sending" (the code text has not been made yet), "send_failed"
+ *          (the text could not be sent; start again), or "none" when nothing is pending.
+ * @raises forbidden for a non-member or device; invalid for input longer than a code.
+ */
+export const confirmMyPhone = mutation({
+  args: { householdId: v.id("households"), code: v.string() },
+  handler: async (ctx, args): Promise<ConfirmPhoneResult> => {
+    const userId = await requireCaregiverAccount(ctx);
+    const member = await requireCaregiverMember(ctx, args.householdId, userId);
+    const code = args.code.trim();
+    if (code.length > MAX_CODE_INPUT) throw appError("invalid", "Enter the 6-digit code");
+    const row = await findVerification(ctx, args.householdId, userId);
+    if (!row) return { status: "none" };
+    if (Date.now() >= row.expiresAt) {
+      await ctx.db.delete(row._id);
+      await ctx.db.patch(member._id, { pendingPhone: undefined });
+      return { status: "expired" };
+    }
+    if (row.sendError !== undefined) return { status: "send_failed" };
+    if (row.codeHash === undefined) return { status: "sending" };
+    if (row.attempts >= MAX_CODE_ATTEMPTS) return { status: "locked" };
+    const given = await hashCode(userId, row.phone, code);
+    if (!constantTimeEqual(given, row.codeHash)) {
+      const attempts = row.attempts + 1;
+      await ctx.db.patch(row._id, { attempts });
+      return attempts >= MAX_CODE_ATTEMPTS
+        ? { status: "locked" }
+        : { status: "wrong_code", attemptsLeft: MAX_CODE_ATTEMPTS - attempts };
+    }
+    await ctx.db.patch(member._id, {
+      phone: row.phone,
+      phoneVerifiedAt: Date.now(),
+      pendingPhone: undefined,
+    });
+    await ctx.db.delete(row._id);
+    return { status: "verified", phone: row.phone };
+  },
+});
+
+/**
+ * purpose: Remove the caller's phone number: the verified phone, any pending one and any
+ *          outstanding verification. The member stops receiving texts.
+ * @param householdId: (Id<"households">) Household the caller belongs to.
+ * @return: (null)
+ * @raises forbidden for a non-member or device.
+ */
+export const clearMyPhone = mutation({
+  args: { householdId: v.id("households") },
+  handler: async (ctx, args): Promise<null> => {
+    const userId = await requireCaregiverAccount(ctx);
+    const member = await requireCaregiverMember(ctx, args.householdId, userId);
+    const row = await findVerification(ctx, args.householdId, userId);
+    if (row) await ctx.db.delete(row._id);
+    await ctx.db.patch(member._id, {
+      phone: undefined,
+      phoneVerifiedAt: undefined,
+      pendingPhone: undefined,
+    });
+    return null;
+  },
+});
+
+/**
+ * purpose: Delete verifications past their expiry and clear the pending number they left on
+ *          the member (hourly cron). Internal.
+ * @return: (number) Rows deleted (at most one batch per run).
+ */
+export const sweepExpired = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<number> => {
+    const stale = await ctx.db
+      .query("phoneVerifications")
+      .withIndex("by_expires", (q) => q.lt("expiresAt", Date.now()))
+      .take(SWEEP_BATCH);
+    for (const row of stale) {
+      const member = await ctx.db
+        .query("householdMembers")
+        .withIndex("by_household_user", (q) =>
+          q.eq("householdId", row.householdId).eq("userId", row.userId),
+        )
+        .unique();
+      if (member && member.pendingPhone === row.phone) {
+        await ctx.db.patch(member._id, { pendingPhone: undefined });
+      }
+      await ctx.db.delete(row._id);
+    }
+    return stale.length;
+  },
+});

@@ -33,14 +33,14 @@ def _make_assistant(
 ) -> Assistant:
     """
     purpose: Build a minimal Assistant instance suitable for unit tests. Uses a
-             MagicMock Supabase client so no external services are contacted.
+             MagicMock Convex client so no external services are contacted.
     @param instructions: (str) Optional system prompt override. Defaults to minimal Sunny persona.
     @return: (Assistant) Test-ready assistant instance.
     """
     return Assistant(
         instructions=instructions,
         household_id=None,
-        supabase=MagicMock(),
+        convex=MagicMock(),
     )
 
 

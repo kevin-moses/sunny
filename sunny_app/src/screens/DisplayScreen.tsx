@@ -7,7 +7,7 @@
 // from the app shell (see useDayView). Two columns in landscape (width > height), one in
 // portrait.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { useKeepAwake } from 'expo-keep-awake';
 import { StatusBar } from 'expo-status-bar';
@@ -88,12 +88,12 @@ function DayBody({
   agenda: AgendaItem[];
   landscape: boolean;
 }) {
-  const nextUp = day.next_up !== null && (
-    <NextUpCard event={day.next_up} today={day.local_date} scale={1.5} />
+  const nextUp = day.nextUp !== null && (
+    <NextUpCard event={day.nextUp} today={day.localDate} scale={1.5} />
   );
   const agendaList = <AgendaList items={agenda} scale={1.5} />;
   const upcoming = (
-    <UpcomingList events={day.upcoming.slice(0, 4)} today={day.local_date} scale={1.4} />
+    <UpcomingList events={day.upcoming.slice(0, 4)} today={day.localDate} scale={1.4} />
   );
   return (
     <View style={styles.body}>

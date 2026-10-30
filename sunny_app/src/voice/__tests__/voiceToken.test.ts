@@ -1,14 +1,15 @@
 // sunny_app/src/voice/__tests__/voiceToken.test.ts
 //
-// Purpose: Unit tests for the voice token source: the livekit-token request body built from
+// Purpose: Unit tests for the voice token source: the voice.livekitToken action arguments built from
 // the in-flight start's request, the response mapping, the reset of the request after the
 // fetch, cancellation, and that background fetches reuse the last response (or call through
 // when there is none) instead of calling the backend.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
+import type { TaskInstanceId } from '../../backend/convexApi';
 import { StartCancelledError, createTokenSource } from '../voiceToken';
 
 const mockInvoke = jest.fn<(name: string, body: Record<string, unknown>) => Promise<unknown>>();
@@ -24,7 +25,10 @@ jest.mock('livekit-client', () => ({
 }));
 
 jest.mock('../../backend/api', () => ({
-  invokeFunction: (name: string, body: Record<string, unknown>) => mockInvoke(name, body),
+  callAction: (reference: unknown, body: Record<string, unknown>) => {
+    const { getFunctionName } = jest.requireActual<typeof import('convex/server')>('convex/server');
+    return mockInvoke(getFunctionName(reference as never), body);
+  },
 }));
 
 const RESPONSE = {
@@ -42,11 +46,14 @@ beforeEach(() => {
 
 describe('createTokenSource', () => {
   it('fetches for the in-flight start request and maps the response', async () => {
-    createTokenSource().beginStart({ trigger: 'notification_tap', taskInstanceId: 'abc' });
-    const result = await capturedFn?.();
-    expect(mockInvoke).toHaveBeenCalledWith('livekit-token', {
+    createTokenSource().beginStart({
       trigger: 'notification_tap',
-      taskInstanceId: 'abc',
+      taskInstanceId: 'abc' as TaskInstanceId,
+    });
+    const result = await capturedFn?.();
+    expect(mockInvoke).toHaveBeenCalledWith('voice:livekitToken', {
+      trigger: 'notification_tap',
+      taskInstanceId: 'abc' as TaskInstanceId,
     });
     expect(result).toEqual({ serverUrl: 'wss://x', participantToken: 'jwt' });
   });
@@ -54,12 +61,12 @@ describe('createTokenSource', () => {
   it('omits the task instance when the tap has none', async () => {
     createTokenSource().beginStart({ trigger: 'notification_tap' });
     await capturedFn?.();
-    expect(mockInvoke).toHaveBeenCalledWith('livekit-token', { trigger: 'notification_tap' });
+    expect(mockInvoke).toHaveBeenCalledWith('voice:livekitToken', { trigger: 'notification_tap' });
   });
 
   it('resets to the talk request after the in-flight fetch', async () => {
     const { beginStart } = createTokenSource();
-    beginStart({ trigger: 'notification_tap', taskInstanceId: 'abc' });
+    beginStart({ trigger: 'notification_tap', taskInstanceId: 'abc' as TaskInstanceId });
     await capturedFn?.();
     mockInvoke.mockClear();
     await capturedFn?.();
@@ -70,7 +77,7 @@ describe('createTokenSource', () => {
     createTokenSource();
     const result = await capturedFn?.();
     expect(mockInvoke).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith('livekit-token', { trigger: 'talk' });
+    expect(mockInvoke).toHaveBeenCalledWith('voice:livekitToken', { trigger: 'talk' });
     expect(result).toEqual({ serverUrl: 'wss://x', participantToken: 'jwt' });
   });
 
@@ -129,9 +136,9 @@ describe('createTokenSource', () => {
 
   it('cancelStart drops the in-flight mark', async () => {
     const { beginStart, cancelStart } = createTokenSource();
-    beginStart({ trigger: 'notification_tap', taskInstanceId: 'abc' });
+    beginStart({ trigger: 'notification_tap', taskInstanceId: 'abc' as TaskInstanceId });
     cancelStart();
     await capturedFn?.();
-    expect(mockInvoke).toHaveBeenCalledWith('livekit-token', { trigger: 'talk' });
+    expect(mockInvoke).toHaveBeenCalledWith('voice:livekitToken', { trigger: 'talk' });
   });
 });

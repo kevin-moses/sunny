@@ -1,10 +1,14 @@
 # .pre-commit-config.yaml
 # Pre-commit hooks for the sunny repo.
-# Covers Python (ruff lint+format, mypy) and the Expo app (prettier, eslint, tsc).
+# Covers Python (ruff lint+format, mypy), the Expo app (prettier, eslint, tsc) and the
+# Convex backend in sunny_backend (tsc and prettier for convex/ and scripts/).
 #
 # Install: pre-commit install
 # Run manually: pre-commit run --all-files
 # Update hook versions: pre-commit autoupdate
+#
+# The TypeScript hooks need `npm install` run once in sunny_app and in sunny_backend
+# (tsc, eslint and prettier come from their node_modules).
 #
 # Note: prettier and ruff auto-fix files in place. If a commit is blocked
 # because files were modified, re-stage the changes and commit again.
@@ -31,9 +35,34 @@ repos:
         pass_filenames: false
         files: ^sunny_agent/
 
+  # --- TypeScript (Convex backend): tsc type check and prettier (auto-formats in place) ---
+  - repo: local
+    hooks:
+      - id: convex-tsc
+        name: convex tsc
+        entry: bash -c 'cd sunny_backend && npx tsc --noEmit -p convex'
+        language: system
+        pass_filenames: false
+        files: ^sunny_backend/convex/
+        exclude: ^sunny_backend/convex/_generated/
+      - id: scripts-tsc
+        name: backend scripts tsc
+        entry: bash -c 'cd sunny_backend && npx tsc --noEmit -p scripts'
+        language: system
+        pass_filenames: false
+        files: ^sunny_backend/(scripts/|convex/)
+        exclude: ^sunny_backend/convex/_generated/
+      - id: convex-prettier
+        name: convex prettier
+        entry: bash -c 'cd sunny_backend && npx prettier --write "${@#sunny_backend/}"' --
+        language: system
+        pass_filenames: true
+        files: ^sunny_backend/(convex|scripts)/
+        exclude: ^sunny_backend/convex/_generated/
+
   # --- sunny_app (Expo / TypeScript): prettier (auto-formats), eslint, tsc ---
   # Run against the whole app from inside sunny_app so its configs and node_modules
-  # apply. Needs `npm install` in sunny_app first.
+  # apply.
   - repo: local
     hooks:
       - id: prettier

@@ -1,45 +1,25 @@
 // sunny_app/src/day/types.ts
 //
-// Purpose: Types for the get_day_view RPC payload that both senior surfaces (the phone's
-// Today screen and the home display) render, plus the merged agenda line type. Field
-// names stay snake_case exactly as the server sends them; there is no case conversion.
-// Times arrive already in the household's local time ("14:00:00", "2026-10-29"). Extra
-// keys the server sends are ignored.
+// Purpose: Types for the calendar.dayView query result that both senior surfaces (the phone's
+// Today screen and the home display) render, plus the merged agenda line type. The types are
+// derived from the backend's generated api (FunctionReturnType), so they follow the server
+// and are camelCase exactly as the server sends them. Times are household-local "HH:MM"
+// strings and dates are "YYYY-MM-DD"; instants (startsAt, endsAt) are epoch milliseconds.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
-/** One occurrence of a calendar event, in household-local terms. */
-export interface EventOccurrence {
-  event_id: string;
-  label: string;
-  /** Local date "YYYY-MM-DD". */
-  local_date: string;
-  /** Local start time "HH:MM:SS". */
-  start_time: string;
-  place: string | null;
-  visitor_name: string | null;
-}
+import type { FunctionReturnType } from 'convex/server';
+
+import type { api } from '../backend/convexApi';
+
+/** The calendar.dayView result the surfaces render. */
+export type DayViewData = FunctionReturnType<typeof api.calendar.dayView>;
 
 /** One of today's task instances (medication, routine, reminder). */
-export interface DayTask {
-  instance_id: string;
-  display_label: string;
-  /** Local time "HH:MM:SS". */
-  scheduled_time: string;
-  /** Lifecycle state, for example "upcoming", "due", "escalated", "confirmed", "resolved". */
-  state: string;
-}
+export type DayTask = DayViewData['tasks'][number];
 
-/** The get_day_view fields the surfaces render. */
-export interface DayViewData {
-  local_date: string;
-  date_label: string;
-  header: string;
-  tasks: DayTask[];
-  events_today: EventOccurrence[];
-  next_up: EventOccurrence | null;
-  upcoming: EventOccurrence[];
-}
+/** One occurrence of a calendar event, in household-local terms. */
+export type EventOccurrence = DayViewData['eventsToday'][number];
 
 /** A line in today's agenda: a task or an event, ordered by local time. */
 export type AgendaItem =

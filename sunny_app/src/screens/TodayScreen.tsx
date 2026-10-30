@@ -1,11 +1,11 @@
 // sunny_app/src/screens/TodayScreen.tsx
 //
 // Purpose: The senior phone's home screen: the day clock (orientation header, Next up,
-// today's tasks and events, the coming week) from get_day_view, with the Talk button at
+// today's tasks and events, the coming week) from calendar.dayView, with the Talk button at
 // the bottom. The day view state comes from the app shell (see useDayView), so it survives
 // a conversation.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import {
   ActivityIndicator,
@@ -55,9 +55,9 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         {day !== null ? (
           <>
             <OrientationHeader day={day} />
-            {day.next_up !== null && <NextUpCard event={day.next_up} today={day.local_date} />}
+            {day.nextUp !== null && <NextUpCard event={day.nextUp} today={day.localDate} />}
             <AgendaList items={agenda} />
-            <UpcomingList events={day.upcoming} today={day.local_date} />
+            <UpcomingList events={day.upcoming} today={day.localDate} />
             {isOffline && <OfflineMark />}
           </>
         ) : errorMessage !== null ? (

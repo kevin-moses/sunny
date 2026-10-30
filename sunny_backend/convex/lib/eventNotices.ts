@@ -1,0 +1,111 @@
+// lib/eventNotices.ts
+// Purpose: Day-of event notices, ported from public.event_notice_tick in the SQL calendar
+// migration. Once a household's local time reaches its eventNoticeTime, every live event
+// occurrence on the household's local today that has not started yet and has no eventNotices
+// row for (eventId, localDate) is announced: the eventNotices row is inserted and one
+// "event_notice" notificationOutbox row is queued for every household member (the SQL joined
+// household_members with no role filter; devices are separate and get none). An event added
+// after the notice time the same day is announced on the next scheduler tick; an event that
+// already started is not. Cancelled events are never announced and notices already queued
+// stay. Like the SQL, the pass does not look at backgroundPaused. It runs inside the
+// household's own tickHousehold mutation (scheduler.ts), so there is no second cron and no
+// global transaction. Rows are inserted through insertNotification (lib/delivery.ts), which
+// enqueues their delivery. Times are household-local, so DST and zones far from UTC follow the
+// household's zone.
+//
+// Last modified: 2026-10-29
+
+import type { Doc, Id } from "../_generated/dataModel";
+import type { MutationCtx } from "../_generated/server";
+import { insertNotification } from "./delivery";
+import { householdOccurrences } from "./occurrences";
+import type { Occurrence } from "./occurrences";
+import { formatTime12, localDate, localTime } from "./time";
+
+/**
+ * purpose: The title, body and payload of one occurrence's notice, worded as the SQL did:
+ *          "Today: Physio at 3:00 PM" / "Mom has Physio at 3:00 PM today at Clinic."
+ * @param household: (Doc<"households">) The household (for the senior's name).
+ * @param occurrence: (Occurrence) The occurrence being announced.
+ * @return: (object) title, body and payload { eventId, localDate }.
+ */
+export function noticeContent(
+  household: Doc<"households">,
+  occurrence: Occurrence,
+): { title: string; body: string; payload: { eventId: Id<"events">; localDate: string } } {
+  const { event } = occurrence;
+  const time = formatTime12(event.startTime);
+  const place = event.place === undefined ? "" : ` at ${event.place}`;
+  return {
+    title: `Today: ${event.title} at ${time}`,
+    body: `${household.seniorPreferredName} has ${event.title} at ${time} today${place}.`,
+    payload: { eventId: event._id, localDate: occurrence.localDate },
+  };
+}
+
+/**
+ * purpose: Announce the household's day-of events that are due: nothing before the notice
+ *          time; afterwards each unannounced occurrence of today that has not started gets an
+ *          eventNotices row and one outbox row per household member. Idempotent per
+ *          (event, local date).
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param household: (Doc<"households">) The household, as the tick already read it.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<number>) Occurrences announced.
+ */
+export async function announceEvents(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  now: number,
+): Promise<number> {
+  const householdId = household._id;
+  if (localTime(now, household.timezone) < household.eventNoticeTime) return 0;
+  const today = localDate(now, household.timezone);
+  const upcoming = (
+    await householdOccurrences(ctx, householdId, household.timezone, today, today)
+  ).filter((o) => o.startsAt > now);
+  if (upcoming.length === 0) return 0;
+  // No index lists one household's notices for a day, so look each event up (in parallel)
+  // and diff against the set already announced.
+  const announced = new Set(
+    (
+      await Promise.all(
+        upcoming.map((o) =>
+          ctx.db
+            .query("eventNotices")
+            .withIndex("by_event_date", (q) => q.eq("eventId", o.event._id).eq("localDate", today))
+            .first(),
+        ),
+      )
+    )
+      .filter((notice) => notice !== null)
+      .map((notice) => notice.eventId),
+  );
+  const due = upcoming.filter((o) => !announced.has(o.event._id));
+  if (due.length === 0) return 0;
+  const members = await ctx.db
+    .query("householdMembers")
+    .withIndex("by_household_user", (q) => q.eq("householdId", householdId))
+    .collect();
+  await Promise.all(
+    due.map(async (occurrence) => {
+      const eventId = occurrence.event._id;
+      await ctx.db.insert("eventNotices", { eventId, localDate: today });
+      const { title, body, payload } = noticeContent(household, occurrence);
+      await Promise.all(
+        members.map((member) =>
+          insertNotification(ctx, {
+            householdId,
+            kind: "event_notice",
+            eventId,
+            recipientUserId: member.userId,
+            title,
+            body,
+            payload,
+          }),
+        ),
+      );
+    }),
+  );
+  return due.length;
+}

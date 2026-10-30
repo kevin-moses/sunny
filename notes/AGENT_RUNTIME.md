@@ -1,72 +1,76 @@
-# Background Runtime (Jobs and Agents)
+# Background runtime on Convex
 
-How Sunny runs work that outlives a request: calendar sync, agent tasks a caregiver asks for, and later relays that wait hours for a family reply. Schema details live in `notes/SCHEMA.md`; this file covers the design and why.
+How Sunny runs work that outlives a request: the per-minute clock, delivery of notifications, Google Calendar sync, and the agent tasks a caregiver asks for. Tables are described in `notes/SCHEMA.md`; this file covers where work runs, the flows, and the contracts that are not obvious from the code. Module headers in `sunny_backend/convex` are the detailed source. History: `notes/CONVEX_MIGRATION.md`.
+
+Research on Meta's Muse and OpenAI's dots (2026-10-26) shaped the design: both store schedules and pending work durably and treat compute as disposable. We copy that and skip their always-on VM per user, which costs money while idle and keeps memory caregivers cannot see. Here the durable state is Convex tables, and every piece of compute (a mutation, an action, a workflow step) can disappear and be rerun.
 
 ## Where work runs
 
 | Piece | Job | Never does |
 | --- | --- | --- |
-| Postgres + pg_cron | The clock: task schedule, escalation, day-of event notices, the job queue and its sweep | Call a model or a third-party API |
-| Voice agent (LiveKit Cloud now, self-hosted later) | Live conversation with the senior | Outlive the call |
-| Edge Functions | Short request/response: `livekit-token`, `google-oauth`, `jobs-run` | Hold state between calls |
-| Job queue (`jobs` table + `jobs-run`) | Anything that runs in the background: plain jobs (calendar sync) and agent jobs | Keep a process alive while waiting |
-| Agent runtime (Claude Managed Agents for the POC) | Multi-step model work with tools, behind the `AgentRuntime` interface | Hold state that Postgres does not also have |
+| Convex queries and mutations | Reads and transactional writes: access checks, task and event CRUD, instance confirm, claim, the per-household scheduler pass, queueing deliveries and syncs | Call a model or a third-party API (mutations are deterministic and cannot use WebCrypto or `fetch`) |
+| Convex actions | Anything that calls out: Managed Agents, Google, APNs (`"use node"`, `node:http2`), Twilio, Clerk, LiveKit token minting, Claude Haiku for the digest | Hold state; each action reads and writes through internal queries and mutations |
+| `crons.ts` | The clock: `scheduler.tick` every minute; every 10 minutes `calendarFanOut.sweepStuckSyncs` and `delivery.sweepStuck`; hourly `googleCalendar.sweepOauthStates`, `phone.sweepExpired`, `sms.sweepInbound` | Do the work inline |
+| Scheduler tick and fan-out | `tick` pages through households and schedules one `tickHousehold` each with the same `now`, so no transaction grows with household count. Each household pass runs in its own serializable transaction: expand instances, open and close windows, fire escalation steps, queue event notices and the daily digest | Share a transaction between households |
+| Workpool `deliveryPool` | Delivers `notificationOutbox` rows (`delivery.deliver`) and composes digests (`digest.compose`), max 10 in parallel, 5 attempts with exponential backoff | Run a job for a settled row |
+| Workpool `calendarSyncPool` | Pushes one event to one caregiver's Google calendar (`calendarPush.push`) with retry and a parallelism cap | Call Google for a paused household or inactive connection |
+| Workflow (`agentRuntime.ts`) | One caregiver request to the household agent, as durable steps over a Managed Agents session | Run a step without re-checking the request and the pause switch |
+| HTTP routes (`http.ts`) | `POST /pair` (device pairing), `GET /google/callback`, `POST /twilio/sms` (signature checked) | Trust the caller without checks |
+| LiveKit voice agent (`sunny_agent`, self-run Python) | The live conversation with the senior. Reads and writes household state through the `agent:*` Convex functions over HTTP, authenticated by `SUNNY_AGENT_KEY` | Outlive the call or write tables directly |
+| Claude Managed Agents | The model loop for caregiver requests, behind `lib/managedAgents.ts` | Hold state Convex does not also have |
 
-Research on Meta's Muse and OpenAI's dots (2026-10-26) shaped this: both store schedules and pending work durably and treat compute as disposable. We copy that and skip their always-on VM per user, which costs money while idle and keeps memory caregivers cannot see.
+Components are registered in `convex.config.ts`: rate limiter, workflow, and the two workpools.
 
-## Job queue
+**Pause switch.** `households.backgroundPaused` is checked by the scheduler, every workflow step, every push and delivery before it acts, and the digest. A caregiver "stop" covers all background work at once. Resuming re-pushes calendars. Queued work stays queued.
 
-One table, `public.jobs`. A job is a row; running it is a short serverless call.
+## Agent request flow
 
-1. **Enqueue.** SQL enqueues through `private.enqueue_job` (triggers, RPCs such as `request_agent_chat`). A `dedupe_key` merges repeats: at most one queued job per key, so ten quick edits to an event make one Google push.
-2. **Dispatch.** Inserting a due job calls the `jobs-run` Edge Function through `pg_net` (async, after commit). The function URL and a shared secret come from Vault (`sunny_functions_url`, `sunny_jobs_secret`); without them, dispatch is skipped and the sweep is the only trigger (tests, unconfigured environments).
-3. **Claim.** `jobs-run` answers 202 at once and runs the job in the background (`EdgeRuntime.waitUntil`). `claim_job` takes it with `for update skip locked` and a lease, so duplicate dispatches are harmless.
-4. **Finish.** The handler ends with one of: `complete_job` (result), `defer_job` (save a checkpoint, wake at a time: waiting on a person or continuing a long agent run), or `fail_job` (retry with exponential backoff up to `max_attempts`, or fail for good).
-5. **Sweep.** pg_cron runs `jobs_sweep` every minute: expired leases count as a failed attempt, waiting jobs whose time has come go back to queued, and every due queued job is dispatched again.
+A caregiver sends a message with `agentRequests.request` (editors only: primary or member). The mutation validates it (1 to 4000 characters, at most 5 queued or running per household), inserts an `agentRequests` row and starts the workflow. The app subscribes to `agentRequests.get` / `list` for the reply.
 
-**Pause switch.** `households.background_paused` stops claims for the household's jobs (queued work stays queued). A caregiver "stop" covers every background job at once, unlike dots, where pausing leaves scheduled runs going.
+1. **Steps.** `markRunning`, `startSession` (creates a Managed Agents session with the message and a household briefing built from Convex: the senior's preferred name, timezone, the local weekday and date/time now, the requesting caregiver's display name, and the coming calendar), then per poll one `pollSession`; when the session needs tool results, `executeToolCalls` and `sendToolResults`; finally `finishRequest`. A reply with no tools is 4 steps; each tool round adds 3.
+2. **Tools** (`lib/agentTools.ts`): `get_calendar`, `add_event`, `update_event`, `cancel_event`. Each is a thin wrapper over the same functions the app and voice use (`calendar.ts`), so there is one write path and one set of checks. The household always comes from the request row, never from the model. Agent edits are recorded with `createdVia = agent` and in the audit log. The agent has no shell, files or web (see `lib/agentConfig.ts`; re-run `scripts/setup_managed_agent.ts` after changing it).
+3. **Tools run exactly once.** A tool call's `agentToolCalls` row is inserted in the same transaction as its effect. A repeat of the step finds the row and reuses its result; results already sent are marked `sentAt` so a lagging event list is ignored. A retried step therefore cannot add an event twice.
+4. **One in-progress request per session.** `request` rejects a continuation while another request in the same session is queued or running. A continuation copies the earlier `sessionId` onto its row up front, and records `baselineUserMessages` (the session's user messages before posting). `finishedTurn` ignores any turn that does not include a newer user message, so a lagging event list cannot return the previous reply.
+5. **Pause switch and cancel.** Every acting step re-reads the request and `backgroundPaused` (`readGate`). Paused: the workflow sleeps a minute and retries. A request no longer queued or running (cancelled) ends the run.
+6. **30-minute cap.** A request older than `MAX_REQUEST_AGE_MS` (30 minutes from creation, paused time included) fails; the error says it timed out (or timed out while paused).
+7. **Per-session budget.** `SUNNY_AGENT_SESSION_BUDGET_CENTS` (default 100) caps spend. A stop for budget, refusal or exhausted retries fails the request.
+8. **Caregiver-safe errors.** `error` is plain text shown in the app. Raw detail (SDK errors, env var names, ids) goes to `errorDetail`, which no public query returns, and to the logs. `onRunComplete` fails or cancels the row if the workflow dies while the row is still in progress.
+9. **Workflow versioning.** Changing the steps breaks runs in flight. Runs are short (30-minute cap) today. Before `wait_for_reply` ships, workflows need a version field and old versions kept until their runs drain.
 
-**Resuming never depends on a live process.** Each job stores a checkpoint (`checkpoint_job`; for agents, the Managed Agents session id and the result of every tool call already run). A resume rebuilds from the checkpoint and the database: a tool call whose result is saved is never run again, only re-sent, so a retry cannot add an event twice. Google pushes use event ids derived from Sunny's, so a retried create replaces instead of duplicating.
-
-**Same-key jobs.** At most one job per dedupe key is queued, and jobs sharing a key never run at the same time. A job that would go back to the queue (retry, defer, wake, expired lease) while a newer same-key job is queued is cancelled as superseded: the newer one re-reads current data. One bad job never stops the sweep for other households.
-
-## Agent runtime
-
-`AgentRuntime` (in `supabase/functions/jobs-run/agent.ts`) has one method, `run(job)`, returning done, defer or an error. The POC implementation is `ManagedAgentsRuntime`; a self-hosted Python worker using the Claude API tool runner can implement the same contract later.
-
-**Managed Agents flow (agent_chat job):**
-
-1. The agent and its environment are created once by `supabase/scripts/setup_managed_agent.ts` (ids go into Edge Function secrets `SUNNY_AGENT_ID`, `SUNNY_ENVIRONMENT_ID`). The agent has only custom tools; no shell, files or web.
-2. `run` creates a session with the caregiver's message in `initial_events`, prefixed by a household briefing built from Postgres (senior's name, local date and time, timezone). A per-session budget caps spend.
-3. It polls the session. For each `agent.custom_tool_use` without a result, it runs the tool through our RPCs as the backend, with the household taken from the job row, never from the model, and posts `user.custom_tool_result`.
-4. When the session idles with `end_turn`, the last agent message becomes `jobs.result.reply`. Any other stop (budget reached, refusal, retries exhausted) fails the job with the reason. If the Edge Function's time runs short first, the job defers with the session id and resumes on the next dispatch; a request still unfinished after 30 minutes fails.
-5. A follow-up message can continue the same session (`request_agent_chat(..., p_continue_job_id)`, once the earlier request has finished).
-
-**Tools (calendar POC):** `get_calendar(from_date, to_date)`, `add_event(...)`, `update_event(event_id, ...)`, `cancel_event(event_id)`. Each is a thin wrapper over the SQL RPC of the same purpose, so voice, the caregiver app and the agent share one write path and one set of checks. Agent edits apply immediately and are recorded with `created_via = 'agent'` and in `audit_log`.
-
-**Per-household docs.** The briefing is generated from Postgres at session start (later: life profile, verified memory, playbook, agent notes), so caregivers can always see and correct what the agent knows. Nothing durable lives in the sandbox.
-
-**Policy (next step, not in the POC).** Per-household rules per action (allow, ask a caregiver, deny), checked in `jobs-run` before a tool executes. Defaults: message household members freely, ask before contacting anyone else, deny money and credentials. Once a job has read household data, sending outside the household always asks.
-
-**Long waits (next step).** "Ask Sarah and tell Mom" uses a `wait_for_reply` tool that is left unanswered: the job defers as `waiting`, a trigger on the reply (or the timeout via the sweep) re-dispatches it, and the runtime answers the pending tool call. Managed Agents bills session running time, so a paused session costs almost nothing; if the session is gone, the runtime starts a fresh one from the checkpoint.
+Env on the Convex deployment: `ANTHROPIC_API_KEY`, `SUNNY_AGENT_ID`, `SUNNY_ENVIRONMENT_ID`, optional `SUNNY_AGENT_SESSION_BUDGET_CENTS`.
 
 ## Google Calendar sync
 
-Sunny's `events` table is the source of truth. Each caregiver who connects Google gets their own secondary calendar ("Mom (Sunny)") created by Sunny with the narrow `calendar.app.created` scope: Sunny can create and edit calendars it made and nothing else in the account.
+Sunny's `events` table is the source of truth. Each caregiver who connects Google gets their own secondary calendar (named like "Mom (Sunny)") created by Sunny with the narrow `calendar.app.created` scope: Sunny can create and edit calendars it made and nothing else in the account. Setup: `notes/GOOGLE_CALENDAR_SETUP.md`.
 
-- **Connect.** `google-oauth/start` (caregiver JWT) returns a Google consent URL with a signed state. `google-oauth/callback` exchanges the code, stores the refresh token in Vault, creates (or reuses) the calendar in the household's timezone and queues a push for every event.
-- **Push (Sunny to Google).** A trigger on `events` queues one `calendar_sync_event` job per active connection. The job builds the Google event from `get_event_sync_payload` (SQL does the timezone math): local start and end with the household timezone, a weekly `RRULE` for repeats, a popup reminder at the household's `event_notice_time` on the day, and our event id in `extendedProperties.private`. Cancelled events are deleted from Google.
-- **Day-of notifications.** Two paths: the Google reminder (Google's own app notifies the caregiver) and an `event_notice` row in `notification_outbox` for every caregiver at `event_notice_time` (or right away when the event is added later that day), for the push sender to deliver.
-- **Pull (Google to Sunny), next step.** Watch the Sunny calendar (`events.watch`), queue a pull job on each notification, apply changes with incremental sync tokens (410 means full resync), skip our own echoes by etag, renew channels daily from pg_cron. Later edits win; fields only Sunny has (senior label, visibility) are never overwritten.
-- **Revocation.** `invalid_grant` marks the connection `revoked` and stops retries; the caregiver reconnects from the app, and reconnecting also pushes cancellations made in the meantime. A caregiver removed from the household loses their connection (and its token) at once.
-- **Household changes.** Changing the timezone, notice time or senior's name re-pushes every event.
+- **Connect.** `googleCalendar.connectUrl` (a public action; caregiver members only, never a device) stores a single-use nonce in `oauthStates` (10-minute TTL) and returns Google's consent URL carrying a signed state. Google redirects the browser to `GET /google/callback`, which verifies the state, consumes the nonce (a second use shows a "link expired" page), exchanges the code, requires the calendar scope, reuses the caregiver's existing Sunny calendar if it still exists (else creates one), encrypts the refresh token (`lib/secretBox.ts`) and calls `saveConnection`. That mutation reactivates the connection and schedules a chunked push of every event that can still occur plus cancelled events still linked. A grant that ends up unused (rejected callback, replaced or dropped connection) is revoked at Google, best effort.
+- **State machine** (`calendarSyncs`, described once in `lib/calendarSync.ts`). One row exists per event and connection while a push is pending: `queued`, then `running` when the push begins, `dirty` if the event changes while it runs, deleted on completion (a dirty row goes back to `queued`). This is what merges ten quick edits into one Google write. Retries exhausted: the row is tried once more after a delay, and the connection gets a caregiver-safe `lastError` that the next success clears.
+- **Push.** `calendarPush.push` builds the Google event (local start and end in the household timezone, a weekly `RRULE` for repeats, a popup reminder at `eventNoticeTime` on the day, our event id in `extendedProperties.private`). Google event ids derive from Sunny's, so a retried create replaces instead of duplicating. The access token is cached encrypted on the connection and refreshed only when missing, near expiry, or after a 401. Cancelled events are deleted from Google.
+- **Chunked fan-out.** Backfill after connecting and resync after a household change (timezone, notice time, senior's name, pause ending) never run inline: `calendarFanOut.chunk` queues at most `FAN_OUT_CHUNK` syncs and schedules the next until the events are done.
+- **Sweeper.** Every 10 minutes `sweepStuckSyncs` re-enqueues rows idle for 15 minutes (a lost job).
+- **Revoke and removal.** Revoked access (`invalid_grant`) marks the connection `revoked` and stops retries; the caregiver reconnects, which also pushes cancellations made meanwhile. A calendar Google confirms gone, a permanent 403, or credentials Sunny can no longer decrypt mark it `error`. One event's 404 does not disable the connection. Dropping a connection (`disconnect`, or a caregiver leaving the household) deletes its links and pending syncs and schedules revocation of the grant; a running push finds its row gone and stops. `disconnect` leaves the Google calendar as it is.
+- **Day-of notices.** Two paths: the Google popup (Google's own app notifies the caregiver) and an `event_notice` outbox row for every caregiver at `eventNoticeTime` (or right away for an event added later that day, if it has not started), written by the household tick.
 
-## LiveKit: Cloud now, self-hosted later
+## Delivery
 
-- Noise cancellation is a setting (`NOISE_CANCELLATION=cloud|none`); BVC is a LiveKit Cloud feature.
-- Sessions start by explicit agent dispatch by name, created by `livekit-token` (or the backend for scheduled prompts), which works the same on both.
-- Deploy with `livekit.toml`; the starter template's CI check that blocks committing it is removed when deploys are set up.
+Every notification is a `notificationOutbox` row inserted through `insertNotification` (`lib/delivery.ts`), which enqueues `delivery.deliver` on `deliveryPool`.
 
-## Not in this milestone
+- **Routing.** A device recipient gets APNs to every push token of its user. A member recipient gets an SMS at the verified phone (title and body on separate lines; a `caregiver_alert` for a member who can claim ends with a reply hint). Membership, device and content are re-checked at send time; an unreachable or stale row is `skipped` with the reason in `detail`.
+- **APNs.** `apns.ts` uses `node:http2` (one session per send call, 10-second timeout per request); payload and provider token live in `lib/apnsPayload.ts`. A row counts as sent when any token was accepted; only tokens APNs reports unregistered are deleted. Env: `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8` (set with `npx convex env set APNS_KEY_P8 --from-file <key.p8>`), `APNS_ENVIRONMENT` (development for dev builds), optional `APNS_BUNDLE_ID`.
+- **SMS.** Twilio REST through `lib/twilio.ts`. A retryable failure is thrown so the pool retries with backoff. An SMS that timed out is retried only for a `caregiver_alert`; for other kinds the text may already have arrived, so the row is failed rather than risk a duplicate. A configuration problem leaves the row pending with the detail recorded, so the sweeper retries after the fix (bounded by `MAX_ATTEMPTS`). Inbound `POST /twilio/sms` handles "1" / "on it" to claim the newest texted alert (`sms.ts`; MessageSid dedupe; viewers cannot claim). Phone verification: `phone.ts` (HMAC-hashed codes, rate limits, allowed countries). Env: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_WEBHOOK_URL`, optional `SMS_ALLOWED_COUNTRY_CODES`.
+- **Daily digest.** `queueDigestIfDue` (from the household tick) records a `digests` row once local time reaches `digestTime`, then `digest.compose` writes the not-done and alert lines from a template and asks Claude Haiku for the rest (`lib/digestText.ts`), falling back to the whole template on any failure; `complete` stores the text and inserts one `digest` outbox row per member with a verified phone.
+- **Sweepers.** `delivery.sweepStuck` (every 10 minutes) re-enqueues deliveries and digests left pending for 15 minutes. A row a run started less than 5 minutes ago is leased and left alone. Retries exhausted ends the row as `failed`; a settled row is never delivered again.
 
-Google pull, the policy engine, `wait_for_reply`, post-call memory extraction, the push sender (APNs), and the caregiver app UI. The caregiver talks to the agent through `request_agent_chat` with `supabase/scripts/caregiver.ts` until the app exists.
+## Voice agent
+
+`sunny_agent` is a LiveKit Agents worker (Deepgram STT, Claude Haiku, Cartesia TTS, Tavily search). A senior device gets a room token from `voice.livekitToken`; its participant metadata (`household_id`, `device_id`, `trigger`, `task_instance_id`) is the only place the agent learns the household. The agent calls `agent:getContext`, `today`, `confirmDueTask`, `createSeniorReminder`, `cancelSeniorReminder`, `startConversation`, `logTurn` and `finishConversation` through Convex's `/api/query` and `/api/mutation`.
+
+## Not built yet
+
+- **Google pull** (Google to Sunny): watch the Sunny calendar, apply incremental changes, skip our own echoes by etag, renew channels daily. Later edits win; fields only Sunny has are never overwritten.
+- **`wait_for_reply`**: "ask Sarah and tell Mom" leaves a tool call unanswered and the workflow `awaitEvent`s; the Twilio webhook or an in-app reply calls `sendEvent`. Needs workflow versioning first.
+- **Live Activity** pushes, deferred until the app adopts ActivityKit.
+- **Caregiver app**: caregivers use `sunny_backend/scripts/caregiver.ts` and SMS until it exists. Resend (email) is unused for the same reason.
+- **Policy engine**: per-household allow, ask or deny rules checked before a tool executes. Planned defaults: message household members freely, ask before contacting anyone else, deny money and credentials.
+- **Post-call memory extraction** into `agentMemory` and `agentQuestions`.
+- **Live SMS verification**: Twilio A2P 10DLC / toll-free registration is pending; SMS has not been tested end to end.

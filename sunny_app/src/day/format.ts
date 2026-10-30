@@ -1,11 +1,11 @@
 // sunny_app/src/day/format.ts
 //
 // Purpose: Pure helpers for the day clock: task state checks, the time-ordered agenda
-// merge, and plain-language time text. Dates and times from get_day_view are already in
+// merge, and plain-language time text. Dates and times from calendar.dayView are already in
 // the household's local time, so nothing here converts timezones; calendar arithmetic
 // uses UTC dates purely as a day counter.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-29
 
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
 
@@ -33,10 +33,10 @@ export function isDue(task: DayTask): boolean {
 /**
  * purpose: Stable id of an event occurrence (an event repeats on different dates).
  * @param event: (EventOccurrence) The occurrence.
- * @return: (string) "<event_id>-<local_date>".
+ * @return: (string) "<eventId>-<localDate>".
  */
 export function eventKey(event: EventOccurrence): string {
-  return `${event.event_id}-${event.local_date}`;
+  return `${event.eventId}-${event.localDate}`;
 }
 
 /**
@@ -48,36 +48,36 @@ export function buildAgenda(day: DayViewData | null): AgendaItem[] {
   if (day === null) return [];
   const tasks = day.tasks.map((task): AgendaItem => ({
     kind: 'task',
-    id: `task-${task.instance_id}`,
-    time: task.scheduled_time,
+    id: `task-${task.instanceId}`,
+    time: task.scheduledTime,
     task,
   }));
-  const events = day.events_today.map((event): AgendaItem => ({
+  const events = day.eventsToday.map((event): AgendaItem => ({
     kind: 'event',
     id: `event-${eventKey(event)}`,
-    time: event.start_time,
+    time: event.startTime,
     event,
   }));
   return [...tasks, ...events].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 }
 
 /**
- * purpose: Display form of a local "HH:MM:SS" time, for example "2:00 PM".
- * @param localTime: (string) Time from the database.
+ * purpose: Display form of a local "HH:MM" time, for example "2:00 PM".
+ * @param localTime: (string) Time from the backend.
  * @return: (string) Display time, or the input unchanged when it is not a valid time.
  */
 export function displayTime(localTime: string): string {
-  const match = /^(\d{2}):(\d{2}):(\d{2})$/.exec(localTime);
+  const match = /^(\d{2}):(\d{2})$/.exec(localTime);
   if (match === null) return localTime;
-  const [hour, minute, second] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  if (hour > 23 || minute > 59 || second > 59) return localTime;
+  const [hour, minute] = [Number(match[1]), Number(match[2])];
+  if (hour > 23 || minute > 59) return localTime;
   const hour12 = hour % 12 === 0 ? 12 : hour % 12;
   return `${hour12}:${match[2]} ${hour < 12 ? 'AM' : 'PM'}`;
 }
 
 /**
  * purpose: Parse a "YYYY-MM-DD" local date into a UTC timestamp used as a day counter.
- * @param localDate: (string) Date from the database.
+ * @param localDate: (string) Date from the backend.
  * @return: (number | null) Milliseconds at UTC midnight, or null when invalid.
  */
 function parseLocalDate(localDate: string): number | null {
@@ -97,13 +97,13 @@ function parseLocalDate(localDate: string): number | null {
  * purpose: When an event happens relative to today: "Today at 2:00 PM",
  *          "Tomorrow at 9:00 AM" or "Thursday at 2:00 PM".
  * @param event: (EventOccurrence) The occurrence.
- * @param todayLocalDate: (string | null) The day view's local_date; null before the first load.
+ * @param todayLocalDate: (string | null) The day view's localDate; null before the first load.
  * @return: (string) Calm, plain description; just the time when dates cannot be compared.
  */
 export function whenText(event: EventOccurrence, todayLocalDate: string | null): string {
-  const time = displayTime(event.start_time);
+  const time = displayTime(event.startTime);
   const today = todayLocalDate === null ? null : parseLocalDate(todayLocalDate);
-  const date = parseLocalDate(event.local_date);
+  const date = parseLocalDate(event.localDate);
   if (today === null || date === null) return time;
   const days = Math.trunc((date - today) / MS_PER_DAY);
   if (days === 0) return `Today at ${time}`;
