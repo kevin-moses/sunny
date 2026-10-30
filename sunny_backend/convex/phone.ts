@@ -4,15 +4,20 @@
 // member's pendingPhone and schedules sendCode with only the verification id: the action makes
 // the 6-digit code, stores its HMAC (key derived from CALENDAR_TOKEN_KEY, label
 // "sunny-phone-code", bound to user and number) and texts it, so the code is never in a
-// scheduled-function argument or a table. A failed send is saved on the row and reported by
-// confirmMyPhone as "send_failed". Codes expire after 10 minutes and allow 5 wrong guesses.
+// scheduled-function argument or a table. A failed send is saved on the row as a caregiver-safe
+// sendError (generic, or "That number cannot receive texts." when Twilio rejects the number
+// itself) plus the raw text in sendErrorDetail, which no public function returns (it is also
+// logged). confirmMyPhone reports "send_failed". Codes expire after 10 minutes and allow 5 wrong guesses.
 // Sending is limited per caregiver (burst of 3, then one a minute), per caregiver and number (3
 // an hour, so one caregiver cannot use up another's budget for a number), and per day for each
 // caregiver and each household. confirmMyPhone makes the number the member's phone with
 // phoneVerifiedAt set; clearMyPhone removes it; sweepExpired (hourly) deletes stale rows.
 // myPhoneStatus (a read-only query) tells the caller whether the code text is still being sent,
-// went out, or failed (with the sanitized failure reason), so a client can wait for the send.
-// setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus are re-exported by households.ts.
+// went out, or failed (with the caregiver-safe reason), so a client can wait for the send.
+// Its "expired" is computed from Date.now() inside a query, which Convex does not re-run as time
+// passes: a subscribed client should compare the returned expiresAt with its own clock.
+// setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus are re-exported by households.ts
+// (the canonical public name is households.myPhoneStatus).
 // Wrong guesses are returned as a status, not thrown, so the attempt count is saved.
 //
 // Last modified: 2026-10-29
@@ -61,6 +66,13 @@ export type ConfirmPhoneResult =
   | { status: "sending" }
   | { status: "send_failed" }
   | { status: "none" };
+
+/** Shown when the code text could not be sent for any reason but a rejected number. */
+export const SEND_FAILED_MESSAGE = "The code text could not be sent. Try again later.";
+/** Shown when Twilio rejects the destination number itself. */
+export const BAD_NUMBER_MESSAGE = "That number cannot receive texts.";
+/** Twilio error codes meaning the destination number is invalid or not a mobile number. */
+const BAD_NUMBER_PATTERN = /\(code (21211|21614)\)/;
 
 /** Result of myPhoneStatus. */
 export type MyPhoneStatus =
@@ -206,28 +218,37 @@ export const storeCode = internalMutation({
   handler: async (ctx, { verificationId, codeHash }): Promise<boolean> => {
     const row = await ctx.db.get(verificationId);
     if (!row) return false;
-    await ctx.db.patch(verificationId, { codeHash, sendError: undefined });
+    await ctx.db.patch(verificationId, {
+      codeHash,
+      sendError: undefined,
+      sendErrorDetail: undefined,
+    });
     return true;
   },
 });
 
 /**
- * purpose: Record that the code text could not be sent, for confirmMyPhone to report. Internal.
+ * purpose: Record that the code text could not be sent, for confirmMyPhone and myPhoneStatus
+ *          to report. Internal.
  * @param verificationId: (Id<"phoneVerifications">) The verification.
- * @param error: (string) What went wrong (not shown to the caregiver).
+ * @param error: (string) Caregiver-safe reason, returned to the caller as is.
+ * @param detail: (string) Raw failure text (configuration or Twilio); never returned to clients.
  * @return: (null)
  */
 export const markSendFailed = internalMutation({
-  args: { verificationId: v.id("phoneVerifications"), error: v.string() },
-  handler: async (ctx, { verificationId, error }): Promise<null> => {
-    if (await ctx.db.get(verificationId)) await ctx.db.patch(verificationId, { sendError: error });
+  args: { verificationId: v.id("phoneVerifications"), error: v.string(), detail: v.string() },
+  handler: async (ctx, { verificationId, error, detail }): Promise<null> => {
+    if (await ctx.db.get(verificationId)) {
+      await ctx.db.patch(verificationId, { sendError: error, sendErrorDetail: detail });
+    }
     return null;
   },
 });
 
 /**
  * purpose: Make the code, store its HMAC and text it. Only the verification id travels in the
- *          scheduled arguments. A failure (configuration, Twilio) is saved on the row.
+ *          scheduled arguments. A failure (configuration, Twilio) is saved on the row: a safe
+ *          message for the caregiver and the raw text for the logs.
  * @param verificationId: (Id<"phoneVerifications">) The verification.
  * @return: (null)
  */
@@ -237,12 +258,14 @@ export const sendCode = internalAction({
     const target = await ctx.runQuery(internal.phone.verificationTarget, { verificationId });
     if (target === null) return null;
     /**
-     * purpose: Save a send failure on the verification.
-     * @param error: (string) What went wrong.
+     * purpose: Save a send failure on the verification and log the raw text.
+     * @param error: (string) Caregiver-safe reason.
+     * @param detail: (string) Raw failure text.
      * @return: (Promise<null>) Always null.
      */
-    const fail = async (error: string): Promise<null> => {
-      await ctx.runMutation(internal.phone.markSendFailed, { verificationId, error });
+    const fail = async (error: string, detail: string): Promise<null> => {
+      console.error(`Phone verification code text failed: ${detail}`);
+      await ctx.runMutation(internal.phone.markSendFailed, { verificationId, error, detail });
       return null;
     };
     const code = randomCode();
@@ -250,7 +273,7 @@ export const sendCode = internalAction({
     try {
       codeHash = await hashCode(target.userId, target.phone, code);
     } catch (e) {
-      if (e instanceof ConfigError) return await fail(e.message);
+      if (e instanceof ConfigError) return await fail(SEND_FAILED_MESSAGE, e.message);
       throw e;
     }
     if (!(await ctx.runMutation(internal.phone.storeCode, { verificationId, codeHash }))) {
@@ -260,7 +283,11 @@ export const sendCode = internalAction({
       target.phone,
       `Sunny code: ${code}. It expires in 10 minutes. Reply STOP to opt out.`,
     );
-    return result.ok ? null : await fail(result.error);
+    if (result.ok) return null;
+    return await fail(
+      BAD_NUMBER_PATTERN.test(result.error) ? BAD_NUMBER_MESSAGE : SEND_FAILED_MESSAGE,
+      result.error,
+    );
   },
 });
 
@@ -271,7 +298,9 @@ export const sendCode = internalAction({
  * @param householdId: (Id<"households">) Household the caller belongs to.
  * @return: (MyPhoneStatus) "none" (nothing pending), "expired", "sending" (code text not sent
  *          yet), "sent" (with the pending number and expiry) or "send_failed" (with the
- *          sanitized reason recorded by the send action).
+ *          caregiver-safe reason recorded by the send action). "expired" is computed from the
+ *          server clock when the query runs and is not re-pushed as time passes, so a
+ *          subscribed client should compare expiresAt with its own clock.
  * @raises forbidden for a non-member or device.
  */
 export const myPhoneStatus = query({

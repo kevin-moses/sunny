@@ -101,7 +101,7 @@ Each phase ends with its tests passing, `npx convex dev --once` deploying cleanl
      - Twilio: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_WEBHOOK_URL`.
      - Optional: `SMS_ALLOWED_COUNTRY_CODES`.
 6. **Cutover** (in progress, 2026-10-29).
-   - **Done:** the app runs on Clerk and Convex and no longer depends on Supabase. `supabase/` is removed (migrations, Edge Functions, seed, pgTAP tests, scripts) along with its .gitignore entries; comments that cited its files now describe the history in words. `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md` are rewritten for Convex and `notes/HANDOFF.md` is now the code map of the current repo. `scripts/caregiver.ts phone` waits for the verification text to go out (new `phone.myPhoneStatus` query) and reports a send failure.
+   - **Done:** the app runs on Clerk and Convex and no longer depends on Supabase. `supabase/` is removed (migrations, Edge Functions, seed, pgTAP tests, scripts) along with its .gitignore entries; comments that cited its files now describe the history in words. `notes/SCHEMA.md` and `notes/AGENT_RUNTIME.md` are rewritten for Convex and `notes/HANDOFF.md` is now the code map of the current repo. `scripts/caregiver.ts phone` waits for the verification text to go out (new `households.myPhoneStatus` query, implemented in `phone.ts`) and reports a send failure.
    - **Open:**
      - Convex Cloud production deployment (separate Clerk production instance, Google and Apple OAuth credentials, redirect URIs, env vars). Runbook: `notes/PRODUCTION.md`.
      - BAAs confirmed with Convex, Clerk, Twilio (and the other vendors that touch household data) before real pilot data.

@@ -1,7 +1,7 @@
 // calendar.test.ts
 // Purpose: Tests for calendar.ts with convex-test and a fake clock (vi.setSystemTime drives
-// Date.now() inside the functions). Ports the calendar assertions of the pgTAP suite
-// (calendar_jobs.test.sql): who may add, update and cancel; validation and normalization;
+// Date.now() inside the functions). Ports the calendar assertions of the former Supabase pgTAP suite
+// (its calendar job tests): who may add, update and cancel; validation and normalization;
 // created-by provenance; past-time and repeat rules; DST stability of a weekly event;
 // update semantics (absent = unchanged, null = cleared, unknown keys rejected); soft
 // delete; audit rows; listEvents range limits; and dayView (header, part-of-day

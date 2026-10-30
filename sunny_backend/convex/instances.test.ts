@@ -5,7 +5,7 @@
 // ambiguous, not found, already done, not due yet, prefer what is due now), senior reminders
 // (create, recurring, cancel, blank query, past date) and dose logging. Also one access test
 // per public function (outsider forbidden, viewer cannot write, device and caregiver rules
-// differ), standing in for the pgTAP grant and RLS checks. Also: non-finite dose times and
+// differ), standing in for the former Supabase grant and RLS checks. Also: non-finite dose times and
 // over-long reminder titles are rejected. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //

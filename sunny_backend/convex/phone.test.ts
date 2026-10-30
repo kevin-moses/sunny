@@ -8,7 +8,7 @@
 // locking, expiry, resend, a failed send and a still-sending status, code length cap, the send
 // rate limits (burst, per caregiver and number without one caregiver spending another's budget,
 // per caregiver and household per day), member-only access, texting not configured,
-// clearMyPhone, myPhoneStatus (none, sending, sent, send_failed, expired, members only),
+// clearMyPhone, myPhoneStatus (none, sending, sent, send_failed with safe messages only, expired, members only),
 // the hourly sweep, and the verified phone in listMembers and the phone index.
 //
 // Last modified: 2026-10-29
@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { CODE_TTL_MS, MAX_CODE_ATTEMPTS } from "./phone";
+import { BAD_NUMBER_MESSAGE, CODE_TTL_MS, MAX_CODE_ATTEMPTS, SEND_FAILED_MESSAGE } from "./phone";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
@@ -365,16 +365,44 @@ describe("myPhoneStatus", () => {
     });
   });
 
-  test("reports a failed send with its reason", async () => {
+  test("a rejected number is reported with a safe message and no Twilio text", async () => {
     const { t, householdId } = await setup();
     fetchMock.mockResolvedValue(Response.json({ code: 21211, message: "bad" }, { status: 400 }));
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
+    await queuedTexts(t);
+    const status = await pat.query(api.households.myPhoneStatus, { householdId });
+    expect(status).toEqual({ status: "send_failed", error: BAD_NUMBER_MESSAGE });
+    expect(JSON.stringify(status)).not.toMatch(/Twilio|21211/);
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("Twilio 400 (code 21211)"));
+    const [row] = await t.run(async (ctx) => await ctx.db.query("phoneVerifications").collect());
+    expect(row!.sendErrorDetail).toContain("Twilio 400 (code 21211)");
+  });
+
+  test("another Twilio failure is reported with the generic message", async () => {
+    const { t, householdId } = await setup();
+    fetchMock.mockResolvedValue(Response.json({ code: 30008, message: "x" }, { status: 400 }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     const pat = t.withIdentity({ subject: "pat" });
     await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
     await queuedTexts(t);
     expect(await pat.query(api.households.myPhoneStatus, { householdId })).toEqual({
       status: "send_failed",
-      error: "Twilio 400 (code 21211): bad",
+      error: SEND_FAILED_MESSAGE,
     });
+  });
+
+  test("a missing key is reported without naming environment variables", async () => {
+    const { t, householdId } = await setup();
+    vi.stubEnv("CALENDAR_TOKEN_KEY", "");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.setMyPhone, { householdId, phone: "5551234567" });
+    await queuedTexts(t);
+    const status = await pat.query(api.households.myPhoneStatus, { householdId });
+    expect(status).toEqual({ status: "send_failed", error: SEND_FAILED_MESSAGE });
+    expect(JSON.stringify(status)).not.toMatch(/CALENDAR_TOKEN_KEY|TWILIO/);
   });
 
   test("is expired once the code has expired", async () => {

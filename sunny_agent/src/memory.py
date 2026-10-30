@@ -38,7 +38,7 @@ logger = logging.getLogger("agent.memory")
 def resolve_session(room: rtc.Room) -> dict:
     """
     purpose: Read who this session is for and how it started from the first remote
-             participant's metadata. The livekit-token Edge Function writes it after
+             participant's metadata. The voice.livekitToken Convex action writes it after
              verifying the caller's paired device. When no household is present, falls
              back to the DEV_HOUSEHOLD_ID environment variable for local testing with a
              sandbox token.

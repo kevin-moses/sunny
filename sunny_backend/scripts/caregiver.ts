@@ -21,7 +21,7 @@
 //                      10-digit US or +E.164. Sunny texts a 6-digit code to it (needs the
 //                      TWILIO_* variables on the deployment). Waits up to 30 seconds for
 //                      the text to go out (households:myPhoneStatus) and prints either
-//                      "Texted a code" or the send failure reason.
+//                      "Texted a code" or the send failure reason (exit code 1 unless the text went out).
 //   confirm-phone <code>  Confirm that code (households:confirmMyPhone) and print the result.
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
@@ -222,13 +222,11 @@ ${url}`);
 const PHONE_WAIT_MS = 30_000;
 const PHONE_POLL_MS = 1_000;
 
-/** Shape of households:myPhoneStatus. */
-interface PhoneStatus {
-  status: "none" | "expired" | "sending" | "sent" | "send_failed";
-  phone?: string;
-  expiresAt?: number;
-  error?: string;
-}
+/** Shape of households:myPhoneStatus; phone and expiresAt exist only when sent. */
+type PhoneStatus =
+  | { status: "none" | "expired" | "sending" }
+  | { status: "sent"; phone: string; expiresAt: number }
+  | { status: "send_failed"; error: string };
 
 /**
  * purpose: Start verifying the dev caregiver's phone number; Sunny texts the code. Waits
@@ -249,17 +247,20 @@ async function startPhone(number: string): Promise<void> {
   }
   if (status.status === "sent") {
     console.log(
-      `Texted a code to ${status.phone}; it expires at ${new Date(status.expiresAt ?? 0).toLocaleTimeString()}. ` +
+      `Texted a code to ${status.phone}; it expires at ${new Date(status.expiresAt).toLocaleTimeString()}. ` +
         "Run `confirm-phone <code>` next.",
     );
   } else if (status.status === "send_failed") {
     console.log(`The code text could not be sent: ${status.error}`);
+    process.exitCode = 1;
   } else if (status.status === "sending") {
     console.log(
       "The code text is still being sent; check your phone, then run `confirm-phone <code>`.",
     );
+    process.exitCode = 1;
   } else {
     console.log(`No code is pending (${status.status}); run \`phone <number>\` again.`);
+    process.exitCode = 1;
   }
 }
 

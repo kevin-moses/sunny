@@ -4,7 +4,7 @@
 // single-use and 24 hour expiry of codes, caregiver and device redemption, member removal
 // and the on-call rule, push token ownership (a live owner's token is protected, an orphaned
 // owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
-// the device identity claim, and the last-primary guard. These stand in for the pgTAP grant
+// the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
 // and RLS checks of the Supabase test suite.
 //
 // Last modified: 2026-10-29

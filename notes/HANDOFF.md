@@ -35,7 +35,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Time zones | `lib/time.ts` |
 | Google Calendar connect, push, sweepers | `googleCalendar.ts`, `calendarPush.ts`, `calendarFanOut.ts`, `lib/calendarSync.ts`, `lib/google.ts`, `lib/googleEvent.ts`, `lib/secretBox.ts` |
 | Notification delivery (APNs, SMS) | `delivery.ts`, `apns.ts`, `apnsTokens.ts`, `lib/delivery.ts`, `lib/apnsPayload.ts`, `lib/twilio.ts` |
-| Caregiver phone verification and inbound SMS | `phone.ts` (includes `myPhoneStatus`), `sms.ts` |
+| Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
 | Daily digest | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts` |
 | Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` |
 | Functions the Python voice agent calls (`agent:*`) | `agent.ts` |
@@ -88,7 +88,7 @@ LiveKit Python worker. `src/agent.py` (the `Assistant` and `entrypoint`), `src/p
 
 Run (from `sunny_agent/`): `uv sync`, `uv run python src/agent.py download-files` once, then `uv run python src/agent.py dev` (or `console` to talk in the terminal). Tests: `uv run pytest -q` (some tests are LLM-judged and need `ANTHROPIC_API_KEY`). Type and lint: `uv run mypy src/ --ignore-missing-imports`, ruff (via pre-commit).
 
-Environment (`.env.local`, git-ignored; copy from `.env.example`): `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`, `TAVILY_API_KEY`, `CONVEX_URL`, `SUNNY_AGENT_KEY` (must equal the value on the Convex deployment), optional `DEV_HOUSEHOLD_ID` (used when the session has no household in its metadata).
+Environment (`sunny_agent/.env`, git-ignored; copy from `.env.example`): `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`, `TAVILY_API_KEY`, `CONVEX_URL`, `SUNNY_AGENT_KEY` (must equal the value on the Convex deployment), optional `DEV_HOUSEHOLD_ID` (used when the session has no household in its metadata).
 
 ## Checks
 
