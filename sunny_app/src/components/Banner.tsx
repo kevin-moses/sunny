@@ -2,17 +2,17 @@
 //
 // Purpose: A snackbar shown at the top of the screen for errors and warnings. The tone
 // picks the "serious" (error) or "moderate" (warning) status colors; an optional dismiss
-// button is shown when onDismiss is given.
+// button is shown when onDismiss is given. The tone colors (TONES) are exported for reuse.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-30
 
 import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, GRID } from '../theme/colors';
 
-/** Status color sets, keyed by tone. */
-const TONES = {
+/** Status color sets, keyed by tone; exported so other cards can match the banner colors. */
+export const TONES = {
   serious: {
     foreground: colors.seriousForeground,
     background: colors.seriousBackground,

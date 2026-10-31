@@ -1,0 +1,297 @@
+// sunny_app/src/caregiver/CaregiverComponents.tsx
+//
+// Purpose: The building blocks of the caregiver Home tab: the screen header (title, subtitle
+// and optional trailing control), the section title, the calendar card with its seven-day week
+// strip, the alert card with its "I'm on it" action, and the "This week" schedule card. They
+// take plain data from format.ts and render the Figma design: warm translucent cards, serious
+// banner colors for alerts, accent-tinted selection. No motion.
+//
+// Last modified: 2026-10-30
+
+import { SymbolView } from 'expo-symbols';
+import type { ReactNode } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { TONES } from '../components/Banner';
+import type { DayTask } from '../day/types';
+import { displayTime } from '../day/format';
+import { colors } from '../theme/colors';
+import { useTheme } from '../theme/ThemeProvider';
+import {
+  alertMessage,
+  monthYearLabel,
+  type ScheduleGroup,
+  type ScheduleRowData,
+  type WeekStripDay,
+} from './format';
+import type { ClaimState } from './useClaimTasks';
+import { type } from './typography';
+
+const alertTone = TONES.serious;
+
+/**
+ * purpose: The top of a caregiver tab: a title with an optional trailing control, and a subtitle.
+ * @param props: ({ title: string, subtitle: string, trailing?: ReactNode }) The texts and the
+ *        control shown at the right of the title (for example the account button).
+ * @return: (JSX.Element) The header.
+ */
+export function ScreenHeader({
+  title,
+  subtitle,
+  trailing,
+}: {
+  title: string;
+  subtitle: string;
+  trailing?: ReactNode;
+}) {
+  return (
+    <View style={styles.header}>
+      <View style={styles.headerTitleRow}>
+        <Text accessibilityRole="header" style={[type.title, styles.fill]} numberOfLines={2}>
+          {title}
+        </Text>
+        {trailing}
+      </View>
+      <Text style={type.subtitle}>{subtitle}</Text>
+    </View>
+  );
+}
+
+/**
+ * purpose: A small uppercase heading for a Home section.
+ * @param props: ({ text: string }) The heading.
+ * @return: (JSX.Element) The heading.
+ */
+export function SectionTitle({ text }: { text: string }) {
+  return (
+    <Text accessibilityRole="header" style={type.section}>
+      {text}
+    </Text>
+  );
+}
+
+/**
+ * purpose: One cell of the week strip: weekday, date and a dot when the day has plans. Today is
+ *          filled with the accent color.
+ * @param props: ({ day: WeekStripDay }) The day.
+ * @return: (JSX.Element) The cell.
+ */
+function WeekStripCell({ day }: { day: WeekStripDay }) {
+  const { accentColor } = useTheme();
+  const textColor = day.isToday ? colors.onAccent : undefined;
+  return (
+    <View
+      accessible
+      accessibilityLabel={day.accessibilityLabel}
+      accessibilityState={{ selected: day.isToday }}
+      style={[styles.dayCell, day.isToday && { backgroundColor: accentColor }]}
+    >
+      <Text style={[type.caption, { color: day.isToday ? colors.onAccent : colors.secondaryText }]}>
+        {day.weekdayShort}
+      </Text>
+      <Text style={[type.headline, { color: textColor }]}>{day.dayOfMonth}</Text>
+      <View
+        style={[
+          styles.dot,
+          day.hasMarker && { backgroundColor: day.isToday ? colors.onAccent : accentColor },
+        ]}
+      />
+    </View>
+  );
+}
+
+/**
+ * purpose: The calendar card: the month and year of today, then the seven-day week strip.
+ * @param props: ({ todayLocalDate: string, days: WeekStripDay[] }) Today's date and the cells.
+ * @return: (JSX.Element) The card.
+ */
+export function CalendarCard({
+  todayLocalDate,
+  days,
+}: {
+  todayLocalDate: string;
+  days: WeekStripDay[];
+}) {
+  return (
+    <View style={styles.card}>
+      <Text accessibilityRole="header" style={type.headline}>
+        {monthYearLabel(todayLocalDate)}
+      </Text>
+      <View style={styles.weekStrip}>
+        {days.map((day) => (
+          <WeekStripCell key={day.localDate} day={day} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * purpose: One alert: a task that was not confirmed, with the "I'm on it" button for editors.
+ *          After a successful claim the button is replaced by "You're on it"; a failed claim
+ *          shows the error in the card and keeps the button.
+ * @param props: ({ task: DayTask, claim: ClaimState | undefined, canClaim: boolean,
+ *        onClaim: () => void }) The task, its local claim state, whether this caregiver may
+ *        claim (editors only) and the press handler.
+ * @return: (JSX.Element) The card.
+ */
+export function AlertCard({
+  task,
+  claim,
+  canClaim,
+  onClaim,
+}: {
+  task: DayTask;
+  claim: ClaimState | undefined;
+  canClaim: boolean;
+  onClaim: () => void;
+}) {
+  const { accentColor } = useTheme();
+  const time = displayTime(task.scheduledTime);
+  const message = alertMessage(task);
+  const claiming = claim?.status === 'claiming';
+  return (
+    <View
+      accessibilityRole="alert"
+      style={[
+        styles.alertCard,
+        { backgroundColor: alertTone.background, borderColor: alertTone.separator },
+      ]}
+    >
+      <View style={styles.alertTitleRow}>
+        <SymbolView name="exclamationmark.triangle" size={20} tintColor={alertTone.foreground} />
+        <Text style={[type.bodyStrong, styles.fill, { color: alertTone.foreground }]}>
+          {`${task.displayLabel} not confirmed`}
+        </Text>
+        <Text style={[type.caption, { color: alertTone.foreground }]}>{time}</Text>
+      </View>
+      <Text style={[type.callout, { color: alertTone.foreground }]}>{message}</Text>
+      {claim?.status === 'error' && (
+        <Text style={[type.callout, { color: alertTone.foreground }]}>{claim.message}</Text>
+      )}
+      {canClaim &&
+        (claim?.status === 'claimed' ? (
+          <Text style={[type.button, { color: alertTone.foreground }]}>You&apos;re on it</Text>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`I'm on it, ${task.displayLabel}`}
+            disabled={claiming}
+            onPress={onClaim}
+            style={[
+              styles.claimButton,
+              { backgroundColor: accentColor, opacity: claiming ? 0.4 : 1 },
+            ]}
+          >
+            <Text style={[type.button, { color: colors.onAccent }]}>I&apos;m on it</Text>
+          </Pressable>
+        ))}
+    </View>
+  );
+}
+
+/**
+ * purpose: One line of the schedule: icon, time and label. Done tasks are checked off and
+ *          struck through; alerts are highlighted in the serious colors.
+ * @param props: ({ row: ScheduleRowData }) The row.
+ * @return: (JSX.Element) The row.
+ */
+function ScheduleRow({ row }: { row: ScheduleRowData }) {
+  const done = row.variant === 'done';
+  const alert = row.variant === 'alert';
+  const iconColor = done ? colors.success : alert ? alertTone.foreground : colors.secondaryText;
+  return (
+    <View
+      accessible
+      accessibilityLabel={row.accessibilityLabel}
+      style={[styles.row, alert && { backgroundColor: alertTone.background }]}
+    >
+      <SymbolView name={row.icon} size={22} tintColor={iconColor} />
+      <Text
+        style={[
+          type.callout,
+          styles.rowTime,
+          { color: alert ? alertTone.foreground : colors.secondaryText },
+        ]}
+      >
+        {row.time}
+      </Text>
+      <Text
+        style={[
+          alert ? type.bodyStrong : type.body,
+          styles.fill,
+          done && { color: colors.secondaryText, textDecorationLine: 'line-through' },
+        ]}
+      >
+        {row.label}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * purpose: The "This week" card: a group per day with rows, or a calm line when the week is empty.
+ * @param props: ({ groups: ScheduleGroup[] }) The groups from buildSchedule.
+ * @return: (JSX.Element) The card.
+ */
+export function ScheduleCard({ groups }: { groups: ScheduleGroup[] }) {
+  return (
+    <View style={styles.scheduleCard}>
+      {groups.length === 0 && (
+        <Text style={[type.callout, styles.emptyLine]}>Nothing scheduled this week.</Text>
+      )}
+      {groups.map((group) => (
+        <View key={group.key} style={styles.group}>
+          <Text accessibilityRole="header" style={[type.headline, styles.groupTitle]}>
+            {group.title}
+          </Text>
+          {group.rows.map((row) => (
+            <ScheduleRow key={row.id} row={row} />
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+  header: { gap: 4 },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  card: { gap: 8, padding: 12, borderRadius: 18, backgroundColor: colors.overlayMedium },
+  weekStrip: { flexDirection: 'row', justifyContent: 'space-between' },
+  dayCell: {
+    width: 44,
+    paddingVertical: 8,
+    gap: 4,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  alertCard: { gap: 8, padding: 12, borderRadius: 12, borderWidth: 1 },
+  alertTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  claimButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  scheduleCard: {
+    gap: 16,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: colors.overlayMedium,
+  },
+  emptyLine: { color: colors.secondaryText, paddingHorizontal: 20, paddingVertical: 4 },
+  group: { gap: 4, paddingHorizontal: 8 },
+  groupTitle: { paddingTop: 4, paddingHorizontal: 12 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+  },
+  rowTime: { width: 72, fontVariant: ['tabular-nums'] },
+});
