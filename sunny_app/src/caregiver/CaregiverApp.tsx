@@ -3,43 +3,53 @@
 // Purpose: The caregiver side of the app, rendered full screen on the app background once a
 // caregiver is signed in and has chosen a household. It owns the tab state (Home or Chat),
 // follows the household's day view once (useDayView) for the Home tab and the Chat header, and
-// signs the caregiver out from the account button (Clerk) after a confirmation. Both tabs stay
-// mounted so a half-typed chat message survives a tab switch; the inactive one is hidden.
-// The caregiver's role decides what they may do: viewers cannot claim alerts or message Sunny.
+// signs the caregiver out from the account button (Clerk) after a confirmation. The Chat tab
+// mounts on its first visit and then stays mounted so a half-typed message survives a tab
+// switch; the inactive tab is hidden. It also owns the floating tab bar's geometry: the bar is
+// hidden while the keyboard is up, and the room screens must leave for it is provided through
+// useTabBarInset. The caregiver's role decides what they may do: viewers cannot claim alerts
+// or message Sunny.
 //
 // Last modified: 2026-10-31
 
 import { useAuth } from '@clerk/expo';
 import { useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import type { HouseholdId } from '../backend/convexApi';
-import type { CaregiverRole } from '../backend/pairing';
+import type { CaregiverHome } from '../backend/pairing';
 import { useDayView } from '../day/useDayView';
 import { logger } from '../logging/logger';
 import { BACKGROUND } from '../theme/colors';
+import { useKeyboardVisible } from '../theme/useKeyboardVisible';
 import { CaregiverChatScreen } from './CaregiverChatScreen';
 import { CaregiverHomeScreen } from './CaregiverHomeScreen';
-import { CaregiverTabBar, type CaregiverTab } from './CaregiverTabBar';
-
-export type { CaregiverRole };
-
-/** Props for CaregiverApp. */
-export interface CaregiverAppProps {
-  householdId: HouseholdId;
-  role: CaregiverRole;
-}
+import { CaregiverTabBar, tabBarClearance, type CaregiverTab } from './CaregiverTabBar';
+import { TabBarInsetContext } from './tabBarInset';
 
 /**
  * purpose: Render the caregiver app: the Home or Chat tab and the floating tab bar.
- * @param props: (CaregiverAppProps) The household and the caregiver's role in it.
+ * @param props: (CaregiverHome) The household and the caregiver's role in it.
  * @return: (JSX.Element) The full-screen caregiver UI.
  */
-export function CaregiverApp({ householdId, role }: CaregiverAppProps) {
+export function CaregiverApp({ householdId, role }: CaregiverHome) {
   const [tab, setTab] = useState<CaregiverTab>('home');
-  const { signOut } = useAuth();
+  const [chatVisited, setChatVisited] = useState(false);
+  const { signOut, userId } = useAuth();
+  const insets = useSafeAreaInsets();
+  const keyboardVisible = useKeyboardVisible();
   const dayView = useDayView(householdId);
   const isEditor = role !== 'viewer';
+
+  /**
+   * purpose: Switch tabs, remembering that Chat has been opened so it stays mounted.
+   * @param next: (CaregiverTab) The tab to show.
+   * @return: (void)
+   */
+  const selectTab = (next: CaregiverTab): void => {
+    if (next === 'chat') setChatVisited(true);
+    setTab(next);
+  };
 
   /**
    * purpose: Ask for confirmation, then sign the caregiver out of Clerk.
@@ -62,23 +72,28 @@ export function CaregiverApp({ householdId, role }: CaregiverAppProps) {
   };
 
   return (
-    <View style={styles.root}>
-      <View style={tab === 'home' ? styles.tab : styles.hidden}>
-        <CaregiverHomeScreen
-          dayView={dayView}
-          canClaim={isEditor}
-          onAccountPress={confirmSignOut}
-        />
+    <TabBarInsetContext.Provider value={keyboardVisible ? 0 : tabBarClearance(insets.bottom)}>
+      <View style={styles.root}>
+        <View style={tab === 'home' ? styles.tab : styles.hidden}>
+          <CaregiverHomeScreen
+            dayView={dayView}
+            canClaim={isEditor}
+            userId={userId ?? null}
+            onAccountPress={confirmSignOut}
+          />
+        </View>
+        {chatVisited && (
+          <View style={tab === 'chat' ? styles.tab : styles.hidden}>
+            <CaregiverChatScreen
+              householdId={householdId}
+              seniorName={dayView.day?.seniorPreferredName ?? null}
+              canSend={isEditor}
+            />
+          </View>
+        )}
+        {!keyboardVisible && <CaregiverTabBar active={tab} onChange={selectTab} />}
       </View>
-      <View style={tab === 'chat' ? styles.tab : styles.hidden}>
-        <CaregiverChatScreen
-          householdId={householdId}
-          seniorName={dayView.day?.seniorPreferredName ?? null}
-          canSend={isEditor}
-        />
-      </View>
-      <CaregiverTabBar active={tab} onChange={setTab} />
-    </View>
+    </TabBarInsetContext.Provider>
   );
 }
 

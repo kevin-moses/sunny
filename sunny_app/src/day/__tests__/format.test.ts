@@ -1,15 +1,23 @@
 // sunny_app/src/day/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the day clock helpers on the camelCase calendar.dayView shape:
-// the agenda merge and its order, relative day wording, local "HH:MM" time formatting, and
-// the task state checks. Fixtures are built with small helpers that fill the fields the
+// the agenda merge and its order, relative day wording, event detail wording, local "HH:MM"
+// time formatting, and the task state checks. Fixtures are built with small helpers that fill the fields the
 // helpers do not read, so each test states only what it cares about.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { describe, expect, it } from '@jest/globals';
 
-import { buildAgenda, displayTime, eventKey, isDone, isDue, whenText } from '../format';
+import {
+  buildAgenda,
+  displayTime,
+  eventDetails,
+  eventKey,
+  isDone,
+  isDue,
+  whenText,
+} from '../format';
 import type { DayTask, DayViewData, EventOccurrence } from '../types';
 
 /**
@@ -139,6 +147,20 @@ describe('buildAgenda', () => {
 describe('eventKey', () => {
   it('combines the event id and the local date', () => {
     expect(eventKey(makeEvent({ eventId: 'e-9', localDate: '2026-10-27' }))).toBe('e-9-2026-10-27');
+  });
+});
+
+describe('eventDetails', () => {
+  it('appends the visitor and place to the head when present', () => {
+    const event = makeEvent({ visitorName: 'Dr. Patel', place: 'the clinic' });
+    expect(eventDetails(event, 'Cardiology')).toBe('Cardiology with Dr. Patel at the clinic');
+    expect(eventDetails(event, 'Today at 2:00 PM')).toBe(
+      'Today at 2:00 PM with Dr. Patel at the clinic',
+    );
+  });
+
+  it('is just the head when there is no visitor or place', () => {
+    expect(eventDetails(makeEvent(), 'Cardiology')).toBe('Cardiology');
   });
 });
 

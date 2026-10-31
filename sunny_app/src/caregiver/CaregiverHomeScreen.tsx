@@ -2,19 +2,22 @@
 //
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, the calendar card
 // (seven-day week strip), the Alerts section (tasks that were escalated or missed, with an
-// "I'm on it" button for editors) and the "This week" schedule. Everything comes from the
-// shared day view state owned by CaregiverApp. While the first load is pending it shows a
-// spinner, and if it fails with nothing cached, the error message.
+// "I'm on it" button for editors, or who is already on it) and the "This week" schedule.
+// Everything comes from the shared day view state owned by CaregiverApp, and the derived lists
+// are computed once per day view. While the first load is pending it shows a spinner, and if
+// it fails with nothing cached, the error message.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { SymbolView } from 'expo-symbols';
+import { useMemo } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineMark } from '../components/DayComponents';
 import type { DayViewState } from '../day/useDayView';
 import { colors } from '../theme/colors';
+import { type } from '../theme/typography';
 import {
   AlertCard,
   CalendarCard,
@@ -22,8 +25,8 @@ import {
   ScreenHeader,
   SectionTitle,
 } from './CaregiverComponents';
-import { buildSchedule, buildWeekStrip, selectAlerts, weekRangeLabel } from './format';
-import { tabBarClearance, type } from './typography';
+import { buildSchedule, buildWeekStrip, isAlert, weekRangeLabel } from './format';
+import { useTabBarInset } from './tabBarInset';
 import { useClaimTasks } from './useClaimTasks';
 
 /** Props for CaregiverHomeScreen. */
@@ -31,6 +34,8 @@ interface CaregiverHomeScreenProps {
   dayView: DayViewState;
   /** Whether this caregiver may claim alerts (everyone but viewers). */
   canClaim: boolean;
+  /** The signed-in caregiver's Clerk user id, to tell their own claims from others'. */
+  userId: string | null;
   /** Called when the account button is pressed. */
   onAccountPress: () => void;
 }
@@ -55,66 +60,73 @@ function AccountButton({ onPress }: { onPress: () => void }) {
 
 /**
  * purpose: Render the Home tab.
- * @param props: (CaregiverHomeScreenProps) The shared day view, the claim permission and the
- *        account button handler.
+ * @param props: (CaregiverHomeScreenProps) The shared day view, the claim permission, the
+ *        caregiver's user id and the account button handler.
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverHomeScreen({
   dayView,
   canClaim,
+  userId,
   onAccountPress,
 }: CaregiverHomeScreenProps) {
-  const { day, errorMessage, isOffline } = dayView;
+  const { day, agenda, errorMessage, isOffline } = dayView;
   const insets = useSafeAreaInsets();
+  const tabBarInset = useTabBarInset();
   const { claims, claim } = useClaimTasks();
-  const alerts = day === null ? [] : selectAlerts(day.tasks);
+  const view = useMemo(
+    () =>
+      day === null
+        ? null
+        : {
+            alerts: day.tasks.filter(isAlert),
+            strip: buildWeekStrip(day),
+            schedule: buildSchedule(day, agenda),
+            range: weekRangeLabel(day.localDate),
+          },
+    [day, agenda],
+  );
 
   return (
     <ScrollView
       contentContainerStyle={[
         styles.content,
-        { paddingTop: insets.top + 8, paddingBottom: tabBarClearance(insets.bottom) },
+        { paddingTop: insets.top + 8, paddingBottom: tabBarInset },
       ]}
     >
-      {day === null ? (
-        <>
-          <ScreenHeader
-            title="This week"
-            subtitle=""
-            trailing={<AccountButton onPress={onAccountPress} />}
-          />
-          {errorMessage !== null ? (
-            <Text style={[type.callout, styles.message]}>{errorMessage}</Text>
-          ) : (
-            <ActivityIndicator size="large" color={colors.secondaryText} />
-          )}
-        </>
+      <ScreenHeader
+        title={day === null ? 'This week' : `${day.seniorPreferredName}'s week`}
+        subtitle={view?.range ?? ''}
+        trailing={<AccountButton onPress={onAccountPress} />}
+      />
+      {day === null || view === null ? (
+        errorMessage !== null ? (
+          <Text style={[type.callout, styles.message]}>{errorMessage}</Text>
+        ) : (
+          <ActivityIndicator size="large" color={colors.secondaryText} />
+        )
       ) : (
         <>
-          <ScreenHeader
-            title={`${day.seniorPreferredName}'s week`}
-            subtitle={weekRangeLabel(day.localDate)}
-            trailing={<AccountButton onPress={onAccountPress} />}
-          />
-          <CalendarCard todayLocalDate={day.localDate} days={buildWeekStrip(day)} />
+          <CalendarCard todayLocalDate={day.localDate} days={view.strip} />
           <View style={styles.section}>
             <SectionTitle text="Alerts" />
-            {alerts.length === 0 && (
+            {view.alerts.length === 0 && (
               <Text style={[type.callout, styles.message]}>Nothing needs attention.</Text>
             )}
-            {alerts.map((task) => (
+            {view.alerts.map((task) => (
               <AlertCard
                 key={task.instanceId}
                 task={task}
                 claim={claims[task.instanceId]}
                 canClaim={canClaim}
-                onClaim={() => void claim(task.instanceId)}
+                userId={userId}
+                onClaim={() => claim(task.instanceId)}
               />
             ))}
           </View>
           <View style={styles.section}>
             <SectionTitle text="This week" />
-            <ScheduleCard groups={buildSchedule(day)} />
+            <ScheduleCard groups={view.schedule} />
           </View>
           {isOffline && <OfflineMark />}
         </>

@@ -331,6 +331,8 @@ describe("getContext", () => {
         state: "due",
         confirmedAt: null,
         confirmedVia: null,
+        claimedBy: null,
+        claimedByName: null,
       },
     ]);
     expect(

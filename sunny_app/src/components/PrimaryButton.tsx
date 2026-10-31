@@ -3,9 +3,10 @@
 // Purpose: The full-width solid accent button used for primary actions (for example
 // Connect and Talk to Sunny). Its press handler may be async: while it runs, or while the
 // caller passes busy, the label is replaced by a spinner (with the optional busyLabel next
-// to it) and further presses are ignored. At least 60pt tall for easy tapping.
+// to it) and further presses are ignored. At least 60pt tall for easy tapping; the compact
+// variant is a small left-aligned button with 15pt bold text for inline actions in cards.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-31
 
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -32,6 +33,8 @@ interface PrimaryButtonProps {
   busy?: boolean;
   /** Text shown next to the spinner while busy; the spinner is shown alone without it. */
   busyLabel?: string;
+  /** A small inline button (smaller padding, left-aligned, 15pt bold text) instead of full width. */
+  compact?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
   style?: StyleProp<ViewStyle>;
@@ -40,8 +43,8 @@ interface PrimaryButtonProps {
 /**
  * purpose: Render a prominent accent button with a busy spinner for async presses.
  * @param props: (PrimaryButtonProps) Label, press handler, disabled and busy flags, busy
- *        label, accessibility label and hint, and optional extra style (for example a max
- *        width).
+ *        label, compact flag, accessibility label and hint, and optional extra style (for
+ *        example a max width).
  * @return: (JSX.Element) The button.
  */
 export function PrimaryButton({
@@ -50,6 +53,7 @@ export function PrimaryButton({
   disabled = false,
   busy: externalBusy = false,
   busyLabel,
+  compact = false,
   accessibilityLabel,
   accessibilityHint,
   style,
@@ -80,11 +84,9 @@ export function PrimaryButton({
     }
   };
 
-  const textStyle: TextStyle = {
-    fontSize: theme.buttonFontSize,
-    fontWeight: '600',
-    color: colors.onAccent,
-  };
+  const textStyle: TextStyle = compact
+    ? { fontSize: 15, fontWeight: '700', color: colors.onAccent }
+    : { fontSize: theme.buttonFontSize, fontWeight: '600', color: colors.onAccent };
 
   return (
     <Pressable
@@ -96,6 +98,7 @@ export function PrimaryButton({
       onPress={() => void handlePress()}
       style={({ pressed }) => [
         styles.button,
+        compact && styles.compact,
         {
           borderRadius: theme.cornerRadius,
           backgroundColor: theme.accentColor,
@@ -124,5 +127,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 16,
   },
+  compact: { minHeight: 36, alignSelf: 'flex-start', paddingVertical: 8 },
   busyRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
 });

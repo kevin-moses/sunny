@@ -2,32 +2,34 @@
 //
 // Purpose: The building blocks of the caregiver Home tab: the screen header (title, subtitle
 // and optional trailing control), the section title, the calendar card with its seven-day week
-// strip, the alert card with its "I'm on it" action, and the "This week" schedule card. They
-// take plain data from format.ts and render the Figma design: warm translucent cards, serious
-// banner colors for alerts, accent-tinted selection. No motion.
+// strip, the alert card with its "I'm on it" action (or who is already on it), and the "This
+// week" schedule card. They take plain data from format.ts and render the Figma design: warm
+// translucent cards, serious status colors for alerts, accent-tinted selection. No motion.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { SymbolView } from 'expo-symbols';
 import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
-import { TONES } from '../components/Banner';
+import { PrimaryButton } from '../components/PrimaryButton';
 import type { DayTask } from '../day/types';
 import { displayTime } from '../day/format';
-import { colors } from '../theme/colors';
+import { colors, statusTones } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
+import { type } from '../theme/typography';
 import {
   alertMessage,
+  claimText,
   monthYearLabel,
   type ScheduleGroup,
   type ScheduleRowData,
+  VARIANT_STYLE,
   type WeekStripDay,
 } from './format';
 import type { ClaimState } from './useClaimTasks';
-import { type } from './typography';
 
-const alertTone = TONES.serious;
+const alertTone = statusTones.serious;
 
 /**
  * purpose: The top of a caregiver tab: a title with an optional trailing control, and a subtitle.
@@ -127,29 +129,30 @@ export function CalendarCard({
 }
 
 /**
- * purpose: One alert: a task that was not confirmed, with the "I'm on it" button for editors.
- *          After a successful claim the button is replaced by "You're on it"; a failed claim
- *          shows the error in the card and keeps the button.
+ * purpose: One alert: a task that was not confirmed. When someone has claimed it the card says
+ *          who is on it ("You're on it" for the signed-in caregiver); otherwise editors get the
+ *          "I'm on it" button, which shows a spinner while the claim runs. A failed claim shows
+ *          the error in the card and keeps the button.
  * @param props: ({ task: DayTask, claim: ClaimState | undefined, canClaim: boolean,
- *        onClaim: () => void }) The task, its local claim state, whether this caregiver may
- *        claim (editors only) and the press handler.
+ *        userId: string | null, onClaim: () => Promise<void> }) The task, its in-flight or
+ *        failed claim, whether this caregiver may claim (editors only), their Clerk user id and
+ *        the press handler.
  * @return: (JSX.Element) The card.
  */
 export function AlertCard({
   task,
   claim,
   canClaim,
+  userId,
   onClaim,
 }: {
   task: DayTask;
   claim: ClaimState | undefined;
   canClaim: boolean;
-  onClaim: () => void;
+  userId: string | null;
+  onClaim: () => Promise<void>;
 }) {
-  const { accentColor } = useTheme();
-  const time = displayTime(task.scheduledTime);
-  const message = alertMessage(task);
-  const claiming = claim?.status === 'claiming';
+  const claimed = claimText(task, userId);
   return (
     <View
       accessibilityRole="alert"
@@ -160,32 +163,28 @@ export function AlertCard({
     >
       <View style={styles.alertTitleRow}>
         <SymbolView name="exclamationmark.triangle" size={20} tintColor={alertTone.foreground} />
-        <Text style={[type.bodyStrong, styles.fill, { color: alertTone.foreground }]}>
+        <Text style={[type.bodyStrong, styles.fill, styles.alertText]}>
           {`${task.displayLabel} not confirmed`}
         </Text>
-        <Text style={[type.caption, { color: alertTone.foreground }]}>{time}</Text>
+        <Text style={[type.caption, styles.alertText]}>{displayTime(task.scheduledTime)}</Text>
       </View>
-      <Text style={[type.callout, { color: alertTone.foreground }]}>{message}</Text>
+      <Text style={[type.callout, styles.alertText]}>{alertMessage(task)}</Text>
       {claim?.status === 'error' && (
-        <Text style={[type.callout, { color: alertTone.foreground }]}>{claim.message}</Text>
+        <Text style={[type.callout, styles.alertText]}>{claim.message}</Text>
       )}
-      {canClaim &&
-        (claim?.status === 'claimed' ? (
-          <Text style={[type.button, { color: alertTone.foreground }]}>You&apos;re on it</Text>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
+      {claimed !== null ? (
+        <Text style={[type.button, styles.alertText]}>{claimed}</Text>
+      ) : (
+        canClaim && (
+          <PrimaryButton
+            compact
+            label="I'm on it"
             accessibilityLabel={`I'm on it, ${task.displayLabel}`}
-            disabled={claiming}
+            busy={claim?.status === 'claiming'}
             onPress={onClaim}
-            style={[
-              styles.claimButton,
-              { backgroundColor: accentColor, opacity: claiming ? 0.4 : 1 },
-            ]}
-          >
-            <Text style={[type.button, { color: colors.onAccent }]}>I&apos;m on it</Text>
-          </Pressable>
-        ))}
+          />
+        )
+      )}
     </View>
   );
 }
@@ -206,7 +205,7 @@ function ScheduleRow({ row }: { row: ScheduleRowData }) {
       accessibilityLabel={row.accessibilityLabel}
       style={[styles.row, alert && { backgroundColor: alertTone.background }]}
     >
-      <SymbolView name={row.icon} size={22} tintColor={iconColor} />
+      <SymbolView name={VARIANT_STYLE[row.variant].icon} size={22} tintColor={iconColor} />
       <Text
         style={[
           type.callout,
@@ -270,12 +269,7 @@ const styles = StyleSheet.create({
   dot: { width: 6, height: 6, borderRadius: 3 },
   alertCard: { gap: 8, padding: 12, borderRadius: 12, borderWidth: 1 },
   alertTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  claimButton: {
-    alignSelf: 'flex-start',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-  },
+  alertText: { color: alertTone.foreground },
   scheduleCard: {
     gap: 16,
     paddingVertical: 8,
