@@ -12,7 +12,7 @@
 // still valid) or a device user that exists before pairDevice runs cannot become a caregiver.
 // requireSenior stays keyed on the devices row.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
@@ -81,6 +81,21 @@ export async function currentUserId(ctx: QueryCtx): Promise<string | null> {
  */
 export function isDeviceIdentity(identity: UserIdentity | null): boolean {
   return identity !== null && identity["sunny_kind"] === "device";
+}
+
+/**
+ * purpose: Whether a signed-in account is a senior device rather than a caregiver: it carries
+ *          the device claim, or has a devices row. The one rule behind requireCaregiverAccount
+ *          and households.mine, so the caller loads the device row once and passes it in.
+ * @param identity: (UserIdentity | null) Identity from ctx.auth.
+ * @param device: (Doc<"devices"> | null) The user's devices row from findDevice, or null.
+ * @return: (boolean) True for a device account.
+ */
+export function isDeviceAccount(
+  identity: UserIdentity | null,
+  device: Doc<"devices"> | null,
+): boolean {
+  return isDeviceIdentity(identity) || device !== null;
 }
 
 /**
@@ -222,7 +237,8 @@ export async function requireSenior(
  */
 export async function requireCaregiverAccount(ctx: QueryCtx): Promise<string> {
   const userId = await requireUserId(ctx);
-  if (isDeviceIdentity(await ctx.auth.getUserIdentity()) || (await findDevice(ctx, userId))) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (isDeviceAccount(identity, await findDevice(ctx, userId))) {
     throw appError("forbidden", "Only a signed-in caregiver can do this");
   }
   return userId;

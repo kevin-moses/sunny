@@ -6,9 +6,11 @@
 // thrown value into a short message that is safe to show, and picking the email-code first
 // factor out of the ones a sign-in supports. Clerk API errors are recognized by
 // shape (an `errors` array whose entries carry `code` and `message`/`longMessage`), so this
-// module needs no Clerk import and can be tested without mocks.
+// module needs no Clerk import (only the shared offline message from api.ts) and can be tested without mocks.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
+
+import { OFFLINE_ERROR_MESSAGE } from './api';
 
 /** Length of the email verification code Clerk sends. */
 export const EMAIL_CODE_LENGTH = 6;
@@ -20,8 +22,6 @@ const NETWORK_ERROR_CODE = 'network_error';
 
 /** Shown when nothing safe and specific can be said about a failure. */
 export const SIGN_IN_FALLBACK_MESSAGE = 'Could not sign in. Please try again.';
-/** Shown when the request never reached Clerk. */
-export const SIGN_IN_OFFLINE_MESSAGE = 'Could not reach Sunny. Check the internet connection.';
 /** Shown when the sign-in or sign-up ends in a state this screen cannot continue from. */
 export const SIGN_IN_INCOMPLETE_MESSAGE =
   'Could not finish signing in. Please try again, or use a different email.';
@@ -124,7 +124,7 @@ export function findEmailCodeFactorId(
  *          offline message for a Clerk network error; otherwise a calm generic message.
  */
 export function signInErrorMessage(error: unknown): string {
-  if (clerkErrorCode(error) === NETWORK_ERROR_CODE) return SIGN_IN_OFFLINE_MESSAGE;
+  if (clerkErrorCode(error) === NETWORK_ERROR_CODE) return OFFLINE_ERROR_MESSAGE;
   const first = clerkEntries(error)[0];
   for (const text of [first?.longMessage, first?.message]) {
     if (typeof text === 'string' && text.trim() !== '') return text.trim();

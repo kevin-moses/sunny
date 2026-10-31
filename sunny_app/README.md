@@ -32,7 +32,7 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
    `clerk.setActive({ session })`; from then on Convex calls are authenticated as the device.
    The Clerk session is kept in the Keychain through `@clerk/expo/token-cache`.
 3. Nothing about the pairing is stored locally. The app derives it from the Clerk session,
-   Convex auth and the `households.mine` query (`usePairing` / `decidePairing`). The pairing
+   Convex auth and the `households.mine` query, which also reports the account kind (`useSession` / `decideSession`). The pairing
    screen shows only when Clerk has loaded and has no session. A device is paired when `mine`
    has an entry with a `deviceKind`. Signed in but no such entry (the device was removed, or a
    caregiver account is signed in) means removed: the app unregisters its push token and signs

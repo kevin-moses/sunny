@@ -4,10 +4,11 @@
 // codes (API errors and runtime errors), picking the email code factor, the sign-in to sign-up fallback decision, and the safe
 // error messages.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 
+import { OFFLINE_ERROR_MESSAGE } from '../api';
 import {
   cleanCode,
   clerkErrorCode,
@@ -18,8 +19,9 @@ import {
   shouldFallBackToSignUp,
   signInErrorMessage,
   SIGN_IN_FALLBACK_MESSAGE,
-  SIGN_IN_OFFLINE_MESSAGE,
 } from '../caregiverAuth';
+
+jest.mock('../convex', () => ({ convex: {} }));
 
 /**
  * purpose: Build an error shaped like a Clerk API response error.
@@ -110,7 +112,7 @@ describe('signInErrorMessage', () => {
 
   it('gives the offline message for a Clerk network error', () => {
     const error = Object.assign(new Error('raw detail'), { code: 'network_error' });
-    expect(signInErrorMessage(error)).toBe(SIGN_IN_OFFLINE_MESSAGE);
+    expect(signInErrorMessage(error)).toBe(OFFLINE_ERROR_MESSAGE);
   });
 
   it('never leaks an unrecognized error message', () => {

@@ -11,18 +11,21 @@
 // Session rule (decideSession): no pairing or role is stored locally. "Signed out" means Clerk
 // has loaded and has no session; a Convex auth blip (Clerk cannot mint the "convex" JWT:
 // offline, network error, Clerk 5xx) never shows the welcome screen. With a Clerk session but
-// no Convex auth, no households.mine answer or no households.accountKind answer, the app keeps
-// the last home seen in this run (a paired device or a caregiver household, in memory only) or
-// shows the loading view, so an offline cold start stays on the loading view until Clerk and
-// Convex answer. Once both queries answer, accountKind decides the role. A "device" is paired
-// when households.mine has an entry with a deviceKind; without one (the device was removed) it
-// is "removed": the app unpairs it, retrying with a capped backoff (removalRetryDelay) until
-// the session is gone. A "caregiver" with a mine entry that has a role is in that household
-// (the first such entry); a caregiver without one needs onboarding (join or create a
-// household). unpair() unregisters the stored push token first (the device row survives a local
+// no Convex auth or no households.mine answer, decideSession reports loading (with a calm notice
+// when the backend looks unreachable), and useSession keeps the last home seen in this run (a
+// paired device or a caregiver household, in a ref only) on screen meanwhile, so an offline
+// cold start stays on the loading view until Clerk and Convex answer. Once mine answers, its
+// accountKind decides the role. A "device" is paired when a mine household has a deviceKind;
+// without one (the device was removed) it is "removed": the app unpairs it, retrying with a
+// capped backoff (removalRetryDelay) until the session is gone. A "caregiver" with a mine
+// household that has a role is in that household (the first such entry); a caregiver without one
+// needs onboarding (join or create a household). rememberHome and showHome hold the
+// remembered-home rule as pure functions.
+//
+// unpair() unregisters the stored push token first (the device row survives a local
 // unpair, so the server could not reclaim the token later) and never rejects.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getClerkInstance } from '@clerk/expo';
@@ -35,8 +38,14 @@ import { unregisterStoredPushToken } from '../notifications/push';
 import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE } from './api';
 import { api, type HouseholdId } from './convexApi';
 
-/** One entry of the households.mine query. */
-export type MineEntry = FunctionReturnType<typeof api.households.mine>[number];
+/** The households.mine result: the account kind and its households. */
+export type MineResult = FunctionReturnType<typeof api.households.mine>;
+
+/** One household entry of the households.mine query. */
+export type MineEntry = MineResult['households'][number];
+
+/** What kind of account is signed in, as reported by households.mine. */
+export type AccountKind = NonNullable<MineResult['accountKind']>;
 
 /** What kind of senior device this is, as recorded by the join code. */
 type DeviceKind = NonNullable<MineEntry['deviceKind']>;
@@ -91,9 +100,6 @@ const REMOVAL_RETRY_DELAYS_MS = [2000, 5000, 15_000, 30_000];
 /** The unpair run in progress, shared by concurrent unpair() and awaited by pair(). */
 let unpairRun: Promise<void> | null = null;
 
-/** What households.accountKind answers: the role of the signed-in account. */
-export type AccountKind = 'device' | 'caregiver' | null;
-
 /** Everything decideSession looks at. */
 export interface SessionInputs {
   /** Clerk has finished loading. */
@@ -105,92 +111,74 @@ export interface SessionInputs {
   /** Convex has confirmed the session. */
   convexAuthenticated: boolean;
   /** The households.mine result; undefined while it is skipped, loading or failed. */
-  mine: MineEntry[] | undefined;
+  mine: MineResult | undefined;
   /** The households.mine query failed. */
-  mineFailed: boolean;
-  /** The households.accountKind result; undefined while it is skipped, loading or failed. */
-  accountKind: AccountKind | undefined;
-  /** The households.accountKind query failed. */
-  accountKindFailed: boolean;
-  /** The last home screen decision seen in this app run (memory only), or null. */
-  lastHome: HomeDecision | null;
+  queryFailed: boolean;
 }
 
 /**
- * purpose: Derive what the app should show from the Clerk session, Convex auth, the account
- *          kind and the households.mine result. Only Clerk decides "signed out": a Convex auth
- *          failure with a Clerk session is treated as a transient connection problem.
- * @param inputs: (SessionInputs) The auth state, the query results and the last home seen.
- * @return: (SessionDecision) loading (not settled; may carry a notice when the backend is
+ * purpose: Derive what the app should show from the Clerk session, Convex auth and the
+ *          households.mine result. Only Clerk decides "signed out": a Convex auth failure with
+ *          a Clerk session is treated as a transient connection problem.
+ * @param inputs: (SessionInputs) The auth state and the query result.
+ * @return: (SessionDecision) loading (not settled; carries a notice when the backend looks
  *          unreachable), signedOut (Clerk loaded without a session: show the welcome screen),
- *          paired (a device whose mine entry has a deviceKind), removed (a device without one;
- *          the caller should unpair), caregiver (a caregiver whose first mine entry with a role
- *          gives the household and role), caregiverOnboarding (a caregiver with no such entry),
- *          or, while the queries are unavailable, the last home seen earlier in this run.
+ *          paired (a device whose household entry has a deviceKind), removed (a device without
+ *          one; the caller should unpair), caregiver (a caregiver whose first household entry
+ *          with a role gives the household and role) or caregiverOnboarding (a caregiver with
+ *          no such entry).
  */
 export function decideSession(inputs: SessionInputs): SessionDecision {
-  const { clerkLoaded, clerkSignedIn, convexLoading, convexAuthenticated, mine, lastHome } = inputs;
+  const { clerkLoaded, clerkSignedIn, convexLoading, convexAuthenticated, mine } = inputs;
   if (!clerkLoaded) return { state: 'loading' };
   if (!clerkSignedIn) return { state: 'signedOut' };
-  const unavailable = (notice: boolean): SessionDecision =>
-    lastHome !== null
-      ? lastHome
-      : notice
-        ? { state: 'loading', notice: UNREACHABLE_NOTICE }
-        : { state: 'loading' };
-  if (!convexAuthenticated) return unavailable(!convexLoading);
-  const { accountKind } = inputs;
-  if (mine === undefined || accountKind === undefined) {
-    return unavailable(inputs.mineFailed || inputs.accountKindFailed);
-  }
+  const unreachable: SessionDecision = { state: 'loading', notice: UNREACHABLE_NOTICE };
+  if (!convexAuthenticated) return convexLoading ? { state: 'loading' } : unreachable;
+  if (mine === undefined) return inputs.queryFailed ? unreachable : { state: 'loading' };
   // Convex is authenticated yet reports no account: a transient mismatch, not a role.
-  if (accountKind === null) return unavailable(true);
-  if (accountKind === 'device') {
-    const entry = mine.find((e) => e.deviceKind !== null);
-    if (entry === undefined || entry.deviceKind === null) return { state: 'removed' };
+  if (mine.accountKind === null) return unreachable;
+  if (mine.accountKind === 'device') {
+    const entry = mine.households.find((e) => e.deviceKind !== null);
+    if (!entry?.deviceKind) return { state: 'removed' };
     return {
       state: 'paired',
       device: { householdId: entry.household._id, kind: entry.deviceKind },
     };
   }
-  const member = mine.find((e) => e.role !== null);
-  if (member === undefined || member.role === null) return { state: 'caregiverOnboarding' };
+  const member = mine.households.find((e) => e.role !== null);
+  if (!member?.role) return { state: 'caregiverOnboarding' };
   return { state: 'caregiver', home: { householdId: member.household._id, role: member.role } };
 }
 
 /**
- * purpose: Tell whether two home decisions show the same thing.
- * @param a: (HomeDecision) One decision.
- * @param b: (HomeDecision) The other decision.
- * @return: (boolean) True when both are the same kind of home for the same household, with the
- *          same device kind or caregiver role.
- */
-function sameHome(a: HomeDecision, b: HomeDecision): boolean {
-  if (a.state === 'paired' && b.state === 'paired') {
-    return a.device.householdId === b.device.householdId && a.device.kind === b.device.kind;
-  }
-  if (a.state === 'caregiver' && b.state === 'caregiver') {
-    return a.home.householdId === b.home.householdId && a.home.role === b.home.role;
-  }
-  return false;
-}
-
-/**
  * purpose: Update the remembered home after a decision: remember a paired device or caregiver
- *          household, forget it once the user is signed out, removed or needs onboarding,
- *          otherwise keep it.
+ *          household, keep it while loading, forget it on any other decision (signed out,
+ *          removed, onboarding).
  * @param decision: (SessionDecision) The latest decision.
  * @param last: (HomeDecision | null) The home remembered so far.
- * @return: (HomeDecision | null) The home to remember; `last` itself when nothing changed.
+ * @return: (HomeDecision | null) The home to remember.
  */
 export function rememberHome(
   decision: SessionDecision,
   last: HomeDecision | null,
 ): HomeDecision | null {
-  if (decision.state === 'paired' || decision.state === 'caregiver') {
-    return last !== null && sameHome(last, decision) ? last : decision;
-  }
+  if (decision.state === 'paired' || decision.state === 'caregiver') return decision;
   return decision.state === 'loading' ? last : null;
+}
+
+/**
+ * purpose: Pick what to show: the remembered home while the decision is loading (a connection
+ *          blip must not unmount a home screen), otherwise the decision itself.
+ * @param decision: (SessionDecision) The latest decision.
+ * @param last: (HomeDecision | null) The home remembered before this decision.
+ * @return: ({shown, remembered}) The decision to show and the home to remember from now on.
+ */
+export function showHome(
+  decision: SessionDecision,
+  last: HomeDecision | null,
+): { shown: SessionDecision; remembered: HomeDecision | null } {
+  const remembered = rememberHome(decision, last);
+  return { shown: decision.state === 'loading' && remembered ? remembered : decision, remembered };
 }
 
 /**
