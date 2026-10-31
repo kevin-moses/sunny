@@ -13,7 +13,8 @@
 // session id onto its row up front. `continueLatest` lets the server own the thread: it
 // continues the household's newest succeeded request that has a session (or starts fresh when
 // there is none), so the app never tracks which request to continue. It excludes
-// continueRequestId ("invalid" if both are given).
+// continueRequestId ("invalid" if both are given). Views carry requestedByName (the requester's
+// member display name, null once they have left) so the shared chat can attribute messages.
 //
 // Last modified: 2026-10-31
 
@@ -23,7 +24,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { workflow } from "./agentRuntime";
-import { requireEditor, type CaregiverActor } from "./lib/access";
+import { findMember, requireEditor, type CaregiverActor } from "./lib/access";
 import { isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { audit } from "./lib/audit";
 import { appError } from "./lib/errors";
@@ -37,12 +38,16 @@ const MAX_IN_PROGRESS = 5;
 /** Default and largest page size of `list`. */
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
+/** Most succeeded requests scanned for one with a session when continuing the latest thread. */
+const MAX_CONTINUABLE_SCAN = 20;
 
 /** A request as the caregiver app sees it (absent fields are null). */
 export interface AgentRequestView {
   id: Id<"agentRequests">;
   householdId: Id<"households">;
   requestedBy: string;
+  /** The requester's display name; null when they are no longer a member. */
+  requestedByName: string | null;
   message: string;
   continueRequestId: Id<"agentRequests"> | null;
   status: AgentRequestStatus;
@@ -55,13 +60,15 @@ export interface AgentRequestView {
 /**
  * purpose: Shape a request row for the app.
  * @param row: (Doc<"agentRequests">) The row.
+ * @param requestedByName: (string | null) The requester's display name, null if unknown.
  * @return: (AgentRequestView) The view.
  */
-function toView(row: Doc<"agentRequests">): AgentRequestView {
+function toView(row: Doc<"agentRequests">, requestedByName: string | null): AgentRequestView {
   return {
     id: row._id,
     householdId: row.householdId,
     requestedBy: row.requestedBy,
+    requestedByName,
     message: row.message,
     continueRequestId: row.continueRequestId ?? null,
     status: row.status,
@@ -70,6 +77,27 @@ function toView(row: Doc<"agentRequests">): AgentRequestView {
     createdAt: row._creationTime,
     finishedAt: row.finishedAt ?? null,
   };
+}
+
+/**
+ * purpose: Look up a requester's display name in a household, caching per user within one call.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param userId: (string) Requester's user id.
+ * @param cache: (Map<string, string | null>) Names already looked up in this call; updated.
+ * @return: (Promise<string | null>) The display name, or null if they are no longer a member.
+ */
+async function requesterName(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  userId: string,
+  cache: Map<string, string | null>,
+): Promise<string | null> {
+  const cached = cache.get(userId);
+  if (cached !== undefined) return cached;
+  const name = (await findMember(ctx, householdId, userId))?.displayName ?? null;
+  cache.set(userId, name);
+  return name;
 }
 
 /**
@@ -153,14 +181,15 @@ async function findLatestContinuable(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<Id<"agentRequests"> | null> {
-  const rows = ctx.db
+  // Newest first: creation time is the implicit last field of by_household_status.
+  const rows = await ctx.db
     .query("agentRequests")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
-    .order("desc");
-  for await (const row of rows) {
-    if (row.status === "succeeded" && row.sessionId) return row._id;
-  }
-  return null;
+    .withIndex("by_household_status", (q) =>
+      q.eq("householdId", householdId).eq("status", "succeeded"),
+    )
+    .order("desc")
+    .take(MAX_CONTINUABLE_SCAN);
+  return rows.find((row) => row.sessionId)?._id ?? null;
 }
 
 /**
@@ -236,7 +265,8 @@ export const request = mutation({
 export const get = query({
   args: { requestId: v.id("agentRequests") },
   handler: async (ctx, { requestId }): Promise<AgentRequestView> => {
-    return toView((await loadForEditor(ctx, requestId)).row);
+    const { row } = await loadForEditor(ctx, requestId);
+    return toView(row, await requesterName(ctx, row.householdId, row.requestedBy, new Map()));
   },
 });
 
@@ -257,7 +287,12 @@ export const list = query({
       .withIndex("by_household", (q) => q.eq("householdId", householdId))
       .order("desc")
       .take(count);
-    return rows.map(toView);
+    const names = new Map<string, string | null>();
+    const views: AgentRequestView[] = [];
+    for (const row of rows) {
+      views.push(toView(row, await requesterName(ctx, householdId, row.requestedBy, names)));
+    }
+    return views;
   },
 });
 

@@ -2,7 +2,7 @@
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
 // alert detection, messages and claim text, schedule grouping, row ids and variants,
-// transcript ordering and status lines, and the in-progress check. Fixtures fill only the
+// transcript ordering, status lines and speaker attribution, and the in-progress check. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
 // Last modified: 2026-10-31
@@ -13,6 +13,7 @@ import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import {
   alertMessage,
+  ANOTHER_CAREGIVER,
   buildSchedule,
   buildTranscript,
   buildWeekStrip,
@@ -20,9 +21,10 @@ import {
   FAILED_TEXT,
   hasInProgress,
   isAlert,
-  monthYearLabel,
+  messageSpeaker,
   VARIANT_STYLE,
   WORKING_TEXT,
+  weekMonthLabel,
   weekRangeLabel,
   type AgentRequest,
 } from '../format';
@@ -102,6 +104,8 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
 function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {}): AgentRequest {
   return {
     id: 'r1',
+    requestedBy: 'user_a',
+    requestedByName: 'Pat',
     message: 'How is the day?',
     status: 'succeeded',
     reply: 'Going well.',
@@ -111,9 +115,17 @@ function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {
 }
 
 describe('labels', () => {
-  it('formats the month and year', () => {
-    expect(monthYearLabel('2026-10-30')).toBe('October 2026');
-    expect(monthYearLabel('bad')).toBe('');
+  it('formats the month and year of a week inside one month', () => {
+    expect(weekMonthLabel('2026-10-20')).toBe('October 2026');
+    expect(weekMonthLabel('bad')).toBe('');
+  });
+
+  it('shows both months when the week crosses a month boundary', () => {
+    expect(weekMonthLabel('2026-10-30')).toBe('October – November 2026');
+  });
+
+  it('shows both months and years when the week crosses a year boundary', () => {
+    expect(weekMonthLabel('2026-12-29')).toBe('December 2026 – January 2027');
   });
 
   it('formats the range from today through today+6 with an en dash', () => {
@@ -303,13 +315,33 @@ describe('buildSchedule', () => {
   });
 });
 
+describe('messageSpeaker', () => {
+  it('is null for the signed-in caregiver, whatever their stored name', () => {
+    expect(messageSpeaker('user_a', 'Pat', 'user_a')).toBeNull();
+    expect(messageSpeaker('user_a', null, 'user_a')).toBeNull();
+  });
+
+  it('is the sender name for another caregiver', () => {
+    expect(messageSpeaker('user_b', 'Max', 'user_a')).toBe('Max');
+  });
+
+  it('falls back to "Another caregiver" without a usable name', () => {
+    expect(messageSpeaker('user_b', null, 'user_a')).toBe(ANOTHER_CAREGIVER);
+    expect(messageSpeaker('user_b', '  ', 'user_a')).toBe(ANOTHER_CAREGIVER);
+  });
+
+  it('is null while the signed-in user is unknown', () => {
+    expect(messageSpeaker('user_b', 'Max', null)).toBeNull();
+  });
+});
+
 describe('buildTranscript', () => {
   it('lists the requests oldest first, each message followed by its reply', () => {
     const requests = [
       makeRequest({ id: 'r2', message: 'And now?', reply: 'Still fine.' }),
       makeRequest({ id: 'r1' }),
     ];
-    expect(buildTranscript(requests).map((e) => [e.kind, e.text])).toEqual([
+    expect(buildTranscript(requests, 'user_a').map((e) => [e.kind, e.text])).toEqual([
       ['caregiver', 'How is the day?'],
       ['sunny', 'Going well.'],
       ['caregiver', 'And now?'],
@@ -318,30 +350,52 @@ describe('buildTranscript', () => {
   });
 
   it('shows a working line while a request is queued or running', () => {
-    const queued = buildTranscript([makeRequest({ status: 'queued', reply: null })]);
-    const running = buildTranscript([makeRequest({ status: 'running', reply: null })]);
+    const queued = buildTranscript([makeRequest({ status: 'queued', reply: null })], 'user_a');
+    const running = buildTranscript([makeRequest({ status: 'running', reply: null })], 'user_a');
     expect(queued[1]).toMatchObject({ kind: 'working', text: WORKING_TEXT });
     expect(running[1]).toMatchObject({ kind: 'working', text: WORKING_TEXT });
   });
 
   it('shows the error of a failed request, or a generic line without one', () => {
-    const withError = buildTranscript([
-      makeRequest({ status: 'failed', reply: null, error: 'Agent unavailable' }),
-    ]);
-    const without = buildTranscript([makeRequest({ status: 'failed', reply: null, error: null })]);
+    const withError = buildTranscript(
+      [makeRequest({ status: 'failed', reply: null, error: 'Agent unavailable' })],
+      'user_a',
+    );
+    const without = buildTranscript(
+      [makeRequest({ status: 'failed', reply: null, error: null })],
+      'user_a',
+    );
     expect(withError[1]).toMatchObject({ kind: 'error', text: 'Agent unavailable' });
     expect(without[1]).toMatchObject({ kind: 'error', text: FAILED_TEXT });
   });
 
   it('shows only the message for a cancelled request or a blank reply', () => {
-    expect(buildTranscript([makeRequest({ status: 'cancelled', reply: null })])).toHaveLength(1);
-    expect(buildTranscript([makeRequest({ reply: '  ' })])).toHaveLength(1);
+    expect(
+      buildTranscript([makeRequest({ status: 'cancelled', reply: null })], 'user_a'),
+    ).toHaveLength(1);
+    expect(buildTranscript([makeRequest({ reply: '  ' })], 'user_a')).toHaveLength(1);
   });
 
   it('gives every entry a unique id and handles no requests', () => {
-    const entries = buildTranscript([makeRequest({ id: 'r2' }), makeRequest({ id: 'r1' })]);
+    const entries = buildTranscript(
+      [makeRequest({ id: 'r2' }), makeRequest({ id: 'r1' })],
+      'user_a',
+    );
     expect(new Set(entries.map((e) => e.id)).size).toBe(entries.length);
-    expect(buildTranscript([])).toEqual([]);
+    expect(buildTranscript([], 'user_a')).toEqual([]);
+  });
+
+  it('credits other caregivers by name and leaves the signed-in caregiver unlabelled', () => {
+    const entries = buildTranscript(
+      [
+        makeRequest({ id: 'r2', requestedBy: 'user_b', requestedByName: 'Max' }),
+        makeRequest({ id: 'r1' }),
+      ],
+      'user_a',
+    );
+    const speakers = entries.filter((e) => e.kind === 'caregiver').map((e) => e.speaker);
+    expect(speakers).toEqual([null, 'Max']);
+    expect(entries.filter((e) => e.kind === 'sunny').every((e) => e.speaker === null)).toBe(true);
   });
 });
 

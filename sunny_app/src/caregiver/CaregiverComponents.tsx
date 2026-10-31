@@ -21,7 +21,7 @@ import { type } from '../theme/typography';
 import {
   alertMessage,
   claimText,
-  monthYearLabel,
+  weekMonthLabel,
   type ScheduleGroup,
   type ScheduleRowData,
   VARIANT_STYLE,
@@ -117,7 +117,7 @@ export function CalendarCard({
   return (
     <View style={styles.card}>
       <Text accessibilityRole="header" style={type.headline}>
-        {monthYearLabel(todayLocalDate)}
+        {weekMonthLabel(todayLocalDate)}
       </Text>
       <View style={styles.weekStrip}>
         {days.map((day) => (

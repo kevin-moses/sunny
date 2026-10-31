@@ -10,7 +10,9 @@
 // cannot send (the server requires an editor), so they see a note instead of the input and the
 // list query is skipped. The draft text lives in the composer, so typing does not re-render the
 // transcript. The screen is keyboard-aware, sticks to the newest message, and leaves room for
-// the tab bar (useTabBarInset).
+// the tab bar (useTabBarInset). The transcript is shared by every editor: messages from other
+// caregivers carry their name above the bubble (the signed-in caregiver's id comes from
+// CaregiverApp). Sends are guarded by a ref so two taps in one frame cannot both send.
 //
 // Last modified: 2026-10-31
 
@@ -42,6 +44,8 @@ interface CaregiverChatScreenProps {
   seniorName: string | null;
   /** Whether this caregiver may message the agent (everyone but viewers). */
   canSend: boolean;
+  /** The signed-in caregiver's Clerk user id, to tell their messages from other caregivers'. */
+  userId: string | null;
 }
 
 /**
@@ -52,7 +56,9 @@ interface CaregiverChatScreenProps {
 function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
   const textStyle = [type.body, styles.ink];
   if (entry.kind === 'caregiver') {
-    return <UserBubble text={entry.text} textStyle={textStyle} inset={48} />;
+    return (
+      <UserBubble text={entry.text} textStyle={textStyle} inset={48} speaker={entry.speaker} />
+    );
   }
   if (entry.kind === 'sunny') {
     return <AgentMessage text={entry.text} textStyle={textStyle} inset={32} />;
@@ -113,19 +119,23 @@ function ChatComposer({
 
 /**
  * purpose: Render the Chat tab.
- * @param props: (CaregiverChatScreenProps) The household, the senior's name and whether the
- *        caregiver may send.
+ * @param props: (CaregiverChatScreenProps) The household, the senior's name, whether the
+ *        caregiver may send and the signed-in caregiver's user id.
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverChatScreen({
   householdId,
   seniorName,
   canSend,
+  userId,
 }: CaregiverChatScreenProps) {
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const scrollRef = useRef<ScrollView>(null);
   const [sending, setSending] = useState(false);
+  // Synchronous in-flight guard: state is stale until the next render, so two taps in one frame
+  // would both pass a state check.
+  const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const result = useQueryWithStatus(
@@ -133,8 +143,8 @@ export function CaregiverChatScreen({
     canSend ? { householdId, limit: REQUEST_LIMIT } : 'skip',
   );
   const entries = useMemo(
-    () => (result.data === undefined ? EMPTY : buildTranscript(result.data)),
-    [result.data],
+    () => (result.data === undefined ? EMPTY : buildTranscript(result.data, userId)),
+    [result.data, userId],
   );
   const busy = result.data !== undefined && hasInProgress(result.data);
   const listError = result.status === 'error' ? toBackendError(result.error).message : null;
@@ -146,7 +156,8 @@ export function CaregiverChatScreen({
    * @return: (Promise<boolean>) True when the message was sent; never rejects.
    */
   const send = async (message: string): Promise<boolean> => {
-    if (sending) return false;
+    if (sendingRef.current) return false;
+    sendingRef.current = true;
     setSending(true);
     setSendError(null);
     try {
@@ -160,6 +171,7 @@ export function CaregiverChatScreen({
       setSendError(toBackendError(e).message);
       return false;
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };

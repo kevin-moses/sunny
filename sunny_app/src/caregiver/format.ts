@@ -37,13 +37,23 @@ export const WORKING_TEXT = 'Sunny is working on it...';
 export const FAILED_TEXT = 'Sunny could not finish that. Please try again.';
 
 /**
- * purpose: Month and year of a local date, for the calendar card, for example "October 2026".
- * @param localDate: (string) "YYYY-MM-DD".
+ * purpose: Month and year the week covers (today through today+6), for the calendar card. A
+ *          week inside one month reads "October 2026"; across a month boundary both months
+ *          show: "October – November 2026", or "December 2026 – January 2027" across a year.
+ * @param todayLocalDate: (string) "YYYY-MM-DD", the first day of the week.
  * @return: (string) The label, or an empty string when the date is invalid.
  */
-export function monthYearLabel(localDate: string): string {
-  const time = parseLocalDate(localDate);
-  return time === null ? '' : `${monthName(time)} ${yearOf(time)}`;
+export function weekMonthLabel(todayLocalDate: string): string {
+  const start = parseLocalDate(todayLocalDate);
+  if (start === null) return '';
+  const end = addDays(start, WEEK_LENGTH - 1);
+  if (yearOf(start) !== yearOf(end)) {
+    return `${monthName(start)} ${yearOf(start)} – ${monthName(end)} ${yearOf(end)}`;
+  }
+  if (monthName(start) !== monthName(end)) {
+    return `${monthName(start)} – ${monthName(end)} ${yearOf(end)}`;
+  }
+  return `${monthName(start)} ${yearOf(start)}`;
 }
 
 /**
@@ -271,6 +281,31 @@ export interface TranscriptEntry {
   /** caregiver: right bubble; sunny: left text; working and error: status lines. */
   kind: 'caregiver' | 'sunny' | 'working' | 'error';
   text: string;
+  /**
+   * Caregiver lines only: who said it when it was not the signed-in caregiver (their name, or
+   * "Another caregiver"); null for the signed-in caregiver's own messages and other kinds.
+   */
+  speaker: string | null;
+}
+
+/** The speaker label for a message from a caregiver whose name is unknown. */
+export const ANOTHER_CAREGIVER = 'Another caregiver';
+
+/**
+ * purpose: Decide who to credit for a caregiver's message in the shared chat.
+ * @param requestedBy: (string) Clerk user id of the caregiver who sent it.
+ * @param requestedByName: (string | null) Their display name, null if no longer a member.
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id.
+ * @return: (string | null) null when the message is the signed-in caregiver's own (or the
+ *          signed-in user is unknown); otherwise the sender's name, or "Another caregiver".
+ */
+export function messageSpeaker(
+  requestedBy: string,
+  requestedByName: string | null,
+  userId: string | null,
+): string | null {
+  if (userId === null || requestedBy === userId) return null;
+  return requestedByName?.trim() ? requestedByName : ANOTHER_CAREGIVER;
 }
 
 /**
@@ -278,22 +313,43 @@ export interface TranscriptEntry {
  *          the caregiver's message, then Sunny's reply, a "working" line while it is queued or
  *          running, or the error when it failed. Cancelled requests show only the message.
  * @param requests: (AgentRequest[]) Requests as agentRequests.list returns them (newest first).
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id, to tell their own
+ *        messages from other caregivers'.
  * @return: (TranscriptEntry[]) The lines in reading order.
  */
-export function buildTranscript(requests: AgentRequest[]): TranscriptEntry[] {
+export function buildTranscript(
+  requests: AgentRequest[],
+  userId: string | null,
+): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   for (const request of [...requests].reverse()) {
-    entries.push({ id: `${request.id}-message`, kind: 'caregiver', text: request.message });
+    entries.push({
+      id: `${request.id}-message`,
+      kind: 'caregiver',
+      text: request.message,
+      speaker: messageSpeaker(request.requestedBy, request.requestedByName, userId),
+    });
     if (request.status === 'queued' || request.status === 'running') {
-      entries.push({ id: `${request.id}-status`, kind: 'working', text: WORKING_TEXT });
+      entries.push({
+        id: `${request.id}-status`,
+        kind: 'working',
+        text: WORKING_TEXT,
+        speaker: null,
+      });
     } else if (request.status === 'failed') {
       entries.push({
         id: `${request.id}-status`,
         kind: 'error',
         text: request.error?.trim() ? request.error : FAILED_TEXT,
+        speaker: null,
       });
     } else if (request.status === 'succeeded' && request.reply?.trim()) {
-      entries.push({ id: `${request.id}-reply`, kind: 'sunny', text: request.reply });
+      entries.push({
+        id: `${request.id}-reply`,
+        kind: 'sunny',
+        text: request.reply,
+        speaker: null,
+      });
     }
   }
   return entries;

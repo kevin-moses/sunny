@@ -7,7 +7,7 @@
 // through the public API, a household that has all of them, and the pending sync rows).
 // The name has two dots, so Convex does not treat this file as a function module.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import workpoolTest from "@convex-dev/workpool/test";
 import workflowTest from "@convex-dev/workflow/test";
@@ -64,7 +64,8 @@ export async function createHousehold(
  * purpose: Insert an agent request row directly.
  * @param t: (TestConvex) Harness.
  * @param householdId: (Id<"households">) Household.
- * @param fields: (object) Overrides for status, sessionId, reply, error and finishedAt.
+ * @param fields: (object) Overrides for status, sessionId, reply, error, finishedAt and
+ *        requestedBy (default "user_a").
  * @return: (Promise<Id<"agentRequests">>) The request.
  */
 export async function insertRequest(
@@ -76,6 +77,7 @@ export async function insertRequest(
     reply: string;
     error: string;
     finishedAt: number;
+    requestedBy: string;
   }> = {},
 ): Promise<Id<"agentRequests">> {
   return await t.run(async (ctx) => {

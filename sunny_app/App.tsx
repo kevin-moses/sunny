@@ -19,7 +19,7 @@
 // Provider order: SafeAreaProvider > ThemeProvider > ClerkProvider > ConvexProviderWithClerk >
 // VoiceProvider.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { ClerkProvider, useAuth } from '@clerk/expo';
 import { tokenCache } from '@clerk/expo/token-cache';
@@ -127,7 +127,11 @@ type SignedOutScreen = 'welcome' | 'caregiver' | 'device';
  */
 function SignedOutFlow() {
   const [screen, setScreen] = useState<SignedOutScreen>('welcome');
-  const back = () => setScreen('welcome');
+  /**
+   * purpose: Return to the welcome choice.
+   * @return: (void) Nothing.
+   */
+  const back = (): void => setScreen('welcome');
   if (screen === 'caregiver') return <CaregiverSignInScreen onBack={back} />;
   if (screen === 'device') return <PairingScreen onBack={back} />;
   return (

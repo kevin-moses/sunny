@@ -78,6 +78,11 @@ export function useSession(): SessionDecision {
     let attempt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let active = true;
+    /**
+     * purpose: Try to unpair the removed device, then schedule another try with backoff unless
+     *          the effect has been cleaned up.
+     * @return: (void) Nothing.
+     */
     const run = (): void => {
       void unpair().then(() => {
         if (active) timer = setTimeout(run, removalRetryDelay(attempt++));

@@ -246,6 +246,16 @@ describe("request", () => {
         expect(row?.sessionId).toBe("new");
       });
 
+      test("finds an old succeeded request behind many newer failed ones", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const old = await insertRequest(t, householdId, { status: "succeeded", sessionId: "old" });
+        for (let i = 0; i < 30; i++) await insertRequest(t, householdId, { status: "failed" });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.continueRequestId).toBe(old);
+      });
+
       test("starts fresh when nothing has succeeded yet", async () => {
         const t = makeBackend();
         const householdId = await createTeam(t);
@@ -386,6 +396,29 @@ describe("get and list", () => {
     expect(typeof view.createdAt).toBe("number");
     expect(Object.keys(view)).not.toContain("workflowId");
     expect(Object.keys(view)).not.toContain("sessionId");
+  });
+
+  test("get and list include the requester's display name, null for a former member", async () => {
+    const t = makeBackend();
+    const householdId = await createTeam(t);
+    await t.run(async (ctx) => {
+      const member = await ctx.db
+        .query("householdMembers")
+        .withIndex("by_household_user", (q) =>
+          q.eq("householdId", householdId).eq("userId", "user_member"),
+        )
+        .unique();
+      if (member) await ctx.db.patch(member._id, { displayName: "Max" });
+    });
+    const byMember = await insertRequest(t, householdId, { requestedBy: "user_member" });
+    const byAlum = await insertRequest(t, householdId, { requestedBy: "user_gone" });
+    const asA = t.withIdentity({ subject: "user_a" });
+    expect((await asA.query(api.agentRequests.get, { requestId: byMember })).requestedByName).toBe(
+      "Max",
+    );
+    const rows = await asA.query(api.agentRequests.list, { householdId });
+    expect(rows.find((r) => r.id === byMember)?.requestedByName).toBe("Max");
+    expect(rows.find((r) => r.id === byAlum)?.requestedByName).toBeNull();
   });
 
   test("get returns the reply of a succeeded request", async () => {

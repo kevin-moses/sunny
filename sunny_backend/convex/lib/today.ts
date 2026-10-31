@@ -52,6 +52,12 @@ export async function todayInstances(
   const household = await ctx.db.get(householdId);
   if (!household) return [];
   const date = localDate(now, household.timezone);
+  /**
+   * purpose: Sort comparator ordering task instances by window start.
+   * @param a: (Doc<"taskInstances">) First instance.
+   * @param b: (Doc<"taskInstances">) Second instance.
+   * @return: (number) Negative when a starts first.
+   */
   const byWindowStart = (a: Doc<"taskInstances">, b: Doc<"taskInstances">): number =>
     a.windowStart - b.windowStart;
   const carryOver = (
