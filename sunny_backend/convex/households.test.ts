@@ -7,9 +7,9 @@
 // the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
 // and RLS checks of the Supabase test suite.
 //
-// accountKind is covered for signed out, device (claim or device row) and caregiver accounts.
+// mine's accountKind is covered for signed out, device (claim or device row) and caregiver accounts.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -281,51 +281,46 @@ describe("mine", () => {
     await pairDevice(t, householdId, "device_1");
 
     const asCaregiver = await t.withIdentity({ subject: "user_a" }).query(api.households.mine, {});
-    expect(asCaregiver).toHaveLength(1);
-    expect(asCaregiver[0]).toMatchObject({ role: "primary", deviceKind: null });
+    expect(asCaregiver.accountKind).toBe("caregiver");
+    expect(asCaregiver.households).toHaveLength(1);
+    expect(asCaregiver.households[0]).toMatchObject({ role: "primary", deviceKind: null });
 
     const asDevice = await t.withIdentity({ subject: "device_1" }).query(api.households.mine, {});
-    expect(asDevice).toHaveLength(1);
-    expect(asDevice[0]).toMatchObject({ role: null, deviceKind: "home_display" });
+    expect(asDevice.accountKind).toBe("device");
+    expect(asDevice.households).toHaveLength(1);
+    expect(asDevice.households[0]).toMatchObject({ role: null, deviceKind: "home_display" });
   });
 
-  test("is empty for a stranger and when signed out", async () => {
+  test("is a caregiver with no households for a stranger", async () => {
     const t = makeBackend();
     await createHousehold(t);
-    expect(await t.withIdentity({ subject: "user_x" }).query(api.households.mine, {})).toEqual([]);
-    expect(await t.query(api.households.mine, {})).toEqual([]);
+    expect(await t.withIdentity({ subject: "user_x" }).query(api.households.mine, {})).toEqual({
+      accountKind: "caregiver",
+      households: [],
+    });
   });
-});
 
-describe("accountKind", () => {
-  test("is null when signed out", async () => {
+  test("is null with no households when signed out", async () => {
     const t = makeBackend();
-    expect(await t.query(api.households.accountKind, {})).toBeNull();
+    await createHousehold(t);
+    expect(await t.query(api.households.mine, {})).toEqual({ accountKind: null, households: [] });
   });
 
   test("is device for a device identity claim, even with no device row", async () => {
     const t = makeBackend();
     const asDevice = t.withIdentity({ subject: "device_x", sunny_kind: "device" });
-    expect(await asDevice.query(api.households.accountKind, {})).toBe("device");
+    expect(await asDevice.query(api.households.mine, {})).toEqual({
+      accountKind: "device",
+      households: [],
+    });
   });
 
   test("is device for a user with a device row but no claim", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     await pairDevice(t, householdId, "device_1");
-    const asDevice = t.withIdentity({ subject: "device_1" });
-    expect(await asDevice.query(api.households.accountKind, {})).toBe("device");
-  });
-
-  test("is caregiver for any other signed-in user, with or without a household", async () => {
-    const t = makeBackend();
-    await createHousehold(t);
-    expect(await t.withIdentity({ subject: "user_a" }).query(api.households.accountKind, {})).toBe(
-      "caregiver",
-    );
-    expect(
-      await t.withIdentity({ subject: "user_new" }).query(api.households.accountKind, {}),
-    ).toBe("caregiver");
+    const result = await t.withIdentity({ subject: "device_1" }).query(api.households.mine, {});
+    expect(result.accountKind).toBe("device");
   });
 });
 

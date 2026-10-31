@@ -8,32 +8,32 @@
 // nothing more: households.mine updates reactively and the app shell moves to the caregiver
 // home. A "Sign out" button (Clerk) lets the user leave with a different account.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { useAuth } from '@clerk/expo';
 import { useState } from 'react';
-import {
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  type TextInputProps,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StyleSheet, Text, TextInput, type TextInputProps } from 'react-native';
 
 import { callMutation } from '../backend/api';
 import { api } from '../backend/convexApi';
+import { FormScreen, formStyles } from '../components/FormScreen';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { TextButton } from '../components/TextButton';
+import { useBusyAction } from '../components/useBusyAction';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
-import { colors, GRID, ROUNDED_FONT } from '../theme/colors';
+import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
 /** Which part of onboarding is showing. */
 type Mode = 'choose' | 'join' | 'create';
+
+/** The header of each part of onboarding. */
+const TITLES: Record<Mode, string> = {
+  choose: 'Your family',
+  join: 'Join a household',
+  create: 'Set up a household',
+};
 
 /**
  * purpose: The phone's IANA timezone, as the default for a new household.
@@ -68,7 +68,7 @@ function Field({ label, ...input }: FieldProps) {
       <TextInput
         accessibilityLabel={label}
         placeholderTextColor={colors.secondaryText}
-        style={[styles.input, { borderRadius: theme.cornerRadius }]}
+        style={[formStyles.input, { borderRadius: theme.cornerRadius }]}
         {...input}
       />
     </>
@@ -80,50 +80,42 @@ function Field({ label, ...input }: FieldProps) {
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverOnboardingScreen() {
-  const insets = useSafeAreaInsets();
   const { signOut } = useAuth();
   const [mode, setMode] = useState<Mode>('choose');
   const [code, setCode] = useState('');
   const [seniorName, setSeniorName] = useState('');
   const [myName, setMyName] = useState('');
   const [timezone, setTimezone] = useState(deviceTimezone);
-  const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const { busy, message, setMessage, run } = useBusyAction(errorMessage);
   const locked = busy || done;
 
   /**
-   * purpose: Run one backend call with the busy flag and inline error message around it. On
-   *          success the screen stays locked until the shell replaces it.
+   * purpose: Run one backend call; on success the screen stays locked until the shell replaces it.
    * @param call: (() => Promise<unknown>) The call; may throw.
    * @return: (Promise<void>) Resolves when the call finished and any failure is shown.
    */
-  const run = async (call: () => Promise<unknown>): Promise<void> => {
-    setBusy(true);
-    setMessage(null);
-    try {
+  const runCall = (call: () => Promise<unknown>): Promise<void> =>
+    run(async () => {
       await call();
       setDone(true);
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
   /**
    * purpose: Join the household the invite code belongs to.
    * @return: (Promise<void>) Resolves when joined or the failure is shown.
    */
   const handleJoin = (): Promise<void> =>
-    run(() => callMutation(api.households.redeemJoinCode, { code, displayName: myName.trim() }));
+    runCall(() =>
+      callMutation(api.households.redeemJoinCode, { code, displayName: myName.trim() }),
+    );
 
   /**
    * purpose: Create a household with this caregiver as its primary caregiver.
    * @return: (Promise<void>) Resolves when created or the failure is shown.
    */
   const handleCreate = (): Promise<void> =>
-    run(() =>
+    runCall(() =>
       callMutation(api.households.create, {
         seniorPreferredName: seniorName.trim(),
         caregiverDisplayName: myName.trim(),
@@ -158,118 +150,80 @@ export function CaregiverOnboardingScreen() {
   const createReady = seniorName.trim() !== '' && myName.trim() !== '' && timezone.trim() !== '';
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={{ flex: 1 }}
-    >
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[
-          styles.content,
-          { paddingTop: insets.top + 8 * GRID, paddingBottom: insets.bottom + 8 * GRID },
-        ]}
-      >
-        <Text accessibilityRole="header" style={styles.title}>
-          {mode === 'join'
-            ? 'Join a household'
-            : mode === 'create'
-              ? 'Set up a household'
-              : 'Your family'}
-        </Text>
-        {mode === 'choose' && (
-          <>
-            <Text style={styles.subtitle}>
-              Join a family that already uses Sunny, or start one.
-            </Text>
-            <PrimaryButton
-              label="Join with an invite code"
-              onPress={() => setMode('join')}
-              style={styles.button}
-            />
-            <PrimaryButton
-              label="Set up a new household"
-              onPress={() => setMode('create')}
-              style={styles.button}
-            />
-          </>
-        )}
-        {mode === 'join' && (
-          <>
-            <Field
-              label="Invite code"
-              value={code}
-              onChangeText={setCode}
-              editable={!locked}
-              autoFocus
-              autoCapitalize="characters"
-              autoCorrect={false}
-            />
-            <Field label="Your name" value={myName} onChangeText={setMyName} editable={!locked} />
-            <PrimaryButton
-              label="Join"
-              disabled={!joinReady || done}
-              busy={busy}
-              onPress={handleJoin}
-              style={styles.button}
-            />
-          </>
-        )}
-        {mode === 'create' && (
-          <>
-            <Field
-              label="What does your parent like to be called?"
-              value={seniorName}
-              onChangeText={setSeniorName}
-              editable={!locked}
-              autoFocus
-            />
-            <Field label="Your name" value={myName} onChangeText={setMyName} editable={!locked} />
-            <Field
-              label="Timezone"
-              value={timezone}
-              onChangeText={setTimezone}
-              editable={!locked}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <PrimaryButton
-              label="Create household"
-              disabled={!createReady || done}
-              busy={busy}
-              onPress={handleCreate}
-              style={styles.button}
-            />
-          </>
-        )}
-        {message !== null && <Text style={styles.error}>{message}</Text>}
-        {mode !== 'choose' && <TextButton label="Back" disabled={locked} onPress={handleBack} />}
-        <TextButton label="Sign out" disabled={locked} onPress={() => void handleSignOut()} />
-      </ScrollView>
-    </KeyboardAvoidingView>
+    <FormScreen title={TITLES[mode]}>
+      {mode === 'choose' && (
+        <>
+          <Text style={formStyles.subtitle}>
+            Join a family that already uses Sunny, or start one.
+          </Text>
+          <PrimaryButton
+            label="Join with an invite code"
+            onPress={() => setMode('join')}
+            style={formStyles.button}
+          />
+          <PrimaryButton
+            label="Set up a new household"
+            onPress={() => setMode('create')}
+            style={formStyles.button}
+          />
+        </>
+      )}
+      {mode === 'join' && (
+        <>
+          <Field
+            label="Invite code"
+            value={code}
+            onChangeText={setCode}
+            editable={!locked}
+            autoFocus
+            autoCapitalize="characters"
+            autoCorrect={false}
+          />
+          <Field label="Your name" value={myName} onChangeText={setMyName} editable={!locked} />
+          <PrimaryButton
+            label="Join"
+            disabled={!joinReady || done}
+            busy={busy}
+            onPress={handleJoin}
+            style={formStyles.button}
+          />
+        </>
+      )}
+      {mode === 'create' && (
+        <>
+          <Field
+            label="What does your parent like to be called?"
+            value={seniorName}
+            onChangeText={setSeniorName}
+            editable={!locked}
+            autoFocus
+          />
+          <Field label="Your name" value={myName} onChangeText={setMyName} editable={!locked} />
+          <Field
+            label="Timezone"
+            value={timezone}
+            onChangeText={setTimezone}
+            editable={!locked}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <PrimaryButton
+            label="Create household"
+            disabled={!createReady || done}
+            busy={busy}
+            onPress={handleCreate}
+            style={formStyles.button}
+          />
+        </>
+      )}
+      {message !== null && <Text style={formStyles.error}>{message}</Text>}
+      {mode !== 'choose' && <TextButton label="Back" disabled={locked} onPress={handleBack} />}
+      <TextButton label="Sign out" disabled={locked} onPress={() => void handleSignOut()} />
+    </FormScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  content: {
-    flexGrow: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3 * GRID,
-    paddingHorizontal: 8 * GRID,
-  },
-  title: {
-    fontFamily: ROUNDED_FONT,
-    fontSize: 32,
-    fontWeight: '700',
-    textAlign: 'center',
-    color: colors.text,
-  },
-  subtitle: {
-    fontFamily: ROUNDED_FONT,
-    fontSize: 20,
-    textAlign: 'center',
-    color: colors.secondaryText,
-  },
   label: {
     alignSelf: 'stretch',
     maxWidth: 420,
@@ -279,16 +233,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.secondaryText,
   },
-  input: {
-    alignSelf: 'stretch',
-    maxWidth: 420,
-    width: '100%',
-    padding: 3 * GRID,
-    fontFamily: ROUNDED_FONT,
-    fontSize: 22,
-    color: colors.text,
-    backgroundColor: colors.overlayMedium,
-  },
-  error: { fontSize: 18, textAlign: 'center', color: colors.seriousForeground },
-  button: { maxWidth: 420, width: '100%' },
 });

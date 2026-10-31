@@ -17,10 +17,11 @@
 // Phone numbers: setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus (phone.ts) are re-exported here; listMembers
 // reports phoneVerified and hides numbers from paired devices.
 //
-// accountKind tells the app which role the signed-in account has (device, caregiver or signed out),
-// using the same rule as requireCaregiverAccount, so the app can route before any household exists.
+// mine returns the signed-in account's kind (device, caregiver or signed out, using the same rule
+// as requireCaregiverAccount) together with its households, so the app can route before any
+// household exists.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -28,10 +29,9 @@ import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import {
-  currentUserId,
   findDevice,
   findMember,
-  isDeviceIdentity,
+  isDeviceAccount,
   loadHousehold,
   myHouseholdIds,
   requireCaregiverAccount,
@@ -187,49 +187,49 @@ export const create = mutation({
   },
 });
 
+/** The role of a signed-in account: a senior device or a caregiver. */
+type AccountKind = "device" | "caregiver";
+
 /**
- * purpose: Households the caller belongs to, as a caregiver (with role) or as a paired device.
- * @return: (Array<{household, role, deviceKind}>) role is null for a device; deviceKind is
- *          null for a caregiver. Empty when signed out.
+ * purpose: The signed-in account's kind and the households it belongs to, as a caregiver (with
+ *          role) or as a paired device. The kind uses the same rule as requireCaregiverAccount
+ *          (isDeviceAccount), so the app can route before any household exists.
+ * @return: ({accountKind, households}) accountKind is null when signed out. Each household
+ *          entry has role null for a device and deviceKind null for a caregiver. households is
+ *          empty when signed out.
  */
 export const mine = query({
   args: {},
   handler: async (
     ctx,
-  ): Promise<
-    Array<{ household: Doc<"households">; role: MemberRole | null; deviceKind: DeviceKind | null }>
-  > => {
+  ): Promise<{
+    accountKind: AccountKind | null;
+    households: Array<{
+      household: Doc<"households">;
+      role: MemberRole | null;
+      deviceKind: DeviceKind | null;
+    }>;
+  }> => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return { accountKind: null, households: [] };
+    const userId = identity.subject;
+    const device = await findDevice(ctx, userId);
     const ids = await myHouseholdIds(ctx);
-    const userId = await currentUserId(ctx);
-    const device = userId === null ? null : await findDevice(ctx, userId);
-    const result = [];
+    const households = [];
     for (const id of ids) {
       const household = await ctx.db.get(id);
       if (!household) continue;
-      const member = userId === null ? null : await findMember(ctx, id, userId);
-      result.push({
+      const member = await findMember(ctx, id, userId);
+      households.push({
         household,
         role: member ? member.role : null,
         deviceKind: !member && device && device.householdId === id ? device.kind : null,
       });
     }
-    return result;
-  },
-});
-
-/**
- * purpose: What kind of account is signed in, so the app can route a senior device and a
- *          caregiver differently. Uses the same rule as requireCaregiverAccount: a device
- *          identity, or a user with a device row, is a device; any other user is a caregiver.
- * @return: ("device" | "caregiver" | null) null when signed out.
- */
-export const accountKind = query({
-  args: {},
-  handler: async (ctx): Promise<"device" | "caregiver" | null> => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (identity === null) return null;
-    if (isDeviceIdentity(identity) || (await findDevice(ctx, identity.subject))) return "device";
-    return "caregiver";
+    return {
+      accountKind: isDeviceAccount(identity, device) ? "device" : "caregiver",
+      households,
+    };
   },
 });
 

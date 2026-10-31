@@ -7,14 +7,14 @@
 // mounted so a half-typed chat message survives a tab switch; the inactive one is hidden.
 // The caregiver's role decides what they may do: viewers cannot claim alerts or message Sunny.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { useAuth } from '@clerk/expo';
-import type { FunctionReturnType } from 'convex/server';
 import { useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
 
-import type { api, HouseholdId } from '../backend/convexApi';
+import type { HouseholdId } from '../backend/convexApi';
+import type { CaregiverRole } from '../backend/pairing';
 import { useDayView } from '../day/useDayView';
 import { logger } from '../logging/logger';
 import { BACKGROUND } from '../theme/colors';
@@ -22,10 +22,7 @@ import { CaregiverChatScreen } from './CaregiverChatScreen';
 import { CaregiverHomeScreen } from './CaregiverHomeScreen';
 import { CaregiverTabBar, type CaregiverTab } from './CaregiverTabBar';
 
-/** A caregiver's role in the household: 'primary' | 'member' | 'viewer'. */
-export type CaregiverRole = NonNullable<
-  FunctionReturnType<typeof api.households.mine>[number]['role']
->;
+export type { CaregiverRole };
 
 /** Props for CaregiverApp. */
 export interface CaregiverAppProps {
