@@ -8,13 +8,14 @@
 // The ControlBar sits at the bottom, hidden while the text keyboard is open.
 // Error and reconnecting banners are owned by the app shell, not this screen.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-31
 
-import { useEffect, useState, type ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { Keyboard, KeyboardAvoidingView, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BACKGROUND } from '../theme/colors';
+import { useKeyboardVisible } from '../theme/useKeyboardVisible';
 import { AgentListeningHint } from './AgentListeningHint';
 import { AgentVisualizer } from './AgentVisualizer';
 import { ChatInput } from './ChatInput';
@@ -24,23 +25,6 @@ import { useConversation } from './voiceContext';
 
 /** Whether the conversation shows the voice visualizer or the text transcript. */
 type InteractionMode = 'voice' | 'text';
-
-/**
- * purpose: Track whether the software keyboard is showing.
- * @return: (boolean) true while the keyboard is visible
- */
-function useKeyboardVisible(): boolean {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const show = Keyboard.addListener('keyboardWillShow', () => setVisible(true));
-    const hide = Keyboard.addListener('keyboardWillHide', () => setVisible(false));
-    return () => {
-      show.remove();
-      hide.remove();
-    };
-  }, []);
-  return visible;
-}
 
 /**
  * purpose: Render the conversation for the current interaction mode.

@@ -10,9 +10,12 @@
 // requests queued or running per household ("limit"); a request may continue only a
 // succeeded request of the same household that has a session ("not_found" otherwise), and only
 // while no other request is in progress in that session ("limit"). A continuation copies the
-// session id onto its row up front.
+// session id onto its row up front. `continueLatest` lets the server own the thread: it
+// continues the household's newest succeeded request that has a session (or starts fresh when
+// there is none), so the app never tracks which request to continue. It excludes
+// continueRequestId ("invalid" if both are given).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { v } from "convex/values";
 import type { WorkflowId } from "@convex-dev/workflow";
@@ -140,21 +143,49 @@ async function requireContinuable(
 }
 
 /**
+ * purpose: The household's newest succeeded request that has a session, the head of its
+ *          conversation thread.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<Id<"agentRequests"> | null>) The request, or null when there is none.
+ */
+async function findLatestContinuable(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Id<"agentRequests"> | null> {
+  const rows = ctx.db
+    .query("agentRequests")
+    .withIndex("by_household", (q) => q.eq("householdId", householdId))
+    .order("desc");
+  for await (const row of rows) {
+    if (row.status === "succeeded" && row.sessionId) return row._id;
+  }
+  return null;
+}
+
+/**
  * purpose: Ask the household agent to do something. Queues the request and starts its workflow.
  * @param householdId: (Id<"households">) Household the agent acts for.
  * @param message: (string) What the caregiver wants; trimmed, 1 to 4000 characters.
  * @param continueRequestId: (Id<"agentRequests">, optional) A succeeded earlier request whose
  *        conversation to continue.
+ * @param continueLatest: (boolean, optional) Continue the household's newest succeeded
+ *        conversation instead, or start fresh if there is none. Not with continueRequestId.
  * @return: (Id<"agentRequests">) The new request; subscribe to `get` for the reply.
+ * @raises invalid when both continueRequestId and continueLatest are given.
  */
 export const request = mutation({
   args: {
     householdId: v.id("households"),
     message: v.string(),
     continueRequestId: v.optional(v.id("agentRequests")),
+    continueLatest: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<Id<"agentRequests">> => {
     const actor = await requireEditor(ctx, args.householdId);
+    if (args.continueRequestId !== undefined && args.continueLatest) {
+      throw appError("invalid", "Use continueRequestId or continueLatest, not both");
+    }
     const message = requireMaxLength(
       requireNonBlank(args.message, "Message"),
       MAX_MESSAGE_LENGTH,
@@ -163,14 +194,18 @@ export const request = mutation({
     if ((await countInProgress(ctx, args.householdId)) >= MAX_IN_PROGRESS) {
       throw appError("limit", "Too many agent requests in progress");
     }
-    const sessionId = args.continueRequestId
-      ? await requireContinuable(ctx, args.householdId, args.continueRequestId)
+    const continueRequestId =
+      args.continueRequestId ??
+      (args.continueLatest ? await findLatestContinuable(ctx, args.householdId) : null) ??
+      undefined;
+    const sessionId = continueRequestId
+      ? await requireContinuable(ctx, args.householdId, continueRequestId)
       : undefined;
     const requestId = await ctx.db.insert("agentRequests", {
       householdId: args.householdId,
       requestedBy: actor.userId,
       message,
-      continueRequestId: args.continueRequestId,
+      continueRequestId,
       sessionId,
       status: "queued",
     });
@@ -187,7 +222,7 @@ export const request = mutation({
       action: "agent_request",
       entity: "agentRequest",
       entityId: requestId,
-      detail: { continued: args.continueRequestId !== undefined },
+      detail: { continued: continueRequestId !== undefined },
     });
     return requestId;
   },

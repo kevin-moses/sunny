@@ -6,12 +6,12 @@
 // `scale` prop so the display can use much larger type than the phone. Calm, high
 // contrast, no motion.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
-import { displayTime, eventKey, isDone, isDue, whenText } from '../day/format';
+import { displayTime, eventDetails, eventKey, isDone, isDue, whenText } from '../day/format';
 import type { AgendaItem, DayViewData, EventOccurrence } from '../day/types';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
@@ -63,19 +63,6 @@ function SectionTitle({ text, scale = 1 }: ScaleProps & { text: string }) {
       {text}
     </Text>
   );
-}
-
-/**
- * purpose: Describe an event as "<when> with <visitor> at <place>".
- * @param event: (EventOccurrence) The event.
- * @param when: (string) Already-formatted when text.
- * @return: (string) The details line.
- */
-function eventDetails(event: EventOccurrence, when: string): string {
-  const parts = [when];
-  if (event.visitorName) parts.push(`with ${event.visitorName}`);
-  if (event.place) parts.push(`at ${event.place}`);
-  return parts.join(' ');
 }
 
 /**

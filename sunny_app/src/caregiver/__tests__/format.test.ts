@@ -1,30 +1,40 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert selection and messages, schedule grouping and row variants, transcript ordering and
-// status lines, and the continue-request choice. Fixtures fill only the fields the helpers
-// read; the day is Thursday 2026-10-29 unless a test says otherwise.
+// alert detection, messages and claim text, schedule grouping, row ids and variants,
+// transcript ordering and status lines, and the in-progress check. Fixtures fill only the
+// fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
-// Last modified: 2026-10-30
+// Last modified: 2026-10-31
 
 import { describe, expect, it } from '@jest/globals';
 
+import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import {
-  addLocalDays,
   alertMessage,
   buildSchedule,
   buildTranscript,
   buildWeekStrip,
-  chooseContinueRequestId,
-  eventLabel,
+  claimText,
   FAILED_TEXT,
+  hasInProgress,
+  isAlert,
   monthYearLabel,
-  selectAlerts,
+  VARIANT_STYLE,
   WORKING_TEXT,
   weekRangeLabel,
   type AgentRequest,
 } from '../format';
+
+/**
+ * purpose: Build the schedule for a day the way the Home screen does.
+ * @param day: (DayViewData) The day view.
+ * @return: (ReturnType<typeof buildSchedule>) The schedule groups.
+ */
+function scheduleOf(day: DayViewData): ReturnType<typeof buildSchedule> {
+  return buildSchedule(day, buildAgenda(day));
+}
 
 /**
  * purpose: Build an event occurrence.
@@ -100,21 +110,6 @@ function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {
   } as AgentRequest;
 }
 
-describe('addLocalDays', () => {
-  it('crosses month and year boundaries', () => {
-    expect(addLocalDays('2026-10-30', 6)).toBe('2026-11-05');
-    expect(addLocalDays('2026-12-30', 3)).toBe('2027-01-02');
-  });
-
-  it('goes backwards with a negative count', () => {
-    expect(addLocalDays('2026-03-01', -1)).toBe('2026-02-28');
-  });
-
-  it('returns an invalid date unchanged', () => {
-    expect(addLocalDays('nope', 2)).toBe('nope');
-  });
-});
-
 describe('labels', () => {
   it('formats the month and year', () => {
     expect(monthYearLabel('2026-10-30')).toBe('October 2026');
@@ -164,6 +159,23 @@ describe('buildWeekStrip', () => {
     expect(buildWeekStrip(day)[0].hasMarker).toBe(true);
   });
 
+  it('crosses a month and year boundary', () => {
+    const days = buildWeekStrip(makeDay({ localDate: '2026-12-30' }));
+    expect(days.map((d) => d.localDate)).toEqual([
+      '2026-12-30',
+      '2026-12-31',
+      '2027-01-01',
+      '2027-01-02',
+      '2027-01-03',
+      '2027-01-04',
+      '2027-01-05',
+    ]);
+  });
+
+  it('is empty for an invalid date', () => {
+    expect(buildWeekStrip(makeDay({ localDate: 'bad' }))).toEqual([]);
+  });
+
   it('describes the day for screen readers', () => {
     const days = buildWeekStrip(makeDay({ tasks: [makeTask()] }));
     expect(days[0].accessibilityLabel).toBe('Today, Thursday 29, has plans');
@@ -172,20 +184,21 @@ describe('buildWeekStrip', () => {
 });
 
 describe('alerts', () => {
-  it('selects escalated and missed tasks in order', () => {
-    const tasks = [
-      makeTask({ instanceId: 'a', state: 'escalated' }),
-      makeTask({ instanceId: 'b', state: 'due' }),
-      makeTask({ instanceId: 'c', state: 'missed' }),
-      makeTask({ instanceId: 'd', state: 'confirmed' }),
-      makeTask({ instanceId: 'e', state: 'upcoming' }),
-      makeTask({ instanceId: 'f', state: 'resolved' }),
-    ];
-    expect(selectAlerts(tasks).map((t) => t.instanceId)).toEqual(['a', 'c']);
+  it('flags only escalated and missed tasks', () => {
+    const states = ['escalated', 'due', 'missed', 'confirmed', 'upcoming', 'resolved'] as const;
+    expect(states.filter((state) => isAlert(makeTask({ state })))).toEqual(['escalated', 'missed']);
   });
 
-  it('returns nothing when no task needs attention', () => {
-    expect(selectAlerts([makeTask()])).toEqual([]);
+  it('says who is on a claimed alert, and nothing when unclaimed', () => {
+    const unclaimed = makeTask({ claimedBy: null, claimedByName: null });
+    const mine = makeTask({ claimedBy: 'user_me', claimedByName: 'Me' });
+    const theirs = makeTask({ claimedBy: 'user_pat', claimedByName: 'Pat' });
+    const gone = makeTask({ claimedBy: 'user_gone', claimedByName: null });
+    expect(claimText(unclaimed, 'user_me')).toBeNull();
+    expect(claimText(mine, 'user_me')).toBe("You're on it");
+    expect(claimText(theirs, 'user_me')).toBe('Pat is on it');
+    expect(claimText(gone, 'user_me')).toBe('Someone is on it');
+    expect(claimText(theirs, null)).toBe('Pat is on it');
   });
 
   it('adds the family line only when escalated', () => {
@@ -198,18 +211,9 @@ describe('alerts', () => {
   });
 });
 
-describe('eventLabel', () => {
-  it('appends the visitor and place when present', () => {
-    expect(eventLabel(makeEvent({ visitorName: 'Dr. Patel', place: 'the clinic' }))).toBe(
-      'Cardiology with Dr. Patel at the clinic',
-    );
-    expect(eventLabel(makeEvent())).toBe('Cardiology');
-  });
-});
-
 describe('buildSchedule', () => {
   it('is empty when nothing is scheduled', () => {
-    expect(buildSchedule(makeDay())).toEqual([]);
+    expect(scheduleOf(makeDay())).toEqual([]);
   });
 
   it('merges today tasks and events in time order under "Today, <weekday>"', () => {
@@ -217,12 +221,28 @@ describe('buildSchedule', () => {
       tasks: [makeTask({ instanceId: 't1', scheduledTime: '08:00' })],
       eventsToday: [makeEvent({ startTime: '07:00', label: 'Walk' })],
     });
-    const [today] = buildSchedule(day);
+    const [today] = scheduleOf(day);
     expect(today.title).toBe('Today, Thursday');
     expect(today.rows.map((r) => r.label)).toEqual(['Walk', 'Take medication']);
   });
 
-  it('assigns a variant and icon to each kind of row', () => {
+  it('reuses the agenda ids for today and the event key for later days', () => {
+    const day = makeDay({
+      tasks: [makeTask({ instanceId: 't1' })],
+      eventsToday: [makeEvent({ eventId: 'e1', startTime: '07:00' })],
+      upcoming: [makeEvent({ eventId: 'e2', localDate: '2026-10-31' })],
+    });
+    const groups = scheduleOf(day);
+    expect(groups[0].rows.map((r) => r.id)).toEqual(['event-e1-2026-10-29', 'task-t1']);
+    expect(groups[1].rows.map((r) => r.id)).toEqual(['e2-2026-10-31']);
+  });
+
+  it('uses the agenda it is given instead of rebuilding it', () => {
+    const day = makeDay({ tasks: [makeTask({ instanceId: 't1' })] });
+    expect(buildSchedule(day, [])).toEqual([]);
+  });
+
+  it('assigns a variant to each kind of row, with its icon from VARIANT_STYLE', () => {
     const day = makeDay({
       tasks: [
         makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
@@ -233,8 +253,8 @@ describe('buildSchedule', () => {
       ],
       eventsToday: [makeEvent({ startTime: '11:00' })],
     });
-    const rows = buildSchedule(day)[0].rows;
-    expect(rows.map((r) => [r.variant, r.icon])).toEqual([
+    const rows = scheduleOf(day)[0].rows;
+    expect(rows.map((r) => [r.variant, VARIANT_STYLE[r.variant].icon])).toEqual([
       ['done', 'checkmark.circle.fill'],
       ['alert', 'exclamationmark.circle.fill'],
       ['alert', 'exclamationmark.circle.fill'],
@@ -253,7 +273,7 @@ describe('buildSchedule', () => {
         makeEvent({ eventId: 'w', localDate: '2026-11-05', startTime: '08:00', label: 'Too far' }),
       ],
     });
-    const groups = buildSchedule(day);
+    const groups = scheduleOf(day);
     expect(groups.map((g) => g.title)).toEqual(['Friday', 'Saturday']);
     expect(groups[1].rows.map((r) => r.label)).toEqual(['First', 'Late']);
   });
@@ -262,9 +282,24 @@ describe('buildSchedule', () => {
     const day = makeDay({
       eventsToday: [makeEvent({ visitorName: 'Sam', startTime: '14:00' })],
     });
-    const row = buildSchedule(day)[0].rows[0];
+    const row = scheduleOf(day)[0].rows[0];
     expect(row.label).toBe('Cardiology with Sam');
     expect(row.accessibilityLabel).toBe('2:00 PM, Cardiology with Sam');
+  });
+
+  it('adds the status word to task rows for screen readers', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
+        makeTask({ instanceId: 'b', scheduledTime: '07:00', state: 'missed' }),
+        makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'upcoming' }),
+      ],
+    });
+    expect(scheduleOf(day)[0].rows.map((r) => r.accessibilityLabel)).toEqual([
+      '6:00 AM, Take medication, Done',
+      '7:00 AM, Take medication, Not confirmed',
+      '8:00 AM, Take medication',
+    ]);
   });
 });
 
@@ -310,19 +345,17 @@ describe('buildTranscript', () => {
   });
 });
 
-describe('chooseContinueRequestId', () => {
-  it('picks the newest succeeded request', () => {
-    const requests = [
-      makeRequest({ id: 'r3', status: 'running', reply: null }),
-      makeRequest({ id: 'r2', status: 'failed', reply: null }),
-      makeRequest({ id: 'r1b', status: 'succeeded' }),
-      makeRequest({ id: 'r1a', status: 'succeeded' }),
-    ];
-    expect(chooseContinueRequestId(requests)).toBe('r1b');
+describe('hasInProgress', () => {
+  it('is true while any request is queued or running', () => {
+    expect(hasInProgress([makeRequest(), makeRequest({ status: 'queued' })])).toBe(true);
+    expect(hasInProgress([makeRequest({ status: 'running' }), makeRequest()])).toBe(true);
   });
 
-  it('is undefined when nothing has succeeded', () => {
-    expect(chooseContinueRequestId([makeRequest({ status: 'failed' })])).toBeUndefined();
-    expect(chooseContinueRequestId([])).toBeUndefined();
+  it('is false when every request has finished or there are none', () => {
+    const finished = (['succeeded', 'failed', 'cancelled'] as const).map((status) =>
+      makeRequest({ status }),
+    );
+    expect(hasInProgress(finished)).toBe(false);
+    expect(hasInProgress([])).toBe(false);
   });
 });

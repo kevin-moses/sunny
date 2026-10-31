@@ -9,7 +9,7 @@
 // over-long reminder titles are rejected. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -452,7 +452,54 @@ describe("today", () => {
     const [entry] = await f.t
       .withIdentity({ subject: "pat" })
       .query(api.instances.today, { householdId: f.householdId });
-    expect(entry).toMatchObject({ pillDescription: null, confirmedAt: null, confirmedVia: null });
+    expect(entry).toMatchObject({
+      pillDescription: null,
+      confirmedAt: null,
+      confirmedVia: null,
+      claimedBy: null,
+      claimedByName: null,
+    });
+  });
+
+  test("a claimed entry names who is on it, for every caregiver and device", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:05:00Z");
+    await f.t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.instances.claimTaskInstance, { instanceId: instance!._id });
+    for (const subject of ["max", "val", "phone"]) {
+      const [entry] = await f.t
+        .withIdentity({ subject })
+        .query(api.instances.today, { householdId: f.householdId });
+      expect(entry, subject).toMatchObject({ claimedBy: "pat", claimedByName: "Pat" });
+    }
+  });
+
+  test("claimedByName is null when the claimer is no longer a member", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:05:00Z");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.claimTaskInstance, { instanceId: instance!._id });
+    await f.t.run(async (ctx) => {
+      const member = await ctx.db
+        .query("householdMembers")
+        .withIndex("by_household_user", (q) =>
+          q.eq("householdId", f.householdId).eq("userId", "max"),
+        )
+        .unique();
+      await ctx.db.delete(member!._id);
+    });
+    const [entry] = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entry).toMatchObject({ claimedBy: "max", claimedByName: null });
   });
 
   test("access: outsiders and other households' devices cannot read the day", async () => {
