@@ -17,7 +17,10 @@
 // Phone numbers: setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus (phone.ts) are re-exported here; listMembers
 // reports phoneVerified and hides numbers from paired devices.
 //
-// Last modified: 2026-10-29
+// accountKind tells the app which role the signed-in account has (device, caregiver or signed out),
+// using the same rule as requireCaregiverAccount, so the app can route before any household exists.
+//
+// Last modified: 2026-10-30
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -28,6 +31,7 @@ import {
   currentUserId,
   findDevice,
   findMember,
+  isDeviceIdentity,
   loadHousehold,
   myHouseholdIds,
   requireCaregiverAccount,
@@ -210,6 +214,22 @@ export const mine = query({
       });
     }
     return result;
+  },
+});
+
+/**
+ * purpose: What kind of account is signed in, so the app can route a senior device and a
+ *          caregiver differently. Uses the same rule as requireCaregiverAccount: a device
+ *          identity, or a user with a device row, is a device; any other user is a caregiver.
+ * @return: ("device" | "caregiver" | null) null when signed out.
+ */
+export const accountKind = query({
+  args: {},
+  handler: async (ctx): Promise<"device" | "caregiver" | null> => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return null;
+    if (isDeviceIdentity(identity) || (await findDevice(ctx, identity.subject))) return "device";
+    return "caregiver";
   },
 });
 

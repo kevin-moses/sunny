@@ -5,9 +5,10 @@
 // or the home display. Submitting the same code again after a failure reuses the pairing nonce
 // kept by pair(), so a retry after a lost response recovers. The server's message is shown when
 // the code is rejected. After pair() succeeds the button stays disabled; the app shell leaves
-// this screen when Convex reports the device authenticated.
+// this screen when Convex reports the device authenticated. onBack (optional) adds a Back button
+// that returns to the welcome choice.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-30
 
 import { useState } from 'react';
 import {
@@ -23,16 +24,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { pair } from '../backend/pairing';
 import { errorMessage } from '../errors';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { TextButton } from '../components/TextButton';
 import { colors, GRID, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
 const CODE_LENGTH = 8;
 
+/** Props for PairingScreen. */
+interface PairingScreenProps {
+  /** Returns to the welcome choice; the Back button is hidden without it. */
+  onBack?: () => void;
+}
+
 /**
  * purpose: Join-code entry that pairs this device with a household.
+ * @param props: (PairingScreenProps) Optional onBack handler.
  * @return: (JSX.Element) The screen.
  */
-export function PairingScreen() {
+export function PairingScreen({ onBack }: PairingScreenProps = {}) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const [code, setCode] = useState('');
@@ -89,6 +98,7 @@ export function PairingScreen() {
           onPress={handlePair}
           style={styles.button}
         />
+        {onBack !== undefined && <TextButton label="Back" disabled={connected} onPress={onBack} />}
       </ScrollView>
     </KeyboardAvoidingView>
   );

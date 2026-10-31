@@ -3,19 +3,23 @@
 // Purpose: Root of the Sunny app. Without a Clerk publishable key it shows a configuration
 // error screen. Otherwise it wraps the app in ClerkProvider (session in the Keychain via
 // Clerk's token cache) and ConvexProviderWithClerk (one client, Clerk "convex" JWT template),
-// then follows usePairing: a calm "Connecting..." view (with a one-line notice when the backend
-// cannot be reached) while Clerk, Convex auth or households.mine load and while a removed
-// device is being unpaired, PairingScreen when Clerk has no session,
-// otherwise the paired home: TodayScreen on the senior phone or DisplayScreen on the home
-// display, or ConversationScreen while a voice conversation is live. The paired home is keyed
-// by household and owns the day view so it survives a conversation. The pairing is not stored
-// locally, so an offline cold start shows "Connecting..." until Clerk and Convex answer.
-// Stale notification taps are discarded while unpaired. Shows a "Trying to reconnect"
+// then follows useSession: a calm "Connecting..." view (with a one-line notice when the backend
+// cannot be reached) while Clerk, Convex auth and the household queries load and while a removed
+// device is being unpaired. Signed out shows WelcomeScreen, which leads to the caregiver email
+// code sign-in (CaregiverSignInScreen) or to PairingScreen for a senior's device. A paired
+// senior device gets the paired home: TodayScreen on the senior phone or DisplayScreen on the
+// home display, or ConversationScreen while a voice conversation is live; the paired home is
+// keyed by household and owns the day view so it survives a conversation. A signed-in caregiver
+// gets CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen
+// (join with an invite code or create one). Only devices get voice sessions and push
+// registration (VoiceProvider is idle without a paired device). Nothing about the pairing or the
+// role is stored locally, so an offline cold start shows "Connecting..." until Clerk and Convex
+// answer. Stale notification taps are discarded while signed out. Shows a "Trying to reconnect"
 // warning and voice errors as banners; __DEV__ builds add a DEV pill for developer settings.
 // Provider order: SafeAreaProvider > ThemeProvider > ClerkProvider > ConvexProviderWithClerk >
 // VoiceProvider.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-30
 
 import { ClerkProvider, useAuth } from '@clerk/expo';
 import { tokenCache } from '@clerk/expo/token-cache';
@@ -26,17 +30,21 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { convex } from './src/backend/convex';
-import type { PairedDevice } from './src/backend/pairing';
-import { usePairing } from './src/backend/usePairing';
+import type { PairedDevice, SessionDecision } from './src/backend/pairing';
+import { useSession } from './src/backend/useSession';
+import { CaregiverApp } from './src/caregiver/CaregiverApp';
 import { Banner } from './src/components/Banner';
 import { CLERK_PUBLISHABLE_KEY } from './src/config';
 import { useDayView } from './src/day/useDayView';
 import { discardStaleLaunchTap } from './src/notifications/push';
+import { CaregiverOnboardingScreen } from './src/screens/CaregiverOnboardingScreen';
+import { CaregiverSignInScreen } from './src/screens/CaregiverSignInScreen';
 import { ConfigErrorScreen } from './src/screens/ConfigErrorScreen';
 import { DevSettingsSheet } from './src/screens/DevSettingsSheet';
 import { DisplayScreen } from './src/screens/DisplayScreen';
 import { PairingScreen } from './src/screens/PairingScreen';
 import { TodayScreen } from './src/screens/TodayScreen';
+import { WelcomeScreen } from './src/screens/WelcomeScreen';
 import { BACKGROUND, colors } from './src/theme/colors';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { ConversationScreen } from './src/voice/ConversationScreen';
@@ -109,20 +117,62 @@ function DevTools() {
   );
 }
 
+/** The screens a signed-out user can move between. */
+type SignedOutScreen = 'welcome' | 'caregiver' | 'device';
+
 /**
- * purpose: The app shell inside the voice provider: pairing screen or paired home, banners,
- *          dev tools.
- * @param props: ({ paired }) The pairing, or null when the device is unpaired.
+ * purpose: The signed-out flow: the welcome choice, which leads to the caregiver sign-in or to
+ *          device pairing, each with a way back.
+ * @return: (JSX.Element) The current signed-out screen.
+ */
+function SignedOutFlow() {
+  const [screen, setScreen] = useState<SignedOutScreen>('welcome');
+  const back = () => setScreen('welcome');
+  if (screen === 'caregiver') return <CaregiverSignInScreen onBack={back} />;
+  if (screen === 'device') return <PairingScreen onBack={back} />;
+  return (
+    <WelcomeScreen
+      onCaregiver={() => setScreen('caregiver')}
+      onSeniorDevice={() => setScreen('device')}
+    />
+  );
+}
+
+/**
+ * purpose: The screen for a settled session decision: the welcome flow, the paired home, the
+ *          caregiver app or caregiver onboarding.
+ * @param props: ({ decision }) The session decision; loading and removed are handled by Root.
+ * @return: (JSX.Element) The screen.
+ */
+function SessionScreen({ decision }: { decision: SessionDecision }) {
+  switch (decision.state) {
+    case 'paired':
+      return <PairedHome key={decision.device.householdId} paired={decision.device} />;
+    case 'caregiver':
+      return (
+        <CaregiverApp
+          key={decision.home.householdId}
+          householdId={decision.home.householdId}
+          role={decision.home.role}
+        />
+      );
+    case 'caregiverOnboarding':
+      return <CaregiverOnboardingScreen />;
+    default:
+      return <SignedOutFlow />;
+  }
+}
+
+/**
+ * purpose: The app shell inside the voice provider: the screen for the session, banners, dev
+ *          tools.
+ * @param props: ({ decision }) The session decision.
  * @return: (JSX.Element) The shell.
  */
-function Shell({ paired }: { paired: PairedDevice | null }) {
+function Shell({ decision }: { decision: SessionDecision }) {
   return (
     <View style={styles.root}>
-      {paired === null ? (
-        <PairingScreen />
-      ) : (
-        <PairedHome key={paired.householdId} paired={paired} />
-      )}
+      <SessionScreen decision={decision} />
       <Banners />
       {__DEV__ && <DevTools />}
     </View>
@@ -144,30 +194,31 @@ function LoadingView({ notice }: { notice?: string }) {
 }
 
 /**
- * purpose: Follow the device's pairing (usePairing) and host the voice provider.
- * @return: (JSX.Element) The loading view, or the shell for an unpaired or paired device.
+ * purpose: Follow the signed-in account (useSession) and host the voice provider, which is only
+ *          given a device for a paired senior device.
+ * @return: (JSX.Element) The loading view, or the shell for every other state.
  */
 function Root() {
-  const pairing = usePairing();
-  const unpaired = pairing.state === 'unpaired';
+  const decision = useSession();
+  const signedOut = decision.state === 'signedOut';
 
   useEffect(() => {
-    if (unpaired) discardStaleLaunchTap();
-  }, [unpaired]);
+    if (signedOut) discardStaleLaunchTap();
+  }, [signedOut]);
 
-  if (pairing.state === 'loading') return <LoadingView notice={pairing.notice} />;
-  if (pairing.state === 'removed') return <LoadingView />;
-  const paired = pairing.state === 'paired' ? pairing.device : null;
+  if (decision.state === 'loading') return <LoadingView notice={decision.notice} />;
+  if (decision.state === 'removed') return <LoadingView />;
+  const paired = decision.state === 'paired' ? decision.device : null;
   return (
     <VoiceProvider pairedDevice={paired}>
-      <Shell paired={paired} />
+      <Shell decision={decision} />
     </VoiceProvider>
   );
 }
 
 /**
  * purpose: Provide Clerk and Convex to the app, wired together so Convex calls carry the
- *          device's Clerk session.
+ *          signed-in Clerk session.
  * @return: (JSX.Element) The provider tree around Root.
  */
 function BackendProviders() {
