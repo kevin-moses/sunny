@@ -7,9 +7,9 @@
 // "Next up" and the header current. While a new minute's result loads, the last loaded day
 // stays on screen (a ref; the app shell keys the home screen by household, so it never crosses
 // households). isOffline means the Convex socket is down after having connected once. Errors
-// are only surfaced: a removed device is detected by the pairing derivation (usePairing).
+// are only surfaced: a removed device is detected by the pairing derivation (useSession).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-30
 
 import { useConvexConnectionState } from 'convex/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
