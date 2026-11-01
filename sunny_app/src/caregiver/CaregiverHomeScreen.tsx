@@ -4,7 +4,7 @@
 // Alerts section (tasks that were escalated or missed, with "I'm on it" and "Mark done" buttons
 // for editors, or who is already on it), "Today's tasks" (a "Leftover" group of yesterday's open
 // tasks, then today's tasks in time order; editors tick a task's checkbox, which shows it done
-// at once and sends it after a 5 second undo toast, and tap its text to open an autosaving inline
+// at once with a light haptic tap (a selection click on Undo) and sends it after a 5 second undo toast, and tap its text to open an autosaving inline
 // note editor, one at a time; saved notes show as a subtitle), the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
 // events) with the selected day's events directly below it (events only, never tasks), and
 // "Later this week", the events of the days after the selected one grouped by day (hidden when
@@ -48,6 +48,7 @@ import {
   type ScheduleRowData,
 } from './format';
 import { useTabBarInset } from './tabBarInset';
+import { tapHaptic, undoHaptic } from './haptics';
 import { UndoToast } from './UndoToast';
 import { useNoteEditor } from './useNoteEditor';
 import { useTaskActions } from './useTaskActions';
@@ -105,6 +106,25 @@ export function CaregiverHomeScreen({
   const noteEditor = useNoteEditor(saveNote, active);
   const completion = useUndoableCompletion<TaskInstanceId>((id) => void markDone(id), active);
   const pendingId: string | null = completion.pendingId;
+
+  /**
+   * purpose: Start a completion at the moment of the tap, with a light haptic tap.
+   * @param id: (TaskInstanceId) The task being ticked.
+   * @return: (void)
+   */
+  const tick = (id: TaskInstanceId): void => {
+    tapHaptic();
+    completion.complete(id);
+  };
+
+  /**
+   * purpose: Undo the pending completion, with a selection haptic.
+   * @return: (void)
+   */
+  const undo = (): void => {
+    undoHaptic();
+    completion.undo();
+  };
 
   /**
    * purpose: Open or close a row's note editor.
@@ -176,7 +196,7 @@ export function CaregiverHomeScreen({
                     canEdit={canEdit}
                     userId={userId}
                     onClaim={() => claim(task.instanceId)}
-                    onMarkDone={() => completion.complete(task.instanceId)}
+                    onMarkDone={() => tick(task.instanceId)}
                   />
                 ))}
             </View>
@@ -191,7 +211,7 @@ export function CaregiverHomeScreen({
                 pendingId={pendingId}
                 openNoteId={noteEditor.openRowId}
                 initialDraft={noteEditor.initialDraft}
-                onMarkDone={completion.complete}
+                onMarkDone={tick}
                 onToggleNote={toggleNote}
                 onDraftChange={noteEditor.setDraft}
                 onCloseNote={noteEditor.close}
@@ -214,7 +234,7 @@ export function CaregiverHomeScreen({
                 pendingId={pendingId}
                 openNoteId={noteEditor.openRowId}
                 initialDraft={noteEditor.initialDraft}
-                onMarkDone={completion.complete}
+                onMarkDone={tick}
                 onToggleNote={toggleNote}
                 onDraftChange={noteEditor.setDraft}
                 onCloseNote={noteEditor.close}
@@ -230,7 +250,7 @@ export function CaregiverHomeScreen({
           </>
         )}
       </ScrollView>
-      {pendingId !== null && <UndoToast bottom={tabBarInset} onUndo={completion.undo} />}
+      {pendingId !== null && <UndoToast bottom={tabBarInset} onUndo={undo} />}
     </View>
   );
 }
