@@ -14,7 +14,7 @@
 // Last modified: 2026-11-01
 
 import { SymbolView } from 'expo-symbols';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -98,23 +98,33 @@ export function CaregiverHomeScreen({
   const { day, agenda, errorMessage, isOffline } = dayView;
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { actions, claim, markDone } = useTaskActions();
+  const { actions, claim, markDone } = useTaskActions(userId);
+
+  /** Instances whose Mark done prompt is open, so a quick double tap opens only one. */
+  const promptOpen = useRef(new Set<string>());
 
   /**
    * purpose: Ask the caregiver to confirm marking a task done, with an optional note for the
-   *          family, then mark it done. Cancel does nothing.
+   *          family, then mark it done. Cancel does nothing. A second tap on the same task
+   *          while its prompt is open is ignored.
    * @param markable: ({ instanceId, label }) The task to mark done.
    * @return: (void)
    */
   const askMarkDone = ({ instanceId, label }: Markable): void => {
+    if (promptOpen.current.has(instanceId)) return;
+    promptOpen.current.add(instanceId);
+    const close = (): void => void promptOpen.current.delete(instanceId);
     Alert.prompt(
       `Mark ${label} done?`,
       'Add a note for the family (optional)',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel', onPress: close },
         {
           text: 'Mark done',
-          onPress: (text?: string) => void markDone(instanceId, noteFromPrompt(text)),
+          onPress: (text?: string) => {
+            close();
+            void markDone(instanceId, noteFromPrompt(text));
+          },
         },
       ],
       'plain-text',

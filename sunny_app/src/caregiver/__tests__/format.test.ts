@@ -5,7 +5,7 @@
 // the prompt note, the done detail line (who confirmed, surface, note), the
 // per-day schedule rows (ids, variants, markable, leftover split), the selected-day title and fallback rule,
 // the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
-// in-progress check. Fixtures fill only the
+// in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
 // Last modified: 2026-11-01
@@ -15,7 +15,9 @@ import { describe, expect, it } from '@jest/globals';
 import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import {
+  ALREADY_DONE_MESSAGE,
   alertMessage,
+  alreadyDoneMessage,
   ANOTHER_CAREGIVER,
   buildTranscript,
   buildWeekStrip,
@@ -764,5 +766,24 @@ describe('doneDetail', () => {
       '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. "Called her"',
     );
     expect(row.markable).toBeNull();
+  });
+});
+
+describe('alreadyDoneMessage', () => {
+  it("is null when the returned confirmation is the signed-in caregiver's own", () => {
+    expect(alreadyDoneMessage('user_me', 'user_me')).toBeNull();
+  });
+
+  it('says already done when another person confirmed first', () => {
+    expect(alreadyDoneMessage('user_other', 'user_me')).toBe(ALREADY_DONE_MESSAGE);
+    expect(ALREADY_DONE_MESSAGE).toBe('Already marked done.');
+  });
+
+  it('says already done when the confirmation has no recorded confirmer', () => {
+    expect(alreadyDoneMessage(undefined, 'user_me')).toBe(ALREADY_DONE_MESSAGE);
+  });
+
+  it('says already done when the signed-in user is unknown', () => {
+    expect(alreadyDoneMessage('user_other', null)).toBe(ALREADY_DONE_MESSAGE);
   });
 });

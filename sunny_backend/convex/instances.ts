@@ -7,7 +7,7 @@
 // the public functions resolve the actor from auth and use the server clock. Every instance
 // state, claim and snooze change is audited (lib/schedule.changeInstance).
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-11-01
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -23,7 +23,7 @@ import {
 import type { Actor, CaregiverActor } from "./lib/access";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
-import { normalizeWeekdays, requireMaxLength } from "./lib/text";
+import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
 import { isLocalDate, isLocalTime, localDate, minutes } from "./lib/time";
 import { todayInstances } from "./lib/today";
 import type { TodayEntry } from "./lib/today";
@@ -36,6 +36,7 @@ const DEFAULT_SNOOZE_MINUTES = 15;
 const MAX_SNOOZE_MINUTES = 120;
 const REMINDER_WINDOW_MINUTES = 30;
 const MAX_REMINDER_TITLE_LENGTH = 200;
+const MAX_RESOLUTION_NOTE_LENGTH = 500;
 
 /** Result of confirmDueTask: a status plus the matched entry's fields where there is one. */
 export type ConfirmDueResult = Partial<TodayEntry> & {
@@ -102,7 +103,9 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
  * @param args: ({instanceId, via, note}) The instance, the surface and an optional note.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- * @raises forbidden when the actor may not confirm; invalid when not due yet.
+ * @raises forbidden when the actor may not confirm; invalid when not due yet, when via is
+ *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
+ *          A blank note is stored as absent.
  */
 export async function confirmInstance(
   ctx: MutationCtx,
@@ -115,6 +118,10 @@ export async function confirmInstance(
   if (!asCaregiver && !actsForSenior(actor, instance.householdId)) {
     throw appError("forbidden", "Not allowed to confirm this task");
   }
+  if (!asCaregiver && args.via === "caregiver") {
+    throw appError("invalid", "Only a caregiver can confirm as a caregiver");
+  }
+  const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   if (instance.state === "confirmed" || instance.state === "resolved") return instance;
   if (instance.state === "upcoming" && instance.windowStart - now > EARLY_CONFIRM_MS) {
     throw appError("invalid", "This task is not due yet");
@@ -124,7 +131,7 @@ export async function confirmInstance(
     confirmedAt: now,
     confirmedBy: actorUserId(actor),
     confirmedVia: asCaregiver ? "caregiver" : args.via,
-    resolutionNote: args.note,
+    resolutionNote: note,
     snoozedUntil: undefined,
   });
 }

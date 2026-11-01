@@ -9,7 +9,7 @@
 // calendar.dayView; date arithmetic comes from day/localDate (parsed once, then counted as
 // days). No timezone conversion happens here: the server sends each confirmation as a
 // household-local "HH:MM" (confirmedLocalTime) and marks yesterday's still-open tasks
-// (carriedOver).
+// (carriedOver), and the message for a Mark done that another person beat (alreadyDoneMessage).
 //
 // Last modified: 2026-11-01
 
@@ -164,6 +164,25 @@ export function alertMessage(task: DayTask): string {
 export function noteFromPrompt(text: string | undefined): string | undefined {
   const note = text?.trim();
   return note === undefined || note === '' ? undefined : note;
+}
+
+/** Shown on a task another person finished before the caregiver's Mark done went through. */
+export const ALREADY_DONE_MESSAGE = 'Already marked done.';
+
+/**
+ * purpose: Decide whether a Mark done call did nothing because someone else finished the task
+ *          first. The server returns an already confirmed or resolved instance unchanged, so
+ *          the instance's confirmedBy is the first confirmer, not necessarily this caregiver.
+ * @param confirmedBy: (string | undefined) Clerk user id (or device id) on the returned instance.
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id.
+ * @return: (string | null) ALREADY_DONE_MESSAGE when the confirmation is not this caregiver's;
+ *          otherwise null.
+ */
+export function alreadyDoneMessage(
+  confirmedBy: string | undefined,
+  userId: string | null,
+): string | null {
+  return confirmedBy !== undefined && confirmedBy === userId ? null : ALREADY_DONE_MESSAGE;
 }
 
 /** A device surface a task can be confirmed from (everything but a caregiver's resolution). */

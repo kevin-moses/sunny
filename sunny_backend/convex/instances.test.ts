@@ -6,7 +6,9 @@
 // (create, recurring, cancel, blank query, past date) and dose logging. Also one access test
 // per public function (outsider forbidden, viewer cannot write, device and caregiver rules
 // differ), standing in for the former Supabase grant and RLS checks. Also: non-finite dose times and
-// over-long reminder titles are rejected. The clock is driven by faking Date
+// over-long reminder titles are rejected. Also: the resolution note is trimmed (blank is
+// stored as absent, over 500 characters rejected) and only an editor caregiver may use
+// via "caregiver". The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
 // Last modified: 2026-11-01
@@ -256,6 +258,78 @@ describe("confirmTaskInstance", () => {
       confirmedVia: "caregiver",
       resolutionNote: "Called her",
     });
+  });
+
+  test("a blank resolution note is stored as absent and a padded one is trimmed", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await makeTask(f, "Evening pills", ["08:30"]);
+    const [first, second] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const blank = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: first!._id,
+      via: "phone_app",
+      note: "   ",
+    });
+    expect(blank.resolutionNote).toBeUndefined();
+    const padded = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: second!._id,
+      via: "phone_app",
+      note: "  Called her  ",
+    });
+    expect(padded.resolutionNote).toBe("Called her");
+  });
+
+  test("a resolution note over 500 characters is rejected", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.withIdentity({ subject: "max" }).mutation(api.instances.confirmTaskInstance, {
+        instanceId: instance!._id,
+        via: "caregiver",
+        note: "x".repeat(501),
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("a paired device cannot confirm with via caregiver", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmTaskInstance, {
+        instanceId: instance!._id,
+        via: "caregiver",
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("the agent cannot confirm with via caregiver", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.run(
+        async (ctx) =>
+          await confirmInstance(
+            ctx,
+            AGENT,
+            { instanceId: instance!._id, via: "caregiver" },
+            Date.parse("2027-03-14T11:30:00Z"),
+          ),
+      ),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("an editor caregiver resolves as caregiver whatever via they pass", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const done = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
+    expect(done).toMatchObject({ state: "resolved", confirmedVia: "caregiver" });
   });
 
   test("confirming clears a snooze", async () => {

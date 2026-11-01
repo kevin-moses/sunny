@@ -6,7 +6,8 @@
 // flight and actions that failed (with the error message). A success needs no local state: the
 // day view is a live subscription and carries the claim or the confirmation, so every caregiver
 // sees it. One action runs per instance at a time, so a single map keyed by instance id holds
-// the state. The state lives only while the screen is mounted.
+// the state. The state lives only while the screen is mounted. A Mark done that finds the task
+// already finished by someone else shows "Already marked done." in the same slot.
 //
 // Last modified: 2026-11-01
 
@@ -14,6 +15,7 @@ import { useState } from 'react';
 
 import { callMutation, toBackendError } from '../backend/api';
 import { api, type TaskInstanceId } from '../backend/convexApi';
+import { alreadyDoneMessage } from './format';
 
 /** An action that has not finished well: a claim or mark-done still running, or failed. */
 export type TaskActionState =
@@ -30,9 +32,11 @@ export interface TaskActions {
 
 /**
  * purpose: Track and perform caregiver actions on tasks.
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id, to tell their own
+ *        confirmation from one made first by someone else.
  * @return: (TaskActions) The in-flight and failed actions and the claim and markDone functions.
  */
-export function useTaskActions(): TaskActions {
+export function useTaskActions(userId: string | null): TaskActions {
   const [actions, setActions] = useState<Partial<Record<string, TaskActionState>>>({});
 
   /**
@@ -51,17 +55,20 @@ export function useTaskActions(): TaskActions {
    * @param instanceId: (TaskInstanceId) The task instance.
    * @param working: (TaskActionState) The state to show while the call runs.
    * @param call: (() => Promise<unknown>) The mutation call.
+   * @param notice: ((result: unknown) => string | null, optional) Maps a successful result to a
+   *        calm message to show instead of clearing the state; null means plain success.
    * @return: (Promise<void>) Resolves once the outcome is recorded; never rejects.
    */
   const run = async (
     instanceId: TaskInstanceId,
     working: TaskActionState,
     call: () => Promise<unknown>,
+    notice?: (result: unknown) => string | null,
   ): Promise<void> => {
     setAction(instanceId, working);
     try {
-      await call();
-      setAction(instanceId, undefined);
+      const message = notice?.(await call()) ?? null;
+      setAction(instanceId, message === null ? undefined : { status: 'error', message });
     } catch (e) {
       setAction(instanceId, { status: 'error', message: toBackendError(e).message });
     }
@@ -82,11 +89,15 @@ export function useTaskActions(): TaskActions {
    * @param instanceId: (TaskInstanceId) The task instance.
    * @param note: (string | undefined) Note for the family. An undefined note is dropped when
    *        the Convex client serializes the arguments, so it is passed as is.
-   * @return: (Promise<void>) Resolves once the outcome is recorded; never rejects.
+   * @return: (Promise<void>) Resolves once the outcome is recorded; never rejects. When the
+   *          task was already finished by someone else, the slot shows "Already marked done."
    */
   const markDone = (instanceId: TaskInstanceId, note?: string): Promise<void> =>
-    run(instanceId, { status: 'marking' }, () =>
-      callMutation(api.instances.confirmTaskInstance, { instanceId, via: 'caregiver', note }),
+    run(
+      instanceId,
+      { status: 'marking' },
+      () => callMutation(api.instances.confirmTaskInstance, { instanceId, via: 'caregiver', note }),
+      (result) => alreadyDoneMessage((result as { confirmedBy?: string }).confirmedBy, userId),
     );
 
   return { actions, claim, markDone };

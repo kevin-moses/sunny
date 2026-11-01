@@ -33,6 +33,7 @@ import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import {
+  ALREADY_IN_HOUSEHOLD,
   findDevice,
   findMember,
   hasMembership,
@@ -173,6 +174,7 @@ export const create = mutation({
     const seniorPreferredName = requireNonBlank(args.seniorPreferredName, "Senior's name");
     const displayName = requireNonBlank(args.caregiverDisplayName, "Your name");
     const timezone = requireTimezone(args.timezone);
+    if (await hasMembership(ctx, userId)) throw appError("invalid", ALREADY_IN_HOUSEHOLD);
 
     const householdId = await ctx.db.insert("households", {
       seniorPreferredName,

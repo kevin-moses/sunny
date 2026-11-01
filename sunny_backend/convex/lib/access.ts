@@ -131,6 +131,10 @@ export async function findMember(
     .unique();
 }
 
+/** Error message for a caregiver who tries to join or create a second household. */
+export const ALREADY_IN_HOUSEHOLD =
+  "You already belong to a household. Ask its primary caregiver to remove you before joining another.";
+
 /**
  * purpose: Whether a user belongs to any household as a caregiver.
  * @param ctx: (QueryCtx) Context.
@@ -163,10 +167,7 @@ export async function insertMembership(
   },
 ): Promise<Id<"householdMembers">> {
   if (await hasMembership(ctx, args.userId)) {
-    throw appError(
-      "invalid",
-      "You already belong to a household. Ask its primary caregiver to remove you before joining another.",
-    );
+    throw appError("invalid", ALREADY_IN_HOUSEHOLD);
   }
   return await ctx.db.insert("householdMembers", args);
 }
