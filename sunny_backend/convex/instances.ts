@@ -2,11 +2,12 @@
 // Purpose: Task instance operations, ported from the Supabase tasks migration: confirm,
 // snooze and claim one instance; today's schedule; "Done" (confirmDueTask: which task the
 // senior means, with the already-done double dose guard); senior-created reminders; and
-// as-needed dose logging; and setTaskNote (an editor's note on a task instance, open or done).
+// as-needed dose logging; setTaskNote (an editor's note on a task instance, open or done); and
+// undoResolve (a caregiver takes back their own "Mark done" within 30 seconds).
 // The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
 // the public functions resolve the actor from auth and use the server clock. Every instance
-// state, claim and snooze change is audited (lib/schedule.changeInstance).
+// state, claim, snooze and note change is audited (lib/schedule.changeInstance).
 //
 // Last modified: 2026-11-01
 
@@ -22,7 +23,6 @@ import {
   requireSenior,
 } from "./lib/access";
 import type { Actor, CaregiverActor } from "./lib/access";
-import { audit } from "./lib/audit";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -39,6 +39,8 @@ const MAX_SNOOZE_MINUTES = 120;
 const REMINDER_WINDOW_MINUTES = 30;
 const MAX_REMINDER_TITLE_LENGTH = 200;
 const MAX_RESOLUTION_NOTE_LENGTH = 500;
+/** How long (ms) after resolving an instance its caregiver may undo it. */
+export const UNDO_WINDOW_MS = 30_000;
 
 /** Result of confirmDueTask: a status plus the matched entry's fields where there is one. */
 export type ConfirmDueResult = Partial<TodayEntry> & {
@@ -139,6 +141,7 @@ export async function confirmInstance(
     confirmedAt: now,
     confirmedBy: actorUserId(actor),
     confirmedVia: asCaregiver ? "caregiver" : args.via,
+    resolvedFromState: asCaregiver ? instance.state : undefined,
     resolutionNote: note ?? instance.resolutionNote,
     snoozedUntil: undefined,
   });
@@ -217,16 +220,47 @@ export async function setTaskNoteCore(
     throw appError("forbidden", "Not allowed to change this task's note");
   }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
-  await ctx.db.patch(instance._id, { resolutionNote: note });
-  await audit(ctx, {
-    householdId: instance.householdId,
-    actor,
-    action: "note",
-    entity: "task_instance",
-    entityId: instance._id,
-    detail: { hasNote: note !== undefined },
+  return await changeInstance(ctx, actor, instance, { resolutionNote: note });
+}
+
+/**
+ * purpose: Take back a caregiver's own "Mark done": the instance returns to the state it had
+ *          before (due when that was not recorded) with the confirmation fields cleared. The
+ *          note and any claim are kept. The restored instance is an ordinary open one, so the
+ *          scheduler handles it as usual (upcoming opens when its window starts, due and
+ *          escalated close as missed when the window ends; steps already fired are not
+ *          repeated). The change is audited as a state change.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Must be an editor caregiver of the instance's household.
+ * @param args: ({instanceId}) The instance.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
+ * @raises forbidden for any other actor; invalid when the instance is not resolved, was
+ *          resolved by someone else, or was resolved more than 30 seconds ago.
+ */
+export async function undoResolveInstance(
+  ctx: MutationCtx,
+  actor: Actor,
+  args: { instanceId: Id<"taskInstances"> },
+  now: number,
+): Promise<Doc<"taskInstances">> {
+  const instance = await loadInstance(ctx, args.instanceId);
+  if (!isHouseholdEditor(actor, instance.householdId)) {
+    throw appError("forbidden", "Not allowed to undo this task");
+  }
+  const undoable =
+    instance.state === "resolved" &&
+    instance.confirmedBy === actor.userId &&
+    instance.confirmedAt !== undefined &&
+    now - instance.confirmedAt <= UNDO_WINDOW_MS;
+  if (!undoable) throw appError("invalid", "This can no longer be undone.");
+  return await changeInstance(ctx, actor, instance, {
+    state: instance.resolvedFromState ?? "due",
+    confirmedAt: undefined,
+    confirmedBy: undefined,
+    confirmedVia: undefined,
+    resolvedFromState: undefined,
   });
-  return (await ctx.db.get(instance._id))!;
 }
 
 /**
@@ -516,6 +550,20 @@ export const setTaskNote = mutation({
     const instance = await loadInstance(ctx, args.instanceId);
     const actor = await requireEditor(ctx, instance.householdId);
     return await setTaskNoteCore(ctx, actor, args);
+  },
+});
+
+/**
+ * purpose: Undo the caller's own "Mark done" within 30 seconds. Editor caregivers only.
+ * @param instanceId: (Id<"taskInstances">) Instance.
+ * @return: (Doc<"taskInstances">) The instance after the call.
+ */
+export const undoResolve = mutation({
+  args: { instanceId: v.id("taskInstances") },
+  handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
+    const instance = await loadInstance(ctx, args.instanceId);
+    const actor = await requireEditor(ctx, instance.householdId);
+    return await undoResolveInstance(ctx, actor, args, Date.now());
   },
 });
 

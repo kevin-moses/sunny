@@ -25,7 +25,7 @@
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -207,6 +207,9 @@ export default defineSchema({
     confirmedAt: v.optional(v.number()),
     confirmedBy: v.optional(v.string()),
     confirmedVia: v.optional(confirmVia),
+    // The state an editor caregiver's resolve replaced, kept so instances.undoResolve can
+    // restore it; cleared by the undo.
+    resolvedFromState: v.optional(instanceState),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),
     claimedBy: v.optional(v.string()),

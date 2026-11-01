@@ -2,25 +2,26 @@
 //
 // Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
 // the date range and month labels, which tasks are alerts and who is on them, which tasks are
-// open (upcoming, due, escalated or missed: an editor can mark any of them done; the checkbox
-// looks open, alert, done or disabled), today's task rows (leftover and today, with the "who confirmed"
-// detail line of done tasks and, for open tasks, what "Mark done" needs), the event rows of any
-// day (tasks and events are kept apart; the week strip dots count events only), the title for the
+// open (any task in today's list that is not done: an editor can mark any of them done), the
+// checkbox of a task row (checkboxState: open, alert, done or disabled, and whether it can be
+// tapped), today's task rows (leftover and today, with the "who confirmed" detail line of done
+// tasks), the event rows of any day (tasks and events are different row types; the week strip
+// dots count events only), the title for the
 // day selected in the week strip, the later days of the week grouped by day, and the chat transcript built from the
 // household's agent requests (oldest first). Dates are household-local "YYYY-MM-DD" strings from
 // calendar.dayView; date arithmetic comes from day/localDate (parsed once, then counted as
 // days). No timezone conversion happens here: the server sends each confirmation as a
 // household-local "HH:MM" (confirmedLocalTime) and marks yesterday's still-open tasks
 // (carriedOver), and the message for a Mark done that another person beat (alreadyDoneMessage).
-// Note helpers say who may open the note editor (canEditNote), how a saved note reads on a row
-// (noteLine) and whether closing the editor must save (shouldSaveNote).
+// Note helpers say how a saved note reads on a row (noteLine) and whether closing the editor
+// must save (shouldSaveNote).
 //
 // Last modified: 2026-11-01
 
 import type { FunctionReturnType } from 'convex/server';
 
 import type { api } from '../backend/convexApi';
-import { displayTime, eventDetails, eventKey, isDone, isDue } from '../day/format';
+import { displayTime, eventDetails, eventKey, isDone, isOpen } from '../day/format';
 import {
   addDays,
   dayOfMonth,
@@ -138,16 +139,6 @@ export function isAlert(task: DayTask): boolean {
 }
 
 /**
- * purpose: Whether a task is still open: an editor caregiver may mark it done at any time today,
- *          including before it is due (alerts are the escalated and missed subset, see isAlert).
- * @param task: (DayTask) The task.
- * @return: (boolean) True when its state is upcoming, due, escalated or missed.
- */
-export function isOpen(task: DayTask): boolean {
-  return task.state === 'upcoming' || isDue(task) || isAlert(task);
-}
-
-/**
  * purpose: The message under an alert's title.
  * @param task: (DayTask) An alert task.
  * @return: (string) "Due at 8:00 AM.", preceded by "Left over from yesterday." for a carried-over
@@ -248,89 +239,61 @@ export function claimText(task: DayTask, userId: string | null): string | null {
   return `${task.claimedByName ?? 'Someone'} is on it`;
 }
 
-/** How a schedule row looks. */
-export type ScheduleVariant = 'done' | 'alert' | 'task' | 'event';
+/** How a task row looks: done, an unconfirmed alert, or still open. */
+export type TaskVariant = 'done' | 'alert' | 'open';
 
-/** What each schedule variant shows: its icon and the status word read to screen readers. */
-export const VARIANT_STYLE: Record<
-  ScheduleVariant,
-  {
-    icon: 'checkmark.circle.fill' | 'exclamationmark.circle.fill' | 'circle' | 'calendar';
-    status: string;
-  }
-> = {
-  done: { icon: 'checkmark.circle.fill', status: 'Done' },
-  alert: { icon: 'exclamationmark.circle.fill', status: 'Not confirmed' },
-  task: { icon: 'circle', status: '' },
-  event: { icon: 'calendar', status: '' },
+/** What each task variant adds to a row's screen reader label: the status word. */
+export const VARIANT_STYLE: Record<TaskVariant, { status: string }> = {
+  done: { status: 'Done' },
+  alert: { status: 'Not confirmed' },
+  open: { status: '' },
 };
 
-/** What "Mark done" needs from a row's task. */
-export interface Markable {
-  instanceId: DayTask['instanceId'];
-  label: string;
-}
-
-/** One line of the schedule card. */
-export interface ScheduleRowData {
+/** The fields every schedule row has. */
+interface RowBase {
   id: string;
-  variant: ScheduleVariant;
   time: string;
   label: string;
   /** Who confirmed a done task (see doneDetail); null for everything else. */
   detail: string | null;
-  /** The task instance behind a task row (its actions and note are keyed by it); null for events. */
-  instanceId: DayTask['instanceId'] | null;
-  /** The note on a task, open or done; null when it has none and for events. */
-  note: string | null;
-  /** The task to mark done for an open task row; null for events and tasks that are not open. */
-  markable: Markable | null;
   accessibilityLabel: string;
 }
 
+/** A task row: has a checkbox, a task instance (its actions and note are keyed by it) and a note. */
+export interface TaskRowData extends RowBase {
+  kind: 'task';
+  variant: TaskVariant;
+  instanceId: DayTask['instanceId'];
+  /** The note on the task, open or done; null when it has none. */
+  note: string | null;
+}
+
+/** An event row: plain, with no actions. */
+export interface EventRowData extends RowBase {
+  kind: 'event';
+}
+
+/** One line of the schedule. */
+export type ScheduleRowData = TaskRowData | EventRowData;
+
 /**
- * purpose: Build a schedule row.
- * @param row: ({ id, variant, time, label, detail?, instanceId?, note?, markable? }) The row's
- *        fields: stable id, how it looks, display time, what happens, the done detail (default
- *        none), the task instance (default none), the task's note (default none) and the task
- *        to mark done (default none).
- * @return: (ScheduleRowData) The row, with its screen reader label.
+ * purpose: Build a row's screen reader label: time and label, the status word when there is one,
+ *          the done detail and the note.
+ * @param row: ({ time, label, status, detail, note }) The pieces; status, detail and note may
+ *        be empty or null.
+ * @return: (string) The label, parts joined with ". ".
  */
-function scheduleRow(row: {
-  id: string;
-  variant: ScheduleVariant;
+function spokenLabel(row: {
   time: string;
   label: string;
-  detail?: string | null;
-  instanceId?: DayTask['instanceId'];
-  note?: string | null;
-  markable?: Markable | null;
-}): ScheduleRowData {
-  const {
-    id,
-    variant,
-    time,
-    label,
-    detail = null,
-    note = null,
-    markable = null,
-    instanceId = null,
-  } = row;
-  const { status } = VARIANT_STYLE[variant];
-  const spoken = `${time}, ${label}${status === '' ? '' : `, ${status}`}`;
-  return {
-    id,
-    variant,
-    time,
-    label,
-    instanceId,
-    detail,
-    note,
-    markable,
-    accessibilityLabel: [spoken, detail, note === null ? null : `Note: ${note}`]
-      .filter((part) => part !== null)
-      .join('. '),
-  };
+  status: string;
+  detail: string | null;
+  note: string | null;
+}): string {
+  const spoken = `${row.time}, ${row.label}${row.status === '' ? '' : `, ${row.status}`}`;
+  return [spoken, row.detail, row.note === null ? null : `Note: ${row.note}`]
+    .filter((part) => part !== null)
+    .join('. ');
 }
 
 /**
@@ -338,77 +301,76 @@ function scheduleRow(row: {
  * @param task: (DayTask) The task.
  * @param options: ({ id: string, userId: string | null }) The row id and the signed-in
  *        caregiver's Clerk user id.
- * @return: (ScheduleRowData) The row; open tasks carry what "Mark done" needs.
+ * @return: (TaskRowData) The row.
  */
-function taskRow(task: DayTask, options: { id: string; userId: string | null }): ScheduleRowData {
-  return scheduleRow({
+function taskRow(task: DayTask, options: { id: string; userId: string | null }): TaskRowData {
+  const variant: TaskVariant = !isOpen(task) ? 'done' : isAlert(task) ? 'alert' : 'open';
+  const time = displayTime(task.scheduledTime);
+  const detail = doneDetail(task, options.userId);
+  return {
+    kind: 'task',
     id: options.id,
-    variant: isDone(task) ? 'done' : isAlert(task) ? 'alert' : 'task',
-    time: displayTime(task.scheduledTime),
+    variant,
+    time,
     label: task.displayLabel,
-    detail: doneDetail(task, options.userId),
+    detail,
     instanceId: task.instanceId,
     note: task.resolutionNote,
-    markable: isOpen(task) ? { instanceId: task.instanceId, label: task.displayLabel } : null,
-  });
+    accessibilityLabel: spokenLabel({
+      time,
+      label: task.displayLabel,
+      status: VARIANT_STYLE[variant].status,
+      detail,
+      note: task.resolutionNote,
+    }),
+  };
 }
 
 /**
  * purpose: Reduce an event to its schedule row.
  * @param event: (EventOccurrence) The event occurrence.
  * @param id: (string) Row id.
- * @return: (ScheduleRowData) The row, worded "<label> with <visitor> at <place>".
+ * @return: (EventRowData) The row, worded "<label> with <visitor> at <place>".
  */
-function eventRow(event: EventOccurrence, id: string): ScheduleRowData {
-  return scheduleRow({
+function eventRow(event: EventOccurrence, id: string): EventRowData {
+  const time = displayTime(event.startTime);
+  const label = eventDetails(event, event.label);
+  return {
+    kind: 'event',
     id,
-    variant: 'event',
-    time: displayTime(event.startTime),
-    label: eventDetails(event, event.label),
-  });
+    time,
+    label,
+    detail: null,
+    accessibilityLabel: spokenLabel({ time, label, status: '', detail: null, note: null }),
+  };
 }
 
-/**
- * How a task row's checkbox looks: an open box, an open box in the serious colors, a checked box,
- * or a dulled open box that cannot be ticked (so a tap is never silently ignored).
- */
+/** How a task row's checkbox looks. */
 export type CheckboxKind = 'open' | 'alert' | 'done' | 'disabled';
 
-/**
- * purpose: The checkbox a schedule row shows. Done tasks stay checked whether or not they can be
- *          ticked; an open task that cannot be ticked (a viewer, or a completion in flight)
- *          is dulled, without the alert border.
- * @param variant: (ScheduleVariant) The row's variant.
- * @param interactive: (boolean) Whether tapping the checkbox does something (checkboxInteractive).
- * @return: (CheckboxKind | null) The checkbox look; null for events, which keep their icon.
- */
-export function checkboxKind(variant: ScheduleVariant, interactive: boolean): CheckboxKind | null {
-  if (variant === 'event') return null;
-  if (variant === 'done') return 'done';
-  if (!interactive) return 'disabled';
-  return variant === 'alert' ? 'alert' : 'open';
+/** A task row's checkbox: its look, and whether tapping it marks the task done. */
+export interface CheckboxState {
+  kind: CheckboxKind;
+  interactive: boolean;
 }
 
 /**
- * purpose: Whether tapping a row's checkbox marks the task done: an editor on an open task.
- *          Done tasks (there is no undo), events and viewers get a non-interactive box.
- * @param row: (ScheduleRowData) The row.
- * @param canEdit: (boolean) Whether this caregiver may edit (everyone but viewers).
- * @return: (boolean) True when the checkbox is pressable.
+ * purpose: The checkbox of a task row. A done task, or one whose Mark done call is running
+ *          (busy), shows checked and cannot be tapped. An open task is tappable for an editor
+ *          (an open box, or the serious colors for an alert) and dulled for a viewer, so a tap
+ *          is never silently ignored.
+ * @param row: (TaskRowData) The task row.
+ * @param flags: ({ canEdit: boolean, busy: boolean }) Whether this caregiver may edit
+ *        (everyone but viewers) and whether a Mark done call is running for the task.
+ * @return: (CheckboxState) The look and whether it is interactive.
  */
-export function checkboxInteractive(row: ScheduleRowData, canEdit: boolean): boolean {
-  return canEdit && row.markable !== null;
-}
-
-/**
- * purpose: Whether tapping a task row's text opens the note editor: editors on task rows (open
- *          or done). Viewers and events never get an editor.
- * @param row: (ScheduleRowData) The row.
- * @param canEdit: (boolean) Whether this caregiver may edit (everyone but viewers).
- * @return: (boolean) True when the editor can open.
- */
-export function canEditNote(row: ScheduleRowData, canEdit: boolean): boolean {
-  return canEdit && row.variant !== 'event' && row.instanceId !== null;
+export function checkboxState(
+  row: TaskRowData,
+  flags: { canEdit: boolean; busy: boolean },
+): CheckboxState {
+  if (row.variant === 'done' || flags.busy) return { kind: 'done', interactive: false };
+  if (!flags.canEdit) return { kind: 'disabled', interactive: false };
+  return { kind: row.variant, interactive: true };
 }
 
 /**
@@ -437,9 +399,9 @@ export function shouldSaveNote(draft: string, current: string | null): boolean {
  *          view's eventsToday, every later day's from its upcoming events.
  * @param day: (DayViewData) The day view.
  * @param date: (string) The local date "YYYY-MM-DD".
- * @return: (ScheduleRowData[]) That day's events in time order; empty when there are none.
+ * @return: (EventRowData[]) That day's events in time order; empty when there are none.
  */
-export function eventsForDate(day: DayViewData, date: string): ScheduleRowData[] {
+export function eventsForDate(day: DayViewData, date: string): EventRowData[] {
   const events = date === day.localDate ? day.eventsToday : day.upcoming;
   return events
     .filter((e) => e.localDate === date)
@@ -449,8 +411,8 @@ export function eventsForDate(day: DayViewData, date: string): ScheduleRowData[]
 
 /** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order. */
 export interface TodaysTasks {
-  leftover: ScheduleRowData[];
-  today: ScheduleRowData[];
+  leftover: TaskRowData[];
+  today: TaskRowData[];
 }
 
 /**
@@ -490,7 +452,7 @@ export interface LaterDayGroup {
   date: string;
   /** For example "Sunday, Nov 1". */
   title: string;
-  rows: ScheduleRowData[];
+  rows: EventRowData[];
 }
 
 /**

@@ -6,7 +6,7 @@
 // The app is light-only, so there is one value per token. statusTones groups the status
 // colors by tone for the banner and the caregiver alert cards.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 /** Fixed app background color; not user-selectable. */
 export const BACKGROUND = '#FAE6CC';
@@ -44,6 +44,8 @@ export const colors = {
   overlayMedium: 'rgba(255,255,255,0.6)',
   /** Faint translucent black over the background (the going-out strip). */
   overlayFaint: 'rgba(0,0,0,0.06)',
+  /** Dark translucent ink (about 90% black), for the undo toast. */
+  overlayInk: 'rgba(0,0,0,0.9)',
   /** Neutral card / control background (asset catalog bg2). */
   card: '#F3F3F1',
   /** Hairline separator (asset catalog separator1). */

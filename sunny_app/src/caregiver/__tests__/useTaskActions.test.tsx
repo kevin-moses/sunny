@@ -1,8 +1,10 @@
 // sunny_app/src/caregiver/__tests__/useTaskActions.test.tsx
 //
-// Purpose: Regression tests for useTaskActions, rendering the real hook with react-test-renderer
-// and a mocked callMutation. Guards the bug where run() skipped the mutation entirely when no
-// notice callback was given (claim and saveNote), and checks the error state on a failed call.
+// Purpose: Tests for useTaskActions, rendering the real hook with react-test-renderer and a
+// mocked callMutation: claim and saveNote send their mutations, markDone resolves true only when
+// this caregiver's tick took effect ("Already marked done." otherwise), undoMarkDone sends
+// undoResolve and shows a refusal in the task's slot, a failed call sets the error state, a
+// success clears the state, and the action functions keep their identity between renders.
 //
 // Last modified: 2026-11-01
 
@@ -80,6 +82,84 @@ describe('useTaskActions', () => {
     const [ref, args] = mockCall.mock.calls[0];
     expect(getFunctionName(ref as never)).toBe('instances:confirmTaskInstance');
     expect(args).toEqual({ instanceId: ID, via: 'caregiver' });
+  });
+
+  it('markDone resolves true and clears the state when this caregiver marked it', async () => {
+    mockCall.mockResolvedValue({ confirmedBy: 'user_1' });
+    const h = renderActions();
+    let ok = false;
+    await act(async () => {
+      ok = await h.get().markDone(ID);
+    });
+    expect(ok).toBe(true);
+    expect(h.get().actions[ID as string]).toBeUndefined();
+  });
+
+  it('markDone resolves false with a calm message when someone else marked it first', async () => {
+    mockCall.mockResolvedValue({ confirmedBy: 'user_2' });
+    const h = renderActions();
+    let ok = true;
+    await act(async () => {
+      ok = await h.get().markDone(ID);
+    });
+    expect(ok).toBe(false);
+    expect(h.get().actions[ID as string]).toEqual({
+      status: 'error',
+      message: 'Already marked done.',
+    });
+  });
+
+  it('markDone shows the marking state while the call runs', async () => {
+    let finish!: (value: unknown) => void;
+    mockCall.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const h = renderActions();
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = h.get().markDone(ID);
+    });
+    expect(h.get().actions[ID as string]).toEqual({ status: 'marking' });
+    await act(async () => {
+      finish({ confirmedBy: 'user_1' });
+      await pending;
+    });
+    expect(h.get().actions[ID as string]).toBeUndefined();
+  });
+
+  it('undoMarkDone sends the undo mutation', async () => {
+    const h = renderActions();
+    await act(async () => {
+      await h.get().undoMarkDone(ID);
+    });
+    expect(mockCall).toHaveBeenCalledTimes(1);
+    const [ref, args] = mockCall.mock.calls[0];
+    expect(getFunctionName(ref as never)).toBe('instances:undoResolve');
+    expect(args).toEqual({ instanceId: ID });
+    expect(h.get().actions[ID as string]).toBeUndefined();
+  });
+
+  it('undoMarkDone shows the refusal in the task slot', async () => {
+    mockCall.mockRejectedValue(new Error('This can no longer be undone.'));
+    const h = renderActions();
+    await act(async () => {
+      await h.get().undoMarkDone(ID);
+    });
+    expect(h.get().actions[ID as string]).toEqual({
+      status: 'error',
+      message: expect.any(String),
+    });
+  });
+
+  it('keeps the action functions between renders', async () => {
+    const h = renderActions();
+    const first = h.get();
+    await act(async () => {
+      await h.get().claim(ID);
+    });
+    const second = h.get();
+    expect(second.claim).toBe(first.claim);
+    expect(second.markDone).toBe(first.markDone);
+    expect(second.undoMarkDone).toBe(first.undoMarkDone);
+    expect(second.saveNote).toBe(first.saveNote);
   });
 
   it('a rejected mutation sets the error state and saveNote resolves false', async () => {

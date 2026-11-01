@@ -3,21 +3,26 @@
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, then, in order: the
 // Alerts section (tasks that were escalated or missed, with "I'm on it" and "Mark done" buttons
 // for editors, or who is already on it), "Today's tasks" (a "Leftover" group of yesterday's open
-// tasks, then today's tasks in time order; editors tick a task's checkbox, which shows it done
-// at once with a light haptic tap (a selection click on Undo) and sends it after a 5 second undo toast, and tap its text to open an autosaving inline
-// note editor, one at a time; saved notes show as a subtitle), the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
-// events) with the selected day's events directly below it (events only, never tasks), and
-// "Later this week", the events of the days after the selected one grouped by day (hidden when
-// there are none). Everything comes from the shared day view state owned by CaregiverApp, and the
-// derived lists are computed once per day view and selection. While the first load is pending it
-// shows a spinner, and if it fails with nothing cached, the error message. The scroll view lifts
-// the focused note editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses
-// the keyboard on drag; pending completions and open notes are committed when the tab is left.
+// tasks, then today's tasks in time order; editors tick any open task's checkbox, which marks it
+// done at once on the server and shows it checked, with a light haptic tap; for 5 seconds a
+// "Task completed / Undo" toast offers to take it back (a selection click, and the server
+// restores the task), only the latest tick has a toast; editors tap a task's text to open an
+// autosaving inline note editor, one at a time; saved notes show as a subtitle), the calendar
+// card (seven-day week strip whose cells choose the day shown; the dots mean events) with the
+// selected day's events directly below it (events only, never tasks), and "Later this week", the
+// events of the days after the selected one grouped by day (hidden when there are none).
+// Everything comes from the shared day view state owned by CaregiverApp. The derived lists are
+// computed in two memos: one per day view and user (tasks, alerts, the strip, the range) and one
+// per day view and selection (the selected day's events, the later days, the title), and the
+// memoized cards get stable callbacks. While the first load is pending it shows a spinner, and
+// if it fails with nothing cached, the error message. The scroll view lifts the focused note
+// editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses the keyboard on
+// drag, which closes (and saves) an open note.
 //
 // Last modified: 2026-11-01
 
 import { SymbolView } from 'expo-symbols';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -26,13 +31,16 @@ import { OfflineMark } from '../components/DayComponents';
 import type { DayViewState } from '../day/useDayView';
 import { colors } from '../theme/colors';
 import { type } from '../theme/typography';
+import { useReduceMotion } from '../theme/useReduceMotion';
 import {
   AlertCard,
   CalendarCard,
+  EventsCard,
   LaterWeekCard,
-  ScheduleCard,
   ScreenHeader,
   SectionTitle,
+  TasksCard,
+  type TaskRowActions,
 } from './CaregiverComponents';
 import {
   alertMessage,
@@ -45,14 +53,13 @@ import {
   selectedDayTitle,
   weekRangeLabel,
   type DaySelection,
-  type ScheduleRowData,
 } from './format';
-import { useTabBarInset } from './tabBarInset';
 import { tapHaptic, undoHaptic } from './haptics';
+import { useTabBarInset } from './tabBarInset';
 import { UndoToast } from './UndoToast';
 import { useNoteEditor } from './useNoteEditor';
 import { useTaskActions } from './useTaskActions';
-import { useUndoableCompletion } from './useUndoableCompletion';
+import { useUndoToast } from './useUndoToast';
 
 /** Props for CaregiverHomeScreen. */
 interface CaregiverHomeScreenProps {
@@ -61,8 +68,6 @@ interface CaregiverHomeScreenProps {
   canEdit: boolean;
   /** The signed-in caregiver's Clerk user id, to tell their own claims from others'. */
   userId: string | null;
-  /** Whether Home is the visible tab; leaving it commits pending completions and open notes. */
-  active: boolean;
   /** Called when the account button is pressed. */
   onAccountPress: () => void;
 }
@@ -88,72 +93,92 @@ function AccountButton({ onPress }: { onPress: () => void }) {
 /**
  * purpose: Render the Home tab.
  * @param props: (CaregiverHomeScreenProps) The shared day view, the edit permission, the
- *        caregiver's user id, whether the tab is visible and the account button handler.
+ *        caregiver's user id and the account button handler.
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverHomeScreen({
   dayView,
   canEdit,
   userId,
-  active,
   onAccountPress,
 }: CaregiverHomeScreenProps) {
   const { day, errorMessage, isOffline } = dayView;
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { actions, claim, markDone, saveNote } = useTaskActions(userId);
-
-  const noteEditor = useNoteEditor(saveNote, active);
-  const completion = useUndoableCompletion<TaskInstanceId>((id) => void markDone(id), active);
-  const pendingId: string | null = completion.pendingId;
+  const reduceMotion = useReduceMotion();
+  const { actions, claim, markDone, undoMarkDone, saveNote } = useTaskActions(userId);
+  const noteEditor = useNoteEditor(saveNote);
+  const { id: toastId, show: showToast, dismiss: dismissToast } = useUndoToast<TaskInstanceId>();
+  const [selection, setSelection] = useState<DaySelection | null>(null);
+  const todayDate = day?.localDate ?? null;
 
   /**
-   * purpose: Start a completion at the moment of the tap, with a light haptic tap.
+   * purpose: Tick a task: a light haptic tap at once, the server call, and the undo toast once
+   *          the call succeeded (not when it failed or someone else had marked it done).
    * @param id: (TaskInstanceId) The task being ticked.
    * @return: (void)
    */
-  const tick = (id: TaskInstanceId): void => {
-    tapHaptic();
-    completion.complete(id);
-  };
+  const tick = useCallback(
+    (id: TaskInstanceId): void => {
+      tapHaptic();
+      void markDone(id).then((marked) => {
+        if (marked) showToast(id);
+      });
+    },
+    [markDone, showToast],
+  );
 
   /**
-   * purpose: Undo the pending completion, with a selection haptic.
+   * purpose: Undo the tick the toast is for, with a selection haptic, and hide the toast.
    * @return: (void)
    */
   const undo = (): void => {
+    if (toastId === null) return;
     undoHaptic();
-    completion.undo();
+    dismissToast();
+    void undoMarkDone(toastId);
   };
 
   /**
-   * purpose: Open or close a row's note editor.
-   * @param row: (ScheduleRowData) A task row.
+   * purpose: Select a day of the week strip, remembering which "today" it was chosen against.
+   * @param date: (string) The tapped cell's local date.
    * @return: (void)
    */
-  const toggleNote = (row: ScheduleRowData): void => {
-    if (row.instanceId === null) return;
-    noteEditor.toggle({ rowId: row.id, instanceId: row.instanceId, note: row.note });
-  };
+  const selectDay = useCallback(
+    (date: string): void => {
+      if (todayDate !== null) setSelection({ date, todayWhenChosen: todayDate });
+    },
+    [todayDate],
+  );
 
-  const [selection, setSelection] = useState<DaySelection | null>(null);
+  const rowActions = useMemo<TaskRowActions>(
+    () => ({ states: actions, markDone: tick }),
+    [actions, tick],
+  );
+
   const view = useMemo(() => {
     if (day === null) return null;
-    const strip = buildWeekStrip(day);
-    const selectedDate = resolveSelectedDate(strip, day.localDate, selection);
     const { leftover, today } = todaysTasks(day, userId);
     return {
       alerts: day.tasks.filter(isAlert).map((task) => ({ task, message: alertMessage(task) })),
-      strip,
-      selectedDate,
-      scheduleTitle: selectedDayTitle(day.localDate, selectedDate),
+      strip: buildWeekStrip(day),
       leftover,
       todayTasks: today,
-      events: eventsForDate(day, selectedDate),
-      later: laterThisWeek(day, strip, selectedDate),
       range: weekRangeLabel(day.localDate),
     };
-  }, [day, selection, userId]);
+  }, [day, userId]);
+
+  const strip = view?.strip ?? null;
+  const selected = useMemo(() => {
+    if (day === null || strip === null) return null;
+    const selectedDate = resolveSelectedDate(strip, day.localDate, selection);
+    return {
+      selectedDate,
+      title: selectedDayTitle(day.localDate, selectedDate),
+      events: eventsForDate(day, selectedDate),
+      later: laterThisWeek(day, strip, selectedDate),
+    };
+  }, [day, strip, selection]);
 
   return (
     <View style={styles.fill}>
@@ -161,7 +186,6 @@ export function CaregiverHomeScreen({
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         automaticallyAdjustKeyboardInsets
-        onScrollBeginDrag={noteEditor.close}
         contentContainerStyle={[
           styles.content,
           { paddingTop: insets.top + 8, paddingBottom: tabBarInset },
@@ -172,7 +196,7 @@ export function CaregiverHomeScreen({
           subtitle={view?.range ?? ''}
           trailing={<AccountButton onPress={onAccountPress} />}
         />
-        {day === null || view === null ? (
+        {day === null || view === null || selected === null ? (
           errorMessage !== null ? (
             <Text style={[type.callout, styles.message]}>{errorMessage}</Text>
           ) : (
@@ -185,72 +209,52 @@ export function CaregiverHomeScreen({
               {view.alerts.length === 0 && (
                 <Text style={[type.callout, styles.message]}>Nothing needs attention.</Text>
               )}
-              {view.alerts
-                .filter(({ task }) => task.instanceId !== pendingId)
-                .map(({ task, message }) => (
-                  <AlertCard
-                    key={task.instanceId}
-                    task={task}
-                    message={message}
-                    action={actions[task.instanceId]}
-                    canEdit={canEdit}
-                    userId={userId}
-                    onClaim={() => claim(task.instanceId)}
-                    onMarkDone={() => tick(task.instanceId)}
-                  />
-                ))}
+              {view.alerts.map(({ task, message }) => (
+                <AlertCard
+                  key={task.instanceId}
+                  task={task}
+                  message={message}
+                  action={actions[task.instanceId]}
+                  canEdit={canEdit}
+                  userId={userId}
+                  onClaim={claim}
+                  onMarkDone={tick}
+                />
+              ))}
             </View>
             <View style={styles.section}>
               <SectionTitle text="Today's tasks" />
-              <ScheduleCard
+              <TasksCard
                 leftover={view.leftover}
-                rows={view.todayTasks}
-                emptyText="No tasks today."
+                today={view.todayTasks}
                 canEdit={canEdit}
-                actions={actions}
-                pendingId={pendingId}
-                openNoteId={noteEditor.openRowId}
-                initialDraft={noteEditor.initialDraft}
-                onMarkDone={tick}
-                onToggleNote={toggleNote}
-                onDraftChange={noteEditor.setDraft}
-                onCloseNote={noteEditor.close}
+                rowActions={rowActions}
+                noteEditor={noteEditor}
               />
             </View>
             <View style={styles.section}>
               <CalendarCard
                 todayLocalDate={day.localDate}
                 days={view.strip}
-                selectedDate={view.selectedDate}
-                onSelect={(date) => setSelection({ date, todayWhenChosen: day.localDate })}
+                selectedDate={selected.selectedDate}
+                onSelect={selectDay}
               />
-              <SectionTitle text={view.scheduleTitle} />
-              <ScheduleCard
-                leftover={[]}
-                rows={view.events}
-                emptyText="No events."
-                canEdit={canEdit}
-                actions={actions}
-                pendingId={pendingId}
-                openNoteId={noteEditor.openRowId}
-                initialDraft={noteEditor.initialDraft}
-                onMarkDone={tick}
-                onToggleNote={toggleNote}
-                onDraftChange={noteEditor.setDraft}
-                onCloseNote={noteEditor.close}
-              />
+              <SectionTitle text={selected.title} />
+              <EventsCard rows={selected.events} emptyText="No events." />
             </View>
-            {view.later.length > 0 && (
+            {selected.later.length > 0 && (
               <View style={styles.section}>
                 <SectionTitle text="Later this week" />
-                <LaterWeekCard groups={view.later} />
+                <LaterWeekCard groups={selected.later} />
               </View>
             )}
             {isOffline && <OfflineMark />}
           </>
         )}
       </ScrollView>
-      {pendingId !== null && <UndoToast bottom={tabBarInset} onUndo={undo} />}
+      {toastId !== null && (
+        <UndoToast bottom={tabBarInset} reduceMotion={reduceMotion} onUndo={undo} />
+      )}
     </View>
   );
 }

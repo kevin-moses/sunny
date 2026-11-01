@@ -4,18 +4,20 @@
 // at a time and it autosaves: there is no Save or Cancel, and a draft is never discarded. The
 // draft is saved (when its trimmed text differs from the task's note; blank clears the note) on
 // every way the editor closes: tapping the row's text again, opening another row's editor, the
-// keyboard's Done, the field losing focus (tapping outside dismisses the keyboard), scrolling,
-// the app going to the background, the screen no longer being the active tab, and unmounting. A
-// save that fails keeps its draft so that reopening the row shows it (and closing it retries).
-// The typed text lives in a ref so typing does not re-render the screen.
+// field losing focus (this covers the keyboard's Done, tapping outside and scrolling, because
+// the screen's scroll view dismisses the keyboard on drag), the app leaving the foreground and
+// unmounting (useFlushOnLeave). A save that fails keeps its draft so that reopening the row shows
+// it (and closing it retries). The typed text lives only in a ref (the field is uncontrolled),
+// so typing does not re-render anything. The only state is which row is open and its starting
+// text; toggle, setDraft and close keep their identity between renders.
 //
 // Last modified: 2026-11-01
 
-import { useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { TaskInstanceId } from '../backend/convexApi';
 import { noteFromInput, shouldSaveNote } from './format';
+import { useFlushOnLeave } from './useFlushOnLeave';
 
 /** The row whose editor is opening: its row id, task instance and current note. */
 export interface NoteTarget {
@@ -24,12 +26,17 @@ export interface NoteTarget {
   note: string | null;
 }
 
+/** The open editor: its row and the text the field starts with. */
+export interface OpenNote {
+  rowId: string;
+  /** The current note, or a draft that failed to save. */
+  initialDraft: string;
+}
+
 /** What useNoteEditor returns. */
 export interface NoteEditor {
-  /** The row id whose editor is open; null when none. */
-  openRowId: string | null;
-  /** The text the open editor starts with: the current note or a draft that failed to save. */
-  initialDraft: string;
+  /** The open editor; null when none is open. */
+  open: OpenNote | null;
   /** Open the row's editor, or close (and save) it when it is the open one. */
   toggle: (target: NoteTarget) => void;
   /** Record the text typed in the open editor. */
@@ -42,85 +49,70 @@ export interface NoteEditor {
  * purpose: Manage the autosaving inline note editor.
  * @param saveNote: ((id, note) => Promise<boolean>) Saves or clears a note; resolves true when
  *        saved. The latest function is always used.
- * @param active: (boolean) Whether the screen is the visible tab; going inactive closes the editor.
- * @return: (NoteEditor) The open row, its starting text and the toggle, setDraft and close actions.
+ * @return: (NoteEditor) The open editor and the toggle, setDraft and close actions.
  */
 export function useNoteEditor(
   saveNote: (instanceId: TaskInstanceId, note: string | undefined) => Promise<boolean>,
-  active: boolean,
 ): NoteEditor {
-  const [openRowId, setOpenRowId] = useState<string | null>(null);
-  const [initialDraft, setInitialDraft] = useState('');
-  const openRef = useRef<NoteTarget | null>(null);
+  const [open, setOpen] = useState<OpenNote | null>(null);
+  const targetRef = useRef<NoteTarget | null>(null);
   const draftRef = useRef('');
   /** Drafts whose save failed (or is still running), by instance id. */
   const failedRef = useRef<Partial<Record<string, string>>>({});
   const saveRef = useRef(saveNote);
 
+  useEffect(() => {
+    saveRef.current = saveNote;
+  });
+
   /**
    * purpose: Close the open editor and save its draft if it changed.
    * @return: (void)
    */
-  const close = (): void => {
-    const open = openRef.current;
-    if (open === null) return;
-    openRef.current = null;
-    setOpenRowId(null);
+  const close = useCallback((): void => {
+    const target = targetRef.current;
+    if (target === null) return;
+    targetRef.current = null;
+    setOpen(null);
     const draft = draftRef.current;
-    if (!shouldSaveNote(draft, open.note)) {
-      delete failedRef.current[open.instanceId];
+    if (!shouldSaveNote(draft, target.note)) {
+      delete failedRef.current[target.instanceId];
       return;
     }
-    failedRef.current[open.instanceId] = draft;
-    void saveRef.current(open.instanceId, noteFromInput(draft)).then((saved) => {
-      if (saved) delete failedRef.current[open.instanceId];
+    failedRef.current[target.instanceId] = draft;
+    void saveRef.current(target.instanceId, noteFromInput(draft)).then((saved) => {
+      if (saved) delete failedRef.current[target.instanceId];
     });
-  };
-  const closeRef = useRef(close);
-
-  useEffect(() => {
-    saveRef.current = saveNote;
-    closeRef.current = close;
-  });
+  }, []);
 
   /**
    * purpose: Open a row's editor (saving any other open one first), or close it if it is open.
    * @param target: (NoteTarget) The row, its task instance and its current note.
    * @return: (void)
    */
-  const toggle = (target: NoteTarget): void => {
-    const wasOpen = openRef.current?.rowId === target.rowId;
-    close();
-    if (wasOpen) return;
-    const start = failedRef.current[target.instanceId] ?? target.note ?? '';
-    draftRef.current = start;
-    openRef.current = target;
-    setInitialDraft(start);
-    setOpenRowId(target.rowId);
-  };
+  const toggle = useCallback(
+    (target: NoteTarget): void => {
+      const wasOpen = targetRef.current?.rowId === target.rowId;
+      close();
+      if (wasOpen) return;
+      const initialDraft = failedRef.current[target.instanceId] ?? target.note ?? '';
+      draftRef.current = initialDraft;
+      targetRef.current = target;
+      setOpen({ rowId: target.rowId, initialDraft });
+    },
+    [close],
+  );
 
   /**
    * purpose: Remember the text typed in the editor.
    * @param text: (string) The field's text.
    * @return: (void)
    */
-  const setDraft = (text: string): void => {
+  const setDraft = useCallback((text: string): void => {
     draftRef.current = text;
-  };
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active') closeRef.current();
-    });
-    return () => {
-      subscription.remove();
-      closeRef.current();
-    };
   }, []);
 
-  useEffect(() => {
-    if (!active) closeRef.current();
-  }, [active]);
+  useFlushOnLeave(close);
 
-  return { openRowId, initialDraft, toggle, setDraft, close };
+  return useMemo(() => ({ open, toggle, setDraft, close }), [open, toggle, setDraft, close]);
 }

@@ -1,9 +1,10 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection, messages and claim text, leftover (carried-over) tasks, the open-task predicate,
+// alert detection, messages and claim text, leftover (carried-over) tasks,
 // the note input, the done detail line (who confirmed, surface), today's task rows (leftover
-// split, notes, checkbox kinds, interactivity, note visibility), the events-only rows of any day,
+// split, notes, checkboxState for editors, viewers and busy rows, note visibility), the
+// events-only rows of any day (a separate row type from task rows),
 // the selected-day title and fallback rule,
 // the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
@@ -21,16 +22,13 @@ import {
   ANOTHER_CAREGIVER,
   buildTranscript,
   buildWeekStrip,
-  canEditNote,
-  checkboxInteractive,
-  checkboxKind,
+  checkboxState,
   claimText,
   doneDetail,
   eventsForDate,
   FAILED_TEXT,
   hasInProgress,
   isAlert,
-  isOpen,
   laterThisWeek,
   messageSpeaker,
   noteFromInput,
@@ -39,12 +37,12 @@ import {
   shouldSaveNote,
   selectedDayTitle,
   todaysTasks,
-  VARIANT_STYLE,
   WORKING_TEXT,
   weekMonthLabel,
   weekRangeLabel,
   type AgentRequest,
-  type ScheduleRowData,
+  type EventRowData,
+  type TaskRowData,
 } from '../format';
 
 /** The day the fixtures are dated and the signed-in caregiver. */
@@ -57,18 +55,18 @@ const CONFIRMED_TIME = '14:05';
  * purpose: Build the event rows for a date the way the Home screen does.
  * @param day: (DayViewData) The day view.
  * @param date: (string) The selected local date.
- * @return: (ScheduleRowData[]) The rows.
+ * @return: (EventRowData[]) The rows.
  */
-function eventsOf(day: DayViewData, date: string): ScheduleRowData[] {
+function eventsOf(day: DayViewData, date: string): EventRowData[] {
   return eventsForDate(day, date);
 }
 
 /**
  * purpose: Today's task rows (leftover and today) for a user, flattened in display order.
  * @param day: (DayViewData) The day view.
- * @return: (ScheduleRowData[]) The leftover rows followed by today's rows.
+ * @return: (TaskRowData[]) The leftover rows followed by today's rows.
  */
-function taskRows(day: DayViewData): ScheduleRowData[] {
+function taskRows(day: DayViewData): TaskRowData[] {
   const { leftover, today } = todaysTasks(day, USER);
   return [...leftover, ...today];
 }
@@ -296,7 +294,7 @@ describe('eventsForDate', () => {
     const rows = eventsOf(day, '2026-10-29');
     expect(rows.map((r) => r.label)).toEqual(['Walk', 'Late']);
     expect(rows.map((r) => r.id)).toEqual(['e1-2026-10-29', 'e2-2026-10-29']);
-    expect(rows.every((r) => r.variant === 'event' && r.instanceId === null)).toBe(true);
+    expect(rows.every((r) => r.kind === 'event')).toBe(true);
   });
 
   it('never includes tasks, for today or a later day', () => {
@@ -357,7 +355,7 @@ describe('todaysTasks', () => {
     expect(todaysTasks(day, USER).today.map((r) => r.id)).toEqual(['task-a', 'task-b']);
   });
 
-  it('assigns a variant to each kind of row, with its icon from VARIANT_STYLE', () => {
+  it('assigns a variant to each kind of task row', () => {
     const day = makeDay({
       tasks: [
         makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
@@ -367,12 +365,12 @@ describe('todaysTasks', () => {
         makeTask({ instanceId: 'e', scheduledTime: '10:00', state: 'resolved' }),
       ],
     });
-    expect(taskRows(day).map((r) => [r.variant, VARIANT_STYLE[r.variant].icon])).toEqual([
-      ['done', 'checkmark.circle.fill'],
-      ['alert', 'exclamationmark.circle.fill'],
-      ['alert', 'exclamationmark.circle.fill'],
-      ['task', 'circle'],
-      ['done', 'checkmark.circle.fill'],
+    expect(taskRows(day).map((r) => [r.kind, r.variant])).toEqual([
+      ['task', 'done'],
+      ['task', 'alert'],
+      ['task', 'alert'],
+      ['task', 'open'],
+      ['task', 'done'],
     ]);
   });
 
@@ -477,7 +475,7 @@ describe('laterThisWeek', () => {
     });
     const groups = later(day, '2026-10-29');
     expect(groups.map((g) => g.date)).toEqual(['2026-10-30']);
-    expect(groups.flatMap((g) => g.rows).every((r) => r.variant === 'event')).toBe(true);
+    expect(groups.flatMap((g) => g.rows).every((r) => r.kind === 'event')).toBe(true);
   });
 });
 
@@ -660,38 +658,6 @@ describe('leftover tasks', () => {
   });
 });
 
-describe('isOpen', () => {
-  it('is true for upcoming, due, escalated and missed tasks only', () => {
-    const states = ['upcoming', 'due', 'escalated', 'missed', 'confirmed', 'resolved'] as const;
-    expect(states.filter((state) => isOpen(makeTask({ state })))).toEqual([
-      'upcoming',
-      'due',
-      'escalated',
-      'missed',
-    ]);
-  });
-});
-
-describe('markable rows', () => {
-  it('carries the instance and label for open tasks only (upcoming included)', () => {
-    const day = makeDay({
-      tasks: [
-        makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
-        makeTask({ instanceId: 'b', scheduledTime: '07:00', state: 'missed' }),
-        makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'upcoming' }),
-        makeTask({ instanceId: 'd', scheduledTime: '09:00', state: 'due' }),
-      ],
-      eventsToday: [makeEvent({ startTime: '10:00' })],
-    });
-    expect(taskRows(day).map((r) => r.markable)).toEqual([
-      null,
-      { instanceId: 'b', label: 'Take medication' },
-      { instanceId: 'c', label: 'Take medication' },
-      { instanceId: 'd', label: 'Take medication' },
-    ]);
-  });
-});
-
 describe('note input', () => {
   it('trims the note and turns an empty one into a clear', () => {
     expect(noteFromInput('  Called her  ')).toBe('Called her');
@@ -701,54 +667,38 @@ describe('note input', () => {
   });
 });
 
-describe('checkboxes', () => {
-  const rowFor = (state: string, overrides: Partial<Record<keyof DayTask, unknown>> = {}) =>
-    taskRows(makeDay({ tasks: [makeTask({ state, ...overrides })] }))[0];
+describe('checkboxState', () => {
+  const rowFor = (state: string) => taskRows(makeDay({ tasks: [makeTask({ state })] }))[0];
+  const look = (state: string, canEdit: boolean, busy = false) =>
+    checkboxState(rowFor(state), { canEdit, busy });
 
-  it('maps each variant to a checkbox kind, and none for events', () => {
-    expect(checkboxKind('task', true)).toBe('open');
-    expect(checkboxKind('alert', true)).toBe('alert');
-    expect(checkboxKind('done', true)).toBe('done');
-    expect(checkboxKind('event', true)).toBeNull();
-    expect(checkboxKind('event', false)).toBeNull();
+  it('lets an editor tap every open task, with the alert look for escalated and missed', () => {
+    expect(look('upcoming', true)).toEqual({ kind: 'open', interactive: true });
+    expect(look('due', true)).toEqual({ kind: 'open', interactive: true });
+    expect(look('escalated', true)).toEqual({ kind: 'alert', interactive: true });
+    expect(look('missed', true)).toEqual({ kind: 'alert', interactive: true });
   });
 
-  it('dulls open and alert boxes that cannot be ticked, but keeps done ones checked', () => {
-    expect(checkboxKind('task', false)).toBe('disabled');
-    expect(checkboxKind('alert', false)).toBe('disabled');
-    expect(checkboxKind('done', false)).toBe('done');
-  });
-
-  it('lets an editor tap every open task (upcoming, due, escalated, missed)', () => {
+  it('dulls and disables every open task for a viewer', () => {
     for (const state of ['upcoming', 'due', 'escalated', 'missed']) {
-      expect([state, checkboxInteractive(rowFor(state), true)]).toEqual([state, true]);
+      expect([state, look(state, false)]).toEqual([
+        state,
+        { kind: 'disabled', interactive: false },
+      ]);
     }
   });
 
-  it('is not interactive for done tasks, viewers or events', () => {
-    expect(checkboxInteractive(rowFor('confirmed'), true)).toBe(false);
-    expect(checkboxInteractive(rowFor('resolved'), true)).toBe(false);
-    expect(checkboxInteractive(rowFor('due'), false)).toBe(false);
-    const event = eventsOf(makeDay({ eventsToday: [makeEvent()] }), TODAY)[0];
-    expect(checkboxInteractive(event, true)).toBe(false);
+  it('keeps done tasks checked and not tappable, for editors and viewers', () => {
+    for (const state of ['confirmed', 'resolved']) {
+      for (const canEdit of [true, false]) {
+        expect(look(state, canEdit)).toEqual({ kind: 'done', interactive: false });
+      }
+    }
   });
 
-  it('shows the right box for editor and viewer across every task state', () => {
-    const look = (state: string, canEdit: boolean) => {
-      const row = rowFor(state);
-      return checkboxKind(row.variant, checkboxInteractive(row, canEdit));
-    };
-    const cases: [string, string, string][] = [
-      ['upcoming', 'open', 'disabled'],
-      ['due', 'open', 'disabled'],
-      ['escalated', 'alert', 'disabled'],
-      ['missed', 'alert', 'disabled'],
-      ['confirmed', 'done', 'done'],
-      ['resolved', 'done', 'done'],
-    ];
-    for (const [state, editor, viewer] of cases) {
-      expect([state, look(state, true), look(state, false)]).toEqual([state, editor, viewer]);
-    }
+  it('shows a task whose Mark done call is running as checked and not tappable', () => {
+    expect(look('due', true, true)).toEqual({ kind: 'done', interactive: false });
+    expect(look('missed', true, true)).toEqual({ kind: 'done', interactive: false });
   });
 });
 
@@ -763,20 +713,6 @@ describe('task notes', () => {
     expect(noted('due', 'Refill soon').accessibilityLabel).toBe(
       '8:00 AM, Take medication. Note: Refill soon',
     );
-  });
-
-  it('opens an editor for editors, on open and done tasks, with or without a note', () => {
-    expect(canEditNote(noted('due', null), true)).toBe(true);
-    expect(canEditNote(noted('confirmed', 'Fine'), true)).toBe(true);
-  });
-
-  it('gives viewers no editor', () => {
-    expect(canEditNote(noted('due', 'Fine'), false)).toBe(false);
-  });
-
-  it('never opens a note on an event', () => {
-    const event = eventsOf(makeDay({ eventsToday: [makeEvent()] }), TODAY)[0];
-    expect(canEditNote(event, true)).toBe(false);
   });
 
   it('words the collapsed note subtitle, and has none for no or blank notes', () => {
@@ -901,7 +837,6 @@ describe('doneDetail', () => {
     expect(row.accessibilityLabel).toBe(
       '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. Note: Called her',
     );
-    expect(row.markable).toBeNull();
   });
 });
 

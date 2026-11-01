@@ -9,7 +9,10 @@
 // over-long reminder titles are rejected. Also: the resolution note is trimmed (blank is
 // stored as absent, over 500 characters rejected) and only an editor caregiver may use
 // via "caregiver"; an editor may resolve an upcoming task any time today (a device only
-// within 60 minutes), and the scheduler leaves it resolved. The clock is driven by faking Date
+// within 60 minutes), and the scheduler leaves it resolved. Also: undoResolve (the same
+// caregiver within 30 seconds restores the pre-resolve state and the scheduler carries on;
+// others, late undos, devices and viewers are refused) and an unchanged note writes and
+// audits nothing. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
 // Last modified: 2026-11-01
@@ -522,6 +525,189 @@ describe("setTaskNote", () => {
       note: "Done late",
     });
     expect(replaced.resolutionNote).toBe("Done late");
+  });
+});
+
+describe("setTaskNote unchanged", () => {
+  test("saving the same note again writes and audits nothing", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const args = { instanceId: instance!._id, note: "Took with water" };
+    await asMax.mutation(api.instances.setTaskNote, args);
+    await asMax.mutation(api.instances.setTaskNote, { ...args, note: "  Took with water " });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(rows.filter((r) => r.action === "note")).toHaveLength(1);
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: instance!._id });
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: " " });
+    const after = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(after.filter((r) => r.action === "note")).toHaveLength(2);
+  });
+});
+
+describe("undoResolve", () => {
+  /**
+   * purpose: Resolve the day's only instance as Max at an instant and return its id.
+   * @param f: (Fixture) Fixture with one task at 08:00 on 2027-03-14.
+   * @param iso: (string) UTC instant to resolve at.
+   * @return: (Promise<Id<"taskInstances">>) The instance.
+   */
+  async function resolveAt(f: Fixture, iso: string): Promise<Id<"taskInstances">> {
+    const [instance] = await instancesOn(f, "2027-03-14");
+    at(iso);
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "caregiver" });
+    return instance!._id;
+  }
+
+  test("the same caregiver restores the state it had, per original state", async () => {
+    const cases = [
+      { name: "upcoming", resolve: "2027-03-14T11:00:00Z", ticks: [] as string[] },
+      { name: "due", resolve: "2027-03-14T12:05:00Z", ticks: ["2027-03-14T12:00:00Z"] },
+      { name: "missed", resolve: "2027-03-14T13:05:00Z", ticks: ["2027-03-14T13:00:00Z"] },
+    ];
+    for (const c of cases) {
+      const f = await setup("2027-03-14T11:00:00Z");
+      await makeTask(f, "Morning pills", ["08:00"]);
+      for (const iso of c.ticks) await tick(f.t, iso);
+      const id = await resolveAt(f, c.resolve);
+      const undone = await f.t
+        .withIdentity({ subject: "max" })
+        .mutation(api.instances.undoResolve, { instanceId: id });
+      expect(undone.state, c.name).toBe(c.name);
+      expect(undone.confirmedAt).toBeUndefined();
+      expect(undone.confirmedBy).toBeUndefined();
+      expect(undone.confirmedVia).toBeUndefined();
+      expect(undone.resolvedFromState).toBeUndefined();
+    }
+  });
+
+  test("an escalated instance is restored as escalated", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(instance!._id, { state: "escalated" });
+    });
+    const id = await resolveAt(f, "2027-03-14T12:05:00Z");
+    const undone = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    expect(undone.state).toBe("escalated");
+  });
+
+  test("falls back to due when the prior state was not recorded", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(id, { resolvedFromState: undefined });
+    });
+    const undone = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    expect(undone.state).toBe("due");
+  });
+
+  test("keeps the note and the claim, and is audited as a state change", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T12:01:00Z");
+    await asMax.mutation(api.instances.claimTaskInstance, { instanceId: instance!._id });
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: "Hi" });
+    await resolveAt(f, "2027-03-14T12:05:00Z");
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id });
+    expect(undone).toMatchObject({ state: "due", resolutionNote: "Hi", claimedBy: "max" });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const last = rows.filter((r) => r.action === "state_change").at(-1);
+    expect(last?.detail).toMatchObject({ from: "resolved", to: "due" });
+    expect(last?.actorUserId).toBe("max");
+  });
+
+  test("works at exactly 30 seconds and is refused after", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T11:00:31Z");
+    await expect(
+      asMax.mutation(api.instances.undoResolve, { instanceId: id }),
+    ).rejects.toMatchObject({
+      data: { code: "invalid", message: "This can no longer be undone." },
+    });
+    at("2027-03-14T11:00:30Z");
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: id });
+    expect(undone.state).toBe("upcoming");
+  });
+
+  test("another caregiver cannot undo and an open instance cannot be undone", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    await expect(
+      f.t.withIdentity({ subject: "pat" }).mutation(api.instances.undoResolve, { instanceId: id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    const asMax = f.t.withIdentity({ subject: "max" });
+    await asMax.mutation(api.instances.undoResolve, { instanceId: id });
+    await expect(
+      asMax.mutation(api.instances.undoResolve, { instanceId: id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("a device confirmation cannot be undone", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
+    await expect(
+      f.t
+        .withIdentity({ subject: "max" })
+        .mutation(api.instances.undoResolve, { instanceId: instance!._id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("access: viewers, devices and outsiders are forbidden", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    for (const subject of ["val", "phone", "display", "nobody"]) {
+      await expect(
+        f.t.withIdentity({ subject }).mutation(api.instances.undoResolve, { instanceId: id }),
+        subject,
+      ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    }
+  });
+
+  test("the scheduler picks a restored instance up: upcoming opens, then misses", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))?.state).toBe("due");
+    await tick(f.t, "2027-03-14T13:30:00Z");
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))?.state).toBe("missed");
+  });
+
+  test("a restored due instance still closes as missed when its window ends", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    const id = await resolveAt(f, "2027-03-14T12:05:00Z");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    await tick(f.t, "2027-03-14T13:30:00Z");
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))?.state).toBe("missed");
   });
 });
 

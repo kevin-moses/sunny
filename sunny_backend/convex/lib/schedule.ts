@@ -9,7 +9,7 @@
 // removes the task row at once and the rest in bounded batches (purgeTaskBatch), because a
 // long-lived task has more rows than one mutation may touch.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-11-01
 
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -351,8 +351,9 @@ export async function purgeTaskBatch(
 /**
  * purpose: Patch an instance and audit the change like the SQL trigger: a state change is
  *          "state_change", otherwise a claim change is "claim", otherwise a snooze change is
- *          "snooze"; nothing is audited when none of those fields changed. A key set to
- *          undefined clears the field.
+ *          "snooze", otherwise a resolutionNote change is "note" (detail { hasNote }). Fields
+ *          whose value already matches are not written, and when nothing differs there is no
+ *          write and no audit. A key set to undefined clears the field.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who made the change (the scheduler passes the system actor).
  * @param instance: (Doc<"taskInstances">) The instance before the change.
@@ -365,20 +366,31 @@ export async function changeInstance(
   instance: Doc<"taskInstances">,
   patch: Partial<Omit<Doc<"taskInstances">, "_id" | "_creationTime">>,
 ): Promise<Doc<"taskInstances">> {
-  await ctx.db.patch(instance._id, patch);
+  const changed = Object.entries(patch).filter(
+    ([key, value]) => instance[key as keyof typeof instance] !== value,
+  );
+  if (changed.length === 0) return instance;
+  await ctx.db.patch(instance._id, Object.fromEntries(changed));
   const after = (await ctx.db.get(instance._id))!;
-  const stateChanged = after.state !== instance.state;
-  const claimChanged = after.claimedBy !== instance.claimedBy;
-  const snoozeChanged = after.snoozedUntil !== instance.snoozedUntil;
-  if (!stateChanged && !claimChanged && !snoozeChanged) return after;
-  const detail: Record<string, unknown> = { from: instance.state, to: after.state };
-  if (after.confirmedVia !== undefined) detail["via"] = after.confirmedVia;
-  if (after.claimedBy !== undefined) detail["claimedBy"] = after.claimedBy;
-  if (after.snoozedUntil !== undefined) detail["snoozedUntil"] = after.snoozedUntil;
+  let action: "state_change" | "claim" | "snooze" | "note";
+  let detail: Record<string, unknown>;
+  if (after.state !== instance.state) action = "state_change";
+  else if (after.claimedBy !== instance.claimedBy) action = "claim";
+  else if (after.snoozedUntil !== instance.snoozedUntil) action = "snooze";
+  else if (after.resolutionNote !== instance.resolutionNote) action = "note";
+  else return after;
+  if (action === "note") {
+    detail = { hasNote: after.resolutionNote !== undefined };
+  } else {
+    detail = { from: instance.state, to: after.state };
+    if (after.confirmedVia !== undefined) detail["via"] = after.confirmedVia;
+    if (after.claimedBy !== undefined) detail["claimedBy"] = after.claimedBy;
+    if (after.snoozedUntil !== undefined) detail["snoozedUntil"] = after.snoozedUntil;
+  }
   await audit(ctx, {
     householdId: after.householdId,
     actor,
-    action: stateChanged ? "state_change" : claimChanged ? "claim" : "snooze",
+    action,
     entity: "task_instance",
     entityId: after._id,
     detail,
