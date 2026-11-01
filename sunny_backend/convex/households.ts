@@ -21,7 +21,11 @@
 // as requireCaregiverAccount) together with its households, so the app can route before any
 // household exists.
 //
-// Last modified: 2026-10-31
+// One household per caregiver: create and redeemJoinCode reject a caregiver who already has a
+// householdMembers row (assertNoHousehold, checked before anything is inserted). A caregiver
+// removed by removeMember can then join or create another household.
+//
+// Last modified: 2026-11-01
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -149,11 +153,31 @@ function isDeviceGrant(grant: JoinGrant): grant is DeviceKind {
 }
 
 /**
+ * purpose: Enforce the one-household-per-caregiver rule.
+ * @param ctx: (QueryCtx) Context.
+ * @param userId: (string) The caregiver's user id.
+ * @raises invalid when the user is already a member of any household.
+ */
+async function assertNoHousehold(ctx: QueryCtx, userId: string): Promise<void> {
+  const existing = await ctx.db
+    .query("householdMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  if (existing) {
+    throw appError(
+      "invalid",
+      "You already belong to a household. Ask its primary caregiver to remove you before joining another.",
+    );
+  }
+}
+
+/**
  * purpose: Create a household with the caller as primary caregiver and on-call contact.
  * @param seniorPreferredName: (string) What the senior likes to be called.
  * @param timezone: (string) IANA zone of the household.
  * @param caregiverDisplayName: (string) The caller's display name.
  * @return: (Id<"households">) The new household.
+ * @raises invalid when the caller already belongs to a household (one household per caregiver).
  */
 export const create = mutation({
   args: {
@@ -163,6 +187,7 @@ export const create = mutation({
   },
   handler: async (ctx, args): Promise<Id<"households">> => {
     const userId = await requireCaregiverAccount(ctx);
+    await assertNoHousehold(ctx, userId);
     const seniorPreferredName = requireNonBlank(args.seniorPreferredName, "Senior's name");
     const displayName = requireNonBlank(args.caregiverDisplayName, "Your name");
     const timezone = requireTimezone(args.timezone);
@@ -504,7 +529,8 @@ export const deleteJoinCode = mutation({
  * @param code: (string) The code; trimmed and case-insensitive.
  * @param displayName: (string, optional) Display name; defaults to "Caregiver".
  * @return: (Id<"households">) The joined household.
- * @raises invalid when the code is for a senior's device, not_found when it cannot be redeemed.
+ * @raises invalid when the code is for a senior's device or the caller already belongs to a
+ *          household (including this one); not_found when it cannot be redeemed.
  */
 export const redeemJoinCode = mutation({
   args: { code: v.string(), displayName: v.optional(v.string()) },
@@ -518,9 +544,7 @@ export const redeemJoinCode = mutation({
         "That code is for setting up a senior's device. Ask a family member for a caregiver invite code.",
       );
     }
-    if (await findMember(ctx, row.householdId, userId)) {
-      throw appError("invalid", "You are already a member of this household");
-    }
+    await assertNoHousehold(ctx, userId);
     await ctx.db.insert("householdMembers", {
       householdId: row.householdId,
       userId,

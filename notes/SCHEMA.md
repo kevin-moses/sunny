@@ -24,6 +24,7 @@ How Sunny's Convex tables implement `notes/SPEC.md`. The source of truth is `sun
 | `joinCodes` | One-time 8-character codes for pairing a device or inviting a caregiver: `grants`, `createdBy`, `expiresAt` (24 h), `redeemedBy`, `redeemedAt` | `by_code`, `by_household` | `households.createJoinCode`, `redeemJoinCode`, `pairDevice`, `deleteJoinCode` |
 
 Rules:
+- A caregiver belongs to at most one household: `households.create` and `redeemJoinCode` reject a caller who already has a `householdMembers` row ("invalid"), and the check runs before anything is inserted (a rejected redeem leaves the code unused). A caregiver removed by `removeMember` can then create or join another. The rule is enforced in code, not by an index, and older rows may still hold two memberships.
 - A household always keeps at least one primary: the last primary cannot be demoted or removed.
 - A device's `userId` is a Clerk user made at pairing. Re-pairing creates a new user, so a push token held by an orphaned user (no device row, no membership) may be taken over; a token held by a live account is refused.
 - `pairingNonce` and `pairedAt` support retrying a lost `/pair` response for 10 minutes. `listDevices` strips the nonce.

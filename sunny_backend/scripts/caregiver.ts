@@ -9,7 +9,10 @@
 // CONVEX_DEPLOYMENT in sunny_backend/.env.local starts with "dev:" (only that one line is read).
 //
 //   setup              Create a dev household (once) with the dev caregiver as primary, and
-//                      print join codes for the senior phone and the home display.
+//                      print join codes for the senior phone and the home display. A caregiver
+//                      belongs to at most one household, so if the dev caregiver already has
+//                      one on the deployment (for example the state file was deleted), setup
+//                      adopts it instead of creating another.
 //   chat "<message>"   Send a request to the household agent (agentRequests:request), then
 //                      poll agentRequests:get every 2 seconds and print the reply or error.
 //                      Add --continue to continue the previous conversation.
@@ -37,7 +40,7 @@
 //   npx tsx scripts/caregiver.ts phone 555-123-4567
 //   npx tsx scripts/caregiver.ts confirm-phone 123456
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -167,7 +170,20 @@ function invite(role: string): void {
 }
 
 /**
- * purpose: Create the dev household once and print join codes.
+ * purpose: The id of the household the dev caregiver already belongs to on the deployment.
+ *          A caregiver belongs to at most one household, so there is at most one.
+ * @return: (string | null) The household id, or null when the dev caregiver has none.
+ */
+function findExistingHousehold(): string | null {
+  const mine = convexRun("households:mine", {}) as {
+    households: Array<{ household: { _id: string } }>;
+  };
+  return mine.households[0]?.household._id ?? null;
+}
+
+/**
+ * purpose: Create the dev household once (or adopt the dev caregiver's existing one when the
+ *          state file is missing) and print join codes.
  */
 function setup(): void {
   if (existsSync(STATE_FILE)) {
@@ -176,6 +192,13 @@ function setup(): void {
       `Already set up: household ${state.householdId} (delete ${STATE_FILE} to start over)`,
     );
     printCodes(state.householdId);
+    return;
+  }
+  const existing = findExistingHousehold();
+  if (existing !== null) {
+    saveState({ householdId: existing });
+    console.log(`Adopted existing household ${existing} (saved to ${STATE_FILE})`);
+    printCodes(existing);
     return;
   }
   const householdId = convexRun("households:create", {

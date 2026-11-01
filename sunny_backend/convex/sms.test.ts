@@ -10,7 +10,7 @@
 // other recipients, unverified numbers, viewers, a number shared across households, and many
 // other rows after the alert; TwiML escaping of names.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
@@ -522,10 +522,16 @@ describe("claiming by reply", () => {
 
   test("a number in two households claims the newest alert across them", async () => {
     const { t, householdId } = await setup();
-    const second = await createHousehold(t, {
-      subject: "pat",
-      seniorName: "Dad",
-      caregiverName: "Patricia",
+    // createHousehold enforces one household per caregiver, so pat is added to the second
+    // household's roster directly (rows from before the rule can still hold two memberships).
+    const second = await createHousehold(t, { subject: "zed", seniorName: "Dad" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("householdMembers", {
+        householdId: second,
+        userId: "pat",
+        role: "member",
+        displayName: "Patricia",
+      });
     });
     await setPhone(t, second, "pat", PAT_PHONE);
     const inFirst = await addInstance(t, householdId, "Morning pills");

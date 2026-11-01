@@ -10,7 +10,7 @@
 // inserted row, the stored workflow id, the audit entry, the view shape of get and list
 // (null for absent fields, newest first, limit clamping) and cancel.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -159,7 +159,7 @@ describe("request", () => {
   test("the limit is per household", async () => {
     const t = makeBackend();
     const householdId = await createTeam(t);
-    const other = await createHousehold(t, { seniorName: "Bob" });
+    const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
     for (let i = 0; i < 5; i++) await insertRequest(t, other, { status: "queued" });
     await expect(
       t
@@ -270,7 +270,7 @@ describe("request", () => {
       test("ignores other households' conversations", async () => {
         const t = makeBackend();
         const householdId = await createTeam(t);
-        const other = await createHousehold(t, { seniorName: "Bob" });
+        const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
         await insertRequest(t, other, { status: "succeeded", sessionId: "theirs" });
         const id = await sendLatest(t, householdId);
         const row = await t.run(async (ctx) => await ctx.db.get(id));
@@ -361,7 +361,7 @@ describe("request", () => {
     test("refuses to continue another household's request", async () => {
       const t = makeBackend();
       const householdId = await createTeam(t);
-      const other = await createHousehold(t, { seniorName: "Bob" });
+      const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
       const earlier = await insertRequest(t, other, { status: "succeeded", sessionId: "s1" });
       await expect(
         t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
@@ -459,7 +459,7 @@ describe("get and list", () => {
   test("list returns newest first and only this household's requests", async () => {
     const t = makeBackend();
     const householdId = await createTeam(t);
-    const other = await createHousehold(t, { seniorName: "Bob" });
+    const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
     const first = await insertRequest(t, householdId);
     const second = await insertRequest(t, householdId);
     await insertRequest(t, other);
