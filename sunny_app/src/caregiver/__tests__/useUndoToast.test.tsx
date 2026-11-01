@@ -3,7 +3,7 @@
 // Purpose: Tests for useUndoToast, rendering the real hook with react-test-renderer and fake
 // timers: the toast shows for the task, goes away after the duration, a newer tick replaces it
 // and restarts the timer (the older timer must not hide the newer toast), dismiss hides it at
-// once, and unmounting clears the timer.
+// once, unmounting clears the timer, and a show after unmount arms no timer.
 //
 // Last modified: 2026-11-01
 
@@ -99,6 +99,14 @@ describe('useUndoToast', () => {
     const h = renderToast();
     act(() => h.get().show('a'));
     act(() => h.renderer.unmount());
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('a show after unmount does nothing and arms no timer', () => {
+    const h = renderToast();
+    const { show } = h.get();
+    act(() => h.renderer.unmount());
+    act(() => show('a'));
     expect(jest.getTimerCount()).toBe(0);
   });
 });

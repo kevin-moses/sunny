@@ -4,17 +4,20 @@
 // mocked callMutation: claim and saveNote send their mutations, markDone resolves true only when
 // this caregiver's tick took effect ("Already marked done." otherwise), undoMarkDone sends
 // undoResolve and shows a refusal in the task's slot, a failed call sets the error state, a
-// success clears the state, and the action functions keep their identity between renders.
+// success clears the state, a call that finishes after a newer one started leaves the newer
+// state alone (a note save ending during Mark done), error messages (including "Already marked
+// done.") clear themselves after 5 seconds or when the next action starts, and the action
+// functions keep their identity between renders.
 //
 // Last modified: 2026-11-01
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import React from 'react';
-import { act, create } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { callMutation } from '../../backend/api';
-import { useTaskActions, type TaskActions } from '../useTaskActions';
+import { ERROR_CLEAR_MS, useTaskActions, type TaskActions } from '../useTaskActions';
 
 jest.mock('../../backend/convex', () => ({ convex: {} }));
 
@@ -25,6 +28,8 @@ jest.mock('../../backend/api', () => ({
 
 const mockCall = callMutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const ID = 'inst1' as never;
+/** Renderers created by a test, unmounted afterwards so pending error timers are cleared. */
+const mounted: ReactTestRenderer[] = [];
 
 /**
  * purpose: Render the real hook and expose its latest return value.
@@ -37,12 +42,18 @@ function renderActions(): { get: () => TaskActions } {
     return null;
   };
   act(() => {
-    create(<Probe />);
+    mounted.push(create(<Probe />));
   });
   return { get: () => current };
 }
 
 describe('useTaskActions', () => {
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+  });
+
   beforeEach(() => {
     mockCall.mockReset();
     mockCall.mockResolvedValue(null);
@@ -173,6 +184,120 @@ describe('useTaskActions', () => {
     expect(h.get().actions[ID as string]).toEqual({
       status: 'error',
       message: expect.any(String),
+    });
+  });
+
+  describe('overlapping calls and self-clearing errors', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('a note save finishing during Mark done does not clear the marking state', async () => {
+      let finishSave!: (value: unknown) => void;
+      let finishMark!: (value: unknown) => void;
+      mockCall
+        .mockReturnValueOnce(new Promise((resolve) => (finishSave = resolve)))
+        .mockReturnValueOnce(new Promise((resolve) => (finishMark = resolve)));
+      const h = renderActions();
+      let save!: Promise<boolean>;
+      let mark!: Promise<boolean>;
+      act(() => {
+        save = h.get().saveNote(ID, 'note');
+      });
+      act(() => {
+        mark = h.get().markDone(ID);
+      });
+      expect(h.get().actions[ID as string]).toEqual({ status: 'marking' });
+      await act(async () => {
+        finishSave(null);
+        await save;
+      });
+      expect(h.get().actions[ID as string]).toEqual({ status: 'marking' });
+      await act(async () => {
+        finishMark({ confirmedBy: 'user_1' });
+        await mark;
+      });
+      expect(h.get().actions[ID as string]).toBeUndefined();
+    });
+
+    it('a failed save finishing during Mark done does not overwrite the marking state', async () => {
+      let failSave!: (reason: unknown) => void;
+      mockCall
+        .mockReturnValueOnce(new Promise((_, reject) => (failSave = reject)))
+        .mockReturnValueOnce(new Promise(() => {}));
+      const h = renderActions();
+      let save!: Promise<boolean>;
+      act(() => {
+        save = h.get().saveNote(ID, 'note');
+      });
+      act(() => {
+        void h.get().markDone(ID);
+      });
+      await act(async () => {
+        failSave(new Error('boom'));
+        await save;
+      });
+      expect(h.get().actions[ID as string]).toEqual({ status: 'marking' });
+    });
+
+    it('an error message clears itself after five seconds', async () => {
+      mockCall.mockRejectedValue(new Error('boom'));
+      const h = renderActions();
+      await act(async () => {
+        await h.get().claim(ID);
+      });
+      expect(h.get().actions[ID as string]?.status).toBe('error');
+      act(() => {
+        jest.advanceTimersByTime(ERROR_CLEAR_MS - 1);
+      });
+      expect(h.get().actions[ID as string]?.status).toBe('error');
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(h.get().actions[ID as string]).toBeUndefined();
+    });
+
+    it('"Already marked done." clears itself after five seconds', async () => {
+      mockCall.mockResolvedValue({ confirmedBy: 'user_2' });
+      const h = renderActions();
+      await act(async () => {
+        await h.get().markDone(ID);
+      });
+      expect(h.get().actions[ID as string]).toEqual({
+        status: 'error',
+        message: 'Already marked done.',
+      });
+      act(() => {
+        jest.advanceTimersByTime(ERROR_CLEAR_MS);
+      });
+      expect(h.get().actions[ID as string]).toBeUndefined();
+    });
+
+    it('the next action replaces an error and the old timer does not clear the new state', async () => {
+      mockCall.mockRejectedValueOnce(new Error('boom'));
+      const h = renderActions();
+      await act(async () => {
+        await h.get().claim(ID);
+      });
+      let finish!: (value: unknown) => void;
+      mockCall.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+      let pending!: Promise<boolean>;
+      act(() => {
+        pending = h.get().markDone(ID);
+      });
+      expect(h.get().actions[ID as string]).toEqual({ status: 'marking' });
+      act(() => {
+        jest.advanceTimersByTime(ERROR_CLEAR_MS);
+      });
+      expect(h.get().actions[ID as string]).toEqual({ status: 'marking' });
+      await act(async () => {
+        finish({ confirmedBy: 'user_1' });
+        await pending;
+      });
     });
   });
 });

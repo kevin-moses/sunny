@@ -3,7 +3,8 @@
 // Purpose: The state of the "Task completed / Undo" toast: which task it is for and when it goes
 // away. show(id) displays the toast for a task and starts a UNDO_TOAST_MS timer; showing it again
 // (a newer tick) replaces the task and restarts the timer, so only the latest tick has a toast.
-// dismiss() hides it at once. The timer is cleared on unmount. show and dismiss keep their
+// dismiss() hides it at once. The timer is cleared on unmount, and a show() after unmount (a late server reply) does
+// nothing, so no timer is armed. show and dismiss keep their
 // identity between renders.
 //
 // Last modified: 2026-11-01
@@ -31,6 +32,7 @@ export interface UndoToast<T> {
 export function useUndoToast<T>(durationMs: number = UNDO_TOAST_MS): UndoToast<T> {
   const [id, setId] = useState<T | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
   /**
    * purpose: Stop the running timer, if any.
@@ -52,11 +54,13 @@ export function useUndoToast<T>(durationMs: number = UNDO_TOAST_MS): UndoToast<T
 
   /**
    * purpose: Show the toast for a task, replacing any current one and restarting the timer.
+   *          Does nothing once the component has unmounted.
    * @param next: (T) The task the toast is for.
    * @return: (void)
    */
   const show = useCallback(
     (next: T): void => {
+      if (!mountedRef.current) return;
       clearTimer();
       setId(next);
       timerRef.current = setTimeout(dismiss, durationMs);
@@ -64,7 +68,13 @@ export function useUndoToast<T>(durationMs: number = UNDO_TOAST_MS): UndoToast<T
     [clearTimer, dismiss, durationMs],
   );
 
-  useEffect(() => clearTimer, [clearTimer]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearTimer();
+    };
+  }, [clearTimer]);
 
   return { id, show, dismiss };
 }

@@ -4,7 +4,8 @@
 // row, saving on close only when the trimmed draft changed (blank clears), toggling the open row
 // closes it, opening another row saves the first, a failed save's draft comes back when the row
 // is reopened, unmounting saves an open draft, and toggle, setDraft and close keep their
-// identity between renders.
+// identity between renders. Also: a successful save keeps a newer failed draft for the same
+// task, and close(rowId) acts only when that row is the open one.
 //
 // Last modified: 2026-11-01
 
@@ -121,5 +122,33 @@ describe('useNoteEditor', () => {
     expect(h.get().toggle).toBe(toggle);
     expect(h.get().setDraft).toBe(setDraft);
     expect(h.get().close).toBe(close);
+  });
+
+  it('a successful save does not erase a newer failed draft for the same task', async () => {
+    let finishFirst!: (saved: boolean) => void;
+    save.mockReturnValueOnce(new Promise<boolean>((resolve) => (finishFirst = resolve)));
+    save.mockResolvedValueOnce(false);
+    const h = renderEditor();
+    act(() => h.get().toggle(A));
+    act(() => h.get().setDraft('First'));
+    act(() => h.get().close());
+    act(() => h.get().toggle(A));
+    act(() => h.get().setDraft('Second'));
+    await act(async () => h.get().close());
+    await act(async () => finishFirst(true));
+    act(() => h.get().toggle(A));
+    expect(h.get().open?.initialDraft).toBe('Second');
+  });
+
+  it('close(rowId) closes the open row but ignores a blur from another row', async () => {
+    const h = renderEditor();
+    act(() => h.get().toggle(B));
+    act(() => h.get().setDraft('Typed'));
+    act(() => h.get().close('row-a'));
+    expect(h.get().open?.rowId).toBe('row-b');
+    expect(save).not.toHaveBeenCalled();
+    await act(async () => h.get().close('row-b'));
+    expect(h.get().open).toBeNull();
+    expect(save).toHaveBeenCalledWith('b', 'Typed');
   });
 });

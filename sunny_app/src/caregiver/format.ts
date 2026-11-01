@@ -1,20 +1,24 @@
 // sunny_app/src/caregiver/format.ts
 //
-// Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
-// the date range and month labels, which tasks are alerts and who is on them, which tasks are
-// open (any task in today's list that is not done: an editor can mark any of them done), the
-// checkbox of a task row (checkboxState: open, alert, done or disabled, and whether it can be
-// tapped), today's task rows (leftover and today, with the "who confirmed" detail line of done
-// tasks), the event rows of any day (tasks and events are different row types; the week strip
-// dots count events only), the title for the
-// day selected in the week strip, the later days of the week grouped by day, and the chat transcript built from the
-// household's agent requests (oldest first). Dates are household-local "YYYY-MM-DD" strings from
-// calendar.dayView; date arithmetic comes from day/localDate (parsed once, then counted as
-// days). No timezone conversion happens here: the server sends each confirmation as a
-// household-local "HH:MM" (confirmedLocalTime) and marks yesterday's still-open tasks
-// (carriedOver), and the message for a Mark done that another person beat (alreadyDoneMessage).
-// Note helpers say how a saved note reads on a row (noteLine) and whether closing the editor
-// must save (shouldSaveNote).
+// Purpose: Pure helpers for the caregiver app:
+// - the seven-day week strip (today through today+6), the date range and month labels;
+// - which tasks are alerts and who is on them;
+// - which tasks are open (any task in today's list that is not done: an editor can mark any of
+//   them done);
+// - the checkbox of a task row (checkboxState: open, alert, done or disabled, and whether it can
+//   be tapped);
+// - today's task rows (leftover and today, with the "who confirmed" detail line of done tasks);
+// - the event rows of any day (tasks and events are different row types; the week strip dots
+//   count events only);
+// - the title for the day selected in the week strip, and the later days of the week grouped by
+//   day;
+// - the chat transcript built from the household's agent requests (oldest first).
+// Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date arithmetic comes
+// from day/localDate (parsed once, then counted as days). No timezone conversion happens here:
+// the server sends each confirmation as a household-local "HH:MM" (confirmedLocalTime) and marks
+// yesterday's still-open tasks (carriedOver). Also here: the message for a Mark done that another
+// person beat (alreadyDoneMessage), and the note helpers that say how a saved note reads on a row
+// (noteLine) and whether closing the editor must save (shouldSaveNote).
 //
 // Last modified: 2026-11-01
 

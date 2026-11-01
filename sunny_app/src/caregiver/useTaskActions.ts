@@ -9,16 +9,23 @@
 // a live subscription and carries the claim, the confirmation or the undo, so every caregiver
 // sees it. One action runs per instance at a time, so a single map keyed by instance id holds
 // the state. The state lives only while the screen is mounted. A Mark done that finds the task
-// already finished by someone else shows "Already marked done." in the same slot. The action
-// functions keep their identity between renders, so memoized rows can receive them.
+// already finished by someone else shows "Already marked done." in the same slot. Every call
+// takes a token and only writes the slot while it still owns it, so a call that finishes after a
+// newer one started (a note save that ends after Mark done began) cannot clear or overwrite the
+// newer state. An error message clears itself after ERROR_CLEAR_MS or when the next action for
+// that instance starts. The action functions keep their identity between renders, so memoized
+// rows can receive them.
 //
 // Last modified: 2026-11-01
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { callMutation, toBackendError } from '../backend/api';
 import { api, type TaskInstanceId } from '../backend/convexApi';
 import { alreadyDoneMessage } from './format';
+
+/** How long (milliseconds) an error message stays in a task's slot before it clears itself. */
+export const ERROR_CLEAR_MS = 5000;
 
 /** An action that has not finished well: one still running, or failed. */
 export type TaskActionState =
@@ -50,6 +57,18 @@ export interface TaskActions {
  */
 export function useTaskActions(userId: string | null): TaskActions {
   const [actions, setActions] = useState<Partial<Record<string, TaskActionState>>>({});
+  /** The token of the latest call per instance; a call writes the slot only while it holds it. */
+  const tokensRef = useRef<Partial<Record<string, number>>>({});
+  const nextTokenRef = useRef(0);
+  /** The pending self-clear timer of an error message, per instance. */
+  const timersRef = useRef<Partial<Record<string, ReturnType<typeof setTimeout>>>>({});
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      Object.values(timers).forEach((timer) => clearTimeout(timer));
+    };
+  }, []);
 
   /**
    * purpose: Record (or, with undefined, clear) one instance's action state. Clearing an
@@ -73,7 +92,9 @@ export function useTaskActions(userId: string | null): TaskActions {
 
   /**
    * purpose: Run one mutation for an instance, recording its progress. On success the state is
-   *          cleared because the day view now shows the result.
+   *          cleared because the day view now shows the result. The call takes a token; when a
+   *          newer call for the same instance has started by the time this one finishes, this
+   *          one leaves the slot alone. An error message clears itself after ERROR_CLEAR_MS.
    * @param instanceId: (TaskInstanceId) The task instance.
    * @param working: (TaskActionState) The state to show while the call runs.
    * @param call: (() => Promise<R>) The mutation call.
@@ -89,13 +110,34 @@ export function useTaskActions(userId: string | null): TaskActions {
       call: () => Promise<R>,
       notice: (result: R) => string | null = () => null,
     ): Promise<boolean> => {
+      const token = ++nextTokenRef.current;
+      tokensRef.current[instanceId] = token;
+      clearTimeout(timersRef.current[instanceId]);
+      delete timersRef.current[instanceId];
       setAction(instanceId, working);
+
+      /**
+       * purpose: Write this call's outcome unless a newer call owns the slot; an error message
+       *          also schedules its own removal.
+       * @param state: (TaskActionState | undefined) The outcome; undefined clears the slot.
+       * @return: (void)
+       */
+      const finish = (state: TaskActionState | undefined): void => {
+        if (tokensRef.current[instanceId] !== token) return;
+        setAction(instanceId, state);
+        if (state?.status !== 'error') return;
+        timersRef.current[instanceId] = setTimeout(() => {
+          if (tokensRef.current[instanceId] === token) setAction(instanceId, undefined);
+          delete timersRef.current[instanceId];
+        }, ERROR_CLEAR_MS);
+      };
+
       try {
         const message = notice(await call());
-        setAction(instanceId, message === null ? undefined : { status: 'error', message });
+        finish(message === null ? undefined : { status: 'error', message });
         return message === null;
       } catch (e) {
-        setAction(instanceId, { status: 'error', message: toBackendError(e).message });
+        finish({ status: 'error', message: toBackendError(e).message });
         return false;
       }
     },

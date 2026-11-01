@@ -6,7 +6,8 @@
 // signs the caregiver out from the account button (Clerk) after a confirmation. The Chat tab
 // mounts on its first visit and then stays mounted so a half-typed message survives a tab
 // switch; the inactive tab is hidden. It also owns the floating tab bar's geometry: the bar is
-// hidden while the keyboard is up, and the room screens must leave for it is provided through
+// hidden while the keyboard is up or a note field has focus (a hardware keyboard
+// fires no keyboard events, so the field reports its focus through NoteFocusContext), and the room screens must leave for it is provided through
 // useTabBarInset. The caregiver's role decides what they may do: viewers cannot claim alerts,
 // mark tasks done or message Sunny.
 //
@@ -25,7 +26,7 @@ import { useKeyboardVisible } from '../theme/useKeyboardVisible';
 import { CaregiverChatScreen } from './CaregiverChatScreen';
 import { CaregiverHomeScreen } from './CaregiverHomeScreen';
 import { CaregiverTabBar, tabBarClearance, type CaregiverTab } from './CaregiverTabBar';
-import { TabBarInsetContext } from './tabBarInset';
+import { NoteFocusContext, TabBarInsetContext } from './tabBarInset';
 
 /**
  * purpose: Render the caregiver app: the Home or Chat tab and the floating tab bar.
@@ -37,7 +38,9 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
   const [chatVisited, setChatVisited] = useState(false);
   const { signOut, userId } = useAuth();
   const insets = useSafeAreaInsets();
-  const keyboardVisible = useKeyboardVisible();
+  const softwareKeyboardVisible = useKeyboardVisible();
+  const [noteFocused, setNoteFocused] = useState(false);
+  const keyboardVisible = softwareKeyboardVisible || noteFocused;
   const dayView = useDayView(householdId);
   const isEditor = role !== 'viewer';
 
@@ -72,29 +75,31 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
   };
 
   return (
-    <TabBarInsetContext.Provider value={keyboardVisible ? 0 : tabBarClearance(insets.bottom)}>
-      <View style={styles.root}>
-        <View style={tab === 'home' ? styles.tab : styles.hidden}>
-          <CaregiverHomeScreen
-            dayView={dayView}
-            canEdit={isEditor}
-            userId={userId ?? null}
-            onAccountPress={confirmSignOut}
-          />
-        </View>
-        {chatVisited && (
-          <View style={tab === 'chat' ? styles.tab : styles.hidden}>
-            <CaregiverChatScreen
-              householdId={householdId}
-              seniorName={dayView.day?.seniorPreferredName ?? null}
-              canSend={isEditor}
+    <NoteFocusContext.Provider value={setNoteFocused}>
+      <TabBarInsetContext.Provider value={keyboardVisible ? 0 : tabBarClearance(insets.bottom)}>
+        <View style={styles.root}>
+          <View style={tab === 'home' ? styles.tab : styles.hidden}>
+            <CaregiverHomeScreen
+              dayView={dayView}
+              canEdit={isEditor}
               userId={userId ?? null}
+              onAccountPress={confirmSignOut}
             />
           </View>
-        )}
-        {!keyboardVisible && <CaregiverTabBar active={tab} onChange={selectTab} />}
-      </View>
-    </TabBarInsetContext.Provider>
+          {chatVisited && (
+            <View style={tab === 'chat' ? styles.tab : styles.hidden}>
+              <CaregiverChatScreen
+                householdId={householdId}
+                seniorName={dayView.day?.seniorPreferredName ?? null}
+                canSend={isEditor}
+                userId={userId ?? null}
+              />
+            </View>
+          )}
+          {!keyboardVisible && <CaregiverTabBar active={tab} onChange={selectTab} />}
+        </View>
+      </TabBarInsetContext.Provider>
+    </NoteFocusContext.Provider>
   );
 }
 

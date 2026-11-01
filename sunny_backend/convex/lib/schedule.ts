@@ -358,6 +358,8 @@ export async function purgeTaskBatch(
  * @param actor: (Actor) Who made the change (the scheduler passes the system actor).
  * @param instance: (Doc<"taskInstances">) The instance before the change.
  * @param patch: (Partial<Doc<"taskInstances">>) Fields to change.
+ * @param extraDetail: (Record<string, unknown>, optional) Keys merged into the audit detail of a
+ *        state, claim or snooze change (for example { undo: true }); other callers omit it.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the change.
  */
 export async function changeInstance(
@@ -365,6 +367,7 @@ export async function changeInstance(
   actor: Actor,
   instance: Doc<"taskInstances">,
   patch: Partial<Omit<Doc<"taskInstances">, "_id" | "_creationTime">>,
+  extraDetail?: Record<string, unknown>,
 ): Promise<Doc<"taskInstances">> {
   const changed = Object.entries(patch).filter(
     ([key, value]) => instance[key as keyof typeof instance] !== value,
@@ -386,6 +389,7 @@ export async function changeInstance(
     if (after.confirmedVia !== undefined) detail["via"] = after.confirmedVia;
     if (after.claimedBy !== undefined) detail["claimedBy"] = after.claimedBy;
     if (after.snoozedUntil !== undefined) detail["snoozedUntil"] = after.snoozedUntil;
+    if (extraDetail !== undefined) Object.assign(detail, extraDetail);
   }
   await audit(ctx, {
     householdId: after.householdId,

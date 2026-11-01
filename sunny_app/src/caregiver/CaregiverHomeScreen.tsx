@@ -132,12 +132,12 @@ export function CaregiverHomeScreen({
    * purpose: Undo the tick the toast is for, with a selection haptic, and hide the toast.
    * @return: (void)
    */
-  const undo = (): void => {
+  const undo = useCallback((): void => {
     if (toastId === null) return;
     undoHaptic();
     dismissToast();
     void undoMarkDone(toastId);
-  };
+  }, [toastId, dismissToast, undoMarkDone]);
 
   /**
    * purpose: Select a day of the week strip, remembering which "today" it was chosen against.

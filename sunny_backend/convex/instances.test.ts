@@ -8,8 +8,8 @@
 // differ), standing in for the former Supabase grant and RLS checks. Also: non-finite dose times and
 // over-long reminder titles are rejected. Also: the resolution note is trimmed (blank is
 // stored as absent, over 500 characters rejected) and only an editor caregiver may use
-// via "caregiver"; an editor may resolve an upcoming task any time today (a device only
-// within 60 minutes), and the scheduler leaves it resolved. Also: undoResolve (the same
+// via "caregiver"; an editor may resolve an open task of today or earlier (not a later day;
+// a device only within 60 minutes), and the scheduler leaves it resolved. Also: undoResolve (the same
 // caregiver within 30 seconds restores the pre-resolve state and the scheduler carries on;
 // others, late undos, devices and viewers are refused) and an unchanged note writes and
 // audits nothing. The clock is driven by faking Date
@@ -22,7 +22,13 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { confirmDueTaskCore, confirmInstance, logDoseCore, snoozeInstance } from "./instances";
+import {
+  UNDO_WINDOW_MS,
+  confirmDueTaskCore,
+  confirmInstance,
+  logDoseCore,
+  snoozeInstance,
+} from "./instances";
 import schema from "./schema";
 
 /** Every non-test module in the backend, for the convex-test harness. */
@@ -354,6 +360,40 @@ describe("confirmTaskInstance", () => {
     });
   });
 
+  test("an editor cannot resolve a later day's instance, but today's and yesterday's work", async () => {
+    const f = await setup("2027-03-14T10:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [today] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const day = 24 * 60 * 60 * 1000;
+    const shifted = async (date: string, offset: number) =>
+      await f.t.run(async (ctx) => {
+        const id = await ctx.db.insert("taskInstances", {
+          ...(({ _id, _creationTime, ...rest }) => rest)(today!),
+          localDate: date,
+          windowStart: today!.windowStart + offset * day,
+          windowEnd: today!.windowEnd + offset * day,
+        });
+        return id;
+      });
+    const tomorrow = await shifted("2027-03-15", 1);
+    const yesterday = await shifted("2027-03-13", -1);
+    await expect(
+      asMax.mutation(api.instances.confirmTaskInstance, { instanceId: tomorrow, via: "button" }),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: "This task is not due yet" } });
+    expect(await f.t.run(async (ctx) => (await ctx.db.get(tomorrow))?.state)).toBe("upcoming");
+    const upcomingToday = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: today!._id,
+      via: "button",
+    });
+    expect(upcomingToday.state).toBe("resolved");
+    const carried = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: yesterday,
+      via: "button",
+    });
+    expect(carried.state).toBe("resolved");
+  });
+
   test("the scheduler leaves an early-resolved task resolved after its window passes", async () => {
     const f = await setup("2027-03-14T10:00:00Z");
     await makeTask(f, "Morning pills", ["08:00"]);
@@ -643,6 +683,86 @@ describe("undoResolve", () => {
     at("2027-03-14T11:00:30Z");
     const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: id });
     expect(undone.state).toBe("upcoming");
+  });
+
+  test("works at exactly UNDO_WINDOW_MS after the resolve", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T11:00:00Z");
+    await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: instance!._id,
+      via: "caregiver",
+    });
+    const t0 = (await f.t.run(async (ctx) => await ctx.db.get(instance!._id)))!.confirmedAt!;
+    vi.setSystemTime(t0 + UNDO_WINDOW_MS);
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id });
+    expect(undone.state).toBe("upcoming");
+    vi.setSystemTime(t0 + UNDO_WINDOW_MS + 1);
+    await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: instance!._id,
+      via: "caregiver",
+    });
+    vi.setSystemTime(t0 + 2 * UNDO_WINDOW_MS + 2);
+    await expect(
+      asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("restores the snooze the resolve cleared and audits the undo", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T12:01:00Z");
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.snoozeTaskInstance, { instanceId: instance!._id });
+    const snoozed = (await f.t.run(async (ctx) => await ctx.db.get(instance!._id)))!.snoozedUntil;
+    expect(snoozed).toBeDefined();
+    await resolveAt(f, "2027-03-14T12:02:00Z");
+    const resolved = await f.t.run(async (ctx) => await ctx.db.get(instance!._id));
+    expect(resolved?.snoozedUntil).toBeUndefined();
+    expect(resolved?.resolvedFromSnoozedUntil).toBe(snoozed);
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id });
+    expect(undone.snoozedUntil).toBe(snoozed);
+    expect(undone.resolvedFromSnoozedUntil).toBeUndefined();
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const stateChanges = rows.filter((r) => r.action === "state_change");
+    expect(stateChanges.at(-1)?.detail).toMatchObject({ from: "resolved", to: "due", undo: true });
+    expect(
+      stateChanges.slice(0, -1).some((r) => (r.detail as Record<string, unknown>)["undo"]),
+    ).toBe(false);
+  });
+
+  test("resolve, tick past the window start, undo, tick again: no step fires twice", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:55:00Z");
+    const get = async () => (await f.t.run(async (ctx) => await ctx.db.get(id)))!;
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    expect((await get()).state).toBe("resolved");
+    expect((await get()).firedSteps).toEqual([]);
+    at("2027-03-14T11:55:20Z");
+    await f.t.withIdentity({ subject: "max" }).mutation(api.instances.undoResolve, {
+      instanceId: id,
+    });
+    expect((await get()).state).toBe("upcoming");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    expect((await get()).state).toBe("due");
+    const afterFirst = (await get()).firedSteps.map((s) => s.stepId);
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    await tick(f.t, "2027-03-14T12:10:00Z");
+    const afterSecond = (await get()).firedSteps.map((s) => s.stepId);
+    expect(new Set(afterSecond).size).toBe(afterSecond.length);
+    expect(afterSecond.slice(0, afterFirst.length)).toEqual(afterFirst);
+    await tick(f.t, "2027-03-14T13:30:00Z");
+    const final = await get();
+    expect(final.state).toBe("missed");
+    const ids = final.firedSteps.map((s) => s.stepId);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   test("another caregiver cannot undo and an open instance cannot be undone", async () => {

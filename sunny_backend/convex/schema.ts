@@ -210,6 +210,8 @@ export default defineSchema({
     // The state an editor caregiver's resolve replaced, kept so instances.undoResolve can
     // restore it; cleared by the undo.
     resolvedFromState: v.optional(instanceState),
+    // The snooze that resolve cleared, restored by the undo.
+    resolvedFromSnoozedUntil: v.optional(v.number()),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),
     claimedBy: v.optional(v.string()),

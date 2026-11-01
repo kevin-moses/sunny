@@ -5,9 +5,12 @@
 // draft is saved (when its trimmed text differs from the task's note; blank clears the note) on
 // every way the editor closes: tapping the row's text again, opening another row's editor, the
 // field losing focus (this covers the keyboard's Done, tapping outside and scrolling, because
-// the screen's scroll view dismisses the keyboard on drag), the app leaving the foreground and
+// the screen's scroll view dismisses the keyboard on drag), the app going to the background and
 // unmounting (useFlushOnLeave). A save that fails keeps its draft so that reopening the row shows
-// it (and closing it retries). The typed text lives only in a ref (the field is uncontrolled),
+// it (and closing it retries); a save that succeeds forgets the draft only if it is still the
+// text that was saved. The field reports its row id when it loses focus and close(rowId) acts
+// only when that row is the open one, so a late blur from a row that is unmounting cannot close
+// the next row's editor. The typed text lives only in a ref (the field is uncontrolled),
 // so typing does not re-render anything. The only state is which row is open and its starting
 // text; toggle, setDraft and close keep their identity between renders.
 //
@@ -41,8 +44,11 @@ export interface NoteEditor {
   toggle: (target: NoteTarget) => void;
   /** Record the text typed in the open editor. */
   setDraft: (text: string) => void;
-  /** Close the open editor, saving its draft when it changed; does nothing when none is open. */
-  close: () => void;
+  /**
+   * Close the open editor, saving its draft when it changed; does nothing when none is open.
+   * With a row id, does nothing unless that row is the open one.
+   */
+  close: (rowId?: string) => void;
 }
 
 /**
@@ -67,11 +73,13 @@ export function useNoteEditor(
 
   /**
    * purpose: Close the open editor and save its draft if it changed.
+   * @param rowId: (string, optional) When given, close only if this is the open row.
    * @return: (void)
    */
-  const close = useCallback((): void => {
+  const close = useCallback((rowId?: string): void => {
     const target = targetRef.current;
     if (target === null) return;
+    if (rowId !== undefined && target.rowId !== rowId) return;
     targetRef.current = null;
     setOpen(null);
     const draft = draftRef.current;
@@ -81,9 +89,17 @@ export function useNoteEditor(
     }
     failedRef.current[target.instanceId] = draft;
     void saveRef.current(target.instanceId, noteFromInput(draft)).then((saved) => {
-      if (saved) delete failedRef.current[target.instanceId];
+      if (saved && failedRef.current[target.instanceId] === draft) {
+        delete failedRef.current[target.instanceId];
+      }
     });
   }, []);
+
+  /**
+   * purpose: Close whatever editor is open (used when the app leaves the screen).
+   * @return: (void)
+   */
+  const flush = useCallback((): void => close(), [close]);
 
   /**
    * purpose: Open a row's editor (saving any other open one first), or close it if it is open.
@@ -112,7 +128,7 @@ export function useNoteEditor(
     draftRef.current = text;
   }, []);
 
-  useFlushOnLeave(close);
+  useFlushOnLeave(flush);
 
   return useMemo(() => ({ open, toggle, setDraft, close }), [open, toggle, setDraft, close]);
 }

@@ -20,7 +20,7 @@
 // Last modified: 2026-11-01
 
 import { SymbolView } from 'expo-symbols';
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { TaskInstanceId } from '../backend/convexApi';
@@ -41,6 +41,7 @@ import {
   type TaskRowData,
   type WeekStripDay,
 } from './format';
+import { useReportNoteFocus } from './tabBarInset';
 import type { NoteEditor } from './useNoteEditor';
 import type { TaskActionState } from './useTaskActions';
 
@@ -349,20 +350,27 @@ function CheckboxBox({ kind }: { kind: CheckboxKind }) {
  *          with the current note (or a draft that failed to save). It has no buttons: every
  *          edit is reported to the note editor hook, which saves when the editor closes. The
  *          field losing focus closes it (the keyboard's Done and dragging the screen both blur
- *          it).
- * @param props: ({ initial: string, onChange: (text: string) => void, onClose: () => void })
- *        The starting text, the handler for every edit and the handler for losing focus.
+ *          it), reporting its row id so a late blur cannot close another row's editor. It also
+ *          reports focus and blur to the tab bar (hidden while a note has focus, since a
+ *          hardware keyboard fires no keyboard events), and blur when it unmounts.
+ * @param props: ({ rowId: string, initial: string, onChange: (text: string) => void,
+ *        onClose: (rowId: string) => void }) The row, the starting text, the handler for every
+ *        edit and the handler for losing focus.
  * @return: (JSX.Element) The editor.
  */
 function NoteEditorField({
+  rowId,
   initial,
   onChange,
   onClose,
 }: {
+  rowId: string;
   initial: string;
   onChange: (text: string) => void;
-  onClose: () => void;
+  onClose: (rowId: string) => void;
 }) {
+  const reportFocus = useReportNoteFocus();
+  useEffect(() => () => reportFocus(false), [reportFocus]);
   return (
     <View style={styles.noteEditor}>
       <TextInput
@@ -372,7 +380,11 @@ function NoteEditorField({
         onChangeText={onChange}
         returnKeyType="done"
         submitBehavior="blurAndSubmit"
-        onBlur={onClose}
+        onFocus={() => reportFocus(true)}
+        onBlur={() => {
+          reportFocus(false);
+          onClose(rowId);
+        }}
         placeholder="Add a note for the family"
         placeholderTextColor={colors.secondaryText}
         accessibilityLabel="Note"
@@ -484,6 +496,7 @@ export const TaskRow = memo(function TaskRow({
         </Pressable>
         {editing && noteEditor.open !== null && (
           <NoteEditorField
+            rowId={row.id}
             initial={noteEditor.open.initialDraft}
             onChange={noteEditor.setDraft}
             onClose={noteEditor.close}

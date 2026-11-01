@@ -100,15 +100,18 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
  * purpose: Confirm a task instance from any surface. The senior's device or the backend
  *          produces "confirmed"; an editor caregiver produces "resolved" under their name with
  *          confirmedVia "caregiver". A senior device can confirm an upcoming instance
- *          up to 60 minutes early; an editor caregiver can resolve one any time today (for
- *          example pills given early). Missed ones can still be confirmed late. Confirming an already confirmed or
- *          resolved instance changes nothing and returns it.
+ *          up to 60 minutes early; an editor caregiver can resolve any open task in today's
+ *          list or earlier (for example pills given early, or a leftover from yesterday), judged
+ *          by the household's timezone, but not one of a later day. Missed ones can still be
+ *          confirmed late. Confirming an already confirmed or resolved instance changes nothing
+ *          and returns it.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
  * @param args: ({instanceId, via, note}) The instance, the surface and an optional note.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the agent only), when via is
+ * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the agent: more than 60 minutes
+ *          early; editors: the instance's local date is after today), when via is
  *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
  *          A blank note is stored as absent, but never erases a note already on the
  *          instance (set earlier with setTaskNote): without a note the existing one is kept.
@@ -129,11 +132,12 @@ export async function confirmInstance(
   }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   if (instance.state === "confirmed" || instance.state === "resolved") return instance;
-  if (
-    !asCaregiver &&
-    instance.state === "upcoming" &&
-    instance.windowStart - now > EARLY_CONFIRM_MS
-  ) {
+  if (asCaregiver) {
+    const household = await loadHousehold(ctx, instance.householdId);
+    if (instance.localDate > localDate(now, household.timezone)) {
+      throw appError("invalid", "This task is not due yet");
+    }
+  } else if (instance.state === "upcoming" && instance.windowStart - now > EARLY_CONFIRM_MS) {
     throw appError("invalid", "This task is not due yet");
   }
   return await changeInstance(ctx, actor, instance, {
@@ -142,6 +146,7 @@ export async function confirmInstance(
     confirmedBy: actorUserId(actor),
     confirmedVia: asCaregiver ? "caregiver" : args.via,
     resolvedFromState: asCaregiver ? instance.state : undefined,
+    resolvedFromSnoozedUntil: asCaregiver ? instance.snoozedUntil : undefined,
     resolutionNote: note ?? instance.resolutionNote,
     snoozedUntil: undefined,
   });
@@ -229,7 +234,9 @@ export async function setTaskNoteCore(
  *          note and any claim are kept. The restored instance is an ordinary open one, so the
  *          scheduler handles it as usual (upcoming opens when its window starts, due and
  *          escalated close as missed when the window ends; steps already fired are not
- *          repeated). The change is audited as a state change.
+ *          repeated). The snooze the resolve cleared is restored too. The change is audited as a
+ *          state change with detail undo: true. A caregiver alert that the scheduler skipped as
+ *          instance_closed while the instance was resolved is not re-sent after the undo.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be an editor caregiver of the instance's household.
  * @param args: ({instanceId}) The instance.
@@ -254,13 +261,21 @@ export async function undoResolveInstance(
     instance.confirmedAt !== undefined &&
     now - instance.confirmedAt <= UNDO_WINDOW_MS;
   if (!undoable) throw appError("invalid", "This can no longer be undone.");
-  return await changeInstance(ctx, actor, instance, {
-    state: instance.resolvedFromState ?? "due",
-    confirmedAt: undefined,
-    confirmedBy: undefined,
-    confirmedVia: undefined,
-    resolvedFromState: undefined,
-  });
+  return await changeInstance(
+    ctx,
+    actor,
+    instance,
+    {
+      state: instance.resolvedFromState ?? "due",
+      confirmedAt: undefined,
+      confirmedBy: undefined,
+      confirmedVia: undefined,
+      snoozedUntil: instance.resolvedFromSnoozedUntil,
+      resolvedFromState: undefined,
+      resolvedFromSnoozedUntil: undefined,
+    },
+    { undo: true },
+  );
 }
 
 /**
