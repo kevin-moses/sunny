@@ -146,6 +146,8 @@ describe("tasks.create", () => {
     const cases: Array<[string, Record<string, unknown>]> = [
       ["blank title", { title: "  " }],
       ["blank label", { displayLabel: "" }],
+      ["title over 200", { title: "t".repeat(201) }],
+      ["label over 60", { displayLabel: "l".repeat(61) }],
       ["bad time", { times: ["9:00"] }],
       ["duplicate times", { times: ["09:00", "09:00"] }],
       ["weekday 0", { daysOfWeek: [0, 1] }],

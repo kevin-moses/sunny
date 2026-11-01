@@ -13,6 +13,13 @@
 // (createTaskCore, updateTaskCore, listTasksCore) that the public mutations and the household
 // agent's task tools (lib/agentTools.ts) share, so validation, audit and instance resync are
 // identical; only the public mutations check the caller's role, and only they hard delete.
+// createTaskCore returns the inserted task; its creator (createdBy) is the actor's user id,
+// which for the household agent is the caregiver it acts for (actorUserId). Wording limits: a
+// title is 200 characters at most (as for calendar events) and a display label 60, because the
+// senior's display shows the label in large type and a longer one would not fit.
+// TaskOptions.requireTimes (set by the agent, not the app, where as-needed medications have no
+// times) rejects an active task with no times, checked on the merged result of a create or an
+// update.
 // Default policy: a task created with no escalationPolicyId gets the household's seeded
 // "medication" policy (type medication) or "prompt_only" policy (every other type), found by
 // systemKey, because a task without a policy is never prompted or escalated. A later change
@@ -39,6 +46,10 @@ import { escalationStepInput, taskType } from "./lib/validators";
 import type { EscalationStepInput, TaskType } from "./lib/validators";
 
 const MAX_WINDOW_MINUTES = 720;
+/** Same limit as a calendar event title. */
+const MAX_TITLE_LENGTH = 200;
+/** The senior's display shows the label in large type; longer wording would not fit. */
+const MAX_DISPLAY_LABEL_LENGTH = 60;
 const DEFAULT_WINDOW_MINUTES = 60;
 const MAX_POLICY_NAME_LENGTH = 80;
 const MAX_POLICY_STEPS = 10;
@@ -46,6 +57,12 @@ const MAX_STEP_OFFSET_MINUTES = 1440;
 /** Households handled per backfill page, and tasks handled per backfill batch. */
 const BACKFILL_HOUSEHOLD_PAGE = 20;
 const BACKFILL_TASK_BATCH = 100;
+
+/** Optional extra rules for a create or an update. */
+export interface TaskOptions {
+  /** Reject a task that would be active with no times (the agent never makes one). */
+  requireTimes?: boolean;
+}
 
 /** The writable task fields after defaults, before validation. */
 type TaskDraft = Omit<
@@ -99,6 +116,7 @@ function normalizeSchedule(draft: TaskDraft): TaskDraft {
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) The task's household.
  * @param draft: (TaskDraft) The task fields.
+ * @param options: (TaskOptions) Extra rules; requireTimes rejects an active task with no times.
  * @return: (Promise<TaskDraft>) The normalized draft.
  * @raises invalid for any rule violation.
  */
@@ -106,9 +124,20 @@ async function validateDraft(
   ctx: QueryCtx,
   householdId: Id<"households">,
   draft: TaskDraft,
+  options: TaskOptions,
 ): Promise<TaskDraft> {
-  const title = requireNonBlank(draft.title, "Title");
-  const displayLabel = requireNonBlank(draft.displayLabel, "Display label");
+  const title = requireMaxLength(requireNonBlank(draft.title, "Title"), MAX_TITLE_LENGTH, "Title");
+  const displayLabel = requireMaxLength(
+    requireNonBlank(draft.displayLabel, "Display label"),
+    MAX_DISPLAY_LABEL_LENGTH,
+    "Display label",
+  );
+  if (options.requireTimes && draft.active && draft.times.length === 0) {
+    throw appError(
+      "invalid",
+      "A task needs at least one time (HH:MM); ask the caregiver for it instead of guessing",
+    );
+  }
   const spokenPrompt = draft.spokenPrompt.trim() || `Time for ${displayLabel}.`;
   const max = draft.asNeededMaxPerDay;
   if (max !== undefined && (!Number.isInteger(max) || max <= 0)) {
@@ -192,15 +221,24 @@ const taskChangeFields = {
 export type TaskChanges = ObjectType<typeof taskChangeFields>;
 
 /**
- * purpose: The household's tasks, active and inactive (core of list, shared with the agent).
+ * purpose: The household's tasks (core of list, shared with the agent).
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
+ * @param activeOnly: (boolean) True reads only active tasks through the by_household_active
+ *        index; false (default) reads active and inactive ones.
  * @return: (Promise<Doc<"tasks">[]>) Tasks in creation order.
  */
 export async function listTasksCore(
   ctx: QueryCtx,
   householdId: Id<"households">,
+  activeOnly = false,
 ): Promise<Doc<"tasks">[]> {
+  if (activeOnly) {
+    return await ctx.db
+      .query("tasks")
+      .withIndex("by_household_active", (q) => q.eq("householdId", householdId).eq("active", true))
+      .collect();
+  }
   return await ctx.db
     .query("tasks")
     .withIndex("by_household", (q) => q.eq("householdId", householdId))
@@ -216,15 +254,15 @@ export async function listTasksCore(
  *          "prompt_only" for the rest. An explicit escalationPolicyId wins. If the household
  *          lacks the seeded policy the task is created with no policy (it then never
  *          escalates). Changing the type later does not change the policy. The task is
- *          recorded as created by a caregiver.
+ *          recorded as created by a caregiver; createdBy is the actor's user id (for the
+ *          household agent, the caregiver it acts for).
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) Who creates it (audit actor).
  * @param householdId: (Id<"households">) Household.
  * @param args: (CreateTaskArgs) The task's fields.
  * @param now: (number) Epoch ms.
- * @param createdBy: (string, optional) Clerk user id recorded as the creator; defaults to the
- *        actor's own user id. The agent passes the requesting caregiver.
- * @return: (Promise<Id<"tasks">>) The new task.
+ * @param options: (TaskOptions) Extra rules (requireTimes).
+ * @return: (Promise<Doc<"tasks">>) The new task.
  * @raises invalid for any rule violation.
  */
 export async function createTaskCore(
@@ -233,24 +271,36 @@ export async function createTaskCore(
   householdId: Id<"households">,
   args: CreateTaskArgs,
   now: number,
-  createdBy: string | undefined = actorUserId(actor),
-): Promise<Id<"tasks">> {
-  const draft = await validateDraft(ctx, householdId, {
-    ...args,
-    spokenPrompt: args.spokenPrompt ?? "",
-    checklistItems: args.checklistItems ?? [],
-    times: args.times ?? [],
-    windowMinutes: args.windowMinutes ?? DEFAULT_WINDOW_MINUTES,
-    active: args.active ?? true,
-  });
+  options: TaskOptions = {},
+): Promise<Doc<"tasks">> {
+  const draft = await validateDraft(
+    ctx,
+    householdId,
+    {
+      ...args,
+      spokenPrompt: args.spokenPrompt ?? "",
+      checklistItems: args.checklistItems ?? [],
+      times: args.times ?? [],
+      windowMinutes: args.windowMinutes ?? DEFAULT_WINDOW_MINUTES,
+      active: args.active ?? true,
+    },
+    options,
+  );
   const escalationPolicyId =
     draft.escalationPolicyId ?? (await defaultPolicyId(ctx, householdId, draft.type));
-  return await insertTask(
+  const taskId = await insertTask(
     ctx,
     actor,
-    { ...draft, escalationPolicyId, householdId, createdByKind: "caregiver", createdBy },
+    {
+      ...draft,
+      escalationPolicyId,
+      householdId,
+      createdByKind: "caregiver",
+      createdBy: actorUserId(actor),
+    },
     now,
   );
+  return (await ctx.db.get(taskId))!;
 }
 
 /**
@@ -288,6 +338,7 @@ export async function defaultPolicyId(
  * @param changes: (TaskChanges) Absent key = unchanged, null = cleared. daysOfWeek null means
  *        every day; a blank spokenPrompt restores the default.
  * @param now: (number) Epoch ms.
+ * @param options: (TaskOptions) Extra rules (requireTimes), checked on the merged result.
  * @return: (Promise<Doc<"tasks">>) The task after the change.
  * @raises not_found for a missing or foreign task; invalid for bad values.
  */
@@ -298,6 +349,7 @@ export async function updateTaskCore(
   taskId: Id<"tasks">,
   changes: TaskChanges,
   now: number,
+  options: TaskOptions = {},
 ): Promise<Doc<"tasks">> {
   const task = await loadTask(ctx, householdId, taskId);
   /**
@@ -309,24 +361,29 @@ export async function updateTaskCore(
    */
   const orUndefined = <T>(value: T | null | undefined, current: T | undefined) =>
     value === undefined ? current : (value ?? undefined);
-  const draft = await validateDraft(ctx, task.householdId, {
-    type: changes.type ?? task.type,
-    title: changes.title ?? task.title,
-    displayLabel: changes.displayLabel ?? task.displayLabel,
-    spokenPrompt: changes.spokenPrompt ?? task.spokenPrompt,
-    pillDescription: orUndefined(changes.pillDescription, task.pillDescription),
-    checklistItems: changes.checklistItems ?? task.checklistItems,
-    times: changes.times ?? task.times,
-    daysOfWeek: orUndefined(changes.daysOfWeek, task.daysOfWeek),
-    onceOn: orUndefined(changes.onceOn, task.onceOn),
-    startsOn: orUndefined(changes.startsOn, task.startsOn),
-    endsOn: orUndefined(changes.endsOn, task.endsOn),
-    windowMinutes: changes.windowMinutes ?? task.windowMinutes,
-    escalationPolicyId: orUndefined(changes.escalationPolicyId, task.escalationPolicyId),
-    asNeededMaxPerDay: orUndefined(changes.asNeededMaxPerDay, task.asNeededMaxPerDay),
-    asNeededMinHours: orUndefined(changes.asNeededMinHours, task.asNeededMinHours),
-    active: changes.active ?? task.active,
-  });
+  const draft = await validateDraft(
+    ctx,
+    task.householdId,
+    {
+      type: changes.type ?? task.type,
+      title: changes.title ?? task.title,
+      displayLabel: changes.displayLabel ?? task.displayLabel,
+      spokenPrompt: changes.spokenPrompt ?? task.spokenPrompt,
+      pillDescription: orUndefined(changes.pillDescription, task.pillDescription),
+      checklistItems: changes.checklistItems ?? task.checklistItems,
+      times: changes.times ?? task.times,
+      daysOfWeek: orUndefined(changes.daysOfWeek, task.daysOfWeek),
+      onceOn: orUndefined(changes.onceOn, task.onceOn),
+      startsOn: orUndefined(changes.startsOn, task.startsOn),
+      endsOn: orUndefined(changes.endsOn, task.endsOn),
+      windowMinutes: changes.windowMinutes ?? task.windowMinutes,
+      escalationPolicyId: orUndefined(changes.escalationPolicyId, task.escalationPolicyId),
+      asNeededMaxPerDay: orUndefined(changes.asNeededMaxPerDay, task.asNeededMaxPerDay),
+      asNeededMinHours: orUndefined(changes.asNeededMinHours, task.asNeededMinHours),
+      active: changes.active ?? task.active,
+    },
+    options,
+  );
   return await patchTask(ctx, actor, task, draft, now);
 }
 
@@ -370,7 +427,7 @@ export const create = mutation({
   handler: async (ctx, args): Promise<Id<"tasks">> => {
     const actor = await requireEditor(ctx, args.householdId);
     const { householdId, ...rest } = args;
-    return await createTaskCore(ctx, actor, householdId, rest, Date.now());
+    return (await createTaskCore(ctx, actor, householdId, rest, Date.now()))._id;
   },
 });
 

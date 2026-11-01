@@ -37,7 +37,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Notification delivery (APNs, SMS) | `delivery.ts`, `apns.ts`, `apnsTokens.ts`, `lib/delivery.ts`, `lib/apnsPayload.ts`, `lib/twilio.ts` |
 | Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
 | Daily digest | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts` |
-| Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` (the agent's calendar and task tools; re-run `scripts/setup_managed_agent.ts` after changing the tools or prompt) |
+| Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` (the agent's calendar and task tools, run as an agent actor acting for the requesting caregiver; re-run `scripts/setup_managed_agent.ts` after changing the tools or prompt) |
 | Functions the Python voice agent calls (`agent:*`) | `agent.ts` |
 | LiveKit room token for a senior device | `voice.ts` |
 | Components (rate limiter, workflow, two workpools) | `convex.config.ts` |

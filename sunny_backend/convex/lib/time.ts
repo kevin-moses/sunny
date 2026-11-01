@@ -6,9 +6,10 @@
 // offset in effect before the change (2:30 becomes 3:30 daylight time), and repeated
 // times (fall-back) resolve to the later, standard-time instant, matching Postgres.
 //
-// Zone names are validated and canonicalized through canonicalTimezone.
+// Zone names are validated and canonicalized through canonicalTimezone. WEEKDAY_NAMES and
+// WEEKDAY_CODES (mon..sun, with weekdayCodes) name ISO weekdays.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-11-01
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -308,6 +309,18 @@ export const WEEKDAY_NAMES = [
   "Saturday",
   "Sunday",
 ];
+
+/** Weekday codes as the agent tools write them: mon..sun (index = ISO weekday - 1). */
+export const WEEKDAY_CODES = WEEKDAY_NAMES.map((name) => name.slice(0, 3).toLowerCase());
+
+/**
+ * purpose: Weekday codes for ISO weekday numbers.
+ * @param days: (number[] | null | undefined) ISO weekdays, 1 (Monday) to 7 (Sunday).
+ * @return: (string[] | null) e.g. [1, 3] gives ["mon", "wed"]; null when days is null or absent.
+ */
+export function weekdayCodes(days: readonly number[] | null | undefined): string[] | null {
+  return days ? days.map((d) => WEEKDAY_CODES[d - 1]!) : null;
+}
 const MONTH_NAMES = [
   "January",
   "February",

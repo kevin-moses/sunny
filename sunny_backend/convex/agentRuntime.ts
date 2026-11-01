@@ -10,6 +10,8 @@
 //   that does not include a newer user message, so a lagging event list cannot return a stale reply.
 // - A tool call runs once: its agentToolCalls row is inserted in the same transaction as its
 //   effect, a repeat reuses the row, and sent results are marked so a lagging event list is ignored.
+//   Tools run as an agent actor { kind: "agent", onBehalfOf: requestedBy, requestId } built from
+//   the request row, so what the agent creates and audits records the requesting caregiver.
 // - `error` on a request is caregiver-safe text; raw detail goes to `errorDetail` and the log.
 // - onRunComplete fails or cancels the row if the workflow dies while the row is in progress.
 // - Steps: markRunning, startSession (records the session), then per poll one pollSession, and for
@@ -34,6 +36,7 @@ import {
 import { buildBriefing } from "./lib/agentBriefing";
 import { errorText, GENERIC_ERROR, isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { executeAgentTool } from "./lib/agentTools";
+import type { ToolContext } from "./lib/agentTools";
 import {
   countUserMessages,
   createSession,
@@ -443,8 +446,14 @@ export const executeToolCalls = internalMutation({
     const now = Date.now();
     const g = await readGate(ctx, requestId, now);
     if (g.gate !== "go") return stopFor(g.gate);
+    // The household and the requesting caregiver come from the request row, never the model.
+    const toolCtx: ToolContext = {
+      householdId: g.request.householdId,
+      actor: { kind: "agent", onBehalfOf: g.request.requestedBy, requestId },
+      now,
+    };
     for (const call of calls) {
-      await runToolOnce(ctx, g.request.householdId, g.request.requestedBy, requestId, call, now);
+      await runToolOnce(ctx, toolCtx, requestId, call);
     }
     return { kind: "ok" };
   },
@@ -453,23 +462,20 @@ export const executeToolCalls = internalMutation({
 /**
  * purpose: Run one tool call unless its result is already recorded.
  * @param ctx: (MutationCtx) Mutation context; the tool's writes share this transaction.
- * @param householdId: (Id<"households">) Household taken from the request row, never the model.
- * @param requestedBy: (string) Requesting caregiver, taken from the request row.
+ * @param toolCtx: (ToolContext) Household, agent actor (requester and request) and clock, all
+ *        taken from the request row.
  * @param requestId: (Id<"agentRequests">) The request.
  * @param call: (ToolCall) The call.
- * @param now: (number) Epoch ms.
  */
 async function runToolOnce(
   ctx: MutationCtx,
-  householdId: Id<"households">,
-  requestedBy: string,
+  toolCtx: ToolContext,
   requestId: Id<"agentRequests">,
   call: ToolCall,
-  now: number,
 ): Promise<void> {
   if (await findToolCall(ctx, requestId, call.toolUseId)) return;
   const input = JSON.parse(call.input) as Record<string, unknown>;
-  const result = await executeAgentTool(ctx, householdId, requestedBy, call.name, input, now);
+  const result = await executeAgentTool(ctx, toolCtx, { name: call.name, input });
   await ctx.db.insert("agentToolCalls", { requestId, ...call, ...result });
 }
 
