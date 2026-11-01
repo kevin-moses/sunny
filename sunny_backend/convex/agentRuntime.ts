@@ -17,7 +17,7 @@
 //   with no tools is 4 steps; each tool round adds 3; each pause check adds a sleep plus a re-run.
 // - The workflow body must stay stable while runs are in flight (notes/CONVEX_MIGRATION.md).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { vResultValidator, WorkflowManager, type WorkflowCtx } from "@convex-dev/workflow";
 import { v } from "convex/values";
@@ -444,7 +444,7 @@ export const executeToolCalls = internalMutation({
     const g = await readGate(ctx, requestId, now);
     if (g.gate !== "go") return stopFor(g.gate);
     for (const call of calls) {
-      await runToolOnce(ctx, g.request.householdId, requestId, call, now);
+      await runToolOnce(ctx, g.request.householdId, g.request.requestedBy, requestId, call, now);
     }
     return { kind: "ok" };
   },
@@ -454,6 +454,7 @@ export const executeToolCalls = internalMutation({
  * purpose: Run one tool call unless its result is already recorded.
  * @param ctx: (MutationCtx) Mutation context; the tool's writes share this transaction.
  * @param householdId: (Id<"households">) Household taken from the request row, never the model.
+ * @param requestedBy: (string) Requesting caregiver, taken from the request row.
  * @param requestId: (Id<"agentRequests">) The request.
  * @param call: (ToolCall) The call.
  * @param now: (number) Epoch ms.
@@ -461,13 +462,14 @@ export const executeToolCalls = internalMutation({
 async function runToolOnce(
   ctx: MutationCtx,
   householdId: Id<"households">,
+  requestedBy: string,
   requestId: Id<"agentRequests">,
   call: ToolCall,
   now: number,
 ): Promise<void> {
   if (await findToolCall(ctx, requestId, call.toolUseId)) return;
   const input = JSON.parse(call.input) as Record<string, unknown>;
-  const result = await executeAgentTool(ctx, householdId, call.name, input, now);
+  const result = await executeAgentTool(ctx, householdId, requestedBy, call.name, input, now);
   await ctx.db.insert("agentToolCalls", { requestId, ...call, ...result });
 }
 

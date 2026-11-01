@@ -5,9 +5,13 @@
 // null, nulls clearing fields), tool errors for malformed input, unknown fields, invalid or
 // foreign event ids, past dates and unknown tools, household isolation, the get_calendar
 // result shape (event_id), and buildBriefing for an empty and a populated week, DST-safe
-// local times and an unknown requester.
+// local times and an unknown requester. Task tools: get_tasks shape and size cap, add_task
+// (defaults, provenance createdBy = requester with audit actor agent, today's instances,
+// validation and the missing-time rule), update_task (mapping, null clearing, every-day
+// weekdays, resume), stop_task (history kept, upcoming instances removed, no delete), the
+// field mapping toTaskChanges, household isolation, and the task part of the briefing.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -19,6 +23,7 @@ import {
   executeAgentTool,
   MAX_TOOL_RESULT_CHARS,
   toEventChanges,
+  toTaskChanges,
 } from "./lib/agentTools";
 import { createHousehold, makeBackend, type TestConvex } from "./testing.helpers";
 
@@ -62,6 +67,7 @@ interface ToolResult {
  * @param name: (string) Tool name.
  * @param input: (Record<string, unknown>) Tool input.
  * @param now: (number) Epoch ms.
+ * @param requestedBy: (string) Requesting caregiver's user id (default user_a).
  * @return: (Promise<ToolResult>) The tool result.
  */
 async function tool(
@@ -70,8 +76,11 @@ async function tool(
   name: string,
   input: Record<string, unknown>,
   now: number = NOW,
+  requestedBy: string = "user_a",
 ): Promise<ToolResult> {
-  return await t.run(async (ctx) => await executeAgentTool(ctx, householdId, name, input, now));
+  return await t.run(
+    async (ctx) => await executeAgentTool(ctx, householdId, requestedBy, name, input, now),
+  );
 }
 
 /**
@@ -101,8 +110,12 @@ afterEach(() => {
 });
 
 describe("definitions", () => {
-  test("exposes the four tools with their snake_case names", () => {
+  test("exposes the eight tools with their snake_case names", () => {
     expect(AGENT_TOOLS.map((x) => ("name" in x ? x.name : x.type))).toEqual([
+      "get_tasks",
+      "add_task",
+      "update_task",
+      "stop_task",
       "get_calendar",
       "add_event",
       "update_event",
@@ -114,6 +127,14 @@ describe("definitions", () => {
     expect(AGENT_NAME).toBe("Sunny household agent");
     expect(AGENT_MODEL).toBe("claude-opus-5-5");
     expect(AGENT_SYSTEM_PROMPT).toContain("Sunny's household agent");
+  });
+
+  test("the prompt has a Tasks section with the key rules", () => {
+    expect(AGENT_SYSTEM_PROMPT).toContain("Tasks:");
+    expect(AGENT_SYSTEM_PROMPT).toContain("do not invent one; ask them for it");
+    expect(AGENT_SYSTEM_PROMPT).toContain("never invent a drug name");
+    expect(AGENT_SYSTEM_PROMPT).toContain("stop_task");
+    expect(AGENT_SYSTEM_PROMPT).toContain("get_tasks");
   });
 });
 
@@ -154,7 +175,7 @@ describe("toEventChanges", () => {
     [{ duration_minutes: "ten" }, "duration_minutes"],
     [{ duration_minutes: 1.5 }, "duration_minutes must be a whole number"],
     [{ place: 5 }, "place must be a string"],
-    [{ title: null }, "title is missing"],
+    [{ title: null }, "title is missing or malformed"],
   ])("rejects %j", (fields, message) => {
     expect(() => toEventChanges(fields)).toThrow(message);
   });
@@ -408,7 +429,7 @@ describe("oversized results", () => {
       to_date: "2027-03-31",
     });
     expect(result.isError).toBe(true);
-    expect(result.text).toContain("Ask for a shorter date range");
+    expect(result.text).toContain("Ask for something narrower");
     expect(result.text.length).toBeLessThan(MAX_TOOL_RESULT_CHARS);
   });
 });
@@ -452,6 +473,8 @@ describe("buildBriefing", () => {
         "- Requested by: Anna",
         "- Calendar, today and the next 7 days:",
         "  (nothing scheduled)",
+        "- Active tasks, with today's status:",
+        "  (none)",
       ].join("\n"),
     );
   });
@@ -486,6 +509,7 @@ describe("buildBriefing", () => {
       await executeAgentTool(
         ctx,
         a,
+        "user_a",
         "add_event",
         {
           title: "Walk",
@@ -512,5 +536,468 @@ describe("buildBriefing", () => {
   test("a member of another household is not named", async () => {
     const { t, a } = await makeWorld();
     expect(await briefing(t, a, "user_b")).toContain("- Requested by: a caregiver");
+  });
+});
+
+/** add_task input for a daily pill task at 08:00. */
+const PILLS = {
+  type: "medication",
+  title: "Morning pills",
+  display_label: "Morning pills",
+  times: ["08:00"],
+};
+
+/**
+ * purpose: Read all task rows and their instances.
+ * @param t: (TestConvex) Harness.
+ * @return: The tasks and instances.
+ */
+async function readTasks(t: TestConvex) {
+  return await t.run(async (ctx) => ({
+    tasks: await ctx.db.query("tasks").collect(),
+    instances: await ctx.db.query("taskInstances").collect(),
+    audits: (await ctx.db.query("auditLog").collect()).filter((a) => a.entity === "task"),
+  }));
+}
+
+/**
+ * purpose: Add a task through add_task and return its id.
+ * @param t: (TestConvex) Harness.
+ * @param householdId: (Id<"households">) Household.
+ * @param input: (Record<string, unknown>) add_task input.
+ * @return: (Promise<string>) The task_id.
+ */
+async function addTask(
+  t: TestConvex,
+  householdId: Id<"households">,
+  input: Record<string, unknown> = PILLS,
+): Promise<string> {
+  const result = await tool(t, householdId, "add_task", input);
+  expect(result.isError).toBe(false);
+  return JSON.parse(result.text).task_id as string;
+}
+
+describe("toTaskChanges", () => {
+  test("maps names, weekdays and nulls", () => {
+    expect(
+      toTaskChanges({
+        type: "reminder",
+        display_label: "Call Kevin",
+        spoken_prompt: null,
+        repeat_weekdays: ["mon", "sun"],
+        once_on: null,
+        window_minutes: 30,
+        as_needed_min_hours: 4.5,
+        active: true,
+      }),
+    ).toEqual({
+      type: "reminder",
+      displayLabel: "Call Kevin",
+      spokenPrompt: "",
+      daysOfWeek: [1, 7],
+      onceOn: null,
+      windowMinutes: 30,
+      asNeededMinHours: 4.5,
+      active: true,
+    });
+  });
+
+  test("null or an empty list for repeat_weekdays means every day", () => {
+    expect(toTaskChanges({ repeat_weekdays: [] })).toEqual({ daysOfWeek: null });
+    expect(toTaskChanges({ repeat_weekdays: null })).toEqual({ daysOfWeek: null });
+  });
+
+  test.each([
+    [{ type: "party" }, "type must be one of"],
+    [{ repeat_weekdays: ["funday"] }, "mon..sun"],
+    [{ times: "08:00" }, "times must be a list of strings"],
+    [{ window_minutes: 1.5 }, "whole number"],
+    [{ window_minutes: null }, "cannot be cleared"],
+    [{ active: "yes" }, "true or false"],
+    [{ nope: 1 }, "Unknown field nope"],
+    [{ title: null }, "title is missing or malformed"],
+  ])("rejects %j", (fields, message) => {
+    expect(() => toTaskChanges(fields as Record<string, unknown>)).toThrow(
+      expect.objectContaining({
+        data: expect.objectContaining({ message: expect.stringContaining(message) }),
+      }),
+    );
+  });
+});
+
+describe("add_task", () => {
+  test("adds a task with defaults and returns it in model shape", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", PILLS);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.text)).toEqual({
+      task_id: expect.any(String),
+      type: "medication",
+      title: "Morning pills",
+      display_label: "Morning pills",
+      spoken_prompt: "Time for Morning pills.",
+      times: ["08:00"],
+      repeat_weekdays: null,
+      once_on: null,
+      starts_on: null,
+      ends_on: null,
+      window_minutes: 60,
+      pill_description: null,
+      checklist_items: [],
+      as_needed_max_per_day: null,
+      as_needed_min_hours: null,
+      active: true,
+    });
+  });
+
+  test("maps every field", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, {
+      type: "checklist",
+      title: "Evening routine",
+      display_label: "Evening routine",
+      spoken_prompt: "Let's get ready for bed.",
+      times: ["21:00", "20:00"],
+      repeat_weekdays: ["tue", "thu"],
+      starts_on: "2027-03-01",
+      ends_on: "2027-06-01",
+      window_minutes: 90,
+      checklist_items: ["Brush teeth", "Lock door"],
+      pill_description: "white round",
+      as_needed_max_per_day: 2,
+      as_needed_min_hours: 6,
+    });
+    const { tasks } = await readTasks(t);
+    expect(tasks[0]).toMatchObject({
+      spokenPrompt: "Let's get ready for bed.",
+      times: ["20:00", "21:00"],
+      daysOfWeek: [2, 4],
+      startsOn: "2027-03-01",
+      endsOn: "2027-06-01",
+      windowMinutes: 90,
+      checklistItems: ["Brush teeth", "Lock door"],
+      pillDescription: "white round",
+      asNeededMaxPerDay: 2,
+      asNeededMinHours: 6,
+    });
+  });
+
+  test("records the requesting caregiver as creator and the agent as audit actor", async () => {
+    const { t, a } = await makeWorld();
+    await tool(t, a, "add_task", PILLS, NOW, "user_a");
+    const { tasks, audits } = await readTasks(t);
+    expect(tasks[0]).toMatchObject({ createdByKind: "caregiver", createdBy: "user_a" });
+    expect(tasks[0]!.escalationPolicyId).toBeUndefined();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorKind: "agent", action: "insert" });
+    expect(audits[0]!.actorUserId).toBeUndefined();
+  });
+
+  test("creates today's instance like an app-created task", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a);
+    const { instances } = await readTasks(t);
+    expect(instances).toHaveLength(2);
+    expect(instances.map((i) => [i.localDate, i.scheduledTime, i.state]).sort()).toEqual([
+      ["2027-03-01", "08:00", "upcoming"],
+      ["2027-03-02", "08:00", "upcoming"],
+    ]);
+  });
+
+  test("a one-off task with a date and time", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, {
+      type: "reminder",
+      title: "Call Kevin",
+      display_label: "Call Kevin",
+      times: ["15:00"],
+      once_on: "2027-03-01",
+    });
+    const { instances } = await readTasks(t);
+    expect(instances).toHaveLength(1);
+  });
+
+  test.each([
+    [{ ...PILLS, times: [] }, "at least one time"],
+    [{ type: "reminder", title: "x", display_label: "x" }, "at least one time"],
+    [
+      { title: "x", display_label: "x", times: ["08:00"] },
+      "type, title and display_label are required",
+    ],
+    [{ ...PILLS, times: ["8am"] }, "must be HH:MM"],
+    [{ ...PILLS, times: ["08:00", "08:00"] }, "unique"],
+    [{ ...PILLS, once_on: "2027-03-02", repeat_weekdays: ["mon"] }, "cannot also repeat"],
+    [{ ...PILLS, window_minutes: 5000 }, "Window must be"],
+    [{ ...PILLS, as_needed_max_per_day: 0 }, "positive whole number"],
+    [{ ...PILLS, title: "  " }, "title cannot be blank"],
+    [{ ...PILLS, active: false }, "Unknown field active"],
+    [{ ...PILLS, household_id: "x" }, "Unknown field household_id"],
+  ])("rejects %j", async (input, message) => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", input);
+    expect(result).toMatchObject({ isError: true });
+    expect(result.text).toContain(message);
+    expect((await readTasks(t)).tasks).toHaveLength(0);
+  });
+});
+
+describe("get_tasks", () => {
+  test("lists active tasks in creation order and hides stopped ones by default", async () => {
+    const { t, a } = await makeWorld();
+    const first = await addTask(t, a);
+    await addTask(t, a, {
+      ...PILLS,
+      title: "Evening pills",
+      display_label: "Evening",
+      times: ["20:00"],
+    });
+    await tool(t, a, "stop_task", { task_id: first });
+    const active = JSON.parse((await tool(t, a, "get_tasks", {})).text);
+    expect(active.map((x: { title: string }) => x.title)).toEqual(["Evening pills"]);
+    const all = JSON.parse((await tool(t, a, "get_tasks", { include_stopped: true })).text);
+    expect(all.map((x: { title: string }) => x.title)).toEqual(["Morning pills", "Evening pills"]);
+    expect(all[0]).toMatchObject({ task_id: first, active: false });
+  });
+
+  test("shows weekday names", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, { ...PILLS, repeat_weekdays: ["wed", "mon"] });
+    const [task] = JSON.parse((await tool(t, a, "get_tasks", {})).text);
+    expect(task.repeat_weekdays).toEqual(["mon", "wed"]);
+  });
+
+  test("does not list another household's tasks", async () => {
+    const { t, a, b } = await makeWorld();
+    await addTask(t, b);
+    expect(JSON.parse((await tool(t, a, "get_tasks", {})).text)).toEqual([]);
+  });
+
+  test("rejects a malformed include_stopped", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "get_tasks", { include_stopped: "yes" });
+    expect(result).toMatchObject({ isError: true });
+  });
+
+  test("a result over the cap becomes a tool error", async () => {
+    const { t, a } = await makeWorld();
+    for (let i = 0; i < 8; i++) {
+      await addTask(t, a, {
+        ...PILLS,
+        title: `Pills ${i}`,
+        display_label: `Pills ${i}`,
+        times: [`0${i}:00`],
+        checklist_items: Array.from({ length: 20 }, () => "x".repeat(400)),
+      });
+    }
+    const result = await tool(t, a, "get_tasks", {});
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Ask for something narrower");
+    expect(result.text.length).toBeLessThan(MAX_TOOL_RESULT_CHARS);
+  });
+});
+
+describe("update_task", () => {
+  test("changes only the given fields and resyncs instances", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { times: ["09:30"], display_label: "Pills" },
+    });
+    expect(JSON.parse(result.text)).toMatchObject({
+      times: ["09:30"],
+      display_label: "Pills",
+      title: "Morning pills",
+    });
+    const { instances, audits } = await readTasks(t);
+    expect(instances.every((i) => i.scheduledTime === "09:30")).toBe(true);
+    expect(audits.map((x) => [x.actorKind, x.action])).toEqual([
+      ["agent", "insert"],
+      ["agent", "update"],
+    ]);
+  });
+
+  test("null clears optional fields and an empty repeat list means every day", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, {
+      ...PILLS,
+      repeat_weekdays: ["mon"],
+      pill_description: "blue",
+      ends_on: "2027-12-31",
+    });
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { repeat_weekdays: [], pill_description: null, ends_on: null },
+    });
+    expect(JSON.parse(result.text)).toMatchObject({
+      repeat_weekdays: null,
+      pill_description: null,
+      ends_on: null,
+    });
+  });
+
+  test("null repeat_weekdays also means every day", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, { ...PILLS, repeat_weekdays: ["mon"] });
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { repeat_weekdays: null },
+    });
+    expect(JSON.parse(result.text).repeat_weekdays).toBeNull();
+  });
+
+  test("a null spoken_prompt restores the default sentence", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, { ...PILLS, spoken_prompt: "Pills time, Mom." });
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { spoken_prompt: null },
+    });
+    expect(JSON.parse(result.text).spoken_prompt).toBe("Time for Morning pills.");
+  });
+
+  test("active true resumes a stopped task and brings back its instances", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    await tool(t, a, "stop_task", { task_id: id });
+    expect((await readTasks(t)).instances).toHaveLength(0);
+    const result = await tool(t, a, "update_task", { task_id: id, changes: { active: true } });
+    expect(JSON.parse(result.text).active).toBe(true);
+    expect((await readTasks(t)).instances.length).toBeGreaterThan(0);
+  });
+
+  test.each([
+    [(id: string) => ({ task_id: id, changes: { times: ["25:00"] } }), "must be HH:MM"],
+    [(id: string) => ({ task_id: id, changes: { bogus: 1 } }), "Unknown field bogus"],
+    [(id: string) => ({ task_id: id, changes: "x" }), "changes must be an object"],
+    [(id: string) => ({ task_id: id, changes: [] }), "changes must be an object"],
+    [() => ({ changes: {} }), "task_id is missing"],
+  ])("rejects bad input %#", async (build, message) => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    const result = await tool(t, a, "update_task", build(id));
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(message);
+  });
+
+  test("a failed update leaves the task unchanged", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    await tool(t, a, "update_task", { task_id: id, changes: { times: ["99:99"] } });
+    expect((await readTasks(t)).tasks[0]!.times).toEqual(["08:00"]);
+  });
+
+  test("rejects an id that is not a task id", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "update_task", { task_id: "nonsense", changes: {} });
+    expect(result.text).toContain("not a valid task id");
+  });
+});
+
+describe("stop_task", () => {
+  test("stops the task, keeps it and its history, and removes upcoming instances", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    await t.run(async (ctx) => {
+      const [first] = await ctx.db.query("taskInstances").collect();
+      await ctx.db.patch(first!._id, { state: "confirmed" });
+    });
+    const result = await tool(t, a, "stop_task", { task_id: id });
+    expect(JSON.parse(result.text)).toMatchObject({ task_id: id, active: false });
+    const { tasks, instances } = await readTasks(t);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.active).toBe(false);
+    expect(instances.map((i) => i.state)).toEqual(["confirmed"]);
+  });
+
+  test("stopping twice is fine", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    await tool(t, a, "stop_task", { task_id: id });
+    expect((await tool(t, a, "stop_task", { task_id: id })).isError).toBe(false);
+  });
+
+  test("there is no delete tool", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    expect((await tool(t, a, "delete_task", { task_id: id })).text).toContain("Unknown tool");
+    expect((await readTasks(t)).tasks).toHaveLength(1);
+  });
+});
+
+describe("task household isolation", () => {
+  test("another household's task_id fails like a bad id and is untouched", async () => {
+    const { t, a, b } = await makeWorld();
+    const foreign = await addTask(t, b);
+    for (const [name, input] of [
+      ["update_task", { task_id: foreign, changes: { title: "Hijack" } }],
+      ["stop_task", { task_id: foreign }],
+    ] as const) {
+      const result = await tool(t, a, name, input);
+      expect(result).toEqual({ text: "Error: Task not found", isError: true });
+    }
+    const { tasks } = await readTasks(t);
+    expect(tasks[0]).toMatchObject({ title: "Morning pills", active: true });
+  });
+
+  test("a household_id in the input is rejected, never used", async () => {
+    const { t, a, b } = await makeWorld();
+    const result = await tool(t, a, "add_task", { ...PILLS, household_id: b });
+    expect(result.isError).toBe(true);
+    expect((await readTasks(t)).tasks).toHaveLength(0);
+  });
+
+  test("a new task belongs to the request's household", async () => {
+    const { t, a, b } = await makeWorld();
+    await addTask(t, a);
+    expect((await readTasks(t)).tasks[0]!.householdId).toBe(a);
+    expect(JSON.parse((await tool(t, b, "get_tasks", {})).text)).toEqual([]);
+  });
+});
+
+describe("briefing tasks", () => {
+  /**
+   * purpose: Build the briefing.
+   * @param t: (TestConvex) Harness.
+   * @param householdId: (Id<"households">) Household.
+   * @return: (Promise<string>) Briefing.
+   */
+  async function briefing(t: TestConvex, householdId: Id<"households">): Promise<string> {
+    return await t.run(async (ctx) => await buildBriefing(ctx, householdId, "user_a", NOW));
+  }
+
+  test("lists active tasks with times, weekdays and today's state", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, { ...PILLS, times: ["08:00", "20:00"] });
+    await addTask(t, a, {
+      type: "reminder",
+      title: "Call Kevin",
+      display_label: "Call Kevin",
+      times: ["15:00"],
+      repeat_weekdays: ["mon", "wed"],
+    });
+    await t.run(async (ctx) => {
+      const eight = (await ctx.db.query("taskInstances").collect()).find(
+        (i) => i.localDate === "2027-03-01" && i.scheduledTime === "08:00",
+      );
+      await ctx.db.patch(eight!._id, { state: "confirmed" });
+    });
+    const text = await briefing(t, a);
+    expect(text).toContain("- Active tasks, with today's status:");
+    expect(text).toContain(
+      "- Morning pills (medication) at 08:00, 20:00 every day; today: 08:00 confirmed, 20:00 upcoming",
+    );
+    expect(text).toContain("- Call Kevin (reminder) at 15:00 on mon, wed; today: 15:00 upcoming");
+  });
+
+  test("leaves out stopped tasks and other households' tasks", async () => {
+    const { t, a, b } = await makeWorld();
+    const id = await addTask(t, a);
+    await tool(t, a, "stop_task", { task_id: id });
+    await addTask(t, b, { ...PILLS, title: "Walter pills", display_label: "Walter pills" });
+    const text = await briefing(t, a);
+    expect(text).not.toContain("Morning pills");
+    expect(text).not.toContain("Walter pills");
+    expect(text).toContain("  (none)");
   });
 });

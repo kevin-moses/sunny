@@ -11,7 +11,7 @@
 // directly: executeToolCalls reuses a stored result, pollUntil's outcomes, the paused gate on
 // every acting step, and the onComplete handler.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -66,7 +66,7 @@ beforeEach(() => {
   mocks.sendToolResults.mockResolvedValue(undefined);
   mocks.sendUserMessage.mockResolvedValue(undefined);
   // The tool double: one audit row per real execution, so repeats are countable.
-  mocks.executeAgentTool.mockImplementation(async (ctx, householdId, name) => {
+  mocks.executeAgentTool.mockImplementation(async (ctx, householdId, _requestedBy, name) => {
     await ctx.db.insert("auditLog", {
       householdId,
       actorKind: "agent",
@@ -222,8 +222,8 @@ describe("workflow end to end", () => {
     expect(row).toMatchObject({ status: "succeeded", reply: "Lunch is on the calendar." });
     expect(await toolEffects(t)).toBe(1);
     expect(mocks.executeAgentTool).toHaveBeenCalledTimes(1);
-    expect(mocks.executeAgentTool.mock.calls[0]![2]).toBe("add_event");
-    expect(mocks.executeAgentTool.mock.calls[0]![3]).toEqual({ title: "Lunch" });
+    expect(mocks.executeAgentTool.mock.calls[0]![3]).toBe("add_event");
+    expect(mocks.executeAgentTool.mock.calls[0]![4]).toEqual({ title: "Lunch" });
     expect(mocks.sendToolResults).toHaveBeenCalledTimes(1);
     expect(mocks.sendToolResults).toHaveBeenCalledWith("sess_1", [
       { toolUseId: "tu1", text: "ran add_event", isError: false },
@@ -429,6 +429,13 @@ describe("step functions", () => {
     expect(mocks.executeAgentTool.mock.calls[0]![1]).toBe(householdId);
   });
 
+  test("executeToolCalls passes the request row's requester to the tool", async () => {
+    const t = makeBackend();
+    const { requestId } = await runningRequest(t);
+    await t.mutation(internal.agentRuntime.executeToolCalls, { requestId, calls: [call] });
+    expect(mocks.executeAgentTool.mock.calls[0]![2]).toBe("user_a");
+  });
+
   test("executeToolCalls does not act while paused or after cancellation", async () => {
     const t = makeBackend();
     const { requestId, householdId } = await runningRequest(t);
@@ -585,7 +592,7 @@ describe("hardening", () => {
       requestId,
       calls: [{ toolUseId: "tu9", name: "add_event", input }],
     });
-    expect(mocks.executeAgentTool.mock.calls[0]![3]).toEqual({ $bad: 1, "": 2, title: "x" });
+    expect(mocks.executeAgentTool.mock.calls[0]![4]).toEqual({ $bad: 1, "": 2, title: "x" });
     const rows = await t.run(async (ctx) => await ctx.db.query("agentToolCalls").collect());
     expect(rows[0]!.input).toBe(input);
   });
