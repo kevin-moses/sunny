@@ -321,6 +321,7 @@ describe("getContext", () => {
     expect(context.today).toEqual([
       {
         instanceId,
+        localDate: "2027-03-10",
         taskId,
         type: "medication",
         displayLabel: "Morning pills",
@@ -333,6 +334,9 @@ describe("getContext", () => {
         confirmedVia: null,
         claimedBy: null,
         claimedByName: null,
+        confirmedBy: null,
+        confirmedByName: null,
+        resolutionNote: null,
       },
     ]);
     expect(

@@ -1,14 +1,16 @@
 // sunny_app/src/caregiver/format.ts
 //
 // Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
-// the date range and month labels, which tasks are alerts and who is on them, the schedule rows
-// and title for the day selected in the week strip, the later days of the week grouped by day,
-// and the chat transcript built from the household's agent requests
+// the date range and month labels, which tasks are alerts and who is on them, who may mark a task
+// done, which tasks are left over from yesterday, the schedule rows (with the "who confirmed"
+// detail line of done tasks) and title for the day selected in the week strip, the later days of
+// the week grouped by day, and the chat transcript built from the household's agent requests
 // (oldest first). Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date
-// arithmetic comes from day/localDate (parsed once, then counted as days), so no timezone
-// conversion happens here.
+// arithmetic comes from day/localDate (parsed once, then counted as days). The only timezone
+// conversion is timeInZone, which shows a confirmation instant (epoch ms) in the household's
+// timezone from the day view, never the device's.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import type { FunctionReturnType } from 'convex/server';
 
@@ -131,13 +133,119 @@ export function isAlert(task: DayTask): boolean {
 }
 
 /**
+ * purpose: Whether a task is left over from an earlier day (yesterday's still open at midnight).
+ * @param task: (DayTask) The task.
+ * @param todayDate: (string) The day view's localDate.
+ * @return: (boolean) True when the task's own local date is before today.
+ */
+export function isLeftover(task: DayTask, todayDate: string): boolean {
+  return task.localDate < todayDate;
+}
+
+/**
  * purpose: The message under an alert's title.
  * @param task: (DayTask) An alert task.
- * @return: (string) "Due at 8:00 AM." plus "Sunny has alerted the family." when escalated.
+ * @param todayDate: (string) The day view's localDate, to recognize a leftover task.
+ * @return: (string) "Due at 8:00 AM." plus "Sunny has alerted the family." when escalated,
+ *          prefixed "Left over from yesterday." for a leftover task.
  */
-export function alertMessage(task: DayTask): string {
+export function alertMessage(task: DayTask, todayDate: string): string {
   const due = `Due at ${displayTime(task.scheduledTime)}.`;
-  return task.state === 'escalated' ? `${due} Sunny has alerted the family.` : due;
+  const lead = isLeftover(task, todayDate) ? 'Left over from yesterday. ' : '';
+  return task.state === 'escalated'
+    ? `${lead}${due} Sunny has alerted the family.`
+    : `${lead}${due}`;
+}
+
+/**
+ * purpose: Whether a caregiver may mark a task done now.
+ * @param task: (DayTask) The task.
+ * @param canEdit: (boolean) False for viewers.
+ * @return: (boolean) True for editors on a task that is due, escalated or missed.
+ */
+export function canMarkDone(task: DayTask, canEdit: boolean): boolean {
+  return canEdit && (task.state === 'due' || task.state === 'escalated' || task.state === 'missed');
+}
+
+/**
+ * purpose: Title of the "Mark done" prompt.
+ * @param task: (DayTask) The task.
+ * @return: (string) "Mark <label> done?".
+ */
+export function markDoneTitle(task: DayTask): string {
+  return `Mark ${task.displayLabel} done?`;
+}
+
+/**
+ * purpose: Turn the text typed in the "Mark done" prompt into the note to send.
+ * @param text: (string | undefined) What the caregiver typed, if anything.
+ * @return: (string | undefined) The trimmed note, or undefined when empty so it is omitted.
+ */
+export function noteFromPrompt(text: string | undefined): string | undefined {
+  const note = text?.trim();
+  return note === undefined || note === '' ? undefined : note;
+}
+
+/** Where a device confirmation happened, as worded after "Done at <time>". */
+export const SURFACE_PHRASE: Record<string, string> = {
+  button: 'on the display',
+  widget: 'from the widget',
+  live_activity: 'from the Live Activity',
+  phone_app: 'on the phone',
+  voice: 'by voice',
+};
+
+/**
+ * purpose: Show an instant as a local clock time in a given timezone.
+ * @param epochMs: (number) Instant, epoch milliseconds.
+ * @param timezone: (string) IANA timezone, the household's (from the day view).
+ * @return: (string | null) For example "2:05 PM"; null when the timezone is not recognized.
+ */
+export function timeInZone(epochMs: number, timezone: string): string | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(epochMs));
+    const hour = parts.find((p) => p.type === 'hour')?.value;
+    const minute = parts.find((p) => p.type === 'minute')?.value;
+    return hour === undefined || minute === undefined ? null : displayTime(`${hour}:${minute}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * purpose: The detail text under a done task: who confirmed it and when, and the note.
+ *          Caregiver-resolved: "Marked done by <name> at <time>" ("by you" for the signed-in
+ *          caregiver, "by a caregiver" when their name is unknown). Device-confirmed: "Done at
+ *          <time>" plus where it happened ("on the display", "by voice", ...). A resolution note
+ *          follows on a second line, in quotes.
+ * @param task: (DayTask) The task.
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id.
+ * @param timezone: (string) The household timezone (day view), for the time.
+ * @return: (string | null) The text (lines separated by a newline); null when the task is not
+ *          done, or when there is nothing to add to "Done" (no time, surface or note known).
+ */
+export function doneDetail(task: DayTask, userId: string | null, timezone: string): string | null {
+  if (!isDone(task)) return null;
+  const time = task.confirmedAt === null ? null : timeInZone(task.confirmedAt, timezone);
+  const at = time === null ? '' : ` at ${time}`;
+  let first: string;
+  if (task.confirmedVia === 'caregiver') {
+    const who =
+      task.confirmedBy !== null && task.confirmedBy === userId
+        ? 'you'
+        : (task.confirmedByName ?? 'a caregiver');
+    first = `Marked done by ${who}${at}`;
+  } else {
+    const where = task.confirmedVia === null ? undefined : SURFACE_PHRASE[task.confirmedVia];
+    first = `Done${at}${where === undefined ? '' : ` ${where}`}`;
+  }
+  if (task.resolutionNote !== null) return `${first}\n"${task.resolutionNote}"`;
+  return first === 'Done' ? null : first;
 }
 
 /**
@@ -176,6 +284,10 @@ export interface ScheduleRowData {
   variant: ScheduleVariant;
   time: string;
   label: string;
+  /** Who confirmed a done task and the note (see doneDetail); null for everything else. */
+  detail: string | null;
+  /** The task behind a task row (for "Mark done"); null for event rows. */
+  task: DayTask | null;
   accessibilityLabel: string;
 }
 
@@ -185,6 +297,8 @@ export interface ScheduleRowData {
  * @param variant: (ScheduleVariant) How the row looks.
  * @param time: (string) Display time.
  * @param label: (string) What happens.
+ * @param detail: (string | null) Who confirmed it and the note, for a done task.
+ * @param task: (DayTask | null) The task behind the row, null for events.
  * @return: (ScheduleRowData) The row, with its screen reader label.
  */
 function scheduleRow(
@@ -192,14 +306,19 @@ function scheduleRow(
   variant: ScheduleVariant,
   time: string,
   label: string,
+  detail: string | null = null,
+  task: DayTask | null = null,
 ): ScheduleRowData {
   const { status } = VARIANT_STYLE[variant];
+  const spoken = `${time}, ${label}${status === '' ? '' : `, ${status}`}`;
   return {
     id,
     variant,
     time,
     label,
-    accessibilityLabel: `${time}, ${label}${status === '' ? '' : `, ${status}`}`,
+    detail,
+    task,
+    accessibilityLabel: detail === null ? spoken : `${spoken}. ${detail.replace('\n', '. ')}`,
   };
 }
 
@@ -207,11 +326,25 @@ function scheduleRow(
  * purpose: Reduce a task to its schedule row.
  * @param task: (DayTask) The task.
  * @param id: (string) Row id.
+ * @param day: (DayViewData) The day view (its timezone words the confirmation time).
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id.
  * @return: (ScheduleRowData) The row.
  */
-function taskRow(task: DayTask, id: string): ScheduleRowData {
+function taskRow(
+  task: DayTask,
+  id: string,
+  day: DayViewData,
+  userId: string | null,
+): ScheduleRowData {
   const variant: ScheduleVariant = isDone(task) ? 'done' : isAlert(task) ? 'alert' : 'task';
-  return scheduleRow(id, variant, displayTime(task.scheduledTime), task.displayLabel);
+  return scheduleRow(
+    id,
+    variant,
+    displayTime(task.scheduledTime),
+    task.displayLabel,
+    doneDetail(task, userId, day.timezone),
+    task,
+  );
 }
 
 /**
@@ -225,23 +358,48 @@ function eventRow(event: EventOccurrence, id: string): ScheduleRowData {
 }
 
 /**
+ * purpose: The leftover rows of today's schedule: tasks from an earlier day that are still
+ *          open, in the agenda's time order. Shown in their own "Leftover" group above today.
+ * @param day: (DayViewData) The day view.
+ * @param agenda: (AgendaItem[]) Today's merged agenda.
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id.
+ * @return: (ScheduleRowData[]) The rows; empty when nothing is left over.
+ */
+export function leftoverRows(
+  day: DayViewData,
+  agenda: AgendaItem[],
+  userId: string | null,
+): ScheduleRowData[] {
+  const rows: ScheduleRowData[] = [];
+  for (const item of agenda) {
+    if (item.kind === 'task' && isLeftover(item.task, day.localDate)) {
+      rows.push(taskRow(item.task, item.id, day, userId));
+    }
+  }
+  return rows;
+}
+
+/**
  * purpose: The schedule rows of one day of the week: for today the agenda (tasks and events
- *          merged in time order, from the day view); for any other date that day's events in
- *          time order.
+ *          merged in time order, from the day view) without the leftover tasks, which
+ *          leftoverRows returns separately; for any other date that day's events in time order.
  * @param day: (DayViewData) The day view.
  * @param agenda: (AgendaItem[]) Today's merged agenda (useDayView's agenda for this day).
  * @param date: (string) The selected local date "YYYY-MM-DD".
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id, to word "by you".
  * @return: (ScheduleRowData[]) The rows; empty when nothing is scheduled that day.
  */
 export function scheduleForDate(
   day: DayViewData,
   agenda: AgendaItem[],
   date: string,
+  userId: string | null,
 ): ScheduleRowData[] {
   if (date === day.localDate) {
-    return agenda.map((item) =>
-      item.kind === 'task' ? taskRow(item.task, item.id) : eventRow(item.event, item.id),
-    );
+    return agenda.flatMap((item) => {
+      if (item.kind === 'event') return [eventRow(item.event, item.id)];
+      return isLeftover(item.task, day.localDate) ? [] : [taskRow(item.task, item.id, day, userId)];
+    });
   }
   return day.upcoming
     .filter((e) => e.localDate === date)
@@ -288,7 +446,7 @@ export function laterThisWeek(
   const groups: LaterDayGroup[] = [];
   for (const { localDate } of strip) {
     if (localDate <= selectedDate) continue;
-    const rows = scheduleForDate(day, [], localDate);
+    const rows = scheduleForDate(day, [], localDate, null);
     if (rows.length > 0) {
       groups.push({ date: localDate, title: selectedDayTitle(day.localDate, localDate), rows });
     }

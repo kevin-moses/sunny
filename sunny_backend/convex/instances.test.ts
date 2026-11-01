@@ -458,7 +458,87 @@ describe("today", () => {
       confirmedVia: null,
       claimedBy: null,
       claimedByName: null,
+      confirmedBy: null,
+      confirmedByName: null,
+      resolutionNote: null,
     });
+  });
+
+  test("entries carry their own local date", async () => {
+    const f = await setup("2027-03-20T11:00:00Z");
+    await makeTask(f, "Lunch pills", ["12:00"]);
+    const [entry] = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entry).toMatchObject({ localDate: "2027-03-20" });
+  });
+
+  test("a caregiver's resolution names them and keeps the note; a device's does not", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await makeTask(f, "Evening pills", ["08:30"]);
+    const [first, second] = await instancesOn(f, "2027-03-14");
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.instances.confirmTaskInstance, {
+      instanceId: first!._id,
+      via: "phone_app",
+      note: "Called her",
+    });
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: second!._id, via: "button" });
+    const entries = await f.t
+      .withIdentity({ subject: "val" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entries.find((e) => e.instanceId === first!._id)).toMatchObject({
+      state: "resolved",
+      confirmedVia: "caregiver",
+      confirmedBy: "pat",
+      confirmedByName: "Pat",
+      resolutionNote: "Called her",
+    });
+    expect(entries.find((e) => e.instanceId === second!._id)).toMatchObject({
+      state: "confirmed",
+      confirmedVia: "button",
+      confirmedBy: "phone",
+      confirmedByName: null,
+      resolutionNote: null,
+    });
+  });
+
+  test("confirmedByName is null when the confirming caregiver is no longer a member", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "phone_app" });
+    await f.t.run(async (ctx) => {
+      const member = await ctx.db
+        .query("householdMembers")
+        .withIndex("by_household_user", (q) =>
+          q.eq("householdId", f.householdId).eq("userId", "max"),
+        )
+        .unique();
+      await ctx.db.delete(member!._id);
+    });
+    const [entry] = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entry).toMatchObject({ confirmedBy: "max", confirmedByName: null });
+  });
+
+  test("yesterday's open instance is listed first with yesterday's local date", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Late pills", ["23:30"]);
+    await makeTask(f, "Morning pills", ["08:00"]);
+    // 2027-03-15 00:10 in New York (EDT, UTC-4) is 04:10Z: the 23:30 instance is still open.
+    await tick(f.t, "2027-03-15T03:35:00Z");
+    at("2027-03-15T04:10:00Z");
+    const entries = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entries[0]).toMatchObject({ displayLabel: "Late pills", localDate: "2027-03-14" });
+    expect(entries.slice(1).every((e) => e.localDate === "2027-03-15")).toBe(true);
   });
 
   test("a claimed entry names who is on it, for every caregiver and device", async () => {
