@@ -1,12 +1,14 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection, messages and claim text, the per-day schedule rows (ids and variants), the
-// selected-day title and fallback rule, the later-this-week groups, transcript ordering, status lines and speaker
-// attribution, and the in-progress check. Fixtures fill only the
+// alert detection, messages and claim text, leftover tasks, the mark-done predicate, prompt title and
+// note, the household-timezone time and the done detail line (who confirmed, surface, note), the
+// per-day schedule rows (ids, variants, leftover split), the selected-day title and fallback rule,
+// the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
+// in-progress check. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -17,15 +19,22 @@ import {
   ANOTHER_CAREGIVER,
   buildTranscript,
   buildWeekStrip,
+  canMarkDone,
   claimText,
+  doneDetail,
   FAILED_TEXT,
   hasInProgress,
   isAlert,
+  isLeftover,
   laterThisWeek,
+  leftoverRows,
+  markDoneTitle,
   messageSpeaker,
+  noteFromPrompt,
   resolveSelectedDate,
   scheduleForDate,
   selectedDayTitle,
+  timeInZone,
   VARIANT_STYLE,
   WORKING_TEXT,
   weekMonthLabel,
@@ -34,6 +43,12 @@ import {
   type ScheduleRowData,
 } from '../format';
 
+/** The day the fixtures are dated and the signed-in caregiver. */
+const TODAY = '2026-10-29';
+const USER = 'user_me';
+/** 2026-10-29 18:05 UTC, which is 2:05 PM in New York (EDT). */
+const CONFIRMED_AT = Date.parse('2026-10-29T18:05:00Z');
+
 /**
  * purpose: Build the schedule rows for a date the way the Home screen does.
  * @param day: (DayViewData) The day view.
@@ -41,7 +56,7 @@ import {
  * @return: (ScheduleRowData[]) The rows.
  */
 function scheduleOf(day: DayViewData, date: string): ScheduleRowData[] {
-  return scheduleForDate(day, buildAgenda(day), date);
+  return scheduleForDate(day, buildAgenda(day), date, USER);
 }
 
 /**
@@ -74,8 +89,16 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   return {
     instanceId: 't1',
     displayLabel: 'Take medication',
+    localDate: '2026-10-29',
     scheduledTime: '08:00',
     state: 'due',
+    confirmedAt: null,
+    confirmedVia: null,
+    claimedBy: null,
+    claimedByName: null,
+    confirmedBy: null,
+    confirmedByName: null,
+    resolutionNote: null,
     ...overrides,
   } as DayTask;
 }
@@ -228,10 +251,10 @@ describe('alerts', () => {
   });
 
   it('adds the family line only when escalated', () => {
-    expect(alertMessage(makeTask({ state: 'escalated', scheduledTime: '14:05' }))).toBe(
+    expect(alertMessage(makeTask({ state: 'escalated', scheduledTime: '14:05' }), TODAY)).toBe(
       'Due at 2:05 PM. Sunny has alerted the family.',
     );
-    expect(alertMessage(makeTask({ state: 'missed', scheduledTime: '08:00' }))).toBe(
+    expect(alertMessage(makeTask({ state: 'missed', scheduledTime: '08:00' }), TODAY)).toBe(
       'Due at 8:00 AM.',
     );
   });
@@ -266,7 +289,7 @@ describe('scheduleForDate', () => {
 
   it('uses the agenda it is given instead of rebuilding it', () => {
     const day = makeDay({ tasks: [makeTask({ instanceId: 't1' })] });
-    expect(scheduleForDate(day, [], '2026-10-29')).toEqual([]);
+    expect(scheduleForDate(day, [], '2026-10-29', USER)).toEqual([]);
   });
 
   it('assigns a variant to each kind of row, with its icon from VARIANT_STYLE', () => {
@@ -552,5 +575,195 @@ describe('hasInProgress', () => {
     );
     expect(hasInProgress(finished)).toBe(false);
     expect(hasInProgress([])).toBe(false);
+  });
+});
+
+describe('leftover tasks', () => {
+  const yesterday = '2026-10-28';
+
+  it('recognizes a task from an earlier day only', () => {
+    expect(isLeftover(makeTask({ localDate: yesterday }), TODAY)).toBe(true);
+    expect(isLeftover(makeTask({ localDate: TODAY }), TODAY)).toBe(false);
+  });
+
+  it('opens the alert message with where it came from', () => {
+    const task = makeTask({ localDate: yesterday, state: 'escalated', scheduledTime: '23:30' });
+    expect(alertMessage(task, TODAY)).toBe(
+      'Left over from yesterday. Due at 11:30 PM. Sunny has alerted the family.',
+    );
+    expect(alertMessage(makeTask({ localDate: yesterday, state: 'missed' }), TODAY)).toBe(
+      'Left over from yesterday. Due at 8:00 AM.',
+    );
+  });
+
+  it('moves leftover tasks out of the day rows into their own list', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'old', localDate: yesterday, scheduledTime: '23:30', state: 'due' }),
+        makeTask({ instanceId: 'new', scheduledTime: '08:00' }),
+      ],
+      eventsToday: [makeEvent({ startTime: '09:00' })],
+    });
+    const agenda = buildAgenda(day);
+    expect(leftoverRows(day, agenda, USER).map((r) => r.id)).toEqual(['task-old']);
+    expect(scheduleForDate(day, agenda, TODAY, USER).map((r) => r.id)).toEqual([
+      'task-new',
+      'event-e1-2026-10-29',
+    ]);
+  });
+
+  it('has no leftover rows when everything is from today', () => {
+    const day = makeDay({ tasks: [makeTask()] });
+    expect(leftoverRows(day, buildAgenda(day), USER)).toEqual([]);
+  });
+});
+
+describe('canMarkDone', () => {
+  it('lets editors mark due, escalated and missed tasks only', () => {
+    const states = ['upcoming', 'due', 'escalated', 'missed', 'confirmed', 'resolved'] as const;
+    expect(states.filter((state) => canMarkDone(makeTask({ state }), true))).toEqual([
+      'due',
+      'escalated',
+      'missed',
+    ]);
+  });
+
+  it('never lets viewers', () => {
+    expect(canMarkDone(makeTask({ state: 'escalated' }), false)).toBe(false);
+  });
+});
+
+describe('mark done prompt', () => {
+  it('titles the prompt with the task label', () => {
+    expect(markDoneTitle(makeTask({ displayLabel: 'Morning pills' }))).toBe(
+      'Mark Morning pills done?',
+    );
+  });
+
+  it('trims the note and omits an empty one', () => {
+    expect(noteFromPrompt('  Called her  ')).toBe('Called her');
+    expect(noteFromPrompt('   ')).toBeUndefined();
+    expect(noteFromPrompt('')).toBeUndefined();
+    expect(noteFromPrompt(undefined)).toBeUndefined();
+  });
+});
+
+describe('timeInZone', () => {
+  it('uses the given timezone, not the device', () => {
+    expect(timeInZone(CONFIRMED_AT, 'America/New_York')).toBe('2:05 PM');
+    expect(timeInZone(CONFIRMED_AT, 'UTC')).toBe('6:05 PM');
+    expect(timeInZone(CONFIRMED_AT, 'Asia/Tokyo')).toBe('3:05 AM');
+  });
+
+  it('shows midnight as 12:00 AM', () => {
+    expect(timeInZone(Date.parse('2026-10-29T04:00:00Z'), 'America/New_York')).toBe('12:00 AM');
+  });
+
+  it('is null for an unknown timezone', () => {
+    expect(timeInZone(CONFIRMED_AT, 'Not/AZone')).toBeNull();
+  });
+});
+
+describe('doneDetail', () => {
+  const NY = 'America/New_York';
+
+  it('is null for a task that is not done', () => {
+    expect(doneDetail(makeTask({ state: 'due' }), USER, NY)).toBeNull();
+  });
+
+  it('names the caregiver who marked it done', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: 'user_pat',
+      confirmedByName: 'Pat',
+      confirmedAt: CONFIRMED_AT,
+    });
+    expect(doneDetail(task, USER, NY)).toBe('Marked done by Pat at 2:05 PM');
+  });
+
+  it('says "you" when the signed-in caregiver did it', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: USER,
+      confirmedByName: 'Me',
+      confirmedAt: CONFIRMED_AT,
+    });
+    expect(doneDetail(task, USER, NY)).toBe('Marked done by you at 2:05 PM');
+  });
+
+  it('says "a caregiver" when the name is unknown', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: 'user_gone',
+      confirmedByName: null,
+      confirmedAt: CONFIRMED_AT,
+    });
+    expect(doneDetail(task, USER, NY)).toBe('Marked done by a caregiver at 2:05 PM');
+    expect(doneDetail(task, null, NY)).toBe('Marked done by a caregiver at 2:05 PM');
+  });
+
+  it('adds the note on a second line, in quotes', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: 'user_pat',
+      confirmedByName: 'Pat',
+      confirmedAt: CONFIRMED_AT,
+      resolutionNote: 'Called her',
+    });
+    expect(doneDetail(task, USER, NY)).toBe('Marked done by Pat at 2:05 PM\n"Called her"');
+  });
+
+  it('words each device surface', () => {
+    const wording = {
+      button: 'Done at 2:05 PM on the display',
+      widget: 'Done at 2:05 PM from the widget',
+      live_activity: 'Done at 2:05 PM from the Live Activity',
+      phone_app: 'Done at 2:05 PM on the phone',
+      voice: 'Done at 2:05 PM by voice',
+    };
+    for (const [confirmedVia, text] of Object.entries(wording)) {
+      const task = makeTask({ state: 'confirmed', confirmedVia, confirmedAt: CONFIRMED_AT });
+      expect([confirmedVia, doneDetail(task, USER, NY)]).toEqual([confirmedVia, text]);
+    }
+  });
+
+  it('uses the household timezone for the time', () => {
+    const task = makeTask({ state: 'confirmed', confirmedVia: 'voice', confirmedAt: CONFIRMED_AT });
+    expect(doneDetail(task, USER, 'America/Los_Angeles')).toBe('Done at 11:05 AM by voice');
+  });
+
+  it('omits the time when the timezone is not recognized', () => {
+    const task = makeTask({ state: 'confirmed', confirmedVia: 'voice', confirmedAt: CONFIRMED_AT });
+    expect(doneDetail(task, USER, 'Not/AZone')).toBe('Done by voice');
+  });
+
+  it('is null for a confirmation with nothing known beyond "Done"', () => {
+    expect(doneDetail(makeTask({ state: 'confirmed' }), USER, NY)).toBeNull();
+  });
+
+  it('shows the detail on done schedule rows, using the day view timezone', () => {
+    const day = makeDay({
+      timezone: NY,
+      tasks: [
+        makeTask({
+          state: 'resolved',
+          confirmedVia: 'caregiver',
+          confirmedBy: 'user_pat',
+          confirmedByName: 'Pat',
+          confirmedAt: CONFIRMED_AT,
+          resolutionNote: 'Called her',
+        }),
+      ],
+    });
+    const [row] = scheduleOf(day, TODAY);
+    expect(row.detail).toBe('Marked done by Pat at 2:05 PM\n"Called her"');
+    expect(row.accessibilityLabel).toBe(
+      '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. "Called her"',
+    );
+    expect(row.task?.instanceId).toBe('t1');
   });
 });

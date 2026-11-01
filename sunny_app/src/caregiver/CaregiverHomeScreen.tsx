@@ -2,21 +2,32 @@
 //
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, the calendar card
 // (seven-day week strip whose cells choose the day shown), the Alerts section (tasks that were
-// escalated or missed, with an "I'm on it" button for editors, or who is already on it) and the
-// schedule of the selected day (today by default) followed by "Later this week", the events of
+// escalated or missed, with "I'm on it" and "Mark done" buttons for editors, or who is already on
+// it) and the schedule of the selected day (today by default, with a "Leftover" group of
+// yesterday's open tasks above it, and open tasks that editors can tap to mark done; "Mark done"
+// asks for an optional note) followed by "Later this week", the events of
 // the days after it grouped by day (hidden when there are none). Everything comes from the
 // shared day view state owned by CaregiverApp, and the derived lists are computed once per day
 // view and selection. While the first load is pending it shows a spinner, and if it fails with
 // nothing cached, the error message.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { SymbolView } from 'expo-symbols';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineMark } from '../components/DayComponents';
+import type { DayTask } from '../day/types';
 import type { DayViewState } from '../day/useDayView';
 import { colors } from '../theme/colors';
 import { type } from '../theme/typography';
@@ -32,6 +43,9 @@ import {
   buildWeekStrip,
   isAlert,
   laterThisWeek,
+  leftoverRows,
+  markDoneTitle,
+  noteFromPrompt,
   resolveSelectedDate,
   scheduleForDate,
   selectedDayTitle,
@@ -39,13 +53,13 @@ import {
   type DaySelection,
 } from './format';
 import { useTabBarInset } from './tabBarInset';
-import { useClaimTasks } from './useClaimTasks';
+import { useTaskActions } from './useTaskActions';
 
 /** Props for CaregiverHomeScreen. */
 interface CaregiverHomeScreenProps {
   dayView: DayViewState;
-  /** Whether this caregiver may claim alerts (everyone but viewers). */
-  canClaim: boolean;
+  /** Whether this caregiver may claim alerts and mark tasks done (everyone but viewers). */
+  canEdit: boolean;
   /** The signed-in caregiver's Clerk user id, to tell their own claims from others'. */
   userId: string | null;
   /** Called when the account button is pressed. */
@@ -72,20 +86,41 @@ function AccountButton({ onPress }: { onPress: () => void }) {
 
 /**
  * purpose: Render the Home tab.
- * @param props: (CaregiverHomeScreenProps) The shared day view, the claim permission, the
+ * @param props: (CaregiverHomeScreenProps) The shared day view, the edit permission, the
  *        caregiver's user id and the account button handler.
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverHomeScreen({
   dayView,
-  canClaim,
+  canEdit,
   userId,
   onAccountPress,
 }: CaregiverHomeScreenProps) {
   const { day, agenda, errorMessage, isOffline } = dayView;
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { claims, claim } = useClaimTasks();
+  const { actions, claim, markDone } = useTaskActions();
+
+  /**
+   * purpose: Ask the caregiver to confirm marking a task done, with an optional note for the
+   *          family, then mark it done. Cancel does nothing.
+   * @param task: (DayTask) The task.
+   * @return: (void)
+   */
+  const askMarkDone = (task: DayTask): void => {
+    Alert.prompt(
+      markDoneTitle(task),
+      'Add a note for the family (optional)',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Mark done',
+          onPress: (text?: string) => void markDone(task.instanceId, noteFromPrompt(text)),
+        },
+      ],
+      'plain-text',
+    );
+  };
   const [selection, setSelection] = useState<DaySelection | null>(null);
   const view = useMemo(() => {
     if (day === null) return null;
@@ -96,11 +131,12 @@ export function CaregiverHomeScreen({
       strip,
       selectedDate,
       scheduleTitle: selectedDayTitle(day.localDate, selectedDate),
-      schedule: scheduleForDate(day, agenda, selectedDate),
+      leftover: selectedDate === day.localDate ? leftoverRows(day, agenda, userId) : [],
+      schedule: scheduleForDate(day, agenda, selectedDate, userId),
       later: laterThisWeek(day, strip, selectedDate),
       range: weekRangeLabel(day.localDate),
     };
-  }, [day, agenda, selection]);
+  }, [day, agenda, selection, userId]);
 
   return (
     <ScrollView
@@ -137,16 +173,24 @@ export function CaregiverHomeScreen({
               <AlertCard
                 key={task.instanceId}
                 task={task}
-                claim={claims[task.instanceId]}
-                canClaim={canClaim}
+                todayDate={day.localDate}
+                action={actions[task.instanceId]}
+                canEdit={canEdit}
                 userId={userId}
                 onClaim={() => claim(task.instanceId)}
+                onMarkDone={() => askMarkDone(task)}
               />
             ))}
           </View>
           <View style={styles.section}>
             <SectionTitle text={view.scheduleTitle} />
-            <ScheduleCard rows={view.schedule} />
+            <ScheduleCard
+              leftover={view.leftover}
+              rows={view.schedule}
+              canEdit={canEdit}
+              actions={actions}
+              onMarkDone={askMarkDone}
+            />
           </View>
           {view.later.length > 0 && (
             <View style={styles.section}>

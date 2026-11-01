@@ -2,17 +2,19 @@
 //
 // Purpose: The building blocks of the caregiver Home tab: the screen header (title, subtitle
 // and optional trailing control), the section title, the calendar card with its seven-day week
-// strip (tappable cells that select a day), the alert card with its "I'm on it" action (or who
-// is already on it), the schedule card for the selected day, and the later-days card grouping
-// the rest of the week's events by day. They take plain data from format.ts and render the
-// Figma design: warm translucent cards, serious status colors for alerts, accent-tinted
+// strip (tappable cells that select a day), the alert card with its "I'm on it" and "Mark done"
+// actions (or who is already on it), the schedule card for the selected day (a "Leftover" group
+// of yesterday's open tasks above today's rows, a detail line under done tasks saying who
+// confirmed them, and open tasks that editors can tap to mark done), and the later-days card
+// grouping the rest of the week's events by day. They take plain data from format.ts and render
+// the Figma design: warm translucent cards, serious status colors for alerts, accent-tinted
 // selection. No motion.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { SymbolView } from 'expo-symbols';
 import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PrimaryButton } from '../components/PrimaryButton';
 import type { DayTask } from '../day/types';
@@ -22,6 +24,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { type } from '../theme/typography';
 import {
   alertMessage,
+  canMarkDone,
   claimText,
   type LaterDayGroup,
   weekMonthLabel,
@@ -29,7 +32,7 @@ import {
   VARIANT_STYLE,
   type WeekStripDay,
 } from './format';
-import type { ClaimState } from './useClaimTasks';
+import type { TaskActionState } from './useTaskActions';
 
 const alertTone = statusTones.serious;
 
@@ -159,30 +162,73 @@ export function CalendarCard({
 }
 
 /**
+ * purpose: A compact outlined button for a secondary action beside a primary one (for example
+ *          "Mark done" next to "I'm on it"), at least 36pt tall. Shows a spinner while busy.
+ * @param props: ({ label: string, accessibilityLabel: string, busy: boolean, onPress: () => void })
+ *        The text, the screen reader label, whether the action is running and the press handler.
+ * @return: (JSX.Element) The button.
+ */
+function OutlineButton({
+  label,
+  accessibilityLabel,
+  busy,
+  onPress,
+}: {
+  label: string;
+  accessibilityLabel: string;
+  busy: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled: busy, busy }}
+      disabled={busy}
+      onPress={onPress}
+      style={({ pressed }) => [styles.outlineButton, pressed && styles.dayCellPressed]}
+    >
+      {busy ? (
+        <ActivityIndicator color={alertTone.foreground} />
+      ) : (
+        <Text style={[type.button, styles.alertText]}>{label}</Text>
+      )}
+    </Pressable>
+  );
+}
+
+/**
  * purpose: One alert: a task that was not confirmed. When someone has claimed it the card says
  *          who is on it ("You're on it" for the signed-in caregiver); otherwise editors get the
- *          "I'm on it" button, which shows a spinner while the claim runs. A failed claim shows
- *          the error in the card and keeps the button.
- * @param props: ({ task: DayTask, claim: ClaimState | undefined, canClaim: boolean,
- *        userId: string | null, onClaim: () => Promise<void> }) The task, its in-flight or
- *        failed claim, whether this caregiver may claim (editors only), their Clerk user id and
- *        the press handler.
+ *          "I'm on it" button. Editors also get "Mark done", which asks for a note. Each shows
+ *          a spinner while its call runs, and a failed call shows the error in the card and
+ *          keeps the buttons. A task left over from yesterday says so.
+ * @param props: ({ task: DayTask, todayDate: string, action: TaskActionState | undefined,
+ *        canEdit: boolean, userId: string | null, onClaim: () => Promise<void>,
+ *        onMarkDone: () => void }) The task, today's local date, its in-flight or failed
+ *        action, whether this caregiver may act (editors only), their Clerk user id, and the
+ *        handlers for "I'm on it" and "Mark done".
  * @return: (JSX.Element) The card.
  */
 export function AlertCard({
   task,
-  claim,
-  canClaim,
+  todayDate,
+  action,
+  canEdit,
   userId,
   onClaim,
+  onMarkDone,
 }: {
   task: DayTask;
-  claim: ClaimState | undefined;
-  canClaim: boolean;
+  todayDate: string;
+  action: TaskActionState | undefined;
+  canEdit: boolean;
   userId: string | null;
   onClaim: () => Promise<void>;
+  onMarkDone: () => void;
 }) {
   const claimed = claimText(task, userId);
+  const working = action?.status === 'claiming' || action?.status === 'marking';
   return (
     <View
       accessibilityRole="alert"
@@ -198,43 +244,63 @@ export function AlertCard({
         </Text>
         <Text style={[type.caption, styles.alertText]}>{displayTime(task.scheduledTime)}</Text>
       </View>
-      <Text style={[type.callout, styles.alertText]}>{alertMessage(task)}</Text>
-      {claim?.status === 'error' && (
-        <Text style={[type.callout, styles.alertText]}>{claim.message}</Text>
+      <Text style={[type.callout, styles.alertText]}>{alertMessage(task, todayDate)}</Text>
+      {action?.status === 'error' && (
+        <Text style={[type.callout, styles.alertText]}>{action.message}</Text>
       )}
-      {claimed !== null ? (
-        <Text style={[type.button, styles.alertText]}>{claimed}</Text>
-      ) : (
-        canClaim && (
-          <PrimaryButton
-            compact
-            label="I'm on it"
-            accessibilityLabel={`I'm on it, ${task.displayLabel}`}
-            busy={claim?.status === 'claiming'}
-            onPress={onClaim}
+      <View style={styles.alertActions}>
+        {claimed !== null ? (
+          <Text style={[type.button, styles.alertText]}>{claimed}</Text>
+        ) : (
+          canEdit && (
+            <PrimaryButton
+              compact
+              label="I'm on it"
+              accessibilityLabel={`I'm on it, ${task.displayLabel}`}
+              busy={action?.status === 'claiming'}
+              disabled={working}
+              onPress={onClaim}
+            />
+          )
+        )}
+        {canMarkDone(task, canEdit) && (
+          <OutlineButton
+            label="Mark done"
+            accessibilityLabel={`Mark done, ${task.displayLabel}`}
+            busy={action?.status === 'marking'}
+            onPress={onMarkDone}
           />
-        )
-      )}
+        )}
+      </View>
     </View>
   );
 }
 
 /**
  * purpose: One line of the schedule: icon, time and label. Done tasks are checked off and
- *          struck through; alerts are highlighted in the serious colors.
- * @param props: ({ row: ScheduleRowData }) The row.
+ *          struck through with a detail line under them (who confirmed and the note); alerts
+ *          are highlighted in the serious colors. When onMarkDone is given the whole row is a
+ *          button that starts "Mark done"; a pending or failed action shows under the label.
+ * @param props: ({ row: ScheduleRowData, action?: TaskActionState, onMarkDone?: () => void })
+ *        The row, its in-flight or failed action, and the press handler (absent when the row
+ *        is not actionable: viewers, events, done and not-yet-due tasks).
  * @return: (JSX.Element) The row.
  */
-function ScheduleRow({ row }: { row: ScheduleRowData }) {
+function ScheduleRow({
+  row,
+  action,
+  onMarkDone,
+}: {
+  row: ScheduleRowData;
+  action?: TaskActionState;
+  onMarkDone?: () => void;
+}) {
   const done = row.variant === 'done';
   const alert = row.variant === 'alert';
   const iconColor = done ? colors.success : alert ? alertTone.foreground : colors.secondaryText;
-  return (
-    <View
-      accessible
-      accessibilityLabel={row.accessibilityLabel}
-      style={[styles.row, alert && { backgroundColor: alertTone.background }]}
-    >
+  const marking = action?.status === 'marking';
+  const content = (
+    <>
       <SymbolView name={VARIANT_STYLE[row.variant].icon} size={22} tintColor={iconColor} />
       <Text
         style={[
@@ -245,36 +311,102 @@ function ScheduleRow({ row }: { row: ScheduleRowData }) {
       >
         {row.time}
       </Text>
-      <Text
-        style={[
-          alert ? type.bodyStrong : type.body,
-          styles.fill,
-          done && { color: colors.secondaryText, textDecorationLine: 'line-through' },
-        ]}
-      >
-        {row.label}
-      </Text>
-    </View>
+      <View style={styles.fill}>
+        <Text
+          style={[
+            alert ? type.bodyStrong : type.body,
+            done && { color: colors.secondaryText, textDecorationLine: 'line-through' },
+          ]}
+        >
+          {row.label}
+        </Text>
+        {row.detail !== null && (
+          <Text style={[type.caption, { color: colors.secondaryText }]}>{row.detail}</Text>
+        )}
+        {marking && <Text style={[type.caption, styles.rowStatus]}>Marking done...</Text>}
+        {action?.status === 'error' && (
+          <Text style={[type.caption, styles.rowStatus]}>{action.message}</Text>
+        )}
+      </View>
+    </>
+  );
+  const rowStyle = [styles.row, alert && { backgroundColor: alertTone.background }];
+  if (onMarkDone === undefined) {
+    return (
+      <View accessible accessibilityLabel={row.accessibilityLabel} style={rowStyle}>
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={row.accessibilityLabel}
+      accessibilityHint="Marks this task done"
+      accessibilityState={{ disabled: marking, busy: marking }}
+      disabled={marking}
+      onPress={onMarkDone}
+      style={({ pressed }) => [rowStyle, pressed && styles.dayCellPressed]}
+    >
+      {content}
+    </Pressable>
   );
 }
 
 /**
- * purpose: The schedule card for the selected day: its rows, or a calm line when nothing is
- *          scheduled. The day's title is the section title above the card.
- * @param props: ({ rows: ScheduleRowData[] }) The rows from scheduleForDate.
+ * purpose: The schedule card for the selected day: a "Leftover" group (yesterday's open tasks)
+ *          above the day's rows, or a calm line when nothing is scheduled. Editors can tap an
+ *          open task to mark it done. The day's title is the section title above the card.
+ * @param props: ({ leftover: ScheduleRowData[], rows: ScheduleRowData[], canEdit: boolean,
+ *        actions: Partial<Record<string, TaskActionState>>, onMarkDone: (task: DayTask) => void })
+ *        The leftover rows and the day's rows from format.ts, whether this caregiver may mark
+ *        tasks done, the in-flight or failed actions by instance id, and the "Mark done" handler.
  * @return: (JSX.Element) The card.
  */
-export function ScheduleCard({ rows }: { rows: ScheduleRowData[] }) {
+export function ScheduleCard({
+  leftover,
+  rows,
+  canEdit,
+  actions,
+  onMarkDone,
+}: {
+  leftover: ScheduleRowData[];
+  rows: ScheduleRowData[];
+  canEdit: boolean;
+  actions: Partial<Record<string, TaskActionState>>;
+  onMarkDone: (task: DayTask) => void;
+}) {
+  /**
+   * purpose: Render one row, tappable when the caregiver may mark its task done.
+   * @param row: (ScheduleRowData) The row.
+   * @return: (JSX.Element) The row.
+   */
+  const renderRow = (row: ScheduleRowData) => {
+    const task = row.task;
+    const actionable = task !== null && canMarkDone(task, canEdit);
+    return (
+      <ScheduleRow
+        key={row.id}
+        row={row}
+        action={task === null ? undefined : actions[task.instanceId]}
+        onMarkDone={actionable ? () => onMarkDone(task) : undefined}
+      />
+    );
+  };
   return (
     <View style={styles.scheduleCard}>
-      {rows.length === 0 && (
+      {leftover.length === 0 && rows.length === 0 && (
         <Text style={[type.callout, styles.emptyLine]}>Nothing scheduled.</Text>
       )}
-      <View style={styles.rows}>
-        {rows.map((row) => (
-          <ScheduleRow key={row.id} row={row} />
-        ))}
-      </View>
+      {leftover.length > 0 && (
+        <View style={styles.group}>
+          <Text accessibilityRole="header" style={[type.headline, styles.groupTitle]}>
+            Leftover
+          </Text>
+          {leftover.map(renderRow)}
+        </View>
+      )}
+      <View style={styles.rows}>{rows.map(renderRow)}</View>
     </View>
   );
 }
@@ -320,6 +452,17 @@ const styles = StyleSheet.create({
   alertCard: { gap: 8, padding: 12, borderRadius: 12, borderWidth: 1 },
   alertTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   alertText: { color: alertTone.foreground },
+  alertActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  outlineButton: {
+    minHeight: 36,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: alertTone.foreground,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   scheduleCard: {
     gap: 16,
     paddingVertical: 8,
@@ -339,4 +482,5 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   rowTime: { width: 72, fontVariant: ['tabular-nums'] },
+  rowStatus: { color: alertTone.foreground },
 });

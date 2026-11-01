@@ -7,10 +7,10 @@
 // mounts on its first visit and then stays mounted so a half-typed message survives a tab
 // switch; the inactive tab is hidden. It also owns the floating tab bar's geometry: the bar is
 // hidden while the keyboard is up, and the room screens must leave for it is provided through
-// useTabBarInset. The caregiver's role decides what they may do: viewers cannot claim alerts
-// or message Sunny.
+// useTabBarInset. The caregiver's role decides what they may do: viewers cannot claim alerts,
+// mark tasks done or message Sunny.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { useAuth } from '@clerk/expo';
 import { useState } from 'react';
@@ -77,7 +77,7 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
         <View style={tab === 'home' ? styles.tab : styles.hidden}>
           <CaregiverHomeScreen
             dayView={dayView}
-            canClaim={isEditor}
+            canEdit={isEditor}
             userId={userId ?? null}
             onAccountPress={confirmSignOut}
           />
