@@ -771,7 +771,11 @@ describe("join codes", () => {
     await expect(
       t.withIdentity({ subject: "user_b" }).mutation(api.households.redeemJoinCode, { code }),
     ).rejects.toMatchObject({
-      data: { code: "not_found", message: "This code is invalid or has expired" },
+      data: {
+        code: "invalid",
+        message:
+          "That code is for setting up a senior's device. Ask a family member for a caregiver invite code.",
+      },
     });
     const paired = await t.mutation(internal.households.pairDevice, { code, userId: "device_1" });
     expect(paired.kind).toBe("senior_phone");

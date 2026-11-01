@@ -132,7 +132,7 @@ async function loadRedeemableCode(
 
 /**
  * purpose: The one error for every unredeemable code (unknown, used, expired, or the wrong
- *          kind for the redeeming path), so a code's kind is never revealed.
+ *          kind for the unauthenticated device path), so a code's kind is never revealed there.
  * @return: (Error) A not_found app error.
  */
 function invalidCodeError(): Error {
@@ -495,10 +495,14 @@ export const deleteJoinCode = mutation({
 
 /**
  * purpose: Join a household as a caregiver using an invite code. Device codes are redeemed
- *          by pairDevice instead.
+ *          by pairDevice instead; a signed-in caregiver who enters one gets a specific
+ *          "invalid" error pointing them to a caregiver invite code (the caregiver is already
+ *          authenticated, so this reveals nothing to an unauthenticated guesser). Unknown,
+ *          used and expired codes give the generic not_found error.
  * @param code: (string) The code; trimmed and case-insensitive.
  * @param displayName: (string, optional) Display name; defaults to "Caregiver".
  * @return: (Id<"households">) The joined household.
+ * @raises invalid when the code is for a senior's device, not_found when it cannot be redeemed.
  */
 export const redeemJoinCode = mutation({
   args: { code: v.string(), displayName: v.optional(v.string()) },
@@ -506,7 +510,12 @@ export const redeemJoinCode = mutation({
     const userId = await requireCaregiverAccount(ctx);
     const now = Date.now();
     const row = await loadRedeemableCode(ctx, args.code, now);
-    if (isDeviceGrant(row.grants)) throw invalidCodeError();
+    if (isDeviceGrant(row.grants)) {
+      throw appError(
+        "invalid",
+        "That code is for setting up a senior's device. Ask a family member for a caregiver invite code.",
+      );
+    }
     if (await findMember(ctx, row.householdId, userId)) {
       throw appError("invalid", "You are already a member of this household");
     }
