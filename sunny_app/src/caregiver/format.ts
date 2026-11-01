@@ -1,8 +1,8 @@
 // sunny_app/src/caregiver/format.ts
 //
 // Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
-// the date range and month labels, which tasks are alerts and who is on them, the "This week"
-// schedule grouped by day, and the chat transcript built from the household's agent requests
+// the date range and month labels, which tasks are alerts and who is on them, the schedule rows
+// and title for the day selected in the week strip, and the chat transcript built from the household's agent requests
 // (oldest first). Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date
 // arithmetic comes from day/localDate (parsed once, then counted as days), so no timezone
 // conversion happens here.
@@ -86,6 +86,7 @@ export interface WeekStripDay {
   isToday: boolean;
   /** True when the dot shows: the day has events, or it is today and has tasks. */
   hasMarker: boolean;
+  /** For example "Sunday, November 1, has events"; prefixed "Today, " for today. */
   accessibilityLabel: string;
 }
 
@@ -106,15 +107,14 @@ export function buildWeekStrip(day: DayViewData): WeekStripDay[] {
     const hasMarker = eventDates.has(localDate) || (isToday && day.tasks.length > 0);
     const name = weekdayName(time);
     const date = String(dayOfMonth(time));
+    const spoken = `${name}, ${monthName(time)} ${date}`;
     days.push({
       localDate,
       weekdayShort: name.slice(0, 3),
       dayOfMonth: date,
       isToday,
       hasMarker,
-      accessibilityLabel: `${isToday ? 'Today, ' : ''}${name} ${date}${
-        hasMarker ? ', has plans' : ''
-      }`,
+      accessibilityLabel: `${isToday ? 'Today, ' : ''}${spoken}${hasMarker ? ', has events' : ''}`,
     });
   }
   return days;
@@ -169,22 +169,13 @@ export const VARIANT_STYLE: Record<
   event: { icon: 'calendar', status: '' },
 };
 
-/** One line of the "This week" card. */
+/** One line of the schedule card. */
 export interface ScheduleRowData {
   id: string;
   variant: ScheduleVariant;
   time: string;
   label: string;
   accessibilityLabel: string;
-}
-
-/** One day of the "This week" card. */
-export interface ScheduleGroup {
-  /** The local date of the group. */
-  key: string;
-  /** "Today, Thursday" or a full weekday name. */
-  title: string;
-  rows: ScheduleRowData[];
 }
 
 /**
@@ -233,46 +224,72 @@ function eventRow(event: EventOccurrence, id: string): ScheduleRowData {
 }
 
 /**
- * purpose: The "This week" card's groups: today (tasks and events merged in time order, from
- *          the day view's agenda) then each later day within the week that has events. Days
- *          with nothing are omitted.
+ * purpose: The schedule rows of one day of the week: for today the agenda (tasks and events
+ *          merged in time order, from the day view); for any other date that day's events in
+ *          time order.
  * @param day: (DayViewData) The day view.
  * @param agenda: (AgendaItem[]) Today's merged agenda (useDayView's agenda for this day).
- * @return: (ScheduleGroup[]) Groups in date order; empty when nothing is scheduled.
+ * @param date: (string) The selected local date "YYYY-MM-DD".
+ * @return: (ScheduleRowData[]) The rows; empty when nothing is scheduled that day.
  */
-export function buildSchedule(day: DayViewData, agenda: AgendaItem[]): ScheduleGroup[] {
-  const groups: ScheduleGroup[] = [];
-  const todayRows = agenda.map((item) =>
-    item.kind === 'task' ? taskRow(item.task, item.id) : eventRow(item.event, item.id),
-  );
-  if (todayRows.length > 0) {
-    groups.push({ key: day.localDate, title: `Today, ${day.weekday}`, rows: todayRows });
-  }
-  const start = parseLocalDate(day.localDate);
-  const lastDate =
-    start === null ? day.localDate : formatLocalDate(addDays(start, WEEK_LENGTH - 1));
-  const later = day.upcoming
-    .filter((e) => e.localDate > day.localDate && e.localDate <= lastDate)
-    .sort((a, b) =>
-      a.localDate !== b.localDate
-        ? a.localDate.localeCompare(b.localDate)
-        : a.startTime.localeCompare(b.startTime),
+export function scheduleForDate(
+  day: DayViewData,
+  agenda: AgendaItem[],
+  date: string,
+): ScheduleRowData[] {
+  if (date === day.localDate) {
+    return agenda.map((item) =>
+      item.kind === 'task' ? taskRow(item.task, item.id) : eventRow(item.event, item.id),
     );
-  for (const event of later) {
-    const row = eventRow(event, eventKey(event));
-    const last = groups[groups.length - 1];
-    if (last !== undefined && last.key === event.localDate) {
-      last.rows.push(row);
-    } else {
-      const time = parseLocalDate(event.localDate);
-      groups.push({
-        key: event.localDate,
-        title: time === null ? '' : weekdayName(time),
-        rows: [row],
-      });
-    }
   }
-  return groups;
+  return day.upcoming
+    .filter((e) => e.localDate === date)
+    .sort((a, b) => a.startTime.localeCompare(b.startTime))
+    .map((event) => eventRow(event, eventKey(event)));
+}
+
+/**
+ * purpose: The section title for the selected day.
+ * @param todayDate: (string) Today's local date "YYYY-MM-DD".
+ * @param date: (string) The selected local date.
+ * @return: (string) "Today" for today, otherwise the weekday and date such as "Sunday, Nov 1";
+ *          an empty string when the date is invalid.
+ */
+export function selectedDayTitle(todayDate: string, date: string): string {
+  if (date === todayDate) return 'Today';
+  const time = parseLocalDate(date);
+  if (time === null) return '';
+  return `${weekdayName(time)}, ${shortMonthDay(time)}`;
+}
+
+/** The day the caregiver tapped, and which "today" it was chosen against. */
+export interface DaySelection {
+  date: string;
+  /** The day view's localDate when the choice was made. */
+  todayWhenChosen: string;
+}
+
+/**
+ * purpose: Decide which day the schedule shows. The choice holds only while today has not
+ *          changed (midnight rollover resets it) and the chosen date is still in the strip.
+ * @param strip: (WeekStripDay[]) The week strip, today first.
+ * @param todayDate: (string) Today's local date.
+ * @param selection: (DaySelection | null) The caregiver's choice, null before any tap.
+ * @return: (string) The date to show; today when the choice no longer applies.
+ */
+export function resolveSelectedDate(
+  strip: WeekStripDay[],
+  todayDate: string,
+  selection: DaySelection | null,
+): string {
+  if (
+    selection !== null &&
+    selection.todayWhenChosen === todayDate &&
+    strip.some((d) => d.localDate === selection.date)
+  ) {
+    return selection.date;
+  }
+  return todayDate;
 }
 
 /** One line of the chat transcript. */

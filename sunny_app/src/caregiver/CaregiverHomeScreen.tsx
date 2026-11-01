@@ -1,16 +1,17 @@
 // sunny_app/src/caregiver/CaregiverHomeScreen.tsx
 //
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, the calendar card
-// (seven-day week strip), the Alerts section (tasks that were escalated or missed, with an
-// "I'm on it" button for editors, or who is already on it) and the "This week" schedule.
-// Everything comes from the shared day view state owned by CaregiverApp, and the derived lists
-// are computed once per day view. While the first load is pending it shows a spinner, and if
+// (seven-day week strip whose cells choose the day shown), the Alerts section (tasks that were
+// escalated or missed, with an "I'm on it" button for editors, or who is already on it) and the
+// schedule of the selected day (today by default). Everything comes from the shared day view
+// state owned by CaregiverApp, and the derived lists are computed once per day view and
+// selection. While the first load is pending it shows a spinner, and if
 // it fails with nothing cached, the error message.
 //
 // Last modified: 2026-10-31
 
 import { SymbolView } from 'expo-symbols';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -25,7 +26,15 @@ import {
   ScreenHeader,
   SectionTitle,
 } from './CaregiverComponents';
-import { buildSchedule, buildWeekStrip, isAlert, weekRangeLabel } from './format';
+import {
+  buildWeekStrip,
+  isAlert,
+  resolveSelectedDate,
+  scheduleForDate,
+  selectedDayTitle,
+  weekRangeLabel,
+  type DaySelection,
+} from './format';
 import { useTabBarInset } from './tabBarInset';
 import { useClaimTasks } from './useClaimTasks';
 
@@ -74,18 +83,20 @@ export function CaregiverHomeScreen({
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const { claims, claim } = useClaimTasks();
-  const view = useMemo(
-    () =>
-      day === null
-        ? null
-        : {
-            alerts: day.tasks.filter(isAlert),
-            strip: buildWeekStrip(day),
-            schedule: buildSchedule(day, agenda),
-            range: weekRangeLabel(day.localDate),
-          },
-    [day, agenda],
-  );
+  const [selection, setSelection] = useState<DaySelection | null>(null);
+  const view = useMemo(() => {
+    if (day === null) return null;
+    const strip = buildWeekStrip(day);
+    const selectedDate = resolveSelectedDate(strip, day.localDate, selection);
+    return {
+      alerts: day.tasks.filter(isAlert),
+      strip,
+      selectedDate,
+      scheduleTitle: selectedDayTitle(day.localDate, selectedDate),
+      schedule: scheduleForDate(day, agenda, selectedDate),
+      range: weekRangeLabel(day.localDate),
+    };
+  }, [day, agenda, selection]);
 
   return (
     <ScrollView
@@ -107,7 +118,12 @@ export function CaregiverHomeScreen({
         )
       ) : (
         <>
-          <CalendarCard todayLocalDate={day.localDate} days={view.strip} />
+          <CalendarCard
+            todayLocalDate={day.localDate}
+            days={view.strip}
+            selectedDate={view.selectedDate}
+            onSelect={(date) => setSelection({ date, todayWhenChosen: day.localDate })}
+          />
           <View style={styles.section}>
             <SectionTitle text="Alerts" />
             {view.alerts.length === 0 && (
@@ -125,8 +141,8 @@ export function CaregiverHomeScreen({
             ))}
           </View>
           <View style={styles.section}>
-            <SectionTitle text="This week" />
-            <ScheduleCard groups={view.schedule} />
+            <SectionTitle text={view.scheduleTitle} />
+            <ScheduleCard rows={view.schedule} />
           </View>
           {isOffline && <OfflineMark />}
         </>

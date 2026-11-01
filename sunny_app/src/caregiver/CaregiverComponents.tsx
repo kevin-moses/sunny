@@ -2,15 +2,16 @@
 //
 // Purpose: The building blocks of the caregiver Home tab: the screen header (title, subtitle
 // and optional trailing control), the section title, the calendar card with its seven-day week
-// strip, the alert card with its "I'm on it" action (or who is already on it), and the "This
-// week" schedule card. They take plain data from format.ts and render the Figma design: warm
-// translucent cards, serious status colors for alerts, accent-tinted selection. No motion.
+// strip (tappable cells that select a day), the alert card with its "I'm on it" action (or who
+// is already on it), and the schedule card for the selected day. They take plain data from
+// format.ts and render the Figma design: warm translucent cards, serious status colors for
+// alerts, accent-tinted selection. No motion.
 //
 // Last modified: 2026-10-31
 
 import { SymbolView } from 'expo-symbols';
 import type { ReactNode } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PrimaryButton } from '../components/PrimaryButton';
 import type { DayTask } from '../day/types';
@@ -22,7 +23,6 @@ import {
   alertMessage,
   claimText,
   weekMonthLabel,
-  type ScheduleGroup,
   type ScheduleRowData,
   VARIANT_STYLE,
   type WeekStripDay,
@@ -73,46 +73,64 @@ export function SectionTitle({ text }: { text: string }) {
 }
 
 /**
- * purpose: One cell of the week strip: weekday, date and a dot when the day has plans. Today is
- *          filled with the accent color.
- * @param props: ({ day: WeekStripDay }) The day.
+ * purpose: One cell of the week strip, a button that selects the day: weekday, date and a dot
+ *          when the day has events. The selected day is filled with the accent color; today,
+ *          when not selected, shows its date number in the accent color.
+ * @param props: ({ day: WeekStripDay, selected: boolean, onSelect: (localDate: string) => void })
+ *        The day, whether it is the selected one and the press handler.
  * @return: (JSX.Element) The cell.
  */
-function WeekStripCell({ day }: { day: WeekStripDay }) {
+function WeekStripCell({
+  day,
+  selected,
+  onSelect,
+}: {
+  day: WeekStripDay;
+  selected: boolean;
+  onSelect: (localDate: string) => void;
+}) {
   const { accentColor } = useTheme();
-  const textColor = day.isToday ? colors.onAccent : undefined;
+  const dateColor = selected ? colors.onAccent : day.isToday ? accentColor : undefined;
   return (
-    <View
-      accessible
+    <Pressable
+      accessibilityRole="button"
       accessibilityLabel={day.accessibilityLabel}
-      accessibilityState={{ selected: day.isToday }}
-      style={[styles.dayCell, day.isToday && { backgroundColor: accentColor }]}
+      accessibilityState={{ selected }}
+      onPress={() => onSelect(day.localDate)}
+      style={[styles.dayCell, selected && { backgroundColor: accentColor }]}
     >
-      <Text style={[type.caption, { color: day.isToday ? colors.onAccent : colors.secondaryText }]}>
+      <Text style={[type.caption, { color: selected ? colors.onAccent : colors.secondaryText }]}>
         {day.weekdayShort}
       </Text>
-      <Text style={[type.headline, { color: textColor }]}>{day.dayOfMonth}</Text>
+      <Text style={[type.headline, { color: dateColor }]}>{day.dayOfMonth}</Text>
       <View
         style={[
           styles.dot,
-          day.hasMarker && { backgroundColor: day.isToday ? colors.onAccent : accentColor },
+          day.hasMarker && { backgroundColor: selected ? colors.onAccent : accentColor },
         ]}
       />
-    </View>
+    </Pressable>
   );
 }
 
 /**
- * purpose: The calendar card: the month and year of today, then the seven-day week strip.
- * @param props: ({ todayLocalDate: string, days: WeekStripDay[] }) Today's date and the cells.
+ * purpose: The calendar card: the month and year of today, then the seven-day week strip whose
+ *          cells select the day the schedule shows.
+ * @param props: ({ todayLocalDate: string, days: WeekStripDay[], selectedDate: string,
+ *        onSelect: (localDate: string) => void }) Today's date, the cells, the selected local
+ *        date and the handler called with a tapped cell's date.
  * @return: (JSX.Element) The card.
  */
 export function CalendarCard({
   todayLocalDate,
   days,
+  selectedDate,
+  onSelect,
 }: {
   todayLocalDate: string;
   days: WeekStripDay[];
+  selectedDate: string;
+  onSelect: (localDate: string) => void;
 }) {
   return (
     <View style={styles.card}>
@@ -121,7 +139,12 @@ export function CalendarCard({
       </Text>
       <View style={styles.weekStrip}>
         {days.map((day) => (
-          <WeekStripCell key={day.localDate} day={day} />
+          <WeekStripCell
+            key={day.localDate}
+            day={day}
+            selected={day.localDate === selectedDate}
+            onSelect={onSelect}
+          />
         ))}
       </View>
     </View>
@@ -229,26 +252,22 @@ function ScheduleRow({ row }: { row: ScheduleRowData }) {
 }
 
 /**
- * purpose: The "This week" card: a group per day with rows, or a calm line when the week is empty.
- * @param props: ({ groups: ScheduleGroup[] }) The groups from buildSchedule.
+ * purpose: The schedule card for the selected day: its rows, or a calm line when nothing is
+ *          scheduled. The day's title is the section title above the card.
+ * @param props: ({ rows: ScheduleRowData[] }) The rows from scheduleForDate.
  * @return: (JSX.Element) The card.
  */
-export function ScheduleCard({ groups }: { groups: ScheduleGroup[] }) {
+export function ScheduleCard({ rows }: { rows: ScheduleRowData[] }) {
   return (
     <View style={styles.scheduleCard}>
-      {groups.length === 0 && (
-        <Text style={[type.callout, styles.emptyLine]}>Nothing scheduled this week.</Text>
+      {rows.length === 0 && (
+        <Text style={[type.callout, styles.emptyLine]}>Nothing scheduled.</Text>
       )}
-      {groups.map((group) => (
-        <View key={group.key} style={styles.group}>
-          <Text accessibilityRole="header" style={[type.headline, styles.groupTitle]}>
-            {group.title}
-          </Text>
-          {group.rows.map((row) => (
-            <ScheduleRow key={row.id} row={row} />
-          ))}
-        </View>
-      ))}
+      <View style={styles.rows}>
+        {rows.map((row) => (
+          <ScheduleRow key={row.id} row={row} />
+        ))}
+      </View>
     </View>
   );
 }
@@ -277,8 +296,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.overlayMedium,
   },
   emptyLine: { color: colors.secondaryText, paddingHorizontal: 20, paddingVertical: 4 },
-  group: { gap: 4, paddingHorizontal: 8 },
-  groupTitle: { paddingTop: 4, paddingHorizontal: 12 },
+  rows: { gap: 4, paddingHorizontal: 8 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,8 +1,9 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection, messages and claim text, schedule grouping, row ids and variants,
-// transcript ordering, status lines and speaker attribution, and the in-progress check. Fixtures fill only the
+// alert detection, messages and claim text, the per-day schedule rows (ids and variants), the
+// selected-day title and fallback rule, transcript ordering, status lines and speaker
+// attribution, and the in-progress check. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
 // Last modified: 2026-10-31
@@ -14,7 +15,6 @@ import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import {
   alertMessage,
   ANOTHER_CAREGIVER,
-  buildSchedule,
   buildTranscript,
   buildWeekStrip,
   claimText,
@@ -22,20 +22,25 @@ import {
   hasInProgress,
   isAlert,
   messageSpeaker,
+  resolveSelectedDate,
+  scheduleForDate,
+  selectedDayTitle,
   VARIANT_STYLE,
   WORKING_TEXT,
   weekMonthLabel,
   weekRangeLabel,
   type AgentRequest,
+  type ScheduleRowData,
 } from '../format';
 
 /**
- * purpose: Build the schedule for a day the way the Home screen does.
+ * purpose: Build the schedule rows for a date the way the Home screen does.
  * @param day: (DayViewData) The day view.
- * @return: (ReturnType<typeof buildSchedule>) The schedule groups.
+ * @param date: (string) The selected local date.
+ * @return: (ScheduleRowData[]) The rows.
  */
-function scheduleOf(day: DayViewData): ReturnType<typeof buildSchedule> {
-  return buildSchedule(day, buildAgenda(day));
+function scheduleOf(day: DayViewData, date: string): ScheduleRowData[] {
+  return scheduleForDate(day, buildAgenda(day), date);
 }
 
 /**
@@ -190,8 +195,9 @@ describe('buildWeekStrip', () => {
 
   it('describes the day for screen readers', () => {
     const days = buildWeekStrip(makeDay({ tasks: [makeTask()] }));
-    expect(days[0].accessibilityLabel).toBe('Today, Thursday 29, has plans');
-    expect(days[1].accessibilityLabel).toBe('Friday 30');
+    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has events');
+    expect(days[1].accessibilityLabel).toBe('Friday, October 30');
+    expect(days[3].accessibilityLabel).toBe('Sunday, November 1');
   });
 });
 
@@ -223,19 +229,18 @@ describe('alerts', () => {
   });
 });
 
-describe('buildSchedule', () => {
+describe('scheduleForDate', () => {
   it('is empty when nothing is scheduled', () => {
-    expect(scheduleOf(makeDay())).toEqual([]);
+    expect(scheduleOf(makeDay(), '2026-10-29')).toEqual([]);
+    expect(scheduleOf(makeDay(), '2026-10-31')).toEqual([]);
   });
 
-  it('merges today tasks and events in time order under "Today, <weekday>"', () => {
+  it('merges today tasks and events in time order', () => {
     const day = makeDay({
       tasks: [makeTask({ instanceId: 't1', scheduledTime: '08:00' })],
       eventsToday: [makeEvent({ startTime: '07:00', label: 'Walk' })],
     });
-    const [today] = scheduleOf(day);
-    expect(today.title).toBe('Today, Thursday');
-    expect(today.rows.map((r) => r.label)).toEqual(['Walk', 'Take medication']);
+    expect(scheduleOf(day, '2026-10-29').map((r) => r.label)).toEqual(['Walk', 'Take medication']);
   });
 
   it('reuses the agenda ids for today and the event key for later days', () => {
@@ -244,14 +249,16 @@ describe('buildSchedule', () => {
       eventsToday: [makeEvent({ eventId: 'e1', startTime: '07:00' })],
       upcoming: [makeEvent({ eventId: 'e2', localDate: '2026-10-31' })],
     });
-    const groups = scheduleOf(day);
-    expect(groups[0].rows.map((r) => r.id)).toEqual(['event-e1-2026-10-29', 'task-t1']);
-    expect(groups[1].rows.map((r) => r.id)).toEqual(['e2-2026-10-31']);
+    expect(scheduleOf(day, '2026-10-29').map((r) => r.id)).toEqual([
+      'event-e1-2026-10-29',
+      'task-t1',
+    ]);
+    expect(scheduleOf(day, '2026-10-31').map((r) => r.id)).toEqual(['e2-2026-10-31']);
   });
 
   it('uses the agenda it is given instead of rebuilding it', () => {
     const day = makeDay({ tasks: [makeTask({ instanceId: 't1' })] });
-    expect(buildSchedule(day, [])).toEqual([]);
+    expect(scheduleForDate(day, [], '2026-10-29')).toEqual([]);
   });
 
   it('assigns a variant to each kind of row, with its icon from VARIANT_STYLE', () => {
@@ -265,7 +272,7 @@ describe('buildSchedule', () => {
       ],
       eventsToday: [makeEvent({ startTime: '11:00' })],
     });
-    const rows = scheduleOf(day)[0].rows;
+    const rows = scheduleOf(day, '2026-10-29');
     expect(rows.map((r) => [r.variant, VARIANT_STYLE[r.variant].icon])).toEqual([
       ['done', 'checkmark.circle.fill'],
       ['alert', 'exclamationmark.circle.fill'],
@@ -276,25 +283,37 @@ describe('buildSchedule', () => {
     ]);
   });
 
-  it('groups later days by full weekday name, sorted, and drops days past the week', () => {
+  it('lists only the chosen later day events, sorted by time', () => {
     const day = makeDay({
       upcoming: [
         makeEvent({ eventId: 'z', localDate: '2026-10-31', startTime: '15:00', label: 'Late' }),
         makeEvent({ eventId: 'y', localDate: '2026-10-30', startTime: '09:00', label: 'Early' }),
         makeEvent({ eventId: 'x', localDate: '2026-10-31', startTime: '08:00', label: 'First' }),
-        makeEvent({ eventId: 'w', localDate: '2026-11-05', startTime: '08:00', label: 'Too far' }),
       ],
     });
-    const groups = scheduleOf(day);
-    expect(groups.map((g) => g.title)).toEqual(['Friday', 'Saturday']);
-    expect(groups[1].rows.map((r) => r.label)).toEqual(['First', 'Late']);
+    expect(scheduleOf(day, '2026-10-31').map((r) => r.label)).toEqual(['First', 'Late']);
+    expect(scheduleOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Early']);
   });
 
-  it('puts the visitor and place in an event row and labels it for screen readers', () => {
+  it('finds events past a month and year boundary', () => {
+    const day = makeDay({
+      localDate: '2026-12-30',
+      upcoming: [makeEvent({ eventId: 'n', localDate: '2027-01-02', label: 'New year' })],
+    });
+    expect(scheduleOf(day, '2027-01-02').map((r) => r.label)).toEqual(['New year']);
+    expect(scheduleOf(day, '2027-01-01')).toEqual([]);
+  });
+
+  it('does not show tasks on a later day', () => {
+    const day = makeDay({ tasks: [makeTask()] });
+    expect(scheduleOf(day, '2026-10-30')).toEqual([]);
+  });
+
+  it('puts the visitor in an event row and labels it for screen readers', () => {
     const day = makeDay({
       eventsToday: [makeEvent({ visitorName: 'Sam', startTime: '14:00' })],
     });
-    const row = scheduleOf(day)[0].rows[0];
+    const row = scheduleOf(day, '2026-10-29')[0];
     expect(row.label).toBe('Cardiology with Sam');
     expect(row.accessibilityLabel).toBe('2:00 PM, Cardiology with Sam');
   });
@@ -307,11 +326,59 @@ describe('buildSchedule', () => {
         makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'upcoming' }),
       ],
     });
-    expect(scheduleOf(day)[0].rows.map((r) => r.accessibilityLabel)).toEqual([
+    expect(scheduleOf(day, '2026-10-29').map((r) => r.accessibilityLabel)).toEqual([
       '6:00 AM, Take medication, Done',
       '7:00 AM, Take medication, Not confirmed',
       '8:00 AM, Take medication',
     ]);
+  });
+});
+
+describe('selectedDayTitle', () => {
+  it('is "Today" for today', () => {
+    expect(selectedDayTitle('2026-10-29', '2026-10-29')).toBe('Today');
+  });
+
+  it('is the weekday and short date for another day, across a month boundary', () => {
+    expect(selectedDayTitle('2026-10-29', '2026-11-01')).toBe('Sunday, Nov 1');
+  });
+
+  it('crosses a year boundary', () => {
+    expect(selectedDayTitle('2026-12-30', '2027-01-02')).toBe('Saturday, Jan 2');
+  });
+
+  it('is empty for an invalid date', () => {
+    expect(selectedDayTitle('2026-10-29', 'bad')).toBe('');
+  });
+});
+
+describe('resolveSelectedDate', () => {
+  const strip = buildWeekStrip(makeDay());
+
+  it('is today when nothing was chosen', () => {
+    expect(resolveSelectedDate(strip, '2026-10-29', null)).toBe('2026-10-29');
+  });
+
+  it('keeps a chosen day in the strip', () => {
+    const selection = { date: '2026-11-01', todayWhenChosen: '2026-10-29' };
+    expect(resolveSelectedDate(strip, '2026-10-29', selection)).toBe('2026-11-01');
+  });
+
+  it('falls back to today when today changed since the choice', () => {
+    const next = buildWeekStrip(makeDay({ localDate: '2026-10-30' }));
+    const selection = { date: '2026-11-01', todayWhenChosen: '2026-10-29' };
+    expect(resolveSelectedDate(next, '2026-10-30', selection)).toBe('2026-10-30');
+  });
+
+  it('falls back to today when the chosen date is not in the strip', () => {
+    const selection = { date: '2026-11-20', todayWhenChosen: '2026-10-29' };
+    expect(resolveSelectedDate(strip, '2026-10-29', selection)).toBe('2026-10-29');
+  });
+
+  it('works across a year boundary', () => {
+    const yearStrip = buildWeekStrip(makeDay({ localDate: '2026-12-30' }));
+    const selection = { date: '2027-01-03', todayWhenChosen: '2026-12-30' };
+    expect(resolveSelectedDate(yearStrip, '2026-12-30', selection)).toBe('2027-01-03');
   });
 });
 
