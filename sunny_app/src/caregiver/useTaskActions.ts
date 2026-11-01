@@ -80,16 +80,13 @@ export function useTaskActions(): TaskActions {
   /**
    * purpose: Mark one task done as the signed-in caregiver.
    * @param instanceId: (TaskInstanceId) The task instance.
-   * @param note: (string | undefined) Note for the family; omitted from the call when absent.
+   * @param note: (string | undefined) Note for the family. An undefined note is dropped when
+   *        the Convex client serializes the arguments, so it is passed as is.
    * @return: (Promise<void>) Resolves once the outcome is recorded; never rejects.
    */
   const markDone = (instanceId: TaskInstanceId, note?: string): Promise<void> =>
     run(instanceId, { status: 'marking' }, () =>
-      callMutation(api.instances.confirmTaskInstance, {
-        instanceId,
-        via: 'caregiver',
-        ...(note === undefined ? {} : { note }),
-      }),
+      callMutation(api.instances.confirmTaskInstance, { instanceId, via: 'caregiver', note }),
     );
 
   return { actions, claim, markDone };

@@ -27,7 +27,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineMark } from '../components/DayComponents';
-import type { DayTask } from '../day/types';
 import type { DayViewState } from '../day/useDayView';
 import { colors } from '../theme/colors';
 import { type } from '../theme/typography';
@@ -40,17 +39,17 @@ import {
   SectionTitle,
 } from './CaregiverComponents';
 import {
+  alertMessage,
   buildWeekStrip,
   isAlert,
   laterThisWeek,
-  leftoverRows,
-  markDoneTitle,
   noteFromPrompt,
   resolveSelectedDate,
   scheduleForDate,
   selectedDayTitle,
   weekRangeLabel,
   type DaySelection,
+  type Markable,
 } from './format';
 import { useTabBarInset } from './tabBarInset';
 import { useTaskActions } from './useTaskActions';
@@ -104,18 +103,18 @@ export function CaregiverHomeScreen({
   /**
    * purpose: Ask the caregiver to confirm marking a task done, with an optional note for the
    *          family, then mark it done. Cancel does nothing.
-   * @param task: (DayTask) The task.
+   * @param markable: ({ instanceId, label }) The task to mark done.
    * @return: (void)
    */
-  const askMarkDone = (task: DayTask): void => {
+  const askMarkDone = ({ instanceId, label }: Markable): void => {
     Alert.prompt(
-      markDoneTitle(task),
+      `Mark ${label} done?`,
       'Add a note for the family (optional)',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Mark done',
-          onPress: (text?: string) => void markDone(task.instanceId, noteFromPrompt(text)),
+          onPress: (text?: string) => void markDone(instanceId, noteFromPrompt(text)),
         },
       ],
       'plain-text',
@@ -126,13 +125,14 @@ export function CaregiverHomeScreen({
     if (day === null) return null;
     const strip = buildWeekStrip(day);
     const selectedDate = resolveSelectedDate(strip, day.localDate, selection);
+    const { leftover, rows } = scheduleForDate(day, agenda, selectedDate, userId);
     return {
-      alerts: day.tasks.filter(isAlert),
+      alerts: day.tasks.filter(isAlert).map((task) => ({ task, message: alertMessage(task) })),
       strip,
       selectedDate,
       scheduleTitle: selectedDayTitle(day.localDate, selectedDate),
-      leftover: selectedDate === day.localDate ? leftoverRows(day, agenda, userId) : [],
-      schedule: scheduleForDate(day, agenda, selectedDate, userId),
+      leftover,
+      schedule: rows,
       later: laterThisWeek(day, strip, selectedDate),
       range: weekRangeLabel(day.localDate),
     };
@@ -169,16 +169,18 @@ export function CaregiverHomeScreen({
             {view.alerts.length === 0 && (
               <Text style={[type.callout, styles.message]}>Nothing needs attention.</Text>
             )}
-            {view.alerts.map((task) => (
+            {view.alerts.map(({ task, message }) => (
               <AlertCard
                 key={task.instanceId}
                 task={task}
-                todayDate={day.localDate}
+                message={message}
                 action={actions[task.instanceId]}
                 canEdit={canEdit}
                 userId={userId}
                 onClaim={() => claim(task.instanceId)}
-                onMarkDone={() => askMarkDone(task)}
+                onMarkDone={() =>
+                  askMarkDone({ instanceId: task.instanceId, label: task.displayLabel })
+                }
               />
             ))}
           </View>

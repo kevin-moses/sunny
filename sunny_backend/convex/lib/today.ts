@@ -9,17 +9,18 @@
 //
 // Each entry also says who claimed it ("I'm on it"): claimedBy is the claimer's user id and
 // claimedByName their household display name (null when unclaimed or no longer a member).
-// Likewise confirmedBy / confirmedByName name the caregiver who marked it done (null when a
-// device or the senior confirmed it, or the member is gone). localDate is the instance's own
-// local date, so a caller can tell yesterday's carry-over from today's entries, and
-// resolutionNote is the note the caregiver left.
+// confirmedBy is the confirming user id; confirmedByName is the household display name of the
+// caregiver who marked it done (state "resolved"), null for a device confirmation or when the
+// member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
+// is the instance's own local date and carriedOver is true for yesterday's still-open
+// instances, and resolutionNote is the note the caregiver left.
 //
 // Last modified: 2026-11-01
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { findMember } from "./access";
-import { addDays, localDate } from "./time";
+import { memberNames } from "./access";
+import { addDays, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
 /** One of today's instances joined with its task. */
@@ -27,6 +28,8 @@ export interface TodayEntry {
   instanceId: Id<"taskInstances">;
   /** The instance's household-local date, "YYYY-MM-DD" (yesterday's for a carry-over). */
   localDate: string;
+  /** True for yesterday's instance that is still due or escalated. */
+  carriedOver: boolean;
   taskId: Id<"tasks">;
   type: TaskType;
   displayLabel: string;
@@ -36,12 +39,17 @@ export interface TodayEntry {
   scheduledTime: string;
   state: InstanceState;
   confirmedAt: number | null;
+  /** Household-local "HH:MM" of confirmedAt; null when not confirmed. */
+  confirmedLocalTime: string | null;
   confirmedVia: ConfirmVia | null;
   claimedBy: string | null;
   claimedByName: string | null;
-  /** Clerk user id of the caregiver who marked it done; null when a device confirmed it. */
+  /**
+   * The confirming user id: the caregiver's for a resolution, the device's account id for a
+   * device confirmation; null when unconfirmed.
+   */
   confirmedBy: string | null;
-  /** That caregiver's household display name; null when confirmedBy is null or they left. */
+  /** The caregiver's display name; null unless state is "resolved", or when they left. */
   confirmedByName: string | null;
   resolutionNote: string | null;
 }
@@ -87,30 +95,26 @@ export async function todayInstances(
       .withIndex("by_household_date", (q) => q.eq("householdId", householdId).eq("localDate", date))
       .collect()
   ).sort(byWindowStart);
-  const instances = [...carryOver, ...todays];
-  const entries: TodayEntry[] = [];
-  const memberNames = new Map<string, string | null>();
+  const carriedIds = new Set(carryOver.map((i) => i._id));
+  const names = await memberNames(ctx, householdId);
   /**
-   * purpose: A member's display name, looked up once per user for this call.
+   * purpose: A member's display name.
    * @param userId: (string | null) Clerk user id, or null.
-   * @return: (Promise<string | null>) The name; null for null, or when no longer a member.
+   * @return: (string | null) The name; null for null, or when no longer a member.
    */
-  const nameOf = async (userId: string | null): Promise<string | null> => {
-    if (userId === null) return null;
-    if (!memberNames.has(userId)) {
-      const member = await findMember(ctx, householdId, userId);
-      memberNames.set(userId, member?.displayName ?? null);
-    }
-    return memberNames.get(userId) ?? null;
-  };
-  for (const instance of instances) {
+  const nameOf = (userId: string | null): string | null =>
+    userId === null ? null : (names.get(userId) ?? null);
+  const entries: TodayEntry[] = [];
+  for (const instance of [...carryOver, ...todays]) {
     const task = await ctx.db.get(instance.taskId);
     if (!task) continue;
     const claimedBy = instance.claimedBy ?? null;
     const confirmedBy = instance.confirmedBy ?? null;
+    const confirmedAt = instance.confirmedAt ?? null;
     entries.push({
       instanceId: instance._id,
       localDate: instance.localDate,
+      carriedOver: carriedIds.has(instance._id),
       taskId: task._id,
       type: task.type,
       displayLabel: task.displayLabel,
@@ -119,12 +123,13 @@ export async function todayInstances(
       checklistItems: task.checklistItems,
       scheduledTime: instance.scheduledTime,
       state: instance.state,
-      confirmedAt: instance.confirmedAt ?? null,
+      confirmedAt,
+      confirmedLocalTime: confirmedAt === null ? null : localTime(confirmedAt, household.timezone),
       confirmedVia: instance.confirmedVia ?? null,
       claimedBy,
-      claimedByName: await nameOf(claimedBy),
+      claimedByName: nameOf(claimedBy),
       confirmedBy,
-      confirmedByName: await nameOf(confirmedBy),
+      confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
     });
   }

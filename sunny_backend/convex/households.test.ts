@@ -818,12 +818,32 @@ describe("join codes", () => {
     expect(paired.kind).toBe("senior_phone");
   });
 
-  test("an existing member cannot redeem a second code", async () => {
+  test("a member of this household redeeming its code is told they are already a member", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const code = await makeCode(t, householdId, "caregiver_member");
     await expect(
       t.withIdentity({ subject: "user_a" }).mutation(api.households.redeemJoinCode, { code }),
+    ).rejects.toMatchObject({
+      data: { code: "invalid", message: "You are already a member of this household" },
+    });
+    const rows = await t.withIdentity({ subject: "user_a" }).query(api.households.listJoinCodes, {
+      householdId,
+    });
+    expect(rows[0]?.redeemedAt).toBeUndefined();
+  });
+
+  test("a member of another household cannot redeem a code", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await t.withIdentity({ subject: "user_z" }).mutation(api.households.create, {
+      seniorPreferredName: "Bob",
+      timezone: NY,
+      caregiverDisplayName: "Zed",
+    });
+    const code = await makeCode(t, householdId, "caregiver_member");
+    await expect(
+      t.withIdentity({ subject: "user_z" }).mutation(api.households.redeemJoinCode, { code }),
     ).rejects.toMatchObject({ data: { code: "invalid", message: ONE_HOUSEHOLD } });
     const rows = await t.withIdentity({ subject: "user_a" }).query(api.households.listJoinCodes, {
       householdId,

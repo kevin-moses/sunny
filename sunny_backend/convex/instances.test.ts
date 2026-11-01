@@ -9,7 +9,7 @@
 // over-long reminder titles are rejected. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -455,12 +455,14 @@ describe("today", () => {
     expect(entry).toMatchObject({
       pillDescription: null,
       confirmedAt: null,
+      confirmedLocalTime: null,
       confirmedVia: null,
       claimedBy: null,
       claimedByName: null,
       confirmedBy: null,
       confirmedByName: null,
       resolutionNote: null,
+      carriedOver: false,
     });
   });
 
@@ -492,6 +494,7 @@ describe("today", () => {
     expect(entries.find((e) => e.instanceId === first!._id)).toMatchObject({
       state: "resolved",
       confirmedVia: "caregiver",
+      confirmedLocalTime: "07:30",
       confirmedBy: "pat",
       confirmedByName: "Pat",
       resolutionNote: "Called her",
@@ -499,6 +502,7 @@ describe("today", () => {
     expect(entries.find((e) => e.instanceId === second!._id)).toMatchObject({
       state: "confirmed",
       confirmedVia: "button",
+      confirmedLocalTime: "07:30",
       confirmedBy: "phone",
       confirmedByName: null,
       resolutionNote: null,
@@ -537,8 +541,14 @@ describe("today", () => {
     const entries = await f.t
       .withIdentity({ subject: "pat" })
       .query(api.instances.today, { householdId: f.householdId });
-    expect(entries[0]).toMatchObject({ displayLabel: "Late pills", localDate: "2027-03-14" });
-    expect(entries.slice(1).every((e) => e.localDate === "2027-03-15")).toBe(true);
+    expect(entries[0]).toMatchObject({
+      displayLabel: "Late pills",
+      localDate: "2027-03-14",
+      carriedOver: true,
+    });
+    expect(entries.slice(1).every((e) => e.localDate === "2027-03-15" && !e.carriedOver)).toBe(
+      true,
+    );
   });
 
   test("a claimed entry names who is on it, for every caregiver and device", async () => {

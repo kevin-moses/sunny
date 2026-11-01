@@ -12,11 +12,15 @@
 // still valid) or a device user that exists before pairDevice runs cannot become a caregiver.
 // requireSenior stays keyed on the devices row.
 //
-// Last modified: 2026-10-31
+// Membership helpers: hasMembership (any household), insertMembership (the only place a
+// householdMembers row is inserted; it enforces one household per caregiver) and memberNames
+// (display names of a household in one query).
+//
+// Last modified: 2026-11-01
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
-import type { QueryCtx } from "../_generated/server";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { appError } from "./errors";
 
 /** A signed-in caregiver acting within one household. */
@@ -125,6 +129,63 @@ export async function findMember(
     .query("householdMembers")
     .withIndex("by_household_user", (q) => q.eq("householdId", householdId).eq("userId", userId))
     .unique();
+}
+
+/**
+ * purpose: Whether a user belongs to any household as a caregiver.
+ * @param ctx: (QueryCtx) Context.
+ * @param userId: (string) User id.
+ * @return: (Promise<boolean>) True when the user has at least one householdMembers row.
+ */
+export async function hasMembership(ctx: QueryCtx, userId: string): Promise<boolean> {
+  const row = await ctx.db
+    .query("householdMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  return row !== null;
+}
+
+/**
+ * purpose: Add a caregiver to a household, enforcing the one-household-per-caregiver rule.
+ *          The only place a householdMembers row is inserted.
+ * @param ctx: (MutationCtx) Context.
+ * @param args: ({householdId, userId, role, displayName}) The membership to create.
+ * @return: (Promise<Id<"householdMembers">>) The new membership row id.
+ * @raises invalid when the user already belongs to any household.
+ */
+export async function insertMembership(
+  ctx: MutationCtx,
+  args: {
+    householdId: Id<"households">;
+    userId: string;
+    role: Doc<"householdMembers">["role"];
+    displayName: string;
+  },
+): Promise<Id<"householdMembers">> {
+  if (await hasMembership(ctx, args.userId)) {
+    throw appError(
+      "invalid",
+      "You already belong to a household. Ask its primary caregiver to remove you before joining another.",
+    );
+  }
+  return await ctx.db.insert("householdMembers", args);
+}
+
+/**
+ * purpose: Display names of a household's members, from a single query.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<Map<string, string>>) Display name by user id.
+ */
+export async function memberNames(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Map<string, string>> {
+  const members = await ctx.db
+    .query("householdMembers")
+    .withIndex("by_household_user", (q) => q.eq("householdId", householdId))
+    .collect();
+  return new Map(members.map((m) => [m.userId, m.displayName]));
 }
 
 /**

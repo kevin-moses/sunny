@@ -22,7 +22,7 @@
 // household exists.
 //
 // One household per caregiver: create and redeemJoinCode reject a caregiver who already has a
-// householdMembers row (assertNoHousehold, checked before anything is inserted). A caregiver
+// householdMembers row (insertMembership, the only place a membership is inserted). A caregiver
 // removed by removeMember can then join or create another household.
 //
 // Last modified: 2026-11-01
@@ -35,6 +35,8 @@ import type { QueryCtx } from "./_generated/server";
 import {
   findDevice,
   findMember,
+  hasMembership,
+  insertMembership,
   isDeviceAccount,
   loadHousehold,
   myHouseholdIds,
@@ -153,25 +155,6 @@ function isDeviceGrant(grant: JoinGrant): grant is DeviceKind {
 }
 
 /**
- * purpose: Enforce the one-household-per-caregiver rule.
- * @param ctx: (QueryCtx) Context.
- * @param userId: (string) The caregiver's user id.
- * @raises invalid when the user is already a member of any household.
- */
-async function assertNoHousehold(ctx: QueryCtx, userId: string): Promise<void> {
-  const existing = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .first();
-  if (existing) {
-    throw appError(
-      "invalid",
-      "You already belong to a household. Ask its primary caregiver to remove you before joining another.",
-    );
-  }
-}
-
-/**
  * purpose: Create a household with the caller as primary caregiver and on-call contact.
  * @param seniorPreferredName: (string) What the senior likes to be called.
  * @param timezone: (string) IANA zone of the household.
@@ -187,7 +170,6 @@ export const create = mutation({
   },
   handler: async (ctx, args): Promise<Id<"households">> => {
     const userId = await requireCaregiverAccount(ctx);
-    await assertNoHousehold(ctx, userId);
     const seniorPreferredName = requireNonBlank(args.seniorPreferredName, "Senior's name");
     const displayName = requireNonBlank(args.caregiverDisplayName, "Your name");
     const timezone = requireTimezone(args.timezone);
@@ -201,12 +183,7 @@ export const create = mutation({
       shareTranscripts: false,
       backgroundPaused: false,
     });
-    await ctx.db.insert("householdMembers", {
-      householdId,
-      userId,
-      role: "primary",
-      displayName,
-    });
+    await insertMembership(ctx, { householdId, userId, role: "primary", displayName });
     await seedDefaultPolicies(ctx, householdId);
     return householdId;
   },
@@ -530,7 +507,7 @@ export const deleteJoinCode = mutation({
  * @param displayName: (string, optional) Display name; defaults to "Caregiver".
  * @return: (Id<"households">) The joined household.
  * @raises invalid when the code is for a senior's device or the caller already belongs to a
- *          household (including this one); not_found when it cannot be redeemed.
+ *          household ("already a member" if it is this one); not_found when it cannot be redeemed.
  */
 export const redeemJoinCode = mutation({
   args: { code: v.string(), displayName: v.optional(v.string()) },
@@ -544,8 +521,10 @@ export const redeemJoinCode = mutation({
         "That code is for setting up a senior's device. Ask a family member for a caregiver invite code.",
       );
     }
-    await assertNoHousehold(ctx, userId);
-    await ctx.db.insert("householdMembers", {
+    if (await findMember(ctx, row.householdId, userId)) {
+      throw appError("invalid", "You are already a member of this household");
+    }
+    await insertMembership(ctx, {
       householdId: row.householdId,
       userId,
       role: row.grants.replace("caregiver_", "") as MemberRole,
@@ -599,11 +578,8 @@ export const pairDevice = internalMutation({
     if (await findDevice(ctx, args.userId)) {
       throw appError("invalid", "This user is already a paired device");
     }
-    const existingMember = await ctx.db
-      .query("householdMembers")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .first();
-    if (existingMember) throw appError("invalid", "This user is already a caregiver");
+    if (await hasMembership(ctx, args.userId))
+      throw appError("invalid", "This user is already a caregiver");
 
     const deviceId = await ctx.db.insert("devices", {
       householdId: row.householdId,
@@ -711,11 +687,7 @@ export const removeDevice = mutation({
  */
 async function isOrphanedUser(ctx: QueryCtx, userId: string): Promise<boolean> {
   if (await findDevice(ctx, userId)) return false;
-  const member = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .first();
-  return member === null;
+  return !(await hasMembership(ctx, userId));
 }
 
 /**

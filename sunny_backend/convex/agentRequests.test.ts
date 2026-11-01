@@ -15,7 +15,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { createHousehold, insertRequest, makeBackend, type TestConvex } from "./testing.helpers";
+import {
+  addMember,
+  createHousehold,
+  insertRequest,
+  makeBackend,
+  type TestConvex,
+} from "./testing.helpers";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -38,21 +44,12 @@ async function createTeam(t: TestConvex): Promise<Id<"households">> {
 }
 
 /**
- * purpose: Insert a membership directly.
+ * purpose: Create a second household owned by another caregiver, for cross-household checks.
  * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Clerk user id.
- * @param role: ("member" | "viewer") Role.
+ * @return: (Promise<Id<"households">>) The other household.
  */
-async function addMember(
-  t: TestConvex,
-  householdId: Id<"households">,
-  userId: string,
-  role: "member" | "viewer",
-): Promise<void> {
-  await t.run(async (ctx) => {
-    await ctx.db.insert("householdMembers", { householdId, userId, role, displayName: userId });
-  });
+async function createOtherHousehold(t: TestConvex): Promise<Id<"households">> {
+  return await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
 }
 
 describe("request", () => {
@@ -159,7 +156,7 @@ describe("request", () => {
   test("the limit is per household", async () => {
     const t = makeBackend();
     const householdId = await createTeam(t);
-    const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
+    const other = await createOtherHousehold(t);
     for (let i = 0; i < 5; i++) await insertRequest(t, other, { status: "queued" });
     await expect(
       t
@@ -270,7 +267,7 @@ describe("request", () => {
       test("ignores other households' conversations", async () => {
         const t = makeBackend();
         const householdId = await createTeam(t);
-        const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
+        const other = await createOtherHousehold(t);
         await insertRequest(t, other, { status: "succeeded", sessionId: "theirs" });
         const id = await sendLatest(t, householdId);
         const row = await t.run(async (ctx) => await ctx.db.get(id));
@@ -361,7 +358,7 @@ describe("request", () => {
     test("refuses to continue another household's request", async () => {
       const t = makeBackend();
       const householdId = await createTeam(t);
-      const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
+      const other = await createOtherHousehold(t);
       const earlier = await insertRequest(t, other, { status: "succeeded", sessionId: "s1" });
       await expect(
         t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
@@ -459,7 +456,7 @@ describe("get and list", () => {
   test("list returns newest first and only this household's requests", async () => {
     const t = makeBackend();
     const householdId = await createTeam(t);
-    const other = await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
+    const other = await createOtherHousehold(t);
     const first = await insertRequest(t, householdId);
     const second = await insertRequest(t, householdId);
     await insertRequest(t, other);

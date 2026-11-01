@@ -10,7 +10,10 @@
 // caching, a missing CLERK_SECRET_KEY (500), clientIp header parsing, and the best-effort
 // deleteClerkUser action. No real network calls are made.
 //
-// Last modified: 2026-10-29
+// The clock is frozen (Date only) for every test so the rate limiter's token buckets never refill
+// mid-test, which made the 300 request test flaky under load.
+//
+// Last modified: 2026-11-01
 
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { convexTest } from "convex-test";
@@ -94,6 +97,8 @@ function stubClerk(): void {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-29T15:00:00Z"));
   calls = [];
   behavior = { userId: "user_clerk_1" };
   savedEnv.CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
@@ -103,6 +108,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   if (savedEnv.CLERK_SECRET_KEY === undefined) delete process.env.CLERK_SECRET_KEY;

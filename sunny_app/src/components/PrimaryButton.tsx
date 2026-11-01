@@ -4,9 +4,11 @@
 // Connect and Talk to Sunny). Its press handler may be async: while it runs, or while the
 // caller passes busy, the label is replaced by a spinner (with the optional busyLabel next
 // to it) and further presses are ignored. At least 60pt tall for easy tapping; the compact
-// variant is a small left-aligned button with 15pt bold text for inline actions in cards.
+// variant is a small left-aligned button with 15pt bold text for inline actions in cards. The
+// outline variant has a transparent background with a 1px border and text in a tone color (the
+// accent by default) for a secondary action beside a solid one.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -35,6 +37,10 @@ interface PrimaryButtonProps {
   busyLabel?: string;
   /** A small inline button (smaller padding, left-aligned, 15pt bold text) instead of full width. */
   compact?: boolean;
+  /** 'solid' (default) fills with the accent; 'outline' is transparent with a border and text in tone. */
+  variant?: 'solid' | 'outline';
+  /** Border, text and spinner color of the outline variant; defaults to the accent. */
+  tone?: string;
   accessibilityLabel?: string;
   accessibilityHint?: string;
   style?: StyleProp<ViewStyle>;
@@ -43,8 +49,8 @@ interface PrimaryButtonProps {
 /**
  * purpose: Render a prominent accent button with a busy spinner for async presses.
  * @param props: (PrimaryButtonProps) Label, press handler, disabled and busy flags, busy
- *        label, compact flag, accessibility label and hint, and optional extra style (for
- *        example a max width).
+ *        label, compact flag, variant and outline tone, accessibility label and hint, and
+ *        optional extra style (for example a max width).
  * @return: (JSX.Element) The button.
  */
 export function PrimaryButton({
@@ -54,6 +60,8 @@ export function PrimaryButton({
   busy: externalBusy = false,
   busyLabel,
   compact = false,
+  variant = 'solid',
+  tone,
   accessibilityLabel,
   accessibilityHint,
   style,
@@ -84,9 +92,11 @@ export function PrimaryButton({
     }
   };
 
+  const outline = variant === 'outline';
+  const foreground = outline ? (tone ?? theme.accentColor) : colors.onAccent;
   const textStyle: TextStyle = compact
-    ? { fontSize: 15, fontWeight: '700', color: colors.onAccent }
-    : { fontSize: theme.buttonFontSize, fontWeight: '600', color: colors.onAccent };
+    ? { fontSize: 15, fontWeight: '700', color: foreground }
+    : { fontSize: theme.buttonFontSize, fontWeight: '600', color: foreground };
 
   return (
     <Pressable
@@ -101,7 +111,9 @@ export function PrimaryButton({
         compact && styles.compact,
         {
           borderRadius: theme.cornerRadius,
-          backgroundColor: theme.accentColor,
+          ...(outline
+            ? { backgroundColor: 'transparent', borderWidth: 1, borderColor: foreground }
+            : { backgroundColor: theme.accentColor }),
           opacity: disabled ? 0.4 : pressed ? 0.75 : 1,
         },
         style,
@@ -109,7 +121,7 @@ export function PrimaryButton({
     >
       {busy ? (
         <View style={styles.busyRow}>
-          <ActivityIndicator color={colors.onAccent} />
+          <ActivityIndicator color={foreground} />
           {busyLabel !== undefined && <Text style={textStyle}>{busyLabel}</Text>}
         </View>
       ) : (
