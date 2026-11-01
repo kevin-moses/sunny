@@ -4,27 +4,33 @@
 // module mocked: the /pair request (cleaned code, nonce, timeout vs offline messages), nonce
 // reuse for a retry of the same code, error mapping of the server's body, ticket sign-in
 // (including a failing stale sign out), pair() waiting for an unpair in flight, unpair (never
-// rejects, every step isolated, shared run), the removal retry backoff, and decidePairing /
-// rememberDevice (Clerk-only "unpaired", transient Convex auth, mine failure, removal of a
-// non-device account).
+// rejects, every step isolated, shared run), the removal retry backoff, and decideSession /
+// rememberHome / showHome (Clerk-only "signedOut", transient Convex auth, query failure, an
+// authenticated account that mine does not know, removal of a device account without a device
+// entry, caregiver home and onboarding, the remembered home).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { BackendError } from '../api';
 import {
-  decidePairing,
+  decideSession,
   nonceForCode,
   pair,
   pairErrorFromBody,
-  rememberDevice,
+  rememberHome,
   removalRetryDelay,
+  showHome,
   UNREACHABLE_NOTICE,
   unpair,
+  type HomeDecision,
+  type AccountKind,
   type MineEntry,
+  type MineResult,
   type PairedDevice,
-  type PairingInputs,
+  type SessionDecision,
+  type SessionInputs,
 } from '../pairing';
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
@@ -363,105 +369,159 @@ describe('removalRetryDelay', () => {
  * purpose: Build a households.mine entry.
  * @param deviceKind: (string | null) The device kind; null for a caregiver entry.
  * @param householdId: (string) The household id.
+ * @param role: (string | null) The caregiver role; defaults to primary for a caregiver entry.
  * @return: (MineEntry) The entry.
  */
-function mineEntry(deviceKind: string | null, householdId = 'h1'): MineEntry {
-  return {
-    household: { _id: householdId },
-    role: deviceKind === null ? 'primary' : null,
-    deviceKind,
-  } as unknown as MineEntry;
+function mineEntry(
+  deviceKind: string | null,
+  householdId = 'h1',
+  role: string | null = deviceKind === null ? 'primary' : null,
+): MineEntry {
+  return { household: { _id: householdId }, role, deviceKind } as unknown as MineEntry;
+}
+
+/**
+ * purpose: Build a households.mine result.
+ * @param accountKind: (AccountKind | null) The account kind; null when Convex knows no account.
+ * @param households: (MineEntry[]) The household entries.
+ * @return: (MineResult) The result.
+ */
+function mineResult(accountKind: AccountKind | null, households: MineEntry[] = []): MineResult {
+  return { accountKind, households };
+}
+
+/**
+ * purpose: Build a caregiver home decision.
+ * @param householdId: (string) The household id.
+ * @param role: (string) The caregiver role.
+ * @return: (HomeDecision) The caregiver decision.
+ */
+function caregiverHome(householdId: string, role: string): HomeDecision {
+  return { state: 'caregiver', home: { householdId, role } } as unknown as HomeDecision;
 }
 
 const DEVICE: PairedDevice = { householdId: 'h1', kind: 'senior_phone' } as PairedDevice;
+const PAIRED: HomeDecision = { state: 'paired', device: DEVICE };
+const CAREGIVER = caregiverHome('h1', 'primary');
+const LOADING: SessionDecision = { state: 'loading' };
+const UNREACHABLE: SessionDecision = { state: 'loading', notice: UNREACHABLE_NOTICE };
 
 /**
- * purpose: Build decidePairing inputs for a signed-in, Convex-authenticated device.
- * @param overrides: (Partial<PairingInputs>) Fields to set.
- * @return: (PairingInputs) The inputs.
+ * purpose: Build decideSession inputs for a signed-in, Convex-authenticated account whose
+ *          query has not answered yet.
+ * @param overrides: (Partial<SessionInputs>) Fields to set.
+ * @return: (SessionInputs) The inputs.
  */
-function inputs(overrides: Partial<PairingInputs> = {}): PairingInputs {
+function inputs(overrides: Partial<SessionInputs> = {}): SessionInputs {
   return {
     clerkLoaded: true,
     clerkSignedIn: true,
     convexLoading: false,
     convexAuthenticated: true,
     mine: undefined,
-    mineFailed: false,
-    lastDevice: null,
+    queryFailed: false,
     ...overrides,
   };
 }
 
-describe('decidePairing', () => {
+describe('decideSession', () => {
   it('is loading until Clerk has loaded', () => {
-    expect(decidePairing(inputs({ clerkLoaded: false })).state).toBe('loading');
+    expect(decideSession(inputs({ clerkLoaded: false }))).toEqual(LOADING);
   });
 
-  it('is unpaired only when Clerk has loaded without a session', () => {
-    expect(decidePairing(inputs({ clerkSignedIn: false })).state).toBe('unpaired');
+  it('is signed out only when Clerk has loaded without a session', () => {
+    expect(decideSession(inputs({ clerkSignedIn: false }))).toEqual({ state: 'signedOut' });
   });
 
-  it('is loading while Convex authenticates', () => {
-    expect(decidePairing(inputs({ convexLoading: true, convexAuthenticated: false }))).toEqual({
-      state: 'loading',
-    });
+  it('is loading, without a notice, while Convex authenticates', () => {
+    expect(decideSession(inputs({ convexLoading: true, convexAuthenticated: false }))).toEqual(
+      LOADING,
+    );
   });
 
-  it('does not look unpaired when Convex cannot authenticate a Clerk session', () => {
-    const decision = decidePairing(inputs({ convexAuthenticated: false }));
-    expect(decision).toEqual({ state: 'loading', notice: UNREACHABLE_NOTICE });
+  it('does not look signed out when Convex cannot authenticate a Clerk session', () => {
+    expect(decideSession(inputs({ convexAuthenticated: false }))).toEqual(UNREACHABLE);
   });
 
-  it('keeps the last device seen when Convex auth drops', () => {
-    expect(decidePairing(inputs({ convexAuthenticated: false, lastDevice: DEVICE }))).toEqual({
-      state: 'paired',
-      device: DEVICE,
-    });
+  it('is loading, without a notice, while mine has not arrived', () => {
+    expect(decideSession(inputs())).toEqual(LOADING);
   });
 
-  it('is loading while mine has not arrived', () => {
-    expect(decidePairing(inputs())).toEqual({ state: 'loading' });
+  it('shows the notice when the mine query failed', () => {
+    expect(decideSession(inputs({ queryFailed: true }))).toEqual(UNREACHABLE);
   });
 
-  it('shows the notice, or keeps the last device, when mine failed', () => {
-    expect(decidePairing(inputs({ mineFailed: true }))).toEqual({
-      state: 'loading',
-      notice: UNREACHABLE_NOTICE,
-    });
-    expect(decidePairing(inputs({ mineFailed: true, lastDevice: DEVICE })).state).toBe('paired');
+  it('treats an authenticated Convex that reports no account as unreachable', () => {
+    expect(decideSession(inputs({ mine: mineResult(null) }))).toEqual(UNREACHABLE);
   });
 
-  it('is paired with the device entry from mine', () => {
-    const mine = [mineEntry(null, 'h0'), mineEntry('home_display', 'h9')];
-    expect(decidePairing(inputs({ mine }))).toEqual({
+  it('is paired with the device entry from mine for a device account', () => {
+    const mine = mineResult('device', [mineEntry(null, 'h0'), mineEntry('home_display', 'h9')]);
+    expect(decideSession(inputs({ mine }))).toEqual({
       state: 'paired',
       device: { householdId: 'h9', kind: 'home_display' },
     });
   });
 
-  it('detects removal: signed in but mine has no device entry', () => {
-    expect(decidePairing(inputs({ mine: [] })).state).toBe('removed');
+  it('detects removal: a device account whose mine has no device entry', () => {
+    expect(decideSession(inputs({ mine: mineResult('device') }))).toEqual({ state: 'removed' });
+    const caregiverEntryOnly = mineResult('device', [mineEntry(null)]);
+    expect(decideSession(inputs({ mine: caregiverEntryOnly }))).toEqual({ state: 'removed' });
   });
 
-  it('treats a signed-in caregiver account (no device entry) as removed', () => {
-    expect(decidePairing(inputs({ mine: [mineEntry(null)], lastDevice: DEVICE })).state).toBe(
-      'removed',
-    );
+  it('is a caregiver in the first mine entry that has a role', () => {
+    const mine = mineResult('caregiver', [
+      mineEntry('senior_phone', 'h0'),
+      mineEntry(null, 'h2', 'viewer'),
+      mineEntry(null),
+    ]);
+    expect(decideSession(inputs({ mine }))).toEqual({
+      state: 'caregiver',
+      home: { householdId: 'h2', role: 'viewer' },
+    });
+  });
+
+  it('needs onboarding: a caregiver account with no entry that has a role', () => {
+    expect(decideSession(inputs({ mine: mineResult('caregiver') }))).toEqual({
+      state: 'caregiverOnboarding',
+    });
+    const deviceOnly = mineResult('caregiver', [mineEntry('senior_phone')]);
+    expect(decideSession(inputs({ mine: deviceOnly }))).toEqual({ state: 'caregiverOnboarding' });
   });
 });
 
-describe('rememberDevice', () => {
-  it('remembers a paired device and keeps the same object when unchanged', () => {
-    const first = rememberDevice({ state: 'paired', device: DEVICE }, null);
-    expect(first).toBe(DEVICE);
-    const same = { householdId: 'h1', kind: 'senior_phone' } as PairedDevice;
-    expect(rememberDevice({ state: 'paired', device: same }, DEVICE)).toBe(DEVICE);
+describe('rememberHome', () => {
+  it('remembers a paired device or a caregiver home', () => {
+    expect(rememberHome(PAIRED, null)).toBe(PAIRED);
+    expect(rememberHome(CAREGIVER, PAIRED)).toBe(CAREGIVER);
   });
 
-  it('keeps the device while loading and forgets it when unpaired or removed', () => {
-    expect(rememberDevice({ state: 'loading' }, DEVICE)).toBe(DEVICE);
-    expect(rememberDevice({ state: 'unpaired' }, DEVICE)).toBeNull();
-    expect(rememberDevice({ state: 'removed' }, DEVICE)).toBeNull();
+  it('keeps the home while loading', () => {
+    expect(rememberHome(LOADING, PAIRED)).toBe(PAIRED);
+    expect(rememberHome(UNREACHABLE, CAREGIVER)).toBe(CAREGIVER);
+    expect(rememberHome(LOADING, null)).toBeNull();
+  });
+
+  it('forgets the home when signed out, removed or onboarding', () => {
+    expect(rememberHome({ state: 'signedOut' }, CAREGIVER)).toBeNull();
+    expect(rememberHome({ state: 'removed' }, PAIRED)).toBeNull();
+    expect(rememberHome({ state: 'caregiverOnboarding' }, CAREGIVER)).toBeNull();
+  });
+});
+
+describe('showHome', () => {
+  it('shows the remembered home while the decision is loading', () => {
+    expect(showHome(LOADING, PAIRED)).toEqual({ shown: PAIRED, remembered: PAIRED });
+    expect(showHome(UNREACHABLE, CAREGIVER)).toEqual({ shown: CAREGIVER, remembered: CAREGIVER });
+  });
+
+  it('shows the loading decision when no home is remembered', () => {
+    expect(showHome(UNREACHABLE, null)).toEqual({ shown: UNREACHABLE, remembered: null });
+  });
+
+  it('shows a settled decision and updates the remembered home', () => {
+    expect(showHome(CAREGIVER, PAIRED)).toEqual({ shown: CAREGIVER, remembered: CAREGIVER });
+    const signedOut: SessionDecision = { state: 'signedOut' };
+    expect(showHome(signedOut, PAIRED)).toEqual({ shown: signedOut, remembered: null });
   });
 });

@@ -10,9 +10,13 @@
 // requests queued or running per household ("limit"); a request may continue only a
 // succeeded request of the same household that has a session ("not_found" otherwise), and only
 // while no other request is in progress in that session ("limit"). A continuation copies the
-// session id onto its row up front.
+// session id onto its row up front. `continueLatest` lets the server own the thread: it
+// continues the household's newest succeeded request that has a session (or starts fresh when
+// there is none), so the app never tracks which request to continue. It excludes
+// continueRequestId ("invalid" if both are given). Views carry requestedByName (the requester's
+// member display name, null once they have left) so the shared chat can attribute messages.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { v } from "convex/values";
 import type { WorkflowId } from "@convex-dev/workflow";
@@ -20,7 +24,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { workflow } from "./agentRuntime";
-import { requireEditor, type CaregiverActor } from "./lib/access";
+import { findMember, requireEditor, type CaregiverActor } from "./lib/access";
 import { isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { audit } from "./lib/audit";
 import { appError } from "./lib/errors";
@@ -34,12 +38,16 @@ const MAX_IN_PROGRESS = 5;
 /** Default and largest page size of `list`. */
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
+/** Most succeeded requests scanned for one with a session when continuing the latest thread. */
+const MAX_CONTINUABLE_SCAN = 20;
 
 /** A request as the caregiver app sees it (absent fields are null). */
 export interface AgentRequestView {
   id: Id<"agentRequests">;
   householdId: Id<"households">;
   requestedBy: string;
+  /** The requester's display name; null when they are no longer a member. */
+  requestedByName: string | null;
   message: string;
   continueRequestId: Id<"agentRequests"> | null;
   status: AgentRequestStatus;
@@ -52,13 +60,15 @@ export interface AgentRequestView {
 /**
  * purpose: Shape a request row for the app.
  * @param row: (Doc<"agentRequests">) The row.
+ * @param requestedByName: (string | null) The requester's display name, null if unknown.
  * @return: (AgentRequestView) The view.
  */
-function toView(row: Doc<"agentRequests">): AgentRequestView {
+function toView(row: Doc<"agentRequests">, requestedByName: string | null): AgentRequestView {
   return {
     id: row._id,
     householdId: row.householdId,
     requestedBy: row.requestedBy,
+    requestedByName,
     message: row.message,
     continueRequestId: row.continueRequestId ?? null,
     status: row.status,
@@ -67,6 +77,27 @@ function toView(row: Doc<"agentRequests">): AgentRequestView {
     createdAt: row._creationTime,
     finishedAt: row.finishedAt ?? null,
   };
+}
+
+/**
+ * purpose: Look up a requester's display name in a household, caching per user within one call.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param userId: (string) Requester's user id.
+ * @param cache: (Map<string, string | null>) Names already looked up in this call; updated.
+ * @return: (Promise<string | null>) The display name, or null if they are no longer a member.
+ */
+async function requesterName(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  userId: string,
+  cache: Map<string, string | null>,
+): Promise<string | null> {
+  const cached = cache.get(userId);
+  if (cached !== undefined) return cached;
+  const name = (await findMember(ctx, householdId, userId))?.displayName ?? null;
+  cache.set(userId, name);
+  return name;
 }
 
 /**
@@ -140,21 +171,50 @@ async function requireContinuable(
 }
 
 /**
+ * purpose: The household's newest succeeded request that has a session, the head of its
+ *          conversation thread.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<Id<"agentRequests"> | null>) The request, or null when there is none.
+ */
+async function findLatestContinuable(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Id<"agentRequests"> | null> {
+  // Newest first: creation time is the implicit last field of by_household_status.
+  const rows = await ctx.db
+    .query("agentRequests")
+    .withIndex("by_household_status", (q) =>
+      q.eq("householdId", householdId).eq("status", "succeeded"),
+    )
+    .order("desc")
+    .take(MAX_CONTINUABLE_SCAN);
+  return rows.find((row) => row.sessionId)?._id ?? null;
+}
+
+/**
  * purpose: Ask the household agent to do something. Queues the request and starts its workflow.
  * @param householdId: (Id<"households">) Household the agent acts for.
  * @param message: (string) What the caregiver wants; trimmed, 1 to 4000 characters.
  * @param continueRequestId: (Id<"agentRequests">, optional) A succeeded earlier request whose
  *        conversation to continue.
+ * @param continueLatest: (boolean, optional) Continue the household's newest succeeded
+ *        conversation instead, or start fresh if there is none. Not with continueRequestId.
  * @return: (Id<"agentRequests">) The new request; subscribe to `get` for the reply.
+ * @raises invalid when both continueRequestId and continueLatest are given.
  */
 export const request = mutation({
   args: {
     householdId: v.id("households"),
     message: v.string(),
     continueRequestId: v.optional(v.id("agentRequests")),
+    continueLatest: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<Id<"agentRequests">> => {
     const actor = await requireEditor(ctx, args.householdId);
+    if (args.continueRequestId !== undefined && args.continueLatest) {
+      throw appError("invalid", "Use continueRequestId or continueLatest, not both");
+    }
     const message = requireMaxLength(
       requireNonBlank(args.message, "Message"),
       MAX_MESSAGE_LENGTH,
@@ -163,14 +223,18 @@ export const request = mutation({
     if ((await countInProgress(ctx, args.householdId)) >= MAX_IN_PROGRESS) {
       throw appError("limit", "Too many agent requests in progress");
     }
-    const sessionId = args.continueRequestId
-      ? await requireContinuable(ctx, args.householdId, args.continueRequestId)
+    const continueRequestId =
+      args.continueRequestId ??
+      (args.continueLatest ? await findLatestContinuable(ctx, args.householdId) : null) ??
+      undefined;
+    const sessionId = continueRequestId
+      ? await requireContinuable(ctx, args.householdId, continueRequestId)
       : undefined;
     const requestId = await ctx.db.insert("agentRequests", {
       householdId: args.householdId,
       requestedBy: actor.userId,
       message,
-      continueRequestId: args.continueRequestId,
+      continueRequestId,
       sessionId,
       status: "queued",
     });
@@ -187,7 +251,7 @@ export const request = mutation({
       action: "agent_request",
       entity: "agentRequest",
       entityId: requestId,
-      detail: { continued: args.continueRequestId !== undefined },
+      detail: { continued: continueRequestId !== undefined },
     });
     return requestId;
   },
@@ -201,7 +265,8 @@ export const request = mutation({
 export const get = query({
   args: { requestId: v.id("agentRequests") },
   handler: async (ctx, { requestId }): Promise<AgentRequestView> => {
-    return toView((await loadForEditor(ctx, requestId)).row);
+    const { row } = await loadForEditor(ctx, requestId);
+    return toView(row, await requesterName(ctx, row.householdId, row.requestedBy, new Map()));
   },
 });
 
@@ -222,7 +287,12 @@ export const list = query({
       .withIndex("by_household", (q) => q.eq("householdId", householdId))
       .order("desc")
       .take(count);
-    return rows.map(toView);
+    const names = new Map<string, string | null>();
+    const views: AgentRequestView[] = [];
+    for (const row of rows) {
+      views.push(toView(row, await requesterName(ctx, householdId, row.requestedBy, names)));
+    }
+    return views;
   },
 });
 

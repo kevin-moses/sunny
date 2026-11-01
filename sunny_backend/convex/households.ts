@@ -17,7 +17,11 @@
 // Phone numbers: setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus (phone.ts) are re-exported here; listMembers
 // reports phoneVerified and hides numbers from paired devices.
 //
-// Last modified: 2026-10-29
+// mine returns the signed-in account's kind (device, caregiver or signed out, using the same rule
+// as requireCaregiverAccount) together with its households, so the app can route before any
+// household exists.
+//
+// Last modified: 2026-10-31
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -25,9 +29,9 @@ import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import {
-  currentUserId,
   findDevice,
   findMember,
+  isDeviceAccount,
   loadHousehold,
   myHouseholdIds,
   requireCaregiverAccount,
@@ -128,7 +132,7 @@ async function loadRedeemableCode(
 
 /**
  * purpose: The one error for every unredeemable code (unknown, used, expired, or the wrong
- *          kind for the redeeming path), so a code's kind is never revealed.
+ *          kind for the unauthenticated device path), so a code's kind is never revealed there.
  * @return: (Error) A not_found app error.
  */
 function invalidCodeError(): Error {
@@ -183,33 +187,49 @@ export const create = mutation({
   },
 });
 
+/** The role of a signed-in account: a senior device or a caregiver. */
+type AccountKind = "device" | "caregiver";
+
 /**
- * purpose: Households the caller belongs to, as a caregiver (with role) or as a paired device.
- * @return: (Array<{household, role, deviceKind}>) role is null for a device; deviceKind is
- *          null for a caregiver. Empty when signed out.
+ * purpose: The signed-in account's kind and the households it belongs to, as a caregiver (with
+ *          role) or as a paired device. The kind uses the same rule as requireCaregiverAccount
+ *          (isDeviceAccount), so the app can route before any household exists.
+ * @return: ({accountKind, households}) accountKind is null when signed out. Each household
+ *          entry has role null for a device and deviceKind null for a caregiver. households is
+ *          empty when signed out.
  */
 export const mine = query({
   args: {},
   handler: async (
     ctx,
-  ): Promise<
-    Array<{ household: Doc<"households">; role: MemberRole | null; deviceKind: DeviceKind | null }>
-  > => {
+  ): Promise<{
+    accountKind: AccountKind | null;
+    households: Array<{
+      household: Doc<"households">;
+      role: MemberRole | null;
+      deviceKind: DeviceKind | null;
+    }>;
+  }> => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (identity === null) return { accountKind: null, households: [] };
+    const userId = identity.subject;
+    const device = await findDevice(ctx, userId);
     const ids = await myHouseholdIds(ctx);
-    const userId = await currentUserId(ctx);
-    const device = userId === null ? null : await findDevice(ctx, userId);
-    const result = [];
+    const households = [];
     for (const id of ids) {
       const household = await ctx.db.get(id);
       if (!household) continue;
-      const member = userId === null ? null : await findMember(ctx, id, userId);
-      result.push({
+      const member = await findMember(ctx, id, userId);
+      households.push({
         household,
         role: member ? member.role : null,
         deviceKind: !member && device && device.householdId === id ? device.kind : null,
       });
     }
-    return result;
+    return {
+      accountKind: isDeviceAccount(identity, device) ? "device" : "caregiver",
+      households,
+    };
   },
 });
 
@@ -475,10 +495,16 @@ export const deleteJoinCode = mutation({
 
 /**
  * purpose: Join a household as a caregiver using an invite code. Device codes are redeemed
- *          by pairDevice instead.
+ *          by pairDevice instead; a signed-in caregiver who enters one gets a specific
+ *          "invalid" error pointing them to a caregiver invite code. That message is revealed
+ *          only to signed-in caregiver accounts: any Clerk caregiver account can tell a live
+ *          device code from an unknown, used or expired one, which is acceptable given the
+ *          32^8 code space and that /pair already accepts a correct guess. Unknown, used and
+ *          expired codes give the generic not_found error.
  * @param code: (string) The code; trimmed and case-insensitive.
  * @param displayName: (string, optional) Display name; defaults to "Caregiver".
  * @return: (Id<"households">) The joined household.
+ * @raises invalid when the code is for a senior's device, not_found when it cannot be redeemed.
  */
 export const redeemJoinCode = mutation({
   args: { code: v.string(), displayName: v.optional(v.string()) },
@@ -486,7 +512,12 @@ export const redeemJoinCode = mutation({
     const userId = await requireCaregiverAccount(ctx);
     const now = Date.now();
     const row = await loadRedeemableCode(ctx, args.code, now);
-    if (isDeviceGrant(row.grants)) throw invalidCodeError();
+    if (isDeviceGrant(row.grants)) {
+      throw appError(
+        "invalid",
+        "That code is for setting up a senior's device. Ask a family member for a caregiver invite code.",
+      );
+    }
     if (await findMember(ctx, row.householdId, userId)) {
       throw appError("invalid", "You are already a member of this household");
     }

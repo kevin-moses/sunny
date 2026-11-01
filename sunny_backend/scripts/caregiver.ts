@@ -15,6 +15,9 @@
 //                      Add --continue to continue the previous conversation.
 //   day                Print the day view (calendar:dayView) as the displays see it.
 //   codes              Print fresh join codes for the senior phone and the home display.
+//   invite [primary|member|viewer]
+//                      Create a caregiver invite code (households:createJoinCode, grants
+//                      caregiver_<role>; default member) and print it. An unknown role exits 1.
 //   google             Print the Google Calendar consent link (googleCalendar:connectUrl); open
 //                      it signed in as a Google test user. See notes/GOOGLE_CALENDAR_SETUP.md.
 //   phone <number>     Start verifying the dev caregiver's mobile number (households:setMyPhone):
@@ -29,11 +32,12 @@
 //   npx tsx scripts/caregiver.ts chat "Add lunch with Sarah on Friday at noon"
 //   npx tsx scripts/caregiver.ts chat "Make it 12:30 instead" --continue
 //   npx tsx scripts/caregiver.ts day
+//   npx tsx scripts/caregiver.ts invite viewer
 //   npx tsx scripts/caregiver.ts google
 //   npx tsx scripts/caregiver.ts phone 555-123-4567
 //   npx tsx scripts/caregiver.ts confirm-phone 123456
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -140,6 +144,26 @@ function printCodes(householdId: string): void {
     };
     console.log(`${label} join code: ${result.code}`);
   }
+}
+
+/** Caregiver roles an invite code can grant. */
+const INVITE_ROLES = ["primary", "member", "viewer"] as const;
+
+/**
+ * purpose: Create and print a caregiver invite code for the dev household.
+ * @param role: (string) One of primary, member or viewer.
+ */
+function invite(role: string): void {
+  if (!(INVITE_ROLES as readonly string[]).includes(role)) {
+    console.error(`Unknown role "${role}"; use one of: ${INVITE_ROLES.join(", ")}.`);
+    process.exitCode = 1;
+    return;
+  }
+  const result = convexRun("households:createJoinCode", {
+    householdId: loadState().householdId,
+    grants: `caregiver_${role}`,
+  }) as { code: string };
+  console.log(`Caregiver invite code (${role}): ${result.code}`);
 }
 
 /**
@@ -310,6 +334,9 @@ async function main(argv: string[]): Promise<void> {
     case "codes":
       printCodes(loadState().householdId);
       break;
+    case "invite":
+      invite(rest[0] ?? "member");
+      break;
     case "google":
       google();
       break;
@@ -323,7 +350,7 @@ async function main(argv: string[]): Promise<void> {
       break;
     default:
       console.log(
-        'Commands: setup | chat "<message>" [--continue] | day | codes | google | phone <number> | confirm-phone <code>',
+        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | phone <number> | confirm-phone <code>',
       );
   }
 }

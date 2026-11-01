@@ -7,10 +7,14 @@
 // surface (display, widget, agent context) renders. Absent optional
 // values are null, not missing keys, as in the other view-shaped results (lib/occurrences).
 //
-// Last modified: 2026-10-28
+// Each entry also says who claimed it ("I'm on it"): claimedBy is the claimer's user id and
+// claimedByName their household display name (null when unclaimed or no longer a member).
+//
+// Last modified: 2026-10-31
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { findMember } from "./access";
 import { addDays, localDate } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -27,6 +31,8 @@ export interface TodayEntry {
   state: InstanceState;
   confirmedAt: number | null;
   confirmedVia: ConfirmVia | null;
+  claimedBy: string | null;
+  claimedByName: string | null;
 }
 
 /**
@@ -46,6 +52,12 @@ export async function todayInstances(
   const household = await ctx.db.get(householdId);
   if (!household) return [];
   const date = localDate(now, household.timezone);
+  /**
+   * purpose: Sort comparator ordering task instances by window start.
+   * @param a: (Doc<"taskInstances">) First instance.
+   * @param b: (Doc<"taskInstances">) Second instance.
+   * @return: (number) Negative when a starts first.
+   */
   const byWindowStart = (a: Doc<"taskInstances">, b: Doc<"taskInstances">): number =>
     a.windowStart - b.windowStart;
   const carryOver = (
@@ -66,9 +78,15 @@ export async function todayInstances(
   ).sort(byWindowStart);
   const instances = [...carryOver, ...todays];
   const entries: TodayEntry[] = [];
+  const claimerNames = new Map<string, string | null>();
   for (const instance of instances) {
     const task = await ctx.db.get(instance.taskId);
     if (!task) continue;
+    const claimedBy = instance.claimedBy ?? null;
+    if (claimedBy !== null && !claimerNames.has(claimedBy)) {
+      const member = await findMember(ctx, householdId, claimedBy);
+      claimerNames.set(claimedBy, member?.displayName ?? null);
+    }
     entries.push({
       instanceId: instance._id,
       taskId: task._id,
@@ -81,6 +99,8 @@ export async function todayInstances(
       state: instance.state,
       confirmedAt: instance.confirmedAt ?? null,
       confirmedVia: instance.confirmedVia ?? null,
+      claimedBy,
+      claimedByName: claimedBy === null ? null : (claimerNames.get(claimedBy) ?? null),
     });
   }
   return entries;

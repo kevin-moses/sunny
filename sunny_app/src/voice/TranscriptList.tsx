@@ -2,20 +2,16 @@
 //
 // Purpose: Scrolling transcript for text mode. The user's words are
 // right-aligned bubbles tinted with the accent color; Sunny's words are left-aligned plain
-// text. Text is black at the theme body font size. VoiceOver reads "You said: ..." and
-// "Sunny said: ...". The list sticks to the newest message.
+// text (both are the shared UserBubble and AgentMessage). The list sticks to the newest
+// message.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-31
 
 import { useRef, type ReactElement } from 'react';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet } from 'react-native';
 
-import { colors } from '../theme/colors';
-import { useTheme } from '../theme/ThemeProvider';
+import { AgentMessage, UserBubble } from '../components/ChatMessages';
 import { useConversation, type ConversationMessage } from './voiceContext';
-
-/** Opacity of the accent tint behind the user's bubbles. */
-const USER_BUBBLE_TINT = '1F';
 
 /** A message reduced to what the list shows. */
 interface TranscriptEntry {
@@ -43,7 +39,6 @@ function toTranscriptEntry(message: ConversationMessage): TranscriptEntry | null
  * @return: (ReactElement) the message list
  */
 export function TranscriptList(): ReactElement {
-  const { accentColor, bodyFontSize, cornerRadius } = useTheme();
   const { messages } = useConversation();
   const listRef = useRef<FlatList<TranscriptEntry>>(null);
   const entries = messages.map(toTranscriptEntry).filter((e): e is TranscriptEntry => e !== null);
@@ -57,27 +52,7 @@ export function TranscriptList(): ReactElement {
       showsVerticalScrollIndicator={false}
       onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
       renderItem={({ item }) =>
-        item.fromUser ? (
-          <View style={styles.userRow} accessible accessibilityLabel={`You said: ${item.text}`}>
-            <View
-              style={[
-                styles.bubble,
-                {
-                  borderRadius: cornerRadius,
-                  backgroundColor: `${accentColor}${USER_BUBBLE_TINT}`,
-                },
-              ]}
-            >
-              <Text style={[styles.text, { fontSize: bodyFontSize }]}>{item.text}</Text>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.agentRow} accessible accessibilityLabel={`Sunny said: ${item.text}`}>
-            <Text style={[styles.text, styles.agentText, { fontSize: bodyFontSize }]}>
-              {item.text}
-            </Text>
-          </View>
-        )
+        item.fromUser ? <UserBubble text={item.text} /> : <AgentMessage text={item.text} />
       }
     />
   );
@@ -85,9 +60,4 @@ export function TranscriptList(): ReactElement {
 
 const styles = StyleSheet.create({
   content: { paddingHorizontal: 16, paddingVertical: 8, gap: 4 },
-  userRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingLeft: 16 },
-  agentRow: { flexDirection: 'row', justifyContent: 'flex-start', paddingRight: 16 },
-  bubble: { paddingHorizontal: 16, paddingVertical: 8 },
-  agentText: { paddingVertical: 8 },
-  text: { color: colors.ink },
 });

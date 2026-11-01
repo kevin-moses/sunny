@@ -3,9 +3,10 @@
 // Purpose: Sunny's fixed design tokens: the warm app background, the five-color accent
 // palette the user can pick from, neutral text/card/separator colors, the serious
 // (error, end-call) and moderate (warning) status colors, and the rounded system font.
-// The app is light-only, so there is one value per token.
+// The app is light-only, so there is one value per token. statusTones groups the status
+// colors by tone for the banner and the caregiver alert cards.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-10-31
 
 /** Fixed app background color; not user-selectable. */
 export const BACKGROUND = '#FAE6CC';
@@ -61,6 +62,20 @@ export const colors = {
   moderateBackground: '#FAEDD1',
   /** Warning border (asset catalog separatorModerate). */
   moderateSeparator: '#FBD7A0',
+} as const;
+
+/** Foreground, background and border colors of a status tone (error or warning). */
+export const statusTones = {
+  serious: {
+    foreground: colors.seriousForeground,
+    background: colors.seriousBackground,
+    separator: colors.seriousSeparator,
+  },
+  moderate: {
+    foreground: colors.moderateForeground,
+    background: colors.moderateBackground,
+    separator: colors.moderateSeparator,
+  },
 } as const;
 
 /** The iOS rounded system font. */

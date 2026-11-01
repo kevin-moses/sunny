@@ -2,15 +2,13 @@
 //
 // Purpose: Pure helpers for the day clock: task state checks, the time-ordered agenda
 // merge, and plain-language time text. Dates and times from calendar.dayView are already in
-// the household's local time, so nothing here converts timezones; calendar arithmetic
-// uses UTC dates purely as a day counter.
+// the household's local time, so nothing here converts timezones (date arithmetic lives in
+// localDate.ts). Also the shared wording of an event line (eventDetails).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
+import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
-
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const MS_PER_DAY = 86_400_000;
 
 /**
  * purpose: Whether a task was confirmed by the senior or a caregiver.
@@ -76,24 +74,6 @@ export function displayTime(localTime: string): string {
 }
 
 /**
- * purpose: Parse a "YYYY-MM-DD" local date into a UTC timestamp used as a day counter.
- * @param localDate: (string) Date from the backend.
- * @return: (number | null) Milliseconds at UTC midnight, or null when invalid.
- */
-function parseLocalDate(localDate: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
-  if (match === null) return null;
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const time = Date.UTC(year, month - 1, day);
-  const parsed = new Date(time);
-  const valid =
-    parsed.getUTCFullYear() === year &&
-    parsed.getUTCMonth() === month - 1 &&
-    parsed.getUTCDate() === day;
-  return valid ? time : null;
-}
-
-/**
  * purpose: When an event happens relative to today: "Today at 2:00 PM",
  *          "Tomorrow at 9:00 AM" or "Thursday at 2:00 PM".
  * @param event: (EventOccurrence) The occurrence.
@@ -105,8 +85,21 @@ export function whenText(event: EventOccurrence, todayLocalDate: string | null):
   const today = todayLocalDate === null ? null : parseLocalDate(todayLocalDate);
   const date = parseLocalDate(event.localDate);
   if (today === null || date === null) return time;
-  const days = Math.trunc((date - today) / MS_PER_DAY);
+  const days = daysBetween(today, date);
   if (days === 0) return `Today at ${time}`;
   if (days === 1) return `Tomorrow at ${time}`;
-  return `${WEEKDAYS[new Date(date).getUTCDay()]} at ${time}`;
+  return `${weekdayName(date)} at ${time}`;
+}
+
+/**
+ * purpose: Describe an event as "<head> with <visitor> at <place>".
+ * @param event: (EventOccurrence) The event.
+ * @param head: (string) The leading text (the label, or an already-formatted when text).
+ * @return: (string) The head with whichever of visitor and place are present.
+ */
+export function eventDetails(event: EventOccurrence, head: string): string {
+  const parts = [head];
+  if (event.visitorName) parts.push(`with ${event.visitorName}`);
+  if (event.place) parts.push(`at ${event.place}`);
+  return parts.join(' ');
 }

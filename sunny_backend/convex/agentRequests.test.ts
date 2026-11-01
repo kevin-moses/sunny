@@ -4,11 +4,13 @@
 // ported from request_agent_chat: editor caregivers only (viewers, outsiders, devices and
 // signed-out callers are refused for request, get, list and cancel), message trimmed and
 // limited to 1 to 4000 characters, at most 5 queued or running requests per household, and
-// continuing only a succeeded request of the same household that has a session. Also the
+// continuing only a succeeded request of the same household that has a session, and
+// continueLatest (newest succeeded conversation, fresh when none, busy limit, exclusive with
+// continueRequestId). Also the
 // inserted row, the stored workflow id, the audit entry, the view shape of get and list
 // (null for absent fields, newest first, limit clamping) and cancel.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-10-31
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -220,6 +222,113 @@ describe("request", () => {
       ).rejects.toThrow(/limit/);
     });
 
+    describe("continueLatest", () => {
+      /** Send a message with continueLatest as user_a. */
+      const sendLatest = (t: TestConvex, householdId: Id<"households">) =>
+        t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+          householdId,
+          message: "more",
+          continueLatest: true,
+        });
+
+      test("continues the newest succeeded request that has a session", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        await insertRequest(t, householdId, { status: "succeeded", sessionId: "old" });
+        const newest = await insertRequest(t, householdId, {
+          status: "succeeded",
+          sessionId: "new",
+        });
+        await insertRequest(t, householdId, { status: "failed" });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.continueRequestId).toBe(newest);
+        expect(row?.sessionId).toBe("new");
+      });
+
+      test("finds an old succeeded request behind many newer failed ones", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const old = await insertRequest(t, householdId, { status: "succeeded", sessionId: "old" });
+        for (let i = 0; i < 30; i++) await insertRequest(t, householdId, { status: "failed" });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.continueRequestId).toBe(old);
+      });
+
+      test("starts fresh when nothing has succeeded yet", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        await insertRequest(t, householdId, { status: "failed" });
+        await insertRequest(t, householdId, { status: "succeeded" });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.continueRequestId).toBeUndefined();
+        expect(row?.sessionId).toBeUndefined();
+      });
+
+      test("ignores other households' conversations", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const other = await createHousehold(t, { seniorName: "Bob" });
+        await insertRequest(t, other, { status: "succeeded", sessionId: "theirs" });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.sessionId).toBeUndefined();
+      });
+
+      test.each(["queued", "running"] as const)(
+        "keeps the busy limit while a %s request is in the conversation",
+        async (status) => {
+          const t = makeBackend();
+          const householdId = await createTeam(t);
+          await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
+          await insertRequest(t, householdId, { status, sessionId: "s1" });
+          await expect(sendLatest(t, householdId)).rejects.toThrow(
+            /still working on that conversation/,
+          );
+        },
+      );
+
+      test("a second send continues from the first", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
+        await sendLatest(t, householdId);
+        await expect(sendLatest(t, householdId)).rejects.toThrow(/limit/);
+      });
+
+      test("is rejected together with continueRequestId", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const earlier = await insertRequest(t, householdId, {
+          status: "succeeded",
+          sessionId: "s1",
+        });
+        await expect(
+          t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+            householdId,
+            message: "more",
+            continueRequestId: earlier,
+            continueLatest: true,
+          }),
+        ).rejects.toThrow(/invalid/);
+      });
+
+      test("continueLatest false behaves as a fresh request", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        await insertRequest(t, householdId, { status: "succeeded", sessionId: "s1" });
+        const id = await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+          householdId,
+          message: "fresh",
+          continueLatest: false,
+        });
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.sessionId).toBeUndefined();
+      });
+    });
+
     test.each(["queued", "running", "failed", "cancelled"] as const)(
       "refuses to continue a %s request",
       async (status) => {
@@ -287,6 +396,29 @@ describe("get and list", () => {
     expect(typeof view.createdAt).toBe("number");
     expect(Object.keys(view)).not.toContain("workflowId");
     expect(Object.keys(view)).not.toContain("sessionId");
+  });
+
+  test("get and list include the requester's display name, null for a former member", async () => {
+    const t = makeBackend();
+    const householdId = await createTeam(t);
+    await t.run(async (ctx) => {
+      const member = await ctx.db
+        .query("householdMembers")
+        .withIndex("by_household_user", (q) =>
+          q.eq("householdId", householdId).eq("userId", "user_member"),
+        )
+        .unique();
+      if (member) await ctx.db.patch(member._id, { displayName: "Max" });
+    });
+    const byMember = await insertRequest(t, householdId, { requestedBy: "user_member" });
+    const byAlum = await insertRequest(t, householdId, { requestedBy: "user_gone" });
+    const asA = t.withIdentity({ subject: "user_a" });
+    expect((await asA.query(api.agentRequests.get, { requestId: byMember })).requestedByName).toBe(
+      "Max",
+    );
+    const rows = await asA.query(api.agentRequests.list, { householdId });
+    expect(rows.find((r) => r.id === byMember)?.requestedByName).toBe("Max");
+    expect(rows.find((r) => r.id === byAlum)?.requestedByName).toBeNull();
   });
 
   test("get returns the reply of a succeeded request", async () => {
