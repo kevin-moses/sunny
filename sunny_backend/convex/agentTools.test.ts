@@ -10,6 +10,7 @@
 // validation and the missing-time rule), update_task (mapping, null clearing, every-day
 // weekdays, resume), stop_task (history kept, upcoming instances removed, no delete), the
 // field mapping toTaskChanges, household isolation, and the task part of the briefing.
+// Also the default escalation policy add_task assigns by type.
 //
 // Last modified: 2026-11-01
 
@@ -687,7 +688,6 @@ describe("add_task", () => {
     await tool(t, a, "add_task", PILLS, NOW, "user_a");
     const { tasks, audits } = await readTasks(t);
     expect(tasks[0]).toMatchObject({ createdByKind: "caregiver", createdBy: "user_a" });
-    expect(tasks[0]!.escalationPolicyId).toBeUndefined();
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({ actorKind: "agent", action: "insert" });
     expect(audits[0]!.actorUserId).toBeUndefined();
@@ -999,5 +999,53 @@ describe("briefing tasks", () => {
     expect(text).not.toContain("Morning pills");
     expect(text).not.toContain("Walter pills");
     expect(text).toContain("  (none)");
+  });
+});
+
+/**
+ * purpose: Ids of a household's seeded policies by systemKey.
+ * @param t: (TestConvex) Harness.
+ * @param householdId: (Id<"households">) Household.
+ * @return: The medication and prompt_only policy ids.
+ */
+async function seededPolicies(t: TestConvex, householdId: Id<"households">) {
+  const rows = await t.run(
+    async (ctx) =>
+      await ctx.db
+        .query("escalationPolicies")
+        .withIndex("by_household", (q) => q.eq("householdId", householdId))
+        .collect(),
+  );
+  return {
+    medication: rows.find((p) => p.systemKey === "medication")!._id,
+    promptOnly: rows.find((p) => p.systemKey === "prompt_only")!._id,
+  };
+}
+
+describe("add_task default escalation policy", () => {
+  test("a medication task gets the medication policy", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a);
+    const { tasks } = await readTasks(t);
+    expect(tasks[0]!.escalationPolicyId).toBe((await seededPolicies(t, a)).medication);
+  });
+
+  test("a non-medication task gets the prompt_only policy", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, { ...PILLS, type: "routine", title: "Walk", display_label: "Walk" });
+    const { tasks } = await readTasks(t);
+    expect(tasks[0]!.escalationPolicyId).toBe((await seededPolicies(t, a)).promptOnly);
+  });
+
+  test("a household without seeded policies still creates the task with no policy", async () => {
+    const { t, a } = await makeWorld();
+    await t.run(async (ctx) => {
+      for (const p of await ctx.db.query("escalationPolicies").collect())
+        await ctx.db.delete(p._id);
+    });
+    await addTask(t, a);
+    const { tasks } = await readTasks(t);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.escalationPolicyId).toBeUndefined();
   });
 });

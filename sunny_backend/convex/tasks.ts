@@ -13,6 +13,11 @@
 // (createTaskCore, updateTaskCore, listTasksCore) that the public mutations and the household
 // agent's task tools (lib/agentTools.ts) share, so validation, audit and instance resync are
 // identical; only the public mutations check the caller's role, and only they hard delete.
+// Default policy: a task created with no escalationPolicyId gets the household's seeded
+// "medication" policy (type medication) or "prompt_only" policy (every other type), found by
+// systemKey, because a task without a policy is never prompted or escalated. A later change
+// of type does not change the policy. backfillDefaultPolicies (internal, run once from the
+// CLI) assigns the same defaults to existing tasks that have no policy, in bounded batches.
 //
 // Last modified: 2026-11-01
 
@@ -31,13 +36,16 @@ import type { TaskFields } from "./lib/schedule";
 import { normalizeWeekdays, requireMaxLength, requireNonBlank } from "./lib/text";
 import { isLocalDate, isLocalTime } from "./lib/time";
 import { escalationStepInput, taskType } from "./lib/validators";
-import type { EscalationStepInput } from "./lib/validators";
+import type { EscalationStepInput, TaskType } from "./lib/validators";
 
 const MAX_WINDOW_MINUTES = 720;
 const DEFAULT_WINDOW_MINUTES = 60;
 const MAX_POLICY_NAME_LENGTH = 80;
 const MAX_POLICY_STEPS = 10;
 const MAX_STEP_OFFSET_MINUTES = 1440;
+/** Households handled per backfill page, and tasks handled per backfill batch. */
+const BACKFILL_HOUSEHOLD_PAGE = 20;
+const BACKFILL_TASK_BATCH = 100;
 
 /** The writable task fields after defaults, before validation. */
 type TaskDraft = Omit<
@@ -203,9 +211,12 @@ export async function listTasksCore(
  * purpose: Core of create, reusable by agent tools: validate and insert a task and expand its
  *          first instances. The caller has already checked that the actor may edit the
  *          household. A blank spokenPrompt becomes "Time for <displayLabel>."; windowMinutes
- *          defaults to 60; with no escalationPolicyId the task has no escalation policy and
- *          so never escalates (no default policy is assigned). The task is recorded as
- *          created by a caregiver.
+ *          defaults to 60; with no escalationPolicyId the task gets the household's default
+ *          policy for its type (see defaultPolicyId): "medication" for medication tasks,
+ *          "prompt_only" for the rest. An explicit escalationPolicyId wins. If the household
+ *          lacks the seeded policy the task is created with no policy (it then never
+ *          escalates). Changing the type later does not change the policy. The task is
+ *          recorded as created by a caregiver.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) Who creates it (audit actor).
  * @param householdId: (Id<"households">) Household.
@@ -232,12 +243,38 @@ export async function createTaskCore(
     windowMinutes: args.windowMinutes ?? DEFAULT_WINDOW_MINUTES,
     active: args.active ?? true,
   });
+  const escalationPolicyId =
+    draft.escalationPolicyId ?? (await defaultPolicyId(ctx, householdId, draft.type));
   return await insertTask(
     ctx,
     actor,
-    { ...draft, householdId, createdByKind: "caregiver", createdBy },
+    { ...draft, escalationPolicyId, householdId, createdByKind: "caregiver", createdBy },
     now,
   );
+}
+
+/**
+ * purpose: Find the household's default escalation policy for a task type: the seeded
+ *          "medication" policy for medication tasks, "prompt_only" for every other type.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param type: (TaskType) The task's type.
+ * @return: (Promise<Id<"escalationPolicies"> | undefined>) The policy id, or undefined when
+ *          the household has no policy with that systemKey.
+ */
+export async function defaultPolicyId(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  type: TaskType,
+): Promise<Id<"escalationPolicies"> | undefined> {
+  const systemKey = type === "medication" ? "medication" : "prompt_only";
+  const policy = await ctx.db
+    .query("escalationPolicies")
+    .withIndex("by_household_system_key", (q) =>
+      q.eq("householdId", householdId).eq("systemKey", systemKey),
+    )
+    .first();
+  return policy?._id;
 }
 
 /**
@@ -401,6 +438,71 @@ export const purgeTaskData = internalMutation({
   handler: async (ctx, args): Promise<null> => {
     if (await purgeTaskBatch(ctx, args.householdId, args.taskId)) {
       await ctx.scheduler.runAfter(0, internal.tasks.purgeTaskData, args);
+    }
+    return null;
+  },
+});
+
+/**
+ * purpose: One-off maintenance: give every task that has no escalation policy the default for
+ *          its type (see defaultPolicyId), across all households. Pages through households
+ *          (20 at a time) and schedules one backfillHouseholdPolicies per household, so each
+ *          mutation stays small. Safe to run again: tasks that have a policy are untouched.
+ *          Tasks whose caregiver deliberately cleared the policy are indistinguishable from
+ *          never-assigned ones and also get the default. Run: npx convex run
+ *          tasks:backfillDefaultPolicies (no arguments).
+ * @param cursor: (string, optional) Household paging cursor; omit to start. Used by the
+ *        function's own continuation.
+ * @return: (null)
+ */
+export const backfillDefaultPolicies = internalMutation({
+  args: { cursor: v.optional(v.string()) },
+  handler: async (ctx, args): Promise<null> => {
+    const page = await ctx.db
+      .query("households")
+      .paginate({ numItems: BACKFILL_HOUSEHOLD_PAGE, cursor: args.cursor ?? null });
+    for (const household of page.page) {
+      await ctx.scheduler.runAfter(0, internal.tasks.backfillHouseholdPolicies, {
+        householdId: household._id,
+      });
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.tasks.backfillDefaultPolicies, {
+        cursor: page.continueCursor,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * purpose: Backfill one household: assign the type default policy to the tasks that have none
+ *          in pages of 100, rescheduling itself until the household is done. Each assignment
+ *          is audited as a system update. A task whose type has no seeded policy in the
+ *          household is skipped.
+ * @param householdId: (Id<"households">) Household.
+ * @param cursor: (string, optional) Task paging cursor; omit to start.
+ * @return: (null)
+ */
+export const backfillHouseholdPolicies = internalMutation({
+  args: { householdId: v.id("households"), cursor: v.optional(v.string()) },
+  handler: async (ctx, args): Promise<null> => {
+    const now = Date.now();
+    const page = await ctx.db
+      .query("tasks")
+      .withIndex("by_household", (q) => q.eq("householdId", args.householdId))
+      .paginate({ numItems: BACKFILL_TASK_BATCH, cursor: args.cursor ?? null });
+    for (const task of page.page) {
+      if (task.escalationPolicyId !== undefined) continue;
+      const policyId = await defaultPolicyId(ctx, args.householdId, task.type);
+      if (policyId === undefined) continue;
+      await patchTask(ctx, { kind: "system" }, task, { escalationPolicyId: policyId }, now);
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.tasks.backfillHouseholdPolicies, {
+        householdId: args.householdId,
+        cursor: page.continueCursor,
+      });
     }
     return null;
   },
