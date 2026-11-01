@@ -10,7 +10,7 @@
 // the `now` argument. Also the logTurn length cap, today for an unknown household, and the
 // accepted trust model (a valid key may log to or finish any conversation).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -321,6 +321,8 @@ describe("getContext", () => {
     expect(context.today).toEqual([
       {
         instanceId,
+        localDate: "2027-03-10",
+        carriedOver: false,
         taskId,
         type: "medication",
         displayLabel: "Morning pills",
@@ -330,9 +332,13 @@ describe("getContext", () => {
         scheduledTime: "09:30",
         state: "due",
         confirmedAt: null,
+        confirmedLocalTime: null,
         confirmedVia: null,
         claimedBy: null,
         claimedByName: null,
+        confirmedBy: null,
+        confirmedByName: null,
+        resolutionNote: null,
       },
     ]);
     expect(

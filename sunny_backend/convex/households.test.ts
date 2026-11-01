@@ -2,7 +2,9 @@
 // Purpose: Tests for households.ts with convex-test: creation and defaults, access control
 // for every public function (non-members, viewers, devices), role rules for join codes,
 // single-use and 24 hour expiry of codes (an expired or redeemed device code gives a caregiver
-// the generic not_found error), caregiver and device redemption, member removal
+// the generic not_found error), caregiver and device redemption, the one-household-per-caregiver
+// rule (create and redeem reject a caregiver who already belongs to a household, leave the code
+// unredeemed, and allow a removed caregiver to join another), member removal
 // and the on-call rule, push token ownership (a live owner's token is protected, an orphaned
 // owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
 // the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
@@ -10,7 +12,7 @@
 //
 // mine's accountKind is covered for signed out, device (claim or device row) and caregiver accounts.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -119,6 +121,10 @@ async function makeCode(
     .mutation(api.households.createJoinCode, { householdId, grants });
   return code;
 }
+
+/** The message of the one-household-per-caregiver rejection. */
+const ONE_HOUSEHOLD =
+  "You already belong to a household. Ask its primary caregiver to remove you before joining another.";
 
 describe("create", () => {
   test("seeds defaults, the primary member and the on-call contact", async () => {
@@ -812,17 +818,103 @@ describe("join codes", () => {
     expect(paired.kind).toBe("senior_phone");
   });
 
-  test("an existing member cannot redeem a second code", async () => {
+  test("a member of this household redeeming its code is told they are already a member", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const code = await makeCode(t, householdId, "caregiver_member");
     await expect(
       t.withIdentity({ subject: "user_a" }).mutation(api.households.redeemJoinCode, { code }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    ).rejects.toMatchObject({
+      data: { code: "invalid", message: "You are already a member of this household" },
+    });
     const rows = await t.withIdentity({ subject: "user_a" }).query(api.households.listJoinCodes, {
       householdId,
     });
     expect(rows[0]?.redeemedAt).toBeUndefined();
+  });
+
+  test("a member of another household cannot redeem a code", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await t.withIdentity({ subject: "user_z" }).mutation(api.households.create, {
+      seniorPreferredName: "Bob",
+      timezone: NY,
+      caregiverDisplayName: "Zed",
+    });
+    const code = await makeCode(t, householdId, "caregiver_member");
+    await expect(
+      t.withIdentity({ subject: "user_z" }).mutation(api.households.redeemJoinCode, { code }),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: ONE_HOUSEHOLD } });
+    const rows = await t.withIdentity({ subject: "user_a" }).query(api.households.listJoinCodes, {
+      householdId,
+    });
+    expect(rows[0]?.redeemedAt).toBeUndefined();
+  });
+
+  test("a caregiver of one household cannot create another", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await expect(createHousehold(t)).rejects.toMatchObject({
+      data: { code: "invalid", message: ONE_HOUSEHOLD },
+    });
+    const count = await t.run(async (ctx) => (await ctx.db.query("households").collect()).length);
+    expect(count).toBe(1);
+    expect(householdId).toBeDefined();
+  });
+
+  test("a caregiver of one household cannot redeem a code for another and the code stays usable", async () => {
+    const t = makeBackend();
+    const first = await createHousehold(t);
+    const second = await t.withIdentity({ subject: "user_b" }).mutation(api.households.create, {
+      seniorPreferredName: "Joe",
+      timezone: NY,
+      caregiverDisplayName: "Bea",
+    });
+    const { code } = await t
+      .withIdentity({ subject: "user_b" })
+      .mutation(api.households.createJoinCode, { householdId: second, grants: "caregiver_member" });
+    await expect(
+      t.withIdentity({ subject: "user_a" }).mutation(api.households.redeemJoinCode, { code }),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: ONE_HOUSEHOLD } });
+    const memberships = await t.run(async (ctx) =>
+      ctx.db
+        .query("householdMembers")
+        .withIndex("by_user", (q) => q.eq("userId", "user_a"))
+        .collect(),
+    );
+    expect(memberships.map((m) => m.householdId)).toEqual([first]);
+    const rows = await t
+      .withIdentity({ subject: "user_b" })
+      .query(api.households.listJoinCodes, { householdId: second });
+    expect(rows[0]?.redeemedAt).toBeUndefined();
+    await t.withIdentity({ subject: "user_c" }).mutation(api.households.redeemJoinCode, { code });
+    const joined = await t
+      .withIdentity({ subject: "user_c" })
+      .query(api.households.get, { householdId: second });
+    expect(joined).not.toBeNull();
+  });
+
+  test("a caregiver removed from a household can join another", async () => {
+    const t = makeBackend();
+    const first = await createHousehold(t);
+    await addCaregiver(t, first, "user_b", "caregiver_member");
+    const second = await t.withIdentity({ subject: "user_c" }).mutation(api.households.create, {
+      seniorPreferredName: "Joe",
+      timezone: NY,
+      caregiverDisplayName: "Cy",
+    });
+    const { code } = await t
+      .withIdentity({ subject: "user_c" })
+      .mutation(api.households.createJoinCode, { householdId: second, grants: "caregiver_member" });
+    const asB = t.withIdentity({ subject: "user_b" });
+    await expect(asB.mutation(api.households.redeemJoinCode, { code })).rejects.toMatchObject({
+      data: { code: "invalid" },
+    });
+    await t
+      .withIdentity({ subject: "user_a" })
+      .mutation(api.households.removeMember, { householdId: first, userId: "user_b" });
+    await asB.mutation(api.households.redeemJoinCode, { code });
+    expect(await asB.query(api.households.get, { householdId: second })).not.toBeNull();
   });
 
   test("a paired device cannot redeem a caregiver code", async () => {

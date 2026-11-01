@@ -1,11 +1,11 @@
 // sunny_app/src/day/format.ts
 //
-// Purpose: Pure helpers for the day clock: task state checks, the time-ordered agenda
+// Purpose: Pure helpers for the day clock: task state checks (done, open, due), the time-ordered agenda
 // merge, and plain-language time text. Dates and times from calendar.dayView are already in
 // the household's local time, so nothing here converts timezones (date arithmetic lives in
 // localDate.ts). Also the shared wording of an event line (eventDetails).
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
@@ -17,6 +17,16 @@ import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types'
  */
 export function isDone(task: DayTask): boolean {
   return task.state === 'confirmed' || task.state === 'resolved';
+}
+
+/**
+ * purpose: Whether a task is still open: any task in today's list that is not done (upcoming,
+ *          due, escalated or missed).
+ * @param task: (DayTask) The task.
+ * @return: (boolean) True until its state is confirmed or resolved.
+ */
+export function isOpen(task: DayTask): boolean {
+  return !isDone(task);
 }
 
 /**

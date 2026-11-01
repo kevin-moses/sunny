@@ -8,10 +8,11 @@
 // DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
 // Nothing from other days is read. Lists are capped so a busy day stays within one query.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { memberNames } from "./access";
 import { addDays, formatTime12, localTime, zonedInstant } from "./time";
 import type { ConfirmVia } from "./validators";
 
@@ -230,11 +231,7 @@ export async function gatherDigestFacts(
   localDate: string,
 ): Promise<DigestFacts> {
   const range = dayRange(localDate, household.timezone);
-  const members = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) => q.eq("householdId", household._id))
-    .collect();
-  const names = new Map(members.map((m) => [m.userId, m.displayName]));
+  const names = await memberNames(ctx, household._id);
   const questions = await ctx.db
     .query("agentQuestions")
     .withIndex("by_household_asked", (q) =>

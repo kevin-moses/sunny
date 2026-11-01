@@ -7,7 +7,7 @@
 // through the public API, a household that has all of them, and the pending sync rows).
 // The name has two dots, so Convex does not treat this file as a function module.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import workpoolTest from "@convex-dev/workpool/test";
 import workflowTest from "@convex-dev/workflow/test";
@@ -174,20 +174,19 @@ export async function addConnection(
  * @param t: (TestConvex) Harness.
  * @param householdId: (Id<"households">) Household.
  * @param userId: (string) User id.
+ * @param role: (Doc<"householdMembers">["role"], optional) Role; defaults to "member".
+ * @param displayName: (string, optional) Display name; defaults to the user id.
  * @return: (Promise<void>) Resolves when inserted.
  */
 export async function addMember(
   t: TestConvex,
   householdId: Id<"households">,
   userId: string,
+  role: Doc<"householdMembers">["role"] = "member",
+  displayName: string = userId,
 ): Promise<void> {
   await t.run(async (ctx) => {
-    await ctx.db.insert("householdMembers", {
-      householdId,
-      userId,
-      role: "member",
-      displayName: userId,
-    });
+    await ctx.db.insert("householdMembers", { householdId, userId, role, displayName });
   });
 }
 

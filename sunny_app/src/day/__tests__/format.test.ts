@@ -5,7 +5,7 @@
 // time formatting, and the task state checks. Fixtures are built with small helpers that fill the fields the
 // helpers do not read, so each test states only what it cares about.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -16,6 +16,7 @@ import {
   eventKey,
   isDone,
   isDue,
+  isOpen,
   whenText,
 } from '../format';
 import type { DayTask, DayViewData, EventOccurrence } from '../types';
@@ -218,6 +219,16 @@ describe('task state checks', () => {
     expect(isDone(makeTask({ state: 'confirmed' }))).toBe(true);
     expect(isDone(makeTask({ state: 'resolved' }))).toBe(true);
     expect(isDone(makeTask({ state: 'due' }))).toBe(false);
+  });
+
+  it('treats every task that is not done as open', () => {
+    const states = ['upcoming', 'due', 'escalated', 'missed', 'confirmed', 'resolved'] as const;
+    expect(states.filter((state) => isOpen(makeTask({ state })))).toEqual([
+      'upcoming',
+      'due',
+      'escalated',
+      'missed',
+    ]);
   });
 
   it('treats due and escalated as due', () => {

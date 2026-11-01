@@ -6,17 +6,29 @@
 // (create, recurring, cancel, blank query, past date) and dose logging. Also one access test
 // per public function (outsider forbidden, viewer cannot write, device and caregiver rules
 // differ), standing in for the former Supabase grant and RLS checks. Also: non-finite dose times and
-// over-long reminder titles are rejected. The clock is driven by faking Date
+// over-long reminder titles are rejected. Also: the resolution note is trimmed (blank is
+// stored as absent, over 500 characters rejected) and only an editor caregiver may use
+// via "caregiver"; an editor may resolve an open task of today or earlier (not a later day;
+// a device only within 60 minutes), and the scheduler leaves it resolved. Also: undoResolve (the same
+// caregiver within 30 seconds restores the pre-resolve state and the scheduler carries on;
+// others, late undos, devices and viewers are refused) and an unchanged note writes and
+// audits nothing. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { confirmDueTaskCore, confirmInstance, logDoseCore, snoozeInstance } from "./instances";
+import {
+  UNDO_WINDOW_MS,
+  confirmDueTaskCore,
+  confirmInstance,
+  logDoseCore,
+  snoozeInstance,
+} from "./instances";
 import schema from "./schema";
 
 /** Every non-test module in the backend, for the convex-test harness. */
@@ -258,6 +270,143 @@ describe("confirmTaskInstance", () => {
     });
   });
 
+  test("a blank resolution note is stored as absent and a padded one is trimmed", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await makeTask(f, "Evening pills", ["08:30"]);
+    const [first, second] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const blank = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: first!._id,
+      via: "phone_app",
+      note: "   ",
+    });
+    expect(blank.resolutionNote).toBeUndefined();
+    const padded = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: second!._id,
+      via: "phone_app",
+      note: "  Called her  ",
+    });
+    expect(padded.resolutionNote).toBe("Called her");
+  });
+
+  test("a resolution note over 500 characters is rejected", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.withIdentity({ subject: "max" }).mutation(api.instances.confirmTaskInstance, {
+        instanceId: instance!._id,
+        via: "caregiver",
+        note: "x".repeat(501),
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("a paired device cannot confirm with via caregiver", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmTaskInstance, {
+        instanceId: instance!._id,
+        via: "caregiver",
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("the agent cannot confirm with via caregiver", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.run(
+        async (ctx) =>
+          await confirmInstance(
+            ctx,
+            AGENT,
+            { instanceId: instance!._id, via: "caregiver" },
+            Date.parse("2027-03-14T11:30:00Z"),
+          ),
+      ),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("an editor caregiver resolves as caregiver whatever via they pass", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const done = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
+    expect(done).toMatchObject({ state: "resolved", confirmedVia: "caregiver" });
+  });
+
+  test("an editor resolves an upcoming task hours early while a device is refused", async () => {
+    const f = await setup("2027-03-14T10:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const args = { instanceId: instance!._id, via: "button" as const };
+    await expect(
+      f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmTaskInstance, args),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: "This task is not due yet" } });
+    const done = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, args);
+    expect(done).toMatchObject({
+      state: "resolved",
+      confirmedBy: "max",
+      confirmedVia: "caregiver",
+    });
+  });
+
+  test("an editor cannot resolve a later day's instance, but today's and yesterday's work", async () => {
+    const f = await setup("2027-03-14T10:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [today] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const day = 24 * 60 * 60 * 1000;
+    const shifted = async (date: string, offset: number) =>
+      await f.t.run(async (ctx) => {
+        const id = await ctx.db.insert("taskInstances", {
+          ...(({ _id, _creationTime, ...rest }) => rest)(today!),
+          localDate: date,
+          windowStart: today!.windowStart + offset * day,
+          windowEnd: today!.windowEnd + offset * day,
+        });
+        return id;
+      });
+    const tomorrow = await shifted("2027-03-15", 1);
+    const yesterday = await shifted("2027-03-13", -1);
+    await expect(
+      asMax.mutation(api.instances.confirmTaskInstance, { instanceId: tomorrow, via: "button" }),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: "This task is not due yet" } });
+    expect(await f.t.run(async (ctx) => (await ctx.db.get(tomorrow))?.state)).toBe("upcoming");
+    const upcomingToday = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: today!._id,
+      via: "button",
+    });
+    expect(upcomingToday.state).toBe("resolved");
+    const carried = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: yesterday,
+      via: "button",
+    });
+    expect(carried.state).toBe("resolved");
+  });
+
+  test("the scheduler leaves an early-resolved task resolved after its window passes", async () => {
+    const f = await setup("2027-03-14T10:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    await tick(f.t, "2027-03-14T23:00:00Z");
+    const after = await f.t.run(async (ctx) => await ctx.db.get(instance!._id));
+    expect(after?.state).toBe("resolved");
+  });
+
   test("confirming clears a snooze", async () => {
     const f = await setup("2027-03-14T11:00:00Z");
     await makeTask(f, "Morning pills", ["08:00"]);
@@ -309,6 +458,376 @@ describe("confirmTaskInstance", () => {
     await expect(f.t.mutation(api.instances.confirmTaskInstance, args)).rejects.toMatchObject({
       data: { code: "unauthenticated" },
     });
+  });
+});
+
+describe("setTaskNote", () => {
+  test("an editor sets a trimmed note, then a blank note clears it, each audited", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const set = await asMax.mutation(api.instances.setTaskNote, {
+      instanceId: instance!._id,
+      note: "  Took with water  ",
+    });
+    expect(set.resolutionNote).toBe("Took with water");
+    expect(set.state).toBe(instance!.state);
+    const cleared = await asMax.mutation(api.instances.setTaskNote, {
+      instanceId: instance!._id,
+      note: "   ",
+    });
+    expect(cleared.resolutionNote).toBeUndefined();
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const notes = rows.filter((r) => r.action === "note" && r.entityId === instance!._id);
+    expect(notes.map((r) => r.detail)).toEqual([{ hasNote: true }, { hasNote: false }]);
+    expect(notes[0]!.actorUserId).toBe("max");
+  });
+
+  test("a note can be added to a done task", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asPat = f.t.withIdentity({ subject: "pat" });
+    await asPat.mutation(api.instances.confirmTaskInstance, {
+      instanceId: instance!._id,
+      via: "caregiver",
+    });
+    const noted = await asPat.mutation(api.instances.setTaskNote, {
+      instanceId: instance!._id,
+      note: "Felt dizzy",
+    });
+    expect(noted).toMatchObject({ state: "resolved", resolutionNote: "Felt dizzy" });
+  });
+
+  test("a note over 500 characters is rejected", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.withIdentity({ subject: "max" }).mutation(api.instances.setTaskNote, {
+        instanceId: instance!._id,
+        note: "x".repeat(501),
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("access: viewers, devices and outsiders are forbidden", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    for (const subject of ["val", "phone", "display", "nobody"]) {
+      await expect(
+        f.t
+          .withIdentity({ subject })
+          .mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: "hi" }),
+        subject,
+      ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    }
+  });
+
+  test("a primary of another household is forbidden", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t.withIdentity({ subject: "zed" }).mutation(api.households.create, {
+      seniorPreferredName: "Dad",
+      timezone: "America/New_York",
+      caregiverDisplayName: "Zed",
+    });
+    await expect(
+      f.t
+        .withIdentity({ subject: "zed" })
+        .mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: "hi" }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+  });
+
+  test("marking done without a note keeps the existing note; a new note replaces it", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await makeTask(f, "Evening pills", ["08:30"]);
+    const [first, second] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    for (const instance of [first!, second!]) {
+      await asMax.mutation(api.instances.setTaskNote, {
+        instanceId: instance._id,
+        note: "Refill soon",
+      });
+    }
+    const kept = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: first!._id,
+      via: "caregiver",
+    });
+    expect(kept.resolutionNote).toBe("Refill soon");
+    const replaced = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: second!._id,
+      via: "caregiver",
+      note: "Done late",
+    });
+    expect(replaced.resolutionNote).toBe("Done late");
+  });
+});
+
+describe("setTaskNote unchanged", () => {
+  test("saving the same note again writes and audits nothing", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const args = { instanceId: instance!._id, note: "Took with water" };
+    await asMax.mutation(api.instances.setTaskNote, args);
+    await asMax.mutation(api.instances.setTaskNote, { ...args, note: "  Took with water " });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(rows.filter((r) => r.action === "note")).toHaveLength(1);
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: instance!._id });
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: " " });
+    const after = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(after.filter((r) => r.action === "note")).toHaveLength(2);
+  });
+});
+
+describe("undoResolve", () => {
+  /**
+   * purpose: Resolve the day's only instance as Max at an instant and return its id.
+   * @param f: (Fixture) Fixture with one task at 08:00 on 2027-03-14.
+   * @param iso: (string) UTC instant to resolve at.
+   * @return: (Promise<Id<"taskInstances">>) The instance.
+   */
+  async function resolveAt(f: Fixture, iso: string): Promise<Id<"taskInstances">> {
+    const [instance] = await instancesOn(f, "2027-03-14");
+    at(iso);
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "caregiver" });
+    return instance!._id;
+  }
+
+  test("the same caregiver restores the state it had, per original state", async () => {
+    const cases = [
+      { name: "upcoming", resolve: "2027-03-14T11:00:00Z", ticks: [] as string[] },
+      { name: "due", resolve: "2027-03-14T12:05:00Z", ticks: ["2027-03-14T12:00:00Z"] },
+      { name: "missed", resolve: "2027-03-14T13:05:00Z", ticks: ["2027-03-14T13:00:00Z"] },
+    ];
+    for (const c of cases) {
+      const f = await setup("2027-03-14T11:00:00Z");
+      await makeTask(f, "Morning pills", ["08:00"]);
+      for (const iso of c.ticks) await tick(f.t, iso);
+      const id = await resolveAt(f, c.resolve);
+      const undone = await f.t
+        .withIdentity({ subject: "max" })
+        .mutation(api.instances.undoResolve, { instanceId: id });
+      expect(undone.state, c.name).toBe(c.name);
+      expect(undone.confirmedAt).toBeUndefined();
+      expect(undone.confirmedBy).toBeUndefined();
+      expect(undone.confirmedVia).toBeUndefined();
+      expect(undone.resolvedFromState).toBeUndefined();
+    }
+  });
+
+  test("an escalated instance is restored as escalated", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(instance!._id, { state: "escalated" });
+    });
+    const id = await resolveAt(f, "2027-03-14T12:05:00Z");
+    const undone = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    expect(undone.state).toBe("escalated");
+  });
+
+  test("falls back to due when the prior state was not recorded", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(id, { resolvedFromState: undefined });
+    });
+    const undone = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    expect(undone.state).toBe("due");
+  });
+
+  test("keeps the note and the claim, and is audited as a state change", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T12:01:00Z");
+    await asMax.mutation(api.instances.claimTaskInstance, { instanceId: instance!._id });
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: "Hi" });
+    await resolveAt(f, "2027-03-14T12:05:00Z");
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id });
+    expect(undone).toMatchObject({ state: "due", resolutionNote: "Hi", claimedBy: "max" });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const last = rows.filter((r) => r.action === "state_change").at(-1);
+    expect(last?.detail).toMatchObject({ from: "resolved", to: "due" });
+    expect(last?.actorUserId).toBe("max");
+  });
+
+  test("works at exactly 30 seconds and is refused after", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T11:00:31Z");
+    await expect(
+      asMax.mutation(api.instances.undoResolve, { instanceId: id }),
+    ).rejects.toMatchObject({
+      data: { code: "invalid", message: "This can no longer be undone." },
+    });
+    at("2027-03-14T11:00:30Z");
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: id });
+    expect(undone.state).toBe("upcoming");
+  });
+
+  test("works at exactly UNDO_WINDOW_MS after the resolve", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T11:00:00Z");
+    await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: instance!._id,
+      via: "caregiver",
+    });
+    const t0 = (await f.t.run(async (ctx) => await ctx.db.get(instance!._id)))!.confirmedAt!;
+    vi.setSystemTime(t0 + UNDO_WINDOW_MS);
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id });
+    expect(undone.state).toBe("upcoming");
+    vi.setSystemTime(t0 + UNDO_WINDOW_MS + 1);
+    await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: instance!._id,
+      via: "caregiver",
+    });
+    vi.setSystemTime(t0 + 2 * UNDO_WINDOW_MS + 2);
+    await expect(
+      asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("restores the snooze the resolve cleared and audits the undo", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    at("2027-03-14T12:01:00Z");
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.snoozeTaskInstance, { instanceId: instance!._id });
+    const snoozed = (await f.t.run(async (ctx) => await ctx.db.get(instance!._id)))!.snoozedUntil;
+    expect(snoozed).toBeDefined();
+    await resolveAt(f, "2027-03-14T12:02:00Z");
+    const resolved = await f.t.run(async (ctx) => await ctx.db.get(instance!._id));
+    expect(resolved?.snoozedUntil).toBeUndefined();
+    expect(resolved?.resolvedFromSnoozedUntil).toBe(snoozed);
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: instance!._id });
+    expect(undone.snoozedUntil).toBe(snoozed);
+    expect(undone.resolvedFromSnoozedUntil).toBeUndefined();
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const stateChanges = rows.filter((r) => r.action === "state_change");
+    expect(stateChanges.at(-1)?.detail).toMatchObject({ from: "resolved", to: "due", undo: true });
+    expect(
+      stateChanges.slice(0, -1).some((r) => (r.detail as Record<string, unknown>)["undo"]),
+    ).toBe(false);
+  });
+
+  test("resolve, tick past the window start, undo, tick again: no step fires twice", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:55:00Z");
+    const get = async () => (await f.t.run(async (ctx) => await ctx.db.get(id)))!;
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    expect((await get()).state).toBe("resolved");
+    expect((await get()).firedSteps).toEqual([]);
+    at("2027-03-14T11:55:20Z");
+    await f.t.withIdentity({ subject: "max" }).mutation(api.instances.undoResolve, {
+      instanceId: id,
+    });
+    expect((await get()).state).toBe("upcoming");
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    expect((await get()).state).toBe("due");
+    const afterFirst = (await get()).firedSteps.map((s) => s.stepId);
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    await tick(f.t, "2027-03-14T12:10:00Z");
+    const afterSecond = (await get()).firedSteps.map((s) => s.stepId);
+    expect(new Set(afterSecond).size).toBe(afterSecond.length);
+    expect(afterSecond.slice(0, afterFirst.length)).toEqual(afterFirst);
+    await tick(f.t, "2027-03-14T13:30:00Z");
+    const final = await get();
+    expect(final.state).toBe("missed");
+    const ids = final.firedSteps.map((s) => s.stepId);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test("another caregiver cannot undo and an open instance cannot be undone", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    await expect(
+      f.t.withIdentity({ subject: "pat" }).mutation(api.instances.undoResolve, { instanceId: id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    const asMax = f.t.withIdentity({ subject: "max" });
+    await asMax.mutation(api.instances.undoResolve, { instanceId: id });
+    await expect(
+      asMax.mutation(api.instances.undoResolve, { instanceId: id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("a device confirmation cannot be undone", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
+    await expect(
+      f.t
+        .withIdentity({ subject: "max" })
+        .mutation(api.instances.undoResolve, { instanceId: instance!._id }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("access: viewers, devices and outsiders are forbidden", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    for (const subject of ["val", "phone", "display", "nobody"]) {
+      await expect(
+        f.t.withIdentity({ subject }).mutation(api.instances.undoResolve, { instanceId: id }),
+        subject,
+      ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    }
+  });
+
+  test("the scheduler picks a restored instance up: upcoming opens, then misses", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const id = await resolveAt(f, "2027-03-14T11:00:00Z");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))?.state).toBe("due");
+    await tick(f.t, "2027-03-14T13:30:00Z");
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))?.state).toBe("missed");
+  });
+
+  test("a restored due instance still closes as missed when its window ends", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    const id = await resolveAt(f, "2027-03-14T12:05:00Z");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: id });
+    await tick(f.t, "2027-03-14T13:30:00Z");
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))?.state).toBe("missed");
   });
 });
 
@@ -455,10 +974,100 @@ describe("today", () => {
     expect(entry).toMatchObject({
       pillDescription: null,
       confirmedAt: null,
+      confirmedLocalTime: null,
       confirmedVia: null,
       claimedBy: null,
       claimedByName: null,
+      confirmedBy: null,
+      confirmedByName: null,
+      resolutionNote: null,
+      carriedOver: false,
     });
+  });
+
+  test("entries carry their own local date", async () => {
+    const f = await setup("2027-03-20T11:00:00Z");
+    await makeTask(f, "Lunch pills", ["12:00"]);
+    const [entry] = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entry).toMatchObject({ localDate: "2027-03-20" });
+  });
+
+  test("a caregiver's resolution names them and keeps the note; a device's does not", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await makeTask(f, "Evening pills", ["08:30"]);
+    const [first, second] = await instancesOn(f, "2027-03-14");
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.instances.confirmTaskInstance, {
+      instanceId: first!._id,
+      via: "phone_app",
+      note: "Called her",
+    });
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: second!._id, via: "button" });
+    const entries = await f.t
+      .withIdentity({ subject: "val" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entries.find((e) => e.instanceId === first!._id)).toMatchObject({
+      state: "resolved",
+      confirmedVia: "caregiver",
+      confirmedLocalTime: "07:30",
+      confirmedBy: "pat",
+      confirmedByName: "Pat",
+      resolutionNote: "Called her",
+    });
+    expect(entries.find((e) => e.instanceId === second!._id)).toMatchObject({
+      state: "confirmed",
+      confirmedVia: "button",
+      confirmedLocalTime: "07:30",
+      confirmedBy: "phone",
+      confirmedByName: null,
+      resolutionNote: null,
+    });
+  });
+
+  test("confirmedByName is null when the confirming caregiver is no longer a member", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "phone_app" });
+    await f.t.run(async (ctx) => {
+      const member = await ctx.db
+        .query("householdMembers")
+        .withIndex("by_household_user", (q) =>
+          q.eq("householdId", f.householdId).eq("userId", "max"),
+        )
+        .unique();
+      await ctx.db.delete(member!._id);
+    });
+    const [entry] = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entry).toMatchObject({ confirmedBy: "max", confirmedByName: null });
+  });
+
+  test("yesterday's open instance is listed first with yesterday's local date", async () => {
+    const f = await setup("2027-03-14T11:00:00Z");
+    await makeTask(f, "Late pills", ["23:30"]);
+    await makeTask(f, "Morning pills", ["08:00"]);
+    // 2027-03-15 00:10 in New York (EDT, UTC-4) is 04:10Z: the 23:30 instance is still open.
+    await tick(f.t, "2027-03-15T03:35:00Z");
+    at("2027-03-15T04:10:00Z");
+    const entries = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(entries[0]).toMatchObject({
+      displayLabel: "Late pills",
+      localDate: "2027-03-14",
+      carriedOver: true,
+    });
+    expect(entries.slice(1).every((e) => e.localDate === "2027-03-15" && !e.carriedOver)).toBe(
+      true,
+    );
   });
 
   test("a claimed entry names who is on it, for every caregiver and device", async () => {

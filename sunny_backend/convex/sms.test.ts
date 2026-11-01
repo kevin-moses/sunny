@@ -10,7 +10,7 @@
 // other recipients, unverified numbers, viewers, a number shared across households, and many
 // other rows after the alert; TwiML escaping of names.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
@@ -520,28 +520,28 @@ describe("claiming by reply", () => {
     );
   });
 
-  test("a number in two households claims the newest alert across them", async () => {
+  test("one number, two accounts: the newest alert across their households is claimed", async () => {
     const { t, householdId } = await setup();
     const second = await createHousehold(t, {
-      subject: "pat",
+      subject: "zed",
       seniorName: "Dad",
-      caregiverName: "Patricia",
+      caregiverName: "Zed",
     });
-    await setPhone(t, second, "pat", PAT_PHONE);
+    await setPhone(t, second, "zed", PAT_PHONE);
     const inFirst = await addInstance(t, householdId, "Morning pills");
     const inSecond = await addInstance(t, second, "Insulin");
     await addAlert(t, householdId, "pat", inFirst);
     vi.setSystemTime(START + HOUR_MS);
-    await addAlert(t, second, "pat", inSecond);
+    await addAlert(t, second, "zed", inSecond);
     vi.setSystemTime(START + 2 * HOUR_MS);
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
-      "Thanks, Patricia. You&apos;re on it: Insulin for Dad.",
+      "Thanks, Zed. You&apos;re on it: Insulin for Dad.",
     );
-    expect(await claimedBy(t, inSecond)).toBe("pat");
+    expect(await claimedBy(t, inSecond)).toBe("zed");
     expect(await claimedBy(t, inFirst)).toBeUndefined();
     // The older alert in the other household is not used once the newest is taken.
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
-      "You&apos;re already on it, Patricia: Insulin for Dad.",
+      "You&apos;re already on it, Zed: Insulin for Dad.",
     );
     expect(await claimedBy(t, inFirst)).toBeUndefined();
   });

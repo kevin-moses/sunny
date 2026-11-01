@@ -1,47 +1,74 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection, messages and claim text, the per-day schedule rows (ids and variants), the
-// selected-day title and fallback rule, the later-this-week groups, transcript ordering, status lines and speaker
-// attribution, and the in-progress check. Fixtures fill only the
+// alert detection, messages and claim text, leftover (carried-over) tasks,
+// the note input, the done detail line (who confirmed, surface), today's task rows (leftover
+// split, notes, checkboxState for editors, viewers and busy rows, note visibility), the
+// events-only rows of any day (a separate row type from task rows),
+// the selected-day title and fallback rule,
+// the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
+// in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { describe, expect, it } from '@jest/globals';
 
-import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import {
+  ALREADY_DONE_MESSAGE,
   alertMessage,
+  alreadyDoneMessage,
   ANOTHER_CAREGIVER,
   buildTranscript,
   buildWeekStrip,
+  checkboxState,
   claimText,
+  doneDetail,
+  eventsForDate,
   FAILED_TEXT,
   hasInProgress,
   isAlert,
   laterThisWeek,
   messageSpeaker,
+  noteFromInput,
+  noteLine,
   resolveSelectedDate,
-  scheduleForDate,
+  shouldSaveNote,
   selectedDayTitle,
-  VARIANT_STYLE,
+  todaysTasks,
   WORKING_TEXT,
   weekMonthLabel,
   weekRangeLabel,
   type AgentRequest,
-  type ScheduleRowData,
+  type EventRowData,
+  type TaskRowData,
 } from '../format';
 
+/** The day the fixtures are dated and the signed-in caregiver. */
+const TODAY = '2026-10-29';
+const USER = 'user_me';
+/** The household-local time the server reports for a confirmation (confirmedLocalTime). */
+const CONFIRMED_TIME = '14:05';
+
 /**
- * purpose: Build the schedule rows for a date the way the Home screen does.
+ * purpose: Build the event rows for a date the way the Home screen does.
  * @param day: (DayViewData) The day view.
  * @param date: (string) The selected local date.
- * @return: (ScheduleRowData[]) The rows.
+ * @return: (EventRowData[]) The rows.
  */
-function scheduleOf(day: DayViewData, date: string): ScheduleRowData[] {
-  return scheduleForDate(day, buildAgenda(day), date);
+function eventsOf(day: DayViewData, date: string): EventRowData[] {
+  return eventsForDate(day, date);
+}
+
+/**
+ * purpose: Today's task rows (leftover and today) for a user, flattened in display order.
+ * @param day: (DayViewData) The day view.
+ * @return: (TaskRowData[]) The leftover rows followed by today's rows.
+ */
+function taskRows(day: DayViewData): TaskRowData[] {
+  const { leftover, today } = todaysTasks(day, USER);
+  return [...leftover, ...today];
 }
 
 /**
@@ -74,8 +101,18 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   return {
     instanceId: 't1',
     displayLabel: 'Take medication',
+    localDate: '2026-10-29',
     scheduledTime: '08:00',
     state: 'due',
+    carriedOver: false,
+    confirmedAt: null,
+    confirmedLocalTime: null,
+    confirmedVia: null,
+    claimedBy: null,
+    claimedByName: null,
+    confirmedBy: null,
+    confirmedByName: null,
+    resolutionNote: null,
     ...overrides,
   } as DayTask;
 }
@@ -159,13 +196,13 @@ describe('buildWeekStrip', () => {
     expect(days.filter((d) => d.isToday)).toHaveLength(1);
   });
 
-  it('marks days with events and today when it has tasks', () => {
+  it('marks days with events only, ignoring tasks', () => {
     const day = makeDay({
       tasks: [makeTask()],
       upcoming: [makeEvent({ localDate: '2026-10-31' })],
     });
     const markers = buildWeekStrip(day).map((d) => d.hasMarker);
-    expect(markers).toEqual([true, false, true, false, false, false, false]);
+    expect(markers).toEqual([false, false, true, false, false, false, false]);
   });
 
   it('leaves an empty day unmarked', () => {
@@ -195,17 +232,21 @@ describe('buildWeekStrip', () => {
   });
 
   it('describes the day for screen readers', () => {
-    const days = buildWeekStrip(makeDay({ tasks: [makeTask()] }));
-    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has plans');
+    const day = makeDay({
+      eventsToday: [makeEvent()],
+      upcoming: [makeEvent({ localDate: '2026-11-01' })],
+    });
+    const days = buildWeekStrip(day);
+    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has events');
     expect(days[1].accessibilityLabel).toBe('Friday, October 30');
-    expect(days[3].accessibilityLabel).toBe('Sunday, November 1');
+    expect(days[3].accessibilityLabel).toBe('Sunday, November 1, has events');
   });
 
-  it('says "has plans" for today when it has only tasks and no events', () => {
+  it('leaves today unmarked when it has only tasks', () => {
     const day = makeDay({ tasks: [makeTask()], eventsToday: [], upcoming: [] });
     const [today] = buildWeekStrip(day);
-    expect(today.hasMarker).toBe(true);
-    expect(today.accessibilityLabel).toBe('Today, Thursday, October 29, has plans');
+    expect(today.hasMarker).toBe(false);
+    expect(today.accessibilityLabel).toBe('Today, Thursday, October 29');
   });
 });
 
@@ -237,58 +278,32 @@ describe('alerts', () => {
   });
 });
 
-describe('scheduleForDate', () => {
-  it('is empty when nothing is scheduled', () => {
-    expect(scheduleOf(makeDay(), '2026-10-29')).toEqual([]);
-    expect(scheduleOf(makeDay(), '2026-10-31')).toEqual([]);
+describe('eventsForDate', () => {
+  it('is empty when no events are scheduled', () => {
+    expect(eventsOf(makeDay(), '2026-10-29')).toEqual([]);
+    expect(eventsOf(makeDay(), '2026-10-31')).toEqual([]);
   });
 
-  it('merges today tasks and events in time order', () => {
+  it("lists today's events, from eventsToday, sorted by time, with event keys as ids", () => {
     const day = makeDay({
-      tasks: [makeTask({ instanceId: 't1', scheduledTime: '08:00' })],
-      eventsToday: [makeEvent({ startTime: '07:00', label: 'Walk' })],
+      eventsToday: [
+        makeEvent({ eventId: 'e2', startTime: '15:00', label: 'Late' }),
+        makeEvent({ eventId: 'e1', startTime: '07:00', label: 'Walk' }),
+      ],
     });
-    expect(scheduleOf(day, '2026-10-29').map((r) => r.label)).toEqual(['Walk', 'Take medication']);
+    const rows = eventsOf(day, '2026-10-29');
+    expect(rows.map((r) => r.label)).toEqual(['Walk', 'Late']);
+    expect(rows.map((r) => r.id)).toEqual(['e1-2026-10-29', 'e2-2026-10-29']);
+    expect(rows.every((r) => r.kind === 'event')).toBe(true);
   });
 
-  it('reuses the agenda ids for today and the event key for later days', () => {
+  it('never includes tasks, for today or a later day', () => {
     const day = makeDay({
       tasks: [makeTask({ instanceId: 't1' })],
-      eventsToday: [makeEvent({ eventId: 'e1', startTime: '07:00' })],
-      upcoming: [makeEvent({ eventId: 'e2', localDate: '2026-10-31' })],
+      eventsToday: [makeEvent({ startTime: '07:00', label: 'Walk' })],
     });
-    expect(scheduleOf(day, '2026-10-29').map((r) => r.id)).toEqual([
-      'event-e1-2026-10-29',
-      'task-t1',
-    ]);
-    expect(scheduleOf(day, '2026-10-31').map((r) => r.id)).toEqual(['e2-2026-10-31']);
-  });
-
-  it('uses the agenda it is given instead of rebuilding it', () => {
-    const day = makeDay({ tasks: [makeTask({ instanceId: 't1' })] });
-    expect(scheduleForDate(day, [], '2026-10-29')).toEqual([]);
-  });
-
-  it('assigns a variant to each kind of row, with its icon from VARIANT_STYLE', () => {
-    const day = makeDay({
-      tasks: [
-        makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
-        makeTask({ instanceId: 'b', scheduledTime: '07:00', state: 'missed' }),
-        makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'escalated' }),
-        makeTask({ instanceId: 'd', scheduledTime: '09:00', state: 'upcoming' }),
-        makeTask({ instanceId: 'e', scheduledTime: '10:00', state: 'resolved' }),
-      ],
-      eventsToday: [makeEvent({ startTime: '11:00' })],
-    });
-    const rows = scheduleOf(day, '2026-10-29');
-    expect(rows.map((r) => [r.variant, VARIANT_STYLE[r.variant].icon])).toEqual([
-      ['done', 'checkmark.circle.fill'],
-      ['alert', 'exclamationmark.circle.fill'],
-      ['alert', 'exclamationmark.circle.fill'],
-      ['task', 'circle'],
-      ['done', 'checkmark.circle.fill'],
-      ['event', 'calendar'],
-    ]);
+    expect(eventsOf(day, '2026-10-29').map((r) => r.label)).toEqual(['Walk']);
+    expect(eventsOf(makeDay({ tasks: [makeTask()] }), '2026-10-30')).toEqual([]);
   });
 
   it('lists only the chosen later day events, sorted by time', () => {
@@ -299,8 +314,8 @@ describe('scheduleForDate', () => {
         makeEvent({ eventId: 'x', localDate: '2026-10-31', startTime: '08:00', label: 'First' }),
       ],
     });
-    expect(scheduleOf(day, '2026-10-31').map((r) => r.label)).toEqual(['First', 'Late']);
-    expect(scheduleOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Early']);
+    expect(eventsOf(day, '2026-10-31').map((r) => r.label)).toEqual(['First', 'Late']);
+    expect(eventsOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Early']);
   });
 
   it('finds events past a month and year boundary', () => {
@@ -308,22 +323,55 @@ describe('scheduleForDate', () => {
       localDate: '2026-12-30',
       upcoming: [makeEvent({ eventId: 'n', localDate: '2027-01-02', label: 'New year' })],
     });
-    expect(scheduleOf(day, '2027-01-02').map((r) => r.label)).toEqual(['New year']);
-    expect(scheduleOf(day, '2027-01-01')).toEqual([]);
-  });
-
-  it('does not show tasks on a later day', () => {
-    const day = makeDay({ tasks: [makeTask()] });
-    expect(scheduleOf(day, '2026-10-30')).toEqual([]);
+    expect(eventsOf(day, '2027-01-02').map((r) => r.label)).toEqual(['New year']);
+    expect(eventsOf(day, '2027-01-01')).toEqual([]);
   });
 
   it('puts the visitor in an event row and labels it for screen readers', () => {
     const day = makeDay({
       eventsToday: [makeEvent({ visitorName: 'Sam', startTime: '14:00' })],
     });
-    const row = scheduleOf(day, '2026-10-29')[0];
+    const row = eventsOf(day, '2026-10-29')[0];
     expect(row.label).toBe('Cardiology with Sam');
     expect(row.accessibilityLabel).toBe('2:00 PM, Cardiology with Sam');
+  });
+});
+
+describe('todaysTasks', () => {
+  it('is empty when there are no tasks, whatever the events', () => {
+    expect(todaysTasks(makeDay(), USER)).toEqual({ leftover: [], today: [] });
+    const withEvent = makeDay({ eventsToday: [makeEvent()] });
+    expect(todaysTasks(withEvent, USER)).toEqual({ leftover: [], today: [] });
+  });
+
+  it('orders tasks by scheduled time and never includes events', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'b', scheduledTime: '12:00' }),
+        makeTask({ instanceId: 'a', scheduledTime: '08:00' }),
+      ],
+      eventsToday: [makeEvent({ startTime: '09:00' })],
+    });
+    expect(todaysTasks(day, USER).today.map((r) => r.id)).toEqual(['task-a', 'task-b']);
+  });
+
+  it('assigns a variant to each kind of task row', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
+        makeTask({ instanceId: 'b', scheduledTime: '07:00', state: 'missed' }),
+        makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'escalated' }),
+        makeTask({ instanceId: 'd', scheduledTime: '09:00', state: 'upcoming' }),
+        makeTask({ instanceId: 'e', scheduledTime: '10:00', state: 'resolved' }),
+      ],
+    });
+    expect(taskRows(day).map((r) => [r.kind, r.variant])).toEqual([
+      ['task', 'done'],
+      ['task', 'alert'],
+      ['task', 'alert'],
+      ['task', 'open'],
+      ['task', 'done'],
+    ]);
   });
 
   it('adds the status word to task rows for screen readers', () => {
@@ -334,11 +382,16 @@ describe('scheduleForDate', () => {
         makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'upcoming' }),
       ],
     });
-    expect(scheduleOf(day, '2026-10-29').map((r) => r.accessibilityLabel)).toEqual([
+    expect(taskRows(day).map((r) => r.accessibilityLabel)).toEqual([
       '6:00 AM, Take medication, Done',
       '7:00 AM, Take medication, Not confirmed',
       '8:00 AM, Take medication',
     ]);
+  });
+
+  it('carries the instance id on every task row', () => {
+    const day = makeDay({ tasks: [makeTask({ instanceId: 't9' })] });
+    expect(taskRows(day)[0].instanceId).toBe('t9');
   });
 });
 
@@ -422,7 +475,7 @@ describe('laterThisWeek', () => {
     });
     const groups = later(day, '2026-10-29');
     expect(groups.map((g) => g.date)).toEqual(['2026-10-30']);
-    expect(groups.flatMap((g) => g.rows).every((r) => r.variant === 'event')).toBe(true);
+    expect(groups.flatMap((g) => g.rows).every((r) => r.kind === 'event')).toBe(true);
   });
 });
 
@@ -552,5 +605,256 @@ describe('hasInProgress', () => {
     );
     expect(hasInProgress(finished)).toBe(false);
     expect(hasInProgress([])).toBe(false);
+  });
+});
+
+describe('leftover tasks', () => {
+  const yesterday = '2026-10-28';
+
+  it('opens the alert message with where it came from', () => {
+    const task = makeTask({
+      localDate: yesterday,
+      carriedOver: true,
+      state: 'escalated',
+      scheduledTime: '23:30',
+    });
+    expect(alertMessage(task)).toBe(
+      'Left over from yesterday. Due at 11:30 PM. Sunny has alerted the family.',
+    );
+    expect(alertMessage(makeTask({ carriedOver: true, state: 'missed' }))).toBe(
+      'Left over from yesterday. Due at 8:00 AM.',
+    );
+  });
+
+  it('moves carried-over tasks out of the day rows into the leftover list, tasks only', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({
+          instanceId: 'old',
+          localDate: yesterday,
+          carriedOver: true,
+          scheduledTime: '23:30',
+          state: 'due',
+        }),
+        makeTask({ instanceId: 'new', scheduledTime: '08:00' }),
+      ],
+      eventsToday: [makeEvent({ startTime: '09:00' })],
+    });
+    const { leftover, today } = todaysTasks(day, USER);
+    expect(leftover.map((r) => r.id)).toEqual(['task-old']);
+    expect(today.map((r) => r.id)).toEqual(['task-new']);
+  });
+
+  it('never calls an event leftover: today events stay out of the tasks lists', () => {
+    const day = makeDay({ eventsToday: [makeEvent({ startTime: '06:00' })] });
+    const { leftover, today } = todaysTasks(day, USER);
+    expect([...leftover, ...today]).toEqual([]);
+    expect(eventsOf(day, TODAY)).toHaveLength(1);
+  });
+
+  it('has no leftover rows when nothing is carried over', () => {
+    const day = makeDay({ tasks: [makeTask()] });
+    expect(todaysTasks(day, USER).leftover).toEqual([]);
+  });
+});
+
+describe('note input', () => {
+  it('trims the note and turns an empty one into a clear', () => {
+    expect(noteFromInput('  Called her  ')).toBe('Called her');
+    expect(noteFromInput('   ')).toBeUndefined();
+    expect(noteFromInput('')).toBeUndefined();
+    expect(noteFromInput(undefined)).toBeUndefined();
+  });
+});
+
+describe('checkboxState', () => {
+  const rowFor = (state: string) => taskRows(makeDay({ tasks: [makeTask({ state })] }))[0];
+  const look = (state: string, canEdit: boolean, busy = false) =>
+    checkboxState(rowFor(state), { canEdit, busy });
+
+  it('lets an editor tap every open task, with the alert look for escalated and missed', () => {
+    expect(look('upcoming', true)).toEqual({ kind: 'open', interactive: true });
+    expect(look('due', true)).toEqual({ kind: 'open', interactive: true });
+    expect(look('escalated', true)).toEqual({ kind: 'alert', interactive: true });
+    expect(look('missed', true)).toEqual({ kind: 'alert', interactive: true });
+  });
+
+  it('dulls and disables every open task for a viewer', () => {
+    for (const state of ['upcoming', 'due', 'escalated', 'missed']) {
+      expect([state, look(state, false)]).toEqual([
+        state,
+        { kind: 'disabled', interactive: false },
+      ]);
+    }
+  });
+
+  it('keeps done tasks checked and not tappable, for editors and viewers', () => {
+    for (const state of ['confirmed', 'resolved']) {
+      for (const canEdit of [true, false]) {
+        expect(look(state, canEdit)).toEqual({ kind: 'done', interactive: false });
+      }
+    }
+  });
+
+  it('shows a task whose Mark done call is running as checked and not tappable', () => {
+    expect(look('due', true, true)).toEqual({ kind: 'done', interactive: false });
+    expect(look('missed', true, true)).toEqual({ kind: 'done', interactive: false });
+  });
+});
+
+describe('task notes', () => {
+  const noted = (state: string, resolutionNote: string | null) =>
+    taskRows(makeDay({ tasks: [makeTask({ state, resolutionNote })] }))[0];
+
+  it('puts the note on open and done task rows alike, and on the screen reader label', () => {
+    expect(noted('due', 'Refill soon').note).toBe('Refill soon');
+    expect(noted('confirmed', 'Refill soon').note).toBe('Refill soon');
+    expect(noted('due', null).note).toBeNull();
+    expect(noted('due', 'Refill soon').accessibilityLabel).toBe(
+      '8:00 AM, Take medication. Note: Refill soon',
+    );
+  });
+
+  it('words the collapsed note subtitle, and has none for no or blank notes', () => {
+    expect(noteLine('Refill soon')).toBe('Note: Refill soon');
+    expect(noteLine('  Called  ')).toBe('Note: Called');
+    expect(noteLine(null)).toBeNull();
+    expect(noteLine('   ')).toBeNull();
+  });
+
+  it('saves only when the trimmed draft differs from the current note', () => {
+    expect(shouldSaveNote('Called her', null)).toBe(true);
+    expect(shouldSaveNote('  Called her ', 'Called her')).toBe(false);
+    expect(shouldSaveNote('Called again', 'Called her')).toBe(true);
+    expect(shouldSaveNote('', null)).toBe(false);
+    expect(shouldSaveNote('   ', null)).toBe(false);
+  });
+
+  it('treats a blank draft over an existing note as a clear to save', () => {
+    expect(shouldSaveNote('', 'Called her')).toBe(true);
+  });
+});
+
+describe('doneDetail', () => {
+  it('is null for a task that is not done', () => {
+    expect(doneDetail(makeTask({ state: 'due' }), USER)).toBeNull();
+  });
+
+  it('names the caregiver who marked it done', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: 'user_pat',
+      confirmedByName: 'Pat',
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    expect(doneDetail(task, USER)).toBe('Marked done by Pat at 2:05 PM');
+  });
+
+  it('says "you" when the signed-in caregiver did it', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: USER,
+      confirmedByName: 'Me',
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    expect(doneDetail(task, USER)).toBe('Marked done by you at 2:05 PM');
+  });
+
+  it('says "a caregiver" when the name is unknown', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: 'user_gone',
+      confirmedByName: null,
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    expect(doneDetail(task, USER)).toBe('Marked done by a caregiver at 2:05 PM');
+    expect(doneDetail(task, null)).toBe('Marked done by a caregiver at 2:05 PM');
+  });
+
+  it('leaves the note out of the detail (it is the row note)', () => {
+    const task = makeTask({
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedBy: 'user_pat',
+      confirmedByName: 'Pat',
+      confirmedLocalTime: CONFIRMED_TIME,
+      resolutionNote: 'Called her',
+    });
+    expect(doneDetail(task, USER)).toBe('Marked done by Pat at 2:05 PM');
+  });
+
+  it('words each device surface', () => {
+    const wording = {
+      button: 'Done at 2:05 PM on the display',
+      widget: 'Done at 2:05 PM from the widget',
+      live_activity: 'Done at 2:05 PM from the Live Activity',
+      phone_app: 'Done at 2:05 PM on the phone',
+      voice: 'Done at 2:05 PM by voice',
+    };
+    for (const [confirmedVia, text] of Object.entries(wording)) {
+      const task = makeTask({
+        state: 'confirmed',
+        confirmedVia,
+        confirmedLocalTime: CONFIRMED_TIME,
+      });
+      expect([confirmedVia, doneDetail(task, USER)]).toEqual([confirmedVia, text]);
+    }
+  });
+
+  it('omits the time when the server sent none', () => {
+    const task = makeTask({ state: 'confirmed', confirmedVia: 'voice' });
+    expect(doneDetail(task, USER)).toBe('Done by voice');
+  });
+
+  it('is null for a confirmation with nothing known beyond "Done"', () => {
+    expect(doneDetail(makeTask({ state: 'confirmed' }), USER)).toBeNull();
+  });
+
+  it('is null for a done task with only a note', () => {
+    const task = makeTask({ state: 'confirmed', resolutionNote: 'Fine' });
+    expect(doneDetail(task, USER)).toBeNull();
+  });
+
+  it('shows the detail and the note on done task rows', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({
+          state: 'resolved',
+          confirmedVia: 'caregiver',
+          confirmedBy: 'user_pat',
+          confirmedByName: 'Pat',
+          confirmedLocalTime: CONFIRMED_TIME,
+          resolutionNote: 'Called her',
+        }),
+      ],
+    });
+    const [row] = taskRows(day);
+    expect(row.detail).toBe('Marked done by Pat at 2:05 PM');
+    expect(row.note).toBe('Called her');
+    expect(row.accessibilityLabel).toBe(
+      '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. Note: Called her',
+    );
+  });
+});
+
+describe('alreadyDoneMessage', () => {
+  it("is null when the returned confirmation is the signed-in caregiver's own", () => {
+    expect(alreadyDoneMessage('user_me', 'user_me')).toBeNull();
+  });
+
+  it('says already done when another person confirmed first', () => {
+    expect(alreadyDoneMessage('user_other', 'user_me')).toBe(ALREADY_DONE_MESSAGE);
+    expect(ALREADY_DONE_MESSAGE).toBe('Already marked done.');
+  });
+
+  it('says already done when the confirmation has no recorded confirmer', () => {
+    expect(alreadyDoneMessage(undefined, 'user_me')).toBe(ALREADY_DONE_MESSAGE);
+  });
+
+  it('says already done when the signed-in user is unknown', () => {
+    expect(alreadyDoneMessage('user_other', null)).toBe(ALREADY_DONE_MESSAGE);
   });
 });
