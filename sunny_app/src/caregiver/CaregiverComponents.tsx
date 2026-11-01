@@ -3,7 +3,8 @@
 // Purpose: The building blocks of the caregiver Home tab: the screen header (title, subtitle
 // and optional trailing control), the section title, the calendar card with its seven-day week
 // strip (tappable cells that select a day), the alert card with its "I'm on it" action (or who
-// is already on it), and the schedule card for the selected day. They take plain data from
+// is already on it), the schedule card for the selected day, and the later-days card grouping
+// the rest of the week's events by day. They take plain data from
 // format.ts and render the Figma design: warm translucent cards, serious status colors for
 // alerts, accent-tinted selection. No motion.
 //
@@ -22,6 +23,7 @@ import { type } from '../theme/typography';
 import {
   alertMessage,
   claimText,
+  type LaterDayGroup,
   weekMonthLabel,
   type ScheduleRowData,
   VARIANT_STYLE,
@@ -272,6 +274,29 @@ export function ScheduleCard({ rows }: { rows: ScheduleRowData[] }) {
   );
 }
 
+/**
+ * purpose: The "Later this week" card: one group per later day with events, each with its
+ *          weekday and date as a heading above that day's rows.
+ * @param props: ({ groups: LaterDayGroup[] }) The groups from laterThisWeek.
+ * @return: (JSX.Element) The card.
+ */
+export function LaterWeekCard({ groups }: { groups: LaterDayGroup[] }) {
+  return (
+    <View style={styles.scheduleCard}>
+      {groups.map((group) => (
+        <View key={group.date} style={styles.group}>
+          <Text accessibilityRole="header" style={[type.headline, styles.groupTitle]}>
+            {group.title}
+          </Text>
+          {group.rows.map((row) => (
+            <ScheduleRow key={row.id} row={row} />
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   header: { gap: 4 },
@@ -297,6 +322,8 @@ const styles = StyleSheet.create({
   },
   emptyLine: { color: colors.secondaryText, paddingHorizontal: 20, paddingVertical: 4 },
   rows: { gap: 4, paddingHorizontal: 8 },
+  group: { gap: 4, paddingHorizontal: 8 },
+  groupTitle: { paddingTop: 4, paddingHorizontal: 12 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -2,7 +2,7 @@
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
 // alert detection, messages and claim text, the per-day schedule rows (ids and variants), the
-// selected-day title and fallback rule, transcript ordering, status lines and speaker
+// selected-day title and fallback rule, the later-this-week groups, transcript ordering, status lines and speaker
 // attribution, and the in-progress check. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
@@ -21,6 +21,7 @@ import {
   FAILED_TEXT,
   hasInProgress,
   isAlert,
+  laterThisWeek,
   messageSpeaker,
   resolveSelectedDate,
   scheduleForDate,
@@ -349,6 +350,72 @@ describe('selectedDayTitle', () => {
 
   it('is empty for an invalid date', () => {
     expect(selectedDayTitle('2026-10-29', 'bad')).toBe('');
+  });
+});
+
+describe('laterThisWeek', () => {
+  const later = (day: DayViewData, selected: string) =>
+    laterThisWeek(day, buildWeekStrip(day), selected);
+
+  it('lists every later day with events, in date order, when today is selected', () => {
+    const day = makeDay({
+      upcoming: [
+        makeEvent({ eventId: 'e2', label: 'Lunch', localDate: '2026-11-01', startTime: '12:00' }),
+        makeEvent({ eventId: 'e1', label: 'Walk', localDate: '2026-10-31', startTime: '09:00' }),
+        makeEvent({ eventId: 'e3', label: 'Call', localDate: '2026-11-01', startTime: '08:00' }),
+      ],
+    });
+    const groups = later(day, '2026-10-29');
+    expect(groups.map((g) => g.date)).toEqual(['2026-10-31', '2026-11-01']);
+    expect(groups.map((g) => g.title)).toEqual(['Saturday, Oct 31', 'Sunday, Nov 1']);
+    expect(groups[1].rows.map((r) => r.label)).toEqual(['Call', 'Lunch']);
+  });
+
+  it('starts after the selected day mid-week', () => {
+    const day = makeDay({
+      upcoming: [
+        makeEvent({ eventId: 'e1', localDate: '2026-10-30' }),
+        makeEvent({ eventId: 'e2', localDate: '2026-10-31' }),
+        makeEvent({ eventId: 'e3', localDate: '2026-11-02' }),
+      ],
+    });
+    expect(later(day, '2026-10-31').map((g) => g.date)).toEqual(['2026-11-02']);
+  });
+
+  it('is empty when the last day of the strip is selected', () => {
+    const day = makeDay({ upcoming: [makeEvent({ localDate: '2026-11-04' })] });
+    expect(later(day, '2026-11-04')).toEqual([]);
+  });
+
+  it('skips days without events', () => {
+    const day = makeDay({ upcoming: [makeEvent({ localDate: '2026-11-03' })] });
+    expect(later(day, '2026-10-29').map((g) => g.date)).toEqual(['2026-11-03']);
+  });
+
+  it('ignores events beyond the strip', () => {
+    const day = makeDay({ upcoming: [makeEvent({ localDate: '2026-11-05' })] });
+    expect(later(day, '2026-10-29')).toEqual([]);
+  });
+
+  it('crosses a year boundary', () => {
+    const day = makeDay({
+      localDate: '2026-12-30',
+      upcoming: [makeEvent({ localDate: '2027-01-02' })],
+    });
+    const groups = later(day, '2026-12-30');
+    expect(groups.map((g) => g.date)).toEqual(['2027-01-02']);
+    expect(groups[0].title).toBe('Saturday, Jan 2');
+  });
+
+  it('never includes today or its tasks', () => {
+    const day = makeDay({
+      tasks: [makeTask()],
+      eventsToday: [makeEvent({ localDate: '2026-10-29' })],
+      upcoming: [makeEvent({ eventId: 'e2', localDate: '2026-10-30' })],
+    });
+    const groups = later(day, '2026-10-29');
+    expect(groups.map((g) => g.date)).toEqual(['2026-10-30']);
+    expect(groups.flatMap((g) => g.rows).every((r) => r.variant === 'event')).toBe(true);
   });
 });
 

@@ -3,7 +3,8 @@
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, the calendar card
 // (seven-day week strip whose cells choose the day shown), the Alerts section (tasks that were
 // escalated or missed, with an "I'm on it" button for editors, or who is already on it) and the
-// schedule of the selected day (today by default). Everything comes from the shared day view
+// schedule of the selected day (today by default) followed by
+// "Later this week", the events of the days after it grouped by day (hidden when there are none). Everything comes from the shared day view
 // state owned by CaregiverApp, and the derived lists are computed once per day view and
 // selection. While the first load is pending it shows a spinner, and if
 // it fails with nothing cached, the error message.
@@ -22,6 +23,7 @@ import { type } from '../theme/typography';
 import {
   AlertCard,
   CalendarCard,
+  LaterWeekCard,
   ScheduleCard,
   ScreenHeader,
   SectionTitle,
@@ -29,6 +31,7 @@ import {
 import {
   buildWeekStrip,
   isAlert,
+  laterThisWeek,
   resolveSelectedDate,
   scheduleForDate,
   selectedDayTitle,
@@ -94,6 +97,7 @@ export function CaregiverHomeScreen({
       selectedDate,
       scheduleTitle: selectedDayTitle(day.localDate, selectedDate),
       schedule: scheduleForDate(day, agenda, selectedDate),
+      later: laterThisWeek(day, strip, selectedDate),
       range: weekRangeLabel(day.localDate),
     };
   }, [day, agenda, selection]);
@@ -144,6 +148,12 @@ export function CaregiverHomeScreen({
             <SectionTitle text={view.scheduleTitle} />
             <ScheduleCard rows={view.schedule} />
           </View>
+          {view.later.length > 0 && (
+            <View style={styles.section}>
+              <SectionTitle text="Later this week" />
+              <LaterWeekCard groups={view.later} />
+            </View>
+          )}
           {isOffline && <OfflineMark />}
         </>
       )}

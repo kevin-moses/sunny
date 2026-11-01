@@ -2,7 +2,8 @@
 //
 // Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
 // the date range and month labels, which tasks are alerts and who is on them, the schedule rows
-// and title for the day selected in the week strip, and the chat transcript built from the household's agent requests
+// and title for the day selected in the week strip, the later days of the week grouped by day,
+// and the chat transcript built from the household's agent requests
 // (oldest first). Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date
 // arithmetic comes from day/localDate (parsed once, then counted as days), so no timezone
 // conversion happens here.
@@ -260,6 +261,39 @@ export function selectedDayTitle(todayDate: string, date: string): string {
   const time = parseLocalDate(date);
   if (time === null) return '';
   return `${weekdayName(time)}, ${shortMonthDay(time)}`;
+}
+
+/** One later day of the week: its date, heading and event rows. */
+export interface LaterDayGroup {
+  date: string;
+  /** For example "Sunday, Nov 1". */
+  title: string;
+  rows: ScheduleRowData[];
+}
+
+/**
+ * purpose: The days after the selected one, through the end of the week strip, that have
+ *          events, for the "Later this week" section. Today is never included (the selected
+ *          day is today or later), so its tasks never appear here.
+ * @param day: (DayViewData) The day view.
+ * @param strip: (WeekStripDay[]) The week strip, today first.
+ * @param selectedDate: (string) The selected local date.
+ * @return: (LaterDayGroup[]) One group per day with events, in date order; empty when none.
+ */
+export function laterThisWeek(
+  day: DayViewData,
+  strip: WeekStripDay[],
+  selectedDate: string,
+): LaterDayGroup[] {
+  const groups: LaterDayGroup[] = [];
+  for (const { localDate } of strip) {
+    if (localDate <= selectedDate) continue;
+    const rows = scheduleForDate(day, [], localDate);
+    if (rows.length > 0) {
+      groups.push({ date: localDate, title: selectedDayTitle(day.localDate, localDate), rows });
+    }
+  }
+  return groups;
 }
 
 /** The day the caregiver tapped, and which "today" it was chosen against. */
