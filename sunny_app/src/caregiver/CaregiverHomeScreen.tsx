@@ -3,14 +3,16 @@
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, then, in order: the
 // Alerts section (tasks that were escalated or missed, with "I'm on it" and "Mark done" buttons
 // for editors, or who is already on it), "Today's tasks" (a "Leftover" group of yesterday's open
-// tasks, then today's tasks in time order; editors tap a task's checkbox to mark it done at once
-// and tap its text to open an inline note editor, one at a time; viewers can open a note to read
-// it), the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
+// tasks, then today's tasks in time order; editors tick a task's checkbox, which shows it done
+// at once and sends it after a 5 second undo toast, and tap its text to open an autosaving inline
+// note editor, one at a time; saved notes show as a subtitle), the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
 // events) with the selected day's events directly below it (events only, never tasks), and
 // "Later this week", the events of the days after the selected one grouped by day (hidden when
 // there are none). Everything comes from the shared day view state owned by CaregiverApp, and the
 // derived lists are computed once per day view and selection. While the first load is pending it
-// shows a spinner, and if it fails with nothing cached, the error message.
+// shows a spinner, and if it fails with nothing cached, the error message. The scroll view lifts
+// the focused note editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses
+// the keyboard on drag; pending completions and open notes are committed when the tab is left.
 //
 // Last modified: 2026-11-01
 
@@ -43,9 +45,13 @@ import {
   selectedDayTitle,
   weekRangeLabel,
   type DaySelection,
+  type ScheduleRowData,
 } from './format';
 import { useTabBarInset } from './tabBarInset';
+import { UndoToast } from './UndoToast';
+import { useNoteEditor } from './useNoteEditor';
 import { useTaskActions } from './useTaskActions';
+import { useUndoableCompletion } from './useUndoableCompletion';
 
 /** Props for CaregiverHomeScreen. */
 interface CaregiverHomeScreenProps {
@@ -54,6 +60,8 @@ interface CaregiverHomeScreenProps {
   canEdit: boolean;
   /** The signed-in caregiver's Clerk user id, to tell their own claims from others'. */
   userId: string | null;
+  /** Whether Home is the visible tab; leaving it commits pending completions and open notes. */
+  active: boolean;
   /** Called when the account button is pressed. */
   onAccountPress: () => void;
 }
@@ -79,13 +87,14 @@ function AccountButton({ onPress }: { onPress: () => void }) {
 /**
  * purpose: Render the Home tab.
  * @param props: (CaregiverHomeScreenProps) The shared day view, the edit permission, the
- *        caregiver's user id and the account button handler.
+ *        caregiver's user id, whether the tab is visible and the account button handler.
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverHomeScreen({
   dayView,
   canEdit,
   userId,
+  active,
   onAccountPress,
 }: CaregiverHomeScreenProps) {
   const { day, errorMessage, isOffline } = dayView;
@@ -93,28 +102,18 @@ export function CaregiverHomeScreen({
   const tabBarInset = useTabBarInset();
   const { actions, claim, markDone, saveNote } = useTaskActions(userId);
 
-  /** The row whose note is open; only one at a time. */
-  const [openNoteId, setOpenNoteId] = useState<string | null>(null);
+  const noteEditor = useNoteEditor(saveNote, active);
+  const completion = useUndoableCompletion<TaskInstanceId>((id) => void markDone(id), active);
+  const pendingId: string | null = completion.pendingId;
 
   /**
-   * purpose: Open a row's note, or close it when it is already open.
-   * @param rowId: (string) The row's id.
+   * purpose: Open or close a row's note editor.
+   * @param row: (ScheduleRowData) A task row.
    * @return: (void)
    */
-  const toggleNote = (rowId: string): void =>
-    setOpenNoteId((current) => (current === rowId ? null : rowId));
-
-  /**
-   * purpose: Save a task's note and close its editor once it is saved; a failure keeps the
-   *          editor open with the error under the row.
-   * @param instanceId: (TaskInstanceId) The task instance.
-   * @param note: (string | undefined) The trimmed note; undefined clears it.
-   * @return: (void)
-   */
-  const saveTaskNote = (instanceId: TaskInstanceId, note: string | undefined): void => {
-    void saveNote(instanceId, note).then((saved) => {
-      if (saved) setOpenNoteId(null);
-    });
+  const toggleNote = (row: ScheduleRowData): void => {
+    if (row.instanceId === null) return;
+    noteEditor.toggle({ rowId: row.id, instanceId: row.instanceId, note: row.note });
   };
 
   const [selection, setSelection] = useState<DaySelection | null>(null);
@@ -137,92 +136,107 @@ export function CaregiverHomeScreen({
   }, [day, selection, userId]);
 
   return (
-    <ScrollView
-      keyboardShouldPersistTaps="handled"
-      contentContainerStyle={[
-        styles.content,
-        { paddingTop: insets.top + 8, paddingBottom: tabBarInset },
-      ]}
-    >
-      <ScreenHeader
-        title={day === null ? 'This week' : `${day.seniorPreferredName}'s week`}
-        subtitle={view?.range ?? ''}
-        trailing={<AccountButton onPress={onAccountPress} />}
-      />
-      {day === null || view === null ? (
-        errorMessage !== null ? (
-          <Text style={[type.callout, styles.message]}>{errorMessage}</Text>
+    <View style={styles.fill}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
+        onScrollBeginDrag={noteEditor.close}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: insets.top + 8, paddingBottom: tabBarInset },
+        ]}
+      >
+        <ScreenHeader
+          title={day === null ? 'This week' : `${day.seniorPreferredName}'s week`}
+          subtitle={view?.range ?? ''}
+          trailing={<AccountButton onPress={onAccountPress} />}
+        />
+        {day === null || view === null ? (
+          errorMessage !== null ? (
+            <Text style={[type.callout, styles.message]}>{errorMessage}</Text>
+          ) : (
+            <ActivityIndicator size="large" color={colors.secondaryText} />
+          )
         ) : (
-          <ActivityIndicator size="large" color={colors.secondaryText} />
-        )
-      ) : (
-        <>
-          <View style={styles.section}>
-            <SectionTitle text="Alerts" />
-            {view.alerts.length === 0 && (
-              <Text style={[type.callout, styles.message]}>Nothing needs attention.</Text>
-            )}
-            {view.alerts.map(({ task, message }) => (
-              <AlertCard
-                key={task.instanceId}
-                task={task}
-                message={message}
-                action={actions[task.instanceId]}
-                canEdit={canEdit}
-                userId={userId}
-                onClaim={() => claim(task.instanceId)}
-                onMarkDone={() => void markDone(task.instanceId)}
-              />
-            ))}
-          </View>
-          <View style={styles.section}>
-            <SectionTitle text="Today's tasks" />
-            <ScheduleCard
-              leftover={view.leftover}
-              rows={view.todayTasks}
-              emptyText="No tasks today."
-              canEdit={canEdit}
-              actions={actions}
-              openNoteId={openNoteId}
-              onMarkDone={(instanceId) => void markDone(instanceId)}
-              onToggleNote={toggleNote}
-              onSaveNote={saveTaskNote}
-            />
-          </View>
-          <View style={styles.section}>
-            <CalendarCard
-              todayLocalDate={day.localDate}
-              days={view.strip}
-              selectedDate={view.selectedDate}
-              onSelect={(date) => setSelection({ date, todayWhenChosen: day.localDate })}
-            />
-            <SectionTitle text={view.scheduleTitle} />
-            <ScheduleCard
-              leftover={[]}
-              rows={view.events}
-              emptyText="No events."
-              canEdit={canEdit}
-              actions={actions}
-              openNoteId={openNoteId}
-              onMarkDone={(instanceId) => void markDone(instanceId)}
-              onToggleNote={toggleNote}
-              onSaveNote={saveTaskNote}
-            />
-          </View>
-          {view.later.length > 0 && (
+          <>
             <View style={styles.section}>
-              <SectionTitle text="Later this week" />
-              <LaterWeekCard groups={view.later} />
+              <SectionTitle text="Alerts" />
+              {view.alerts.length === 0 && (
+                <Text style={[type.callout, styles.message]}>Nothing needs attention.</Text>
+              )}
+              {view.alerts
+                .filter(({ task }) => task.instanceId !== pendingId)
+                .map(({ task, message }) => (
+                  <AlertCard
+                    key={task.instanceId}
+                    task={task}
+                    message={message}
+                    action={actions[task.instanceId]}
+                    canEdit={canEdit}
+                    userId={userId}
+                    onClaim={() => claim(task.instanceId)}
+                    onMarkDone={() => completion.complete(task.instanceId)}
+                  />
+                ))}
             </View>
-          )}
-          {isOffline && <OfflineMark />}
-        </>
-      )}
-    </ScrollView>
+            <View style={styles.section}>
+              <SectionTitle text="Today's tasks" />
+              <ScheduleCard
+                leftover={view.leftover}
+                rows={view.todayTasks}
+                emptyText="No tasks today."
+                canEdit={canEdit}
+                actions={actions}
+                pendingId={pendingId}
+                openNoteId={noteEditor.openRowId}
+                initialDraft={noteEditor.initialDraft}
+                onMarkDone={completion.complete}
+                onToggleNote={toggleNote}
+                onDraftChange={noteEditor.setDraft}
+                onCloseNote={noteEditor.close}
+              />
+            </View>
+            <View style={styles.section}>
+              <CalendarCard
+                todayLocalDate={day.localDate}
+                days={view.strip}
+                selectedDate={view.selectedDate}
+                onSelect={(date) => setSelection({ date, todayWhenChosen: day.localDate })}
+              />
+              <SectionTitle text={view.scheduleTitle} />
+              <ScheduleCard
+                leftover={[]}
+                rows={view.events}
+                emptyText="No events."
+                canEdit={canEdit}
+                actions={actions}
+                pendingId={pendingId}
+                openNoteId={noteEditor.openRowId}
+                initialDraft={noteEditor.initialDraft}
+                onMarkDone={completion.complete}
+                onToggleNote={toggleNote}
+                onDraftChange={noteEditor.setDraft}
+                onCloseNote={noteEditor.close}
+              />
+            </View>
+            {view.later.length > 0 && (
+              <View style={styles.section}>
+                <SectionTitle text="Later this week" />
+                <LaterWeekCard groups={view.later} />
+              </View>
+            )}
+            {isOffline && <OfflineMark />}
+          </>
+        )}
+      </ScrollView>
+      {pendingId !== null && <UndoToast bottom={tabBarInset} onUndo={completion.undo} />}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fill: { flex: 1 },
   content: { paddingHorizontal: 24, gap: 32 },
   section: { gap: 12 },
   message: { color: colors.secondaryText },

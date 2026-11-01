@@ -6,10 +6,12 @@
 // actions (or who is already on it), the schedule card used for both today's tasks (a "Leftover"
 // group of yesterday's open tasks above a "Today" group) and the selected day's events (a plain
 // list), and the later-days card grouping the rest of the week's events by day. A task row has a
-// rounded-square checkbox (editors tap an open one to mark it done at once; a done one is
+// rounded-square checkbox (editors tap an open one to complete it; a done or completing one is
 // checked and greyed, with a detail line saying who confirmed it) and tappable text that opens
-// the task's note: an inline editor for editors, the full note for viewers. Task rows are
-// separated by hairlines that start at the text; event rows keep their calendar icon. They take plain data from format.ts and render
+// the task's autosaving inline note editor (no Save or Cancel). A saved note shows as a "Note:"
+// subtitle. In task and event rows the time and the label share one text baseline and the
+// subtitles line up under the label. Task rows are separated by hairlines that start at the
+// text; event rows keep their calendar icon. They take plain data from format.ts and render
 // the Figma design: warm translucent cards, serious status colors for alerts, accent-tinted
 // selection. No motion.
 //
@@ -20,18 +22,17 @@ import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { PrimaryButton } from '../components/PrimaryButton';
-import { TextButton } from '../components/TextButton';
 import type { DayTask } from '../day/types';
 import { displayTime } from '../day/format';
 import { colors, statusTones } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 import { type } from '../theme/typography';
 import {
+  canEditNote,
   checkboxInteractive,
   checkboxKind,
   claimText,
-  noteFromInput,
-  noteMode,
+  noteLine,
   type CheckboxKind,
   type LaterDayGroup,
   weekMonthLabel,
@@ -45,6 +46,13 @@ const alertTone = statusTones.serious;
 
 /** Fill of a checked checkbox: the secondary text color, softened. */
 const DONE_FILL = 'rgba(77,77,77,0.55)';
+
+/** Width (points) of the time column and the gap after it; subtitles indent past both. */
+const TIME_WIDTH = 72;
+const LABEL_INDENT = TIME_WIDTH + 12;
+
+/** Line height (points) of the label text (type.body), which the event icon is centered on. */
+const BODY_LINE_HEIGHT = 24;
 
 /**
  * purpose: The top of a caregiver tab: a title with an optional trailing control, and a subtitle.
@@ -256,23 +264,26 @@ export function AlertCard({
 }
 
 /**
- * purpose: One line of the schedule for an event: calendar icon, time and label. Not pressable.
+ * purpose: One line of the schedule for an event: calendar icon, then time and label on one
+ *          text baseline. The icon is centered on that first line. Not pressable.
  * @param props: ({ row: ScheduleRowData }) The row.
  * @return: (JSX.Element) The row.
  */
 function ScheduleRow({ row }: { row: ScheduleRowData }) {
   return (
     <View accessible accessibilityLabel={row.accessibilityLabel} style={styles.row}>
-      <SymbolView
-        name={VARIANT_STYLE[row.variant].icon}
-        size={22}
-        tintColor={colors.secondaryText}
-      />
-      <Text style={[type.callout, styles.rowTime, { color: colors.secondaryText }]}>
-        {row.time}
-      </Text>
-      <View style={styles.fill}>
-        <Text style={type.body}>{row.label}</Text>
+      <View style={styles.iconSlot}>
+        <SymbolView
+          name={VARIANT_STYLE[row.variant].icon}
+          size={22}
+          tintColor={colors.secondaryText}
+        />
+      </View>
+      <View style={styles.titleLine}>
+        <Text style={[type.callout, styles.rowTime, { color: colors.secondaryText }]}>
+          {row.time}
+        </Text>
+        <Text style={[type.body, styles.fill]}>{row.label}</Text>
       </View>
     </View>
   );
@@ -302,60 +313,59 @@ function CheckboxBox({ kind }: { kind: CheckboxKind }) {
 
 /**
  * purpose: The inline note editor under a task row: a multiline field prefilled with the current
- *          note, with Save and Cancel. A blank note clears it. Save is disabled while saving.
- * @param props: ({ initial: string | null, saving: boolean, onSave: (note: string | undefined)
- *        => void, onCancel: () => void }) The current note, whether a save is running and the
- *        handlers.
+ *          note (or a draft that failed to save). It has no buttons: the note is saved when the
+ *          editor closes. The keyboard's Done and the field losing focus close it.
+ * @param props: ({ initial: string, onChange: (text: string) => void, onClose: () => void })
+ *        The starting text, the handler for every edit and the handler for Done or blur.
  * @return: (JSX.Element) The editor.
  */
 function NoteEditor({
   initial,
-  saving,
-  onSave,
-  onCancel,
+  onChange,
+  onClose,
 }: {
-  initial: string | null;
-  saving: boolean;
-  onSave: (note: string | undefined) => void;
-  onCancel: () => void;
+  initial: string;
+  onChange: (text: string) => void;
+  onClose: () => void;
 }) {
-  const [draft, setDraft] = useState(initial ?? '');
+  const [draft, setDraft] = useState(initial);
   return (
     <View style={styles.noteEditor}>
       <TextInput
         multiline
         autoFocus
         value={draft}
-        onChangeText={setDraft}
+        onChangeText={(text) => {
+          setDraft(text);
+          onChange(text);
+        }}
+        returnKeyType="done"
+        submitBehavior="blurAndSubmit"
+        onSubmitEditing={onClose}
+        onBlur={onClose}
         placeholder="Add a note for the family"
         placeholderTextColor={colors.secondaryText}
         accessibilityLabel="Note"
         maxLength={500}
-        editable={!saving}
         style={[type.body, styles.noteInput]}
       />
-      <View style={styles.noteButtons}>
-        <TextButton label="Cancel" onPress={onCancel} disabled={saving} />
-        <TextButton
-          label={saving ? 'Saving...' : 'Save'}
-          onPress={() => onSave(noteFromInput(draft))}
-          disabled={saving}
-        />
-      </View>
     </View>
   );
 }
 
 /**
- * purpose: One task row: a checkbox (editors tap an open task's to mark it done at once; done
- *          tasks and viewers get a non-interactive box), then time and label, the who-confirmed
- *          detail, the note, and a pending or failed action. Tapping the text opens the note: an
- *          editor for editors, the full note for viewers. A hairline above the text column
- *          separates it from the row before.
- * @param props: ({ row, first, canEdit, action, expanded, onMarkDone, onToggleNote, onSaveNote })
- *        The task row, whether it is the first in its list (no divider), whether this caregiver
- *        may edit, its in-flight or failed action, whether its note is open, and the handlers
- *        for the checkbox, the text tap and Save (undefined clears the note).
+ * purpose: One task row. The first line has the checkbox, then time and label on one text
+ *          baseline; the who-confirmed detail, the "Note: ..." subtitle and any pending, saving or
+ *          failed action sit under the label. Editors tick an open task's checkbox to mark it done
+ *          (shown as checked at once; the screen decides when it is sent) and tap the text to
+ *          open the autosaving note editor. Viewers can tap a truncated note to read all of it.
+ *          A hairline above the text column separates it from the row before.
+ * @param props: ({ row, first, canEdit, action, completing, editing, initialDraft, onMarkDone,
+ *        onToggleNote, onDraftChange, onCloseNote }) The task row, whether it is the first in its
+ *        list (no divider), whether this caregiver may edit, its in-flight or failed action,
+ *        whether it shows as done while its completion is pending, whether its note editor is
+ *        open, the editor's starting text, and the handlers for the checkbox, the text tap, every
+ *        edit and the editor closing.
  * @return: (JSX.Element) The row.
  */
 function TaskRow({
@@ -363,26 +373,35 @@ function TaskRow({
   first,
   canEdit,
   action,
-  expanded,
+  completing,
+  editing,
+  initialDraft,
   onMarkDone,
   onToggleNote,
-  onSaveNote,
+  onDraftChange,
+  onCloseNote,
 }: {
   row: ScheduleRowData;
   first: boolean;
   canEdit: boolean;
   action?: TaskActionState;
-  expanded: boolean;
+  completing: boolean;
+  editing: boolean;
+  initialDraft: string;
   onMarkDone: () => void;
   onToggleNote: () => void;
-  onSaveNote: (note: string | undefined) => void;
+  onDraftChange: (text: string) => void;
+  onCloseNote: () => void;
 }) {
-  const kind = checkboxKind(row.variant) ?? 'open';
+  const [noteShown, setNoteShown] = useState(false);
+  const marking = action?.status === 'marking';
+  const kind = completing || marking ? 'done' : (checkboxKind(row.variant) ?? 'open');
   const done = kind === 'done';
   const alert = kind === 'alert';
-  const interactive = checkboxInteractive(row, canEdit);
-  const marking = action?.status === 'marking';
-  const mode = noteMode(row, canEdit, expanded);
+  const interactive = checkboxInteractive(row, canEdit) && !completing;
+  const editable = canEditNote(row, canEdit);
+  const noteText = noteLine(row.note);
+  const textActive = editable || noteText !== null;
   return (
     <View style={[styles.taskRow, alert && { backgroundColor: alertTone.background }]}>
       <Pressable
@@ -400,50 +419,56 @@ function TaskRow({
           accessible
           accessibilityRole="button"
           accessibilityLabel={row.accessibilityLabel}
-          accessibilityHint={expanded ? 'Hides the note' : 'Shows the note'}
-          accessibilityState={{ expanded }}
-          onPress={onToggleNote}
-          style={styles.taskText}
+          accessibilityHint={
+            editable ? (editing ? 'Saves and closes the note' : 'Edits the note') : undefined
+          }
+          accessibilityState={{ expanded: editable ? editing : noteShown }}
+          disabled={!textActive}
+          onPress={editable ? onToggleNote : () => setNoteShown((shown) => !shown)}
         >
-          <Text
-            style={[
-              type.callout,
-              styles.rowTime,
-              { color: alert ? alertTone.foreground : colors.secondaryText },
-            ]}
-          >
-            {row.time}
-          </Text>
-          <View style={styles.fill}>
+          <View style={styles.titleLine}>
             <Text
-              style={[alert ? type.bodyStrong : type.body, done && { color: colors.secondaryText }]}
+              style={[
+                type.callout,
+                styles.rowTime,
+                { color: alert && !done ? alertTone.foreground : colors.secondaryText },
+              ]}
+            >
+              {row.time}
+            </Text>
+            <Text
+              style={[
+                alert && !done ? type.bodyStrong : type.body,
+                styles.fill,
+                done && { color: colors.secondaryText },
+              ]}
             >
               {row.label}
             </Text>
+          </View>
+          <View style={styles.subtitles}>
             {row.detail !== null && (
               <Text style={[type.caption, { color: colors.secondaryText }]}>{row.detail}</Text>
             )}
-            {row.note !== null && mode !== 'edit' && (
+            {noteText !== null && !editing && (
               <Text
-                numberOfLines={expanded ? undefined : 2}
+                numberOfLines={noteShown ? undefined : 2}
                 style={[type.caption, { color: colors.secondaryText }]}
               >
-                {`"${row.note}"`}
+                {noteText}
               </Text>
             )}
             {marking && <Text style={[type.caption, styles.rowStatus]}>Marking done...</Text>}
+            {action?.status === 'saving' && (
+              <Text style={[type.caption, { color: colors.secondaryText }]}>Saving note...</Text>
+            )}
             {action?.status === 'error' && (
               <Text style={[type.caption, styles.rowStatus]}>{action.message}</Text>
             )}
           </View>
         </Pressable>
-        {mode === 'edit' && (
-          <NoteEditor
-            initial={row.note}
-            saving={action?.status === 'saving'}
-            onSave={onSaveNote}
-            onCancel={onToggleNote}
-          />
+        {editing && (
+          <NoteEditor initial={initialDraft} onChange={onDraftChange} onClose={onCloseNote} />
         )}
       </View>
     </View>
@@ -455,12 +480,13 @@ function TaskRow({
  *          When the Leftover group is present the rows get a "Today" group header; otherwise they
  *          are a plain list. With nothing to show, one calm line. Task rows have checkboxes and
  *          notes (see TaskRow); event rows are plain. Only one task's note is open at a time.
- * @param props: ({ leftover, rows, emptyText, canEdit, actions, openNoteId, onMarkDone,
- *        onToggleNote, onSaveNote }) The leftover rows (empty for events), the main rows, the line
- *        shown when both are empty, whether this caregiver may edit, the in-flight or failed
- *        actions by instance id, the id of the row whose note is open (or null), and the
- *        handlers: mark done (by instance id), toggle a row's note (by row id) and save a note
- *        (by instance id; undefined clears it).
+ * @param props: ({ leftover, rows, emptyText, canEdit, actions, pendingId, openNoteId,
+ *        initialDraft, onMarkDone, onToggleNote, onDraftChange, onCloseNote }) The leftover rows
+ *        (empty for events), the main rows, the line shown when both are empty, whether this
+ *        caregiver may edit, the in-flight or failed actions by instance id, the instance whose
+ *        completion is pending (shown as done), the id of the row whose note is open (or null)
+ *        with the editor's starting text, and the handlers: mark done (by instance id), toggle a
+ *        row's note (by row), every edit of the open note and the open note closing.
  * @return: (JSX.Element) The card.
  */
 export function ScheduleCard({
@@ -469,23 +495,26 @@ export function ScheduleCard({
   emptyText,
   canEdit,
   actions,
+  pendingId,
   openNoteId,
+  initialDraft,
   onMarkDone,
   onToggleNote,
-  onSaveNote,
+  onDraftChange,
+  onCloseNote,
 }: {
   leftover: ScheduleRowData[];
   rows: ScheduleRowData[];
   emptyText: string;
   canEdit: boolean;
   actions: Partial<Record<string, TaskActionState>>;
+  pendingId: string | null;
   openNoteId: string | null;
+  initialDraft: string;
   onMarkDone: (instanceId: NonNullable<ScheduleRowData['instanceId']>) => void;
-  onToggleNote: (rowId: string) => void;
-  onSaveNote: (
-    instanceId: NonNullable<ScheduleRowData['instanceId']>,
-    note: string | undefined,
-  ) => void;
+  onToggleNote: (row: ScheduleRowData) => void;
+  onDraftChange: (text: string) => void;
+  onCloseNote: () => void;
 }) {
   /**
    * purpose: Render one row of a list: a task row with checkbox and note, or an event row.
@@ -503,10 +532,13 @@ export function ScheduleCard({
         first={index === 0}
         canEdit={canEdit}
         action={actions[instanceId]}
-        expanded={openNoteId === row.id}
+        completing={pendingId === instanceId}
+        editing={openNoteId === row.id}
+        initialDraft={initialDraft}
         onMarkDone={() => onMarkDone(instanceId)}
-        onToggleNote={() => onToggleNote(row.id)}
-        onSaveNote={(note) => onSaveNote(instanceId, note)}
+        onToggleNote={() => onToggleNote(row)}
+        onDraftChange={onDraftChange}
+        onCloseNote={onCloseNote}
       />
     );
   };
@@ -591,13 +623,16 @@ const styles = StyleSheet.create({
   groupTitle: { paddingTop: 4, paddingHorizontal: 12 },
   row: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 12,
   },
-  rowTime: { width: 72, fontVariant: ['tabular-nums'] },
+  iconSlot: { height: BODY_LINE_HEIGHT, justifyContent: 'center' },
+  titleLine: { flex: 1, flexDirection: 'row', alignItems: 'baseline', gap: 12 },
+  subtitles: { marginLeft: LABEL_INDENT },
+  rowTime: { width: TIME_WIDTH, fontVariant: ['tabular-nums'] },
   taskRow: { flexDirection: 'row', alignItems: 'flex-start', borderRadius: 12 },
   checkboxTarget: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   box: {
@@ -610,8 +645,7 @@ const styles = StyleSheet.create({
   },
   taskBody: { flex: 1, minHeight: 44, paddingVertical: 10, paddingRight: 12 },
   divider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.separator },
-  taskText: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  noteEditor: { gap: 4, paddingTop: 8 },
+  noteEditor: { paddingTop: 8 },
   noteInput: {
     minHeight: 72,
     padding: 10,
@@ -621,6 +655,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     textAlignVertical: 'top',
   },
-  noteButtons: { flexDirection: 'row', justifyContent: 'flex-end' },
   rowStatus: { color: alertTone.foreground },
 });

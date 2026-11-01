@@ -11,6 +11,8 @@
 // days). No timezone conversion happens here: the server sends each confirmation as a
 // household-local "HH:MM" (confirmedLocalTime) and marks yesterday's still-open tasks
 // (carriedOver), and the message for a Mark done that another person beat (alreadyDoneMessage).
+// Note helpers say who may open the note editor (canEditNote), how a saved note reads on a row
+// (noteLine) and whether closing the editor must save (shouldSaveNote).
 //
 // Last modified: 2026-11-01
 
@@ -388,21 +390,36 @@ export function checkboxInteractive(row: ScheduleRowData, canEdit: boolean): boo
   return canEdit && row.markable !== null;
 }
 
-/** What is shown under a task row after its text is tapped. */
-export type NoteMode = 'hidden' | 'read' | 'edit';
-
 /**
- * purpose: What a task row shows under it: the note editor for editors, the full note for
- *          viewers who have something to read, nothing otherwise or when not expanded.
+ * purpose: Whether tapping a task row's text opens the note editor: editors on task rows (open
+ *          or done). Viewers and events never get an editor.
  * @param row: (ScheduleRowData) The row.
  * @param canEdit: (boolean) Whether this caregiver may edit (everyone but viewers).
- * @param expanded: (boolean) Whether the row's text was tapped open.
- * @return: (NoteMode) hidden, read or edit; always hidden for events.
+ * @return: (boolean) True when the editor can open.
  */
-export function noteMode(row: ScheduleRowData, canEdit: boolean, expanded: boolean): NoteMode {
-  if (row.variant === 'event' || !expanded) return 'hidden';
-  if (canEdit) return 'edit';
-  return row.note === null ? 'hidden' : 'read';
+export function canEditNote(row: ScheduleRowData, canEdit: boolean): boolean {
+  return canEdit && row.variant !== 'event' && row.instanceId !== null;
+}
+
+/**
+ * purpose: The subtitle that shows a task's saved note on its collapsed row.
+ * @param note: (string | null) The task's note.
+ * @return: (string | null) "Note: <text>", or null when there is no note (or only blanks).
+ */
+export function noteLine(note: string | null): string | null {
+  const text = noteFromInput(note ?? undefined);
+  return text === undefined ? null : `Note: ${text}`;
+}
+
+/**
+ * purpose: Decide whether closing the note editor must save: only when what was typed, trimmed,
+ *          differs from the note the task has (a blank draft against no note is no change).
+ * @param draft: (string) The text in the editor.
+ * @param current: (string | null) The note the task has now.
+ * @return: (boolean) True when the draft should be saved (a blank draft then clears the note).
+ */
+export function shouldSaveNote(draft: string, current: string | null): boolean {
+  return noteFromInput(draft) !== noteFromInput(current ?? undefined);
 }
 
 /**

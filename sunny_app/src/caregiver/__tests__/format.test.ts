@@ -21,6 +21,7 @@ import {
   ANOTHER_CAREGIVER,
   buildTranscript,
   buildWeekStrip,
+  canEditNote,
   checkboxInteractive,
   checkboxKind,
   claimText,
@@ -33,8 +34,9 @@ import {
   laterThisWeek,
   messageSpeaker,
   noteFromInput,
-  noteMode,
+  noteLine,
   resolveSelectedDate,
+  shouldSaveNote,
   selectedDayTitle,
   todaysTasks,
   VARIANT_STYLE,
@@ -737,24 +739,37 @@ describe('task notes', () => {
     );
   });
 
-  it('shows no note editor until the text is tapped open', () => {
-    expect(noteMode(noted('due', null), true, false)).toBe('hidden');
-  });
-
   it('opens an editor for editors, on open and done tasks, with or without a note', () => {
-    expect(noteMode(noted('due', null), true, true)).toBe('edit');
-    expect(noteMode(noted('confirmed', 'Fine'), true, true)).toBe('edit');
+    expect(canEditNote(noted('due', null), true)).toBe(true);
+    expect(canEditNote(noted('confirmed', 'Fine'), true)).toBe(true);
   });
 
-  it('lets viewers read an existing note but gives them no editor', () => {
-    expect(noteMode(noted('due', 'Fine'), false, true)).toBe('read');
-    expect(noteMode(noted('due', null), false, true)).toBe('hidden');
-    expect(noteMode(noted('due', 'Fine'), false, false)).toBe('hidden');
+  it('gives viewers no editor', () => {
+    expect(canEditNote(noted('due', 'Fine'), false)).toBe(false);
   });
 
   it('never opens a note on an event', () => {
     const event = eventsOf(makeDay({ eventsToday: [makeEvent()] }), TODAY)[0];
-    expect(noteMode(event, true, true)).toBe('hidden');
+    expect(canEditNote(event, true)).toBe(false);
+  });
+
+  it('words the collapsed note subtitle, and has none for no or blank notes', () => {
+    expect(noteLine('Refill soon')).toBe('Note: Refill soon');
+    expect(noteLine('  Called  ')).toBe('Note: Called');
+    expect(noteLine(null)).toBeNull();
+    expect(noteLine('   ')).toBeNull();
+  });
+
+  it('saves only when the trimmed draft differs from the current note', () => {
+    expect(shouldSaveNote('Called her', null)).toBe(true);
+    expect(shouldSaveNote('  Called her ', 'Called her')).toBe(false);
+    expect(shouldSaveNote('Called again', 'Called her')).toBe(true);
+    expect(shouldSaveNote('', null)).toBe(false);
+    expect(shouldSaveNote('   ', null)).toBe(false);
+  });
+
+  it('treats a blank draft over an existing note as a clear to save', () => {
+    expect(shouldSaveNote('', 'Called her')).toBe(true);
   });
 });
 

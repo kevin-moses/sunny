@@ -79,6 +79,7 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
             dayView={dayView}
             canEdit={isEditor}
             userId={userId ?? null}
+            active={tab === 'home'}
             onAccountPress={confirmSignOut}
           />
         </View>
