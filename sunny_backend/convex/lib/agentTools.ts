@@ -20,8 +20,14 @@
 // by the core on the merged result of add_task and update_task; as-needed medications, which
 // have no times and limits, stay app-only, so their fields are not in the tool schema), and
 // add_task refuses a duplicate (an active task of the household with the same type, the same
-// display label ignoring case and spacing, and a shared time), naming the existing task_id.
-// The agent can stop a task (active false, history kept) but never hard delete one.
+// display label ignoring case and spacing, a shared time and a schedule that can fall on the
+// same day: weekday sets and starts/ends ranges overlap, or a one-off date is covered), naming
+// the existing task_id; update_task runs the same guard, excluding the task itself, when the
+// updated task is active and the change touches type, label, times, schedule or active.
+// update_task refuses an as-needed medication (no times and an as-needed limit) with "As-needed
+// medications are managed in the app."; stop_task may still stop one, because stopping is safe
+// and only removes prompts. The agent can stop a task (active false, history kept) but never
+// hard delete one.
 //
 // Bad input and application errors become tool errors the model can read and fix; anything
 // else is rethrown. A result over MAX_TOOL_RESULT_CHARS becomes a tool error asking for a
@@ -45,18 +51,21 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { addEventCore, cancelEventCore, listOccurrencesCore, updateEventCore } from "../calendar";
 import type { AddEventArgs, EventChanges } from "../calendar";
-import { createTaskCore, listTasksCore, updateTaskCore } from "../tasks";
+import { createTaskCore, isAsNeededTask, listTasksCore, updateTaskCore } from "../tasks";
 import type { CreateTaskArgs, TaskChanges } from "../tasks";
 import type { AgentActor } from "./access";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
 import { requireNonBlank } from "./text";
-import { WEEKDAY_CODES, weekdayCodes } from "./time";
+import { isoWeekday, WEEKDAY_CODES, weekdayCodes } from "./time";
 import { taskType } from "./validators";
 import type { TaskType } from "./validators";
 
 /** Longest tool result sent to the model; larger results become a tool error, never truncated JSON. */
 export const MAX_TOOL_RESULT_CHARS = 50_000;
+
+/** Why update_task refuses an as-needed medication (stop_task may still stop one). */
+const AS_NEEDED_REFUSAL = "As-needed medications are managed in the app.";
 
 /** Task types, as the model writes them. */
 const TASK_TYPES: readonly TaskType[] = taskType.members.map((m) => m.value);
@@ -498,6 +507,58 @@ function toAddEventArgs(input: Record<string, unknown>): AddEventArgs {
 }
 
 /**
+ * purpose: Readers for each task field a tool may carry, keyed by the tool-style (snake_case)
+ *          name. Each types its value and stores it, camelCased, on the changes. This table
+ *          and the key lists (ADD_TASK_KEYS, UPDATE_TASK_KEYS) are the only places a field is
+ *          known; a key with no reader is unknown.
+ */
+const TASK_FIELD_READERS: Record<string, (out: TaskChanges, value: unknown, key: string) => void> =
+  {
+    type: (out, value) => {
+      out.type = taskTypeField(value);
+    },
+    title: (out, value, key) => {
+      out.title = stringField(value, key);
+    },
+    display_label: (out, value, key) => {
+      out.displayLabel = stringField(value, key);
+    },
+    spoken_prompt: (out, value, key) => {
+      out.spokenPrompt = stringField(value, key, true) ?? "";
+    },
+    pill_description: (out, value, key) => {
+      out.pillDescription = stringField(value, key, true);
+    },
+    once_on: (out, value, key) => {
+      out.onceOn = stringField(value, key, true);
+    },
+    starts_on: (out, value, key) => {
+      out.startsOn = stringField(value, key, true);
+    },
+    ends_on: (out, value, key) => {
+      out.endsOn = stringField(value, key, true);
+    },
+    times: (out, value, key) => {
+      out.times = stringListField(value, key);
+    },
+    checklist_items: (out, value, key) => {
+      out.checklistItems = stringListField(value, key);
+    },
+    repeat_weekdays: (out, value) => {
+      out.daysOfWeek = weekdaysField(value);
+    },
+    window_minutes: (out, value, key) => {
+      const minutes = numberField(value, key, true);
+      if (minutes === null) throw appError("invalid", "window_minutes cannot be cleared");
+      out.windowMinutes = minutes;
+    },
+    active: (out, value) => {
+      if (typeof value !== "boolean") throw appError("invalid", "active must be true or false");
+      out.active = value;
+    },
+  };
+
+/**
  * purpose: Convert tool-style task fields (snake_case, weekday names) to the task core's
  *          camelCase changes (ISO weekday numbers). A null clears a clearable field; null or
  *          an empty repeat_weekdays list becomes null (every day); a null spoken_prompt
@@ -515,54 +576,9 @@ export function toTaskChanges(
 ): TaskChanges {
   const out: TaskChanges = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (!allowed.includes(key)) throw appError("invalid", `Unknown field ${key}`);
-    switch (key) {
-      case "type":
-        out.type = taskTypeField(value);
-        break;
-      case "title":
-        out.title = stringField(value, key);
-        break;
-      case "display_label":
-        out.displayLabel = stringField(value, key);
-        break;
-      case "spoken_prompt":
-        out.spokenPrompt = stringField(value, key, true) ?? "";
-        break;
-      case "pill_description":
-        out.pillDescription = stringField(value, key, true);
-        break;
-      case "once_on":
-        out.onceOn = stringField(value, key, true);
-        break;
-      case "starts_on":
-        out.startsOn = stringField(value, key, true);
-        break;
-      case "ends_on":
-        out.endsOn = stringField(value, key, true);
-        break;
-      case "times":
-        out.times = stringListField(value, key);
-        break;
-      case "checklist_items":
-        out.checklistItems = stringListField(value, key);
-        break;
-      case "repeat_weekdays":
-        out.daysOfWeek = weekdaysField(value);
-        break;
-      case "window_minutes": {
-        const minutes = numberField(value, key, true);
-        if (minutes === null) throw appError("invalid", "window_minutes cannot be cleared");
-        out.windowMinutes = minutes;
-        break;
-      }
-      case "active":
-        if (typeof value !== "boolean") throw appError("invalid", "active must be true or false");
-        out.active = value;
-        break;
-      default:
-        throw appError("invalid", `Unknown field ${key}`);
-    }
+    const read = Object.hasOwn(TASK_FIELD_READERS, key) ? TASK_FIELD_READERS[key] : undefined;
+    if (!read || !allowed.includes(key)) throw appError("invalid", `Unknown field ${key}`);
+    read(out, value, key);
   }
   return out;
 }
@@ -593,27 +609,70 @@ function normalizeLabel(label: string): string {
   return label.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+/** The fields of a task that decide whether it duplicates another. */
+type DuplicateKey = Pick<
+  Doc<"tasks">,
+  "type" | "displayLabel" | "times" | "daysOfWeek" | "onceOn" | "startsOn" | "endsOn"
+>;
+
 /**
- * purpose: Refuse a new task that duplicates an active one: same type, same normalized
- *          display label and at least one shared time.
+ * purpose: Whether a task's schedule puts an occurrence on a local date: inside its starts and
+ *          ends dates and, for a one-off, on that date, else on one of its weekdays.
+ * @param task: (DuplicateKey) The task's schedule fields.
+ * @param date: (string) Local "YYYY-MM-DD".
+ * @return: (boolean) True when the task occurs on the date.
+ */
+function occursOnDate(task: DuplicateKey, date: string): boolean {
+  if (task.startsOn !== undefined && date < task.startsOn) return false;
+  if (task.endsOn !== undefined && date > task.endsOn) return false;
+  if (task.onceOn !== undefined) return date === task.onceOn;
+  return task.daysOfWeek === undefined || task.daysOfWeek.includes(isoWeekday(date));
+}
+
+/**
+ * purpose: Whether two task schedules can fall on the same day. A one-off is checked on its
+ *          date; two repeating schedules need overlapping starts/ends ranges and a shared
+ *          weekday (no weekday list = every day).
+ * @param a: (DuplicateKey) One schedule.
+ * @param b: (DuplicateKey) The other schedule.
+ * @return: (boolean) True when some day could have both.
+ */
+function schedulesOverlap(a: DuplicateKey, b: DuplicateKey): boolean {
+  if (a.onceOn !== undefined) return occursOnDate(b, a.onceOn) && occursOnDate(a, a.onceOn);
+  if (b.onceOn !== undefined) return occursOnDate(a, b.onceOn) && occursOnDate(b, b.onceOn);
+  const startsBeforeOtherEnds = (x: DuplicateKey, y: DuplicateKey) =>
+    x.startsOn === undefined || y.endsOn === undefined || x.startsOn <= y.endsOn;
+  if (!startsBeforeOtherEnds(a, b) || !startsBeforeOtherEnds(b, a)) return false;
+  if (a.daysOfWeek === undefined || b.daysOfWeek === undefined) return true;
+  return a.daysOfWeek.some((day) => b.daysOfWeek!.includes(day));
+}
+
+/**
+ * purpose: Refuse a task that duplicates an active one: same type, same normalized display
+ *          label, at least one shared time and a schedule that can fall on the same day (same
+ *          label and time on different weekdays, or in disjoint date ranges, is allowed).
  * @param ctx: (MutationCtx) Context.
  * @param householdId: (Id<"households">) Household.
- * @param args: (CreateTaskArgs) The task about to be added.
+ * @param candidate: (DuplicateKey) The task about to exist (a new task, or an updated one as
+ *        it will be after the change).
+ * @param excludeId: (Id<"tasks">, optional) The task being updated, never its own duplicate.
  * @return: (Promise<void>) Resolves when there is no duplicate.
  * @raises invalid naming the existing task_id.
  */
 async function rejectDuplicateTask(
   ctx: MutationCtx,
   householdId: Id<"households">,
-  args: CreateTaskArgs,
+  candidate: DuplicateKey,
+  excludeId?: Id<"tasks">,
 ): Promise<void> {
-  const label = normalizeLabel(args.displayLabel);
-  const times = args.times ?? [];
+  const label = normalizeLabel(candidate.displayLabel);
   const existing = (await listTasksCore(ctx, householdId, true)).find(
     (t) =>
-      t.type === args.type &&
+      t._id !== excludeId &&
+      t.type === candidate.type &&
       normalizeLabel(t.displayLabel) === label &&
-      t.times.some((time) => times.includes(time)),
+      t.times.some((time) => candidate.times.includes(time)) &&
+      schedulesOverlap(t, candidate),
   );
   if (existing) {
     throw appError(
@@ -622,6 +681,49 @@ async function rejectDuplicateTask(
     );
   }
 }
+
+/**
+ * purpose: What an update would make of a task, for the duplicate check: the task with the
+ *          changes applied to the fields that decide duplication (null clears).
+ * @param task: (Doc<"tasks">) The task before the change.
+ * @param changes: (TaskChanges) The update's changes.
+ * @return: (DuplicateKey & { active: boolean }) The merged fields and whether it stays active.
+ */
+function mergedForDuplicateCheck(
+  task: Doc<"tasks">,
+  changes: TaskChanges,
+): DuplicateKey & { active: boolean } {
+  /**
+   * purpose: Merge an optional value: undefined keeps the current one, null clears it.
+   * @param value: (T | null | undefined) The change.
+   * @param current: (T | undefined) The current value.
+   * @return: (T | undefined) The merged value.
+   */
+  const merge = <T>(value: T | null | undefined, current: T | undefined) =>
+    value === undefined ? current : (value ?? undefined);
+  return {
+    type: changes.type ?? task.type,
+    displayLabel: changes.displayLabel ?? task.displayLabel,
+    times: changes.times ?? task.times,
+    daysOfWeek: merge(changes.daysOfWeek, task.daysOfWeek),
+    onceOn: merge(changes.onceOn, task.onceOn),
+    startsOn: merge(changes.startsOn, task.startsOn),
+    endsOn: merge(changes.endsOn, task.endsOn),
+    active: changes.active ?? task.active,
+  };
+}
+
+/** The change keys that can make a task a duplicate (the guard runs only when one is present). */
+const DUPLICATE_RELEVANT_KEYS: readonly (keyof TaskChanges)[] = [
+  "type",
+  "displayLabel",
+  "times",
+  "daysOfWeek",
+  "onceOn",
+  "startsOn",
+  "endsOn",
+  "active",
+];
 
 /**
  * purpose: Present a task the way the model reads it: snake_case names matching the other
@@ -708,13 +810,21 @@ const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   },
   add_task: async (ctx, { householdId, actor, now }, input) => {
     const args = toAddTaskArgs(input);
-    await rejectDuplicateTask(ctx, householdId, args);
+    await rejectDuplicateTask(ctx, householdId, { ...args, times: args.times ?? [] });
     const task = await createTaskCore(ctx, actor, householdId, args, now, { requireTimes: true });
     return taskForModel(task);
   },
   update_task: async (ctx, { householdId, actor, now }, input) => {
     const taskId = idOf(ctx, "tasks", input);
     const changes = toTaskChanges(changesOf(input));
+    const current = await ctx.db.get(taskId);
+    if (current && current.householdId === householdId) {
+      if (isAsNeededTask(current)) throw appError("invalid", AS_NEEDED_REFUSAL);
+      const merged = mergedForDuplicateCheck(current, changes);
+      if (merged.active && DUPLICATE_RELEVANT_KEYS.some((k) => changes[k] !== undefined)) {
+        await rejectDuplicateTask(ctx, householdId, merged, taskId);
+      }
+    }
     const task = await updateTaskCore(ctx, actor, householdId, taskId, changes, now, {
       requireTimes: true,
     });

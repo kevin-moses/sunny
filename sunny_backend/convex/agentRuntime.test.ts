@@ -8,7 +8,8 @@
 // session; the agent stopping or its session terminating fails the request with the reason;
 // a missing environment fails with a clear message; a paused household waits and then resumes;
 // a request older than 30 minutes fails; a cancel ends the run. Plus the step functions
-// directly: executeToolCalls reuses a stored result, pollUntil's outcomes, the paused gate on
+// directly: executeToolCalls reuses a stored result, fails when the requester is no longer an
+// editor of the household, pollUntil's outcomes, the paused gate on
 // every acting step, and the onComplete handler.
 //
 // Last modified: 2026-11-01
@@ -439,6 +440,30 @@ describe("step functions", () => {
       requestId,
     });
   });
+
+  test.each([
+    ["removed from the household", null],
+    ["demoted to viewer", "viewer"],
+  ] as const)(
+    "executeToolCalls fails the request without running tools when the requester was %s",
+    async (_name, role) => {
+      const t = makeBackend();
+      const { requestId, householdId } = await runningRequest(t);
+      await t.run(async (ctx) => {
+        const row = (await ctx.db.query("householdMembers").collect()).find(
+          (m) => m.householdId === householdId && m.userId === "user_a",
+        )!;
+        if (role === null) await ctx.db.delete(row._id);
+        else await ctx.db.patch(row._id, { role });
+      });
+      const result = await t.mutation(internal.agentRuntime.executeToolCalls, {
+        requestId,
+        calls: [call],
+      });
+      expect(result).toMatchObject({ kind: "failed", error: GENERIC_ERROR });
+      expect(mocks.executeAgentTool).not.toHaveBeenCalled();
+    },
+  );
 
   test("executeToolCalls does not act while paused or after cancellation", async () => {
     const t = makeBackend();

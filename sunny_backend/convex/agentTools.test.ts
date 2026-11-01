@@ -13,7 +13,11 @@
 // sets, no as-needed fields), household isolation, and the task part of the briefing (task_id,
 // carry-over and who confirmed). Provenance: tasks and events the agent adds record the
 // requesting caregiver as createdBy, and audit rows record the requester and request id.
-// Also the default escalation policy add_task assigns by type.
+// Also the default escalation policy add_task assigns by type, tasks with older long labels
+// staying stoppable and editable, the as-needed medication refusal in update_task (stop_task
+// allowed, briefing marker), size caps on add_task, the schedule-aware duplicate guard on
+// add_task and update_task, the toTaskChanges field table, and the briefing's over-cap
+// selection and times cap.
 //
 // Last modified: 2026-11-01
 
@@ -909,7 +913,7 @@ describe("get_tasks", () => {
         title: `Pills ${i}`,
         display_label: `Pills ${i}`,
         times: [`0${i}:00`],
-        checklist_items: Array.from({ length: 20 }, () => "x".repeat(400)),
+        checklist_items: Array.from({ length: 40 }, () => "x".repeat(200)),
       });
     }
     const result = await tool(t, a, "get_tasks", {});
@@ -1251,5 +1255,261 @@ describe("add_task default escalation policy", () => {
     const { tasks } = await readTasks(t);
     expect(tasks).toHaveLength(1);
     expect(tasks[0]!.escalationPolicyId).toBeUndefined();
+  });
+});
+
+describe("task tools with older long labels", () => {
+  /**
+   * purpose: Add a task and give it a 100 character label, as older data may have.
+   * @param t: (TestConvex) Harness.
+   * @param householdId: (Id<"households">) Household.
+   * @return: (Promise<string>) The task_id.
+   */
+  async function longLabelTask(t: TestConvex, householdId: Id<"households">): Promise<string> {
+    const id = await addTask(t, householdId);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(id as Id<"tasks">, { displayLabel: "L".repeat(100) });
+    });
+    return id;
+  }
+
+  test("stop_task and update_task still work, a time change included", async () => {
+    const { t, a } = await makeWorld();
+    const id = await longLabelTask(t, a);
+    const moved = await tool(t, a, "update_task", { task_id: id, changes: { times: ["09:00"] } });
+    expect(moved.isError).toBe(false);
+    const stopped = await tool(t, a, "stop_task", { task_id: id });
+    expect(stopped.isError).toBe(false);
+    expect((await readTasks(t)).tasks[0]).toMatchObject({ active: false, times: ["09:00"] });
+  });
+
+  test("renaming it to more than 60 characters is refused", async () => {
+    const { t, a } = await makeWorld();
+    const id = await longLabelTask(t, a);
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { display_label: "x".repeat(61) },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Display label is too long");
+  });
+});
+
+describe("as-needed medications", () => {
+  /**
+   * purpose: Add a task, then make it an as-needed medication as the app would (no times).
+   * @param t: (TestConvex) Harness.
+   * @param householdId: (Id<"households">) Household.
+   * @return: (Promise<string>) The task_id.
+   */
+  async function asNeededTask(t: TestConvex, householdId: Id<"households">): Promise<string> {
+    const id = await addTask(t, householdId);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(id as Id<"tasks">, { times: [], asNeededMaxPerDay: 2 });
+    });
+    return id;
+  }
+
+  test("update_task refuses one with a readable error and changes nothing", async () => {
+    const { t, a } = await makeWorld();
+    const id = await asNeededTask(t, a);
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { display_label: "Other" },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("As-needed medications are managed in the app.");
+    expect((await readTasks(t)).tasks[0]!.displayLabel).toBe("Morning pills");
+  });
+
+  test("stop_task may still stop one", async () => {
+    const { t, a } = await makeWorld();
+    const id = await asNeededTask(t, a);
+    expect((await tool(t, a, "stop_task", { task_id: id })).isError).toBe(false);
+    expect((await readTasks(t)).tasks[0]!.active).toBe(false);
+  });
+
+  test("the briefing marks it as managed in the app", async () => {
+    const { t, a } = await makeWorld();
+    const id = await asNeededTask(t, a);
+    expect(await briefing(t, a)).toContain(
+      `(medication, task_id ${id}) as needed (managed in the app) every day`,
+    );
+  });
+
+  test("a task with no times and no as-needed limit is not treated as as-needed", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(id as Id<"tasks">, { times: [] });
+    });
+    expect(await briefing(t, a)).toContain("with no times every day");
+    const result = await tool(t, a, "update_task", { task_id: id, changes: { times: ["09:00"] } });
+    expect(result.isError).toBe(false);
+  });
+});
+
+describe("add_task size caps", () => {
+  test.each([
+    ["too many times", { times: Array.from({ length: 25 }, (_, i) => `${i}:00`.padStart(5, "0")) }],
+    ["too many checklist items", { checklist_items: Array.from({ length: 51 }, () => "x") }],
+    ["a long checklist item", { checklist_items: ["x".repeat(201)] }],
+    ["a long spoken prompt", { spoken_prompt: "x".repeat(301) }],
+    ["a long pill description", { pill_description: "x".repeat(201) }],
+  ])("refuses %s", async (_name, extra) => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", { ...PILLS, ...extra });
+    expect(result.isError).toBe(true);
+    expect((await readTasks(t)).tasks).toHaveLength(0);
+  });
+});
+
+describe("duplicate guard and schedules", () => {
+  test("the same label and time on different weekdays is allowed", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, { ...PILLS, repeat_weekdays: ["mon", "tue"] });
+    await addTask(t, a, { ...PILLS, repeat_weekdays: ["wed"] });
+    expect((await readTasks(t)).tasks).toHaveLength(2);
+  });
+
+  test("overlapping weekdays, or every day against a weekday set, is a duplicate", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, { ...PILLS, repeat_weekdays: ["mon", "tue"] });
+    const overlap = await tool(t, a, "add_task", { ...PILLS, repeat_weekdays: ["tue", "wed"] });
+    const everyDay = await tool(t, a, "add_task", PILLS);
+    expect(overlap.isError).toBe(true);
+    expect(everyDay.isError).toBe(true);
+  });
+
+  test("disjoint date ranges are allowed, overlapping ones are not", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, { ...PILLS, ends_on: "2027-03-31" });
+    await addTask(t, a, { ...PILLS, starts_on: "2027-04-01" });
+    const overlap = await tool(t, a, "add_task", { ...PILLS, starts_on: "2027-03-31" });
+    expect(overlap.isError).toBe(true);
+    expect((await readTasks(t)).tasks).toHaveLength(2);
+  });
+
+  test("a one-off conflicts only with a task that occurs on its date", async () => {
+    const { t, a } = await makeWorld();
+    // 2027-03-03 is a Wednesday.
+    await addTask(t, a, { ...PILLS, repeat_weekdays: ["mon"] });
+    await addTask(t, a, { ...PILLS, once_on: "2027-03-03" });
+    const clash = await tool(t, a, "add_task", { ...PILLS, once_on: "2027-03-08" });
+    expect(clash.isError).toBe(true);
+    expect((await readTasks(t)).tasks).toHaveLength(2);
+  });
+
+  test("update_task refuses a rename or time change that duplicates another active task", async () => {
+    const { t, a } = await makeWorld();
+    const first = await addTask(t, a);
+    const second = await addTask(t, a, {
+      ...PILLS,
+      display_label: "Evening pills",
+      times: ["20:00"],
+    });
+    const rename = await tool(t, a, "update_task", {
+      task_id: second,
+      changes: { display_label: "morning pills", times: ["08:00"] },
+    });
+    expect(rename.isError).toBe(true);
+    expect(rename.text).toContain(`task_id ${first}`);
+    const retime = await tool(t, a, "update_task", {
+      task_id: second,
+      changes: { times: ["08:00"] },
+    });
+    expect(retime.isError).toBe(false);
+  });
+
+  test("update_task does not count the task itself and allows other edits", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    const same = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { display_label: "Morning Pills", times: ["08:00", "12:00"] },
+    });
+    expect(same.isError).toBe(false);
+  });
+
+  test("resuming a stopped task that duplicates an active one is refused", async () => {
+    const { t, a } = await makeWorld();
+    const stopped = await addTask(t, a);
+    await tool(t, a, "stop_task", { task_id: stopped });
+    const active = await addTask(t, a);
+    const result = await tool(t, a, "update_task", { task_id: stopped, changes: { active: true } });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(`task_id ${active}`);
+  });
+
+  test("a stopped duplicate may be edited while it stays stopped", async () => {
+    const { t, a } = await makeWorld();
+    const stopped = await addTask(t, a);
+    await tool(t, a, "stop_task", { task_id: stopped });
+    await addTask(t, a);
+    const result = await tool(t, a, "update_task", {
+      task_id: stopped,
+      changes: { title: "Old pills" },
+    });
+    expect(result.isError).toBe(false);
+  });
+});
+
+describe("toTaskChanges field table", () => {
+  test("every field of the update_task schema has a reader", () => {
+    const update = AGENT_TOOLS.find((x) => "name" in x && x.name === "update_task") as {
+      input_schema: { properties: Record<string, { properties: object }> };
+    };
+    const changes = update.input_schema.properties.changes!;
+    for (const key of Object.keys(changes.properties)) {
+      let message = "";
+      try {
+        toTaskChanges({ [key]: null });
+      } catch (e) {
+        message = JSON.stringify(e);
+      }
+      expect(message).not.toContain("Unknown field");
+    }
+  });
+});
+
+describe("briefing over the task cap", () => {
+  test("keeps tasks with instances today first, then the newest, and counts the rest", async () => {
+    const { t, a } = await makeWorld();
+    const ids: string[] = [];
+    for (let i = 0; i < 32; i += 1) {
+      vi.advanceTimersByTime(10);
+      ids.push(
+        await addTask(t, a, {
+          ...PILLS,
+          type: "routine",
+          title: `Task ${i}`,
+          display_label: `Task ${i}`,
+        }),
+      );
+    }
+    // Only the oldest task (0) keeps an instance today; the rest have none.
+    await t.run(async (ctx) => {
+      for (const inst of await ctx.db.query("taskInstances").collect()) {
+        if (inst.taskId !== ids[0]) await ctx.db.delete(inst._id);
+      }
+    });
+    const text = await briefing(t, a);
+    const lines = text.split("\n").filter((l) => l.includes("task_id"));
+    expect(lines).toHaveLength(30);
+    expect(text).toContain("Task 0 (routine");
+    expect(text).toContain("Task 31 (routine");
+    expect(text).toContain("Task 3 (routine");
+    expect(text).not.toContain("Task 2 (routine");
+    expect(text).not.toContain("Task 1 (routine");
+    expect(text).toContain("(and 2 more; use get_tasks)");
+  });
+
+  test("shows at most 6 times on a line, then +N more", async () => {
+    const { t, a } = await makeWorld();
+    await addTask(t, a, {
+      ...PILLS,
+      times: ["06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00"],
+    });
+    expect(await briefing(t, a)).toContain("at 06:00, 07:00, 08:00, 09:00, 10:00, 11:00, +2 more ");
   });
 });

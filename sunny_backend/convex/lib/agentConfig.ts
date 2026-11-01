@@ -2,8 +2,8 @@
 // Purpose: The household agent's Managed Agents configuration (name, model, system prompt).
 // It must match the deployed Managed Agents agent; re-run scripts/setup_managed_agent.ts after
 // changing it. The agent works for caregivers in the background: it reads and changes the
-// senior's calendar and tasks through the custom tools in agentTools.ts and has no shell, files or web
-// access.
+// senior's calendar and tasks through the custom tools in agentTools.ts and has no shell,
+// files or web access.
 //
 // Last modified: 2026-11-01
 

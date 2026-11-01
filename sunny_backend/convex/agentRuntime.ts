@@ -12,6 +12,8 @@
 //   effect, a repeat reuses the row, and sent results are marked so a lagging event list is ignored.
 //   Tools run as an agent actor { kind: "agent", onBehalfOf: requestedBy, requestId } built from
 //   the request row, so what the agent creates and audits records the requesting caregiver.
+//   executeToolCalls re-checks that the requester is still an editor member (primary or member)
+//   of the household and otherwise fails the request with the generic error, running no tool.
 // - `error` on a request is caregiver-safe text; raw detail goes to `errorDetail` and the log.
 // - onRunComplete fails or cancels the row if the workflow dies while the row is in progress.
 // - Steps: markRunning, startSession (records the session), then per poll one pollSession, and for
@@ -33,6 +35,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { EDITOR_ROLES, findMember } from "./lib/access";
 import { buildBriefing } from "./lib/agentBriefing";
 import { errorText, GENERIC_ERROR, isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { executeAgentTool } from "./lib/agentTools";
@@ -438,7 +441,8 @@ export const pollSession = internalAction({
  *          in this same transaction, so a retried step never repeats an effect.
  * @param requestId: (Id<"agentRequests">) The request.
  * @param calls: (ToolCall[]) Calls to run.
- * @return: ({ kind: "ok" } | Stop) Stop when paused, cancelled or expired.
+ * @return: ({ kind: "ok" } | Stop) Stop when paused, cancelled or expired, or a failure (generic
+ *          caregiver error) when the requester is no longer an editor of the household.
  */
 export const executeToolCalls = internalMutation({
   args: { requestId: v.id("agentRequests"), calls: v.array(toolCall) },
@@ -446,6 +450,11 @@ export const executeToolCalls = internalMutation({
     const now = Date.now();
     const g = await readGate(ctx, requestId, now);
     if (g.gate !== "go") return stopFor(g.gate);
+    // The requester may have been removed or demoted to viewer since they asked.
+    const member = await findMember(ctx, g.request.householdId, g.request.requestedBy);
+    if (!member || !EDITOR_ROLES.includes(member.role)) {
+      return failure("The requesting caregiver can no longer edit the household");
+    }
     // The household and the requesting caregiver come from the request row, never the model.
     const toolCtx: ToolContext = {
       householdId: g.request.householdId,

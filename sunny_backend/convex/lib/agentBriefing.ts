@@ -8,14 +8,17 @@
 // take her pills" and change or stop a task without a lookup). Built on the calendar's
 // householdWeek helper so the week matches the day view, and on lib/today.ts todayInstances
 // so task status is the canonical "today": it includes yesterday's still-open carry-over,
-// and says when and by whom a confirmed instance was done.
+// and says when and by whom a confirmed instance was done. Over MAX_BRIEFING_TASKS tasks,
+// the ones with instances today are kept first, then the newest; a line shows at most
+// MAX_BRIEFING_TIMES times (then "+N more"); an as-needed medication reads "as needed
+// (managed in the app)".
 //
 // Last modified: 2026-11-01
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
-import { listTasksCore } from "../tasks";
+import { isAsNeededTask, listTasksCore } from "../tasks";
 import { findMember } from "./access";
 import { localDateTime, weekdayCodes } from "./time";
 import { todayInstances } from "./today";
@@ -23,6 +26,8 @@ import type { TodayEntry } from "./today";
 
 /** Most tasks listed in the briefing; the rest are left to the get_tasks tool. */
 const MAX_BRIEFING_TASKS = 30;
+/** Most times shown on one task line; the rest are summarized as "+N more". */
+const MAX_BRIEFING_TIMES = 6;
 
 /**
  * purpose: One instance as briefing text: "08:00 confirmed at 08:04", "08:00 resolved at 09:10
@@ -35,6 +40,22 @@ function instanceText(entry: TodayEntry): string {
   const at = entry.confirmedLocalTime ? ` at ${entry.confirmedLocalTime}` : "";
   const by = entry.confirmedByName ? ` by ${entry.confirmedByName}` : "";
   return `${day}${entry.scheduledTime} ${entry.state}${at}${by}`;
+}
+
+/**
+ * purpose: When a task runs, as briefing text: "at 08:00, 20:00", capped at MAX_BRIEFING_TIMES
+ *          times then "+N more"; "as needed (managed in the app)" for an as-needed medication;
+ *          "with no times" for any other task without times.
+ * @param task: (Doc<"tasks">) A task.
+ * @return: (string) The text.
+ */
+function timesText(task: Doc<"tasks">): string {
+  if (task.times.length === 0) {
+    return isAsNeededTask(task) ? "as needed (managed in the app)" : "with no times";
+  }
+  const shown = task.times.slice(0, MAX_BRIEFING_TIMES).join(", ");
+  const extra = task.times.length - MAX_BRIEFING_TIMES;
+  return `at ${shown}${extra > 0 ? `, +${extra} more` : ""}`;
 }
 
 /**
@@ -52,14 +73,16 @@ function taskLine(task: Doc<"tasks">, todays: TodayEntry[]): string {
     : days
       ? `on ${days.join(", ")}`
       : "every day";
-  const times = task.times.length ? `at ${task.times.join(", ")}` : "as needed";
+  const times = timesText(task);
   const today = todays.length ? `today: ${todays.map(instanceText).join(", ")}` : "nothing today";
   return `- ${task.displayLabel} (${task.type}, task_id ${task._id}) ${times} ${when}; ${today}`;
 }
 
 /**
  * purpose: The briefing's task lines: the household's active tasks with today's instance
- *          states (carry-over included), at most MAX_BRIEFING_TASKS.
+ *          states (carry-over included), at most MAX_BRIEFING_TASKS. Over the cap the
+ *          tasks with instances today come first, then the newest; the rest are named
+ *          only as a count.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms.
@@ -76,7 +99,13 @@ async function taskLines(
   for (const entry of await todayInstances(ctx, householdId, now)) {
     byTask.set(entry.taskId, [...(byTask.get(entry.taskId) ?? []), entry]);
   }
-  const lines = tasks.slice(0, MAX_BRIEFING_TASKS).map((t) => taskLine(t, byTask.get(t._id) ?? []));
+  const ranked = [...tasks].sort(
+    (x, y) =>
+      Number(byTask.has(y._id)) - Number(byTask.has(x._id)) || y._creationTime - x._creationTime,
+  );
+  const lines = ranked
+    .slice(0, MAX_BRIEFING_TASKS)
+    .map((t) => taskLine(t, byTask.get(t._id) ?? []));
   if (tasks.length > MAX_BRIEFING_TASKS) {
     lines.push(`  (and ${tasks.length - MAX_BRIEFING_TASKS} more; use get_tasks)`);
   }

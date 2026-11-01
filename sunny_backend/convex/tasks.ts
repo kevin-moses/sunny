@@ -20,11 +20,20 @@
 // TaskOptions.requireTimes (set by the agent, not the app, where as-needed medications have no
 // times) rejects an active task with no times, checked on the merged result of a create or an
 // update.
+// Size caps apply to the values being written, never to data already stored: a create checks
+// every field it was given; an update checks only the fields present in its changes, so a task
+// saved under older, looser limits can still be stopped, rescheduled or edited elsewhere.
+// Caps: title 200, display label 60, spoken prompt 300, pill description 200, at most 24
+// times, at most 50 checklist items of at most 200 characters each.
 // Default policy: a task created with no escalationPolicyId gets the household's seeded
 // "medication" policy (type medication) or "prompt_only" policy (every other type), found by
 // systemKey, because a task without a policy is never prompted or escalated. A later change
-// of type does not change the policy. backfillDefaultPolicies (internal, run once from the
-// CLI) assigns the same defaults to existing tasks that have no policy, in bounded batches.
+// of type across the medication boundary (to or from medication) switches the policy to the
+// new type's default, but only when the current policy is one of those two seeded policies;
+// a custom policy is left alone, and an escalationPolicyId in the same update wins.
+// backfillDefaultPolicies (internal, run once from the CLI) assigns the same defaults to
+// existing tasks that have no policy, in bounded batches. isAsNeededTask identifies
+// as-needed medications (no times, a daily or spacing limit), which the agent may not edit.
 //
 // Last modified: 2026-11-01
 
@@ -50,6 +59,12 @@ const MAX_WINDOW_MINUTES = 720;
 const MAX_TITLE_LENGTH = 200;
 /** The senior's display shows the label in large type; longer wording would not fit. */
 const MAX_DISPLAY_LABEL_LENGTH = 60;
+/** Caps on newly written wording and lists (see the header). */
+const MAX_SPOKEN_PROMPT_LENGTH = 300;
+const MAX_PILL_DESCRIPTION_LENGTH = 200;
+const MAX_TIMES = 24;
+const MAX_CHECKLIST_ITEMS = 50;
+const MAX_CHECKLIST_ITEM_LENGTH = 200;
 const DEFAULT_WINDOW_MINUTES = 60;
 const MAX_POLICY_NAME_LENGTH = 80;
 const MAX_POLICY_STEPS = 10;
@@ -111,11 +126,62 @@ function normalizeSchedule(draft: TaskDraft): TaskDraft {
 }
 
 /**
+ * purpose: Whether a task is an as-needed medication: no times and a daily or spacing limit.
+ *          These are managed in the app; the household agent does not edit them.
+ * @param task: (Pick<TaskFields, "times" | "asNeededMaxPerDay" | "asNeededMinHours">) A task.
+ * @return: (boolean) True for an as-needed medication.
+ */
+export function isAsNeededTask(
+  task: Pick<TaskFields, "times" | "asNeededMaxPerDay" | "asNeededMinHours">,
+): boolean {
+  return (
+    task.times.length === 0 &&
+    (task.asNeededMaxPerDay !== undefined || task.asNeededMinHours !== undefined)
+  );
+}
+
+/**
+ * purpose: Apply the size caps to the draft fields being written. Fields not being written
+ *          are not checked, so older data with longer values stays editable.
+ * @param draft: (TaskDraft) The merged task fields.
+ * @param written: (ReadonlySet<keyof TaskDraft>) The fields the caller is writing.
+ * @return: (void)
+ * @raises invalid naming the field that is too long or has too many entries.
+ */
+function enforceSizeCaps(draft: TaskDraft, written: ReadonlySet<keyof TaskDraft>): void {
+  if (written.has("title")) requireMaxLength(draft.title, MAX_TITLE_LENGTH, "Title");
+  if (written.has("displayLabel")) {
+    requireMaxLength(draft.displayLabel, MAX_DISPLAY_LABEL_LENGTH, "Display label");
+  }
+  if (written.has("spokenPrompt")) {
+    requireMaxLength(draft.spokenPrompt.trim(), MAX_SPOKEN_PROMPT_LENGTH, "Spoken prompt");
+  }
+  if (written.has("pillDescription") && draft.pillDescription !== undefined) {
+    requireMaxLength(draft.pillDescription, MAX_PILL_DESCRIPTION_LENGTH, "Pill description");
+  }
+  if (written.has("times") && draft.times.length > MAX_TIMES) {
+    throw appError("invalid", `A task can have at most ${MAX_TIMES} times`);
+  }
+  if (written.has("checklistItems")) {
+    if (draft.checklistItems.length > MAX_CHECKLIST_ITEMS) {
+      throw appError("invalid", `A checklist can have at most ${MAX_CHECKLIST_ITEMS} items`);
+    }
+    for (const item of draft.checklistItems) {
+      requireMaxLength(item, MAX_CHECKLIST_ITEM_LENGTH, "Checklist item");
+    }
+  }
+}
+
+/**
  * purpose: Validate a whole task draft: wording, schedule, as-needed limits and policy; fill a
- *          blank spoken prompt with "Time for <displayLabel>.".
+ *          blank spoken prompt with "Time for <displayLabel>.". Size caps (enforceSizeCaps)
+ *          apply only to the fields being written; non-blank, schedule and limit rules apply
+ *          to the whole merged draft.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) The task's household.
  * @param draft: (TaskDraft) The task fields.
+ * @param written: (ReadonlySet<keyof TaskDraft>) The fields the caller is writing (all, on
+ *        create).
  * @param options: (TaskOptions) Extra rules; requireTimes rejects an active task with no times.
  * @return: (Promise<TaskDraft>) The normalized draft.
  * @raises invalid for any rule violation.
@@ -124,14 +190,12 @@ async function validateDraft(
   ctx: QueryCtx,
   householdId: Id<"households">,
   draft: TaskDraft,
+  written: ReadonlySet<keyof TaskDraft>,
   options: TaskOptions,
 ): Promise<TaskDraft> {
-  const title = requireMaxLength(requireNonBlank(draft.title, "Title"), MAX_TITLE_LENGTH, "Title");
-  const displayLabel = requireMaxLength(
-    requireNonBlank(draft.displayLabel, "Display label"),
-    MAX_DISPLAY_LABEL_LENGTH,
-    "Display label",
-  );
+  const title = requireNonBlank(draft.title, "Title");
+  const displayLabel = requireNonBlank(draft.displayLabel, "Display label");
+  enforceSizeCaps({ ...draft, title, displayLabel }, written);
   if (options.requireTimes && draft.active && draft.times.length === 0) {
     throw appError(
       "invalid",
@@ -253,7 +317,9 @@ export async function listTasksCore(
  *          policy for its type (see defaultPolicyId): "medication" for medication tasks,
  *          "prompt_only" for the rest. An explicit escalationPolicyId wins. If the household
  *          lacks the seeded policy the task is created with no policy (it then never
- *          escalates). Changing the type later does not change the policy. The task is
+ *          escalates). A later type change across the medication boundary switches a default
+ *          policy to the new type's default (see updateTaskCore). Every given field is
+ *          size-capped (enforceSizeCaps). The task is
  *          recorded as created by a caregiver; createdBy is the actor's user id (for the
  *          household agent, the caregiver it acts for).
  * @param ctx: (MutationCtx) Context.
@@ -273,19 +339,16 @@ export async function createTaskCore(
   now: number,
   options: TaskOptions = {},
 ): Promise<Doc<"tasks">> {
-  const draft = await validateDraft(
-    ctx,
-    householdId,
-    {
-      ...args,
-      spokenPrompt: args.spokenPrompt ?? "",
-      checklistItems: args.checklistItems ?? [],
-      times: args.times ?? [],
-      windowMinutes: args.windowMinutes ?? DEFAULT_WINDOW_MINUTES,
-      active: args.active ?? true,
-    },
-    options,
-  );
+  const fields: TaskDraft = {
+    ...args,
+    spokenPrompt: args.spokenPrompt ?? "",
+    checklistItems: args.checklistItems ?? [],
+    times: args.times ?? [],
+    windowMinutes: args.windowMinutes ?? DEFAULT_WINDOW_MINUTES,
+    active: args.active ?? true,
+  };
+  const written = new Set(Object.keys(fields) as (keyof TaskDraft)[]);
+  const draft = await validateDraft(ctx, householdId, fields, written, options);
   const escalationPolicyId =
     draft.escalationPolicyId ?? (await defaultPolicyId(ctx, householdId, draft.type));
   const taskId = await insertTask(
@@ -328,9 +391,38 @@ export async function defaultPolicyId(
 }
 
 /**
+ * purpose: The policy a task should move to when its type changes: when the change crosses
+ *          the medication boundary (to or from "medication") and the task's current policy is
+ *          one of the household's seeded policies (systemKey "medication" or "prompt_only"),
+ *          the new type's default; otherwise nothing (a custom policy, no policy, the same
+ *          side of the boundary, or a household missing the new default are left alone).
+ * @param ctx: (QueryCtx) Context.
+ * @param task: (Doc<"tasks">) The task before the change.
+ * @param newType: (TaskType) The type being set.
+ * @return: (Promise<Id<"escalationPolicies"> | undefined>) The policy to switch to, or
+ *          undefined to keep the current one.
+ */
+async function policyForTypeChange(
+  ctx: QueryCtx,
+  task: Doc<"tasks">,
+  newType: TaskType,
+): Promise<Id<"escalationPolicies"> | undefined> {
+  if ((task.type === "medication") === (newType === "medication")) return undefined;
+  if (task.escalationPolicyId === undefined) return undefined;
+  const current = await ctx.db.get(task.escalationPolicyId);
+  if (!current || current.householdId !== task.householdId || current.systemKey === undefined) {
+    return undefined;
+  }
+  return await defaultPolicyId(ctx, task.householdId, newType);
+}
+
+/**
  * purpose: Core of update, reusable by agent tools: merge changes into a task of the
  *          household, validate the result, patch and audit it, and resync instances when the
  *          schedule changed (deactivating removes upcoming, due and escalated instances).
+ *          Size caps apply only to the fields in changes. A type change across the medication
+ *          boundary moves a seeded default policy to the new type's default (see
+ *          policyForTypeChange) unless the same change sets escalationPolicyId.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) Who changes it (audit actor).
  * @param householdId: (Id<"households">) Household the caller acts for.
@@ -361,6 +453,13 @@ export async function updateTaskCore(
    */
   const orUndefined = <T>(value: T | null | undefined, current: T | undefined) =>
     value === undefined ? current : (value ?? undefined);
+  const switchedPolicy =
+    changes.type !== undefined && changes.escalationPolicyId === undefined
+      ? await policyForTypeChange(ctx, task, changes.type)
+      : undefined;
+  const written = new Set(
+    (Object.keys(changes) as (keyof TaskChanges)[]).filter((k) => changes[k] !== undefined),
+  ) as ReadonlySet<keyof TaskDraft>;
   const draft = await validateDraft(
     ctx,
     task.householdId,
@@ -377,11 +476,13 @@ export async function updateTaskCore(
       startsOn: orUndefined(changes.startsOn, task.startsOn),
       endsOn: orUndefined(changes.endsOn, task.endsOn),
       windowMinutes: changes.windowMinutes ?? task.windowMinutes,
-      escalationPolicyId: orUndefined(changes.escalationPolicyId, task.escalationPolicyId),
+      escalationPolicyId:
+        switchedPolicy ?? orUndefined(changes.escalationPolicyId, task.escalationPolicyId),
       asNeededMaxPerDay: orUndefined(changes.asNeededMaxPerDay, task.asNeededMaxPerDay),
       asNeededMinHours: orUndefined(changes.asNeededMinHours, task.asNeededMinHours),
       active: changes.active ?? task.active,
     },
+    written,
     options,
   );
   return await patchTask(ctx, actor, task, draft, now);

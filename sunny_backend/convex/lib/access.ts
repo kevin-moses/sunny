@@ -274,8 +274,11 @@ export async function requireEditor(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<CaregiverActor> {
-  return await requireCaregiver(ctx, householdId, ["primary", "member"]);
+  return await requireCaregiver(ctx, householdId, EDITOR_ROLES);
 }
+
+/** Roles that may change the household's data (viewers are read only). */
+export const EDITOR_ROLES: readonly Doc<"householdMembers">["role"][] = ["primary", "member"];
 
 /**
  * purpose: Require a primary caregiver of the household.
