@@ -2,9 +2,10 @@
 //
 // Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
 // the date range and month labels, which tasks are alerts and who is on them, which tasks are
-// open (can be marked done), the schedule rows (with the "who confirmed" detail line of done
-// tasks and, for open tasks, what "Mark done" needs) and title for the day selected in the week
-// strip, the later days of the week grouped by day, and the chat transcript built from the
+// open (can be marked done), today's task rows (leftover and today, with the "who confirmed"
+// detail line of done tasks and, for open tasks, what "Mark done" needs), the event rows of any
+// day (tasks and events are kept apart; the week strip dots count events only), the title for the
+// day selected in the week strip, the later days of the week grouped by day, and the chat transcript built from the
 // household's agent requests (oldest first). Dates are household-local "YYYY-MM-DD" strings from
 // calendar.dayView; date arithmetic comes from day/localDate (parsed once, then counted as
 // days). No timezone conversion happens here: the server sends each confirmation as a
@@ -26,7 +27,7 @@ import {
   weekdayName,
   yearOf,
 } from '../day/localDate';
-import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
+import type { DayTask, DayViewData, EventOccurrence } from '../day/types';
 
 /** An agent request as the chat tab sees it (agentRequests.list, newest first). */
 export type AgentRequest = FunctionReturnType<typeof api.agentRequests.list>[number];
@@ -88,9 +89,9 @@ export interface WeekStripDay {
   /** Day of the month, for example "30". */
   dayOfMonth: string;
   isToday: boolean;
-  /** True when the dot shows (the day has "plans"): it has events, or it is today and has tasks. */
+  /** True when the dot shows: the day has events (tasks do not count). */
   hasMarker: boolean;
-  /** For example "Sunday, November 1, has plans"; prefixed "Today, " for today. */
+  /** For example "Sunday, November 1, has events"; prefixed "Today, " for today. */
   accessibilityLabel: string;
 }
 
@@ -108,7 +109,7 @@ export function buildWeekStrip(day: DayViewData): WeekStripDay[] {
     const time = addDays(start, offset);
     const localDate = formatLocalDate(time);
     const isToday = offset === 0;
-    const hasMarker = eventDates.has(localDate) || (isToday && day.tasks.length > 0);
+    const hasMarker = eventDates.has(localDate);
     const name = weekdayName(time);
     const date = String(dayOfMonth(time));
     const spoken = `${name}, ${monthName(time)} ${date}`;
@@ -118,7 +119,7 @@ export function buildWeekStrip(day: DayViewData): WeekStripDay[] {
       dayOfMonth: date,
       isToday,
       hasMarker,
-      accessibilityLabel: `${isToday ? 'Today, ' : ''}${spoken}${hasMarker ? ', has plans' : ''}`,
+      accessibilityLabel: `${isToday ? 'Today, ' : ''}${spoken}${hasMarker ? ', has events' : ''}`,
     });
   }
   return days;
@@ -157,11 +158,11 @@ export function alertMessage(task: DayTask): string {
 }
 
 /**
- * purpose: Turn the text typed in the "Mark done" prompt into the note to send.
+ * purpose: Turn the text typed in the note editor into the note to save.
  * @param text: (string | undefined) What the caregiver typed, if anything.
- * @return: (string | undefined) The trimmed note, or undefined when empty so it is omitted.
+ * @return: (string | undefined) The trimmed note, or undefined when empty (which clears it).
  */
-export function noteFromPrompt(text: string | undefined): string | undefined {
+export function noteFromInput(text: string | undefined): string | undefined {
   const note = text?.trim();
   return note === undefined || note === '' ? undefined : note;
 }
@@ -198,15 +199,16 @@ const SURFACE_PHRASE: Record<DeviceSurface, string> = {
 };
 
 /**
- * purpose: The detail text under a done task: who confirmed it and when, and the note.
+ * purpose: The detail text under a done task: who confirmed it and when.
  *          Caregiver-resolved (state "resolved"): "Marked done by <name> at <time>" ("by you"
  *          for the signed-in caregiver, "by a caregiver" when their name is unknown).
  *          Device-confirmed: "Done at <time>" plus where it happened ("on the display", "by
- *          voice", ...). A resolution note follows on a second line, in quotes.
+ *          voice", ...). The note is not part of it (see the row's note), because a task
+ *          can have a note before it is done.
  * @param task: (DayTask) The task.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id.
- * @return: (string | null) The text (lines separated by a newline); null when the task is not
- *          done, or a device confirmation has no time, surface or note to add to "Done".
+ * @return: (string | null) The text; null when the task is not done, or a device confirmation
+ *          has no time or surface to add to "Done".
  */
 export function doneDetail(task: DayTask, userId: string | null): string | null {
   if (!isDone(task)) return null;
@@ -223,10 +225,10 @@ export function doneDetail(task: DayTask, userId: string | null): string | null 
       task.confirmedVia === null || task.confirmedVia === 'caregiver'
         ? undefined
         : SURFACE_PHRASE[task.confirmedVia];
-    if (at === '' && surface === undefined && task.resolutionNote === null) return null;
+    if (at === '' && surface === undefined) return null;
     first = `Done${at}${surface === undefined ? '' : ` ${surface}`}`;
   }
-  return task.resolutionNote === null ? first : `${first}\n"${task.resolutionNote}"`;
+  return first;
 }
 
 /**
@@ -271,8 +273,12 @@ export interface ScheduleRowData {
   variant: ScheduleVariant;
   time: string;
   label: string;
-  /** Who confirmed a done task and the note (see doneDetail); null for everything else. */
+  /** Who confirmed a done task (see doneDetail); null for everything else. */
   detail: string | null;
+  /** The task instance behind a task row (its actions and note are keyed by it); null for events. */
+  instanceId: DayTask['instanceId'] | null;
+  /** The note on a task, open or done; null when it has none and for events. */
+  note: string | null;
   /** The task to mark done for an open task row; null for events and tasks that are not open. */
   markable: Markable | null;
   accessibilityLabel: string;
@@ -280,9 +286,10 @@ export interface ScheduleRowData {
 
 /**
  * purpose: Build a schedule row.
- * @param row: ({ id, variant, time, label, detail?, markable? }) The row's fields: stable id, how
- *        it looks, display time, what happens, the done detail (default none) and the task to
- *        mark done (default none).
+ * @param row: ({ id, variant, time, label, detail?, instanceId?, note?, markable? }) The row's
+ *        fields: stable id, how it looks, display time, what happens, the done detail (default
+ *        none), the task instance (default none), the task's note (default none) and the task
+ *        to mark done (default none).
  * @return: (ScheduleRowData) The row, with its screen reader label.
  */
 function scheduleRow(row: {
@@ -291,9 +298,20 @@ function scheduleRow(row: {
   time: string;
   label: string;
   detail?: string | null;
+  instanceId?: DayTask['instanceId'];
+  note?: string | null;
   markable?: Markable | null;
 }): ScheduleRowData {
-  const { id, variant, time, label, detail = null, markable = null } = row;
+  const {
+    id,
+    variant,
+    time,
+    label,
+    detail = null,
+    note = null,
+    markable = null,
+    instanceId = null,
+  } = row;
   const { status } = VARIANT_STYLE[variant];
   const spoken = `${time}, ${label}${status === '' ? '' : `, ${status}`}`;
   return {
@@ -301,9 +319,13 @@ function scheduleRow(row: {
     variant,
     time,
     label,
+    instanceId,
     detail,
+    note,
     markable,
-    accessibilityLabel: detail === null ? spoken : `${spoken}. ${detail.replace('\n', '. ')}`,
+    accessibilityLabel: [spoken, detail, note === null ? null : `Note: ${note}`]
+      .filter((part) => part !== null)
+      .join('. '),
   };
 }
 
@@ -321,6 +343,8 @@ function taskRow(task: DayTask, options: { id: string; userId: string | null }):
     time: displayTime(task.scheduledTime),
     label: task.displayLabel,
     detail: doneDetail(task, options.userId),
+    instanceId: task.instanceId,
+    note: task.resolutionNote,
     markable: isOpen(task) ? { instanceId: task.instanceId, label: task.displayLabel } : null,
   });
 }
@@ -340,53 +364,84 @@ function eventRow(event: EventOccurrence, id: string): ScheduleRowData {
   });
 }
 
+/** How a task row's checkbox looks: an open box, an open box in the serious colors, a checked box. */
+export type CheckboxKind = 'open' | 'alert' | 'done';
+
 /**
- * purpose: The event rows of a day after today, from the day view's upcoming events.
+ * purpose: The checkbox a schedule row shows.
+ * @param variant: (ScheduleVariant) The row's variant.
+ * @return: (CheckboxKind | null) The checkbox look; null for events, which keep their icon.
+ */
+export function checkboxKind(variant: ScheduleVariant): CheckboxKind | null {
+  if (variant === 'event') return null;
+  return variant === 'done' ? 'done' : variant === 'alert' ? 'alert' : 'open';
+}
+
+/**
+ * purpose: Whether tapping a row's checkbox marks the task done: an editor on an open task.
+ *          Done tasks (there is no undo), events and viewers get a non-interactive box.
+ * @param row: (ScheduleRowData) The row.
+ * @param canEdit: (boolean) Whether this caregiver may edit (everyone but viewers).
+ * @return: (boolean) True when the checkbox is pressable.
+ */
+export function checkboxInteractive(row: ScheduleRowData, canEdit: boolean): boolean {
+  return canEdit && row.markable !== null;
+}
+
+/** What is shown under a task row after its text is tapped. */
+export type NoteMode = 'hidden' | 'read' | 'edit';
+
+/**
+ * purpose: What a task row shows under it: the note editor for editors, the full note for
+ *          viewers who have something to read, nothing otherwise or when not expanded.
+ * @param row: (ScheduleRowData) The row.
+ * @param canEdit: (boolean) Whether this caregiver may edit (everyone but viewers).
+ * @param expanded: (boolean) Whether the row's text was tapped open.
+ * @return: (NoteMode) hidden, read or edit; always hidden for events.
+ */
+export function noteMode(row: ScheduleRowData, canEdit: boolean, expanded: boolean): NoteMode {
+  if (row.variant === 'event' || !expanded) return 'hidden';
+  if (canEdit) return 'edit';
+  return row.note === null ? 'hidden' : 'read';
+}
+
+/**
+ * purpose: The event rows of one day of the week, never tasks. Today's events come from the day
+ *          view's eventsToday, every later day's from its upcoming events.
  * @param day: (DayViewData) The day view.
  * @param date: (string) The local date "YYYY-MM-DD".
  * @return: (ScheduleRowData[]) That day's events in time order; empty when there are none.
  */
-function eventsForDate(day: DayViewData, date: string): ScheduleRowData[] {
-  return day.upcoming
+export function eventsForDate(day: DayViewData, date: string): ScheduleRowData[] {
+  const events = date === day.localDate ? day.eventsToday : day.upcoming;
+  return events
     .filter((e) => e.localDate === date)
     .sort((a, b) => a.startTime.localeCompare(b.startTime))
     .map((event) => eventRow(event, eventKey(event)));
 }
 
-/** The schedule of one day: yesterday's leftover tasks (today only) and the day's own rows. */
-export interface DaySchedule {
+/** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order. */
+export interface TodaysTasks {
   leftover: ScheduleRowData[];
-  rows: ScheduleRowData[];
+  today: ScheduleRowData[];
 }
 
 /**
- * purpose: The schedule rows of one day of the week. For today, the agenda (tasks and events
- *          merged in time order, from the day view) split in one pass: tasks carried over from
- *          yesterday go to leftover, everything else to rows. For any other date, that day's
- *          events in time order, with no leftover.
+ * purpose: Today's task rows, independent of the week strip selection and never events. Tasks
+ *          carried over from yesterday go to leftover, the rest to today, each in scheduled-time
+ *          order (ties keep the day view's order).
  * @param day: (DayViewData) The day view.
- * @param agenda: (AgendaItem[]) Today's merged agenda (useDayView's agenda for this day).
- * @param date: (string) The selected local date "YYYY-MM-DD".
  * @param userId: (string | null) The signed-in caregiver's Clerk user id, to word "by you".
- * @return: (DaySchedule) The leftover and day rows; empty when nothing is scheduled that day.
+ * @return: (TodaysTasks) The leftover and today's rows; both empty when there are no tasks.
  */
-export function scheduleForDate(
-  day: DayViewData,
-  agenda: AgendaItem[],
-  date: string,
-  userId: string | null,
-): DaySchedule {
-  if (date !== day.localDate) return { leftover: [], rows: eventsForDate(day, date) };
-  const schedule: DaySchedule = { leftover: [], rows: [] };
-  for (const item of agenda) {
-    if (item.kind === 'event') {
-      schedule.rows.push(eventRow(item.event, item.id));
-    } else {
-      const row = taskRow(item.task, { id: item.id, userId });
-      (item.task.carriedOver ? schedule.leftover : schedule.rows).push(row);
-    }
+export function todaysTasks(day: DayViewData, userId: string | null): TodaysTasks {
+  const result: TodaysTasks = { leftover: [], today: [] };
+  const ordered = [...day.tasks].sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
+  for (const task of ordered) {
+    const row = taskRow(task, { id: `task-${task.instanceId}`, userId });
+    (task.carriedOver ? result.leftover : result.today).push(row);
   }
-  return schedule;
+  return result;
 }
 
 /**

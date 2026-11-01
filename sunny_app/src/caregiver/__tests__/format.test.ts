@@ -2,8 +2,9 @@
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
 // alert detection, messages and claim text, leftover (carried-over) tasks, the open-task predicate,
-// the prompt note, the done detail line (who confirmed, surface, note), the
-// per-day schedule rows (ids, variants, markable, leftover split), the selected-day title and fallback rule,
+// the note input, the done detail line (who confirmed, surface), today's task rows (leftover
+// split, notes, checkbox kinds, interactivity, note visibility), the events-only rows of any day,
+// the selected-day title and fallback rule,
 // the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
@@ -12,7 +13,6 @@
 
 import { describe, expect, it } from '@jest/globals';
 
-import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import {
   ALREADY_DONE_MESSAGE,
@@ -21,18 +21,22 @@ import {
   ANOTHER_CAREGIVER,
   buildTranscript,
   buildWeekStrip,
+  checkboxInteractive,
+  checkboxKind,
   claimText,
   doneDetail,
+  eventsForDate,
   FAILED_TEXT,
   hasInProgress,
   isAlert,
   isOpen,
   laterThisWeek,
   messageSpeaker,
-  noteFromPrompt,
+  noteFromInput,
+  noteMode,
   resolveSelectedDate,
-  scheduleForDate,
   selectedDayTitle,
+  todaysTasks,
   VARIANT_STYLE,
   WORKING_TEXT,
   weekMonthLabel,
@@ -48,13 +52,23 @@ const USER = 'user_me';
 const CONFIRMED_TIME = '14:05';
 
 /**
- * purpose: Build the schedule rows for a date the way the Home screen does.
+ * purpose: Build the event rows for a date the way the Home screen does.
  * @param day: (DayViewData) The day view.
  * @param date: (string) The selected local date.
  * @return: (ScheduleRowData[]) The rows.
  */
-function scheduleOf(day: DayViewData, date: string): ScheduleRowData[] {
-  return scheduleForDate(day, buildAgenda(day), date, USER).rows;
+function eventsOf(day: DayViewData, date: string): ScheduleRowData[] {
+  return eventsForDate(day, date);
+}
+
+/**
+ * purpose: Today's task rows (leftover and today) for a user, flattened in display order.
+ * @param day: (DayViewData) The day view.
+ * @return: (ScheduleRowData[]) The leftover rows followed by today's rows.
+ */
+function taskRows(day: DayViewData): ScheduleRowData[] {
+  const { leftover, today } = todaysTasks(day, USER);
+  return [...leftover, ...today];
 }
 
 /**
@@ -182,13 +196,13 @@ describe('buildWeekStrip', () => {
     expect(days.filter((d) => d.isToday)).toHaveLength(1);
   });
 
-  it('marks days with events and today when it has tasks', () => {
+  it('marks days with events only, ignoring tasks', () => {
     const day = makeDay({
       tasks: [makeTask()],
       upcoming: [makeEvent({ localDate: '2026-10-31' })],
     });
     const markers = buildWeekStrip(day).map((d) => d.hasMarker);
-    expect(markers).toEqual([true, false, true, false, false, false, false]);
+    expect(markers).toEqual([false, false, true, false, false, false, false]);
   });
 
   it('leaves an empty day unmarked', () => {
@@ -218,17 +232,21 @@ describe('buildWeekStrip', () => {
   });
 
   it('describes the day for screen readers', () => {
-    const days = buildWeekStrip(makeDay({ tasks: [makeTask()] }));
-    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has plans');
+    const day = makeDay({
+      eventsToday: [makeEvent()],
+      upcoming: [makeEvent({ localDate: '2026-11-01' })],
+    });
+    const days = buildWeekStrip(day);
+    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has events');
     expect(days[1].accessibilityLabel).toBe('Friday, October 30');
-    expect(days[3].accessibilityLabel).toBe('Sunday, November 1');
+    expect(days[3].accessibilityLabel).toBe('Sunday, November 1, has events');
   });
 
-  it('says "has plans" for today when it has only tasks and no events', () => {
+  it('leaves today unmarked when it has only tasks', () => {
     const day = makeDay({ tasks: [makeTask()], eventsToday: [], upcoming: [] });
     const [today] = buildWeekStrip(day);
-    expect(today.hasMarker).toBe(true);
-    expect(today.accessibilityLabel).toBe('Today, Thursday, October 29, has plans');
+    expect(today.hasMarker).toBe(false);
+    expect(today.accessibilityLabel).toBe('Today, Thursday, October 29');
   });
 });
 
@@ -260,36 +278,81 @@ describe('alerts', () => {
   });
 });
 
-describe('scheduleForDate', () => {
-  it('is empty when nothing is scheduled', () => {
-    expect(scheduleOf(makeDay(), '2026-10-29')).toEqual([]);
-    expect(scheduleOf(makeDay(), '2026-10-31')).toEqual([]);
+describe('eventsForDate', () => {
+  it('is empty when no events are scheduled', () => {
+    expect(eventsOf(makeDay(), '2026-10-29')).toEqual([]);
+    expect(eventsOf(makeDay(), '2026-10-31')).toEqual([]);
   });
 
-  it('merges today tasks and events in time order', () => {
+  it("lists today's events, from eventsToday, sorted by time, with event keys as ids", () => {
     const day = makeDay({
-      tasks: [makeTask({ instanceId: 't1', scheduledTime: '08:00' })],
-      eventsToday: [makeEvent({ startTime: '07:00', label: 'Walk' })],
+      eventsToday: [
+        makeEvent({ eventId: 'e2', startTime: '15:00', label: 'Late' }),
+        makeEvent({ eventId: 'e1', startTime: '07:00', label: 'Walk' }),
+      ],
     });
-    expect(scheduleOf(day, '2026-10-29').map((r) => r.label)).toEqual(['Walk', 'Take medication']);
+    const rows = eventsOf(day, '2026-10-29');
+    expect(rows.map((r) => r.label)).toEqual(['Walk', 'Late']);
+    expect(rows.map((r) => r.id)).toEqual(['e1-2026-10-29', 'e2-2026-10-29']);
+    expect(rows.every((r) => r.variant === 'event' && r.instanceId === null)).toBe(true);
   });
 
-  it('reuses the agenda ids for today and the event key for later days', () => {
+  it('never includes tasks, for today or a later day', () => {
     const day = makeDay({
       tasks: [makeTask({ instanceId: 't1' })],
-      eventsToday: [makeEvent({ eventId: 'e1', startTime: '07:00' })],
-      upcoming: [makeEvent({ eventId: 'e2', localDate: '2026-10-31' })],
+      eventsToday: [makeEvent({ startTime: '07:00', label: 'Walk' })],
     });
-    expect(scheduleOf(day, '2026-10-29').map((r) => r.id)).toEqual([
-      'event-e1-2026-10-29',
-      'task-t1',
-    ]);
-    expect(scheduleOf(day, '2026-10-31').map((r) => r.id)).toEqual(['e2-2026-10-31']);
+    expect(eventsOf(day, '2026-10-29').map((r) => r.label)).toEqual(['Walk']);
+    expect(eventsOf(makeDay({ tasks: [makeTask()] }), '2026-10-30')).toEqual([]);
   });
 
-  it('uses the agenda it is given instead of rebuilding it', () => {
-    const day = makeDay({ tasks: [makeTask({ instanceId: 't1' })] });
-    expect(scheduleForDate(day, [], '2026-10-29', USER)).toEqual({ leftover: [], rows: [] });
+  it('lists only the chosen later day events, sorted by time', () => {
+    const day = makeDay({
+      upcoming: [
+        makeEvent({ eventId: 'z', localDate: '2026-10-31', startTime: '15:00', label: 'Late' }),
+        makeEvent({ eventId: 'y', localDate: '2026-10-30', startTime: '09:00', label: 'Early' }),
+        makeEvent({ eventId: 'x', localDate: '2026-10-31', startTime: '08:00', label: 'First' }),
+      ],
+    });
+    expect(eventsOf(day, '2026-10-31').map((r) => r.label)).toEqual(['First', 'Late']);
+    expect(eventsOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Early']);
+  });
+
+  it('finds events past a month and year boundary', () => {
+    const day = makeDay({
+      localDate: '2026-12-30',
+      upcoming: [makeEvent({ eventId: 'n', localDate: '2027-01-02', label: 'New year' })],
+    });
+    expect(eventsOf(day, '2027-01-02').map((r) => r.label)).toEqual(['New year']);
+    expect(eventsOf(day, '2027-01-01')).toEqual([]);
+  });
+
+  it('puts the visitor in an event row and labels it for screen readers', () => {
+    const day = makeDay({
+      eventsToday: [makeEvent({ visitorName: 'Sam', startTime: '14:00' })],
+    });
+    const row = eventsOf(day, '2026-10-29')[0];
+    expect(row.label).toBe('Cardiology with Sam');
+    expect(row.accessibilityLabel).toBe('2:00 PM, Cardiology with Sam');
+  });
+});
+
+describe('todaysTasks', () => {
+  it('is empty when there are no tasks, whatever the events', () => {
+    expect(todaysTasks(makeDay(), USER)).toEqual({ leftover: [], today: [] });
+    const withEvent = makeDay({ eventsToday: [makeEvent()] });
+    expect(todaysTasks(withEvent, USER)).toEqual({ leftover: [], today: [] });
+  });
+
+  it('orders tasks by scheduled time and never includes events', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'b', scheduledTime: '12:00' }),
+        makeTask({ instanceId: 'a', scheduledTime: '08:00' }),
+      ],
+      eventsToday: [makeEvent({ startTime: '09:00' })],
+    });
+    expect(todaysTasks(day, USER).today.map((r) => r.id)).toEqual(['task-a', 'task-b']);
   });
 
   it('assigns a variant to each kind of row, with its icon from VARIANT_STYLE', () => {
@@ -301,52 +364,14 @@ describe('scheduleForDate', () => {
         makeTask({ instanceId: 'd', scheduledTime: '09:00', state: 'upcoming' }),
         makeTask({ instanceId: 'e', scheduledTime: '10:00', state: 'resolved' }),
       ],
-      eventsToday: [makeEvent({ startTime: '11:00' })],
     });
-    const rows = scheduleOf(day, '2026-10-29');
-    expect(rows.map((r) => [r.variant, VARIANT_STYLE[r.variant].icon])).toEqual([
+    expect(taskRows(day).map((r) => [r.variant, VARIANT_STYLE[r.variant].icon])).toEqual([
       ['done', 'checkmark.circle.fill'],
       ['alert', 'exclamationmark.circle.fill'],
       ['alert', 'exclamationmark.circle.fill'],
       ['task', 'circle'],
       ['done', 'checkmark.circle.fill'],
-      ['event', 'calendar'],
     ]);
-  });
-
-  it('lists only the chosen later day events, sorted by time', () => {
-    const day = makeDay({
-      upcoming: [
-        makeEvent({ eventId: 'z', localDate: '2026-10-31', startTime: '15:00', label: 'Late' }),
-        makeEvent({ eventId: 'y', localDate: '2026-10-30', startTime: '09:00', label: 'Early' }),
-        makeEvent({ eventId: 'x', localDate: '2026-10-31', startTime: '08:00', label: 'First' }),
-      ],
-    });
-    expect(scheduleOf(day, '2026-10-31').map((r) => r.label)).toEqual(['First', 'Late']);
-    expect(scheduleOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Early']);
-  });
-
-  it('finds events past a month and year boundary', () => {
-    const day = makeDay({
-      localDate: '2026-12-30',
-      upcoming: [makeEvent({ eventId: 'n', localDate: '2027-01-02', label: 'New year' })],
-    });
-    expect(scheduleOf(day, '2027-01-02').map((r) => r.label)).toEqual(['New year']);
-    expect(scheduleOf(day, '2027-01-01')).toEqual([]);
-  });
-
-  it('does not show tasks on a later day', () => {
-    const day = makeDay({ tasks: [makeTask()] });
-    expect(scheduleOf(day, '2026-10-30')).toEqual([]);
-  });
-
-  it('puts the visitor in an event row and labels it for screen readers', () => {
-    const day = makeDay({
-      eventsToday: [makeEvent({ visitorName: 'Sam', startTime: '14:00' })],
-    });
-    const row = scheduleOf(day, '2026-10-29')[0];
-    expect(row.label).toBe('Cardiology with Sam');
-    expect(row.accessibilityLabel).toBe('2:00 PM, Cardiology with Sam');
   });
 
   it('adds the status word to task rows for screen readers', () => {
@@ -357,11 +382,16 @@ describe('scheduleForDate', () => {
         makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'upcoming' }),
       ],
     });
-    expect(scheduleOf(day, '2026-10-29').map((r) => r.accessibilityLabel)).toEqual([
+    expect(taskRows(day).map((r) => r.accessibilityLabel)).toEqual([
       '6:00 AM, Take medication, Done',
       '7:00 AM, Take medication, Not confirmed',
       '8:00 AM, Take medication',
     ]);
+  });
+
+  it('carries the instance id on every task row', () => {
+    const day = makeDay({ tasks: [makeTask({ instanceId: 't9' })] });
+    expect(taskRows(day)[0].instanceId).toBe('t9');
   });
 });
 
@@ -596,7 +626,7 @@ describe('leftover tasks', () => {
     );
   });
 
-  it('moves carried-over tasks out of the day rows into the leftover list', () => {
+  it('moves carried-over tasks out of the day rows into the leftover list, tasks only', () => {
     const day = makeDay({
       tasks: [
         makeTask({
@@ -610,16 +640,21 @@ describe('leftover tasks', () => {
       ],
       eventsToday: [makeEvent({ startTime: '09:00' })],
     });
-    const { leftover, rows } = scheduleForDate(day, buildAgenda(day), TODAY, USER);
+    const { leftover, today } = todaysTasks(day, USER);
     expect(leftover.map((r) => r.id)).toEqual(['task-old']);
-    expect(rows.map((r) => r.id)).toEqual(['task-new', 'event-e1-2026-10-29']);
+    expect(today.map((r) => r.id)).toEqual(['task-new']);
   });
 
-  it('has no leftover rows when nothing is carried over, or for another date', () => {
+  it('never calls an event leftover: today events stay out of the tasks lists', () => {
+    const day = makeDay({ eventsToday: [makeEvent({ startTime: '06:00' })] });
+    const { leftover, today } = todaysTasks(day, USER);
+    expect([...leftover, ...today]).toEqual([]);
+    expect(eventsOf(day, TODAY)).toHaveLength(1);
+  });
+
+  it('has no leftover rows when nothing is carried over', () => {
     const day = makeDay({ tasks: [makeTask()] });
-    expect(scheduleForDate(day, buildAgenda(day), TODAY, USER).leftover).toEqual([]);
-    const carried = makeDay({ tasks: [makeTask({ carriedOver: true })] });
-    expect(scheduleForDate(carried, buildAgenda(carried), '2026-10-30', USER).leftover).toEqual([]);
+    expect(todaysTasks(day, USER).leftover).toEqual([]);
   });
 });
 
@@ -645,22 +680,81 @@ describe('markable rows', () => {
       ],
       eventsToday: [makeEvent({ startTime: '10:00' })],
     });
-    expect(scheduleOf(day, TODAY).map((r) => r.markable)).toEqual([
+    expect(taskRows(day).map((r) => r.markable)).toEqual([
       null,
       { instanceId: 'b', label: 'Take medication' },
       null,
       { instanceId: 'd', label: 'Take medication' },
-      null,
     ]);
   });
 });
 
-describe('mark done prompt', () => {
-  it('trims the note and omits an empty one', () => {
-    expect(noteFromPrompt('  Called her  ')).toBe('Called her');
-    expect(noteFromPrompt('   ')).toBeUndefined();
-    expect(noteFromPrompt('')).toBeUndefined();
-    expect(noteFromPrompt(undefined)).toBeUndefined();
+describe('note input', () => {
+  it('trims the note and turns an empty one into a clear', () => {
+    expect(noteFromInput('  Called her  ')).toBe('Called her');
+    expect(noteFromInput('   ')).toBeUndefined();
+    expect(noteFromInput('')).toBeUndefined();
+    expect(noteFromInput(undefined)).toBeUndefined();
+  });
+});
+
+describe('checkboxes', () => {
+  const rowFor = (state: string, overrides: Partial<Record<keyof DayTask, unknown>> = {}) =>
+    taskRows(makeDay({ tasks: [makeTask({ state, ...overrides })] }))[0];
+
+  it('maps each variant to a checkbox kind, and none for events', () => {
+    expect(checkboxKind('task')).toBe('open');
+    expect(checkboxKind('alert')).toBe('alert');
+    expect(checkboxKind('done')).toBe('done');
+    expect(checkboxKind('event')).toBeNull();
+  });
+
+  it('lets an editor tap open tasks (upcoming, due, missed, escalated)', () => {
+    for (const state of ['due', 'missed', 'escalated']) {
+      expect([state, checkboxInteractive(rowFor(state), true)]).toEqual([state, true]);
+    }
+  });
+
+  it('is not interactive for done tasks, viewers or events', () => {
+    expect(checkboxInteractive(rowFor('confirmed'), true)).toBe(false);
+    expect(checkboxInteractive(rowFor('resolved'), true)).toBe(false);
+    expect(checkboxInteractive(rowFor('due'), false)).toBe(false);
+    const event = eventsOf(makeDay({ eventsToday: [makeEvent()] }), TODAY)[0];
+    expect(checkboxInteractive(event, true)).toBe(false);
+  });
+});
+
+describe('task notes', () => {
+  const noted = (state: string, resolutionNote: string | null) =>
+    taskRows(makeDay({ tasks: [makeTask({ state, resolutionNote })] }))[0];
+
+  it('puts the note on open and done task rows alike, and on the screen reader label', () => {
+    expect(noted('due', 'Refill soon').note).toBe('Refill soon');
+    expect(noted('confirmed', 'Refill soon').note).toBe('Refill soon');
+    expect(noted('due', null).note).toBeNull();
+    expect(noted('due', 'Refill soon').accessibilityLabel).toBe(
+      '8:00 AM, Take medication. Note: Refill soon',
+    );
+  });
+
+  it('shows no note editor until the text is tapped open', () => {
+    expect(noteMode(noted('due', null), true, false)).toBe('hidden');
+  });
+
+  it('opens an editor for editors, on open and done tasks, with or without a note', () => {
+    expect(noteMode(noted('due', null), true, true)).toBe('edit');
+    expect(noteMode(noted('confirmed', 'Fine'), true, true)).toBe('edit');
+  });
+
+  it('lets viewers read an existing note but gives them no editor', () => {
+    expect(noteMode(noted('due', 'Fine'), false, true)).toBe('read');
+    expect(noteMode(noted('due', null), false, true)).toBe('hidden');
+    expect(noteMode(noted('due', 'Fine'), false, false)).toBe('hidden');
+  });
+
+  it('never opens a note on an event', () => {
+    const event = eventsOf(makeDay({ eventsToday: [makeEvent()] }), TODAY)[0];
+    expect(noteMode(event, true, true)).toBe('hidden');
   });
 });
 
@@ -703,7 +797,7 @@ describe('doneDetail', () => {
     expect(doneDetail(task, null)).toBe('Marked done by a caregiver at 2:05 PM');
   });
 
-  it('adds the note on a second line, in quotes', () => {
+  it('leaves the note out of the detail (it is the row note)', () => {
     const task = makeTask({
       state: 'resolved',
       confirmedVia: 'caregiver',
@@ -712,7 +806,7 @@ describe('doneDetail', () => {
       confirmedLocalTime: CONFIRMED_TIME,
       resolutionNote: 'Called her',
     });
-    expect(doneDetail(task, USER)).toBe('Marked done by Pat at 2:05 PM\n"Called her"');
+    expect(doneDetail(task, USER)).toBe('Marked done by Pat at 2:05 PM');
   });
 
   it('words each device surface', () => {
@@ -742,12 +836,12 @@ describe('doneDetail', () => {
     expect(doneDetail(makeTask({ state: 'confirmed' }), USER)).toBeNull();
   });
 
-  it('shows the note even when nothing else is known', () => {
+  it('is null for a done task with only a note', () => {
     const task = makeTask({ state: 'confirmed', resolutionNote: 'Fine' });
-    expect(doneDetail(task, USER)).toBe('Done\n"Fine"');
+    expect(doneDetail(task, USER)).toBeNull();
   });
 
-  it('shows the detail on done schedule rows', () => {
+  it('shows the detail and the note on done task rows', () => {
     const day = makeDay({
       tasks: [
         makeTask({
@@ -760,10 +854,11 @@ describe('doneDetail', () => {
         }),
       ],
     });
-    const [row] = scheduleOf(day, TODAY);
-    expect(row.detail).toBe('Marked done by Pat at 2:05 PM\n"Called her"');
+    const [row] = taskRows(day);
+    expect(row.detail).toBe('Marked done by Pat at 2:05 PM');
+    expect(row.note).toBe('Called her');
     expect(row.accessibilityLabel).toBe(
-      '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. "Called her"',
+      '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. Note: Called her',
     );
     expect(row.markable).toBeNull();
   });

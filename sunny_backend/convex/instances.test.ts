@@ -386,6 +386,113 @@ describe("confirmTaskInstance", () => {
   });
 });
 
+describe("setTaskNote", () => {
+  test("an editor sets a trimmed note, then a blank note clears it, each audited", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    const set = await asMax.mutation(api.instances.setTaskNote, {
+      instanceId: instance!._id,
+      note: "  Took with water  ",
+    });
+    expect(set.resolutionNote).toBe("Took with water");
+    expect(set.state).toBe(instance!.state);
+    const cleared = await asMax.mutation(api.instances.setTaskNote, {
+      instanceId: instance!._id,
+      note: "   ",
+    });
+    expect(cleared.resolutionNote).toBeUndefined();
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const notes = rows.filter((r) => r.action === "note" && r.entityId === instance!._id);
+    expect(notes.map((r) => r.detail)).toEqual([{ hasNote: true }, { hasNote: false }]);
+    expect(notes[0]!.actorUserId).toBe("max");
+  });
+
+  test("a note can be added to a done task", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const asPat = f.t.withIdentity({ subject: "pat" });
+    await asPat.mutation(api.instances.confirmTaskInstance, {
+      instanceId: instance!._id,
+      via: "caregiver",
+    });
+    const noted = await asPat.mutation(api.instances.setTaskNote, {
+      instanceId: instance!._id,
+      note: "Felt dizzy",
+    });
+    expect(noted).toMatchObject({ state: "resolved", resolutionNote: "Felt dizzy" });
+  });
+
+  test("a note over 500 characters is rejected", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await expect(
+      f.t.withIdentity({ subject: "max" }).mutation(api.instances.setTaskNote, {
+        instanceId: instance!._id,
+        note: "x".repeat(501),
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("access: viewers, devices and outsiders are forbidden", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    for (const subject of ["val", "phone", "display", "nobody"]) {
+      await expect(
+        f.t
+          .withIdentity({ subject })
+          .mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: "hi" }),
+        subject,
+      ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    }
+  });
+
+  test("a primary of another household is forbidden", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t.withIdentity({ subject: "zed" }).mutation(api.households.create, {
+      seniorPreferredName: "Dad",
+      timezone: "America/New_York",
+      caregiverDisplayName: "Zed",
+    });
+    await expect(
+      f.t
+        .withIdentity({ subject: "zed" })
+        .mutation(api.instances.setTaskNote, { instanceId: instance!._id, note: "hi" }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+  });
+
+  test("marking done without a note keeps the existing note; a new note replaces it", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    await makeTask(f, "Evening pills", ["08:30"]);
+    const [first, second] = await instancesOn(f, "2027-03-14");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    for (const instance of [first!, second!]) {
+      await asMax.mutation(api.instances.setTaskNote, {
+        instanceId: instance._id,
+        note: "Refill soon",
+      });
+    }
+    const kept = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: first!._id,
+      via: "caregiver",
+    });
+    expect(kept.resolutionNote).toBe("Refill soon");
+    const replaced = await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: second!._id,
+      via: "caregiver",
+      note: "Done late",
+    });
+    expect(replaced.resolutionNote).toBe("Done late");
+  });
+});
+
 describe("snoozeTaskInstance", () => {
   test("snoozes an open instance for the requested minutes, 15 by default", async () => {
     const f = await setup("2027-03-14T11:00:00Z");

@@ -2,7 +2,8 @@
 // Purpose: Task instance operations, ported from the Supabase tasks migration: confirm,
 // snooze and claim one instance; today's schedule; "Done" (confirmDueTask: which task the
 // senior means, with the already-done double dose guard); senior-created reminders; and
-// as-needed dose logging. The core of each operation is an exported helper taking
+// as-needed dose logging; and setTaskNote (an editor's note on a task instance, open or done).
+// The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
 // the public functions resolve the actor from auth and use the server clock. Every instance
 // state, claim and snooze change is audited (lib/schedule.changeInstance).
@@ -21,6 +22,7 @@ import {
   requireSenior,
 } from "./lib/access";
 import type { Actor, CaregiverActor } from "./lib/access";
+import { audit } from "./lib/audit";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -105,7 +107,8 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
  * @raises forbidden when the actor may not confirm; invalid when not due yet, when via is
  *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
- *          A blank note is stored as absent.
+ *          A blank note is stored as absent, but never erases a note already on the
+ *          instance (set earlier with setTaskNote): without a note the existing one is kept.
  */
 export async function confirmInstance(
   ctx: MutationCtx,
@@ -131,7 +134,7 @@ export async function confirmInstance(
     confirmedAt: now,
     confirmedBy: actorUserId(actor),
     confirmedVia: asCaregiver ? "caregiver" : args.via,
-    resolutionNote: note,
+    resolutionNote: note ?? instance.resolutionNote,
     snoozedUntil: undefined,
   });
 }
@@ -188,6 +191,37 @@ export async function claimInstance(
     instance.state === "due" || instance.state === "escalated" || instance.state === "missed";
   if (instance.claimedBy !== undefined || !claimable) return instance;
   return await changeInstance(ctx, actor, instance, { claimedBy: actor.userId, claimedAt: now });
+}
+
+/**
+ * purpose: Set or clear the note on a task instance, open or done. The note is trimmed; a
+ *          blank note clears it. The change is audited as action "note" on the instance.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Must be an editor caregiver of the instance's household.
+ * @param args: ({instanceId, note}) The instance and the new note (absent or blank clears).
+ * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
+ * @raises forbidden for any other actor; invalid when the trimmed note is over 500 characters.
+ */
+export async function setTaskNoteCore(
+  ctx: MutationCtx,
+  actor: Actor,
+  args: { instanceId: Id<"taskInstances">; note?: string },
+): Promise<Doc<"taskInstances">> {
+  const instance = await loadInstance(ctx, args.instanceId);
+  if (!isHouseholdEditor(actor, instance.householdId)) {
+    throw appError("forbidden", "Not allowed to change this task's note");
+  }
+  const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
+  await ctx.db.patch(instance._id, { resolutionNote: note });
+  await audit(ctx, {
+    householdId: instance.householdId,
+    actor,
+    action: "note",
+    entity: "task_instance",
+    entityId: instance._id,
+    detail: { hasNote: note !== undefined },
+  });
+  return (await ctx.db.get(instance._id))!;
 }
 
 /**
@@ -461,6 +495,22 @@ export const claimTaskInstance = mutation({
     const instance = await loadInstance(ctx, args.instanceId);
     const actor = await requireEditor(ctx, instance.householdId);
     return await claimInstance(ctx, actor, args, Date.now());
+  },
+});
+
+/**
+ * purpose: Set or clear the note on a task instance (open or done). Editor caregivers of the
+ *          instance's household only.
+ * @param instanceId: (Id<"taskInstances">) Instance.
+ * @param note: (string, optional) The note; absent or blank clears it, at most 500 characters.
+ * @return: (Doc<"taskInstances">) The instance after the call.
+ */
+export const setTaskNote = mutation({
+  args: { instanceId: v.id("taskInstances"), note: v.optional(v.string()) },
+  handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
+    const instance = await loadInstance(ctx, args.instanceId);
+    const actor = await requireEditor(ctx, instance.householdId);
+    return await setTaskNoteCore(ctx, actor, args);
   },
 });
 

@@ -1,31 +1,25 @@
 // sunny_app/src/caregiver/CaregiverHomeScreen.tsx
 //
-// Purpose: The caregiver Home tab: "<name>'s week" with the account button, the calendar card
-// (seven-day week strip whose cells choose the day shown), the Alerts section (tasks that were
-// escalated or missed, with "I'm on it" and "Mark done" buttons for editors, or who is already on
-// it) and the schedule of the selected day (today by default, with a "Leftover" group of
-// yesterday's open tasks above it, and open tasks that editors can tap to mark done; "Mark done"
-// asks for an optional note) followed by "Later this week", the events of
-// the days after it grouped by day (hidden when there are none). Everything comes from the
-// shared day view state owned by CaregiverApp, and the derived lists are computed once per day
-// view and selection. While the first load is pending it shows a spinner, and if it fails with
-// nothing cached, the error message.
+// Purpose: The caregiver Home tab: "<name>'s week" with the account button, then, in order: the
+// Alerts section (tasks that were escalated or missed, with "I'm on it" and "Mark done" buttons
+// for editors, or who is already on it), "Today's tasks" (a "Leftover" group of yesterday's open
+// tasks, then today's tasks in time order; editors tap a task's checkbox to mark it done at once
+// and tap its text to open an inline note editor, one at a time; viewers can open a note to read
+// it), the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
+// events) with the selected day's events directly below it (events only, never tasks), and
+// "Later this week", the events of the days after the selected one grouped by day (hidden when
+// there are none). Everything comes from the shared day view state owned by CaregiverApp, and the
+// derived lists are computed once per day view and selection. While the first load is pending it
+// shows a spinner, and if it fails with nothing cached, the error message.
 //
 // Last modified: 2026-11-01
 
 import { SymbolView } from 'expo-symbols';
-import { useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import type { TaskInstanceId } from '../backend/convexApi';
 import { OfflineMark } from '../components/DayComponents';
 import type { DayViewState } from '../day/useDayView';
 import { colors } from '../theme/colors';
@@ -41,15 +35,14 @@ import {
 import {
   alertMessage,
   buildWeekStrip,
+  eventsForDate,
   isAlert,
   laterThisWeek,
-  noteFromPrompt,
   resolveSelectedDate,
-  scheduleForDate,
+  todaysTasks,
   selectedDayTitle,
   weekRangeLabel,
   type DaySelection,
-  type Markable,
 } from './format';
 import { useTabBarInset } from './tabBarInset';
 import { useTaskActions } from './useTaskActions';
@@ -95,61 +88,57 @@ export function CaregiverHomeScreen({
   userId,
   onAccountPress,
 }: CaregiverHomeScreenProps) {
-  const { day, agenda, errorMessage, isOffline } = dayView;
+  const { day, errorMessage, isOffline } = dayView;
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { actions, claim, markDone } = useTaskActions(userId);
+  const { actions, claim, markDone, saveNote } = useTaskActions(userId);
 
-  /** Instances whose Mark done prompt is open, so a quick double tap opens only one. */
-  const promptOpen = useRef(new Set<string>());
+  /** The row whose note is open; only one at a time. */
+  const [openNoteId, setOpenNoteId] = useState<string | null>(null);
 
   /**
-   * purpose: Ask the caregiver to confirm marking a task done, with an optional note for the
-   *          family, then mark it done. Cancel does nothing. A second tap on the same task
-   *          while its prompt is open is ignored.
-   * @param markable: ({ instanceId, label }) The task to mark done.
+   * purpose: Open a row's note, or close it when it is already open.
+   * @param rowId: (string) The row's id.
    * @return: (void)
    */
-  const askMarkDone = ({ instanceId, label }: Markable): void => {
-    if (promptOpen.current.has(instanceId)) return;
-    promptOpen.current.add(instanceId);
-    const close = (): void => void promptOpen.current.delete(instanceId);
-    Alert.prompt(
-      `Mark ${label} done?`,
-      'Add a note for the family (optional)',
-      [
-        { text: 'Cancel', style: 'cancel', onPress: close },
-        {
-          text: 'Mark done',
-          onPress: (text?: string) => {
-            close();
-            void markDone(instanceId, noteFromPrompt(text));
-          },
-        },
-      ],
-      'plain-text',
-    );
+  const toggleNote = (rowId: string): void =>
+    setOpenNoteId((current) => (current === rowId ? null : rowId));
+
+  /**
+   * purpose: Save a task's note and close its editor once it is saved; a failure keeps the
+   *          editor open with the error under the row.
+   * @param instanceId: (TaskInstanceId) The task instance.
+   * @param note: (string | undefined) The trimmed note; undefined clears it.
+   * @return: (void)
+   */
+  const saveTaskNote = (instanceId: TaskInstanceId, note: string | undefined): void => {
+    void saveNote(instanceId, note).then((saved) => {
+      if (saved) setOpenNoteId(null);
+    });
   };
+
   const [selection, setSelection] = useState<DaySelection | null>(null);
   const view = useMemo(() => {
     if (day === null) return null;
     const strip = buildWeekStrip(day);
     const selectedDate = resolveSelectedDate(strip, day.localDate, selection);
-    const { leftover, rows } = scheduleForDate(day, agenda, selectedDate, userId);
+    const { leftover, today } = todaysTasks(day, userId);
     return {
       alerts: day.tasks.filter(isAlert).map((task) => ({ task, message: alertMessage(task) })),
       strip,
       selectedDate,
       scheduleTitle: selectedDayTitle(day.localDate, selectedDate),
       leftover,
-      schedule: rows,
+      todayTasks: today,
+      events: eventsForDate(day, selectedDate),
       later: laterThisWeek(day, strip, selectedDate),
       range: weekRangeLabel(day.localDate),
     };
-  }, [day, agenda, selection, userId]);
+  }, [day, selection, userId]);
 
   return (
     <ScrollView
+      keyboardShouldPersistTaps="handled"
       contentContainerStyle={[
         styles.content,
         { paddingTop: insets.top + 8, paddingBottom: tabBarInset },
@@ -168,12 +157,6 @@ export function CaregiverHomeScreen({
         )
       ) : (
         <>
-          <CalendarCard
-            todayLocalDate={day.localDate}
-            days={view.strip}
-            selectedDate={view.selectedDate}
-            onSelect={(date) => setSelection({ date, todayWhenChosen: day.localDate })}
-          />
           <View style={styles.section}>
             <SectionTitle text="Alerts" />
             {view.alerts.length === 0 && (
@@ -188,20 +171,42 @@ export function CaregiverHomeScreen({
                 canEdit={canEdit}
                 userId={userId}
                 onClaim={() => claim(task.instanceId)}
-                onMarkDone={() =>
-                  askMarkDone({ instanceId: task.instanceId, label: task.displayLabel })
-                }
+                onMarkDone={() => void markDone(task.instanceId)}
               />
             ))}
           </View>
           <View style={styles.section}>
-            <SectionTitle text={view.scheduleTitle} />
+            <SectionTitle text="Today's tasks" />
             <ScheduleCard
               leftover={view.leftover}
-              rows={view.schedule}
+              rows={view.todayTasks}
+              emptyText="No tasks today."
               canEdit={canEdit}
               actions={actions}
-              onMarkDone={askMarkDone}
+              openNoteId={openNoteId}
+              onMarkDone={(instanceId) => void markDone(instanceId)}
+              onToggleNote={toggleNote}
+              onSaveNote={saveTaskNote}
+            />
+          </View>
+          <View style={styles.section}>
+            <CalendarCard
+              todayLocalDate={day.localDate}
+              days={view.strip}
+              selectedDate={view.selectedDate}
+              onSelect={(date) => setSelection({ date, todayWhenChosen: day.localDate })}
+            />
+            <SectionTitle text={view.scheduleTitle} />
+            <ScheduleCard
+              leftover={[]}
+              rows={view.events}
+              emptyText="No events."
+              canEdit={canEdit}
+              actions={actions}
+              openNoteId={openNoteId}
+              onMarkDone={(instanceId) => void markDone(instanceId)}
+              onToggleNote={toggleNote}
+              onSaveNote={saveTaskNote}
             />
           </View>
           {view.later.length > 0 && (
