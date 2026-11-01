@@ -661,9 +661,10 @@ describe('leftover tasks', () => {
 });
 
 describe('isOpen', () => {
-  it('is true for due, escalated and missed tasks only', () => {
+  it('is true for upcoming, due, escalated and missed tasks only', () => {
     const states = ['upcoming', 'due', 'escalated', 'missed', 'confirmed', 'resolved'] as const;
     expect(states.filter((state) => isOpen(makeTask({ state })))).toEqual([
+      'upcoming',
       'due',
       'escalated',
       'missed',
@@ -672,7 +673,7 @@ describe('isOpen', () => {
 });
 
 describe('markable rows', () => {
-  it('carries the instance and label for open tasks only', () => {
+  it('carries the instance and label for open tasks only (upcoming included)', () => {
     const day = makeDay({
       tasks: [
         makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'confirmed' }),
@@ -685,7 +686,7 @@ describe('markable rows', () => {
     expect(taskRows(day).map((r) => r.markable)).toEqual([
       null,
       { instanceId: 'b', label: 'Take medication' },
-      null,
+      { instanceId: 'c', label: 'Take medication' },
       { instanceId: 'd', label: 'Take medication' },
     ]);
   });
@@ -705,14 +706,21 @@ describe('checkboxes', () => {
     taskRows(makeDay({ tasks: [makeTask({ state, ...overrides })] }))[0];
 
   it('maps each variant to a checkbox kind, and none for events', () => {
-    expect(checkboxKind('task')).toBe('open');
-    expect(checkboxKind('alert')).toBe('alert');
-    expect(checkboxKind('done')).toBe('done');
-    expect(checkboxKind('event')).toBeNull();
+    expect(checkboxKind('task', true)).toBe('open');
+    expect(checkboxKind('alert', true)).toBe('alert');
+    expect(checkboxKind('done', true)).toBe('done');
+    expect(checkboxKind('event', true)).toBeNull();
+    expect(checkboxKind('event', false)).toBeNull();
   });
 
-  it('lets an editor tap open tasks (upcoming, due, missed, escalated)', () => {
-    for (const state of ['due', 'missed', 'escalated']) {
+  it('dulls open and alert boxes that cannot be ticked, but keeps done ones checked', () => {
+    expect(checkboxKind('task', false)).toBe('disabled');
+    expect(checkboxKind('alert', false)).toBe('disabled');
+    expect(checkboxKind('done', false)).toBe('done');
+  });
+
+  it('lets an editor tap every open task (upcoming, due, escalated, missed)', () => {
+    for (const state of ['upcoming', 'due', 'escalated', 'missed']) {
       expect([state, checkboxInteractive(rowFor(state), true)]).toEqual([state, true]);
     }
   });
@@ -723,6 +731,24 @@ describe('checkboxes', () => {
     expect(checkboxInteractive(rowFor('due'), false)).toBe(false);
     const event = eventsOf(makeDay({ eventsToday: [makeEvent()] }), TODAY)[0];
     expect(checkboxInteractive(event, true)).toBe(false);
+  });
+
+  it('shows the right box for editor and viewer across every task state', () => {
+    const look = (state: string, canEdit: boolean) => {
+      const row = rowFor(state);
+      return checkboxKind(row.variant, checkboxInteractive(row, canEdit));
+    };
+    const cases: [string, string, string][] = [
+      ['upcoming', 'open', 'disabled'],
+      ['due', 'open', 'disabled'],
+      ['escalated', 'alert', 'disabled'],
+      ['missed', 'alert', 'disabled'],
+      ['confirmed', 'done', 'done'],
+      ['resolved', 'done', 'done'],
+    ];
+    for (const [state, editor, viewer] of cases) {
+      expect([state, look(state, true), look(state, false)]).toEqual([state, editor, viewer]);
+    }
   });
 });
 

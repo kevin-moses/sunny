@@ -8,7 +8,8 @@
 // differ), standing in for the former Supabase grant and RLS checks. Also: non-finite dose times and
 // over-long reminder titles are rejected. Also: the resolution note is trimmed (blank is
 // stored as absent, over 500 characters rejected) and only an editor caregiver may use
-// via "caregiver". The clock is driven by faking Date
+// via "caregiver"; an editor may resolve an upcoming task any time today (a device only
+// within 60 minutes), and the scheduler leaves it resolved. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
 // Last modified: 2026-11-01
@@ -330,6 +331,37 @@ describe("confirmTaskInstance", () => {
       .withIdentity({ subject: "max" })
       .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
     expect(done).toMatchObject({ state: "resolved", confirmedVia: "caregiver" });
+  });
+
+  test("an editor resolves an upcoming task hours early while a device is refused", async () => {
+    const f = await setup("2027-03-14T10:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    const args = { instanceId: instance!._id, via: "button" as const };
+    await expect(
+      f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmTaskInstance, args),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: "This task is not due yet" } });
+    const done = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, args);
+    expect(done).toMatchObject({
+      state: "resolved",
+      confirmedBy: "max",
+      confirmedVia: "caregiver",
+    });
+  });
+
+  test("the scheduler leaves an early-resolved task resolved after its window passes", async () => {
+    const f = await setup("2027-03-14T10:00:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "button" });
+    await tick(f.t, "2027-03-14T12:00:00Z");
+    await tick(f.t, "2027-03-14T23:00:00Z");
+    const after = await f.t.run(async (ctx) => await ctx.db.get(instance!._id));
+    expect(after?.state).toBe("resolved");
   });
 
   test("confirming clears a snooze", async () => {

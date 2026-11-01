@@ -7,7 +7,7 @@
 // group of yesterday's open tasks above a "Today" group) and the selected day's events (a plain
 // list), and the later-days card grouping the rest of the week's events by day. A task row has a
 // rounded-square checkbox (editors tap an open one to complete it; a done or completing one is
-// checked and greyed, with a detail line saying who confirmed it) and tappable text that opens
+// checked and greyed, with a detail line saying who confirmed it; an open one a viewer cannot tick is dulled) and tappable text that opens
 // the task's autosaving inline note editor (no Save or Cancel). A saved note shows as a "Note:"
 // subtitle. In task and event rows the time and the label share one text baseline and the
 // subtitles line up under the label. Task rows are separated by hairlines that start at the
@@ -43,6 +43,9 @@ import {
 import type { TaskActionState } from './useTaskActions';
 
 const alertTone = statusTones.serious;
+
+/** Opacity of the box of an open task that cannot be ticked. */
+const DISABLED_OPACITY = 0.4;
 
 /** Fill of a checked checkbox: the secondary text color, softened. */
 const DONE_FILL = 'rgba(77,77,77,0.55)';
@@ -291,7 +294,8 @@ function ScheduleRow({ row }: { row: ScheduleRowData }) {
 
 /**
  * purpose: The rounded-square box of a task row: empty with a grey border when open, a red border
- *          for an unconfirmed task, filled grey with a white check when done.
+ *          for an unconfirmed task, filled grey with a white check when done, and a light border
+ *          at reduced opacity when it is open but cannot be ticked (disabled).
  * @param props: ({ kind: CheckboxKind }) The look.
  * @return: (JSX.Element) The 22pt box.
  */
@@ -301,6 +305,7 @@ function CheckboxBox({ kind }: { kind: CheckboxKind }) {
       style={[
         styles.box,
         { borderColor: kind === 'alert' ? alertTone.foreground : colors.secondaryText },
+        kind === 'disabled' && { borderColor: colors.separator, opacity: DISABLED_OPACITY },
         kind === 'done' && { backgroundColor: DONE_FILL, borderColor: DONE_FILL },
       ]}
     >
@@ -395,15 +400,15 @@ function TaskRow({
 }) {
   const [noteShown, setNoteShown] = useState(false);
   const marking = action?.status === 'marking';
-  const kind = completing || marking ? 'done' : (checkboxKind(row.variant) ?? 'open');
-  const done = kind === 'done';
-  const alert = kind === 'alert';
   const interactive = checkboxInteractive(row, canEdit) && !completing;
+  const kind = completing || marking ? 'done' : (checkboxKind(row.variant, interactive) ?? 'open');
+  const done = kind === 'done';
+  const alert = row.variant === 'alert';
   const editable = canEditNote(row, canEdit);
   const noteText = noteLine(row.note);
   const textActive = editable || noteText !== null;
   return (
-    <View style={[styles.taskRow, alert && { backgroundColor: alertTone.background }]}>
+    <View style={[styles.taskRow, alert && !done && { backgroundColor: alertTone.background }]}>
       <Pressable
         accessibilityRole="checkbox"
         accessibilityLabel={`Mark ${row.label} done`}

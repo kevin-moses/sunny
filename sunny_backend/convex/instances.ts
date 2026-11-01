@@ -97,15 +97,16 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 /**
  * purpose: Confirm a task instance from any surface. The senior's device or the backend
  *          produces "confirmed"; an editor caregiver produces "resolved" under their name with
- *          confirmedVia "caregiver". Upcoming instances can be confirmed up to 60 minutes
- *          early; missed ones can still be confirmed late. Confirming an already confirmed or
+ *          confirmedVia "caregiver". A senior device can confirm an upcoming instance
+ *          up to 60 minutes early; an editor caregiver can resolve one any time today (for
+ *          example pills given early). Missed ones can still be confirmed late. Confirming an already confirmed or
  *          resolved instance changes nothing and returns it.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
  * @param args: ({instanceId, via, note}) The instance, the surface and an optional note.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- * @raises forbidden when the actor may not confirm; invalid when not due yet, when via is
+ * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the agent only), when via is
  *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
  *          A blank note is stored as absent, but never erases a note already on the
  *          instance (set earlier with setTaskNote): without a note the existing one is kept.
@@ -126,7 +127,11 @@ export async function confirmInstance(
   }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   if (instance.state === "confirmed" || instance.state === "resolved") return instance;
-  if (instance.state === "upcoming" && instance.windowStart - now > EARLY_CONFIRM_MS) {
+  if (
+    !asCaregiver &&
+    instance.state === "upcoming" &&
+    instance.windowStart - now > EARLY_CONFIRM_MS
+  ) {
     throw appError("invalid", "This task is not due yet");
   }
   return await changeInstance(ctx, actor, instance, {

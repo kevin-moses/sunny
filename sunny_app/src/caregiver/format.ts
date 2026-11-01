@@ -2,7 +2,8 @@
 //
 // Purpose: Pure helpers for the caregiver app: the seven-day week strip (today through today+6),
 // the date range and month labels, which tasks are alerts and who is on them, which tasks are
-// open (can be marked done), today's task rows (leftover and today, with the "who confirmed"
+// open (upcoming, due, escalated or missed: an editor can mark any of them done; the checkbox
+// looks open, alert, done or disabled), today's task rows (leftover and today, with the "who confirmed"
 // detail line of done tasks and, for open tasks, what "Mark done" needs), the event rows of any
 // day (tasks and events are kept apart; the week strip dots count events only), the title for the
 // day selected in the week strip, the later days of the week grouped by day, and the chat transcript built from the
@@ -137,12 +138,13 @@ export function isAlert(task: DayTask): boolean {
 }
 
 /**
- * purpose: Whether a task is still open: a caregiver may mark it done.
+ * purpose: Whether a task is still open: an editor caregiver may mark it done at any time today,
+ *          including before it is due (alerts are the escalated and missed subset, see isAlert).
  * @param task: (DayTask) The task.
- * @return: (boolean) True when its state is due, escalated or missed.
+ * @return: (boolean) True when its state is upcoming, due, escalated or missed.
  */
 export function isOpen(task: DayTask): boolean {
-  return isDue(task) || isAlert(task);
+  return task.state === 'upcoming' || isDue(task) || isAlert(task);
 }
 
 /**
@@ -366,17 +368,25 @@ function eventRow(event: EventOccurrence, id: string): ScheduleRowData {
   });
 }
 
-/** How a task row's checkbox looks: an open box, an open box in the serious colors, a checked box. */
-export type CheckboxKind = 'open' | 'alert' | 'done';
+/**
+ * How a task row's checkbox looks: an open box, an open box in the serious colors, a checked box,
+ * or a dulled open box that cannot be ticked (so a tap is never silently ignored).
+ */
+export type CheckboxKind = 'open' | 'alert' | 'done' | 'disabled';
 
 /**
- * purpose: The checkbox a schedule row shows.
+ * purpose: The checkbox a schedule row shows. Done tasks stay checked whether or not they can be
+ *          ticked; an open task that cannot be ticked (a viewer, or a completion in flight)
+ *          is dulled, without the alert border.
  * @param variant: (ScheduleVariant) The row's variant.
+ * @param interactive: (boolean) Whether tapping the checkbox does something (checkboxInteractive).
  * @return: (CheckboxKind | null) The checkbox look; null for events, which keep their icon.
  */
-export function checkboxKind(variant: ScheduleVariant): CheckboxKind | null {
+export function checkboxKind(variant: ScheduleVariant, interactive: boolean): CheckboxKind | null {
   if (variant === 'event') return null;
-  return variant === 'done' ? 'done' : variant === 'alert' ? 'alert' : 'open';
+  if (variant === 'done') return 'done';
+  if (!interactive) return 'disabled';
+  return variant === 'alert' ? 'alert' : 'open';
 }
 
 /**
