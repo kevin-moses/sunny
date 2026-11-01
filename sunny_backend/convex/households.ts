@@ -496,9 +496,11 @@ export const deleteJoinCode = mutation({
 /**
  * purpose: Join a household as a caregiver using an invite code. Device codes are redeemed
  *          by pairDevice instead; a signed-in caregiver who enters one gets a specific
- *          "invalid" error pointing them to a caregiver invite code (the caregiver is already
- *          authenticated, so this reveals nothing to an unauthenticated guesser). Unknown,
- *          used and expired codes give the generic not_found error.
+ *          "invalid" error pointing them to a caregiver invite code. That message is revealed
+ *          only to signed-in caregiver accounts: any Clerk caregiver account can tell a live
+ *          device code from an unknown, used or expired one, which is acceptable given the
+ *          32^8 code space and that /pair already accepts a correct guess. Unknown, used and
+ *          expired codes give the generic not_found error.
  * @param code: (string) The code; trimmed and case-insensitive.
  * @param displayName: (string, optional) Display name; defaults to "Caregiver".
  * @return: (Id<"households">) The joined household.

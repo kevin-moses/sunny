@@ -85,9 +85,9 @@ export interface WeekStripDay {
   /** Day of the month, for example "30". */
   dayOfMonth: string;
   isToday: boolean;
-  /** True when the dot shows: the day has events, or it is today and has tasks. */
+  /** True when the dot shows (the day has "plans"): it has events, or it is today and has tasks. */
   hasMarker: boolean;
-  /** For example "Sunday, November 1, has events"; prefixed "Today, " for today. */
+  /** For example "Sunday, November 1, has plans"; prefixed "Today, " for today. */
   accessibilityLabel: string;
 }
 
@@ -115,7 +115,7 @@ export function buildWeekStrip(day: DayViewData): WeekStripDay[] {
       dayOfMonth: date,
       isToday,
       hasMarker,
-      accessibilityLabel: `${isToday ? 'Today, ' : ''}${spoken}${hasMarker ? ', has events' : ''}`,
+      accessibilityLabel: `${isToday ? 'Today, ' : ''}${spoken}${hasMarker ? ', has plans' : ''}`,
     });
   }
   return days;

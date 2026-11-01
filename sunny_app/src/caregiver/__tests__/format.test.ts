@@ -196,9 +196,16 @@ describe('buildWeekStrip', () => {
 
   it('describes the day for screen readers', () => {
     const days = buildWeekStrip(makeDay({ tasks: [makeTask()] }));
-    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has events');
+    expect(days[0].accessibilityLabel).toBe('Today, Thursday, October 29, has plans');
     expect(days[1].accessibilityLabel).toBe('Friday, October 30');
     expect(days[3].accessibilityLabel).toBe('Sunday, November 1');
+  });
+
+  it('says "has plans" for today when it has only tasks and no events', () => {
+    const day = makeDay({ tasks: [makeTask()], eventsToday: [], upcoming: [] });
+    const [today] = buildWeekStrip(day);
+    expect(today.hasMarker).toBe(true);
+    expect(today.accessibilityLabel).toBe('Today, Thursday, October 29, has plans');
   });
 });
 

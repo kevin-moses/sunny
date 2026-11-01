@@ -1,7 +1,8 @@
 // households.test.ts
 // Purpose: Tests for households.ts with convex-test: creation and defaults, access control
 // for every public function (non-members, viewers, devices), role rules for join codes,
-// single-use and 24 hour expiry of codes, caregiver and device redemption, member removal
+// single-use and 24 hour expiry of codes (an expired or redeemed device code gives a caregiver
+// the generic not_found error), caregiver and device redemption, member removal
 // and the on-call rule, push token ownership (a live owner's token is protected, an orphaned
 // owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
 // the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
@@ -748,6 +749,36 @@ describe("join codes", () => {
         .unique();
       await ctx.db.patch(row!._id, { expiresAt: Date.now() - 1 });
     });
+    await expect(
+      t.withIdentity({ subject: "user_b" }).mutation(api.households.redeemJoinCode, { code }),
+    ).rejects.toMatchObject({
+      data: { code: "not_found", message: "This code is invalid or has expired" },
+    });
+  });
+
+  test("an expired device code gets the generic not_found error for a caregiver", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const code = await makeCode(t, householdId, "senior_phone");
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("joinCodes")
+        .withIndex("by_code", (q) => q.eq("code", code))
+        .unique();
+      await ctx.db.patch(row!._id, { expiresAt: Date.now() - 1 });
+    });
+    await expect(
+      t.withIdentity({ subject: "user_b" }).mutation(api.households.redeemJoinCode, { code }),
+    ).rejects.toMatchObject({
+      data: { code: "not_found", message: "This code is invalid or has expired" },
+    });
+  });
+
+  test("an already-redeemed device code gets the generic not_found error for a caregiver", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const code = await makeCode(t, householdId, "home_display");
+    await t.mutation(internal.households.pairDevice, { code, userId: "device_1" });
     await expect(
       t.withIdentity({ subject: "user_b" }).mutation(api.households.redeemJoinCode, { code }),
     ).rejects.toMatchObject({

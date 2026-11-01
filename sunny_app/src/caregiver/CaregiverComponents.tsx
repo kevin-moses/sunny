@@ -4,9 +4,9 @@
 // and optional trailing control), the section title, the calendar card with its seven-day week
 // strip (tappable cells that select a day), the alert card with its "I'm on it" action (or who
 // is already on it), the schedule card for the selected day, and the later-days card grouping
-// the rest of the week's events by day. They take plain data from
-// format.ts and render the Figma design: warm translucent cards, serious status colors for
-// alerts, accent-tinted selection. No motion.
+// the rest of the week's events by day. They take plain data from format.ts and render the
+// Figma design: warm translucent cards, serious status colors for alerts, accent-tinted
+// selection. No motion.
 //
 // Last modified: 2026-10-31
 
@@ -76,7 +76,7 @@ export function SectionTitle({ text }: { text: string }) {
 
 /**
  * purpose: One cell of the week strip, a button that selects the day: weekday, date and a dot
- *          when the day has events. The selected day is filled with the accent color; today,
+ *          when the day has plans (events, or tasks for today). The selected day is filled with the accent color; today,
  *          when not selected, shows its date number in the accent color.
  * @param props: ({ day: WeekStripDay, selected: boolean, onSelect: (localDate: string) => void })
  *        The day, whether it is the selected one and the press handler.
@@ -97,9 +97,14 @@ function WeekStripCell({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={day.accessibilityLabel}
+      accessibilityHint="Shows this day's schedule"
       accessibilityState={{ selected }}
       onPress={() => onSelect(day.localDate)}
-      style={[styles.dayCell, selected && { backgroundColor: accentColor }]}
+      style={({ pressed }) => [
+        styles.dayCell,
+        selected && { backgroundColor: accentColor },
+        pressed && styles.dayCellPressed,
+      ]}
     >
       <Text style={[type.caption, { color: selected ? colors.onAccent : colors.secondaryText }]}>
         {day.weekdayShort}
@@ -310,6 +315,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
   },
+  dayCellPressed: { opacity: 0.6 },
   dot: { width: 6, height: 6, borderRadius: 3 },
   alertCard: { gap: 8, padding: 12, borderRadius: 12, borderWidth: 1 },
   alertTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },

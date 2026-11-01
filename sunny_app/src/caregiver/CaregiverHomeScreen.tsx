@@ -3,11 +3,11 @@
 // Purpose: The caregiver Home tab: "<name>'s week" with the account button, the calendar card
 // (seven-day week strip whose cells choose the day shown), the Alerts section (tasks that were
 // escalated or missed, with an "I'm on it" button for editors, or who is already on it) and the
-// schedule of the selected day (today by default) followed by
-// "Later this week", the events of the days after it grouped by day (hidden when there are none). Everything comes from the shared day view
-// state owned by CaregiverApp, and the derived lists are computed once per day view and
-// selection. While the first load is pending it shows a spinner, and if
-// it fails with nothing cached, the error message.
+// schedule of the selected day (today by default) followed by "Later this week", the events of
+// the days after it grouped by day (hidden when there are none). Everything comes from the
+// shared day view state owned by CaregiverApp, and the derived lists are computed once per day
+// view and selection. While the first load is pending it shows a spinner, and if it fails with
+// nothing cached, the error message.
 //
 // Last modified: 2026-10-31
 
