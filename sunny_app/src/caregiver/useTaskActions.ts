@@ -75,7 +75,10 @@ export function useTaskActions(userId: string | null): TaskActions {
   ): Promise<boolean> => {
     setAction(instanceId, working);
     try {
-      const message = notice?.(await call()) ?? null;
+      // Await the call first: an optional call on notice would skip evaluating its arguments
+      // (and so the mutation) whenever no notice is given.
+      const result = await call();
+      const message = notice ? notice(result) : null;
       setAction(instanceId, message === null ? undefined : { status: 'error', message });
       return message === null;
     } catch (e) {
