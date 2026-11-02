@@ -12,7 +12,7 @@
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write convex scripts",
     "format:check": "prettier --check convex scripts",
-    "setup:agent": "tsx --env-file=.env.local scripts/setup_managed_agent.ts",
+    "setup:agent": "tsx --env-file-if-exists=../.env --env-file-if-exists=.env.local scripts/setup_managed_agent.ts",
     "caregiver": "tsx scripts/caregiver.ts"
   },
   "dependencies": {

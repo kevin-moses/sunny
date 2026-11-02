@@ -4,18 +4,32 @@
 // finishedTurn (running while the session works or waits for tool results, replied at end of
 // turn with the joined agent text or "Done.", stopped for any other idle reason, and only the
 // turn after the latest user message counts), plus readAgentConfig (missing variables are
-// named, the session budget defaults to 100 cents and ignores invalid values).
+// named, the session budget defaults to 100 cents and ignores invalid values), and
+// createSession, with the Anthropic SDK replaced by a recording double (the network boundary):
+// the session is created with the deployed model, system prompt and tools as an
+// agent_with_overrides of the configured agent.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { AGENT_MODEL, AGENT_SYSTEM_PROMPT } from "./agentConfig";
+import { AGENT_TOOLS } from "./agentTools";
 import {
   countUserMessages,
+  createSession,
   finishedTurn,
   pendingToolUses,
   readAgentConfig,
   type SessionEvent,
 } from "./managedAgents";
+
+const sdk = vi.hoisted(() => ({ create: vi.fn() }));
+
+vi.mock("@anthropic-ai/sdk", () => ({
+  default: class {
+    beta = { sessions: { create: sdk.create } };
+  },
+}));
 
 /**
  * purpose: A user.message event.
@@ -223,5 +237,25 @@ describe("readAgentConfig", () => {
     expect(() => readAgentConfig({ SUNNY_AGENT_ID: "agent_1" })).toThrow(
       /ANTHROPIC_API_KEY, SUNNY_ENVIRONMENT_ID/,
     );
+  });
+});
+
+describe("createSession", () => {
+  test("sends the deployed model, prompt and tools as overrides of the agent", async () => {
+    sdk.create.mockResolvedValue({ id: "sess_new" });
+    const id = await createSession(
+      { apiKey: "key", agentId: "agent_1", environmentId: "env_1", budgetCents: 100 },
+      { title: "t", requestId: "r1", householdId: "h1", text: "hello" },
+    );
+    expect(id).toBe("sess_new");
+    const body = sdk.create.mock.calls[0]![0];
+    expect(body.agent).toEqual({
+      type: "agent_with_overrides",
+      id: "agent_1",
+      model: AGENT_MODEL,
+      system: AGENT_SYSTEM_PROMPT,
+      tools: AGENT_TOOLS,
+    });
+    expect(body.environment_id).toBe("env_1");
   });
 });

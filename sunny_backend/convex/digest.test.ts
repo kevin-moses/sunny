@@ -344,6 +344,7 @@ describe("facts", () => {
         spokenPrompt: "x",
         checklistItems: [],
         times: [],
+        asNeededMaxPerDay: 3,
         windowMinutes: 60,
         createdByKind: "caregiver",
         active: true,

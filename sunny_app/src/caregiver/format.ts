@@ -10,6 +10,8 @@
 // - today's task rows (leftover and today, with the "who confirmed" detail line of done tasks);
 // - the event rows of any day (tasks and events are different row types; the week strip dots
 //   count events only);
+// - the planned task rows of a selected future day (plannedTasksForDate: read-only rows projected
+//   from task schedules by the server; none for today, whose tasks are the tickable list);
 // - the title for the day selected in the week strip, and the later days of the week grouped by
 //   day;
 // - the chat transcript built from the household's agent requests (oldest first).
@@ -25,7 +27,15 @@
 import type { FunctionReturnType } from 'convex/server';
 
 import type { api } from '../backend/convexApi';
-import { displayTime, eventDetails, eventKey, isDone, isOpen } from '../day/format';
+import {
+  compareTaskTime,
+  displayTime,
+  eventDetails,
+  eventKey,
+  isAnytime,
+  isDone,
+  isOpen,
+} from '../day/format';
 import {
   addDays,
   dayOfMonth,
@@ -35,7 +45,7 @@ import {
   weekdayName,
   yearOf,
 } from '../day/localDate';
-import type { DayTask, DayViewData, EventOccurrence } from '../day/types';
+import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../day/types';
 
 /** An agent request as the chat tab sees it (agentRequests.list, newest first). */
 export type AgentRequest = FunctionReturnType<typeof api.agentRequests.list>[number];
@@ -136,10 +146,11 @@ export function buildWeekStrip(day: DayViewData): WeekStripDay[] {
 /**
  * purpose: Whether a task needs a caregiver's attention.
  * @param task: (DayTask) The task.
- * @return: (boolean) True when its state is escalated or missed.
+ * @return: (boolean) True when its state is escalated or missed; never for an anytime task
+ *          (anytime tasks raise no alerts).
  */
 export function isAlert(task: DayTask): boolean {
-  return task.state === 'escalated' || task.state === 'missed';
+  return !isAnytime(task) && (task.state === 'escalated' || task.state === 'missed');
 }
 
 /**
@@ -413,7 +424,40 @@ export function eventsForDate(day: DayViewData, date: string): EventRowData[] {
     .map((event) => eventRow(event, eventKey(event)));
 }
 
-/** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order. */
+/** A task planned on a future day: read-only, so it has no instance, state, note or actions. */
+export interface PlannedTaskRowData {
+  id: string;
+  /** "8:00 AM", or "Anytime". */
+  time: string;
+  label: string;
+  accessibilityLabel: string;
+}
+
+/**
+ * purpose: The planned task rows of a selected day after today, in the order the server sent
+ *          them (timed by time, anytime last). Today has none: its tasks are the tickable list
+ *          above the calendar, so showing them again would duplicate them.
+ * @param day: (DayViewData) The day view.
+ * @param date: (string) The selected local date "YYYY-MM-DD".
+ * @return: (PlannedTaskRowData[] | null) null when the date is today (or earlier), otherwise
+ *          that day's rows; empty when nothing is planned.
+ */
+export function plannedTasksForDate(day: DayViewData, date: string): PlannedTaskRowData[] | null {
+  if (date <= day.localDate) return null;
+  return day.upcomingTasks
+    .filter((task) => task.localDate === date)
+    .map((task: PlannedTask) => {
+      const time = displayTime(task.scheduledTime);
+      return {
+        id: `planned-${task.taskId}-${task.scheduledTime}`,
+        time,
+        label: task.displayLabel,
+        accessibilityLabel: `${time}, ${task.displayLabel}, planned, not available to mark done yet`,
+      };
+    });
+}
+
+/** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order, anytime last. */
 export interface TodaysTasks {
   leftover: TaskRowData[];
   today: TaskRowData[];
@@ -422,14 +466,14 @@ export interface TodaysTasks {
 /**
  * purpose: Today's task rows, independent of the week strip selection and never events. Tasks
  *          carried over from yesterday go to leftover, the rest to today, each in scheduled-time
- *          order (ties keep the day view's order).
+ *          order with anytime tasks last (ties keep the day view's order).
  * @param day: (DayViewData) The day view.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id, to word "by you".
  * @return: (TodaysTasks) The leftover and today's rows; both empty when there are no tasks.
  */
 export function todaysTasks(day: DayViewData, userId: string | null): TodaysTasks {
   const result: TodaysTasks = { leftover: [], today: [] };
-  const ordered = [...day.tasks].sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
+  const ordered = [...day.tasks].sort(compareTaskTime);
   for (const task of ordered) {
     const row = taskRow(task, { id: `task-${task.instanceId}`, userId });
     (task.carriedOver ? result.leftover : result.today).push(row);

@@ -9,12 +9,16 @@
 // restores the task), only the latest tick has a toast; editors tap a task's text to open an
 // autosaving inline note editor, one at a time; saved notes show as a subtitle), the calendar
 // card (seven-day week strip whose cells choose the day shown; the dots mean events) with the
-// selected day's events directly below it (events only, never tasks), and "Later this week", the
-// events of the days after the selected one grouped by day (hidden when there are none).
+// selected day's section directly below it: for today, its events only (its tasks are the list
+// above); for a later day, first that day's planned tasks in their own read-only card (dulled
+// disabled checkboxes, "No tasks." when none), then its events in a separate card. Then "Later
+// this week", the events of the days after the selected one grouped by day (hidden when there
+// are none; events only).
 // Everything comes from the shared day view state owned by CaregiverApp. The derived lists are
 // computed in two memos: one per day view and user (tasks, alerts, the strip, the range) and one
-// per day view and selection (the selected day's events, the later days, the title), and the
-// memoized cards get stable callbacks. While the first load is pending it shows a spinner, and
+// per day view and selection (the selected day's planned tasks and events, the later days, the
+// title), and the memoized cards get stable callbacks. While the first load is pending it shows a
+// spinner, and
 // if it fails with nothing cached, the error message. The scroll view lifts the focused note
 // editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses the keyboard on
 // drag, which closes (and saves) an open note.
@@ -37,6 +41,7 @@ import {
   CalendarCard,
   EventsCard,
   LaterWeekCard,
+  PlannedTasksCard,
   ScreenHeader,
   SectionTitle,
   TasksCard,
@@ -48,6 +53,7 @@ import {
   eventsForDate,
   isAlert,
   laterThisWeek,
+  plannedTasksForDate,
   resolveSelectedDate,
   todaysTasks,
   selectedDayTitle,
@@ -175,6 +181,7 @@ export function CaregiverHomeScreen({
     return {
       selectedDate,
       title: selectedDayTitle(day.localDate, selectedDate),
+      planned: plannedTasksForDate(day, selectedDate),
       events: eventsForDate(day, selectedDate),
       later: laterThisWeek(day, strip, selectedDate),
     };
@@ -240,6 +247,13 @@ export function CaregiverHomeScreen({
                 onSelect={selectDay}
               />
               <SectionTitle text={selected.title} />
+              {selected.planned !== null && (
+                <PlannedTasksCard
+                  rows={selected.planned}
+                  emptyText="No tasks."
+                  dayTitle={selected.title}
+                />
+              )}
               <EventsCard rows={selected.events} emptyText="No events." />
             </View>
             {selected.later.length > 0 && (

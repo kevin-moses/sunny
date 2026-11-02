@@ -17,9 +17,11 @@
 // the household's daily digest once its digestTime passes (digest.ts), so there is no second
 // per-minute cron. Every outbox row goes through insertNotification (lib/delivery.ts), which
 // enqueues its delivery. The functions take `now` so tests can drive the clock;
-// tickHouseholdCore is the pure pass tests call directly.
+// tickHouseholdCore is the pure pass tests call directly. Anytime instances (tasks without a
+// time, lib/anytime.ts) open and close like the others but never fire a step, so they never
+// notify anyone; their window ends two local midnights after their date.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -27,6 +29,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { queueDigestIfDue } from "./digest";
+import { isAnytimeInstance } from "./lib/anytime";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
 import { announceEvents } from "./lib/eventNotices";
@@ -173,7 +176,8 @@ async function queueNotifications(
 /**
  * purpose: Fire every due escalation step once on every open instance of the household whose
  *          window has not closed, record it on the instance and queue the notifications for
- *          steps to send.
+ *          steps to send. Anytime instances (lib/anytime.ts) are skipped: they never prompt
+ *          or escalate, whatever policy their task has.
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms.
@@ -191,7 +195,7 @@ async function fireSteps(
       .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
       .collect();
     for (const instance of open) {
-      if (instance.windowEnd <= now) continue;
+      if (instance.windowEnd <= now || isAnytimeInstance(instance)) continue;
       const task = await ctx.db.get(instance.taskId);
       if (!task || !task.active || task.escalationPolicyId === undefined) continue;
       const policy = await ctx.db.get(task.escalationPolicyId);

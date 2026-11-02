@@ -13,10 +13,14 @@
 // session id onto its row up front. `continueLatest` lets the server own the thread: it
 // continues the household's newest succeeded request that has a session (or starts fresh when
 // there is none), so the app never tracks which request to continue. It excludes
-// continueRequestId ("invalid" if both are given). Views carry requestedByName (the requester's
+// continueRequestId ("invalid" if both are given). Each row stores the agent config fingerprint
+// of its session (agentConfig); a conversation started under a different config (a deploy
+// changed the prompt, model or tools, or an old row has none) is not continued, so the next
+// continueLatest message starts a session with the deployed config and is marked carryOver (the
+// runtime then replays the recent chat into it). Views carry requestedByName (the requester's
 // member display name, null once they have left) so the shared chat can attribute messages.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-01
 
 import { v } from "convex/values";
 import type { WorkflowId } from "@convex-dev/workflow";
@@ -24,6 +28,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { workflow } from "./agentRuntime";
+import { AGENT_CONFIG_FINGERPRINT } from "./lib/agentFingerprint";
 import { findMember, requireEditor, type CaregiverActor } from "./lib/access";
 import { isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { audit } from "./lib/audit";
@@ -143,14 +148,15 @@ async function countInProgress(ctx: QueryCtx, householdId: Id<"households">): Pr
  * @param ctx: (MutationCtx) Context.
  * @param householdId: (Id<"households">) Household of the new request.
  * @param continueRequestId: (Id<"agentRequests">) The earlier request.
- * @return: (Promise<string>) The session id to continue.
+ * @return: (Promise<{ sessionId, agentConfig }>) The session id to continue and the agent config
+ *          fingerprint of that session (undefined for rows from before it was stored).
  * @raises not_found when the earlier request cannot be continued; limit when the session is busy.
  */
 async function requireContinuable(
   ctx: MutationCtx,
   householdId: Id<"households">,
   continueRequestId: Id<"agentRequests">,
-): Promise<string> {
+): Promise<{ sessionId: string; agentConfig: string | undefined }> {
   const earlier = await ctx.db.get(continueRequestId);
   if (
     !earlier ||
@@ -167,12 +173,14 @@ async function requireContinuable(
       .first();
     if (busy) throw appError("limit", "Sunny is still working on that conversation");
   }
-  return earlier.sessionId;
+  return { sessionId: earlier.sessionId, agentConfig: earlier.agentConfig };
 }
 
 /**
  * purpose: The household's newest succeeded request that has a session, the head of its
- *          conversation thread.
+ *          conversation thread. Returns null (so the next message starts a new session) when
+ *          there is none or its session was started under a different agent config than the
+ *          deployed one (AGENT_CONFIG_FINGERPRINT).
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @return: (Promise<Id<"agentRequests"> | null>) The request, or null when there is none.
@@ -189,7 +197,9 @@ async function findLatestContinuable(
     )
     .order("desc")
     .take(MAX_CONTINUABLE_SCAN);
-  return rows.find((row) => row.sessionId)?._id ?? null;
+  const latest = rows.find((row) => row.sessionId);
+  if (!latest || latest.agentConfig !== AGENT_CONFIG_FINGERPRINT) return null;
+  return latest._id;
 }
 
 /**
@@ -199,7 +209,9 @@ async function findLatestContinuable(
  * @param continueRequestId: (Id<"agentRequests">, optional) A succeeded earlier request whose
  *        conversation to continue.
  * @param continueLatest: (boolean, optional) Continue the household's newest succeeded
- *        conversation instead, or start fresh if there is none. Not with continueRequestId.
+ *        conversation instead, or start a new session if there is none or the agent config
+ *        changed since (the request is then marked carryOver). Omitting it starts fresh without
+ *        carry-over. Not with continueRequestId.
  * @return: (Id<"agentRequests">) The new request; subscribe to `get` for the reply.
  * @raises invalid when both continueRequestId and continueLatest are given.
  */
@@ -227,7 +239,7 @@ export const request = mutation({
       args.continueRequestId ??
       (args.continueLatest ? await findLatestContinuable(ctx, args.householdId) : null) ??
       undefined;
-    const sessionId = continueRequestId
+    const continued = continueRequestId
       ? await requireContinuable(ctx, args.householdId, continueRequestId)
       : undefined;
     const requestId = await ctx.db.insert("agentRequests", {
@@ -235,7 +247,10 @@ export const request = mutation({
       requestedBy: actor.userId,
       message,
       continueRequestId,
-      sessionId,
+      sessionId: continued?.sessionId,
+      // A continuation runs in the old session, so it keeps that session's config fingerprint.
+      agentConfig: continued ? continued.agentConfig : AGENT_CONFIG_FINGERPRINT,
+      carryOver: !continued && args.continueLatest ? true : undefined,
       status: "queued",
     });
     const workflowId = await workflow.start(

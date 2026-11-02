@@ -10,8 +10,9 @@
 // midnight stay listed and confirmable, and deleting a task purges its rows in bounded
 // batches while orphaned instances are harmless. The clock is driven by passing `now` to the
 // internal functions and by faking timers for the public functions and scheduled functions.
+// A task created with no policy gets the type default and so is prompted on the tick.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -104,7 +105,8 @@ async function setup(iso: string): Promise<Fixture> {
 }
 
 /**
- * purpose: Create a medication task as Pat on the medication policy.
+ * purpose: Create a medication task as Pat on the medication policy. A null policy override
+ *          strips the policy after creation (creation itself would assign the type default).
  * @param f: (Fixture) Fixture.
  * @param fields: (object) Overrides: title, times, spokenPrompt, policy and more.
  * @return: (Promise<Id<"tasks">>) The task.
@@ -117,11 +119,12 @@ async function makeTask(
     spokenPrompt: string;
     escalationPolicyId: Id<"escalationPolicies"> | null;
     windowMinutes: number;
-    type: "medication" | "routine";
+    type: "medication" | "routine" | "reminder";
+    asNeededMaxPerDay: number;
   }> = {},
 ): Promise<Id<"tasks">> {
   const { escalationPolicyId, title = "Morning pills", ...rest } = fields;
-  return await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
+  const taskId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
     householdId: f.householdId,
     type: "medication",
     title,
@@ -131,6 +134,12 @@ async function makeTask(
       escalationPolicyId === null ? undefined : (escalationPolicyId ?? f.medication),
     ...rest,
   });
+  if (escalationPolicyId === null) {
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(taskId, { escalationPolicyId: undefined });
+    });
+  }
+  return taskId;
 }
 
 /**
@@ -352,7 +361,7 @@ describe("expansion", () => {
 
   test("an unscheduled (as-needed) task creates no instances", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { times: [], type: "medication" });
+    const taskId = await makeTask(f, { times: [], type: "medication", asNeededMaxPerDay: 2 });
     const rows = await f.t.run(
       async (ctx) =>
         await ctx.db
@@ -578,6 +587,26 @@ describe("escalation ladder", () => {
     expect((await reload(f.t, i1)).state).toBe("due");
     await tick(f.t, "2027-03-13T14:00:00Z");
     expect((await reload(f.t, i1)).state).toBe("missed");
+  });
+
+  test("a task created with no policy gets the type default and is prompted on the tick", async () => {
+    const f = await setup("2027-03-13T11:00:00Z");
+    const taskId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
+      householdId: f.householdId,
+      type: "routine",
+      title: "Walk",
+      displayLabel: "Walk",
+      times: ["08:00"],
+    });
+    const task = await f.t.run(async (ctx) => await ctx.db.get(taskId));
+    expect(task!.escalationPolicyId).toBe(f.promptOnly);
+    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
+    const result = await tick(f.t, "2027-03-13T13:00:00Z");
+    expect(result.stepsFired).toBe(1);
+    const prompts = (await outbox(f.t, i1)).filter(
+      (o) => (o.payload["action"] as string) === "prompt_senior",
+    );
+    expect(prompts).toHaveLength(1);
   });
 
   test("an inactive task never fires", async () => {
@@ -967,7 +996,7 @@ describe("bounded task deletion", () => {
 
   test("one purge batch removes at most 200 instances and reports more remain", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { times: [] });
+    const taskId = await makeTask(f, { times: [], asNeededMaxPerDay: 2 });
     await bulkUp(f, taskId, 450, 250);
     const more = await f.t.run(async (ctx) => await purgeTaskBatch(ctx, f.householdId, taskId));
     expect(more).toBe(true);
@@ -977,7 +1006,7 @@ describe("bounded task deletion", () => {
 
   test("removing a task with hundreds of rows deletes the task now and the rest in batches", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { times: [] });
+    const taskId = await makeTask(f, { times: [], asNeededMaxPerDay: 2 });
     await bulkUp(f, taskId, 450, 250);
     await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.remove, {
       householdId: f.householdId,

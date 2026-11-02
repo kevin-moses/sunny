@@ -1,10 +1,11 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection, messages and claim text, leftover (carried-over) tasks,
+// alert detection (never for anytime tasks), messages and claim text, anytime rows listed last, leftover (carried-over) tasks,
 // the note input, the done detail line (who confirmed, surface), today's task rows (leftover
 // split, notes, checkboxState for editors, viewers and busy rows, note visibility), the
-// events-only rows of any day (a separate row type from task rows),
+// events-only rows of any day (a separate row type from task rows), the planned task rows of a
+// selected future day (none for today, so today's tasks are not duplicated),
 // the selected-day title and fallback rule,
 // the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
@@ -14,7 +15,7 @@
 
 import { describe, expect, it } from '@jest/globals';
 
-import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
+import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../../day/types';
 import {
   ALREADY_DONE_MESSAGE,
   alertMessage,
@@ -33,6 +34,7 @@ import {
   messageSpeaker,
   noteFromInput,
   noteLine,
+  plannedTasksForDate,
   resolveSelectedDate,
   shouldSaveNote,
   selectedDayTitle,
@@ -132,6 +134,7 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
     dateLabel: 'October 29',
     header: 'Thursday evening',
     tasks: [],
+    upcomingTasks: [],
     eventsToday: [],
     nextUp: null,
     upcoming: [],
@@ -278,6 +281,62 @@ describe('alerts', () => {
   });
 });
 
+/**
+ * purpose: Build a planned task.
+ * @param overrides: (Partial<Record<keyof PlannedTask, unknown>>) Fields to set.
+ * @return: (PlannedTask) An anytime task on 2026-11-02 unless overridden.
+ */
+function makePlanned(overrides: Partial<Record<keyof PlannedTask, unknown>> = {}): PlannedTask {
+  return {
+    localDate: '2026-11-02',
+    scheduledTime: 'anytime',
+    taskId: 'k1',
+    type: 'reminder',
+    displayLabel: 'License renewal',
+    title: 'Renew license',
+    ...overrides,
+  } as PlannedTask;
+}
+
+describe('plannedTasksForDate', () => {
+  it('is null for today, so the tickable list is not duplicated', () => {
+    const day = makeDay({ upcomingTasks: [makePlanned({ localDate: '2026-10-29' })] });
+    expect(plannedTasksForDate(day, '2026-10-29')).toBeNull();
+  });
+
+  it('lists the rows of the selected future day only, with Anytime and clock times', () => {
+    const day = makeDay({
+      upcomingTasks: [
+        makePlanned({ localDate: '2026-10-30', scheduledTime: '08:00', displayLabel: 'Vitamin' }),
+        makePlanned({ localDate: '2026-10-30' }),
+        makePlanned({ localDate: '2026-10-31', displayLabel: 'Other day' }),
+      ],
+    });
+    const rows = plannedTasksForDate(day, '2026-10-30');
+    expect(rows?.map((r) => [r.time, r.label])).toEqual([
+      ['8:00 AM', 'Vitamin'],
+      ['Anytime', 'License renewal'],
+    ]);
+    expect(new Set(rows?.map((r) => r.id)).size).toBe(2);
+    expect(rows?.[1].accessibilityLabel).toContain('planned');
+  });
+
+  it('is an empty list for a future day with nothing planned', () => {
+    expect(plannedTasksForDate(makeDay(), '2026-10-31')).toEqual([]);
+  });
+
+  it('keeps events out of the rows, and tasks out of the event rows', () => {
+    const day = makeDay({
+      upcomingTasks: [makePlanned({ localDate: '2026-10-30' })],
+      upcoming: [makeEvent({ localDate: '2026-10-30', label: 'Walk' })],
+    });
+    expect(plannedTasksForDate(day, '2026-10-30')?.map((r) => r.label)).toEqual([
+      'License renewal',
+    ]);
+    expect(eventsOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Walk']);
+  });
+});
+
 describe('eventsForDate', () => {
   it('is empty when no events are scheduled', () => {
     expect(eventsOf(makeDay(), '2026-10-29')).toEqual([]);
@@ -353,6 +412,30 @@ describe('todaysTasks', () => {
       eventsToday: [makeEvent({ startTime: '09:00' })],
     });
     expect(todaysTasks(day, USER).today.map((r) => r.id)).toEqual(['task-a', 'task-b']);
+  });
+
+  it('lists anytime rows after the timed ones with the time "Anytime"', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'any', scheduledTime: 'anytime', state: 'due' }),
+        makeTask({ instanceId: 'late', scheduledTime: '20:00' }),
+        makeTask({ instanceId: 'early', scheduledTime: '08:00' }),
+      ],
+    });
+    const { today } = todaysTasks(day, USER);
+    expect(today.map((r) => r.id)).toEqual(['task-early', 'task-late', 'task-any']);
+    expect(today[2]).toMatchObject({ time: 'Anytime', variant: 'open' });
+    expect(today[2]?.accessibilityLabel).toContain('Anytime');
+  });
+
+  it('lists a left-over anytime row after left-over timed rows', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'any', scheduledTime: 'anytime', carriedOver: true, state: 'due' }),
+        makeTask({ instanceId: 'late', scheduledTime: '23:30', carriedOver: true, state: 'due' }),
+      ],
+    });
+    expect(todaysTasks(day, USER).leftover.map((r) => r.id)).toEqual(['task-late', 'task-any']);
   });
 
   it('assigns a variant to each kind of task row', () => {
@@ -605,6 +688,13 @@ describe('hasInProgress', () => {
     );
     expect(hasInProgress(finished)).toBe(false);
     expect(hasInProgress([])).toBe(false);
+  });
+});
+
+describe('anytime alerts', () => {
+  it('never treats an anytime task as an alert', () => {
+    expect(isAlert(makeTask({ scheduledTime: 'anytime', state: 'missed' }))).toBe(false);
+    expect(isAlert(makeTask({ scheduledTime: 'anytime', state: 'escalated' }))).toBe(false);
   });
 });
 

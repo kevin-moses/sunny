@@ -7,7 +7,8 @@
 // The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
 // the public functions resolve the actor from auth and use the server clock. Every instance
-// state, claim, snooze and note change is audited (lib/schedule.changeInstance).
+// state, claim, snooze and note change is audited (lib/schedule.changeInstance). A bare "Done"
+// (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
 //
 // Last modified: 2026-11-01
 
@@ -23,6 +24,7 @@ import {
   requireSenior,
 } from "./lib/access";
 import type { Actor, CaregiverActor } from "./lib/access";
+import { isAnytimeInstance } from "./lib/anytime";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -279,9 +281,10 @@ export async function undoResolveInstance(
 }
 
 /**
- * purpose: Pick the entry "Done" means. No label: the earliest due or escalated entry. With a
- *          label: entries whose display label contains it (case-insensitive), preferring those
- *          due now, then any still open, else already done.
+ * purpose: Pick the entry "Done" means. No label: the earliest due or escalated timed entry
+ *          (anytime entries are only matched by label). With a label: entries whose display
+ *          label contains it (case-insensitive), preferring those due now, then any still open,
+ *          else already done.
  * @param today: (TodayEntry[]) Today's entries in schedule order.
  * @param label: (string | null) Lower-cased, trimmed label, or null for none.
  * @return: (ConfirmDueResult | {entry: TodayEntry}) A final result, or the entry to confirm.
@@ -297,7 +300,8 @@ function pickDueEntry(
    */
   const isDue = (e: TodayEntry): boolean => e.state === "due" || e.state === "escalated";
   if (label === null) {
-    const entry = today.find(isDue);
+    // An anytime entry is open all day, so a bare "Done" never means it; it needs its label.
+    const entry = today.find((e) => isDue(e) && !isAnytimeInstance(e));
     return entry ? { entry } : { status: "nothing_due" };
   }
   const matches = today.filter((e) => e.displayLabel.toLowerCase().includes(label));

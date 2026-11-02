@@ -10,7 +10,10 @@
 # Memory-care pivot (2026-10-25): replaced reminders-table CRUD with household task RPCs.
 # Convex migration (2026-10-29): RPCs became Convex calls; timestamps are epoch ms.
 #
-# Last modified: 2026-10-29
+# Anytime tasks (2026-11-01): a task with no time of day arrives with scheduledTime "anytime"
+# (ANYTIME). It is spoken as "<label>, anytime today" and is never "due now" or "not due until".
+#
+# Last modified: 2026-11-01
 
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -19,6 +22,9 @@ from convex_client import ConvexClient
 
 _DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _DONE_STATES = {"confirmed", "resolved"}
+# scheduledTime of an anytime task (no time of day). Mirrors ANYTIME in
+# sunny_backend/convex/lib/anytime.ts; keep the two in sync.
+ANYTIME = "anytime"
 
 
 def format_time_for_voice(t: str) -> str:
@@ -109,20 +115,27 @@ def describe_instance(item: dict, tz: str) -> str:
     purpose: Describe one of today's task instances for voice.
     @param item: (dict) Entry from agent:today / agent:getContext()['today'] (camelCase keys).
     @param tz: (str) IANA timezone of the household.
-    @return: (str) e.g. "8 AM, Morning pills: done at 8:10 AM".
+    @return: (str) e.g. "8 AM, Morning pills: done at 8:10 AM"; for an anytime task
+             "Water plants, anytime today: still to do today".
     """
     label = item.get("displayLabel", "")
-    when = format_time_for_voice(item.get("scheduledTime", ""))
+    anytime = item.get("scheduledTime", "") == ANYTIME
     state = item.get("state", "")
+    if anytime:
+        when = f"{label}, anytime today"
+        open_status = "still to do today"
+    else:
+        when = f"{format_time_for_voice(item.get('scheduledTime', ''))}, {label}"
+        open_status = "due now"
     if state in _DONE_STATES and item.get("confirmedAt"):
         status = f"done at {local_clock(item['confirmedAt'], tz)}"
-    elif state in ("due", "escalated"):
-        status = "due now"
+    elif (anytime and state != "missed") or state in ("due", "escalated"):
+        status = open_status
     elif state == "missed":
         status = "not done yet"
     else:
         status = "later today"
-    return f"{when}, {label}: {status}"
+    return f"{when}: {status}"
 
 
 async def db_list_today(client: ConvexClient, household_id: str, tz: str) -> str:
@@ -169,6 +182,8 @@ async def db_confirm_task(
     if status == "nothing_due":
         return "Nothing is due right now."
     if status == "not_due_yet":
+        if r.get("scheduledTime") == ANYTIME:
+            return f"{label} is not ready to be marked done yet."
         return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
     if status == "ambiguous":
         options = "; ".join(describe_instance(o, tz) for o in r.get("options") or [])

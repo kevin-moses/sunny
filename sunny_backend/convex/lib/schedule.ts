@@ -7,7 +7,13 @@
 // Cascades the SQL foreign keys performed (instance deletes remove their notifications, task
 // deletes remove instances and dose log rows) are done here explicitly. Deleting a task
 // removes the task row at once and the rest in bounded batches (purgeTaskBatch), because a
-// long-lived task has more rows than one mutation may touch.
+// long-lived task has more rows than one mutation may touch. An anytime task (no times, not a
+// medication; lib/anytime.ts) gets one instance per day it occurs, with the sentinel
+// scheduledTime and a window from local midnight to the next local midnight, or two days
+// later when the task does not occur the next day (then it carries over as Leftover). When a
+// task turns anytime or timed, its open instances of the other kind for today and later are
+// removed on resync. occursOn (the schedule rule) is exported for lib/upcomingTasks.ts, which
+// projects it onto future days.
 //
 // Last modified: 2026-11-01
 
@@ -15,6 +21,7 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { Actor } from "./access";
+import { anytimeWindow, ANYTIME, isAnytimeTask } from "./anytime";
 import { audit } from "./audit";
 import { addDays, isoWeekday, localDate, minutes, zonedInstant } from "./time";
 
@@ -29,11 +36,14 @@ export type ExpandScope = { taskId: Id<"tasks"> } | { householdId: Id<"household
 
 /**
  * purpose: Whether a task's rule puts an occurrence on a local date.
- * @param task: (TaskFields) The task.
+ * @param task: (object) The task's startsOn, endsOn, onceOn and daysOfWeek.
  * @param date: (string) Local "YYYY-MM-DD".
  * @return: (boolean) True when the date is inside starts/ends and matches once-on or weekdays.
  */
-function occursOn(task: TaskFields, date: string): boolean {
+export function occursOn(
+  task: Pick<TaskFields, "startsOn" | "endsOn" | "onceOn" | "daysOfWeek">,
+  date: string,
+): boolean {
   if (task.startsOn !== undefined && date < task.startsOn) return false;
   if (task.endsOn !== undefined && date > task.endsOn) return false;
   if (task.onceOn !== undefined) return date === task.onceOn;
@@ -61,9 +71,13 @@ async function expandOneTask(
   let created = 0;
   for (const date of [today, addDays(today, 1)]) {
     if (!occursOn(task, date)) continue;
-    for (const time of task.times) {
-      const windowStart = zonedInstant(date, time, timezone);
-      const windowEnd = windowStart + minutes(task.windowMinutes);
+    const slots = isAnytimeTask(task)
+      ? [{ time: ANYTIME, ...anytimeWindow(date, timezone, occursOn(task, addDays(date, 1))) }]
+      : task.times.map((time) => {
+          const windowStart = zonedInstant(date, time, timezone);
+          return { time, windowStart, windowEnd: windowStart + minutes(task.windowMinutes) };
+        });
+    for (const { time, windowStart, windowEnd } of slots) {
       if (windowEnd <= now && windowStart < task.scheduleChangedAt) continue;
       const existing = await ctx.db
         .query("taskInstances")
@@ -165,6 +179,7 @@ export async function resyncTask(ctx: MutationCtx, task: Doc<"tasks">, now: numb
     }
     return;
   }
+  await deleteMismatchedOpenInstances(ctx, task, now);
   const future = await ctx.db
     .query("taskInstances")
     .withIndex("by_task_state", (q) =>
@@ -173,6 +188,37 @@ export async function resyncTask(ctx: MutationCtx, task: Doc<"tasks">, now: numb
     .collect();
   await deleteInstances(ctx, future);
   await expandTasks(ctx, now, { taskId: task._id });
+}
+
+/**
+ * purpose: When a task turned anytime or timed, remove its still-open (upcoming or due)
+ *          instances of the other kind for today and later, so an old 08:00 row does not sit
+ *          next to an Anytime row (or the reverse). Confirmed, resolved, missed and escalated
+ *          instances are history and stay.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param task: (Doc<"tasks">) The task as it is now.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<void>)
+ */
+async function deleteMismatchedOpenInstances(
+  ctx: MutationCtx,
+  task: Doc<"tasks">,
+  now: number,
+): Promise<void> {
+  const timezone = (await ctx.db.get(task.householdId))?.timezone;
+  if (!timezone) return;
+  const today = localDate(now, timezone);
+  const anytime = isAnytimeTask(task);
+  for (const state of ["upcoming", "due"] as const) {
+    const open = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_task_state", (q) => q.eq("taskId", task._id).eq("state", state))
+      .collect();
+    await deleteInstances(
+      ctx,
+      open.filter((i) => i.localDate >= today && (i.scheduledTime === ANYTIME) !== anytime),
+    );
+  }
 }
 
 /**
@@ -214,6 +260,7 @@ export function scheduleChanged(before: TaskFields, after: TaskFields): boolean 
   const key = (t: TaskFields): string =>
     JSON.stringify([
       t.times,
+      isAnytimeTask(t),
       t.daysOfWeek ?? null,
       t.onceOn ?? null,
       t.startsOn ?? null,

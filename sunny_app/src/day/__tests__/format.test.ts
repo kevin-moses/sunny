@@ -2,7 +2,7 @@
 //
 // Purpose: Unit tests for the day clock helpers on the camelCase calendar.dayView shape:
 // the agenda merge and its order, relative day wording, event detail wording, local "HH:MM"
-// time formatting, and the task state checks. Fixtures are built with small helpers that fill the fields the
+// time formatting (including "Anytime"), anytime ordering and the task state checks. Fixtures are built with small helpers that fill the fields the
 // helpers do not read, so each test states only what it cares about.
 //
 // Last modified: 2026-11-01
@@ -10,10 +10,13 @@
 import { describe, expect, it } from '@jest/globals';
 
 import {
+  ANYTIME,
   buildAgenda,
+  compareTaskTime,
   displayTime,
   eventDetails,
   eventKey,
+  isAnytime,
   isDone,
   isDue,
   isOpen,
@@ -89,6 +92,7 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
     dateLabel: 'October 26',
     header: 'Monday evening',
     tasks: [],
+    upcomingTasks: [],
     eventsToday: [],
     nextUp: null,
     upcoming: [],
@@ -142,6 +146,39 @@ describe('buildAgenda', () => {
 
   it('is empty before the day view has loaded', () => {
     expect(buildAgenda(null)).toEqual([]);
+  });
+
+  it('lists anytime tasks after every timed task and event', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 't-any', scheduledTime: ANYTIME }),
+        makeTask({ instanceId: 't-late', scheduledTime: '23:30' }),
+      ],
+      eventsToday: [makeEvent({ eventId: 'e-night', startTime: '23:45' })],
+    });
+    expect(buildAgenda(day).map((item) => item.id)).toEqual([
+      'task-t-late',
+      'event-e-night-2026-10-26',
+      'task-t-any',
+    ]);
+  });
+});
+
+describe('anytime tasks', () => {
+  it('recognizes the sentinel only', () => {
+    expect(isAnytime(makeTask({ scheduledTime: ANYTIME }))).toBe(true);
+    expect(isAnytime(makeTask({ scheduledTime: '08:00' }))).toBe(false);
+  });
+
+  it('compareTaskTime puts anytime last and otherwise orders by time', () => {
+    const times = ['anytime', '12:00', '08:00'];
+    const sorted = times.map((scheduledTime) => ({ scheduledTime })).sort(compareTaskTime);
+    expect(sorted.map((t) => t.scheduledTime)).toEqual(['08:00', '12:00', 'anytime']);
+  });
+
+  it('is never due, even when open', () => {
+    expect(isDue(makeTask({ scheduledTime: ANYTIME, state: 'due' }))).toBe(false);
+    expect(isDue(makeTask({ scheduledTime: ANYTIME, state: 'escalated' }))).toBe(false);
   });
 });
 
@@ -204,6 +241,10 @@ describe('displayTime', () => {
     expect(displayTime('12:00')).toBe('12:00 PM');
     expect(displayTime('14:00')).toBe('2:00 PM');
     expect(displayTime('23:59')).toBe('11:59 PM');
+  });
+
+  it('shows the anytime sentinel as "Anytime"', () => {
+    expect(displayTime(ANYTIME)).toBe('Anytime');
   });
 
   it('returns invalid input unchanged', () => {

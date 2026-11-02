@@ -2,8 +2,10 @@
 // Purpose: Access control, replacing Postgres row level security. The caller is resolved
 // from the Clerk identity (the subject is the user id) to an Actor: a caregiver with a role
 // in one household, or a paired senior device bound to one household. Backend callers
-// ("agent", "system") are only ever constructed by internal code, never from auth. Every
-// public query and mutation calls one of the require* helpers before touching data.
+// ("agent", "system") are only ever constructed by internal code, never from auth; the
+// household agent's actor carries the caregiver it acts for (onBehalfOf) and its request
+// (requestId). Every public query and mutation calls one of the require* helpers before
+// touching data.
 //
 // Device identities never act as caregivers. Device Clerk users carry the custom JWT claim
 // `sunny_kind: "device"`: the /pair action sets Clerk public_metadata.sunny_kind = "device"
@@ -40,16 +42,31 @@ export interface DeviceActor {
   device: Doc<"devices">;
 }
 
+/**
+ * A backend agent. The household agent (agentRuntime) sets onBehalfOf to the caregiver who
+ * sent the request and requestId to the request, so what it creates and audits is traced to
+ * both; the voice agent (agent.ts) acts for no caregiver and sets neither.
+ */
+export interface AgentActor {
+  kind: "agent";
+  /** Clerk user id of the caregiver the agent acts for. */
+  onBehalfOf?: string;
+  /** The agent request this action belongs to. */
+  requestId?: Id<"agentRequests">;
+}
+
 /** Everyone who can be the actor of a change; agent and system are backend only. */
-export type Actor = CaregiverActor | DeviceActor | { kind: "agent" } | { kind: "system" };
+export type Actor = CaregiverActor | DeviceActor | AgentActor | { kind: "system" };
 
 /**
  * purpose: The user id behind an actor, for audit and ownership columns.
  * @param actor: (Actor) The actor.
- * @return: (string | undefined) The Clerk user id; undefined for agent and system actors.
+ * @return: (string | undefined) The Clerk user id; for an agent the caregiver it acts for
+ *          (onBehalfOf); undefined for an agent with none and for system actors.
  */
 export function actorUserId(actor: Actor): string | undefined {
-  return "userId" in actor ? actor.userId : undefined;
+  if ("userId" in actor) return actor.userId;
+  return actor.kind === "agent" ? actor.onBehalfOf : undefined;
 }
 
 /**
@@ -257,8 +274,11 @@ export async function requireEditor(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<CaregiverActor> {
-  return await requireCaregiver(ctx, householdId, ["primary", "member"]);
+  return await requireCaregiver(ctx, householdId, EDITOR_ROLES);
 }
+
+/** Roles that may change the household's data (viewers are read only). */
+export const EDITOR_ROLES: readonly Doc<"householdMembers">["role"][] = ["primary", "member"];
 
 /**
  * purpose: Require a primary caregiver of the household.
