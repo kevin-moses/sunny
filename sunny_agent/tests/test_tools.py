@@ -102,6 +102,20 @@ def test_format_time_for_voice() -> None:
     assert format_time_for_voice("00:00") == "midnight"
 
 
+def test_describe_instance_anytime() -> None:
+    """purpose: An anytime task is spoken as anytime today, never with a clock time or due now."""
+    water = {**MORNING_DUE, "displayLabel": "Water plants", "scheduledTime": "anytime"}
+    for state in ("upcoming", "due", "escalated"):
+        text = describe_instance({**water, "state": state}, TZ)
+        assert text == "Water plants, anytime today: still to do today"
+    done = {**water, "state": "confirmed", "confirmedAt": MORNING_DONE["confirmedAt"]}
+    assert describe_instance(done, TZ) == "Water plants, anytime today: done at 8:10 AM"
+    assert (
+        describe_instance({**water, "state": "missed"}, TZ)
+        == "Water plants, anytime today: not done yet"
+    )
+
+
 def test_describe_instance_states() -> None:
     """purpose: Each instance state reads naturally, with the local confirmation time."""
     assert describe_instance(MORNING_DONE, TZ) == "8 AM, Morning pills: done at 8:10 AM"
