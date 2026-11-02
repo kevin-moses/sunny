@@ -26,6 +26,8 @@ import type * as instances from "../instances.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_agentBriefing from "../lib/agentBriefing.js";
 import type * as lib_agentConfig from "../lib/agentConfig.js";
+import type * as lib_agentFingerprint from "../lib/agentFingerprint.js";
+import type * as lib_agentHistory from "../lib/agentHistory.js";
 import type * as lib_agentRequestState from "../lib/agentRequestState.js";
 import type * as lib_agentTools from "../lib/agentTools.js";
 import type * as lib_apnsPayload from "../lib/apnsPayload.js";
@@ -82,6 +84,8 @@ declare const fullApi: ApiFromModules<{
   "lib/access": typeof lib_access;
   "lib/agentBriefing": typeof lib_agentBriefing;
   "lib/agentConfig": typeof lib_agentConfig;
+  "lib/agentFingerprint": typeof lib_agentFingerprint;
+  "lib/agentHistory": typeof lib_agentHistory;
   "lib/agentRequestState": typeof lib_agentRequestState;
   "lib/agentTools": typeof lib_agentTools;
   "lib/apnsPayload": typeof lib_apnsPayload;

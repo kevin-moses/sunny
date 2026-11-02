@@ -1,7 +1,8 @@
 // lib/agentTools.ts
-// Purpose: The household agent's custom tools: their definitions (sent to Managed Agents by
-// scripts/setup_managed_agent.ts; they must match the deployed agent, so re-run that script
-// after changing them) and their execution inside a Convex mutation. Calendar tools
+// Purpose: The household agent's custom tools: their definitions (sent with every new Managed
+// Agents session as overrides by lib/managedAgents.ts createSession, so a deploy is enough after
+// changing them; scripts/setup_managed_agent.ts only keeps the console's copy in sync) and their
+// execution inside a Convex mutation. Calendar tools
 // (get_calendar, add_event, update_event, cancel_event) are thin wrappers over the calendar
 // cores (addEventCore, updateEventCore, cancelEventCore, listOccurrencesCore); task tools
 // (get_tasks, add_task, update_task, stop_task) wrap the task cores in tasks.ts
