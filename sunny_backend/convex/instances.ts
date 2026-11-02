@@ -24,7 +24,7 @@ import {
   requireSenior,
 } from "./lib/access";
 import type { Actor, CaregiverActor } from "./lib/access";
-import { ANYTIME } from "./lib/anytime";
+import { isAnytimeInstance } from "./lib/anytime";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -282,9 +282,9 @@ export async function undoResolveInstance(
 
 /**
  * purpose: Pick the entry "Done" means. No label: the earliest due or escalated timed entry
- *          (anytime entries are only matched by label). With a
- *          label: entries whose display label contains it (case-insensitive), preferring those
- *          due now, then any still open, else already done.
+ *          (anytime entries are only matched by label). With a label: entries whose display
+ *          label contains it (case-insensitive), preferring those due now, then any still open,
+ *          else already done.
  * @param today: (TodayEntry[]) Today's entries in schedule order.
  * @param label: (string | null) Lower-cased, trimmed label, or null for none.
  * @return: (ConfirmDueResult | {entry: TodayEntry}) A final result, or the entry to confirm.
@@ -301,7 +301,7 @@ function pickDueEntry(
   const isDue = (e: TodayEntry): boolean => e.state === "due" || e.state === "escalated";
   if (label === null) {
     // An anytime entry is open all day, so a bare "Done" never means it; it needs its label.
-    const entry = today.find((e) => isDue(e) && e.scheduledTime !== ANYTIME);
+    const entry = today.find((e) => isDue(e) && !isAnytimeInstance(e));
     return entry ? { entry } : { status: "nothing_due" };
   }
   const matches = today.filter((e) => e.displayLabel.toLowerCase().includes(label));

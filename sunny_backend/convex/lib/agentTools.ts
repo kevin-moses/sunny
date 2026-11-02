@@ -22,10 +22,10 @@
 // medication must have a time (the core rejects it otherwise, telling the model to ask the
 // caregiver; as-needed medications, which have no times and limits, stay app-only, so their
 // fields are not in the tool schema). update_task with times [] on a non-medication task makes
-// it anytime. add_task refuses a duplicate (an active task of the household with the same type, the same
-// display label ignoring case and spacing, a shared time and a schedule that can fall on the
-// same day: weekday sets and starts/ends ranges overlap, or a one-off date is covered), naming
-// the existing task_id; update_task runs the same guard, excluding the task itself, when the
+// it anytime. add_task refuses a duplicate (an active task of the household with the same
+// type, the same display label ignoring case and spacing, a shared time and a schedule that
+// can fall on the same day: weekday sets and starts/ends ranges overlap, or a one-off date is
+// covered), naming the existing task_id; update_task runs the same guard, excluding the task itself, when the
 // updated task is active and the change touches type, label, times, schedule or active.
 // update_task refuses an as-needed medication (no times and an as-needed limit) with "As-needed
 // medications are managed in the app."; stop_task may still stop one, because stopping is safe
@@ -56,9 +56,9 @@ import type { MutationCtx } from "../_generated/server";
 import { addEventCore, cancelEventCore, listOccurrencesCore, updateEventCore } from "../calendar";
 import type { AddEventArgs, EventChanges } from "../calendar";
 import { createTaskCore, isAsNeededTask, listTasksCore, updateTaskCore } from "../tasks";
-import { isAnytimeTask } from "./anytime";
 import type { CreateTaskArgs, TaskChanges } from "../tasks";
 import type { AgentActor } from "./access";
+import { isAnytimeTask } from "./anytime";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
 import { requireNonBlank } from "./text";
@@ -151,7 +151,7 @@ const TASK_FIELDS = {
     type: "array",
     items: { type: "string" },
     description:
-      "Local times of day, 24-hour HH:MM. Required for medication. Omit or leave empty for an anytime task (done anytime that day, never prompted); an empty list on update makes the task anytime. Replaces the whole list on update.",
+      "Local times, 24-hour HH:MM. Required for medication; omit or leave empty for an anytime task (never prompted). Replaces the whole list on update.",
   },
   repeat_weekdays: {
     type: "array",
@@ -666,8 +666,9 @@ function sharesTime(a: DuplicateKey, b: DuplicateKey): boolean {
 
 /**
  * purpose: Refuse a task that duplicates an active one: same type, same normalized display
- *          label, at least one shared time (or both anytime) and a schedule that can fall on the same day (same
- *          label and time on different weekdays, or in disjoint date ranges, is allowed).
+ *          label, at least one shared time (or both anytime) and a schedule that can fall on
+ *          the same day (same label and time on different weekdays, or in disjoint date
+ *          ranges, is allowed).
  * @param ctx: (MutationCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param candidate: (DuplicateKey) The task about to exist (a new task, or an updated one as

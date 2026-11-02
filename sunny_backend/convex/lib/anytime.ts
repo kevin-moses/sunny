@@ -5,11 +5,13 @@
 // an as-needed medication that is only logged; see tasks.ts isAsNeededTask). Each day it
 // occurs the scheduler (lib/schedule.ts) creates one instance whose scheduledTime is the
 // sentinel ANYTIME, so the unique-by-time index by_task_date_time keeps deduplicating. The
-// instance's window runs from local midnight of its date to local midnight two days later, so
-// it stays open (and is shown as Leftover) through the next day and is marked missed only
-// after that. Anytime instances never prompt the senior, never escalate and never notify:
+// instance's window starts at local midnight of its date. It ends at the next local midnight
+// when the task also occurs the next day (the next day's instance replaces it: it is marked
+// missed and never shown as Leftover), and at local midnight two days later when it does not
+// (a one-off, a weekday task before an off day, a task whose end date is reached): then it stays
+// open and is shown as Leftover through the next day, and is marked missed only after that. Anytime instances never prompt the senior, never escalate and never notify:
 // anytime tasks get no escalation policy and the scheduler skips them even if one is set. The
-// sunny_app mirrors the ANYTIME constant (src/day/anytime.ts); keep the two in sync.
+// sunny_app mirrors the ANYTIME constant (sunny_app/src/day/format.ts); keep the two in sync.
 //
 // Last modified: 2026-11-01
 
@@ -38,19 +40,23 @@ export function isAnytimeInstance(instance: { scheduledTime: string }): boolean 
 }
 
 /**
- * purpose: The window of an anytime instance: local midnight of its date until local midnight
- *          two days later (DST-safe), so it is still open all of the next day.
+ * purpose: The window of an anytime instance: local midnight of its date until the next local
+ *          midnight when the task occurs again the next day (that day's instance replaces
+ *          it), else until local midnight two days later so it is still open, as a
+ *          Leftover, all of the next day. DST-safe.
  * @param date: (string) The instance's local "YYYY-MM-DD".
  * @param timezone: (string) The household's IANA zone.
+ * @param repeatsNextDay: (boolean) Whether the task occurs on the following local date.
  * @return: ({ windowStart: number; windowEnd: number }) Epoch ms bounds.
  */
 export function anytimeWindow(
   date: string,
   timezone: string,
+  repeatsNextDay: boolean,
 ): { windowStart: number; windowEnd: number } {
   return {
     windowStart: zonedInstant(date, "00:00", timezone),
-    windowEnd: zonedInstant(addDays(date, 2), "00:00", timezone),
+    windowEnd: zonedInstant(addDays(date, repeatsNextDay ? 1 : 2), "00:00", timezone),
   };
 }
 

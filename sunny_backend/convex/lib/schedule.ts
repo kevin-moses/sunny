@@ -9,7 +9,10 @@
 // removes the task row at once and the rest in bounded batches (purgeTaskBatch), because a
 // long-lived task has more rows than one mutation may touch. An anytime task (no times, not a
 // medication; lib/anytime.ts) gets one instance per day it occurs, with the sentinel
-// scheduledTime and a window from local midnight to local midnight two days later.
+// scheduledTime and a window from local midnight to the next local midnight, or two days
+// later when the task does not occur the next day (then it carries over as Leftover). When a
+// task turns anytime or timed, its open instances of the other kind for today and later are
+// removed on resync.
 //
 // Last modified: 2026-11-01
 
@@ -65,7 +68,7 @@ async function expandOneTask(
   for (const date of [today, addDays(today, 1)]) {
     if (!occursOn(task, date)) continue;
     const slots = isAnytimeTask(task)
-      ? [{ time: ANYTIME, ...anytimeWindow(date, timezone) }]
+      ? [{ time: ANYTIME, ...anytimeWindow(date, timezone, occursOn(task, addDays(date, 1))) }]
       : task.times.map((time) => {
           const windowStart = zonedInstant(date, time, timezone);
           return { time, windowStart, windowEnd: windowStart + minutes(task.windowMinutes) };
@@ -172,6 +175,7 @@ export async function resyncTask(ctx: MutationCtx, task: Doc<"tasks">, now: numb
     }
     return;
   }
+  await deleteMismatchedOpenInstances(ctx, task, now);
   const future = await ctx.db
     .query("taskInstances")
     .withIndex("by_task_state", (q) =>
@@ -180,6 +184,37 @@ export async function resyncTask(ctx: MutationCtx, task: Doc<"tasks">, now: numb
     .collect();
   await deleteInstances(ctx, future);
   await expandTasks(ctx, now, { taskId: task._id });
+}
+
+/**
+ * purpose: When a task turned anytime or timed, remove its still-open (upcoming or due)
+ *          instances of the other kind for today and later, so an old 08:00 row does not sit
+ *          next to an Anytime row (or the reverse). Confirmed, resolved, missed and escalated
+ *          instances are history and stay.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param task: (Doc<"tasks">) The task as it is now.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<void>)
+ */
+async function deleteMismatchedOpenInstances(
+  ctx: MutationCtx,
+  task: Doc<"tasks">,
+  now: number,
+): Promise<void> {
+  const timezone = (await ctx.db.get(task.householdId))?.timezone;
+  if (!timezone) return;
+  const today = localDate(now, timezone);
+  const anytime = isAnytimeTask(task);
+  for (const state of ["upcoming", "due"] as const) {
+    const open = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_task_state", (q) => q.eq("taskId", task._id).eq("state", state))
+      .collect();
+    await deleteInstances(
+      ctx,
+      open.filter((i) => i.localDate >= today && (i.scheduledTime === ANYTIME) !== anytime),
+    );
+  }
 }
 
 /**
@@ -221,6 +256,7 @@ export function scheduleChanged(before: TaskFields, after: TaskFields): boolean 
   const key = (t: TaskFields): string =>
     JSON.stringify([
       t.times,
+      isAnytimeTask(t),
       t.daysOfWeek ?? null,
       t.onceOn ?? null,
       t.startsOn ?? null,

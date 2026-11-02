@@ -7,12 +7,14 @@
 // "That day" is the household's local day, from local midnight to the next local midnight, so a
 // DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
 // Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
-// no alerts and the digest never reports them as not done. Nothing from other days is read. Lists are capped so a busy day stays within one query.
+// no alerts and the digest never reports them as not done. Nothing from other days is read.
+// Lists are capped so a busy day stays within one query.
 //
 // Last modified: 2026-11-01
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { isAsNeededTask } from "../tasks";
 import { memberNames } from "./access";
 import { isAnytimeInstance } from "./anytime";
 import { addDays, formatTime12, localTime, zonedInstant } from "./time";
@@ -163,7 +165,7 @@ async function doseFacts(
     .collect();
   const perTask = await Promise.all(
     tasks
-      .filter((t) => t.times.length === 0)
+      .filter((t) => isAsNeededTask(t))
       .map(async (task) => {
         const doses = await ctx.db
           .query("doseLog")

@@ -20,7 +20,7 @@
 // Anytime tasks (lib/anytime.ts): a task of any type except medication with no times is done
 // "anytime that day". A medication needs at least one time unless it is a valid as-needed
 // medication (isAsNeededTask: a daily or spacing limit); an active medication that would have
-// neither is rejected when the write touches its times, type or active flag, so older data
+// neither is rejected when the write touches its times, type, active flag or limits, so older data
 // stays editable. Anytime tasks get no escalation policy (they never prompt or escalate).
 // Size caps apply to the values being written, never to data already stored: a create checks
 // every field it was given; an update checks only the fields present in its changes, so a task
@@ -125,15 +125,19 @@ function normalizeSchedule(draft: TaskDraft): TaskDraft {
 }
 
 /**
- * purpose: Whether a task is an as-needed medication: no times and a daily or spacing limit.
- *          These are managed in the app; the household agent does not edit them.
- * @param task: (Pick<TaskFields, "times" | "asNeededMaxPerDay" | "asNeededMinHours">) A task.
+ * purpose: Whether a task is an as-needed medication: a medication with no times and a daily
+ *          or spacing limit. These are managed in the app; the household agent does not edit
+ *          them. A task of another type is never as-needed, whatever limits it still carries
+ *          (an ex-medication with no times is an anytime task instead).
+ * @param task: (Pick<TaskFields, "type" | "times" | "asNeededMaxPerDay" | "asNeededMinHours">) A
+ *        task.
  * @return: (boolean) True for an as-needed medication.
  */
 export function isAsNeededTask(
-  task: Pick<TaskFields, "times" | "asNeededMaxPerDay" | "asNeededMinHours">,
+  task: Pick<TaskFields, "type" | "times" | "asNeededMaxPerDay" | "asNeededMinHours">,
 ): boolean {
   return (
+    task.type === "medication" &&
     task.times.length === 0 &&
     (task.asNeededMaxPerDay !== undefined || task.asNeededMinHours !== undefined)
   );
@@ -198,7 +202,11 @@ async function validateDraft(
     draft.type === "medication" &&
     draft.times.length === 0 &&
     !isAsNeededTask(draft) &&
-    (written.has("times") || written.has("type") || written.has("active"))
+    (written.has("times") ||
+      written.has("type") ||
+      written.has("active") ||
+      written.has("asNeededMaxPerDay") ||
+      written.has("asNeededMinHours"))
   ) {
     throw appError(
       "invalid",

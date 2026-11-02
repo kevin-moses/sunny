@@ -102,16 +102,8 @@ export function buildAgenda(day: DayViewData | null): AgendaItem[] {
     time: event.startTime,
     event,
   }));
-  /**
-   * purpose: Whether an agenda line is an anytime task.
-   * @param item: (AgendaItem) The line.
-   * @return: (boolean) True for an anytime task.
-   */
-  const isAnytimeLine = (item: AgendaItem): boolean => item.kind === 'task' && isAnytime(item.task);
-  return [...tasks, ...events].sort(
-    (a, b) =>
-      Number(isAnytimeLine(a)) - Number(isAnytimeLine(b)) ||
-      (a.time < b.time ? -1 : a.time > b.time ? 1 : 0),
+  return [...tasks, ...events].sort((a, b) =>
+    compareTaskTime({ scheduledTime: a.time }, { scheduledTime: b.time }),
   );
 }
 

@@ -1,10 +1,14 @@
 // anytime.test.ts
 // Purpose: Tests for anytime tasks (tasks without a time; lib/anytime.ts): expansion of their
-// instances for today and tomorrow with a local-midnight window that spans two days across the
-// March 2027 New York DST change (idempotent); the scheduler opening them without prompting,
-// escalating or notifying anyone (even when the task carries a policy) and marking them missed
-// only after the next local day ends; todayInstances ordering (timed first, anytime last in a
-// day) and Leftover carry-over of yesterday's open anytime instance but not a two-day-old one;
+// instances for today and tomorrow with a local-midnight window (one day when the task repeats
+// the next day, so the next day's row replaces it; two days otherwise, so it carries over as
+// Leftover) across the March 2027 New York DST change (idempotent); the scheduler opening
+// them without prompting, escalating or notifying anyone (even when the task carries a policy)
+// and marking them missed at the end of their window; todayInstances ordering (timed first,
+// anytime last in a day), Leftover carry-over of an anytime instance whose task does not occur
+// the next day (one-off, weekday before an off day) but not of a daily one, and not of a
+// two-day-old one; resync removing open instances of the other kind when a task turns anytime
+// or timed (history kept); a table of policy transitions on update;
 // confirming them from the senior's device and as a caregiver; their absence from the daily
 // digest facts; a bare "Done" not picking them; and the task validation and policy rules (a medication needs a time unless it
 // is a valid as-needed medication; no policy for anytime tasks on create and on type/time
@@ -18,6 +22,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { gatherDigestFacts } from "./lib/digestFacts";
 import { anytimeWindow, compareDayOrder, isAnytimeTask } from "./lib/anytime";
+import { isAsNeededTask } from "./tasks";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
@@ -74,6 +79,8 @@ async function makeTask(
     times: string[];
     escalationPolicyId: Id<"escalationPolicies">;
     asNeededMaxPerDay: number;
+    onceOn: string;
+    daysOfWeek: number[];
   }> = {},
 ): Promise<Id<"tasks">> {
   const title = fields.title ?? "Water plants";
@@ -152,15 +159,29 @@ describe("helpers", () => {
     expect([anytime, timed].sort(compareDayOrder)).toEqual([timed, anytime]);
   });
 
-  test("anytimeWindow spans local midnight to local midnight two days later across DST", () => {
-    const w = anytimeWindow("2027-03-13", "America/New_York");
-    expect(w.windowStart).toBe(Date.parse("2027-03-13T05:00:00Z"));
-    expect(w.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
+  test("anytimeWindow ends at the next midnight when the task repeats, else two days later", () => {
+    const repeats = anytimeWindow("2027-03-13", "America/New_York", true);
+    expect(repeats.windowStart).toBe(Date.parse("2027-03-13T05:00:00Z"));
+    expect(repeats.windowEnd).toBe(Date.parse("2027-03-14T05:00:00Z"));
+    const once = anytimeWindow("2027-03-13", "America/New_York", false);
+    expect(once.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
+  });
+
+  test("isAsNeededTask needs a medication, no times and a limit", () => {
+    const base: Parameters<typeof isAsNeededTask>[0] = {
+      type: "medication",
+      times: [],
+      asNeededMaxPerDay: 2,
+    };
+    expect(isAsNeededTask(base)).toBe(true);
+    expect(isAsNeededTask({ ...base, type: "reminder" })).toBe(false);
+    expect(isAsNeededTask({ ...base, times: ["08:00"] })).toBe(false);
+    expect(isAsNeededTask({ type: "medication", times: [] })).toBe(false);
   });
 });
 
 describe("expansion", () => {
-  test("creates an anytime instance for today and tomorrow with the two-day window", async () => {
+  test("a daily anytime task gets one-day windows for today and tomorrow", async () => {
     const f = await setup();
     const taskId = await makeTask(f);
     const rows = await instancesOf(f, taskId);
@@ -169,10 +190,19 @@ describe("expansion", () => {
       ["2027-03-14", "anytime", "upcoming"],
     ]);
     expect(rows[0]!.windowStart).toBe(Date.parse("2027-03-13T05:00:00Z"));
-    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
-    // The second day starts after the spring-forward change: midnight is EST, the end is EDT.
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-14T05:00:00Z"));
+    // The 14th is the 23-hour spring-forward day: midnight is EST, the end is EDT.
     expect(rows[1]!.windowStart).toBe(Date.parse("2027-03-14T05:00:00Z"));
-    expect(rows[1]!.windowEnd).toBe(Date.parse("2027-03-16T04:00:00Z"));
+    expect(rows[1]!.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
+  });
+
+  test("a one-off anytime task keeps a two-day window across DST", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f, { onceOn: "2027-03-13" });
+    const rows = await instancesOf(f, taskId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.windowStart).toBe(Date.parse("2027-03-13T05:00:00Z"));
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
   });
 
   test("expansion is idempotent", async () => {
@@ -218,8 +248,7 @@ describe("scheduler", () => {
       "2027-03-13T18:00:00Z",
       "2027-03-13T23:00:00Z",
       "2027-03-14T03:00:00Z",
-      "2027-03-14T14:00:00Z",
-      "2027-03-15T03:59:00Z",
+      "2027-03-14T04:59:00Z",
     ]) {
       expect(await tick(f, iso)).toMatchObject({ stepsFired: 0, escalated: 0 });
     }
@@ -238,9 +267,21 @@ describe("scheduler", () => {
     expect(await taskNotifications(f)).toBe(0);
   });
 
-  test("is marked missed only after the next local day ends", async () => {
+  test("a daily anytime instance is missed at the end of its own day", async () => {
     const f = await setup();
     const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    // 2027-03-14 04:59Z is 23:59 on the 13th in New York (EST): still open.
+    expect(await tick(f, "2027-03-14T04:59:00Z")).toMatchObject({ missed: 0 });
+    expect((await instancesOf(f, taskId))[0]!.state).toBe("due");
+    expect(await tick(f, "2027-03-14T05:00:00Z")).toMatchObject({ missed: 1 });
+    expect((await instancesOf(f, taskId))[0]!.state).toBe("missed");
+    expect(await taskNotifications(f)).toBe(0);
+  });
+
+  test("a one-off anytime instance is missed only after the next local day ends", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f, { onceOn: "2027-03-13" });
     await tick(f, "2027-03-13T15:01:00Z");
     // 2027-03-15 03:59Z is 23:59 on the 14th in New York (EDT): still open.
     expect(await tick(f, "2027-03-15T03:59:00Z")).toMatchObject({ missed: 0 });
@@ -271,7 +312,7 @@ describe("today", () => {
 
   test("yesterday's open anytime instance is carried over after yesterday's timed leftovers", async () => {
     const f = await setup();
-    await makeTask(f, { title: "Water plants" });
+    await makeTask(f, { title: "Water plants", onceOn: "2027-03-13" });
     await makeTask(f, { type: "medication", title: "Late pills", times: ["23:30"] });
     await tick(f, "2027-03-13T15:01:00Z");
     // 00:10 on the 14th in New York is 05:10Z: the 23:30 pills (2h window) are still due.
@@ -285,13 +326,60 @@ describe("today", () => {
       ["Late pills", "2027-03-13", true],
       ["Water plants", "2027-03-13", true],
       ["Late pills", "2027-03-14", false],
+    ]);
+  });
+
+  test("a daily anytime task's next day replaces the undone one: no Leftover row", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    await tick(f, "2027-03-14T15:00:00Z");
+    const entries = (await todayAt(f, "2027-03-14T15:00:00Z")) as Array<{
+      displayLabel: string;
+      localDate: string;
+      carriedOver: boolean;
+    }>;
+    expect(entries.map((e) => [e.displayLabel, e.localDate, e.carriedOver])).toEqual([
       ["Water plants", "2027-03-14", false],
     ]);
+    expect((await instancesOf(f, taskId))[0]!.state).toBe("missed");
+  });
+
+  test("a weekday-only anytime task before an off day is a Leftover on the off day", async () => {
+    const f = await setup();
+    // 2027-03-13 is a Saturday (6); the task does not run on Sunday.
+    await makeTask(f, { daysOfWeek: [6] });
+    await tick(f, "2027-03-13T15:01:00Z");
+    await tick(f, "2027-03-14T15:00:00Z");
+    const entries = (await todayAt(f, "2027-03-14T15:00:00Z")) as Array<{
+      localDate: string;
+      carriedOver: boolean;
+    }>;
+    expect(entries.map((e) => [e.localDate, e.carriedOver])).toEqual([["2027-03-13", true]]);
+  });
+
+  test("Done by label on day two of a daily anytime task picks today's instance", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    await tick(f, "2027-03-14T15:00:00Z");
+    vi.setSystemTime(new Date("2027-03-14T15:00:00Z"));
+    const done = await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmDueTask, {
+        householdId: f.householdId,
+        via: "button",
+        label: "water",
+      });
+    expect(done.status).toBe("confirmed");
+    const rows = await instancesOf(f, taskId);
+    expect(rows.find((r) => r.localDate === "2027-03-14")!.state).toBe("confirmed");
+    expect(rows.find((r) => r.localDate === "2027-03-13")!.state).toBe("missed");
   });
 
   test("an anytime instance two days old is no longer listed", async () => {
     const f = await setup();
-    await makeTask(f, { title: "Water plants" });
+    await makeTask(f, { title: "Water plants", onceOn: "2027-03-13" });
     await tick(f, "2027-03-13T15:01:00Z");
     await tick(f, "2027-03-15T04:00:00Z");
     const entries = (await todayAt(f, "2027-03-15T15:00:00Z")) as Array<{ localDate: string }>;
@@ -485,6 +573,30 @@ describe("task validation and policies", () => {
     expect(after.escalationPolicyId).toBe(f.medication);
   });
 
+  test("clearing the limits of an untimed medication is rejected", async () => {
+    const f = await setup();
+    const id = await makeTask(f, {
+      type: "medication",
+      title: "Pain relief",
+      asNeededMaxPerDay: 3,
+    });
+    await expect(update(f, id, { asNeededMaxPerDay: null })).rejects.toThrow(/A medication needs/);
+    expect((await row(f, id)).asNeededMaxPerDay).toBe(3);
+  });
+
+  test("an ex-medication with leftover limits is anytime, not as-needed", async () => {
+    const f = await setup();
+    const id = await makeTask(f, {
+      type: "medication",
+      title: "Pain relief",
+      asNeededMaxPerDay: 3,
+    });
+    const after = await update(f, id, { type: "reminder" });
+    expect(isAsNeededTask(after)).toBe(false);
+    expect(isAnytimeTask(after)).toBe(true);
+    expect(after.escalationPolicyId).toBeUndefined();
+  });
+
   test("a medication cannot be made untimed unless it is as-needed", async () => {
     const f = await setup();
     const id = await makeTask(f, { type: "medication", title: "Pills", times: ["08:00"] });
@@ -508,5 +620,160 @@ describe("task validation and policies", () => {
     });
     expect((await update(f, id, { title: "Pills (old)" })).title).toBe("Pills (old)");
     await expect(update(f, id, { active: true })).rejects.toThrow(/A medication needs/);
+  });
+});
+
+/**
+ * purpose: A task row.
+ * @param f: (Fixture) Fixture.
+ * @param id: (Id<"tasks">) Task.
+ * @return: (Promise<Doc<"tasks">>) The row.
+ */
+async function taskRow(f: Fixture, id: Id<"tasks">): Promise<Doc<"tasks">> {
+  return (await f.t.run(async (ctx) => await ctx.db.get(id)))!;
+}
+
+/**
+ * purpose: Update a task as Pat and return the row after the change.
+ * @param f: (Fixture) Fixture.
+ * @param taskId: (Id<"tasks">) Task.
+ * @param changes: (object) The change fields.
+ * @return: (Promise<Doc<"tasks">>) The task after the change.
+ */
+async function updateTask(
+  f: Fixture,
+  taskId: Id<"tasks">,
+  changes: Record<string, unknown>,
+): Promise<Doc<"tasks">> {
+  await f.t
+    .withIdentity({ subject: "pat" })
+    .mutation(api.tasks.update, { householdId: f.householdId, taskId, ...changes });
+  return await taskRow(f, taskId);
+}
+
+describe("turning a task anytime or timed", () => {
+  test("timed to anytime removes the open timed instances and adds anytime ones", async () => {
+    const f = await setup();
+    const id = await makeTask(f, { times: ["20:00"] });
+    await updateTask(f, id, { times: [] });
+    const rows = await instancesOf(f, id);
+    expect(rows.map((r) => [r.localDate, r.scheduledTime])).toEqual([
+      ["2027-03-13", "anytime"],
+      ["2027-03-14", "anytime"],
+    ]);
+  });
+
+  test("a due timed instance is removed too, a resolved one stays as history", async () => {
+    const f = await setup();
+    const id = await makeTask(f, { times: ["11:00", "11:30"] });
+    const due = await makeTask(f, { title: "Stretch", times: ["11:00"] });
+    // 11:05 local (EST) is 16:05Z: the 11:00 instances are due, 11:30 upcoming.
+    await tick(f, "2027-03-13T16:05:00Z");
+    const [first] = await instancesOf(f, id);
+    await f.t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: first!._id, via: "phone_app" });
+    await updateTask(f, id, { times: [] });
+    await updateTask(f, due, { times: [] });
+    const kept = await instancesOf(f, id);
+    expect(kept.filter((r) => r.scheduledTime !== "anytime").map((r) => r.state)).toEqual([
+      "resolved",
+    ]);
+    expect((await instancesOf(f, due)).every((r) => r.scheduledTime === "anytime")).toBe(true);
+  });
+
+  test("anytime to timed removes the open anytime instances and adds timed ones", async () => {
+    const f = await setup();
+    const id = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    await updateTask(f, id, { times: ["20:00"] });
+    const rows = await instancesOf(f, id);
+    expect(rows.map((r) => [r.localDate, r.scheduledTime])).toEqual([
+      ["2027-03-13", "20:00"],
+      ["2027-03-14", "20:00"],
+    ]);
+  });
+
+  test("a done anytime instance stays when the task becomes timed", async () => {
+    const f = await setup();
+    const id = await makeTask(f);
+    const [first] = await instancesOf(f, id);
+    await f.t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: first!._id, via: "phone_app" });
+    await updateTask(f, id, { times: ["20:00"] });
+    const rows = await instancesOf(f, id);
+    expect(rows.filter((r) => r.scheduledTime === "anytime").map((r) => r.state)).toEqual([
+      "resolved",
+    ]);
+  });
+});
+
+describe("policy transitions on update", () => {
+  type Expect = "none" | "promptOnly" | "medication" | "custom";
+  const cases: Array<
+    [string, Parameters<typeof makeTask>[1], Record<string, unknown>, Expect, boolean]
+  > = [
+    [
+      "timed to anytime clears the seeded policy",
+      { times: ["09:00"] },
+      { times: [] },
+      "none",
+      false,
+    ],
+    ["anytime to timed restores the default", {}, { times: ["09:00"] }, "promptOnly", false],
+    ["reminder to medication", { times: ["09:00"] }, { type: "medication" }, "medication", false],
+    [
+      "medication to reminder",
+      { type: "medication", times: ["09:00"] },
+      { type: "reminder" },
+      "promptOnly",
+      false,
+    ],
+    ["custom policy kept becoming anytime", { times: ["09:00"] }, { times: [] }, "custom", true],
+    [
+      "custom policy kept across the medication boundary",
+      { times: ["09:00"] },
+      { type: "medication" },
+      "custom",
+      true,
+    ],
+    [
+      "explicit policy wins over the anytime rule",
+      { times: ["09:00"] },
+      { times: [], escalationPolicyId: "medication" },
+      "medication",
+      false,
+    ],
+    [
+      "medication to anytime routine",
+      { type: "medication", times: ["09:00"] },
+      { type: "routine", times: [] },
+      "none",
+      false,
+    ],
+  ];
+
+  test.each(cases)("%s", async (_name, create, changes, expected, withCustom) => {
+    const f = await setup();
+    let custom: Id<"escalationPolicies"> | undefined;
+    if (withCustom) {
+      custom = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.createPolicy, {
+        householdId: f.householdId,
+        name: "Custom",
+        steps: [{ action: "prompt_senior", offsetMinutes: 0, skipIfClaimed: false }],
+      });
+    }
+    const id = await makeTask(f, { ...create, ...(custom ? { escalationPolicyId: custom } : {}) });
+    const patch = { ...changes };
+    if (patch.escalationPolicyId === "medication") patch.escalationPolicyId = f.medication;
+    const after = await updateTask(f, id, patch);
+    const want = {
+      none: undefined,
+      promptOnly: f.promptOnly,
+      medication: f.medication,
+      custom,
+    }[expected];
+    expect(after.escalationPolicyId).toBe(want);
   });
 });

@@ -165,6 +165,7 @@ async function asNeededEntries(
     .collect();
   const entries: AsNeededEntry[] = [];
   for (const task of tasks) {
+    if (task.type !== "medication") continue;
     if (task.asNeededMaxPerDay === undefined && task.asNeededMinHours === undefined) continue;
     const doses = await ctx.db
       .query("doseLog")
