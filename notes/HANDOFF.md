@@ -57,7 +57,7 @@ The dev deployment is `enduring-ostrich-959` (`https://enduring-ostrich-959.conv
 
 Scripts (not part of the deployed backend):
 - `scripts/caregiver.ts` is a command-line stand-in for the caregiver app, acting as a fixed dev caregiver through `convex run --identity`. Commands: `setup` (create a dev household and print join codes), `chat "<message>" [--continue]` (request to the household agent), `day`, `codes`, `invite [primary|member|viewer]` (caregiver invite code, default member), `google` (consent link), `phone <number>` (waits for the text to go out, then prints "Texted a code" or the failure reason), `confirm-phone <code>`. Run as `npx tsx scripts/caregiver.ts <command>`; it keeps the household id in a git-ignored `scripts/.dev-state.json`.
-- `scripts/setup_managed_agent.ts` creates or updates the Managed Agents agent and environment; run once per Anthropic workspace and again after changing `lib/agentConfig.ts` or `lib/agentTools.ts`: `npx tsx --env-file=.env.local scripts/setup_managed_agent.ts`. It prints the `npx convex env set` commands for the ids.
+- `scripts/setup_managed_agent.ts` creates or updates the Managed Agents agent and environment; run `npm run setup:agent` (from `sunny_backend`; `-- --prod` for production) once per Anthropic workspace and again after changing `lib/agentConfig.ts` or `lib/agentTools.ts`. It reads `ANTHROPIC_API_KEY` from the root `.env`, reads the ids from the Convex deployment, and stores newly created ids there.
 
 Environment (set on the Convex deployment with `npx convex env set`, never in a committed file):
 

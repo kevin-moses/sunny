@@ -39,7 +39,7 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 
 ## 4. Managed Agents
 
-- [ ] Run `scripts/setup_managed_agent.ts` against the production Anthropic organization (or reuse the existing agent): `npx tsx --env-file=.env.local scripts/setup_managed_agent.ts`. The env file needs the production `ANTHROPIC_API_KEY`.
+- [ ] Run `scripts/setup_managed_agent.ts` against the production Anthropic organization (or reuse the existing agent): `npm run setup:agent -- --prod` (from `sunny_backend`). The root `.env` needs the production `ANTHROPIC_API_KEY`; the script reads the agent and environment ids from the production deployment and stores any newly created ones there.
 - [ ] Set the printed `SUNNY_AGENT_ID` and `SUNNY_ENVIRONMENT_ID` on Convex prod.
 - [ ] Read section 8 first: Claude Managed Agents is not covered by Anthropic's BAA.
 
