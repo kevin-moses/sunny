@@ -11,7 +11,8 @@
 // and says when and by whom a confirmed instance was done. Over MAX_BRIEFING_TASKS tasks,
 // the ones with instances today are kept first, then the newest; a line shows at most
 // MAX_BRIEFING_TIMES times (then "+N more"); an as-needed medication reads "as needed
-// (managed in the app)".
+// (managed in the app)"; an anytime task (no times, not a medication) reads "anytime" and its
+// instance "anytime <state>".
 //
 // Last modified: 2026-11-01
 
@@ -20,6 +21,7 @@ import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
 import { isAsNeededTask, listTasksCore } from "../tasks";
 import { findMember } from "./access";
+import { isAnytimeTask } from "./anytime";
 import { localDateTime, weekdayCodes } from "./time";
 import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
@@ -31,7 +33,8 @@ const MAX_BRIEFING_TIMES = 6;
 
 /**
  * purpose: One instance as briefing text: "08:00 confirmed at 08:04", "08:00 resolved at 09:10
- *          by Anna" or "yesterday 23:30 due" for a carry-over.
+ *          by Anna", "yesterday 23:30 due" for a carry-over or "anytime due" for an anytime
+ *          task (its scheduledTime is the sentinel "anytime").
  * @param entry: (TodayEntry) One of today's instances.
  * @return: (string) The text.
  */
@@ -44,12 +47,13 @@ function instanceText(entry: TodayEntry): string {
 
 /**
  * purpose: When a task runs, as briefing text: "at 08:00, 20:00", capped at MAX_BRIEFING_TIMES
- *          times then "+N more"; "as needed (managed in the app)" for an as-needed medication;
- *          "with no times" for any other task without times.
+ *          times then "+N more"; "anytime" for an anytime task; "as needed (managed in the app)"
+ *          for an as-needed medication; "with no times" for any other task without times.
  * @param task: (Doc<"tasks">) A task.
  * @return: (string) The text.
  */
 function timesText(task: Doc<"tasks">): string {
+  if (isAnytimeTask(task)) return "anytime";
   if (task.times.length === 0) {
     return isAsNeededTask(task) ? "as needed (managed in the app)" : "with no times";
   }

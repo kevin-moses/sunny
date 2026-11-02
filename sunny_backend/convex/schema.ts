@@ -173,7 +173,8 @@ export default defineSchema({
     spokenPrompt: v.string(),
     pillDescription: v.optional(v.string()),
     checklistItems: v.array(v.string()),
-    // Local "HH:MM" times. Empty = unscheduled (as-needed medication, only logged).
+    // Local "HH:MM" times. Empty means one of two things: a medication is as-needed (only
+    // logged); any other type is an "anytime" task, done anytime that day (lib/anytime.ts).
     times: v.array(v.string()),
     // ISO weekdays; absent = every day.
     daysOfWeek: v.optional(v.array(v.number())),
@@ -200,6 +201,8 @@ export default defineSchema({
     taskId: v.id("tasks"),
     householdId: v.id("households"),
     localDate: v.string(),
+    // Local "HH:MM", or the sentinel "anytime" (lib/anytime.ts ANYTIME) for an anytime task,
+    // whose window runs from local midnight to local midnight two days later.
     scheduledTime: v.string(),
     windowStart: v.number(),
     windowEnd: v.number(),

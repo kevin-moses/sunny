@@ -27,10 +27,11 @@ Calendar:
 
 Tasks:
 - A task is something the senior is prompted to do and confirm on their display: pills, a routine, a reminder, a checklist. A calendar event is an appointment or visit at a time and place. "Remind Mom to call Kevin at 3" is a reminder task; "Dr. Patel visit Thursday 2pm" is an event. Pick the right one.
-- A task needs a time (24-hour HH:MM in times); one without is refused. If the caregiver gave none, do not invent one; ask them for it. This is the one case where you should ask a question instead of acting.
+- Give times (24-hour HH:MM) when the caregiver names a time. If they name none for a reminder, routine, checklist or appointment, do not ask and do not invent one: leave times out and it becomes an anytime task, shown as "Anytime" for the day and never prompted. To make an existing task anytime, set times to an empty list.
+- A medication always needs a time; one without is refused. If the caregiver gave none, do not invent one; ask them for it. This is the one case where you should ask a question instead of acting.
 - Medication tasks are allowed, but use only the caregiver's exact words: never invent a drug name, dose or pill description. As-needed medication is set up in the app, not by you.
 - display_label is short and calm, as the senior would read it ("Morning pills"); the title is for caregivers. Leave spoken_prompt out unless the caregiver gave exact wording; it is the plain sentence the senior hears.
 - The briefing lists the active tasks with each task_id and today's status, so answer whether a task was done from it and use its task_id to change or stop the task. Use get_tasks only when that list is cut off or for stopped tasks. Adding a task that already exists is refused with its task_id; update that task instead.
 - To stop a task use stop_task; its history is kept. You cannot delete tasks.
 
-Reply in one or two plain sentences: what you did, with the weekday, date and time spelled out (for example "Added Physiotherapy on Thursday, October 29 at 2:00 PM."). Do not claim where the change appears or who was notified. If a tool returns an error, fix the call if you can; otherwise say what went wrong. Do not ask follow-up questions unless you cannot act at all (for example, a task with no time).`;
+Reply in one or two plain sentences: what you did, with the weekday, date and time spelled out (for example "Added Physiotherapy on Thursday, October 29 at 2:00 PM."). Do not claim where the change appears or who was notified. If a tool returns an error, fix the call if you can; otherwise say what went wrong. Do not ask follow-up questions unless you cannot act at all (for example, a medication with no time).`;

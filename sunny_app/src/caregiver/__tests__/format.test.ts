@@ -1,7 +1,7 @@
 // sunny_app/src/caregiver/__tests__/format.test.ts
 //
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection, messages and claim text, leftover (carried-over) tasks,
+// alert detection (never for anytime tasks), messages and claim text, anytime rows listed last, leftover (carried-over) tasks,
 // the note input, the done detail line (who confirmed, surface), today's task rows (leftover
 // split, notes, checkboxState for editors, viewers and busy rows, note visibility), the
 // events-only rows of any day (a separate row type from task rows),
@@ -355,6 +355,30 @@ describe('todaysTasks', () => {
     expect(todaysTasks(day, USER).today.map((r) => r.id)).toEqual(['task-a', 'task-b']);
   });
 
+  it('lists anytime rows after the timed ones with the time "Anytime"', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'any', scheduledTime: 'anytime', state: 'due' }),
+        makeTask({ instanceId: 'late', scheduledTime: '20:00' }),
+        makeTask({ instanceId: 'early', scheduledTime: '08:00' }),
+      ],
+    });
+    const { today } = todaysTasks(day, USER);
+    expect(today.map((r) => r.id)).toEqual(['task-early', 'task-late', 'task-any']);
+    expect(today[2]).toMatchObject({ time: 'Anytime', variant: 'open' });
+    expect(today[2]?.accessibilityLabel).toContain('Anytime');
+  });
+
+  it('lists a left-over anytime row after left-over timed rows', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'any', scheduledTime: 'anytime', carriedOver: true, state: 'due' }),
+        makeTask({ instanceId: 'late', scheduledTime: '23:30', carriedOver: true, state: 'due' }),
+      ],
+    });
+    expect(todaysTasks(day, USER).leftover.map((r) => r.id)).toEqual(['task-late', 'task-any']);
+  });
+
   it('assigns a variant to each kind of task row', () => {
     const day = makeDay({
       tasks: [
@@ -605,6 +629,13 @@ describe('hasInProgress', () => {
     );
     expect(hasInProgress(finished)).toBe(false);
     expect(hasInProgress([])).toBe(false);
+  });
+});
+
+describe('anytime alerts', () => {
+  it('never treats an anytime task as an alert', () => {
+    expect(isAlert(makeTask({ scheduledTime: 'anytime', state: 'missed' }))).toBe(false);
+    expect(isAlert(makeTask({ scheduledTime: 'anytime', state: 'escalated' }))).toBe(false);
   });
 });
 

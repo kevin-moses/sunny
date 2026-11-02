@@ -17,7 +17,9 @@
 // staying stoppable and editable, the as-needed medication refusal in update_task (stop_task
 // allowed, briefing marker), size caps on add_task, the schedule-aware duplicate guard on
 // add_task and update_task, the toTaskChanges field table, and the briefing's over-cap
-// selection and times cap.
+// selection and times cap. Anytime tasks (no times, not a medication): add_task without times,
+// refusal for a medication, update_task to anytime and back (policy handling), the duplicate
+// guard for two anytime tasks, and get_tasks and the briefing showing "anytime".
 //
 // Last modified: 2026-11-01
 
@@ -692,6 +694,7 @@ describe("add_task", () => {
       display_label: "Morning pills",
       spoken_prompt: "Time for Morning pills.",
       times: ["08:00"],
+      anytime: false,
       repeat_weekdays: null,
       once_on: null,
       starts_on: null,
@@ -792,7 +795,7 @@ describe("add_task", () => {
 
   test.each([
     [{ ...PILLS, times: [] }, "at least one time"],
-    [{ type: "reminder", title: "x", display_label: "x" }, "at least one time"],
+    [{ type: "medication", title: "x", display_label: "x" }, "at least one time"],
     [
       { title: "x", display_label: "x", times: ["08:00"] },
       "type, title and display_label are required",
@@ -1511,5 +1514,146 @@ describe("briefing over the task cap", () => {
       times: ["06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00"],
     });
     expect(await briefing(t, a)).toContain("at 06:00, 07:00, 08:00, 09:00, 10:00, 11:00, +2 more ");
+  });
+});
+
+describe("anytime tasks", () => {
+  const REMINDER = { type: "reminder", title: "Water the plants", display_label: "Water plants" };
+
+  /**
+   * purpose: The seeded policy of a household with the given system key.
+   * @param t: (TestConvex) Harness.
+   * @param householdId: (Id<"households">) Household.
+   * @param key: (string) "medication" or "prompt_only".
+   * @return: (Promise<Id<"escalationPolicies"> | undefined>) The policy id.
+   */
+  async function policyKey(
+    t: TestConvex,
+    householdId: Id<"households">,
+    key: "medication" | "prompt_only",
+  ): Promise<Id<"escalationPolicies"> | undefined> {
+    return await t.run(
+      async (ctx) =>
+        (
+          await ctx.db
+            .query("escalationPolicies")
+            .withIndex("by_household_system_key", (q) =>
+              q.eq("householdId", householdId).eq("systemKey", key),
+            )
+            .first()
+        )?._id,
+    );
+  }
+
+  test("add_task without times creates an anytime task with no policy and anytime instances", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", REMINDER);
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.text)).toMatchObject({ times: [], anytime: true });
+    const { tasks, instances } = await readTasks(t);
+    expect(tasks[0]!.escalationPolicyId).toBeUndefined();
+    expect(instances.map((i) => [i.localDate, i.scheduledTime]).sort()).toEqual([
+      ["2027-03-01", "anytime"],
+      ["2027-03-02", "anytime"],
+    ]);
+  });
+
+  test("an empty times list is also anytime", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", { ...REMINDER, times: [] });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.text)).toMatchObject({ anytime: true });
+  });
+
+  test("add_task without times is refused for a medication, telling the model to ask", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", {
+      type: "medication",
+      title: "Pills",
+      display_label: "Pills",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("A medication needs at least one time");
+    expect(result.text).toContain("ask the caregiver");
+    expect((await readTasks(t)).tasks).toHaveLength(0);
+  });
+
+  test("the add_task schema no longer requires times", () => {
+    const addTaskTool = AGENT_TOOLS.find((x) => "name" in x && x.name === "add_task") as {
+      input_schema: { required: string[] };
+    };
+    expect(addTaskTool.input_schema.required).toEqual(["type", "title", "display_label"]);
+  });
+
+  test("the prompt tells the agent not to ask for a time for a non-medication task", () => {
+    expect(AGENT_SYSTEM_PROMPT).toContain("anytime");
+    expect(AGENT_SYSTEM_PROMPT).toContain("A medication always needs a time");
+  });
+
+  test("two anytime tasks with the same type and label are duplicates; a timed one is not", async () => {
+    const { t, a } = await makeWorld();
+    const first = await addTask(t, a, REMINDER);
+    const dup = await tool(t, a, "add_task", REMINDER);
+    expect(dup.isError).toBe(true);
+    expect(dup.text).toContain(`task_id ${first}`);
+    expect(dup.text).toContain("anytime");
+    const timed = await tool(t, a, "add_task", { ...REMINDER, times: ["09:00"] });
+    expect(timed.isError).toBe(false);
+  });
+
+  test("update_task with empty times makes a timed task anytime and drops its default policy", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, { ...REMINDER, times: ["09:00"] });
+    expect((await readTasks(t)).tasks[0]!.escalationPolicyId).toBe(
+      await policyKey(t, a, "prompt_only"),
+    );
+    const result = await tool(t, a, "update_task", { task_id: id, changes: { times: [] } });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.text)).toMatchObject({ times: [], anytime: true });
+    const { tasks, instances } = await readTasks(t);
+    expect(tasks[0]!.escalationPolicyId).toBeUndefined();
+    expect(instances.some((i) => i.scheduledTime === "anytime")).toBe(true);
+  });
+
+  test("update_task giving an anytime task times restores the type's default policy", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, REMINDER);
+    const result = await tool(t, a, "update_task", { task_id: id, changes: { times: ["10:00"] } });
+    expect(result.isError).toBe(false);
+    expect((await readTasks(t)).tasks[0]!.escalationPolicyId).toBe(
+      await policyKey(t, a, "prompt_only"),
+    );
+  });
+
+  test("update_task refuses to make a medication anytime", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    const result = await tool(t, a, "update_task", { task_id: id, changes: { times: [] } });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("A medication needs at least one time");
+    expect((await readTasks(t)).tasks[0]!.times).toEqual(["08:00"]);
+  });
+
+  test("update_task changing a timed medication with no times to a reminder is allowed", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a);
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { type: "reminder", times: [] },
+    });
+    expect(result.isError).toBe(false);
+    expect((await readTasks(t)).tasks[0]!.escalationPolicyId).toBeUndefined();
+  });
+
+  test("get_tasks and the briefing show anytime tasks as anytime", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, REMINDER);
+    const listed = JSON.parse((await tool(t, a, "get_tasks", {})).text) as Record<
+      string,
+      unknown
+    >[];
+    expect(listed[0]).toMatchObject({ task_id: id, times: [], anytime: true });
+    const text = await briefing(t, a);
+    expect(text).toContain(`(reminder, task_id ${id}) anytime every day; today: anytime upcoming`);
   });
 });

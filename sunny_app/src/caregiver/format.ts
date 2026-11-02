@@ -25,7 +25,15 @@
 import type { FunctionReturnType } from 'convex/server';
 
 import type { api } from '../backend/convexApi';
-import { displayTime, eventDetails, eventKey, isDone, isOpen } from '../day/format';
+import {
+  compareTaskTime,
+  displayTime,
+  eventDetails,
+  eventKey,
+  isAnytime,
+  isDone,
+  isOpen,
+} from '../day/format';
 import {
   addDays,
   dayOfMonth,
@@ -136,10 +144,11 @@ export function buildWeekStrip(day: DayViewData): WeekStripDay[] {
 /**
  * purpose: Whether a task needs a caregiver's attention.
  * @param task: (DayTask) The task.
- * @return: (boolean) True when its state is escalated or missed.
+ * @return: (boolean) True when its state is escalated or missed; never for an anytime task
+ *          (anytime tasks raise no alerts).
  */
 export function isAlert(task: DayTask): boolean {
-  return task.state === 'escalated' || task.state === 'missed';
+  return !isAnytime(task) && (task.state === 'escalated' || task.state === 'missed');
 }
 
 /**
@@ -413,7 +422,7 @@ export function eventsForDate(day: DayViewData, date: string): EventRowData[] {
     .map((event) => eventRow(event, eventKey(event)));
 }
 
-/** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order. */
+/** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order, anytime last. */
 export interface TodaysTasks {
   leftover: TaskRowData[];
   today: TaskRowData[];
@@ -422,14 +431,14 @@ export interface TodaysTasks {
 /**
  * purpose: Today's task rows, independent of the week strip selection and never events. Tasks
  *          carried over from yesterday go to leftover, the rest to today, each in scheduled-time
- *          order (ties keep the day view's order).
+ *          order with anytime tasks last (ties keep the day view's order).
  * @param day: (DayViewData) The day view.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id, to word "by you".
  * @return: (TodaysTasks) The leftover and today's rows; both empty when there are no tasks.
  */
 export function todaysTasks(day: DayViewData, userId: string | null): TodaysTasks {
   const result: TodaysTasks = { leftover: [], today: [] };
-  const ordered = [...day.tasks].sort((a, b) => a.scheduledTime.localeCompare(b.scheduledTime));
+  const ordered = [...day.tasks].sort(compareTaskTime);
   for (const task of ordered) {
     const row = taskRow(task, { id: `task-${task.instanceId}`, userId });
     (task.carriedOver ? result.leftover : result.today).push(row);

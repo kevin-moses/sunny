@@ -30,6 +30,7 @@ import type * as lib_agentFingerprint from "../lib/agentFingerprint.js";
 import type * as lib_agentHistory from "../lib/agentHistory.js";
 import type * as lib_agentRequestState from "../lib/agentRequestState.js";
 import type * as lib_agentTools from "../lib/agentTools.js";
+import type * as lib_anytime from "../lib/anytime.js";
 import type * as lib_apnsPayload from "../lib/apnsPayload.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_base64 from "../lib/base64.js";
@@ -88,6 +89,7 @@ declare const fullApi: ApiFromModules<{
   "lib/agentHistory": typeof lib_agentHistory;
   "lib/agentRequestState": typeof lib_agentRequestState;
   "lib/agentTools": typeof lib_agentTools;
+  "lib/anytime": typeof lib_anytime;
   "lib/apnsPayload": typeof lib_apnsPayload;
   "lib/audit": typeof lib_audit;
   "lib/base64": typeof lib_base64;

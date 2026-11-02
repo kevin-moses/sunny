@@ -2,8 +2,11 @@
 // Purpose: The senior's schedule for today, ported from private.today_json. Today is the
 // household-local date of the given instant, plus any instance from the previous local date
 // whose window crosses midnight and is still due or escalated (a 23:30 task with a 120 minute
-// window is still being prompted at 00:10, so it must still be listed and confirmable).
-// Entries are ordered by window start, yesterday's first, and carry the task fields every
+// window is still being prompted at 00:10, so it must still be listed and confirmable; an
+// anytime instance stays open through the whole next day, so yesterday's undone one is
+// listed as carried over and the day after it is not).
+// Entries are ordered by window start with anytime instances (lib/anytime.ts) after the timed
+// ones of the same day, yesterday's first, and carry the task fields every
 // surface (display, widget, agent context) renders. Absent optional
 // values are null, not missing keys, as in the other view-shaped results (lib/occurrences).
 //
@@ -17,9 +20,10 @@
 //
 // Last modified: 2026-11-01
 
-import type { Doc, Id } from "../_generated/dataModel";
+import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
+import { compareDayOrder } from "./anytime";
 import { addDays, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -36,6 +40,7 @@ export interface TodayEntry {
   spokenPrompt: string;
   pillDescription: string | null;
   checklistItems: string[];
+  /** Household-local "HH:MM", or the ANYTIME sentinel ("anytime") for a task without a time. */
   scheduledTime: string;
   state: InstanceState;
   confirmedAt: number | null;
@@ -60,8 +65,8 @@ export interface TodayEntry {
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms; its household-local date defines "today".
- * @return: (TodayEntry[]) Entries ordered by window start (yesterday's carry-over first);
- *          empty if the household is gone.
+ * @return: (TodayEntry[]) Entries ordered by window start, anytime ones last within a day
+ *          (yesterday's carry-over first); empty if the household is gone.
  */
 export async function todayInstances(
   ctx: QueryCtx,
@@ -71,14 +76,6 @@ export async function todayInstances(
   const household = await ctx.db.get(householdId);
   if (!household) return [];
   const date = localDate(now, household.timezone);
-  /**
-   * purpose: Sort comparator ordering task instances by window start.
-   * @param a: (Doc<"taskInstances">) First instance.
-   * @param b: (Doc<"taskInstances">) Second instance.
-   * @return: (number) Negative when a starts first.
-   */
-  const byWindowStart = (a: Doc<"taskInstances">, b: Doc<"taskInstances">): number =>
-    a.windowStart - b.windowStart;
   const carryOver = (
     await ctx.db
       .query("taskInstances")
@@ -88,13 +85,13 @@ export async function todayInstances(
       .collect()
   )
     .filter((i) => i.state === "due" || i.state === "escalated")
-    .sort(byWindowStart);
+    .sort(compareDayOrder);
   const todays = (
     await ctx.db
       .query("taskInstances")
       .withIndex("by_household_date", (q) => q.eq("householdId", householdId).eq("localDate", date))
       .collect()
-  ).sort(byWindowStart);
+  ).sort(compareDayOrder);
   const carriedIds = new Set(carryOver.map((i) => i._id));
   const names = await memberNames(ctx, householdId);
   /**

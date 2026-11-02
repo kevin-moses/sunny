@@ -17,9 +17,11 @@
 // which for the household agent is the caregiver it acts for (actorUserId). Wording limits: a
 // title is 200 characters at most (as for calendar events) and a display label 60, because the
 // senior's display shows the label in large type and a longer one would not fit.
-// TaskOptions.requireTimes (set by the agent, not the app, where as-needed medications have no
-// times) rejects an active task with no times, checked on the merged result of a create or an
-// update.
+// Anytime tasks (lib/anytime.ts): a task of any type except medication with no times is done
+// "anytime that day". A medication needs at least one time unless it is a valid as-needed
+// medication (isAsNeededTask: a daily or spacing limit); an active medication that would have
+// neither is rejected when the write touches its times, type or active flag, so older data
+// stays editable. Anytime tasks get no escalation policy (they never prompt or escalate).
 // Size caps apply to the values being written, never to data already stored: a create checks
 // every field it was given; an update checks only the fields present in its changes, so a task
 // saved under older, looser limits can still be stopped, rescheduled or edited elsewhere.
@@ -27,10 +29,12 @@
 // times, at most 50 checklist items of at most 200 characters each.
 // Default policy: a task created with no escalationPolicyId gets the household's seeded
 // "medication" policy (type medication) or "prompt_only" policy (every other type), found by
-// systemKey, because a task without a policy is never prompted or escalated. A later change
-// of type across the medication boundary (to or from medication) switches the policy to the
-// new type's default, but only when the current policy is one of those two seeded policies;
-// a custom policy is left alone, and an escalationPolicyId in the same update wins.
+// systemKey, because a task without a policy is never prompted or escalated; an anytime task
+// gets none. A later change of type across the medication boundary (to or from medication), or
+// of whether the task has times (anytime or not), switches the policy to the new default
+// (none for an anytime task), but only when the current policy is one of the seeded policies
+// (or, for a task turning from anytime to timed, when it has none); a custom policy is left
+// alone, and an escalationPolicyId in the same update wins.
 // backfillDefaultPolicies (internal, run once from the CLI) assigns the same defaults to
 // existing tasks that have no policy, in bounded batches. isAsNeededTask identifies
 // as-needed medications (no times, a daily or spacing limit), which the agent may not edit.
@@ -45,6 +49,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { actorUserId, requireEditor, requireReader } from "./lib/access";
 import type { Actor } from "./lib/access";
+import { isAnytimeTask } from "./lib/anytime";
 import { appError } from "./lib/errors";
 import { assignStepIds } from "./lib/policies";
 import { deleteTask, insertTask, patchTask, purgeTaskBatch } from "./lib/schedule";
@@ -72,12 +77,6 @@ const MAX_STEP_OFFSET_MINUTES = 1440;
 /** Households handled per backfill page, and tasks handled per backfill batch. */
 const BACKFILL_HOUSEHOLD_PAGE = 20;
 const BACKFILL_TASK_BATCH = 100;
-
-/** Optional extra rules for a create or an update. */
-export interface TaskOptions {
-  /** Reject a task that would be active with no times (the agent never makes one). */
-  requireTimes?: boolean;
-}
 
 /** The writable task fields after defaults, before validation. */
 type TaskDraft = Omit<
@@ -182,7 +181,6 @@ function enforceSizeCaps(draft: TaskDraft, written: ReadonlySet<keyof TaskDraft>
  * @param draft: (TaskDraft) The task fields.
  * @param written: (ReadonlySet<keyof TaskDraft>) The fields the caller is writing (all, on
  *        create).
- * @param options: (TaskOptions) Extra rules; requireTimes rejects an active task with no times.
  * @return: (Promise<TaskDraft>) The normalized draft.
  * @raises invalid for any rule violation.
  */
@@ -191,15 +189,20 @@ async function validateDraft(
   householdId: Id<"households">,
   draft: TaskDraft,
   written: ReadonlySet<keyof TaskDraft>,
-  options: TaskOptions,
 ): Promise<TaskDraft> {
   const title = requireNonBlank(draft.title, "Title");
   const displayLabel = requireNonBlank(draft.displayLabel, "Display label");
   enforceSizeCaps({ ...draft, title, displayLabel }, written);
-  if (options.requireTimes && draft.active && draft.times.length === 0) {
+  if (
+    draft.active &&
+    draft.type === "medication" &&
+    draft.times.length === 0 &&
+    !isAsNeededTask(draft) &&
+    (written.has("times") || written.has("type") || written.has("active"))
+  ) {
     throw appError(
       "invalid",
-      "A task needs at least one time (HH:MM); ask the caregiver for it instead of guessing",
+      "A medication needs at least one time (HH:MM) unless it is as-needed with a limit; ask the caregiver for the time instead of guessing",
     );
   }
   const spokenPrompt = draft.spokenPrompt.trim() || `Time for ${displayLabel}.`;
@@ -315,7 +318,8 @@ export async function listTasksCore(
  *          household. A blank spokenPrompt becomes "Time for <displayLabel>."; windowMinutes
  *          defaults to 60; with no escalationPolicyId the task gets the household's default
  *          policy for its type (see defaultPolicyId): "medication" for medication tasks,
- *          "prompt_only" for the rest. An explicit escalationPolicyId wins. If the household
+ *          "prompt_only" for the rest, and none for an anytime task (no times, not a
+ *          medication; lib/anytime.ts). An explicit escalationPolicyId wins. If the household
  *          lacks the seeded policy the task is created with no policy (it then never
  *          escalates). A later type change across the medication boundary switches a default
  *          policy to the new type's default (see updateTaskCore). Every given field is
@@ -327,7 +331,6 @@ export async function listTasksCore(
  * @param householdId: (Id<"households">) Household.
  * @param args: (CreateTaskArgs) The task's fields.
  * @param now: (number) Epoch ms.
- * @param options: (TaskOptions) Extra rules (requireTimes).
  * @return: (Promise<Doc<"tasks">>) The new task.
  * @raises invalid for any rule violation.
  */
@@ -337,7 +340,6 @@ export async function createTaskCore(
   householdId: Id<"households">,
   args: CreateTaskArgs,
   now: number,
-  options: TaskOptions = {},
 ): Promise<Doc<"tasks">> {
   const fields: TaskDraft = {
     ...args,
@@ -348,9 +350,10 @@ export async function createTaskCore(
     active: args.active ?? true,
   };
   const written = new Set(Object.keys(fields) as (keyof TaskDraft)[]);
-  const draft = await validateDraft(ctx, householdId, fields, written, options);
+  const draft = await validateDraft(ctx, householdId, fields, written);
   const escalationPolicyId =
-    draft.escalationPolicyId ?? (await defaultPolicyId(ctx, householdId, draft.type));
+    draft.escalationPolicyId ??
+    (isAnytimeTask(draft) ? undefined : await defaultPolicyId(ctx, householdId, draft.type));
   const taskId = await insertTask(
     ctx,
     actor,
@@ -391,28 +394,37 @@ export async function defaultPolicyId(
 }
 
 /**
- * purpose: The policy a task should move to when its type changes: when the change crosses
- *          the medication boundary (to or from "medication") and the task's current policy is
- *          one of the household's seeded policies (systemKey "medication" or "prompt_only"),
- *          the new type's default; otherwise nothing (a custom policy, no policy, the same
- *          side of the boundary, or a household missing the new default are left alone).
+ * purpose: The policy a task should move to when an update changes its type or its times.
+ *          Becoming an anytime task (no times, not a medication) clears a seeded policy
+ *          (null); a custom policy is kept (the scheduler never fires an anytime instance).
+ *          Turning from anytime to timed gives a task with no policy the new type's default.
+ *          Otherwise, when the change crosses the medication boundary and the current policy
+ *          is a seeded one (systemKey set), the new type's default. Everything else keeps the
+ *          current policy.
  * @param ctx: (QueryCtx) Context.
  * @param task: (Doc<"tasks">) The task before the change.
- * @param newType: (TaskType) The type being set.
- * @return: (Promise<Id<"escalationPolicies"> | undefined>) The policy to switch to, or
- *          undefined to keep the current one.
+ * @param newType: (TaskType) The type after the change.
+ * @param newTimes: (string[]) The times after the change.
+ * @return: (Promise<Id<"escalationPolicies"> | null | undefined>) The policy to switch to,
+ *          null to clear it, or undefined to keep the current one.
  */
-async function policyForTypeChange(
+async function policyForChange(
   ctx: QueryCtx,
   task: Doc<"tasks">,
   newType: TaskType,
-): Promise<Id<"escalationPolicies"> | undefined> {
-  if ((task.type === "medication") === (newType === "medication")) return undefined;
-  if (task.escalationPolicyId === undefined) return undefined;
-  const current = await ctx.db.get(task.escalationPolicyId);
-  if (!current || current.householdId !== task.householdId || current.systemKey === undefined) {
-    return undefined;
+  newTimes: string[],
+): Promise<Id<"escalationPolicies"> | null | undefined> {
+  const wasAnytime = isAnytimeTask(task);
+  const nowAnytime = isAnytimeTask({ type: newType, times: newTimes });
+  const current =
+    task.escalationPolicyId === undefined ? null : await ctx.db.get(task.escalationPolicyId);
+  const seeded =
+    current !== null && current.householdId === task.householdId && current.systemKey !== undefined;
+  if (nowAnytime) return seeded ? null : undefined;
+  if (task.escalationPolicyId === undefined) {
+    return wasAnytime ? await defaultPolicyId(ctx, task.householdId, newType) : undefined;
   }
+  if ((task.type === "medication") === (newType === "medication") || !seeded) return undefined;
   return await defaultPolicyId(ctx, task.householdId, newType);
 }
 
@@ -420,9 +432,10 @@ async function policyForTypeChange(
  * purpose: Core of update, reusable by agent tools: merge changes into a task of the
  *          household, validate the result, patch and audit it, and resync instances when the
  *          schedule changed (deactivating removes upcoming, due and escalated instances).
- *          Size caps apply only to the fields in changes. A type change across the medication
- *          boundary moves a seeded default policy to the new type's default (see
- *          policyForTypeChange) unless the same change sets escalationPolicyId.
+ *          Size caps apply only to the fields in changes. A change of type or times that
+ *          crosses the medication boundary or the anytime boundary moves a seeded default
+ *          policy to the new default (see policyForChange) unless the same change sets
+ *          escalationPolicyId.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) Who changes it (audit actor).
  * @param householdId: (Id<"households">) Household the caller acts for.
@@ -430,7 +443,6 @@ async function policyForTypeChange(
  * @param changes: (TaskChanges) Absent key = unchanged, null = cleared. daysOfWeek null means
  *        every day; a blank spokenPrompt restores the default.
  * @param now: (number) Epoch ms.
- * @param options: (TaskOptions) Extra rules (requireTimes), checked on the merged result.
  * @return: (Promise<Doc<"tasks">>) The task after the change.
  * @raises not_found for a missing or foreign task; invalid for bad values.
  */
@@ -441,7 +453,6 @@ export async function updateTaskCore(
   taskId: Id<"tasks">,
   changes: TaskChanges,
   now: number,
-  options: TaskOptions = {},
 ): Promise<Doc<"tasks">> {
   const task = await loadTask(ctx, householdId, taskId);
   /**
@@ -454,8 +465,9 @@ export async function updateTaskCore(
   const orUndefined = <T>(value: T | null | undefined, current: T | undefined) =>
     value === undefined ? current : (value ?? undefined);
   const switchedPolicy =
-    changes.type !== undefined && changes.escalationPolicyId === undefined
-      ? await policyForTypeChange(ctx, task, changes.type)
+    (changes.type !== undefined || changes.times !== undefined) &&
+    changes.escalationPolicyId === undefined
+      ? await policyForChange(ctx, task, changes.type ?? task.type, changes.times ?? task.times)
       : undefined;
   const written = new Set(
     (Object.keys(changes) as (keyof TaskChanges)[]).filter((k) => changes[k] !== undefined),
@@ -477,13 +489,14 @@ export async function updateTaskCore(
       endsOn: orUndefined(changes.endsOn, task.endsOn),
       windowMinutes: changes.windowMinutes ?? task.windowMinutes,
       escalationPolicyId:
-        switchedPolicy ?? orUndefined(changes.escalationPolicyId, task.escalationPolicyId),
+        switchedPolicy === undefined
+          ? orUndefined(changes.escalationPolicyId, task.escalationPolicyId)
+          : (switchedPolicy ?? undefined),
       asNeededMaxPerDay: orUndefined(changes.asNeededMaxPerDay, task.asNeededMaxPerDay),
       asNeededMinHours: orUndefined(changes.asNeededMinHours, task.asNeededMinHours),
       active: changes.active ?? task.active,
     },
     written,
-    options,
   );
   return await patchTask(ctx, actor, task, draft, now);
 }

@@ -7,7 +7,9 @@
 // Cascades the SQL foreign keys performed (instance deletes remove their notifications, task
 // deletes remove instances and dose log rows) are done here explicitly. Deleting a task
 // removes the task row at once and the rest in bounded batches (purgeTaskBatch), because a
-// long-lived task has more rows than one mutation may touch.
+// long-lived task has more rows than one mutation may touch. An anytime task (no times, not a
+// medication; lib/anytime.ts) gets one instance per day it occurs, with the sentinel
+// scheduledTime and a window from local midnight to local midnight two days later.
 //
 // Last modified: 2026-11-01
 
@@ -15,6 +17,7 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { Actor } from "./access";
+import { anytimeWindow, ANYTIME, isAnytimeTask } from "./anytime";
 import { audit } from "./audit";
 import { addDays, isoWeekday, localDate, minutes, zonedInstant } from "./time";
 
@@ -61,9 +64,13 @@ async function expandOneTask(
   let created = 0;
   for (const date of [today, addDays(today, 1)]) {
     if (!occursOn(task, date)) continue;
-    for (const time of task.times) {
-      const windowStart = zonedInstant(date, time, timezone);
-      const windowEnd = windowStart + minutes(task.windowMinutes);
+    const slots = isAnytimeTask(task)
+      ? [{ time: ANYTIME, ...anytimeWindow(date, timezone) }]
+      : task.times.map((time) => {
+          const windowStart = zonedInstant(date, time, timezone);
+          return { time, windowStart, windowEnd: windowStart + minutes(task.windowMinutes) };
+        });
+    for (const { time, windowStart, windowEnd } of slots) {
       if (windowEnd <= now && windowStart < task.scheduleChangedAt) continue;
       const existing = await ctx.db
         .query("taskInstances")

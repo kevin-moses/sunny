@@ -17,10 +17,12 @@
 // user id and the request id in detail. The cores refuse events and tasks of any other
 // household. Tools are a Record<ToolName, handler> table; an unknown tool is a missing key.
 //
-// Task rules the agent has beyond the app: an active task must have at least one time (checked
-// by the core on the merged result of add_task and update_task; as-needed medications, which
-// have no times and limits, stay app-only, so their fields are not in the tool schema), and
-// add_task refuses a duplicate (an active task of the household with the same type, the same
+// Task rules the agent has beyond the app: times are optional and a non-medication task with
+// no times is an anytime task (done anytime that day, never prompted; lib/anytime.ts), while a
+// medication must have a time (the core rejects it otherwise, telling the model to ask the
+// caregiver; as-needed medications, which have no times and limits, stay app-only, so their
+// fields are not in the tool schema). update_task with times [] on a non-medication task makes
+// it anytime. add_task refuses a duplicate (an active task of the household with the same type, the same
 // display label ignoring case and spacing, a shared time and a schedule that can fall on the
 // same day: weekday sets and starts/ends ranges overlap, or a one-off date is covered), naming
 // the existing task_id; update_task runs the same guard, excluding the task itself, when the
@@ -39,7 +41,8 @@
 //   repeat_weekdays (mon..sun names or null), repeat_until, created_via, cancelled,
 //   local_date, starts_at, ends_at }.
 // get_tasks result: a JSON array of tasks in creation order, each { task_id, type, title,
-//   display_label, spoken_prompt, times (HH:MM), repeat_weekdays (mon..sun names or null =
+//   display_label, spoken_prompt, times (HH:MM; empty for an anytime task), anytime (true for a
+//   task with no time), repeat_weekdays (mon..sun names or null =
 //   every day), once_on, starts_on, ends_on, window_minutes, pill_description,
 //   checklist_items, active }; stopped tasks only with include_stopped; optionally only one
 //   type. add_task, update_task and stop_task return the task in that shape.
@@ -53,6 +56,7 @@ import type { MutationCtx } from "../_generated/server";
 import { addEventCore, cancelEventCore, listOccurrencesCore, updateEventCore } from "../calendar";
 import type { AddEventArgs, EventChanges } from "../calendar";
 import { createTaskCore, isAsNeededTask, listTasksCore, updateTaskCore } from "../tasks";
+import { isAnytimeTask } from "./anytime";
 import type { CreateTaskArgs, TaskChanges } from "../tasks";
 import type { AgentActor } from "./access";
 import { appError, type AppErrorData } from "./errors";
@@ -147,7 +151,7 @@ const TASK_FIELDS = {
     type: "array",
     items: { type: "string" },
     description:
-      "Local times of day, 24-hour HH:MM, at least one. Replaces the whole list on update.",
+      "Local times of day, 24-hour HH:MM. Required for medication. Omit or leave empty for an anytime task (done anytime that day, never prompted); an empty list on update makes the task anytime. Replaces the whole list on update.",
   },
   repeat_weekdays: {
     type: "array",
@@ -213,11 +217,11 @@ export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
     type: "custom",
     name: "add_task",
     description:
-      "Add a task the senior is prompted to do and confirm on the display (pills, routine, reminder, checklist). It needs at least one time, in the household's local time, and starts prompting at once. An active task with the same type, label and a shared time is refused.",
+      'Add a task the senior confirms on the display (pills, routine, reminder, checklist). With times (household local time) the senior is prompted at those times. Without times it is an anytime task: shown as "Anytime" for the day, never prompted, done any time that day; medication always needs a time. An active task with the same type, label and a shared time (or both anytime) is refused.',
     input_schema: {
       type: "object",
       properties: TASK_FIELDS,
-      required: ["type", "title", "display_label", "times"],
+      required: ["type", "title", "display_label"],
     },
   },
   {
@@ -586,8 +590,8 @@ export function toTaskChanges(
 
 /**
  * purpose: Build the arguments of a new task from add_task input: the mapped fields with
- *          nulls treated as absent, and type, title and display_label required. That it has
- *          a time is checked by the core (TaskOptions.requireTimes).
+ *          nulls treated as absent, and type, title and display_label required. Times are
+ *          optional (no times = anytime); that a medication has one is checked by the core.
  * @param input: (Record<string, unknown>) add_task input.
  * @return: (CreateTaskArgs) Arguments for createTaskCore.
  * @raises invalid when a required field is missing or a field is unknown (including active).
@@ -649,8 +653,20 @@ function schedulesOverlap(a: DuplicateKey, b: DuplicateKey): boolean {
 }
 
 /**
+ * purpose: Whether two tasks of the same type share a time: a common "HH:MM", or both are
+ *          anytime tasks (no times, not medication).
+ * @param a: (DuplicateKey) One task.
+ * @param b: (DuplicateKey) The other task.
+ * @return: (boolean) True when they share a time or are both anytime.
+ */
+function sharesTime(a: DuplicateKey, b: DuplicateKey): boolean {
+  if (isAnytimeTask(a) && isAnytimeTask(b)) return true;
+  return a.times.some((time) => b.times.includes(time));
+}
+
+/**
  * purpose: Refuse a task that duplicates an active one: same type, same normalized display
- *          label, at least one shared time and a schedule that can fall on the same day (same
+ *          label, at least one shared time (or both anytime) and a schedule that can fall on the same day (same
  *          label and time on different weekdays, or in disjoint date ranges, is allowed).
  * @param ctx: (MutationCtx) Context.
  * @param householdId: (Id<"households">) Household.
@@ -672,13 +688,13 @@ async function rejectDuplicateTask(
       t._id !== excludeId &&
       t.type === candidate.type &&
       normalizeLabel(t.displayLabel) === label &&
-      t.times.some((time) => candidate.times.includes(time)) &&
+      sharesTime(t, candidate) &&
       schedulesOverlap(t, candidate),
   );
   if (existing) {
     throw appError(
       "invalid",
-      `This task already exists (task_id ${existing._id}, "${existing.displayLabel}" at ${existing.times.join(", ")}); use update_task to change it`,
+      `This task already exists (task_id ${existing._id}, "${existing.displayLabel}" ${isAnytimeTask(existing) ? "anytime" : `at ${existing.times.join(", ")}`}); use update_task to change it`,
     );
   }
 }
@@ -741,6 +757,7 @@ function taskForModel(task: Doc<"tasks">): Record<string, unknown> {
     display_label: task.displayLabel,
     spoken_prompt: task.spokenPrompt,
     times: task.times,
+    anytime: isAnytimeTask(task),
     repeat_weekdays: weekdayCodes(task.daysOfWeek),
     once_on: task.onceOn ?? null,
     starts_on: task.startsOn ?? null,
@@ -812,7 +829,7 @@ const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   add_task: async (ctx, { householdId, actor, now }, input) => {
     const args = toAddTaskArgs(input);
     await rejectDuplicateTask(ctx, householdId, { ...args, times: args.times ?? [] });
-    const task = await createTaskCore(ctx, actor, householdId, args, now, { requireTimes: true });
+    const task = await createTaskCore(ctx, actor, householdId, args, now);
     return taskForModel(task);
   },
   update_task: async (ctx, { householdId, actor, now }, input) => {
@@ -826,9 +843,7 @@ const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
         await rejectDuplicateTask(ctx, householdId, merged, taskId);
       }
     }
-    const task = await updateTaskCore(ctx, actor, householdId, taskId, changes, now, {
-      requireTimes: true,
-    });
+    const task = await updateTaskCore(ctx, actor, householdId, taskId, changes, now);
     return taskForModel(task);
   },
   stop_task: async (ctx, { householdId, actor, now }, input) => {

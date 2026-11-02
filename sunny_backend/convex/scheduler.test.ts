@@ -119,7 +119,8 @@ async function makeTask(
     spokenPrompt: string;
     escalationPolicyId: Id<"escalationPolicies"> | null;
     windowMinutes: number;
-    type: "medication" | "routine";
+    type: "medication" | "routine" | "reminder";
+    asNeededMaxPerDay: number;
   }> = {},
 ): Promise<Id<"tasks">> {
   const { escalationPolicyId, title = "Morning pills", ...rest } = fields;
@@ -360,7 +361,7 @@ describe("expansion", () => {
 
   test("an unscheduled (as-needed) task creates no instances", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { times: [], type: "medication" });
+    const taskId = await makeTask(f, { times: [], type: "medication", asNeededMaxPerDay: 2 });
     const rows = await f.t.run(
       async (ctx) =>
         await ctx.db
@@ -995,7 +996,7 @@ describe("bounded task deletion", () => {
 
   test("one purge batch removes at most 200 instances and reports more remain", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { times: [] });
+    const taskId = await makeTask(f, { times: [], asNeededMaxPerDay: 2 });
     await bulkUp(f, taskId, 450, 250);
     const more = await f.t.run(async (ctx) => await purgeTaskBatch(ctx, f.householdId, taskId));
     expect(more).toBe(true);
@@ -1005,7 +1006,7 @@ describe("bounded task deletion", () => {
 
   test("removing a task with hundreds of rows deletes the task now and the rest in batches", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { times: [] });
+    const taskId = await makeTask(f, { times: [], asNeededMaxPerDay: 2 });
     await bulkUp(f, taskId, 450, 250);
     await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.remove, {
       householdId: f.householdId,

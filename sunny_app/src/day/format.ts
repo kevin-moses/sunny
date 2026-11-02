@@ -3,12 +3,46 @@
 // Purpose: Pure helpers for the day clock: task state checks (done, open, due), the time-ordered agenda
 // merge, and plain-language time text. Dates and times from calendar.dayView are already in
 // the household's local time, so nothing here converts timezones (date arithmetic lives in
-// localDate.ts). Also the shared wording of an event line (eventDetails).
+// localDate.ts). Also the shared wording of an event line (eventDetails). Anytime tasks (no time
+// of day, done anytime that day) arrive with the scheduledTime sentinel ANYTIME; they read
+// "Anytime", are never "due", and are listed after the day's timed items.
 //
 // Last modified: 2026-11-01
 
 import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
+
+/**
+ * The scheduledTime of an anytime task's instance (a task with no time of day). Mirrors
+ * ANYTIME in sunny_backend/convex/lib/anytime.ts; keep the two in sync.
+ */
+export const ANYTIME = 'anytime';
+
+/**
+ * purpose: Whether a task is an anytime task (done anytime that day, no time of day).
+ * @param task: (Pick<DayTask, 'scheduledTime'>) The task.
+ * @return: (boolean) True when its scheduledTime is the anytime sentinel.
+ */
+export function isAnytime(task: Pick<DayTask, 'scheduledTime'>): boolean {
+  return task.scheduledTime === ANYTIME;
+}
+
+/**
+ * purpose: Sort comparator for tasks of a list: timed tasks by scheduled time, anytime tasks
+ *          after all timed ones.
+ * @param a: (Pick<DayTask, 'scheduledTime'>) First task.
+ * @param b: (Pick<DayTask, 'scheduledTime'>) Second task.
+ * @return: (number) Negative when a is listed first (0 for equal times, so a stable sort keeps
+ *          the day view's order).
+ */
+export function compareTaskTime(
+  a: Pick<DayTask, 'scheduledTime'>,
+  b: Pick<DayTask, 'scheduledTime'>,
+): number {
+  const byAnytime = Number(isAnytime(a)) - Number(isAnytime(b));
+  if (byAnytime !== 0) return byAnytime;
+  return a.scheduledTime < b.scheduledTime ? -1 : a.scheduledTime > b.scheduledTime ? 1 : 0;
+}
 
 /**
  * purpose: Whether a task was confirmed by the senior or a caregiver.
@@ -30,12 +64,13 @@ export function isOpen(task: DayTask): boolean {
 }
 
 /**
- * purpose: Whether a task's confirmation window is open.
+ * purpose: Whether a task's confirmation window is open and it is time to act on it. An anytime
+ *          task is never "due": it is open all day and nothing is highlighted for it.
  * @param task: (DayTask) The task.
- * @return: (boolean) True while its state is due or escalated.
+ * @return: (boolean) True while its state is due or escalated, for a timed task.
  */
 export function isDue(task: DayTask): boolean {
-  return task.state === 'due' || task.state === 'escalated';
+  return !isAnytime(task) && (task.state === 'due' || task.state === 'escalated');
 }
 
 /**
@@ -48,7 +83,8 @@ export function eventKey(event: EventOccurrence): string {
 }
 
 /**
- * purpose: Merge today's tasks and events into one list ordered by local time.
+ * purpose: Merge today's tasks and events into one list ordered by local time; anytime tasks
+ *          come last, after every timed task and event.
  * @param day: (DayViewData | null) The day view, or null before the first load.
  * @return: (AgendaItem[]) Agenda lines; ties keep tasks before events.
  */
@@ -66,15 +102,27 @@ export function buildAgenda(day: DayViewData | null): AgendaItem[] {
     time: event.startTime,
     event,
   }));
-  return [...tasks, ...events].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+  /**
+   * purpose: Whether an agenda line is an anytime task.
+   * @param item: (AgendaItem) The line.
+   * @return: (boolean) True for an anytime task.
+   */
+  const isAnytimeLine = (item: AgendaItem): boolean => item.kind === 'task' && isAnytime(item.task);
+  return [...tasks, ...events].sort(
+    (a, b) =>
+      Number(isAnytimeLine(a)) - Number(isAnytimeLine(b)) ||
+      (a.time < b.time ? -1 : a.time > b.time ? 1 : 0),
+  );
 }
 
 /**
- * purpose: Display form of a local "HH:MM" time, for example "2:00 PM".
+ * purpose: Display form of a local "HH:MM" time, for example "2:00 PM"; "Anytime" for the
+ *          anytime sentinel.
  * @param localTime: (string) Time from the backend.
  * @return: (string) Display time, or the input unchanged when it is not a valid time.
  */
 export function displayTime(localTime: string): string {
+  if (localTime === ANYTIME) return 'Anytime';
   const match = /^(\d{2}):(\d{2})$/.exec(localTime);
   if (match === null) return localTime;
   const [hour, minute] = [Number(match[1]), Number(match[2])];
