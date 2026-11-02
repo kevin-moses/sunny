@@ -19,6 +19,9 @@
 // - Steps: markRunning, startSession (records the session), then per poll one pollSession, and for
 //   tool calls also executeToolCalls and sendToolResults (marks sent), then finishRequest. A reply
 //   with no tools is 4 steps; each tool round adds 3; each pause check adds a sleep plus a re-run.
+// - A request marked carryOver (agentRequests: it began a new session because the agent config
+//   changed) gets an "Earlier in this conversation" section after the briefing in its first
+//   message (lib/agentHistory.ts), so the caregiver's chat reads as one continuing conversation.
 // - The workflow body must stay stable while runs are in flight (notes/CONVEX_MIGRATION.md).
 //
 // Last modified: 2026-11-01
@@ -37,6 +40,7 @@ import {
 } from "./_generated/server";
 import { EDITOR_ROLES, findMember } from "./lib/access";
 import { buildBriefing } from "./lib/agentBriefing";
+import { buildCarryOver } from "./lib/agentHistory";
 import { errorText, GENERIC_ERROR, isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { executeAgentTool } from "./lib/agentTools";
 import type { ToolContext } from "./lib/agentTools";
@@ -215,8 +219,9 @@ export const markRunning = internalMutation({
 });
 
 /**
- * purpose: Everything startSession needs: the gate, the briefing plus message, and the
- *          session to continue (set on the row up front for a continuation).
+ * purpose: Everything startSession needs: the gate, the briefing plus message (with the recent
+ *          chat between them for a carryOver request), and the session to continue (set on the
+ *          row up front for a continuation).
  * @param requestId: (Id<"agentRequests">) The request.
  * @return: (SessionInputs) The inputs, or the stop to report (including failed when the
  *         earlier conversation has no session).
@@ -242,10 +247,11 @@ export const sessionInputs = internalQuery({
       ? request.baselineUserMessages !== undefined
       : request.sessionId !== undefined;
     const briefing = await buildBriefing(ctx, request.householdId, request.requestedBy, now);
+    const earlier = request.carryOver ? await buildCarryOver(ctx, request.householdId) : "";
     return {
       stop: null,
       householdId: request.householdId,
-      text: `${briefing}\n\nCaregiver's request:\n${request.message}`,
+      text: `${briefing}\n\n${earlier}Caregiver's request:\n${request.message}`,
       sessionId: started ? (continueSessionId ?? request.sessionId ?? null) : null,
       continueSessionId,
     };

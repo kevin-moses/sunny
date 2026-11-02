@@ -6,11 +6,16 @@
 // the former Supabase jobs-run agent function with the logic unchanged. Everything that touches the
 // network lives in the wrapper functions so tests can replace this module wholesale and never
 // call the real API. Env: ANTHROPIC_API_KEY, SUNNY_AGENT_ID, SUNNY_ENVIRONMENT_ID, and
-// optionally SUNNY_AGENT_SESSION_BUDGET_CENTS (default 100). See notes/AGENT_RUNTIME.md.
+// optionally SUNNY_AGENT_SESSION_BUDGET_CENTS (default 100). New sessions pass the deployed
+// code's model, system prompt and tools as overrides of the agent (agent_with_overrides), so a
+// backend deploy changes what new sessions run without re-running the setup script. See
+// notes/AGENT_RUNTIME.md.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import Anthropic from "@anthropic-ai/sdk";
+import { AGENT_MODEL, AGENT_SYSTEM_PROMPT } from "./agentConfig";
+import { AGENT_TOOLS } from "./agentTools";
 import { ConfigError } from "./errors";
 
 /** Default per-session spend cap, in US cents. */
@@ -118,7 +123,8 @@ function userMessage(text: string) {
 }
 
 /**
- * purpose: Create a session with the first user message and a spend cap.
+ * purpose: Create a session with the first user message and a spend cap. The session runs the
+ *          agent with the deployed code's model, system prompt and tools as overrides.
  * @param config: (AgentConfig) Agent, environment and budget.
  * @param params: ({ title, requestId, householdId, text }) Session title, ids stored as
  *        metadata, and the first user message.
@@ -129,7 +135,13 @@ export async function createSession(
   params: { title: string; requestId: string; householdId: string; text: string },
 ): Promise<string> {
   const session = await client(config.apiKey).beta.sessions.create({
-    agent: config.agentId,
+    agent: {
+      type: "agent_with_overrides",
+      id: config.agentId,
+      model: AGENT_MODEL,
+      system: AGENT_SYSTEM_PROMPT,
+      tools: AGENT_TOOLS,
+    },
     environment_id: config.environmentId,
     title: params.title,
     metadata: { request_id: params.requestId, household_id: params.householdId },

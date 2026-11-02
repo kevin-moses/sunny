@@ -15,6 +15,7 @@ import { convexTest } from "convex-test";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { AGENT_CONFIG_FINGERPRINT } from "./lib/agentFingerprint";
 import type { AgentRequestStatus } from "./lib/validators";
 
 /** Every non-test module in the backend, for the convex-test harness. */
@@ -64,7 +65,8 @@ export async function createHousehold(
  * purpose: Insert an agent request row directly.
  * @param t: (TestConvex) Harness.
  * @param householdId: (Id<"households">) Household.
- * @param fields: (object) Overrides for status, sessionId, reply, error, finishedAt and
+ * @param fields: (object) Overrides for status, sessionId, reply, error, finishedAt,
+ *        continueRequestId, agentConfig (default: the current AGENT_CONFIG_FINGERPRINT) and
  *        requestedBy (default "user_a").
  * @return: (Promise<Id<"agentRequests">>) The request.
  */
@@ -78,6 +80,8 @@ export async function insertRequest(
     error: string;
     finishedAt: number;
     requestedBy: string;
+    continueRequestId: Id<"agentRequests">;
+    agentConfig: string;
   }> = {},
 ): Promise<Id<"agentRequests">> {
   return await t.run(async (ctx) => {
@@ -86,6 +90,7 @@ export async function insertRequest(
       requestedBy: "user_a",
       message: "hello",
       status: "queued",
+      agentConfig: AGENT_CONFIG_FINGERPRINT,
       ...fields,
     });
   });

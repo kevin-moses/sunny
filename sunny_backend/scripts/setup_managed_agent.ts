@@ -3,8 +3,11 @@
 // Agents. The agent and environment ids live on the Convex deployment (SUNNY_AGENT_ID,
 // SUNNY_ENVIRONMENT_ID) and are read from there, so one command both creates and updates:
 // when an id is not set the script creates the resource and stores the new id on the
-// deployment itself. Re-run after changing the prompt or tools in convex/lib/agentConfig.ts
-// and convex/lib/agentTools.ts; running sessions keep the version they started with. The
+// deployment itself. Sessions themselves use the prompt, model and tools from the deployed
+// backend code (agent_with_overrides in convex/lib/managedAgents.ts), so this script is needed
+// only to create the agent and environment and to keep the console's copy in sync; changing
+// convex/lib/agentConfig.ts or agentTools.ts takes effect on deploy, and the next chat message
+// then starts a new session (agentRequests.ts) while running sessions keep their version. The
 // agent gets only Sunny's custom tools (no shell, files or web), and its environment allows no
 // outbound network. Port of the former Supabase setup script. Not part of the deployed backend.
 //

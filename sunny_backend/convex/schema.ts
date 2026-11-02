@@ -476,6 +476,16 @@ export default defineSchema({
     // Known up front for a continuation (copied from the earlier request), set after the
     // session starts otherwise. At most one in-progress request may use a session.
     sessionId: v.optional(v.string()),
+    // AGENT_CONFIG_FINGERPRINT (lib/agentFingerprint.ts) of the agent config this request's
+    // session runs: the current one for a fresh request, copied from the continued request for
+    // a continuation. Absent on rows from before it existed. A conversation whose fingerprint
+    // differs from the deployed one is not continued (agentRequests.findLatestContinuable).
+    agentConfig: v.optional(v.string()),
+    // True when the caregiver sent this as part of the one household chat (continueLatest) but
+    // it began a new session because the latest conversation could not be continued (the agent
+    // config changed). The session's first message then carries the recent chat
+    // (agentRuntime.sessionInputs) so it reads as one continuing conversation.
+    carryOver: v.optional(v.boolean()),
     // user.message events the session had before this request's message was posted.
     baselineUserMessages: v.optional(v.number()),
     reply: v.optional(v.string()),

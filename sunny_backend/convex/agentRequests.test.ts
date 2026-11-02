@@ -6,7 +6,8 @@
 // limited to 1 to 4000 characters, at most 5 queued or running requests per household, and
 // continuing only a succeeded request of the same household that has a session, and
 // continueLatest (newest succeeded conversation, fresh when none, busy limit, exclusive with
-// continueRequestId). Also the
+// continueRequestId), and the agent config fingerprint (stored fresh, copied by a
+// continuation, a differing or missing one starts a new carryOver session). Also the
 // inserted row, the stored workflow id, the audit entry, the view shape of get and list
 // (null for absent fields, newest first, limit clamping) and cancel.
 //
@@ -15,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { AGENT_CONFIG_FINGERPRINT } from "./lib/agentFingerprint";
 import {
   addMember,
   createHousehold,
@@ -310,6 +312,59 @@ describe("request", () => {
             continueLatest: true,
           }),
         ).rejects.toThrow(/invalid/);
+      });
+
+      test("starts fresh when the stored agent config differs from the deployed one", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        await insertRequest(t, householdId, {
+          status: "succeeded",
+          sessionId: "old",
+          agentConfig: "00000000",
+        });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.continueRequestId).toBeUndefined();
+        expect(row?.sessionId).toBeUndefined();
+        expect(row?.carryOver).toBe(true);
+      });
+
+      test("starts fresh when the stored agent config is missing", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        await insertRequest(t, householdId, {
+          status: "succeeded",
+          sessionId: "old",
+          agentConfig: undefined,
+        });
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.continueRequestId).toBeUndefined();
+      });
+
+      test("a fresh request stores the current fingerprint", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const id = await sendLatest(t, householdId);
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.agentConfig).toBe(AGENT_CONFIG_FINGERPRINT);
+      });
+
+      test("a continuation copies the fingerprint of the request it continues", async () => {
+        const t = makeBackend();
+        const householdId = await createTeam(t);
+        const earlier = await insertRequest(t, householdId, {
+          status: "succeeded",
+          sessionId: "s1",
+          agentConfig: "abcd1234",
+        });
+        const id = await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+          householdId,
+          message: "more",
+          continueRequestId: earlier,
+        });
+        const row = await t.run(async (ctx) => await ctx.db.get(id));
+        expect(row?.agentConfig).toBe("abcd1234");
       });
 
       test("continueLatest false behaves as a fresh request", async () => {

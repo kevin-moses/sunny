@@ -37,7 +37,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Notification delivery (APNs, SMS) | `delivery.ts`, `apns.ts`, `apnsTokens.ts`, `lib/delivery.ts`, `lib/apnsPayload.ts`, `lib/twilio.ts` |
 | Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
 | Daily digest | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts` |
-| Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` (the agent's calendar and task tools, run as an agent actor acting for the requesting caregiver; re-run `scripts/setup_managed_agent.ts` after changing the tools or prompt) |
+| Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` (the agent's calendar and task tools, run as an agent actor acting for the requesting caregiver; sessions pass the deployed prompt, model and tools as overrides, and a config change starts a new session with the recent chat carried over, so a backend deploy is enough) |
 | Functions the Python voice agent calls (`agent:*`) | `agent.ts` |
 | LiveKit room token for a senior device | `voice.ts` |
 | Components (rate limiter, workflow, two workpools) | `convex.config.ts` |
@@ -57,7 +57,7 @@ The dev deployment is `enduring-ostrich-959` (`https://enduring-ostrich-959.conv
 
 Scripts (not part of the deployed backend):
 - `scripts/caregiver.ts` is a command-line stand-in for the caregiver app, acting as a fixed dev caregiver through `convex run --identity`. Commands: `setup` (create a dev household and print join codes), `chat "<message>" [--continue]` (request to the household agent), `day`, `codes`, `invite [primary|member|viewer]` (caregiver invite code, default member), `google` (consent link), `phone <number>` (waits for the text to go out, then prints "Texted a code" or the failure reason), `confirm-phone <code>`. Run as `npx tsx scripts/caregiver.ts <command>`; it keeps the household id in a git-ignored `scripts/.dev-state.json`.
-- `scripts/setup_managed_agent.ts` creates or updates the Managed Agents agent and environment; run `npm run setup:agent` (from `sunny_backend`; `-- --prod` for production) once per Anthropic workspace and again after changing `lib/agentConfig.ts` or `lib/agentTools.ts`. It reads `ANTHROPIC_API_KEY` from the root `.env`, reads the ids from the Convex deployment, and stores newly created ids there.
+- `scripts/setup_managed_agent.ts` creates or updates the Managed Agents agent and environment; run `npm run setup:agent` (from `sunny_backend`; `-- --prod` for production) once per Anthropic workspace to create the agent and environment (it also keeps the console copy in sync; changes to `lib/agentConfig.ts` or `lib/agentTools.ts` take effect on backend deploy). It reads `ANTHROPIC_API_KEY` from the root `.env`, reads the ids from the Convex deployment, and stores newly created ids there.
 
 Environment (set on the Convex deployment with `npx convex env set`, never in a committed file):
 

@@ -7,7 +7,8 @@
 // result, then stores the reply and succeeds; a continued request posts to the earlier
 // session; the agent stopping or its session terminating fails the request with the reason;
 // a missing environment fails with a clear message; a paused household waits and then resumes;
-// a request older than 30 minutes fails; a cancel ends the run. Plus the step functions
+// a request older than 30 minutes fails; a cancel ends the run; a new session after an agent
+// config change carries the recent chat (and a first request or continuation does not). Plus the step functions
 // directly: executeToolCalls reuses a stored result, fails when the requester is no longer an
 // editor of the household, pollUntil's outcomes, the paused gate on
 // every acting step, and the onComplete handler.
@@ -209,6 +210,97 @@ describe("workflow end to end", () => {
     expect(args[1].text).toMatch(
       /^Household briefing \(from Sunny's records\):[\s\S]*\n\nCaregiver's request:\nAdd lunch at noon$/,
     );
+  });
+
+  describe("carry-over of the earlier conversation", () => {
+    /** Send a continueLatest message as user_a and return the first message text sent. */
+    const sendLatestAndRun = async (t: TestConvex, householdId: Id<"households">) => {
+      scriptEvents(repliedOnly);
+      await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+        householdId,
+        message: "What is next?",
+        continueLatest: true,
+      });
+      await drain(t);
+      return mocks.createSession.mock.calls[0]![1].text as string;
+    };
+
+    test("a new session after a config change carries the recent chat, oldest first", async () => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      for (const [i, config] of ["a", "b"].entries()) {
+        await t.run(async (ctx) => {
+          await ctx.db.insert("agentRequests", {
+            householdId,
+            requestedBy: "user_a",
+            message: `question ${i}`,
+            status: "succeeded",
+            reply: `answer ${i}`,
+            sessionId: `old${i}`,
+            agentConfig: config,
+          });
+        });
+      }
+      const text = await sendLatestAndRun(t, householdId);
+      expect(text).toContain("Earlier in this conversation (most recent last):");
+      expect(text.indexOf("question 0")).toBeLessThan(text.indexOf("question 1"));
+      expect(text).toContain("Sunny: answer 1");
+      expect(text.indexOf("Earlier in this conversation")).toBeGreaterThan(
+        text.indexOf("Household briefing"),
+      );
+      expect(text.endsWith("Caregiver's request:\nWhat is next?")).toBe(true);
+    });
+
+    test("the first request has no earlier section", async () => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      expect(await sendLatestAndRun(t, householdId)).not.toContain("Earlier in this conversation");
+    });
+
+    test("a normal continuation posts no earlier section", async () => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      await insertRequest(t, householdId, {
+        status: "succeeded",
+        sessionId: "sess_old",
+        reply: "Old answer",
+      });
+      scriptEvents(
+        [{ id: "u0", type: "user.message" }],
+        [{ id: "u0", type: "user.message" }, ...repliedOnly],
+      );
+      await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
+        householdId,
+        message: "more",
+        continueLatest: true,
+      });
+      await drain(t);
+      expect(mocks.sendUserMessage.mock.calls[0]![1]).not.toContain("Earlier in this conversation");
+    });
+
+    test("is bounded in exchanges, per-text length and total length", async () => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      await t.run(async (ctx) => {
+        for (let i = 0; i < 15; i++) {
+          await ctx.db.insert("agentRequests", {
+            householdId,
+            requestedBy: "user_a",
+            message: `q${i} ${"m".repeat(2000)}`,
+            status: "succeeded",
+            reply: `r${i} ${"x".repeat(2000)}`,
+            sessionId: "old",
+            agentConfig: "stale",
+          });
+        }
+      });
+      const text = await sendLatestAndRun(t, householdId);
+      const section = text.slice(text.indexOf("Earlier in this conversation"));
+      expect(section.length).toBeLessThan(6500);
+      expect(text).not.toContain("q0 ");
+      expect(text).toContain("q14 ");
+      expect(text).not.toContain("m".repeat(501));
+    });
   });
 
   test("a tool call polled twice runs once, sends once and then succeeds", async () => {
