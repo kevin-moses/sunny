@@ -12,7 +12,8 @@
 // scheduledTime and a window from local midnight to the next local midnight, or two days
 // later when the task does not occur the next day (then it carries over as Leftover). When a
 // task turns anytime or timed, its open instances of the other kind for today and later are
-// removed on resync.
+// removed on resync. occursOn (the schedule rule) is exported for lib/upcomingTasks.ts, which
+// projects it onto future days.
 //
 // Last modified: 2026-11-01
 
@@ -35,11 +36,14 @@ export type ExpandScope = { taskId: Id<"tasks"> } | { householdId: Id<"household
 
 /**
  * purpose: Whether a task's rule puts an occurrence on a local date.
- * @param task: (TaskFields) The task.
+ * @param task: (object) The task's startsOn, endsOn, onceOn and daysOfWeek.
  * @param date: (string) Local "YYYY-MM-DD".
  * @return: (boolean) True when the date is inside starts/ends and matches once-on or weekdays.
  */
-function occursOn(task: TaskFields, date: string): boolean {
+export function occursOn(
+  task: Pick<TaskFields, "startsOn" | "endsOn" | "onceOn" | "daysOfWeek">,
+  date: string,
+): boolean {
   if (task.startsOn !== undefined && date < task.startsOn) return false;
   if (task.endsOn !== undefined && date > task.endsOn) return false;
   if (task.onceOn !== undefined) return date === task.onceOn;

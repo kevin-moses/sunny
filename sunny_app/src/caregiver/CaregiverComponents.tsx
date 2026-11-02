@@ -4,7 +4,8 @@
 // and optional trailing control), the section title, the calendar card with its seven-day week
 // strip (tappable cells that select a day), the alert card with its "I'm on it" and "Mark done"
 // actions (or who is already on it), the tasks card (a "Leftover" group of yesterday's open
-// tasks above a "Today" group), the events card (the selected day's events as a plain list) and
+// tasks above a "Today" group), the planned tasks card (a future selected day's tasks, read-only
+// rows with a dulled disabled checkbox, in their own card above that day's events), the events card (the selected day's events as a plain list) and
 // the later-days card grouping the rest of the week's events by day. A task row has a
 // rounded-square checkbox (editors tap an open one to mark it done; a done or marking one is
 // checked and greyed, with a detail line saying who confirmed it; an open one a viewer cannot
@@ -37,6 +38,7 @@ import {
   type CheckboxKind,
   type EventRowData,
   type LaterDayGroup,
+  type PlannedTaskRowData,
   weekMonthLabel,
   type TaskRowData,
   type WeekStripDay,
@@ -581,6 +583,56 @@ export function TasksCard({
     </View>
   );
 }
+
+/**
+ * purpose: One planned task of a future day: the same row look as a task row (time column,
+ *          label) with a dulled disabled checkbox. Read-only: the box is not pressable, it has
+ *          no note and no actions, and the row's screen reader label says it is planned.
+ * @param props: ({ row: PlannedTaskRowData, first: boolean }) The row and whether it is the
+ *        first in its list (no divider).
+ * @return: (JSX.Element) The row.
+ */
+function PlannedTaskRow({ row, first }: { row: PlannedTaskRowData; first: boolean }) {
+  return (
+    <View accessible accessibilityLabel={row.accessibilityLabel} style={styles.taskRow}>
+      <View style={styles.checkboxTarget}>
+        <CheckboxBox kind="disabled" />
+      </View>
+      <View style={[styles.taskBody, !first && styles.divider]}>
+        <TitleLine time={row.time} label={row.label} tone="plain" />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * purpose: A card listing the tasks planned on the selected future day, read-only, or one calm
+ *          line when there are none. Memoized.
+ * @param props: ({ rows: PlannedTaskRowData[], emptyText: string }) The rows and the line shown
+ *        when there are none.
+ * @return: (JSX.Element) The card.
+ */
+export const PlannedTasksCard = memo(function PlannedTasksCard({
+  rows,
+  emptyText,
+}: {
+  rows: PlannedTaskRowData[];
+  emptyText: string;
+}) {
+  return (
+    <View style={styles.scheduleCard}>
+      {rows.length === 0 ? (
+        <Text style={[type.callout, styles.emptyLine]}>{emptyText}</Text>
+      ) : (
+        <View style={styles.rows}>
+          {rows.map((row, index) => (
+            <PlannedTaskRow key={row.id} row={row} first={index === 0} />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+});
 
 /**
  * purpose: The plain list of event rows shared by the events card and the later-days card.

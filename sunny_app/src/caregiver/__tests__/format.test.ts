@@ -4,7 +4,8 @@
 // alert detection (never for anytime tasks), messages and claim text, anytime rows listed last, leftover (carried-over) tasks,
 // the note input, the done detail line (who confirmed, surface), today's task rows (leftover
 // split, notes, checkboxState for editors, viewers and busy rows, note visibility), the
-// events-only rows of any day (a separate row type from task rows),
+// events-only rows of any day (a separate row type from task rows), the planned task rows of a
+// selected future day (none for today, so today's tasks are not duplicated),
 // the selected-day title and fallback rule,
 // the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
@@ -14,7 +15,7 @@
 
 import { describe, expect, it } from '@jest/globals';
 
-import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
+import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../../day/types';
 import {
   ALREADY_DONE_MESSAGE,
   alertMessage,
@@ -33,6 +34,7 @@ import {
   messageSpeaker,
   noteFromInput,
   noteLine,
+  plannedTasksForDate,
   resolveSelectedDate,
   shouldSaveNote,
   selectedDayTitle,
@@ -132,6 +134,7 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
     dateLabel: 'October 29',
     header: 'Thursday evening',
     tasks: [],
+    upcomingTasks: [],
     eventsToday: [],
     nextUp: null,
     upcoming: [],
@@ -275,6 +278,62 @@ describe('alerts', () => {
     expect(alertMessage(makeTask({ state: 'missed', scheduledTime: '08:00' }))).toBe(
       'Due at 8:00 AM.',
     );
+  });
+});
+
+/**
+ * purpose: Build a planned task.
+ * @param overrides: (Partial<Record<keyof PlannedTask, unknown>>) Fields to set.
+ * @return: (PlannedTask) An anytime task on 2026-11-02 unless overridden.
+ */
+function makePlanned(overrides: Partial<Record<keyof PlannedTask, unknown>> = {}): PlannedTask {
+  return {
+    localDate: '2026-11-02',
+    scheduledTime: 'anytime',
+    taskId: 'k1',
+    type: 'reminder',
+    displayLabel: 'License renewal',
+    title: 'Renew license',
+    ...overrides,
+  } as PlannedTask;
+}
+
+describe('plannedTasksForDate', () => {
+  it('is null for today, so the tickable list is not duplicated', () => {
+    const day = makeDay({ upcomingTasks: [makePlanned({ localDate: '2026-10-29' })] });
+    expect(plannedTasksForDate(day, '2026-10-29')).toBeNull();
+  });
+
+  it('lists the rows of the selected future day only, with Anytime and clock times', () => {
+    const day = makeDay({
+      upcomingTasks: [
+        makePlanned({ localDate: '2026-10-30', scheduledTime: '08:00', displayLabel: 'Vitamin' }),
+        makePlanned({ localDate: '2026-10-30' }),
+        makePlanned({ localDate: '2026-10-31', displayLabel: 'Other day' }),
+      ],
+    });
+    const rows = plannedTasksForDate(day, '2026-10-30');
+    expect(rows?.map((r) => [r.time, r.label])).toEqual([
+      ['8:00 AM', 'Vitamin'],
+      ['Anytime', 'License renewal'],
+    ]);
+    expect(new Set(rows?.map((r) => r.id)).size).toBe(2);
+    expect(rows?.[1].accessibilityLabel).toContain('planned');
+  });
+
+  it('is an empty list for a future day with nothing planned', () => {
+    expect(plannedTasksForDate(makeDay(), '2026-10-31')).toEqual([]);
+  });
+
+  it('keeps events out of the rows, and tasks out of the event rows', () => {
+    const day = makeDay({
+      upcomingTasks: [makePlanned({ localDate: '2026-10-30' })],
+      upcoming: [makeEvent({ localDate: '2026-10-30', label: 'Walk' })],
+    });
+    expect(plannedTasksForDate(day, '2026-10-30')?.map((r) => r.label)).toEqual([
+      'License renewal',
+    ]);
+    expect(eventsOf(day, '2026-10-30').map((r) => r.label)).toEqual(['Walk']);
   });
 });
 

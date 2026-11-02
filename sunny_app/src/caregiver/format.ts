@@ -10,6 +10,8 @@
 // - today's task rows (leftover and today, with the "who confirmed" detail line of done tasks);
 // - the event rows of any day (tasks and events are different row types; the week strip dots
 //   count events only);
+// - the planned task rows of a selected future day (plannedTasksForDate: read-only rows projected
+//   from task schedules by the server; none for today, whose tasks are the tickable list);
 // - the title for the day selected in the week strip, and the later days of the week grouped by
 //   day;
 // - the chat transcript built from the household's agent requests (oldest first).
@@ -43,7 +45,7 @@ import {
   weekdayName,
   yearOf,
 } from '../day/localDate';
-import type { DayTask, DayViewData, EventOccurrence } from '../day/types';
+import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../day/types';
 
 /** An agent request as the chat tab sees it (agentRequests.list, newest first). */
 export type AgentRequest = FunctionReturnType<typeof api.agentRequests.list>[number];
@@ -420,6 +422,39 @@ export function eventsForDate(day: DayViewData, date: string): EventRowData[] {
     .filter((e) => e.localDate === date)
     .sort((a, b) => a.startTime.localeCompare(b.startTime))
     .map((event) => eventRow(event, eventKey(event)));
+}
+
+/** A task planned on a future day: read-only, so it has no instance, state, note or actions. */
+export interface PlannedTaskRowData {
+  id: string;
+  /** "8:00 AM", or "Anytime". */
+  time: string;
+  label: string;
+  accessibilityLabel: string;
+}
+
+/**
+ * purpose: The planned task rows of a selected day after today, in the order the server sent
+ *          them (timed by time, anytime last). Today has none: its tasks are the tickable list
+ *          above the calendar, so showing them again would duplicate them.
+ * @param day: (DayViewData) The day view.
+ * @param date: (string) The selected local date "YYYY-MM-DD".
+ * @return: (PlannedTaskRowData[] | null) null when the date is today (or earlier), otherwise
+ *          that day's rows; empty when nothing is planned.
+ */
+export function plannedTasksForDate(day: DayViewData, date: string): PlannedTaskRowData[] | null {
+  if (date <= day.localDate) return null;
+  return day.upcomingTasks
+    .filter((task) => task.localDate === date)
+    .map((task: PlannedTask, index) => {
+      const time = displayTime(task.scheduledTime);
+      return {
+        id: `planned-${task.taskId}-${task.scheduledTime}-${index}`,
+        time,
+        label: task.displayLabel,
+        accessibilityLabel: `${time}, ${task.displayLabel}, planned, not available to mark done yet`,
+      };
+    });
 }
 
 /** Today's tasks: yesterday's open tasks (leftover) and today's own, each in time order, anytime last. */

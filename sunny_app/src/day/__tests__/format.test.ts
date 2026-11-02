@@ -92,6 +92,7 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
     dateLabel: 'October 26',
     header: 'Monday evening',
     tasks: [],
+    upcomingTasks: [],
     eventsToday: [],
     nextUp: null,
     upcoming: [],

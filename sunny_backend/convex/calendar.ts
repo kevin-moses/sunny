@@ -12,8 +12,9 @@
 // householdWeek are shared helpers for the agent tools and briefing (lib/agentTools.ts,
 // lib/agentBriefing.ts). Every write core queues a Google push for the household's active
 // connections (lib/calendarSync.ts); an update that changes no stored field queues nothing.
+// dayView also carries upcomingTasks, the next 6 days' planned tasks, for the caregiver calendar.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-01
 
 import { v } from "convex/values";
 import type { ObjectType } from "convex/values";
@@ -50,6 +51,7 @@ import {
 } from "./lib/time";
 import { cleanOptional, normalizeWeekdays, requireNonBlank } from "./lib/text";
 import { todayInstances } from "./lib/today";
+import { upcomingTasks } from "./lib/upcomingTasks";
 
 const MAX_TITLE = 200;
 const MAX_LABEL = 80;
@@ -489,7 +491,8 @@ export const listEvents = query({
  * @param householdId: (Id<"households">) Household.
  * @param minute: (number | undefined) Client minute counter; only varies the query key.
  * @return: (object) seniorPreferredName, timezone, localNow, localDate, weekday, dateLabel,
- *          header, tasks, eventsToday, nextUp and upcoming.
+ *          header, tasks, upcomingTasks (the tasks planned on each of the next 6 local days,
+ *          projected from the schedules; lib/upcomingTasks.ts), eventsToday, nextUp and upcoming.
  */
 export const dayView = query({
   args: { householdId: v.id("households"), minute: v.optional(v.number()) },
@@ -510,6 +513,7 @@ export const dayView = query({
       dateLabel: dateLabel(today),
       header: `${weekday} ${partOfDay(localTime(now, timezone))}`,
       tasks: await todayInstances(ctx, householdId, now),
+      upcomingTasks: await upcomingTasks(ctx, householdId, today, WEEK_DAYS - 1),
       eventsToday: week.filter((o) => o.localDate === today).map(occurrenceJson),
       nextUp: nextUp ? occurrenceJson(nextUp) : null,
       upcoming: week.filter((o) => o.localDate > today).map(occurrenceJson),
