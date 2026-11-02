@@ -52,6 +52,7 @@ import type * as lib_text from "../lib/text.js";
 import type * as lib_time from "../lib/time.js";
 import type * as lib_today from "../lib/today.js";
 import type * as lib_twilio from "../lib/twilio.js";
+import type * as lib_upcomingTasks from "../lib/upcomingTasks.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as pairing from "../pairing.js";
 import type * as phone from "../phone.js";
@@ -111,6 +112,7 @@ declare const fullApi: ApiFromModules<{
   "lib/time": typeof lib_time;
   "lib/today": typeof lib_today;
   "lib/twilio": typeof lib_twilio;
+  "lib/upcomingTasks": typeof lib_upcomingTasks;
   "lib/validators": typeof lib_validators;
   pairing: typeof pairing;
   phone: typeof phone;
