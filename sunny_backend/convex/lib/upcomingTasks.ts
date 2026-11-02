@@ -12,7 +12,7 @@
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { ANYTIME, compareDayOrder, isAnytimeTask } from "./anytime";
+import { ANYTIME, isAnytimeTask } from "./anytime";
 import { occursOn } from "./schedule";
 import type { TaskFields } from "./schedule";
 import { addDays } from "./time";
@@ -43,6 +43,24 @@ export type ProjectableTask = Pick<
   | "onceOn"
   | "daysOfWeek"
 > & { _id: Id<"tasks"> };
+
+/** Most active tasks a projection reads. A household has a handful of tasks, so this is far above
+ *  real use; it only bounds the read if data ever grows unexpectedly. */
+export const MAX_PLANNED_TASKS = 200;
+
+/**
+ * purpose: Order one day's entries: anytime last, then by "HH:MM" string, then by label.
+ * @param a: (UpcomingTask) First entry.
+ * @param b: (UpcomingTask) Second entry.
+ * @return: (number) Negative when a is listed first.
+ */
+function compareEntries(a: UpcomingTask, b: UpcomingTask): number {
+  const byAnytime = Number(a.scheduledTime === ANYTIME) - Number(b.scheduledTime === ANYTIME);
+  if (byAnytime !== 0) return byAnytime;
+  return (
+    a.scheduledTime.localeCompare(b.scheduledTime) || a.displayLabel.localeCompare(b.displayLabel)
+  );
+}
 
 /**
  * purpose: Project tasks onto the local dates from + 1 .. from + days.
@@ -77,15 +95,7 @@ export function projectTasks(
         });
       }
     }
-    day.sort(
-      (a, b) =>
-        compareDayOrder(
-          { scheduledTime: a.scheduledTime, windowStart: 0 },
-          { scheduledTime: b.scheduledTime, windowStart: 0 },
-        ) ||
-        a.scheduledTime.localeCompare(b.scheduledTime) ||
-        a.displayLabel.localeCompare(b.displayLabel),
-    );
+    day.sort(compareEntries);
     result.push(...day);
   }
   return result;
@@ -108,6 +118,6 @@ export async function upcomingTasks(
   const tasks = await ctx.db
     .query("tasks")
     .withIndex("by_household_active", (q) => q.eq("householdId", householdId).eq("active", true))
-    .collect();
+    .take(MAX_PLANNED_TASKS);
   return projectTasks(tasks, today, days);
 }

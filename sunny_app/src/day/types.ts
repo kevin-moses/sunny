@@ -3,8 +3,8 @@
 // Purpose: Types for the calendar.dayView query result that both senior surfaces (the phone's
 // Today screen and the home display) render, plus the merged agenda line type. The types are
 // derived from the backend's generated api (FunctionReturnType), so they follow the server
-// and are camelCase exactly as the server sends them. upcomingTasks are the coming days' planned tasks
-// (no state; the caregiver calendar shows them read-only). Times are household-local "HH:MM"
+// and are camelCase exactly as the server sends them. upcomingTasks are the coming days' planned
+// tasks (no state; the caregiver calendar shows them read-only). Times are household-local "HH:MM"
 // strings and dates are "YYYY-MM-DD"; instants (startsAt, endsAt) are epoch milliseconds.
 //
 // Last modified: 2026-11-01

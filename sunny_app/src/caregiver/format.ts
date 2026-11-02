@@ -446,10 +446,10 @@ export function plannedTasksForDate(day: DayViewData, date: string): PlannedTask
   if (date <= day.localDate) return null;
   return day.upcomingTasks
     .filter((task) => task.localDate === date)
-    .map((task: PlannedTask, index) => {
+    .map((task: PlannedTask) => {
       const time = displayTime(task.scheduledTime);
       return {
-        id: `planned-${task.taskId}-${task.scheduledTime}-${index}`,
+        id: `planned-${task.taskId}-${task.scheduledTime}`,
         time,
         label: task.displayLabel,
         accessibilityLabel: `${time}, ${task.displayLabel}, planned, not available to mark done yet`,

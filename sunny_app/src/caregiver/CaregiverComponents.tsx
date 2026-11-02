@@ -5,8 +5,9 @@
 // strip (tappable cells that select a day), the alert card with its "I'm on it" and "Mark done"
 // actions (or who is already on it), the tasks card (a "Leftover" group of yesterday's open
 // tasks above a "Today" group), the planned tasks card (a future selected day's tasks, read-only
-// rows with a dulled disabled checkbox, in their own card above that day's events), the events card (the selected day's events as a plain list) and
-// the later-days card grouping the rest of the week's events by day. A task row has a
+// rows with a dulled disabled checkbox, in their own card above that day's events), the events
+// card (the selected day's events as a plain list) and the later-days card grouping the rest of
+// the week's events by day. A task row has a
 // rounded-square checkbox (editors tap an open one to mark it done; a done or marking one is
 // checked and greyed, with a detail line saying who confirmed it; an open one a viewer cannot
 // tick is dulled) and tappable text that opens the task's autosaving inline note editor (no Save
@@ -608,19 +609,26 @@ function PlannedTaskRow({ row, first }: { row: PlannedTaskRowData; first: boolea
 /**
  * purpose: A card listing the tasks planned on the selected future day, read-only, or one calm
  *          line when there are none. Memoized.
- * @param props: ({ rows: PlannedTaskRowData[], emptyText: string }) The rows and the line shown
- *        when there are none.
+ * @param props: ({ rows: PlannedTaskRowData[], emptyText: string, dayTitle: string }) The rows,
+ *        the line shown when there are none and the day's title, for the card's screen reader
+ *        label ("Tasks for <day>").
  * @return: (JSX.Element) The card.
  */
 export const PlannedTasksCard = memo(function PlannedTasksCard({
   rows,
   emptyText,
+  dayTitle,
 }: {
   rows: PlannedTaskRowData[];
   emptyText: string;
+  dayTitle: string;
 }) {
   return (
-    <View style={styles.scheduleCard}>
+    <View
+      accessibilityRole="list"
+      accessibilityLabel={`Tasks for ${dayTitle}`}
+      style={styles.scheduleCard}
+    >
       {rows.length === 0 ? (
         <Text style={[type.callout, styles.emptyLine]}>{emptyText}</Text>
       ) : (

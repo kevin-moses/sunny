@@ -16,8 +16,9 @@
 // are none; events only).
 // Everything comes from the shared day view state owned by CaregiverApp. The derived lists are
 // computed in two memos: one per day view and user (tasks, alerts, the strip, the range) and one
-// per day view and selection (the selected day's planned tasks and events, the later days, the title), and the
-// memoized cards get stable callbacks. While the first load is pending it shows a spinner, and
+// per day view and selection (the selected day's planned tasks and events, the later days, the
+// title), and the memoized cards get stable callbacks. While the first load is pending it shows a
+// spinner, and
 // if it fails with nothing cached, the error message. The scroll view lifts the focused note
 // editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses the keyboard on
 // drag, which closes (and saves) an open note.
@@ -247,7 +248,11 @@ export function CaregiverHomeScreen({
               />
               <SectionTitle text={selected.title} />
               {selected.planned !== null && (
-                <PlannedTasksCard rows={selected.planned} emptyText="No tasks." />
+                <PlannedTasksCard
+                  rows={selected.planned}
+                  emptyText="No tasks."
+                  dayTitle={selected.title}
+                />
               )}
               <EventsCard rows={selected.events} emptyText="No events." />
             </View>
