@@ -12,9 +12,10 @@
 // householdWeek are shared helpers for the agent tools and briefing (lib/agentTools.ts,
 // lib/agentBriefing.ts). Every write core queues a Google push for the household's active
 // connections (lib/calendarSync.ts); an update that changes no stored field queues nothing.
-// dayView also carries upcomingTasks, the next 6 days' planned tasks, for the caregiver calendar.
+// dayView also carries upcomingTasks, the next 6 days' planned tasks, for the caregiver calendar
+// only: the paired senior device gets an empty list and the projection is not computed for it.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { v } from "convex/values";
 import type { ObjectType } from "convex/values";
@@ -491,13 +492,15 @@ export const listEvents = query({
  * @param householdId: (Id<"households">) Household.
  * @param minute: (number | undefined) Client minute counter; only varies the query key.
  * @return: (object) seniorPreferredName, timezone, localNow, localDate, weekday, dateLabel,
- *          header, tasks, upcomingTasks (the tasks planned on each of the next 6 local days,
- *          projected from the schedules; lib/upcomingTasks.ts), eventsToday, nextUp and upcoming.
+ *          header, tasks, upcomingTasks (for a caregiver, the tasks planned on each of the next 6
+ *          local days, projected from the schedules; lib/upcomingTasks.ts; always [] for the
+ *          paired senior device, which does not render it and skips the computation),
+ *          eventsToday, nextUp and upcoming.
  */
 export const dayView = query({
   args: { householdId: v.id("households"), minute: v.optional(v.number()) },
   handler: async (ctx, { householdId }) => {
-    await requireReader(ctx, householdId);
+    const actor = await requireReader(ctx, householdId);
     const now = Date.now();
     const { household, today, weekday, week } = await householdWeek(ctx, householdId, now);
     const timezone = household.timezone;
@@ -513,7 +516,10 @@ export const dayView = query({
       dateLabel: dateLabel(today),
       header: `${weekday} ${partOfDay(localTime(now, timezone))}`,
       tasks: await todayInstances(ctx, householdId, now),
-      upcomingTasks: await upcomingTasks(ctx, householdId, today, WEEK_DAYS - 1),
+      upcomingTasks:
+        actor.kind === "caregiver"
+          ? await upcomingTasks(ctx, householdId, today, WEEK_DAYS - 1)
+          : [],
       eventsToday: week.filter((o) => o.localDate === today).map(occurrenceJson),
       nextUp: nextUp ? occurrenceJson(nextUp) : null,
       upcoming: week.filter((o) => o.localDate > today).map(occurrenceJson),

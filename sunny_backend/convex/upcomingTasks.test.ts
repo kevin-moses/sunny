@@ -4,9 +4,10 @@
 // objects: weekday-only tasks, one-off tasks, starts/ends bounds, inactive tasks, as-needed
 // medications, anytime entries, several times, ordering (timed first, anytime last), and the
 // 6 day range across the March 2027 DST change. dayView is tested end to end: tasks created
-// through the public mutation appear on later days only, and a viewer can read the field.
+// through the public mutation appear on later days only, and a viewer can read the field; a
+// paired senior device gets an empty upcomingTasks while a caregiver gets the planned tasks.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -165,5 +166,26 @@ describe("dayView upcomingTasks", () => {
     expect(view.upcomingTasks.some((u) => u.localDate === "2027-03-19")).toBe(true);
     expect(view.upcomingTasks.some((u) => u.localDate === "2027-03-20")).toBe(false);
     expect(view.upcomingTasks.some((u) => u.displayLabel === "Aspirin")).toBe(false);
+  });
+
+  test("a senior device gets no upcomingTasks while a caregiver gets them", async () => {
+    const t = makeBackend();
+    const householdId = await createFamilyHousehold(t);
+    await t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
+      householdId,
+      type: "reminder",
+      title: "Renew license",
+      displayLabel: "License renewal",
+      onceOn: "2027-03-15",
+    });
+    const asCaregiver = await t
+      .withIdentity({ subject: "val" })
+      .query(api.calendar.dayView, { householdId });
+    const asDevice = await t
+      .withIdentity({ subject: "phone", sunny_kind: "device" })
+      .query(api.calendar.dayView, { householdId });
+    expect(asCaregiver.upcomingTasks.map((u) => u.displayLabel)).toEqual(["License renewal"]);
+    expect(asDevice.upcomingTasks).toEqual([]);
+    expect(asDevice.tasks).toEqual(asCaregiver.tasks);
   });
 });

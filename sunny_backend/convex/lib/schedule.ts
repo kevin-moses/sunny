@@ -13,9 +13,11 @@
 // later when the task does not occur the next day (then it carries over as Leftover). When a
 // task turns anytime or timed, its open instances of the other kind for today and later are
 // removed on resync. occursOn (the schedule rule) is exported for lib/upcomingTasks.ts, which
-// projects it onto future days.
+// projects it onto future days. A household timezone change keeps the still-open anytime
+// instances (rows, notes and all) and moves their windows to the new zone's midnights, instead
+// of deleting them (resyncHouseholdTimezone).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -221,9 +223,71 @@ async function deleteMismatchedOpenInstances(
   }
 }
 
+/** The actor recorded for state changes the household resync makes on its own. */
+const SYSTEM_ACTOR: Actor = { kind: "system" };
+
 /**
- * purpose: After a household timezone change every future window moves: drop the household's
- *          upcoming instances that have not opened and expand its tasks in the new zone.
+ * purpose: After a household timezone change, move the household's still-open anytime
+ *          instances (upcoming or due) to the new zone. Their rows are kept so a caregiver note
+ *          survives; only windowStart and windowEnd are recomputed (the same window rule as
+ *          expansion, including whether the task repeats the next day). A due instance whose
+ *          recomputed window has not opened yet goes back to upcoming (audited as a state
+ *          change); one whose window has already ended keeps its state and the scheduler's
+ *          closeWindows marks it missed on its next tick. A window-only patch writes no audit
+ *          row, like expansion creating a row. Instances whose task is gone, inactive or no
+ *          longer anytime are left alone. An open instance dated after the new tomorrow is
+ *          deleted, as the upcoming-instance cleanup did before.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param householdId: (Id<"households">) Household whose timezone was already updated.
+ * @param timezone: (string) The household's new IANA zone.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<void>)
+ */
+async function moveOpenAnytimeInstances(
+  ctx: MutationCtx,
+  householdId: Id<"households">,
+  timezone: string,
+  now: number,
+): Promise<void> {
+  const lastDate = addDays(localDate(now, timezone), 1);
+  const tasks = new Map<Id<"tasks">, Doc<"tasks"> | null>();
+  for (const state of ["upcoming", "due"] as const) {
+    const open = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
+      .collect();
+    for (const instance of open) {
+      if (instance.scheduledTime !== ANYTIME) continue;
+      if (!tasks.has(instance.taskId)) {
+        tasks.set(instance.taskId, await ctx.db.get(instance.taskId));
+      }
+      const task = tasks.get(instance.taskId);
+      if (!task || !task.active || !isAnytimeTask(task)) continue;
+      if (instance.localDate > lastDate) {
+        await deleteInstances(ctx, [instance]);
+        continue;
+      }
+      const window = anytimeWindow(
+        instance.localDate,
+        timezone,
+        occursOn(task, addDays(instance.localDate, 1)),
+      );
+      const reopened = state === "due" && window.windowStart > now;
+      await changeInstance(ctx, SYSTEM_ACTOR, instance, {
+        ...window,
+        ...(reopened ? { state: "upcoming" as const } : {}),
+      });
+    }
+  }
+}
+
+/**
+ * purpose: After a household timezone change every window moves. Open anytime instances are
+ *          moved in place (moveOpenAnytimeInstances), then the household's other upcoming
+ *          instances that have not opened (timed ones; anytime rows were already moved) are
+ *          dropped and the tasks are expanded in the new zone. Expansion looks each
+ *          (task, date, time) up in by_task_date_time, so it never duplicates a moved row.
+ *          Timed instances that already opened keep their windows.
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household whose timezone was already updated.
  * @param now: (number) Epoch ms.
@@ -234,13 +298,19 @@ export async function resyncHouseholdTimezone(
   householdId: Id<"households">,
   now: number,
 ): Promise<void> {
+  const timezone = (await ctx.db.get(householdId))?.timezone;
+  if (!timezone) return;
+  await moveOpenAnytimeInstances(ctx, householdId, timezone, now);
   const future = await ctx.db
     .query("taskInstances")
     .withIndex("by_household_state", (q) =>
       q.eq("householdId", householdId).eq("state", "upcoming").gt("windowStart", now),
     )
     .collect();
-  await deleteInstances(ctx, future);
+  await deleteInstances(
+    ctx,
+    future.filter((i) => i.scheduledTime !== ANYTIME),
+  );
   await expandTasks(ctx, now, { householdId });
 }
 

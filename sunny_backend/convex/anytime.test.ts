@@ -8,14 +8,15 @@
 // anytime last in a day), Leftover carry-over of an anytime instance whose task does not occur
 // the next day (one-off, weekday before an off day) but not of a daily one, and not of a
 // two-day-old one; resync removing open instances of the other kind when a task turns anytime
-// or timed (history kept); a table of policy transitions on update;
+// or timed (history kept); a household timezone change moving open anytime instances in place
+// (same local date, new local date, not yet opened in the new zone, one-off); a table of policy transitions on update;
 // confirming them from the senior's device and as a caregiver; their absence from the daily
 // digest facts; a bare "Done" not picking them; and the task validation and policy rules (a medication needs a time unless it
 // is a valid as-needed medication; no policy for anytime tasks on create and on type/time
 // changes). Fake timers drive the clock of the public functions; the internal scheduler takes
 // an explicit `now`.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -290,6 +291,96 @@ describe("scheduler", () => {
     expect(await tick(f, "2027-03-15T04:00:00Z")).toMatchObject({ missed: 1 });
     expect((await instancesOf(f, taskId))[0]!.state).toBe("missed");
     expect(await taskNotifications(f)).toBe(0);
+  });
+});
+
+/**
+ * purpose: Change the household's timezone as Pat through the public mutation.
+ * @param f: (Fixture) Fixture.
+ * @param timezone: (string) New IANA zone.
+ * @return: (Promise<void>)
+ */
+async function changeZone(f: Fixture, timezone: string): Promise<void> {
+  await f.t
+    .withIdentity({ subject: "pat" })
+    .mutation(api.households.update, { householdId: f.householdId, timezone });
+}
+
+describe("household timezone change", () => {
+  test("the same local date: today's row keeps its id, state and note, with new-zone bounds", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    const [today] = await instancesOf(f, taskId);
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.instances.setTaskNote, {
+      instanceId: today!._id,
+      note: "Watered the ferns",
+    });
+    await changeZone(f, "America/Chicago");
+    const rows = await instancesOf(f, taskId);
+    expect(rows.map((r) => r.localDate)).toEqual(["2027-03-13", "2027-03-14"]);
+    expect(rows[0]!._id).toBe(today!._id);
+    expect(rows[0]!.state).toBe("due");
+    expect(rows[0]!.resolutionNote).toBe("Watered the ferns");
+    // Chicago is still on CST on the 13th and 14th (DST starts at 2:00 on the 14th).
+    expect(rows[0]!.windowStart).toBe(Date.parse("2027-03-13T06:00:00Z"));
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-14T06:00:00Z"));
+    expect(rows[1]!.windowStart).toBe(Date.parse("2027-03-14T06:00:00Z"));
+    expect(rows[1]!.windowEnd).toBe(Date.parse("2027-03-15T05:00:00Z"));
+  });
+
+  test("a new local date: the old row ends at the new midnight and is missed, no duplicates", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    const [old] = await instancesOf(f, taskId);
+    // 15:00Z is 04:00 on the 14th in Auckland (NZDT, UTC+13).
+    await changeZone(f, "Pacific/Auckland");
+    const rows = await instancesOf(f, taskId);
+    expect(rows.map((r) => r.localDate)).toEqual(["2027-03-13", "2027-03-14", "2027-03-15"]);
+    expect(rows[0]!._id).toBe(old!._id);
+    expect(rows[0]!.windowStart).toBe(Date.parse("2027-03-12T11:00:00Z"));
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-13T11:00:00Z"));
+    expect(rows[0]!.state).toBe("due");
+    expect(await tick(f, "2027-03-13T15:02:00Z")).toMatchObject({ missed: 1 });
+    const after = await instancesOf(f, taskId);
+    expect(after.map((r) => [r.localDate, r.state])).toEqual([
+      ["2027-03-13", "missed"],
+      ["2027-03-14", "due"],
+      ["2027-03-15", "upcoming"],
+    ]);
+  });
+
+  test("moving west before the window opens sends a due instance back to upcoming", async () => {
+    const f = await setup("2027-03-13T05:30:00Z");
+    const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T05:31:00Z");
+    const [today] = await instancesOf(f, taskId);
+    expect(today!.state).toBe("due");
+    // 05:30Z is 21:30 on the 12th in Los Angeles: the 13th has not started there.
+    await changeZone(f, "America/Los_Angeles");
+    const rows = await instancesOf(f, taskId);
+    expect(rows.map((r) => [r.localDate, r.state])).toEqual([
+      ["2027-03-12", "upcoming"],
+      ["2027-03-13", "upcoming"],
+    ]);
+    expect(rows[1]!._id).toBe(today!._id);
+    expect(rows[1]!.windowStart).toBe(Date.parse("2027-03-13T08:00:00Z"));
+    const audits = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(
+      audits.filter((a) => a.entityId === today!._id && a.action === "state_change").length,
+    ).toBe(2);
+  });
+
+  test("a one-off task keeps its two-day window in the new zone", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f, { onceOn: "2027-03-13" });
+    await tick(f, "2027-03-13T15:01:00Z");
+    await changeZone(f, "America/Chicago");
+    const rows = await instancesOf(f, taskId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.windowStart).toBe(Date.parse("2027-03-13T06:00:00Z"));
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-15T05:00:00Z"));
   });
 });
 
