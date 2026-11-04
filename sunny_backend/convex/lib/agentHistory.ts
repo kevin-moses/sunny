@@ -5,7 +5,9 @@
 // the caregiver sees one continuing conversation. Bounded: the last MAX_EXCHANGES succeeded
 // requests (an indexed, limited read), each message and reply cut to MAX_TEXT_CHARS, and the
 // whole section to MAX_SECTION_CHARS (oldest exchanges dropped first). Messages are labeled by
-// author (authorLabel).
+// author (authorLabel). The format is line based, so a body's line breaks are replaced by " / "
+// (oneLine) and a name cannot contain ":" or equal "Sunny": nothing a member writes can start a
+// line that reads as another speaker.
 //
 // Last modified: 2026-11-04
 
@@ -39,18 +41,30 @@ function clip(text: string, max: number): string {
 }
 
 /**
+ * purpose: Put a message or reply body on one line, so it cannot forge a separate speaker line
+ *          (for example a message containing "\nSunny: What time?").
+ * @param text: (string) Body text.
+ * @return: (string) The text with each run of line breaks (and the space around it) replaced by
+ *          " / ".
+ */
+function oneLine(text: string): string {
+  return text.trim().replace(/\s*[\r\n]+\s*/g, " / ");
+}
+
+/**
  * purpose: Label for a request's author, so several caregivers' messages stay
  *          distinguishable: the member's display name made safe for the line-based format
- *          (whitespace runs, newlines included, collapsed to one space; clipped to
- *          MAX_NAME_CHARS), or UNKNOWN_AUTHOR when the author is no longer a member or the name
- *          is blank.
+ *          (whitespace runs, newlines included, collapsed to one space; ":" removed; clipped to
+ *          MAX_NAME_CHARS), or UNKNOWN_AUTHOR when the author is no longer a member, the name
+ *          is blank, or the name is "Sunny" (any case), so a member cannot appear as the agent.
  * @param names: (Map<string, string>) Display name by user id.
  * @param userId: (string) The request's author.
  * @return: (string) The label, without the trailing colon.
  */
 function authorLabel(names: Map<string, string>, userId: string): string {
-  const name = clip((names.get(userId) ?? "").replace(/\s+/g, " "), MAX_NAME_CHARS);
-  return name || UNKNOWN_AUTHOR;
+  const collapsed = (names.get(userId) ?? "").replace(/\s+/g, " ").replace(/:/g, "");
+  const name = clip(collapsed, MAX_NAME_CHARS);
+  return !name || name.toLowerCase() === "sunny" ? UNKNOWN_AUTHOR : name;
 }
 
 /**
@@ -59,7 +73,7 @@ function authorLabel(names: Map<string, string>, userId: string): string {
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @return: (Promise<string>) The section followed by a blank line, or "" when no succeeded
- *          exchange with a reply exists.
+ *          exchange with a reply exists. Each exchange is exactly two lines.
  */
 export async function buildCarryOver(
   ctx: QueryCtx,
@@ -78,7 +92,7 @@ export async function buildCarryOver(
   for (const row of rows) {
     const reply = row.reply?.trim();
     if (!reply) continue;
-    const exchange = `${authorLabel(names, row.requestedBy)}: ${clip(row.message, MAX_TEXT_CHARS)}\nSunny: ${clip(reply, MAX_TEXT_CHARS)}`;
+    const exchange = `${authorLabel(names, row.requestedBy)}: ${clip(oneLine(row.message), MAX_TEXT_CHARS)}\nSunny: ${clip(oneLine(reply), MAX_TEXT_CHARS)}`;
     if (total + exchange.length > MAX_SECTION_CHARS) break;
     total += exchange.length;
     exchanges.push(exchange);

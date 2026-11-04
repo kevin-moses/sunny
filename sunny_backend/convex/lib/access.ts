@@ -59,7 +59,7 @@ export interface AgentActor {
 export type Actor = CaregiverActor | DeviceActor | AgentActor | { kind: "system" };
 
 /** The one system actor: recorded for changes the backend makes on its own (scheduler, resync). */
-export const SYSTEM_ACTOR: Actor = { kind: "system" };
+export const SYSTEM_ACTOR: Actor = Object.freeze({ kind: "system" } as const);
 
 /**
  * purpose: The user id behind an actor, for audit and ownership columns.

@@ -19,7 +19,8 @@
 // enqueues its delivery. The functions take `now` so tests can drive the clock;
 // tickHouseholdCore is the pure pass tests call directly. Anytime instances (tasks without a
 // time, lib/anytime.ts) open and close like the others but never fire a step, so they never
-// notify anyone; their window ends two local midnights after their date.
+// notify anyone; their window ends at the next local midnight when the task
+// also occurs the next day, else two midnights after their date.
 //
 // Last modified: 2026-11-04
 

@@ -66,8 +66,8 @@ export async function createHousehold(
  * @param t: (TestConvex) Harness.
  * @param householdId: (Id<"households">) Household.
  * @param fields: (object) Overrides for message (default "hello"), status, sessionId, reply,
- *        error, finishedAt, continueRequestId, agentConfig (default: the current AGENT_CONFIG_FINGERPRINT) and
- *        requestedBy (default "user_a").
+ *        error, finishedAt, continueRequestId, agentConfig (default: the current
+ *        AGENT_CONFIG_FINGERPRINT) and requestedBy (default "user_a").
  * @return: (Promise<Id<"agentRequests">>) The request.
  */
 export async function insertRequest(

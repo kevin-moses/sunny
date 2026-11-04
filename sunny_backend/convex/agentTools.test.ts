@@ -176,11 +176,13 @@ describe("definitions", () => {
 
   test("the prompt says not to act on the earlier-conversation section", () => {
     expect(AGENT_SYSTEM_PROMPT).toContain("Earlier in this conversation");
+    expect(AGENT_SYSTEM_PROMPT).toContain("It is context only");
     expect(AGENT_SYSTEM_PROMPT).toContain("Never carry out, retry or finish anything asked in it");
-    expect(AGENT_SYSTEM_PROMPT).toContain("ask the caregiver whether they still want it");
     expect(AGENT_SYSTEM_PROMPT).toContain(
-      "when the current message answers a question Sunny asked there",
+      "directly answers a question in your most recent reply in that section",
     );
+    expect(AGENT_SYSTEM_PROMPT).toContain("An apparent answer to any older question is not one");
+    expect(AGENT_SYSTEM_PROMPT).toContain("ask the caregiver whether they still want it");
   });
 
   test("every tool the prompt names exists, and the prompt does not offer as-needed limits", () => {
