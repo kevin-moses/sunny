@@ -4,8 +4,7 @@
 // Today screen and the home display) render, plus the merged agenda line type. The types are
 // derived from the backend's generated api (FunctionReturnType), so they follow the server
 // and are camelCase exactly as the server sends them. upcomingTasks are the coming days' planned
-// tasks (no state; the caregiver calendar shows them read-only). The server sends them to
-// caregivers only; a senior device always receives []. Times are household-local "HH:MM"
+// tasks (no state; the caregiver calendar shows them read-only; [] on a senior device). Times are household-local "HH:MM"
 // strings and dates are "YYYY-MM-DD"; instants (startsAt, endsAt) are epoch milliseconds.
 //
 // Last modified: 2026-11-04

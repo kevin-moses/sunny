@@ -12,8 +12,7 @@
 // householdWeek are shared helpers for the agent tools and briefing (lib/agentTools.ts,
 // lib/agentBriefing.ts). Every write core queues a Google push for the household's active
 // connections (lib/calendarSync.ts); an update that changes no stored field queues nothing.
-// dayView also carries upcomingTasks, the next 6 days' planned tasks, for the caregiver calendar
-// only: the paired senior device gets an empty list and the projection is not computed for it.
+// dayView also carries upcomingTasks, the next 6 days' planned tasks, for the caregiver calendar.
 //
 // Last modified: 2026-11-04
 

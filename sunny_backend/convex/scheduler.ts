@@ -21,7 +21,7 @@
 // time, lib/anytime.ts) open and close like the others but never fire a step, so they never
 // notify anyone; their window ends two local midnights after their date.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -29,6 +29,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { queueDigestIfDue } from "./digest";
+import { SYSTEM_ACTOR } from "./lib/access";
 import { isAnytimeInstance } from "./lib/anytime";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
@@ -36,8 +37,6 @@ import { announceEvents } from "./lib/eventNotices";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12, minutes } from "./lib/time";
 import type { EscalationStep } from "./lib/validators";
-
-const SYSTEM = { kind: "system" } as const;
 
 /** Households a tick page schedules; the next page is scheduled as a follow-up. */
 const TICK_PAGE_SIZE = 500;
@@ -77,7 +76,8 @@ async function openWindows(
       q.eq("householdId", householdId).eq("state", "upcoming").lte("windowStart", now),
     )
     .collect();
-  for (const instance of starting) await changeInstance(ctx, SYSTEM, instance, { state: "due" });
+  for (const instance of starting)
+    await changeInstance(ctx, SYSTEM_ACTOR, instance, { state: "due" });
   return starting.length;
 }
 
@@ -237,7 +237,7 @@ async function markEscalated(ctx: MutationCtx, householdId: Id<"households">): P
     .collect();
   const alerted = due.filter((i) => i.firedSteps.some((f) => f.action !== "prompt_senior"));
   for (const instance of alerted) {
-    await changeInstance(ctx, SYSTEM, instance, { state: "escalated" });
+    await changeInstance(ctx, SYSTEM_ACTOR, instance, { state: "escalated" });
   }
   return alerted.length;
 }
@@ -262,7 +262,8 @@ async function closeWindows(
       .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
       .collect();
     const ended = open.filter((i) => i.windowEnd <= now);
-    for (const instance of ended) await changeInstance(ctx, SYSTEM, instance, { state: "missed" });
+    for (const instance of ended)
+      await changeInstance(ctx, SYSTEM_ACTOR, instance, { state: "missed" });
     missed += ended.length;
   }
   return missed;

@@ -178,6 +178,9 @@ describe("definitions", () => {
     expect(AGENT_SYSTEM_PROMPT).toContain("Earlier in this conversation");
     expect(AGENT_SYSTEM_PROMPT).toContain("Never carry out, retry or finish anything asked in it");
     expect(AGENT_SYSTEM_PROMPT).toContain("ask the caregiver whether they still want it");
+    expect(AGENT_SYSTEM_PROMPT).toContain(
+      "when the current message answers a question Sunny asked there",
+    );
   });
 
   test("every tool the prompt names exists, and the prompt does not offer as-needed limits", () => {

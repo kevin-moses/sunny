@@ -9,12 +9,13 @@
 // the next day (one-off, weekday before an off day) but not of a daily one, and not of a
 // two-day-old one; resync removing open instances of the other kind when a task turns anytime
 // or timed (history kept); a household timezone change moving open anytime instances in place
-// (same local date, new local date, not yet opened in the new zone, one-off); a table of policy transitions on update;
-// confirming them from the senior's device and as a caregiver; their absence from the daily
-// digest facts; a bare "Done" not picking them; and the task validation and policy rules (a medication needs a time unless it
-// is a valid as-needed medication; no policy for anytime tasks on create and on type/time
-// changes). Fake timers drive the clock of the public functions; the internal scheduler takes
-// an explicit `now`.
+// (same local date, new local date, not yet opened in the new zone, one-off); a task edit
+// refreshing today's open window when it flips whether the task repeats the next day; a table
+// of policy transitions on update; confirming them from the senior's device and as a caregiver;
+// their absence from the daily digest facts; a bare "Done" not picking them; and the task
+// validation and policy rules (a medication needs a time unless it is a valid as-needed
+// medication; no policy for anytime tasks on create and on type/time changes). Fake timers
+// drive the clock of the public functions; the internal scheduler takes an explicit `now`.
 //
 // Last modified: 2026-11-04
 
@@ -866,5 +867,32 @@ describe("policy transitions on update", () => {
       custom,
     }[expected];
     expect(after.escalationPolicyId).toBe(want);
+  });
+});
+
+describe("editing a task refreshes today's open anytime window", () => {
+  test("a one-off edited to daily gets the one-day window, so it is not Leftover tomorrow", async () => {
+    const f = await setup();
+    const id = await makeTask(f, { onceOn: "2027-03-13" });
+    const [before] = await instancesOf(f, id);
+    expect(before!.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
+    await updateTask(f, id, { onceOn: null });
+    const rows = await instancesOf(f, id);
+    expect(rows.map((r) => r.localDate)).toEqual(["2027-03-13", "2027-03-14"]);
+    expect(rows[0]!._id).toBe(before!._id);
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-14T05:00:00Z"));
+  });
+
+  test("a daily task edited to skip tomorrow gets the two-day window and carries over", async () => {
+    const f = await setup();
+    const id = await makeTask(f);
+    const [before] = await instancesOf(f, id);
+    expect(before!.windowEnd).toBe(Date.parse("2027-03-14T05:00:00Z"));
+    // 2027-03-13 is a Saturday (6); tomorrow, Sunday, is no longer a day it occurs.
+    await updateTask(f, id, { daysOfWeek: [6] });
+    const rows = await instancesOf(f, id);
+    expect(rows.map((r) => r.localDate)).toEqual(["2027-03-13"]);
+    expect(rows[0]!._id).toBe(before!._id);
+    expect(rows[0]!.windowEnd).toBe(Date.parse("2027-03-15T04:00:00Z"));
   });
 });

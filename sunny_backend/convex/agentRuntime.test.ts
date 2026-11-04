@@ -25,6 +25,7 @@ import {
   pollUntil,
   TIMEOUT_ERROR,
 } from "./agentRuntime";
+import { MAX_NAME_CHARS, UNKNOWN_AUTHOR } from "./lib/agentHistory";
 import { GENERIC_ERROR } from "./lib/agentRequestState";
 import { isInProgress } from "./lib/agentRequestState";
 import type { SessionEvent } from "./lib/managedAgents";
@@ -235,16 +236,12 @@ describe("workflow end to end", () => {
       const t = makeBackend();
       const householdId = await createHousehold(t);
       for (const [i, config] of ["a", "b"].entries()) {
-        await t.run(async (ctx) => {
-          await ctx.db.insert("agentRequests", {
-            householdId,
-            requestedBy: "user_a",
-            message: `question ${i}`,
-            status: "succeeded",
-            reply: `answer ${i}`,
-            sessionId: `old${i}`,
-            agentConfig: config,
-          });
+        await insertRequest(t, householdId, {
+          message: `question ${i}`,
+          status: "succeeded",
+          reply: `answer ${i}`,
+          sessionId: `old${i}`,
+          agentConfig: config,
         });
       }
       const text = await sendLatestAndRun(t, householdId);
@@ -257,7 +254,7 @@ describe("workflow end to end", () => {
       expect(text.endsWith("Caregiver's request:\nWhat is next?")).toBe(true);
     });
 
-    test("labels each message with its author's name, and a removed member as A caregiver", async () => {
+    test("labels each message with its author's name, and a removed member generically", async () => {
       const t = makeBackend();
       const householdId = await createHousehold(t);
       await addMember(t, householdId, "user_b", "member", "Ben\nSmith");
@@ -266,23 +263,20 @@ describe("workflow end to end", () => {
         ["user_b", "from ben"],
         ["user_gone", "from a removed member"],
       ] as const) {
-        await t.run(async (ctx) => {
-          await ctx.db.insert("agentRequests", {
-            householdId,
-            requestedBy: author,
-            message,
-            status: "succeeded",
-            reply: `reply to ${message}`,
-            sessionId: "old",
-            agentConfig: "stale",
-          });
+        await insertRequest(t, householdId, {
+          requestedBy: author,
+          message,
+          status: "succeeded",
+          reply: `reply to ${message}`,
+          sessionId: "old",
+          agentConfig: "stale",
         });
       }
       const text = await sendLatestAndRun(t, householdId);
       expect(text).toContain("Anna: from anna\nSunny: reply to from anna");
       expect(text).toContain("Ben Smith: from ben\nSunny: reply to from ben");
       expect(text).toContain(
-        "A caregiver: from a removed member\nSunny: reply to from a removed member",
+        `${UNKNOWN_AUTHOR}: from a removed member\nSunny: reply to from a removed member`,
       );
       expect(text).not.toContain("Caregiver: from");
     });
@@ -298,8 +292,8 @@ describe("workflow end to end", () => {
       });
       const text = await sendLatestAndRun(t, householdId);
       const section = text.slice(text.indexOf("Earlier in this conversation"));
-      expect(section).toContain(`${"N".repeat(57)}...: hello`);
-      expect(section).not.toContain("N".repeat(58));
+      expect(section).toContain(`${"N".repeat(MAX_NAME_CHARS - 3)}...: hello`);
+      expect(section).not.toContain("N".repeat(MAX_NAME_CHARS - 2));
     });
 
     test("the first request has no earlier section", async () => {
@@ -332,19 +326,15 @@ describe("workflow end to end", () => {
     test("is bounded in exchanges, per-text length and total length", async () => {
       const t = makeBackend();
       const householdId = await createHousehold(t);
-      await t.run(async (ctx) => {
-        for (let i = 0; i < 15; i++) {
-          await ctx.db.insert("agentRequests", {
-            householdId,
-            requestedBy: "user_a",
-            message: `q${i} ${"m".repeat(2000)}`,
-            status: "succeeded",
-            reply: `r${i} ${"x".repeat(2000)}`,
-            sessionId: "old",
-            agentConfig: "stale",
-          });
-        }
-      });
+      for (let i = 0; i < 15; i++) {
+        await insertRequest(t, householdId, {
+          message: `q${i} ${"m".repeat(2000)}`,
+          status: "succeeded",
+          reply: `r${i} ${"x".repeat(2000)}`,
+          sessionId: "old",
+          agentConfig: "stale",
+        });
+      }
       const text = await sendLatestAndRun(t, householdId);
       const section = text.slice(text.indexOf("Earlier in this conversation"));
       expect(section.length).toBeLessThan(6500);

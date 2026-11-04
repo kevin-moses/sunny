@@ -39,7 +39,7 @@
 // existing tasks that have no policy, in bounded batches. isAsNeededTask identifies
 // as-needed medications (no times, a daily or spacing limit), which the agent may not edit.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { v } from "convex/values";
 import type { ObjectType } from "convex/values";
@@ -47,7 +47,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { actorUserId, requireEditor, requireReader } from "./lib/access";
+import { actorUserId, requireEditor, requireReader, SYSTEM_ACTOR } from "./lib/access";
 import type { Actor } from "./lib/access";
 import { isAnytimeTask } from "./lib/anytime";
 import { appError } from "./lib/errors";
@@ -675,7 +675,7 @@ export const backfillHouseholdPolicies = internalMutation({
       if (task.escalationPolicyId !== undefined) continue;
       const policyId = await defaultPolicyId(ctx, args.householdId, task.type);
       if (policyId === undefined) continue;
-      await patchTask(ctx, { kind: "system" }, task, { escalationPolicyId: policyId }, now);
+      await patchTask(ctx, SYSTEM_ACTOR, task, { escalationPolicyId: policyId }, now);
     }
     if (!page.isDone) {
       await ctx.scheduler.runAfter(0, internal.tasks.backfillHouseholdPolicies, {

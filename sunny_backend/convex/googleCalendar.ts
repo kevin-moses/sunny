@@ -22,7 +22,7 @@
 // Env (read by lib/google.ts): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
 // GOOGLE_OAUTH_STATE_SECRET; CALENDAR_TOKEN_KEY (read by lib/secretBox.ts).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-04
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -41,6 +41,7 @@ import {
   loadHousehold,
   requireCaregiverAccount,
   requireCaregiverMember,
+  SYSTEM_ACTOR,
 } from "./lib/access";
 import { toBase64Url } from "./lib/base64";
 import { audit } from "./lib/audit";
@@ -287,7 +288,7 @@ export const saveConnection = internalMutation({
     }
     await audit(ctx, {
       householdId: args.householdId,
-      actor: { kind: "system" },
+      actor: SYSTEM_ACTOR,
       action: "connect",
       entity: "calendarConnection",
       entityId: connectionId,
@@ -454,7 +455,7 @@ export const disconnect = mutation({
     }
     await audit(ctx, {
       householdId: connection.householdId,
-      actor: { kind: "system" },
+      actor: SYSTEM_ACTOR,
       action: "disconnect",
       entity: "calendarConnection",
       entityId: connectionId,
