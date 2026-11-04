@@ -13,7 +13,7 @@
 // editor of the household, pollUntil's outcomes, the paused gate on
 // every acting step, and the onComplete handler.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -28,7 +28,13 @@ import {
 import { GENERIC_ERROR } from "./lib/agentRequestState";
 import { isInProgress } from "./lib/agentRequestState";
 import type { SessionEvent } from "./lib/managedAgents";
-import { createHousehold, insertRequest, makeBackend, type TestConvex } from "./testing.helpers";
+import {
+  addMember,
+  createHousehold,
+  insertRequest,
+  makeBackend,
+  type TestConvex,
+} from "./testing.helpers";
 
 const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -249,6 +255,51 @@ describe("workflow end to end", () => {
         text.indexOf("Household briefing"),
       );
       expect(text.endsWith("Caregiver's request:\nWhat is next?")).toBe(true);
+    });
+
+    test("labels each message with its author's name, and a removed member as A caregiver", async () => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      await addMember(t, householdId, "user_b", "member", "Ben\nSmith");
+      for (const [author, message] of [
+        ["user_a", "from anna"],
+        ["user_b", "from ben"],
+        ["user_gone", "from a removed member"],
+      ] as const) {
+        await t.run(async (ctx) => {
+          await ctx.db.insert("agentRequests", {
+            householdId,
+            requestedBy: author,
+            message,
+            status: "succeeded",
+            reply: `reply to ${message}`,
+            sessionId: "old",
+            agentConfig: "stale",
+          });
+        });
+      }
+      const text = await sendLatestAndRun(t, householdId);
+      expect(text).toContain("Anna: from anna\nSunny: reply to from anna");
+      expect(text).toContain("Ben Smith: from ben\nSunny: reply to from ben");
+      expect(text).toContain(
+        "A caregiver: from a removed member\nSunny: reply to from a removed member",
+      );
+      expect(text).not.toContain("Caregiver: from");
+    });
+
+    test("a very long display name is clipped in the label", async () => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t, { caregiverName: "N".repeat(200) });
+      await insertRequest(t, householdId, {
+        status: "succeeded",
+        sessionId: "old",
+        reply: "r",
+        agentConfig: "stale",
+      });
+      const text = await sendLatestAndRun(t, householdId);
+      const section = text.slice(text.indexOf("Earlier in this conversation"));
+      expect(section).toContain(`${"N".repeat(57)}...: hello`);
+      expect(section).not.toContain("N".repeat(58));
     });
 
     test("the first request has no earlier section", async () => {
