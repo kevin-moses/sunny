@@ -7,11 +7,11 @@
 // scheduled arguments, the code stored as an HMAC, the correct code, wrong codes and the fifth
 // locking, expiry, resend, a failed send and a still-sending status, code length cap, the send
 // rate limits (burst, per caregiver and number without one caregiver spending another's budget,
-// per caregiver and household per day), member-only access, texting not configured,
+// per caregiver and household per day, with the fixed window start pinned), member-only access, texting not configured,
 // clearMyPhone, myPhoneStatus (none, sending, sent, send_failed with safe messages only, expired, members only),
 // the hourly sweep, and the verified phone in listMembers and the phone index.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-04
 
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -30,6 +30,21 @@ interface Fixture {
 /** The stubbed fetch, whose calls are the texts Twilio was asked to send. */
 let fetchMock: ReturnType<typeof vi.fn>;
 
+/** The Math.random spy installed by pinWindowStart, restored after each test. */
+let randomSpy: { mockRestore: () => void } | undefined;
+
+/**
+ * purpose: Make the rate limiter's fixed windows start at the first send. The component starts
+ *          each key's window at `now - random * period` when no start is configured, so with
+ *          real randomness a window boundary can fall inside a test that advances the clock
+ *          through many sends and reset the budget (about 1% of runs). Math.random() of 0 also
+ *          still gives the component two distinct shards.
+ * @return: (void)
+ */
+function pinWindowStart(): void {
+  randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-29T15:00:00Z"));
@@ -43,6 +58,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  randomSpy?.mockRestore();
+  randomSpy = undefined;
   vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -269,6 +286,7 @@ describe("setMyPhone", () => {
 
   test("rate limits sends per caregiver per day", async () => {
     const { t, householdId } = await setup();
+    pinWindowStart();
     const pat = t.withIdentity({ subject: "pat" });
     for (let i = 0; i < 10; i++) {
       await pat.mutation(api.households.setMyPhone, {
@@ -284,6 +302,7 @@ describe("setMyPhone", () => {
 
   test("rate limits sends per household per day", async () => {
     const { t, householdId } = await setup();
+    pinWindowStart();
     const users = ["pat", "max", "val"];
     for (let i = 0; i < 20; i++) {
       await t
