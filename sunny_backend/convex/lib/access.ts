@@ -18,7 +18,7 @@
 // householdMembers row is inserted; it enforces one household per caregiver) and memberNames
 // (display names of a household in one query).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
@@ -57,6 +57,9 @@ export interface AgentActor {
 
 /** Everyone who can be the actor of a change; agent and system are backend only. */
 export type Actor = CaregiverActor | DeviceActor | AgentActor | { kind: "system" };
+
+/** The one system actor: recorded for changes the backend makes on its own (scheduler, resync). */
+export const SYSTEM_ACTOR: Actor = Object.freeze({ kind: "system" } as const);
 
 /**
  * purpose: The user id behind an actor, for audit and ownership columns.

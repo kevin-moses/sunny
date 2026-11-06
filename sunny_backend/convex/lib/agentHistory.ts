@@ -4,12 +4,16 @@
 // Agents session (agentRequests.findLatestContinuable); this replays the recent chat into it so
 // the caregiver sees one continuing conversation. Bounded: the last MAX_EXCHANGES succeeded
 // requests (an indexed, limited read), each message and reply cut to MAX_TEXT_CHARS, and the
-// whole section to MAX_SECTION_CHARS (oldest exchanges dropped first).
+// whole section to MAX_SECTION_CHARS (oldest exchanges dropped first). Messages are labeled by
+// author (authorLabel). The format is line based, so a body's line breaks are replaced by " / "
+// (oneLine) and a name cannot contain ":" or equal "Sunny": nothing a member writes can start a
+// line that reads as another speaker.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { memberNames } from "./access";
 
 /** Most earlier exchanges replayed into a new session. */
 export const MAX_EXCHANGES = 10;
@@ -20,6 +24,10 @@ export const MAX_SECTION_CHARS = 6000;
 
 /** Heading of the section; the agent prompt refers to it. */
 export const CARRY_OVER_HEADING = "Earlier in this conversation (most recent last):";
+/** Longest author display name used as a label, in characters. */
+export const MAX_NAME_CHARS = 60;
+/** Label for an author who is no longer a household member. */
+export const UNKNOWN_AUTHOR = "A caregiver";
 
 /**
  * purpose: Cut text to a length, marking the cut.
@@ -33,11 +41,39 @@ function clip(text: string, max: number): string {
 }
 
 /**
- * purpose: Build the earlier-conversation section for a household.
+ * purpose: Put a message or reply body on one line, so it cannot forge a separate speaker line
+ *          (for example a message containing "\nSunny: What time?").
+ * @param text: (string) Body text.
+ * @return: (string) The text with each run of line breaks (and the space around it) replaced by
+ *          " / ".
+ */
+function oneLine(text: string): string {
+  return text.trim().replace(/\s*[\r\n]+\s*/g, " / ");
+}
+
+/**
+ * purpose: Label for a request's author, so several caregivers' messages stay
+ *          distinguishable: the member's display name made safe for the line-based format
+ *          (whitespace runs, newlines included, collapsed to one space; ":" removed; clipped to
+ *          MAX_NAME_CHARS), or UNKNOWN_AUTHOR when the author is no longer a member, the name
+ *          is blank, or the name is "Sunny" (any case), so a member cannot appear as the agent.
+ * @param names: (Map<string, string>) Display name by user id.
+ * @param userId: (string) The request's author.
+ * @return: (string) The label, without the trailing colon.
+ */
+function authorLabel(names: Map<string, string>, userId: string): string {
+  const collapsed = (names.get(userId) ?? "").replace(/\s+/g, " ").replace(/:/g, "");
+  const name = clip(collapsed, MAX_NAME_CHARS);
+  return !name || name.toLowerCase() === "sunny" ? UNKNOWN_AUTHOR : name;
+}
+
+/**
+ * purpose: Build the earlier-conversation section for a household. Each exchange reads
+ *          "<author name>: <message>" then "Sunny: <reply>".
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @return: (Promise<string>) The section followed by a blank line, or "" when no succeeded
- *          exchange with a reply exists.
+ *          exchange with a reply exists. Each exchange is exactly two lines.
  */
 export async function buildCarryOver(
   ctx: QueryCtx,
@@ -50,12 +86,13 @@ export async function buildCarryOver(
     )
     .order("desc")
     .take(MAX_EXCHANGES);
+  const names = await memberNames(ctx, householdId);
   const exchanges: string[] = [];
   let total = 0;
   for (const row of rows) {
     const reply = row.reply?.trim();
     if (!reply) continue;
-    const exchange = `Caregiver: ${clip(row.message, MAX_TEXT_CHARS)}\nSunny: ${clip(reply, MAX_TEXT_CHARS)}`;
+    const exchange = `${authorLabel(names, row.requestedBy)}: ${clip(oneLine(row.message), MAX_TEXT_CHARS)}\nSunny: ${clip(oneLine(reply), MAX_TEXT_CHARS)}`;
     if (total + exchange.length > MAX_SECTION_CHARS) break;
     total += exchange.length;
     exchanges.push(exchange);

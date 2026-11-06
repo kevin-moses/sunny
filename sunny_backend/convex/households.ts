@@ -25,7 +25,7 @@
 // householdMembers row (insertMembership, the only place a membership is inserted). A caregiver
 // removed by removeMember can then join or create another household.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -276,7 +276,7 @@ export const update = mutation({
     backgroundPaused: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<null> => {
-    await requireEditor(ctx, args.householdId);
+    const actor = await requireEditor(ctx, args.householdId);
     const household = await loadHousehold(ctx, args.householdId);
 
     const { householdId, ...fields } = args;
@@ -288,10 +288,10 @@ export const update = mutation({
     if (fields.timezone !== undefined) {
       patch.timezone = requireTimezone(fields.timezone);
       if (patch.timezone !== household.timezone) {
-        // The resync reads the household's zone, so write it before expanding.
+        // Write the zone first: the resync's expansion reads it from the household.
         // The digest's local date changes with the zone, so forget the remembered one.
         await ctx.db.patch(householdId, { timezone: patch.timezone, lastDigestDate: undefined });
-        await resyncHouseholdTimezone(ctx, householdId, Date.now());
+        await resyncHouseholdTimezone(ctx, actor, householdId, patch.timezone, Date.now());
       }
     }
     if (fields.onCallUserId !== undefined) {

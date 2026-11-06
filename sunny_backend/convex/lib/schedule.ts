@@ -13,15 +13,17 @@
 // later when the task does not occur the next day (then it carries over as Leftover). When a
 // task turns anytime or timed, its open instances of the other kind for today and later are
 // removed on resync. occursOn (the schedule rule) is exported for lib/upcomingTasks.ts, which
-// projects it onto future days.
+// projects it onto future days. Open anytime instances are moved in place when their window
+// changes (a task edit, a household timezone change), never deleted, so notes survive; expansion
+// does not duplicate them because it looks each (task, date, time) up in by_task_date_time.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-04
 
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { Actor } from "./access";
-import { anytimeWindow, ANYTIME, isAnytimeTask } from "./anytime";
+import { anytimeWindow, ANYTIME, isAnytimeInstance, isAnytimeTask } from "./anytime";
 import { audit } from "./audit";
 import { addDays, isoWeekday, localDate, minutes, zonedInstant } from "./time";
 
@@ -51,6 +53,22 @@ export function occursOn(
 }
 
 /**
+ * purpose: The window of a task's anytime instance on a date. The one place the "repeats the
+ *          next day" rule meets the window rule (see anytimeWindow).
+ * @param task: (object) The task's schedule fields (see occursOn).
+ * @param date: (string) The instance's local "YYYY-MM-DD".
+ * @param timezone: (string) The household's IANA zone.
+ * @return: ({ windowStart: number; windowEnd: number }) Epoch ms bounds.
+ */
+function anytimeWindowFor(
+  task: Pick<TaskFields, "startsOn" | "endsOn" | "onceOn" | "daysOfWeek">,
+  date: string,
+  timezone: string,
+): { windowStart: number; windowEnd: number } {
+  return anytimeWindow(date, timezone, occursOn(task, addDays(date, 1)));
+}
+
+/**
  * purpose: Create today's and tomorrow's (household-local) instances for one task. A window
  *          that already closed is only created if the schedule existed when it opened, so
  *          new or edited tasks never back-fill past windows as missed. Idempotent.
@@ -72,7 +90,7 @@ async function expandOneTask(
   for (const date of [today, addDays(today, 1)]) {
     if (!occursOn(task, date)) continue;
     const slots = isAnytimeTask(task)
-      ? [{ time: ANYTIME, ...anytimeWindow(date, timezone, occursOn(task, addDays(date, 1))) }]
+      ? [{ time: ANYTIME, ...anytimeWindowFor(task, date, timezone) }]
       : task.times.map((time) => {
           const windowStart = zonedInstant(date, time, timezone);
           return { time, windowStart, windowEnd: windowStart + minutes(task.windowMinutes) };
@@ -164,11 +182,18 @@ export async function deleteInstances(
  *          Deactivating removes its upcoming, due and escalated instances so nothing keeps
  *          prompting; otherwise future upcoming instances are dropped and expanded again.
  * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Who edited the task; recorded on the audit row of an instance a refresh
+ *        sends back from due to upcoming.
  * @param task: (Doc<"tasks">) The task as it is now.
  * @param now: (number) Epoch ms.
  * @return: (Promise<void>)
  */
-export async function resyncTask(ctx: MutationCtx, task: Doc<"tasks">, now: number): Promise<void> {
+export async function resyncTask(
+  ctx: MutationCtx,
+  actor: Actor,
+  task: Doc<"tasks">,
+  now: number,
+): Promise<void> {
   if (!task.active) {
     for (const state of ["upcoming", "due", "escalated"] as const) {
       const open = await ctx.db
@@ -187,7 +212,41 @@ export async function resyncTask(ctx: MutationCtx, task: Doc<"tasks">, now: numb
     )
     .collect();
   await deleteInstances(ctx, future);
+  await refreshOpenAnytimeWindows(ctx, actor, task, now);
   await expandTasks(ctx, now, { taskId: task._id });
+}
+
+/**
+ * purpose: After a task edit, recompute the window of its still-open anytime instances for
+ *          today and later, because the window depends on whether the task occurs the next day
+ *          and the edit can flip that. Does nothing for a task that is not anytime.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Who edited the task (audit actor of a reopen).
+ * @param task: (Doc<"tasks">) The active task as it is now.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<void>)
+ */
+async function refreshOpenAnytimeWindows(
+  ctx: MutationCtx,
+  actor: Actor,
+  task: Doc<"tasks">,
+  now: number,
+): Promise<void> {
+  if (!isAnytimeTask(task)) return;
+  const timezone = (await ctx.db.get(task.householdId))?.timezone;
+  if (!timezone) return;
+  const today = localDate(now, timezone);
+  for (const state of ["upcoming", "due"] as const) {
+    const open = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_task_state", (q) => q.eq("taskId", task._id).eq("state", state))
+      .collect();
+    for (const instance of open) {
+      if (isAnytimeInstance(instance) && instance.localDate >= today) {
+        await refreshAnytimeWindow(ctx, actor, task, instance, timezone, now);
+      }
+    }
+  }
 }
 
 /**
@@ -216,31 +275,98 @@ async function deleteMismatchedOpenInstances(
       .collect();
     await deleteInstances(
       ctx,
-      open.filter((i) => i.localDate >= today && (i.scheduledTime === ANYTIME) !== anytime),
+      open.filter((i) => i.localDate >= today && isAnytimeInstance(i) !== anytime),
     );
   }
 }
 
 /**
- * purpose: After a household timezone change every future window moves: drop the household's
- *          upcoming instances that have not opened and expand its tasks in the new zone.
+ * purpose: Recompute one open anytime instance's window (same rule as expansion) in place,
+ *          keeping the row so a caregiver note survives. A due instance whose new window has not
+ *          opened yet goes back to upcoming (audited as a state change); one whose window has
+ *          already ended keeps its state and the scheduler's closeWindows marks it missed. A
+ *          window-only patch writes no audit row, like expansion creating a row.
  * @param ctx: (MutationCtx) Mutation context.
- * @param householdId: (Id<"households">) Household whose timezone was already updated.
+ * @param actor: (Actor) Who caused the refresh (a caregiver's edit or zone change), recorded on
+ *        the audit row of a reopen.
+ * @param task: (Doc<"tasks">) The instance's task, active and anytime.
+ * @param instance: (Doc<"taskInstances">) The open (upcoming or due) anytime instance.
+ * @param timezone: (string) The household's IANA zone.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<void>)
+ */
+async function refreshAnytimeWindow(
+  ctx: MutationCtx,
+  actor: Actor,
+  task: Doc<"tasks">,
+  instance: Doc<"taskInstances">,
+  timezone: string,
+  now: number,
+): Promise<void> {
+  const window = anytimeWindowFor(task, instance.localDate, timezone);
+  const reopened = instance.state === "due" && window.windowStart > now;
+  await changeInstance(ctx, actor, instance, {
+    ...window,
+    ...(reopened ? { state: "upcoming" as const } : {}),
+  });
+}
+
+/**
+ * purpose: After a household timezone change every window moves. The household's open
+ *          (upcoming and due) instances are read once and split into two disjoint lists.
+ *          Deleted: upcoming instances that have not opened and are timed, or anytime and dated
+ *          after the new zone's tomorrow. Refreshed in place (refreshAnytimeWindow, any date, so
+ *          a due row dated beyond the new tomorrow is not orphaned): every other open anytime
+ *          instance whose task is still active and anytime; rows whose task is gone, inactive or
+ *          no longer anytime are left alone. Then the tasks are expanded in the new zone. Timed
+ *          instances that already opened keep their windows.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) The caregiver who changed the zone (audit actor of a reopen).
+ * @param householdId: (Id<"households">) Household whose timezone was just written.
+ * @param timezone: (string) The household's new IANA zone. expandTasks still reads the zone
+ *        from the household, so the caller must write it before calling.
  * @param now: (number) Epoch ms.
  * @return: (Promise<void>)
  */
 export async function resyncHouseholdTimezone(
   ctx: MutationCtx,
+  actor: Actor,
   householdId: Id<"households">,
+  timezone: string,
   now: number,
 ): Promise<void> {
-  const future = await ctx.db
-    .query("taskInstances")
-    .withIndex("by_household_state", (q) =>
-      q.eq("householdId", householdId).eq("state", "upcoming").gt("windowStart", now),
+  const lastDate = addDays(localDate(now, timezone), 1);
+  const open = (
+    await Promise.all(
+      (["upcoming", "due"] as const).map((state) =>
+        ctx.db
+          .query("taskInstances")
+          .withIndex("by_household_state", (q) =>
+            q.eq("householdId", householdId).eq("state", state),
+          )
+          .collect(),
+      ),
     )
-    .collect();
-  await deleteInstances(ctx, future);
+  ).flat();
+  const doomed = open.filter(
+    (i) =>
+      i.state === "upcoming" &&
+      i.windowStart > now &&
+      (!isAnytimeInstance(i) || i.localDate > lastDate),
+  );
+  const doomedIds = new Set(doomed.map((i) => i._id));
+  const refreshable = open.filter((i) => isAnytimeInstance(i) && !doomedIds.has(i._id));
+  // doomed and refreshable are disjoint, so the pre-patch snapshot in `doomed` is only ever
+  // read for rows that are never patched.
+  const tasks = new Map<Id<"tasks">, Doc<"tasks"> | null>();
+  for (const instance of refreshable) {
+    if (!tasks.has(instance.taskId)) tasks.set(instance.taskId, await ctx.db.get(instance.taskId));
+    const task = tasks.get(instance.taskId);
+    if (task && task.active && isAnytimeTask(task)) {
+      await refreshAnytimeWindow(ctx, actor, task, instance, timezone, now);
+    }
+  }
+  await deleteInstances(ctx, doomed);
   await expandTasks(ctx, now, { householdId });
 }
 
@@ -339,7 +465,7 @@ export async function patchTask(
   await ctx.db.patch(task._id, changed ? { ...patch, scheduleChangedAt: now } : patch);
   const updated = (await ctx.db.get(task._id))!;
   await auditTask(ctx, actor, "update", updated._id, updated);
-  if (changed) await resyncTask(ctx, updated, now);
+  if (changed) await resyncTask(ctx, actor, updated, now);
   return updated;
 }
 
