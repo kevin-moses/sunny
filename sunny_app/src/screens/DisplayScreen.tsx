@@ -9,16 +9,24 @@
 //
 // The panel is a carousel of two screens, switched every CAROUSEL_MS with no motion: Now (the
 // Now card and Next up) and Today (the day's rows, the waiting task boxed). A newly due task
-// and any key press bring Now back and restart the timer; during a multi-step task the
-// carousel holds on Now so the current step stays in view. Nothing on the panel itself is
-// pressable. Keeps the screen awake with the status bar hidden. The day view comes from the app
-// shell (see useDayView).
+// and any key press bring Now back and restart the timer; during a multi-step task, a voice
+// session or while an answer lingers, the carousel holds on Now so it stays in view. Nothing on
+// the panel itself is pressable. Keeps the screen awake with the status bar hidden. The day
+// view comes from the app shell (see useDayView).
+//
+// Voice stays on the panel (useDisplayVoice): Talk opens a session and the voice card shows
+// listening, thinking and the answer, which lingers a few minutes after the session ends. A
+// newly due task clears a lingering answer. The due cue (useDueCue) chimes and speaks a task's
+// prompt when it comes due and on each reprompt, but never during a voice session.
+// Foreground notification banners and sounds are silenced (useQuietNotifications) since the
+// cue covers the same prompts. The status line between the keys shows the last key's or the
+// voice session's message, "Press Talk to stop" during a session, or "Not connected".
 //
 // Last modified: 2026-11-09
 
 import { useKeepAwake } from 'expo-keep-awake';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,9 +34,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { DayViewState } from '../day/useDayView';
 import { DisplayCanvas, DisplayMessage, NowBody, TodayBody } from '../display/DisplayParts';
 import { KEY_ROW_HEIGHT, KEY_WIDTH, KeyPanel } from '../display/KeyPanel';
-import { nextItem, nowCard, todayRows } from '../display/model';
+import { nextItem, nowCard, nowTime, todayRows } from '../display/model';
 import { CANVAS, ink, useDisplayFonts } from '../display/theme';
 import { useDisplayKeys } from '../display/useDisplayKeys';
+import { useDisplayVoice } from '../display/useDisplayVoice';
+import { useDueCue } from '../display/useDueCue';
+import { useQuietNotifications } from '../display/useQuietNotifications';
+import { useStatusMessage } from '../display/useStatusMessage';
 
 /** How long (ms) each carousel screen stays up. */
 const CAROUSEL_MS = 45_000;
@@ -46,11 +58,14 @@ type Page = 'now' | 'today';
  */
 export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   useKeepAwake();
+  useQuietNotifications();
   const fontsReady = useDisplayFonts();
   const { day, agenda, errorMessage, isOffline } = dayView;
   const card = useMemo(() => (day === null ? null : nowCard(day)), [day]);
   const taskCard = card?.kind === 'task' ? card : null;
   const nowTaskId = taskCard?.task.instanceId ?? null;
+  const status = useStatusMessage();
+  const voice = useDisplayVoice(day === null ? null : nowTime(day), status.show);
 
   const [page, setPage] = useState<Page>('now');
   const [cycle, setCycle] = useState(0);
@@ -58,19 +73,33 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
    * purpose: Show the Now page and restart the carousel timer.
    * @return: (void)
    */
-  const showNow = (): void => {
+  const showNow = useCallback((): void => {
     setPage('now');
     setCycle((c) => c + 1);
-  };
-  // A newly due task brings the Now page forward (state adjusted during render, React's
-  // pattern for following a changing value).
+  }, []);
+  // A newly due task brings the Now page forward and takes over from a lingering answer
+  // (state adjusted during render, React's pattern for following a changing value).
   const [seenTaskId, setSeenTaskId] = useState(nowTaskId);
   if (seenTaskId !== nowTaskId) {
     setSeenTaskId(nowTaskId);
-    if (nowTaskId !== null) showNow();
+    if (nowTaskId !== null) {
+      showNow();
+      voice.dismissAnswer();
+    }
   }
-  // In the middle of a multi-step task the current step stays on screen.
-  const hold = taskCard?.steps != null;
+  const { dismissAnswer } = voice;
+  /**
+   * purpose: A due cue started: bring its task forward, ahead of any lingering answer.
+   * @return: (void)
+   */
+  const onCue = useCallback((): void => {
+    showNow();
+    dismissAnswer();
+  }, [showNow, dismissAnswer]);
+  useDueCue(day?.tasks ?? null, voice.active, onCue);
+
+  // A multi-step task's current step, a voice session and a lingering answer stay on screen.
+  const hold = taskCard?.steps != null || voice.card !== null;
   useEffect(() => {
     if (hold) return undefined;
     const timer = setInterval(() => setPage((p) => (p === 'now' ? 'today' : 'now')), CAROUSEL_MS);
@@ -78,7 +107,7 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   }, [hold, cycle]);
   const shown: Page = hold ? 'now' : page;
 
-  const keys = useDisplayKeys(taskCard, showNow);
+  const keys = useDisplayKeys(taskCard, showNow, status.show, voice.talk);
 
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -121,13 +150,17 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   } else {
     panel = (
       <DisplayCanvas day={day}>
-        <NowBody card={card} step={keys.step} next={nextItem(day, agenda, nowTaskId)} />
+        <NowBody
+          card={card}
+          step={keys.step}
+          next={nextItem(day, agenda, nowTaskId)}
+          voice={voice.card}
+        />
       </DisplayCanvas>
     );
   }
 
-  const status =
-    keys.message ?? (keys.talkBusy ? 'Connecting to Sunny' : isOffline ? 'Not connected' : null);
+  const statusLine = status.message ?? voice.status ?? (isOffline ? 'Not connected' : null);
 
   return (
     <View style={[styles.root, padding, { flexDirection: right ? 'row' : 'column' }]}>
@@ -138,9 +171,9 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
       <KeyPanel
         placement={placement}
         length={right ? panelHeight : panelWidth}
-        status={status}
+        status={statusLine}
         doneBusy={keys.doneBusy}
-        talkBusy={keys.talkBusy}
+        talkBusy={voice.busy}
         onDone={keys.pressDone}
         onTalk={keys.pressTalk}
       />

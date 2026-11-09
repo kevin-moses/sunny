@@ -1,8 +1,8 @@
 // sunny_app/src/voice/VoiceProvider.tsx
 //
 // Purpose: Owns the LiveKit voice session for the app. It wraps the app and provides
-// useVoice() (connect, disconnect, status, error) plus useConversation() (microphone, agent
-// state and tracks, transcript). An unpaired device gets an idle useVoice() and nothing
+// useVoice() (connect, disconnect, status, error) plus useConversation() (microphone, whether
+// the senior is speaking, agent state and tracks, transcript). An unpaired device gets an idle useVoice() and nothing
 // else; for a paired device an inner provider owns the session:
 //   - Token: useSession with a non-caching token source (voiceToken.ts) that calls the
 //     voice.livekitToken Convex action on every session start. The request (trigger 'talk' for
@@ -22,13 +22,18 @@
 //   - Phone RPC (findContact, sendMessage) is registered on the room; app logs are forwarded
 //     to the agent while connected; push notification taps start a session.
 //   - The iOS audio session is configured and activated by registerGlobals() in index.ts
-//     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here.
+//     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here. Its
+//     default policy prefers the speaker and deactivates the session when the call's audio
+//     stops, so the home display's due cue (expo-audio, expo-speech) can take it afterwards.
+//   - The same provider serves the senior phone and the home display: the token action only
+//     requires a paired device of either kind. What each surface shows is up to the app shell.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import {
   SessionProvider,
   useAgent,
+  useIsSpeaking,
   useLocalParticipant,
   useSession,
   useSessionMessages,
@@ -138,7 +143,8 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
   });
   const agent = useAgent(session);
   const { messages, send } = useSessionMessages(session);
-  const { isMicrophoneEnabled } = useLocalParticipant({ room: session.room });
+  const { isMicrophoneEnabled, localParticipant } = useLocalParticipant({ room: session.room });
+  const userSpeaking = useIsSpeaking(localParticipant);
 
   const rawState = session.connectionState;
   const connectionState = toVoiceConnectionState(rawState, isStarting);
@@ -347,6 +353,7 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     () => ({
       isMicrophoneEnabled,
       toggleMicrophone,
+      userSpeaking,
       agentJoined,
       agentState: agent.state,
       agentAudioTrack: agent.microphoneTrack,
@@ -357,6 +364,7 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     [
       isMicrophoneEnabled,
       toggleMicrophone,
+      userSpeaking,
       agentJoined,
       agent.state,
       agent.microphoneTrack,

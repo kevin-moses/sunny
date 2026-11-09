@@ -8,7 +8,12 @@
 // - NowBody: the 600 pt Now card on the left and the Next up card on the right. The Now card
 //   shows the task to act on (title, pill description, "Taken them? Press [Done]"), the
 //   overdue form ("Still to do", plus "Not sure? Press [Talk]"), one step of a multi-step
-//   task with its progress boxes, or a calm clear state.
+//   task with its progress boxes, or a calm clear state. While the senior talks to Sunny, and
+//   for a few minutes after, the voice card (VoiceCardView: "Listening", "Thinking", then the
+//   answer as large text) takes the Next up card's place, so a waiting task stays in view on
+//   the left and Done still confirms what the screen shows. With nothing waiting, the voice
+//   card takes the whole body instead, because an answer of a few sentences only fits the
+//   full width at a size the senior can read across the room.
 // - TodayBody: today's tasks and events as rows; finished ones grey with a check, the Now task
 //   boxed with a black "Now" tag.
 // The drawn keycaps only point at the physical Done and Talk keys; nothing here is pressable.
@@ -27,9 +32,17 @@ import type { DayViewData } from '../day/types';
 import { doneQuestion, fullDate, taskIcon } from './model';
 import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
 import { CANVAS, font, ink } from './theme';
+import type { VoiceCard } from './voiceModel';
 
 /** Up to this many steps get progress boxes; longer tasks show only "Step 2 of 7". */
 const MAX_PROGRESS_BOXES = 5;
+
+/** The smallest an answer's text may shrink to fit its card, as a fraction of its size. */
+const ANSWER_MIN_SCALE = 0.6;
+
+/** Lines an answer may take at its smallest: in the Next up column, and across the body. */
+const ANSWER_LINES = 11;
+const ANSWER_LINES_WIDE = 9;
 
 /**
  * purpose: Text at the canvas's fixed size (system text size is ignored; the page scales).
@@ -135,24 +148,88 @@ function PromptLine({
 }
 
 /**
- * purpose: The Now screen's body: the Now card and the Next up card side by side.
- * @param props: ({ card: NowCard, step: number, next: NextItem | null }) The Now card, the
- *        current step index of a multi-step task (0 for others), and the next item.
+ * purpose: The Now screen's body: the Now card and the Next up card side by side. A voice card
+ *          replaces the Next up card, or the whole body when nothing is waiting.
+ * @param props: ({ card: NowCard, step: number, next: NextItem | null, voice: VoiceCard |
+ *        null }) The Now card, the current step index of a multi-step task (0 for others), the
+ *        next item, and the voice card (null when there is no voice session or answer).
  * @return: (JSX.Element) The body.
  */
 export function NowBody({
   card,
   step,
   next,
+  voice,
 }: {
   card: NowCard;
   step: number;
   next: NextItem | null;
+  voice: VoiceCard | null;
 }) {
+  if (voice !== null && card.kind === 'clear') {
+    return (
+      <View style={styles.nowBody}>
+        <VoiceCardView card={voice} wide />
+      </View>
+    );
+  }
   return (
     <View style={styles.nowBody}>
       <NowColumn card={card} step={step} />
-      <View style={styles.nextColumn}>{next !== null && <NextCard item={next} />}</View>
+      <View style={styles.nextColumn}>
+        {voice !== null ? (
+          <VoiceCardView card={voice} wide={false} />
+        ) : (
+          next !== null && <NextCard item={next} />
+        )}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * purpose: The voice card: a black tab ("Talk", "Sunny", "Sunny said · 10:42") over a
+ *          thick-bordered box holding a symbol with a large title and a detail line
+ *          ("Listening", "Ask your question."), or the answer as large text, shrunk only as
+ *          far as needed to fit.
+ * @param props: ({ card: VoiceCard, wide: boolean }) The card, and whether it has the whole
+ *        body (larger answer text) or the Next up column.
+ * @return: (JSX.Element) The card.
+ */
+function VoiceCardView({ card, wide }: { card: VoiceCard; wide: boolean }) {
+  const label =
+    card.kind === 'answer'
+      ? `${card.tab}. ${card.text}`
+      : `${card.tab}. ${card.title}. ${card.detail ?? ''}`;
+  return (
+    <View accessible accessibilityLabel={label} style={styles.voiceColumn}>
+      <View style={styles.tab}>
+        <DText style={[font.tab, styles.onInk]} numberOfLines={1}>
+          {card.tab}
+        </DText>
+      </View>
+      <View style={[styles.nowBox, styles.voiceBox]}>
+        {card.kind === 'answer' ? (
+          <DText
+            style={[wide ? font.answerWide : font.answer, styles.answerText]}
+            numberOfLines={wide ? ANSWER_LINES_WIDE : ANSWER_LINES}
+            adjustsFontSizeToFit
+            minimumFontScale={ANSWER_MIN_SCALE}
+          >
+            {card.text}
+          </DText>
+        ) : (
+          <View style={styles.stack}>
+            <SymbolView name={card.icon} size={64} weight="bold" tintColor={ink.ink} />
+            <DText style={font.voiceTitle}>{card.title}</DText>
+            {card.detail !== null && (
+              <DText style={font.taskDetail} numberOfLines={4}>
+                {card.detail}
+              </DText>
+            )}
+          </View>
+        )}
+      </View>
     </View>
   );
 }
@@ -443,6 +520,10 @@ const styles = StyleSheet.create({
   progressDone: { backgroundColor: ink.ink },
   progressNow: { borderWidth: 6 },
   nextColumn: { flex: 1 },
+  voiceColumn: { flex: 1 },
+  voiceBox: { justifyContent: 'flex-start' },
+  // Fills the box, so the text has a bounded height to shrink into.
+  answerText: { flex: 1 },
   nextLabel: { paddingVertical: 8 },
   nextBox: {
     flexDirection: 'row',

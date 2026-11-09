@@ -1,41 +1,33 @@
 // sunny_app/src/display/useDisplayKeys.ts
 //
-// Purpose: What the home display's Done and Talk keys do, and the short status line shown
-// between them. Done on a multi-step task moves to the next step (kept on this device until
-// the backend tracks steps); Done on a one-step task, or on the last step, confirms the Now
-// task by its instance id (instances.confirmTaskInstance), so it can only confirm the task the
-// screen shows. With nothing waiting, Done says so without calling the backend. Talk starts a
-// voice session. A second press within PRESS_GAP_MS is ignored so a tremor or a double tap
-// cannot skip a step, and Done is ignored while a confirm is in flight ("Saving" shows until
-// it lands, which offline is when the connection is back). Each result is shown for
-// MESSAGE_MS and announced to VoiceOver.
+// Purpose: What the home display's Done and Talk keys do. Done on a multi-step task moves to
+// the next step (kept on this device until the backend tracks steps); Done on a one-step
+// task, or on the last step, confirms the Now task by its instance id
+// (instances.confirmTaskInstance), so it can only confirm the task the screen shows. With
+// nothing waiting, Done says so without calling the backend. Done works the same during and
+// after a voice session. Talk hands over to the display's voice layer (useDisplayVoice), which
+// starts or ends a session. A second press of either key within PRESS_GAP_MS is ignored so a
+// tremor or a double tap cannot skip a step, and Done is ignored while a confirm is in flight
+// ("Saving" shows until it lands, which offline is when the connection is back). Results go to
+// the status line (useStatusMessage), which shows and announces them.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-09
 
-import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo } from 'react-native';
+import { useRef, useState } from 'react';
 
 import { callMutation, toBackendError } from '../backend/api';
 import { api } from '../backend/convexApi';
-import { useVoice } from '../voice/voiceContext';
 import type { TaskCard } from './model';
 
 /** Presses closer together than this (ms) count as one. */
-const PRESS_GAP_MS = 700;
-
-/** How long (ms) a key's result stays on screen. */
-const MESSAGE_MS = 10_000;
+export const PRESS_GAP_MS = 700;
 
 /** What useDisplayKeys returns. */
 export interface DisplayKeys {
   /** The current step index of the Now task (0 when it has no steps). */
   step: number;
-  /** The status line to show, or null. */
-  message: string | null;
   /** A confirm is in flight. */
   doneBusy: boolean;
-  /** A voice session is connecting. */
-  talkBusy: boolean;
   pressDone: () => void;
   pressTalk: () => void;
 }
@@ -44,31 +36,21 @@ export interface DisplayKeys {
  * purpose: Wire the display's Done and Talk keys.
  * @param card: (TaskCard | null) The task on the Now card, or null when nothing is waiting.
  * @param onPress: (() => void) Called on every accepted press (the screen shows the Now page).
- * @return: (DisplayKeys) The step, status line, busy flags and press handlers.
+ * @param show: ((text: string) => void) Shows and announces a line on the status line.
+ * @param talk: (() => void) The Talk key's action (useDisplayVoice's talk).
+ * @return: (DisplayKeys) The step, the Done busy flag and the press handlers.
  */
-export function useDisplayKeys(card: TaskCard | null, onPress: () => void): DisplayKeys {
-  const voice = useVoice();
+export function useDisplayKeys(
+  card: TaskCard | null,
+  onPress: () => void,
+  show: (text: string) => void,
+  talk: () => void,
+): DisplayKeys {
   const [progress, setProgress] = useState<{ instanceId: string; index: number } | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [doneBusy, setDoneBusy] = useState(false);
   const lastPress = useRef(0);
-  const clearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  useEffect(() => () => clearTimeout(clearTimer.current), []);
 
   const step = card !== null && progress?.instanceId === card.task.instanceId ? progress.index : 0;
-
-  /**
-   * purpose: Show a status line for MESSAGE_MS and announce it.
-   * @param text: (string) The line.
-   * @return: (void)
-   */
-  const show = (text: string): void => {
-    clearTimeout(clearTimer.current);
-    setMessage(text);
-    AccessibilityInfo.announceForAccessibility(text);
-    clearTimer.current = setTimeout(() => setMessage(null), MESSAGE_MS);
-  };
 
   /**
    * purpose: Accept a press unless it follows the last one too closely.
@@ -123,20 +105,12 @@ export function useDisplayKeys(card: TaskCard | null, onPress: () => void): Disp
   };
 
   /**
-   * purpose: The Talk key: start a voice session.
+   * purpose: The Talk key: hand the press to the voice layer.
    * @return: (void)
    */
   const pressTalk = (): void => {
-    if (voice.connectionState === 'connecting' || !accept()) return;
-    void voice.connect();
+    if (accept()) talk();
   };
 
-  return {
-    step,
-    message,
-    doneBusy,
-    talkBusy: voice.connectionState === 'connecting',
-    pressDone,
-    pressTalk,
-  };
+  return { step, doneBusy, pressDone, pressTalk };
 }

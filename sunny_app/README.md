@@ -1,7 +1,7 @@
 # sunny_app
 
 Sunny's senior-facing iOS app: the phone's Today view with the Talk button, and the iPad
-home display stub. Built with React Native on Expo (SDK 57) and the LiveKit React Native
+home display (standing in for the e-ink device). Built with React Native on Expo (SDK 57) and the LiveKit React Native
 SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
 
 ## What it does
@@ -19,6 +19,35 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
   while a session is live.
 - **Push:** the raw APNs token is registered with `households.registerPushToken`. Tapping a
   notification that carries `task_instance_id` starts a session with trigger `notification_tap`.
+  The home display keeps foreground notifications out of sight and silent (its due cue covers
+  the same prompts).
+
+## Home display voice and due cue
+
+The iPad display (`src/screens/DisplayScreen.tsx`, `src/display/`) never swaps to the phone's
+conversation screen. Its voice states live on the paper panel:
+
+- **Talk:** one press starts a session (same LiveKit session and token action as the phone).
+  The voice card reads "One moment", then "Listening" once the microphone is open (LiveKit
+  keeps what is said while the agent joins), "Thinking" with the question heard, then the
+  agent's answer as large text while it is spoken. The card takes the Next up card's place
+  beside a waiting task, or the whole body when nothing is waiting. Pressing Talk while the
+  session is starting is ignored; pressing it during a session ends it. The session ends by
+  itself after 20 s without a question or 10 s after an answer (constants in
+  `src/display/voiceModel.ts`). The last answer stays on the panel for 3 minutes, unless a
+  task comes due. Failures show on the status line in plain words. The display asks for
+  microphone permission when it opens, so the senior never meets the iOS dialog.
+- **Due cue:** when a timed task comes due, and on each reprompt the backend sends (the day
+  view's `seniorPrompts` count), the display plays a soft chime (`assets/sounds/chime.wav`,
+  synthesized by `node scripts/makeChime.js`) and speaks the task's prompt with on-device
+  speech (`expo-speech`, slow rate): the caregiver's spoken prompt, or "Time for <label>, at
+  <time>. Press Done when you have taken them / finished." Never during a voice session (it
+  waits, and is dropped if the task was confirmed meanwhile), never for anytime tasks, and
+  once per prompt across restarts (played cues are kept in AsyncStorage). Audio uses the
+  playback category, so it plays with the device muted.
+
+`expo-audio`, `expo-speech` and `expo-asset` are native modules: after pulling them, rebuild
+the development client with `npm run ios -- --device`.
 
 ## How pairing works
 

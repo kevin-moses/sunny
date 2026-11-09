@@ -7,9 +7,11 @@
 // cannot be reached) while Clerk, Convex auth and the household queries load and while a removed
 // device is being unpaired. Signed out shows WelcomeScreen, which leads to the caregiver email
 // code sign-in (CaregiverSignInScreen) or to PairingScreen for a senior's device. A paired
-// senior device gets the paired home: TodayScreen on the senior phone or DisplayScreen on the
-// home display, or ConversationScreen while a voice conversation is live; the paired home is
-// keyed by household and owns the day view so it survives a conversation. A signed-in caregiver
+// senior device gets the paired home: TodayScreen on the senior phone, or ConversationScreen
+// while a voice conversation is live on the phone; DisplayScreen on the home display, which
+// shows its voice session on its own panel and status line instead (no conversation screen
+// and no voice banners). The paired home is keyed by household and owns the day view so it
+// survives a conversation. A signed-in caregiver
 // gets CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen
 // (join with an invite code or create one). Only devices get voice sessions and push
 // registration (VoiceProvider is idle without a paired device). Nothing about the pairing or the
@@ -19,7 +21,7 @@
 // Provider order: SafeAreaProvider > ThemeProvider > ClerkProvider > ConvexProviderWithClerk >
 // VoiceProvider.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-09
 
 import { ClerkProvider, useAuth } from '@clerk/expo';
 import { tokenCache } from '@clerk/expo/token-cache';
@@ -51,34 +53,46 @@ import { ConversationScreen } from './src/voice/ConversationScreen';
 import { useVoice, VoiceProvider } from './src/voice/VoiceProvider';
 
 /**
- * purpose: The home surface of a paired device: the conversation while a voice session is
- *          live, otherwise Today (senior phone) or the display. It owns the day view, so
- *          the day stays loaded while the conversation replaces the home screen.
+ * purpose: The home surface of a paired device. The display always shows DisplayScreen, which
+ *          draws its own voice states; the phone shows the conversation while a voice session
+ *          is live, otherwise Today. It owns the day view, so the day stays loaded while the
+ *          conversation replaces the phone's home screen.
  * @param props: ({ paired: PairedDevice }) The device's pairing.
  * @return: (JSX.Element) The conversation or the home screen.
  */
 function PairedHome({ paired }: { paired: PairedDevice }) {
   const voice = useVoice();
   const dayView = useDayView(paired.householdId);
-  if (voice.isInteractive) return <ConversationScreen />;
   if (paired.kind === 'home_display') return <DisplayScreen dayView={dayView} />;
+  if (voice.isInteractive) return <ConversationScreen />;
   return <TodayScreen dayView={dayView} />;
 }
 
 /**
- * purpose: The warning and error banners stacked at the top of the screen.
+ * purpose: Whether a session decision is the paired home display.
+ * @param decision: (SessionDecision) The session decision.
+ * @return: (boolean) True for a paired home display.
+ */
+function isHomeDisplay(decision: SessionDecision): boolean {
+  return decision.state === 'paired' && decision.device.kind === 'home_display';
+}
+
+/**
+ * purpose: The warning and error banners stacked at the top of the screen. The home display
+ *          shows voice problems on its own status line, so it gets no voice banners.
+ * @param props: ({ voiceBanners: boolean }) Whether to show the voice banners.
  * @return: (JSX.Element) The banners.
  */
-function Banners() {
+function Banners({ voiceBanners }: { voiceBanners: boolean }) {
   const voice = useVoice();
   const insets = useSafeAreaInsets();
   const top = insets.top + (__DEV__ ? 40 : 4);
   return (
     <View pointerEvents="box-none" style={[styles.banners, { top }]}>
-      {voice.connectionState === 'reconnecting' && (
+      {voiceBanners && voice.connectionState === 'reconnecting' && (
         <Banner tone="moderate" title="Warning" message="Trying to reconnect" />
       )}
-      {voice.error !== null && (
+      {voiceBanners && voice.error !== null && (
         <Banner tone="serious" title="Error" message={voice.error} onDismiss={voice.clearError} />
       )}
     </View>
@@ -177,7 +191,7 @@ function Shell({ decision }: { decision: SessionDecision }) {
   return (
     <View style={styles.root}>
       <SessionScreen decision={decision} />
-      <Banners />
+      <Banners voiceBanners={!isHomeDisplay(decision)} />
       {__DEV__ && <DevTools />}
     </View>
   );

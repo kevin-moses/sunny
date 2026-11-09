@@ -3,7 +3,8 @@
 // Purpose: Design tokens of the home display's black-and-white e-ink look (Figma file
 // "Sunny Caregiver App", page "Senior Display Mockups"): the paper, ink and grey colors, the
 // fixed 1194 x 834 design canvas every screen is drawn on, the text styles (`font`: Literata
-// for the orientation header, Atkinson Hyperlegible Next for everything else) and the hook that
+// for the orientation header, Atkinson Hyperlegible Next for everything else, including the
+// voice card's title and the large answer text) and the hook that
 // loads those fonts. Line heights are the design's percentages turned into points. Only two greys
 // exist besides ink so every state still reads on a 1-bit panel.
 //
@@ -87,6 +88,9 @@ export const font = {
   rowLabelNow: textStyle(FAMILY.extraBold, 36, 120),
   stripLead: textStyle(FAMILY.extraBold, 30, 130),
   stripItems: textStyle(FAMILY.medium, 30, 130),
+  voiceTitle: textStyle(FAMILY.extraBold, 64, 110),
+  answer: textStyle(FAMILY.semiBold, 44, 125),
+  answerWide: textStyle(FAMILY.semiBold, 52, 125),
   key: textStyle(FAMILY.extraBold, 40, 120),
   keyStatus: textStyle(FAMILY.bold, 26, 125),
 } as const;

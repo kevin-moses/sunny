@@ -6,7 +6,8 @@
 // would not. With the iPad in landscape they form a column to the right of the panel, as tall
 // as it (Done on top, Talk on the bottom); in portrait they form a row below it, as wide as it
 // (Done on the left, Talk on the right). A status line between the keys shows the last key's
-// result, "Connecting to Sunny", or "Not connected" when the backend is unreachable. Each key
+// result or voice message, "Press Talk to stop" during a voice session, or "Not connected"
+// when the backend is unreachable. Each key
 // shows the same symbol and word as the keycaps drawn in the prompts, looks raised, visibly
 // sinks while pressed, and dims while its action is busy.
 //
@@ -106,7 +107,13 @@ export function KeyPanel({
           {status}
         </DText>
       </View>
-      <Key icon="mic" label="Talk" hint="Talk to Sunny" busy={talkBusy} onPress={onTalk} />
+      <Key
+        icon="mic"
+        label="Talk"
+        hint="Talk to Sunny. Press again to stop."
+        busy={talkBusy}
+        onPress={onTalk}
+      />
     </View>
   );
 }
