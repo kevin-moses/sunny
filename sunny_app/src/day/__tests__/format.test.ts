@@ -2,16 +2,18 @@
 //
 // Purpose: Unit tests for the day clock helpers on the camelCase calendar.dayView shape:
 // the agenda merge and its order, relative day wording, event detail wording, local "HH:MM"
-// time formatting (including "Anytime"), anytime ordering and the task state checks. Fixtures are built with small helpers that fill the fields the
-// helpers do not read, so each test states only what it cares about.
+// time formatting (with and without AM and PM, including "Anytime"), anytime ordering and the
+// task state checks. Fixtures are built with small helpers that fill the fields the helpers do
+// not read, so each test states only what it cares about.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-07
 
 import { describe, expect, it } from '@jest/globals';
 
 import {
   ANYTIME,
   buildAgenda,
+  clockTime,
   compareTaskTime,
   displayTime,
   eventDetails,
@@ -20,6 +22,7 @@ import {
   isDone,
   isDue,
   isOpen,
+  relativeDayName,
   whenText,
 } from '../format';
 import type { DayTask, DayViewData, EventOccurrence } from '../types';
@@ -252,6 +255,33 @@ describe('displayTime', () => {
     expect(displayTime('25:00')).toBe('25:00');
     expect(displayTime('08:00:00')).toBe('08:00:00');
     expect(displayTime('')).toBe('');
+  });
+});
+
+describe('clockTime', () => {
+  it('writes 12-hour times without AM or PM', () => {
+    expect(clockTime('08:00')).toBe('8:00');
+    expect(clockTime('14:30')).toBe('2:30');
+    expect(clockTime('00:15')).toBe('12:15');
+    expect(clockTime('12:00')).toBe('12:00');
+  });
+
+  it('reads Anytime for the anytime sentinel and leaves bad input alone', () => {
+    expect(clockTime(ANYTIME)).toBe('Anytime');
+    expect(clockTime('25:00')).toBe('25:00');
+  });
+});
+
+describe('relativeDayName', () => {
+  it('names today, tomorrow and later days', () => {
+    expect(relativeDayName('2026-10-26', '2026-10-26')).toBe('Today');
+    expect(relativeDayName('2026-10-27', '2026-10-26')).toBe('Tomorrow');
+    expect(relativeDayName('2026-10-29', '2026-10-26')).toBe('Thursday');
+  });
+
+  it('is null when the dates cannot be compared', () => {
+    expect(relativeDayName('2026-10-27', null)).toBeNull();
+    expect(relativeDayName('soon', '2026-10-26')).toBeNull();
   });
 });
 

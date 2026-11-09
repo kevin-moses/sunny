@@ -84,7 +84,7 @@ The display answers orienting questions at a glance and takes two inputs: Done a
 | Orientation header | Day and part of day in large type ("Saturday morning"), date below; no minute clock | Must have |
 | Today list | 3–6 items, the due one highlighted, finished ones checked off | Must have |
 | Next up | The next event and who it involves ("Sarah visits at 2pm") | Must have |
-| Going-out strip | A fixed line at the bottom: "Going out? Wallet · Keys · Glasses · Phone"; always visible, nothing to press | Must have |
+| Going-out strip | A fixed line at the bottom: "Going out? Wallet · Keys · Glasses · Phone"; visible all day, hidden in night view so it does not prompt night-time wandering; nothing to press | Must have |
 | Done button | A press confirms the task that is due; if two are due, the top one | Must have |
 | Talk button | A second button, separate from Done, with its own shape, color and printed label; one press starts listening and it stops when they stop talking; no holding, no wake word, no always-listening | Must have |
 | Due cue | Soft chime plus a light when a task comes due, repeated per escalation policy | Must have |
@@ -194,7 +194,7 @@ Six flows cover the POC; if these work end to end, the loop is proven.
 **Going out**
 
 1. The senior just leaves; nothing is asked of them
-2. On the way to the door they pass the display, whose bottom line always reads "Going out? Wallet · Keys · Glasses · Phone"
+2. On the way to the door they pass the display, whose bottom line reads "Going out? Wallet · Keys · Glasses · Phone" all day (not in night view)
 3. Later stages add a door sensor: the door opens, the display chimes, highlights the strip and reads it once
 4. Nothing to confirm; a door-open event is logged for the digest when a sensor is present
 
