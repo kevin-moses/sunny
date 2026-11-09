@@ -1,12 +1,11 @@
 // sunny_app/src/components/DayComponents.tsx
 //
-// Purpose: The building blocks of the day clock, shared by the phone's Today screen and
-// the home display: the orientation header ("Monday evening", date below, no minute
-// clock), the Next up card, today's agenda and the coming week. Sizes scale with a
-// `scale` prop so the display can use much larger type than the phone. Calm, high
-// contrast, no motion.
+// Purpose: The building blocks of the senior phone's day clock: the orientation header
+// ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
+// coming week, plus the offline mark the caregiver home also uses. The home display has its
+// own parts in src/display. Calm, high contrast, no motion.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-07
 
 import { StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -16,27 +15,17 @@ import type { AgendaItem, DayViewData, EventOccurrence } from '../day/types';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
-/** Props shared by every day component: a size multiplier (1 on the phone). */
-interface ScaleProps {
-  scale?: number;
-}
-
 /**
  * purpose: "Monday evening" in large type with the date below.
- * @param props: ({ day: DayViewData, scale?: number }) The day and the size multiplier.
+ * @param props: ({ day: DayViewData }) The day.
  * @return: (JSX.Element) The header.
  */
-export function OrientationHeader({ day, scale = 1 }: ScaleProps & { day: DayViewData }) {
+export function OrientationHeader({ day }: { day: DayViewData }) {
   return (
-    <View accessible style={{ gap: 4 * scale, alignSelf: 'stretch' }}>
-      <Text style={[styles.rounded, { fontSize: 40 * scale, fontWeight: '700' }]}>
-        {day.header}
-      </Text>
+    <View accessible style={{ gap: 4, alignSelf: 'stretch' }}>
+      <Text style={[styles.rounded, { fontSize: 40, fontWeight: '700' }]}>{day.header}</Text>
       <Text
-        style={[
-          styles.rounded,
-          { fontSize: 24 * scale, fontWeight: '500', color: colors.secondaryText },
-        ]}
+        style={[styles.rounded, { fontSize: 24, fontWeight: '500', color: colors.secondaryText }]}
       >
         {day.dateLabel}
       </Text>
@@ -46,15 +35,15 @@ export function OrientationHeader({ day, scale = 1 }: ScaleProps & { day: DayVie
 
 /**
  * purpose: A small uppercase heading for a section of the day clock.
- * @param props: ({ text: string, scale?: number }) The heading and the size multiplier.
+ * @param props: ({ text: string }) The heading.
  * @return: (JSX.Element) The heading.
  */
-function SectionTitle({ text, scale = 1 }: ScaleProps & { text: string }) {
+function SectionTitle({ text }: { text: string }) {
   return (
     <Text
       accessibilityRole="header"
       style={{
-        fontSize: 16 * scale,
+        fontSize: 16,
         fontWeight: '600',
         color: colors.secondaryText,
         textTransform: 'uppercase',
@@ -67,37 +56,33 @@ function SectionTitle({ text, scale = 1 }: ScaleProps & { text: string }) {
 
 /**
  * purpose: The next event and who or where it involves.
- * @param props: ({ event: EventOccurrence, today: string, scale?: number }) The event, the
- *        day view's localDate (for the when text), and the size multiplier.
+ * @param props: ({ event: EventOccurrence, today: string }) The event and the day view's
+ *        localDate (for the when text).
  * @return: (JSX.Element) The card.
  */
-export function NextUpCard({
-  event,
-  today,
-  scale = 1,
-}: ScaleProps & { event: EventOccurrence; today: string }) {
+export function NextUpCard({ event, today }: { event: EventOccurrence; today: string }) {
   const theme = useTheme();
   return (
     <View
       accessible
       style={{
-        gap: 6 * scale,
-        padding: 18 * scale,
-        borderRadius: 18 * scale,
+        gap: 6,
+        padding: 18,
+        borderRadius: 18,
         alignSelf: 'stretch',
         backgroundColor: `${theme.accentColor}2E`,
       }}
     >
-      <SectionTitle text="Next up" scale={scale} />
+      <SectionTitle text="Next up" />
       <Text
         numberOfLines={2}
         adjustsFontSizeToFit
         minimumFontScale={0.6}
-        style={[styles.rounded, { fontSize: 30 * scale, fontWeight: '700' }]}
+        style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}
       >
         {event.label}
       </Text>
-      <Text style={[styles.rounded, { fontSize: 22 * scale, fontWeight: '500' }]}>
+      <Text style={[styles.rounded, { fontSize: 22, fontWeight: '500' }]}>
         {eventDetails(event, whenText(event, today))}
       </Text>
     </View>
@@ -107,18 +92,10 @@ export function NextUpCard({
 /**
  * purpose: One agenda line: icon, time and text. A finished task is checked off and struck
  *          through; the due one is highlighted.
- * @param props: (AgendaRowData & { scale: number }) icon (SF Symbol name), time, text, done,
- *        highlighted and the size multiplier.
+ * @param props: (AgendaRowData) icon (SF Symbol name), time, text, done and highlighted.
  * @return: (JSX.Element) The row.
  */
-function AgendaRow({
-  icon,
-  time,
-  text,
-  done,
-  highlighted,
-  scale,
-}: Required<ScaleProps> & AgendaRowData) {
+function AgendaRow({ icon, time, text, done, highlighted }: AgendaRowData) {
   const theme = useTheme();
   const label = `${time}, ${text}`;
   return (
@@ -129,24 +106,20 @@ function AgendaRow({
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12 * scale,
-        paddingVertical: 6 * scale,
-        paddingHorizontal: highlighted ? 10 * scale : 0,
-        borderRadius: 10 * scale,
+        gap: 12,
+        paddingVertical: 6,
+        paddingHorizontal: highlighted ? 10 : 0,
+        borderRadius: 10,
         backgroundColor: highlighted ? `${theme.accentColor}40` : 'transparent',
       }}
     >
-      <SymbolView
-        name={icon}
-        size={22 * scale}
-        tintColor={done ? colors.success : colors.secondaryText}
-      />
+      <SymbolView name={icon} size={22} tintColor={done ? colors.success : colors.secondaryText} />
       <Text
         style={[
           styles.rounded,
           {
-            fontSize: 22 * scale,
-            minWidth: 96 * scale,
+            fontSize: 22,
+            minWidth: 96,
             color: colors.secondaryText,
             fontVariant: ['tabular-nums'],
           },
@@ -159,7 +132,7 @@ function AgendaRow({
           styles.rounded,
           {
             flex: 1,
-            fontSize: 22 * scale,
+            fontSize: 22,
             fontWeight: highlighted ? '700' : '400',
             textDecorationLine: done ? 'line-through' : 'none',
           },
@@ -209,20 +182,20 @@ function toRow(item: AgendaItem): AgendaRowData {
 /**
  * purpose: Today's tasks and events in time order; finished tasks are checked off, the due
  *          one is highlighted, and events (nothing to confirm) carry a calendar icon.
- * @param props: ({ items: AgendaItem[], scale?: number }) The agenda and the size multiplier.
+ * @param props: ({ items: AgendaItem[] }) The agenda.
  * @return: (JSX.Element) The list.
  */
-export function AgendaList({ items, scale = 1 }: ScaleProps & { items: AgendaItem[] }) {
+export function AgendaList({ items }: { items: AgendaItem[] }) {
   return (
-    <View style={{ gap: 10 * scale, alignSelf: 'stretch' }}>
-      <SectionTitle text="Today" scale={scale} />
+    <View style={{ gap: 10, alignSelf: 'stretch' }}>
+      <SectionTitle text="Today" />
       {items.length === 0 && (
-        <Text style={[styles.rounded, { fontSize: 22 * scale, color: colors.secondaryText }]}>
+        <Text style={[styles.rounded, { fontSize: 22, color: colors.secondaryText }]}>
           Nothing else today.
         </Text>
       )}
       {items.map((item) => (
-        <AgendaRow key={item.id} {...toRow(item)} scale={scale} />
+        <AgendaRow key={item.id} {...toRow(item)} />
       ))}
     </View>
   );
@@ -231,20 +204,16 @@ export function AgendaList({ items, scale = 1 }: ScaleProps & { items: AgendaIte
 /**
  * purpose: The coming week's events; renders nothing when there are none. The label and
  *          the when text sit side by side and wrap onto two lines when too narrow.
- * @param props: ({ events: EventOccurrence[], today: string, scale?: number }) The events,
- *        the day view's localDate, and the size multiplier.
+ * @param props: ({ events: EventOccurrence[], today: string }) The events and the day
+ *        view's localDate.
  * @return: (JSX.Element | null) The list.
  */
-export function UpcomingList({
-  events,
-  today,
-  scale = 1,
-}: ScaleProps & { events: EventOccurrence[]; today: string }) {
+export function UpcomingList({ events, today }: { events: EventOccurrence[]; today: string }) {
   if (events.length === 0) return null;
-  const textStyle = [styles.rounded, { fontSize: 20 * scale }];
+  const textStyle = [styles.rounded, { fontSize: 20 }];
   return (
-    <View style={{ gap: 8 * scale, alignSelf: 'stretch' }}>
-      <SectionTitle text="Coming up" scale={scale} />
+    <View style={{ gap: 8, alignSelf: 'stretch' }}>
+      <SectionTitle text="Coming up" />
       {events.map((event) => (
         <View
           key={eventKey(event)}
@@ -253,8 +222,8 @@ export function UpcomingList({
             flexDirection: 'row',
             flexWrap: 'wrap',
             justifyContent: 'space-between',
-            columnGap: 12 * scale,
-            rowGap: 2 * scale,
+            columnGap: 12,
+            rowGap: 2,
           }}
         >
           <Text style={[textStyle, { fontWeight: '500' }]}>{event.label}</Text>

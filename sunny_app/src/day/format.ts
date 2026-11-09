@@ -1,13 +1,14 @@
 // sunny_app/src/day/format.ts
 //
-// Purpose: Pure helpers for the day clock: task state checks (done, open, due), the time-ordered agenda
-// merge, and plain-language time text. Dates and times from calendar.dayView are already in
-// the household's local time, so nothing here converts timezones (date arithmetic lives in
-// localDate.ts). Also the shared wording of an event line (eventDetails). Anytime tasks (no time
-// of day, done anytime that day) arrive with the scheduledTime sentinel ANYTIME; they read
-// "Anytime", are never "due", and are listed after the day's timed items.
+// Purpose: Pure helpers for the day clock: task state checks (done, open, due), the
+// time-ordered agenda merge, plain-language time text (with AM and PM, or the home display's
+// clock form without), and relative day names. Dates and times from calendar.dayView are
+// already in the household's local time, so nothing here converts timezones (date arithmetic
+// lives in localDate.ts). Also the shared wording of an event line (eventDetails). Anytime
+// tasks (no time of day, done anytime that day) arrive with the scheduledTime sentinel
+// ANYTIME; they read "Anytime", are never "due", and are listed after the day's timed items.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-07
 
 import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
@@ -108,19 +109,58 @@ export function buildAgenda(day: DayViewData | null): AgendaItem[] {
 }
 
 /**
+ * purpose: Split a local "HH:MM" time into its 24-hour hour and its minute text.
+ * @param localTime: (string) Time from the backend.
+ * @return: ({ hour: number; minute: string } | null) The parts, or null when it is not a valid
+ *          time (including the anytime sentinel).
+ */
+function timeParts(localTime: string): { hour: number; minute: string } | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(localTime);
+  if (match === null) return null;
+  const hour = Number(match[1]);
+  if (hour > 23 || Number(match[2]) > 59) return null;
+  return { hour, minute: match[2]! };
+}
+
+/**
+ * purpose: A local "HH:MM" time on a 12-hour clock without AM or PM, for example "2:00" (the
+ *          home display's form); "Anytime" for the anytime sentinel.
+ * @param localTime: (string) Time from the backend.
+ * @return: (string) The clock time, or the input unchanged when it is not a valid time.
+ */
+export function clockTime(localTime: string): string {
+  if (localTime === ANYTIME) return 'Anytime';
+  const parts = timeParts(localTime);
+  if (parts === null) return localTime;
+  return `${parts.hour % 12 === 0 ? 12 : parts.hour % 12}:${parts.minute}`;
+}
+
+/**
  * purpose: Display form of a local "HH:MM" time, for example "2:00 PM"; "Anytime" for the
  *          anytime sentinel.
  * @param localTime: (string) Time from the backend.
  * @return: (string) Display time, or the input unchanged when it is not a valid time.
  */
 export function displayTime(localTime: string): string {
-  if (localTime === ANYTIME) return 'Anytime';
-  const match = /^(\d{2}):(\d{2})$/.exec(localTime);
-  if (match === null) return localTime;
-  const [hour, minute] = [Number(match[1]), Number(match[2])];
-  if (hour > 23 || minute > 59) return localTime;
-  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  return `${hour12}:${match[2]} ${hour < 12 ? 'AM' : 'PM'}`;
+  const parts = timeParts(localTime);
+  if (parts === null) return clockTime(localTime);
+  return `${clockTime(localTime)} ${parts.hour < 12 ? 'AM' : 'PM'}`;
+}
+
+/**
+ * purpose: The name of a local date relative to today: "Today", "Tomorrow" or the weekday.
+ * @param localDate: (string) The date, "YYYY-MM-DD".
+ * @param todayLocalDate: (string | null) The day view's localDate; null before the first load.
+ * @return: (string | null) The name, or null when the dates cannot be compared.
+ */
+export function relativeDayName(localDate: string, todayLocalDate: string | null): string | null {
+  const today = todayLocalDate === null ? null : parseLocalDate(todayLocalDate);
+  const date = parseLocalDate(localDate);
+  if (today === null || date === null) return null;
+  const days = daysBetween(today, date);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  return weekdayName(date);
 }
 
 /**
@@ -132,13 +172,8 @@ export function displayTime(localTime: string): string {
  */
 export function whenText(event: EventOccurrence, todayLocalDate: string | null): string {
   const time = displayTime(event.startTime);
-  const today = todayLocalDate === null ? null : parseLocalDate(todayLocalDate);
-  const date = parseLocalDate(event.localDate);
-  if (today === null || date === null) return time;
-  const days = daysBetween(today, date);
-  if (days === 0) return `Today at ${time}`;
-  if (days === 1) return `Tomorrow at ${time}`;
-  return `${weekdayName(date)} at ${time}`;
+  const day = relativeDayName(event.localDate, todayLocalDate);
+  return day === null ? time : `${day} at ${time}`;
 }
 
 /**
