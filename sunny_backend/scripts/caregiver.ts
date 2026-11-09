@@ -29,6 +29,16 @@
 //                      the text to go out (households:myPhoneStatus) and prints either
 //                      "Texted a code" or the send failure reason (exit code 1 unless the text went out).
 //   confirm-phone <code>  Confirm that code (households:confirmMyPhone) and print the result.
+//   profile-load <file.json>
+//                      Load life profile entries, sensitive topics and caregiver facts from a
+//                      JSON file through profile:addEntry, profile:addTopic and profile:addFact
+//                      (format: scripts/profileLoader.ts; example: scripts/profile.example.json).
+//                      Safe to re-run: items already stored are skipped. Prints each item as
+//                      added, skipped or failed; exit code 1 when any failed.
+//   profile            Print what is stored: life profile, sensitive topics, what Sunny
+//                      remembers (verified or not) and the recent family messages.
+//   message "<text>"   Send the senior a text message from the dev caregiver
+//                      (profile:sendMessage).
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
 //   npx tsx scripts/caregiver.ts setup
@@ -39,13 +49,18 @@
 //   npx tsx scripts/caregiver.ts google
 //   npx tsx scripts/caregiver.ts phone 555-123-4567
 //   npx tsx scripts/caregiver.ts confirm-phone 123456
+//   npx tsx scripts/caregiver.ts profile-load ~/sunny-profile.json
+//   npx tsx scripts/caregiver.ts profile
+//   npx tsx scripts/caregiver.ts message "Coming by at noon. Love, J"
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { EntryView, FactView, MessageView, TopicView } from "../convex/profile";
+import { loadProfile, parseProfileFile } from "./profileLoader";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = join(SCRIPT_DIR, "..");
@@ -334,6 +349,64 @@ function confirmPhone(code: string): void {
 }
 
 /**
+ * purpose: Load a profile file into the dev household and print what happened to each item.
+ * @param path: (string) Path of the JSON file.
+ * @return: (Promise<void>) Resolves when every item was tried.
+ */
+async function profileLoad(path: string): Promise<void> {
+  const file = parseProfileFile(JSON.parse(readFileSync(path, "utf8")));
+  const report = await loadProfile(file, loadState().householdId, convexRun);
+  for (const item of report.added) console.log(`Added    ${item}`);
+  for (const item of report.skipped) console.log(`Skipped  ${item} (already stored)`);
+  for (const { item, error } of report.failed) console.log(`Failed   ${item}: ${error}`);
+  console.log(
+    `\n${report.added.length} added, ${report.skipped.length} skipped, ${report.failed.length} failed.`,
+  );
+  if (report.failed.length > 0) process.exitCode = 1;
+}
+
+/**
+ * purpose: Print everything the profile functions store for the dev household.
+ */
+function printProfile(): void {
+  const householdId = loadState().householdId;
+  const entries = convexRun("profile:listEntries", { householdId }) as EntryView[];
+  const topics = convexRun("profile:listTopics", { householdId }) as TopicView[];
+  const facts = convexRun("profile:listMemory", { householdId }) as FactView[];
+  const messages = convexRun("profile:listMessages", { householdId }) as MessageView[];
+
+  console.log(`Life profile (${entries.length}):`);
+  for (const e of entries) {
+    console.log(`  ${e.category} - ${e.name}${e.details === null ? "" : `: ${e.details}`}`);
+  }
+  console.log(`\nSensitive topics (${topics.length}):`);
+  for (const t of topics) console.log(`  If asked about ${t.topic}: ${t.guidance}`);
+  console.log(`\nWhat Sunny remembers (${facts.length}):`);
+  for (const f of facts) {
+    const state = f.verified
+      ? `verified${f.verifiedByName === null ? "" : ` by ${f.verifiedByName}`}`
+      : "NOT VERIFIED";
+    console.log(`  ${f.fact} (${f.source}, ${f.notedOn}, ${state})`);
+  }
+  console.log(`\nRecent messages (${messages.length}, newest first):`);
+  for (const m of messages) {
+    const seen = m.senderKind === "caregiver" ? (m.seenAt === null ? ", not seen" : ", seen") : "";
+    console.log(
+      `  ${m.sentDate} ${m.sentTime} ${m.senderName}${seen}: ${m.body ?? "(photo or audio)"}`,
+    );
+  }
+}
+
+/**
+ * purpose: Send the senior a text message as the dev caregiver.
+ * @param body: (string) The message.
+ */
+function message(body: string): void {
+  convexRun("profile:sendMessage", { householdId: loadState().householdId, body });
+  console.log("Sent.");
+}
+
+/**
  * purpose: Dispatch the command line.
  * @param argv: (string[]) Arguments after the script name.
  * @return: (Promise<void>) Resolves when the command finishes.
@@ -371,9 +444,20 @@ async function main(argv: string[]): Promise<void> {
       if (!rest[0]) throw new Error("Usage: confirm-phone <code>");
       confirmPhone(rest[0]);
       break;
+    case "profile-load":
+      if (!rest[0]) throw new Error("Usage: profile-load <file.json>");
+      await profileLoad(rest[0]);
+      break;
+    case "profile":
+      printProfile();
+      break;
+    case "message":
+      if (!rest.join(" ").trim()) throw new Error('Usage: message "<text>"');
+      message(rest.join(" "));
+      break;
     default:
       console.log(
-        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | phone <number> | confirm-phone <code>',
+        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | phone <number> | confirm-phone <code> | profile-load <file.json> | profile | message "<text>"',
       );
   }
 }
