@@ -113,10 +113,17 @@ Rules: at most 5 requests queued or running per household; one in-progress reque
 | `conversations` | One voice session: `trigger` (`talk`, `scheduled_prompt`, `notification_tap`), `deviceId`, `taskInstanceId`, `startedAt`, `endedAt`, `summary` | `by_household_started` | `agent.startConversation` / `finishConversation` |
 | `conversationTurns` | What was said: `role`, `content` | `by_conversation` | `agent.logTurn` |
 | `agentQuestions` | One row per question the senior asked: `topic`, `outcome`, `toolsUsed`; the digest counts repeats | `by_household_asked` | No writer yet (post-call extraction is not built) |
-| `agentMemory` | Facts the agent knows: `fact`, `source`, `verifiedBy`/`verifiedAt`, `conversationId`. Senior-stated facts start unverified and never overwrite verified ones | `by_household` | No writer yet (caregiver app and post-call extraction); read by `agent.getContext` |
-| `lifeProfileEntries` | Caregiver-owned people, places, doctors, habits, interests, preferences | `by_household` | No writer yet (caregiver app); read by `agent.getContext` |
-| `sensitiveTopics` | Caregiver-written guidance for hard questions | `by_household` | No writer yet; read by `agent.getContext` |
-| `familyMessages` | Messages from family to the senior (text, photo or voice clip in `_storage`) | `by_household` | No writer yet; read by `agent.getContext` |
+| `agentMemory` | Facts the agent knows: `fact`, `source`, `verifiedBy`/`verifiedAt`, `conversationId`. Senior-stated facts start unverified and never overwrite verified ones | `by_household` | `profile.ts` (`addFact`, `verifyFact`, `correctFact`, `removeFact`); senior facts from the voice agent; read by `agent.getContext` |
+| `lifeProfileEntries` | Caregiver-owned people, places, doctors, habits, interests, preferences | `by_household` | `profile.ts` (`addEntry`, `updateEntry`, `removeEntry`); read by `agent.getContext` |
+| `sensitiveTopics` | Caregiver-written guidance for hard questions | `by_household` | `profile.ts` (`addTopic`, `updateTopic`, `removeTopic`); read by `agent.getContext` |
+| `familyMessages` | Messages between family and the senior (text, photo or voice clip in `_storage`), `seenAt` | `by_household` | `profile.sendMessage` (caregiver text); senior messages from the voice agent; read by `agent.getContext` (newest caregiver message) and `profile.listMessages` |
+
+Rules for the caregiver write path (`profile.ts`):
+- Editors (primary, member) write; readers list, except `listTopics`, which a paired device may not read (the guidance is about the senior). Every change writes an `auditLog` row (`lifeProfileEntry`, `sensitiveTopic`, `agentMemory`, `familyMessage`).
+- Text is trimmed and capped: name 120, details 600, topic 200, guidance 1500, fact 300, message 1000 characters. Names, topics and facts are single line (whitespace collapsed).
+- Counts are capped because `getContext` loads every entry and topic into each conversation and at most 50 facts (verified first, then newest): 150 entries, 30 topics, 50 verified facts. The verified cap equals the agent's window, so every verified fact is in the agent's context.
+- Adds de-duplicate (entry: category and name; topic: wording; fact: text; case-insensitive) and return `{ id, created }`, so `scripts/caregiver.ts profile-load` can be re-run. Adding a fact the senior already stated verifies it. Renaming onto another row's key is refused.
+- Only an editor caregiver verifies (`verifyFact`, first verifier kept) or corrects (`correctFact`, which verifies and keeps the source) a fact.
 
 Privacy: conversation summaries, question text and turns carry what the senior said, so caregivers can read them only when `households.shareTranscripts` is true. The digest reports topics and counts. `agent:*` functions require `SUNNY_AGENT_KEY`; the household always comes from the LiveKit participant metadata the token action wrote, never from the model.
 
@@ -134,4 +141,4 @@ Rules: the code is made inside the send action and never stored or scheduled in 
 
 ## Not built yet
 
-Storage rules for photos and voice clips, a household delete, the caregiver-facing read paths for life profile, playbook and memory, and `agentQuestions` extraction.
+Storage rules for photos and voice clips (caregiver messages are text only), a household delete, `agentQuestions` extraction, and anything that sets `familyMessages.seenAt`.

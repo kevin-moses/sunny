@@ -166,7 +166,7 @@ function multiLine(value: string, max: number, label: string): string {
  * @param value: (string) Text.
  * @return: (string) The key.
  */
-export function textKey(value: string): string {
+function textKey(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
