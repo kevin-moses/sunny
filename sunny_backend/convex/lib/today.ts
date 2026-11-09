@@ -16,9 +16,11 @@
 // caregiver who marked it done (state "resolved"), null for a device confirmation or when the
 // member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
 // is the instance's own local date and carriedOver is true for yesterday's still-open
-// instances, and resolutionNote is the note the caregiver left.
+// instances, and resolutionNote is the note the caregiver left. seniorPrompts counts the
+// senior prompts the escalation policy has sent for the instance (fired prompt_senior steps
+// that were notified), so the home display can repeat its due cue on each reprompt.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
@@ -57,6 +59,8 @@ export interface TodayEntry {
   /** The caregiver's display name; null unless state is "resolved", or when they left. */
   confirmedByName: string | null;
   resolutionNote: string | null;
+  /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
+  seniorPrompts: number;
 }
 
 /**
@@ -128,6 +132,8 @@ export async function todayInstances(
       confirmedBy,
       confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
+      seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
+        .length,
     });
   }
   return entries;
