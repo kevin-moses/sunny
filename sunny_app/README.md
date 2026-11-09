@@ -13,6 +13,12 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
   Next up, today's tasks and events, the coming week). It is a Convex subscription, so changes
   push automatically; the app only passes the current minute so "Next up" stays current. The
   offline banner shows when the Convex socket is down.
+- **Done (phone):** when a timed task is due (or escalated), the phone shows its label and one
+  large Done button under the header. It confirms that task by instance id with
+  `instances.confirmTaskInstance` (`via: "phone_app"`); the first due task if two are due.
+  Nothing due: no button. Presses within 700 ms of each other, or while a confirm is running,
+  are ignored. Offline, Done sends nothing and says the task is not checked off yet (no offline
+  queue). Logic in `src/day/useDoneAction.ts`.
 - **Talk:** the phone joins a LiveKit room with a token from the `voice.livekitToken` action.
   The agent can call two RPCs on the phone: `findContact` (contacts search) and `sendMessage`
   (opens the SMS composer). App logs are forwarded to the agent on the `ios.log` data topic

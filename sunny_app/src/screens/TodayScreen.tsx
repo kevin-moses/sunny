@@ -3,9 +3,10 @@
 // Purpose: The senior phone's home screen: the day clock (orientation header, Next up,
 // today's tasks and events, the coming week) from calendar.dayView, with the Talk button at
 // the bottom. The day view state comes from the app shell (see useDayView), so it survives
-// a conversation.
+// a conversation. When a task is due, a Done card sits under the header (the task's label and
+// one large Done button, see useDoneAction); Talk stays fixed at the bottom, far from it.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import {
   ActivityIndicator,
@@ -19,11 +20,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   AgendaList,
+  DoneCard,
   NextUpCard,
   OfflineMark,
   OrientationHeader,
   UpcomingList,
 } from '../components/DayComponents';
+import { doneTarget, useDoneAction } from '../day/useDoneAction';
 import type { DayViewState } from '../day/useDayView';
 import { colors, GRID } from '../theme/colors';
 import { TalkButton } from '../voice/TalkButton';
@@ -40,6 +43,8 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const { day, agenda, errorMessage, isOffline } = dayView;
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const target = doneTarget(day?.tasks ?? []);
+  const done = useDoneAction(target, isOffline);
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 
   return (
@@ -55,6 +60,12 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         {day !== null ? (
           <>
             <OrientationHeader day={day} />
+            <DoneCard
+              task={target}
+              busy={done.busy}
+              message={done.message}
+              onPress={done.pressDone}
+            />
             {day.nextUp !== null && <NextUpCard event={day.nextUp} today={day.localDate} />}
             <AgendaList items={agenda} />
             <UpcomingList events={day.upcoming} today={day.localDate} />
