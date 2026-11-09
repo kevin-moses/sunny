@@ -17,7 +17,10 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
   large Done button under the header. It confirms that task by instance id with
   `instances.confirmTaskInstance` (`via: "phone_app"`); the first due task if two are due.
   Nothing due: no button. Presses within 700 ms of each other, or while a confirm is running,
-  are ignored. Offline, Done sends nothing and says the task is not checked off yet (no offline
+  are ignored. After a success the button is withdrawn for 4 s (only "Checked off: ..." shows), so a
+  doubting second tap cannot confirm the next due task. A call pending over 8 s shows "Still
+  trying. It is not checked off yet." and frees the button; if it lands later while that line
+  is still up, the line becomes "Checked off: ...". Offline, Done sends nothing and says the task is not checked off yet (no offline
   queue). Logic in `src/day/useDoneAction.ts`.
 - **Talk:** the phone joins a LiveKit room with a token from the `voice.livekitToken` action.
   The agent can call two RPCs on the phone: `findContact` (contacts search) and `sendMessage`

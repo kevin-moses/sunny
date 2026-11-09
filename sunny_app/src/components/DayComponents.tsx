@@ -238,6 +238,9 @@ export function UpcomingList({ events, today }: { events: EventOccurrence[]; tod
 /** Height (points) of the Done button; much larger than the 44pt minimum. */
 const DONE_BUTTON_HEIGHT = 96;
 
+/** Background of the Done button while pressed; darker, so the white label keeps its contrast. */
+const DONE_PRESSED_COLOR = '#14582A';
+
 /**
  * purpose: The Done card: the due task's label above one large Done button, and the result
  *          of the last press below. With nothing due it shows only the result line, or
@@ -269,14 +272,19 @@ export function DoneCard({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Done: ${task.displayLabel}`}
-            accessibilityHint="Double-tap to check this off"
             accessibilityState={{ disabled: busy, busy }}
             disabled={busy}
             onPress={onPress}
-            style={({ pressed }) => [styles.doneButton, { opacity: pressed || busy ? 0.75 : 1 }]}
+            style={({ pressed }) => [
+              styles.doneButton,
+              pressed && { backgroundColor: DONE_PRESSED_COLOR },
+            ]}
           >
             {busy ? (
-              <ActivityIndicator size="large" color={colors.surface} />
+              <View style={styles.savingRow}>
+                <ActivityIndicator size="large" color={colors.surface} />
+                <Text style={styles.doneText}>Saving</Text>
+              </View>
             ) : (
               <Text style={styles.doneText}>Done</Text>
             )}
@@ -284,12 +292,7 @@ export function DoneCard({
         </>
       )}
       {message !== null && (
-        <Text
-          accessibilityLiveRegion="polite"
-          style={[styles.rounded, { fontSize: 22, fontWeight: '500' }]}
-        >
-          {message}
-        </Text>
+        <Text style={[styles.rounded, { fontSize: 22, fontWeight: '500' }]}>{message}</Text>
       )}
     </View>
   );
@@ -318,6 +321,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: colors.success,
   },
+  savingRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   doneText: { fontFamily: ROUNDED_FONT, fontSize: 40, fontWeight: '700', color: colors.surface },
   offline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });

@@ -35,7 +35,8 @@ import { TalkButton } from '../voice/TalkButton';
 const REGULAR_WIDTH = 768;
 
 /**
- * purpose: Today screen for a paired senior phone.
+ * purpose: Today screen for a paired senior phone: the day clock, the Done card for the task
+ *          that is due (hidden when nothing is due or just after a confirm) and the Talk button.
  * @param props: ({ dayView: DayViewState }) The household's day view, loaded by the app shell.
  * @return: (JSX.Element) The screen.
  */
@@ -61,7 +62,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
           <>
             <OrientationHeader day={day} />
             <DoneCard
-              task={target}
+              task={done.task}
               busy={done.busy}
               message={done.message}
               onPress={done.pressDone}
