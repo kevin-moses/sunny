@@ -56,6 +56,7 @@ import type * as lib_upcomingTasks from "../lib/upcomingTasks.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as pairing from "../pairing.js";
 import type * as phone from "../phone.js";
+import type * as profile from "../profile.js";
 import type * as scheduler from "../scheduler.js";
 import type * as sms from "../sms.js";
 import type * as tasks from "../tasks.js";
@@ -116,6 +117,7 @@ declare const fullApi: ApiFromModules<{
   "lib/validators": typeof lib_validators;
   pairing: typeof pairing;
   phone: typeof phone;
+  profile: typeof profile;
   scheduler: typeof scheduler;
   sms: typeof sms;
   tasks: typeof tasks;
