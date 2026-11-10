@@ -25,7 +25,11 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
   press (an early task for 10 s). A press the server permanently refuses is dropped and logged
   as an error; the senior sees nothing and the row follows the server. Unpairing clears the queue.
   While the phone is offline the server does not know, so reprompts and caregiver alerts still
-  fire. Logic in `src/day/useDoneAction.ts` and `src/day/pendingConfirms.ts`.
+  fire. Offline across midnight the cached day is yesterday's, so no Done card is offered until
+  today's list loads; an early task is only offered while connected. The server judges a
+  replayed press as of when it was pressed: refused (and audited as `press_not_applied`) if
+  pressed more than 60 minutes before the task's window or more than 3 hours after it. Logic in
+  `src/day/useDoneAction.ts` and `src/day/pendingConfirms.ts`.
 - **Talk:** the phone joins a LiveKit room with a token from the `voice.livekitToken` action.
   The agent can call two RPCs on the phone: `findContact` (contacts search) and `sendMessage`
   (opens the SMS composer). App logs are forwarded to the agent on the `ios.log` data topic

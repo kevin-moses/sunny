@@ -93,7 +93,12 @@ jest.mock('../../logging/logger', () => ({
 
 jest.mock('../../config', () => ({ CONVEX_SITE_URL: 'https://site.example' }));
 
-jest.mock('../convex', () => ({ convex: {} }));
+jest.mock('../convex', () => ({
+  convex: {
+    connectionState: () => ({ isWebSocketConnected: false, hasEverConnected: false }),
+    subscribeToConnectionState: () => () => undefined,
+  },
+}));
 
 const PAIR_BODY = { ticket: 'tkt', householdId: 'h1', deviceId: 'd1', kind: 'senior_phone' };
 

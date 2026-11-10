@@ -9,12 +9,16 @@
 //     "checked off" knowing the press survives an app close or a restart. The entry records the
 //     instance id, its label and pressedAt (epoch ms on this device's clock). enqueue refuses
 //     (rejects) while the stored queue has not been read successfully, so a failed read is never
-//     treated as an empty queue and stored presses are never overwritten.
+//     treated as an empty queue and stored presses are never overwritten. The entry shows in
+//     getEntries (and so the task reads checked) only once its write has finished; presses are
+//     added one at a time.
 //  2. replay() sends entries oldest first, one at a time, through instances.confirmPressedTask
 //     with via "phone_app" and pressedAgoMs, the age of the press at send time. An age, not a
 //     time, so a wrong device clock cannot move the record; the server records now minus the
 //     age. Replay runs after every enqueue while online, at launch, whenever the socket
-//     connects (usePendingConfirms) and again after the retry delay while entries remain.
+//     connects (the queue follows the Convex connection itself from its first use, so it
+//     keeps working while no screen is mounted) and again after the retry delay while
+//     entries remain.
 //  3. Never send while the socket is down. The Convex client never rejects a mutation while it
 //     is disconnected: it holds the original message and resends it on reconnect, so an age
 //     computed at call time would be hours stale when it arrives and would look like a live
@@ -28,7 +32,9 @@
 //     drop (its ping detection), and the server still marks it late-synced if over 5 minutes.
 //     The queue keeps one send promise per instance id and re-awaits it on later passes instead
 //     of calling again, so retries never pile up held mutations; a held send that lands later
-//     removes its entry.
+//     removes its entry. A send unanswered for SEND_MAX_LIFETIME_MS is abandoned and a fresh
+//     one may start (only while connected; the server is idempotent, so whichever lands first
+//     records the press and the other changes nothing).
 //  4. An entry is removed only when the server has answered: success (the backend confirm is
 //     idempotent for an instance that is already confirmed and writes no second audit row), a
 //     "rejected" result (the server could not apply the press and wrote an audit row, see
@@ -44,8 +50,9 @@
 //     previous days) is logged as an error with the instance id, label, press time and reason.
 //     The senior is told nothing: the row follows the server's state. An entry that has failed
 //     while online for more than STUCK_MS (any failure kind, so a sustained 401 counts) is logged
-//     as an error once when it crosses the threshold and then every STUCK_LOG_EVERY_MS; the
-//     failure clock restarts when the connection drops, so offline time does not count.
+//     as an error once when it crosses the threshold and then every STUCK_LOG_EVERY_MS. Offline
+//     time is not counted (a failure's clock moves forward by the time spent offline) while its
+//     backoff schedule is kept across a drop.
 //  7. Storage: a read that throws is retried on the next call (and logged as an error after
 //     several in a row); a stored value that does not parse or is not an array is copied to
 //     CORRUPT_KEY, logged as an error, and the queue starts empty and usable.
@@ -66,6 +73,7 @@ import { convex } from '../backend/convex';
 import { api } from '../backend/convexApi';
 import { logger } from '../logging/logger';
 import type { DayTask } from './types';
+import { withTimeout } from './withTimeout';
 
 /** AsyncStorage key of the persisted queue. */
 export const STORAGE_KEY = 'sunny.pendingConfirms.v1';
@@ -78,6 +86,9 @@ export const MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 /** How long (ms) a send may stay unanswered before the pass ends and the entry is kept. */
 export const SEND_TIMEOUT_MS = 15_000;
+
+/** A send still unanswered after this long (ms) is abandoned and a fresh one may start. */
+export const SEND_MAX_LIFETIME_MS = 2 * 60 * 1000;
 
 /** How long (ms) after a pass that left entries behind the next pass runs by itself. */
 export const RETRY_MS = 30_000;
@@ -128,11 +139,30 @@ export interface ConfirmQueue {
   subscribe: (listener: () => void) => () => void;
 }
 
+/** What the queue needs to know about the connection. */
+export interface ConnectionState {
+  /** The socket is connected right now. */
+  connected: boolean;
+  /** The socket was up once and is now down (false on a fresh launch before the first connect). */
+  offline: boolean;
+}
+
+/** Where the queue learns about the connection, for as long as the app lives. */
+export interface ConnectionSource {
+  current: () => ConnectionState;
+  subscribe: (listener: (state: ConnectionState) => void) => () => void;
+}
+
 /** Options of createConfirmQueue. */
 export interface QueueOptions {
   send: SendConfirm;
   /** The clock; defaults to Date.now. */
   now?: () => number;
+  /**
+   * The connection. When given, the queue follows it by itself from its first use: it tracks
+   * offline and replays whenever the socket connects, whatever screen is mounted.
+   */
+  connection?: ConnectionSource;
 }
 
 /** What is known about an entry that keeps failing. */
@@ -199,24 +229,6 @@ function isEntry(value: unknown): value is PendingConfirm {
 }
 
 /**
- * purpose: Race a send against SEND_TIMEOUT_MS.
- * @param send: (Promise<void>) The send in progress.
- * @return: (Promise<void>) Resolves when it finishes.
- * @raises: The send's error, or an Error('Network request timed out') on timeout.
- */
-async function withTimeout(send: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Network request timed out')), SEND_TIMEOUT_MS);
-  });
-  try {
-    await Promise.race([send, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
  * purpose: Create a pending-confirm queue over AsyncStorage.
  * @param options: (QueueOptions) The send function and an optional clock.
  * @return: (ConfirmQueue) The queue.
@@ -232,7 +244,11 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0;
   let offline = false;
-  const inflight = new Map<string, Promise<void>>();
+  let adding: PendingConfirm | null = null;
+  let addChain: Promise<void> = Promise.resolve();
+  let offlineSince: number | null = null;
+  let watching = false;
+  const inflight = new Map<string, { send: Promise<void>; startedAt: number }>();
   const failures = new Map<string, Failure>();
   const listeners = new Set<() => void>();
 
@@ -247,18 +263,20 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   };
 
   /**
-   * purpose: Write the current entries to storage, after earlier writes finished. The write is
-   *          skipped if clear() ran meanwhile.
+   * purpose: Write the queue to storage, after earlier writes finished. The snapshot is taken
+   *          when the write starts and includes a press still being added, so a write queued
+   *          behind a slow one never drops it. Skipped if clear() ran meanwhile.
    * @return: (Promise<void>) Resolves when written; rejects when storage fails or the stored
    *          queue has not been read yet (so stored presses are never overwritten).
    */
   const persist = (): Promise<void> => {
     if (!loadedOk) return Promise.reject(new Error('The stored queue has not been read'));
     const gen = generation;
-    const snapshot = JSON.stringify(entries);
-    const write = writes.then(() =>
-      gen === generation ? AsyncStorage.setItem(STORAGE_KEY, snapshot) : undefined,
-    );
+    const write = writes.then(() => {
+      if (gen !== generation) return undefined;
+      const all = adding === null ? entries : [...entries, adding];
+      return AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    });
     writes = write.catch(() => undefined);
     return write;
   };
@@ -345,6 +363,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
       const gen = generation;
       let raw: string | null;
       try {
+        await writes; // a removal or write already queued lands first, so this read is current
         raw = await AsyncStorage.getItem(STORAGE_KEY);
       } catch (error) {
         readFailures += 1;
@@ -375,50 +394,70 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
       loadedOk = true;
       await dropExpired(gen);
     })();
+    watchConnection();
     return loading;
   };
 
   /**
-   * purpose: Add a press and store it before resolving.
+   * purpose: Store one press, then make it visible. Presses are added one at a time, so each
+   *          write snapshot is complete; the entry is not in getEntries (the task does not read
+   *          checked) until its write has finished.
    * @param entry: (PendingConfirm) The press.
+   * @param gen: (number) The generation when the press was queued; a clear() since then drops it.
    * @return: (Promise<void>) Resolves once stored (or when the instance is already queued).
-   * @raises: An error when the stored queue could not be read or the press could not be
-   *          stored; only the new entry is rolled back.
+   * @raises: An error when the stored queue could not be read, the press could not be stored,
+   *          or the queue was cleared first.
    */
-  const enqueue = async (entry: PendingConfirm): Promise<void> => {
+  const add = async (entry: PendingConfirm, gen: number): Promise<void> => {
     await load();
+    if (gen !== generation) throw new Error('The queue was cleared');
     if (!loadedOk) throw new Error('The stored queue could not be read');
     if (entries.some((e) => e.instanceId === entry.instanceId)) return;
-    setEntries([...entries, entry]);
+    adding = entry;
     try {
       await persist();
-    } catch (error) {
-      setEntries(entries.filter((e) => e.instanceId !== entry.instanceId));
-      throw error;
+    } finally {
+      adding = null;
     }
+    if (gen === generation) setEntries([...entries, entry]);
+  };
+
+  /**
+   * purpose: Queue a press, stored before the returned promise resolves.
+   * @param entry: (PendingConfirm) The press.
+   * @return: (Promise<void>) Resolves once stored; rejects if it could not be stored.
+   */
+  const enqueue = (entry: PendingConfirm): Promise<void> => {
+    const gen = generation;
+    const run = addChain.then(() => add(entry, gen));
+    addChain = run.catch(() => undefined);
+    return run;
   };
 
   /**
    * purpose: Start a send for an entry, or return the one already running for its instance. A
-   *          send that lands after the pass gave up removes its entry.
+   *          send still unanswered after SEND_MAX_LIFETIME_MS is abandoned and a fresh one
+   *          starts (sendConfirm only calls while the socket is connected, and the server is
+   *          idempotent, so whichever lands first records the press and the other changes
+   *          nothing). A send that lands after the pass gave up removes its entry.
    * @param entry: (PendingConfirm) The entry.
    * @param gen: (number) The generation the pass started in.
    * @return: (Promise<void>) The send.
    */
   const sendOnce = (entry: PendingConfirm, gen: number): Promise<void> => {
     const running = inflight.get(entry.instanceId);
-    if (running !== undefined) return running;
+    if (running !== undefined && now() - running.startedAt <= SEND_MAX_LIFETIME_MS) {
+      return running.send;
+    }
     const send = options.send(entry);
-    inflight.set(entry.instanceId, send);
-    send.then(
-      () => {
-        if (inflight.get(entry.instanceId) === send) inflight.delete(entry.instanceId);
-        void remove(entry.instanceId, gen);
-      },
-      () => {
-        if (inflight.get(entry.instanceId) === send) inflight.delete(entry.instanceId);
-      },
-    );
+    inflight.set(entry.instanceId, { send, startedAt: now() });
+    const forget = (): void => {
+      if (inflight.get(entry.instanceId)?.send === send) inflight.delete(entry.instanceId);
+    };
+    send.then(() => {
+      forget();
+      void remove(entry.instanceId, gen);
+    }, forget);
     return send;
   };
 
@@ -494,7 +533,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
       const waitUntil = failures.get(entry.instanceId)?.nextAt;
       if (waitUntil !== undefined && waitUntil > now()) continue;
       try {
-        await withTimeout(sendOnce(entry, gen));
+        await withTimeout(sendOnce(entry, gen), SEND_TIMEOUT_MS, 'Network request timed out');
         await remove(entry.instanceId, gen);
       } catch (error) {
         if (gen !== generation) return;
@@ -526,17 +565,42 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
 
   /**
    * purpose: Record whether the connection is known to be down. Going offline stops the retry
-   *          timer and restarts every failure clock, so offline time never counts as failing
-   *          online.
+   *          timer. Backoff schedules are kept across a drop; coming back online moves each
+   *          failure's start forward by the time spent offline, so offline time never counts
+   *          toward the stuck threshold.
    * @param next: (boolean) True when offline.
    * @return: (void)
    */
   const setOffline = (next: boolean): void => {
-    offline = next;
+    if (next === offline) return;
     if (next) {
+      offlineSince = now();
       clearTimeout(retryTimer);
-      failures.clear();
+    } else if (offlineSince !== null) {
+      const away = now() - offlineSince;
+      for (const [id, failure] of failures)
+        failures.set(id, { ...failure, since: failure.since + away });
+      offlineSince = null;
     }
+    offline = next;
+  };
+
+  /**
+   * purpose: Follow the connection source, once, for as long as the app lives: track offline
+   *          and replay whenever the socket connects. This is what keeps queued presses
+   *          flowing when no screen is mounted (for example during a voice conversation).
+   * @return: (void)
+   */
+  const watchConnection = (): void => {
+    const source = options.connection;
+    if (watching || source === undefined) return;
+    watching = true;
+    const apply = (state: ConnectionState): void => {
+      setOffline(state.offline);
+      if (state.connected) void replay();
+    };
+    apply(source.current());
+    source.subscribe(apply);
   };
 
   /**
@@ -549,6 +613,8 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     clearTimeout(retryTimer);
     inflight.clear();
     failures.clear();
+    adding = null;
+    offlineSince = null;
     const dropped = entries;
     loading = null;
     loadedOk = false;
@@ -588,8 +654,27 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   };
 }
 
-/** The app's queue, sending through the real backend. */
-export const confirmQueue: ConfirmQueue = createConfirmQueue({ send: sendConfirm });
+/**
+ * purpose: Reduce the Convex client's connection state to what the queue needs.
+ * @param state: (ReturnType<typeof convex.connectionState>) The client's connection state.
+ * @return: (ConnectionState) Connected now, and offline (was up once, now down).
+ */
+function toConnectionState(state: ReturnType<typeof convex.connectionState>): ConnectionState {
+  return {
+    connected: state.isWebSocketConnected,
+    offline: state.hasEverConnected && !state.isWebSocketConnected,
+  };
+}
+
+/** The app's queue, sending through the real backend and following the Convex connection. */
+export const confirmQueue: ConfirmQueue = createConfirmQueue({
+  send: sendConfirm,
+  connection: {
+    current: () => toConnectionState(convex.connectionState()),
+    subscribe: (listener) =>
+      convex.subscribeToConnectionState((state) => listener(toConnectionState(state))),
+  },
+});
 
 /**
  * purpose: The task a queued press was made for, as an entry.

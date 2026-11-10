@@ -38,7 +38,10 @@ import {
   STUCK_LOG_EVERY_MS,
   STUCK_MS,
   toPending,
+  SEND_MAX_LIFETIME_MS,
   type ConfirmQueue,
+  type ConnectionSource,
+  type ConnectionState,
   type PendingConfirm,
 } from '../pendingConfirms';
 
@@ -46,6 +49,7 @@ const mockStore = new Map<string, string>();
 let mockFailWrites = false;
 let mockFailReads = false;
 let mockReadGate: Promise<void> | null = null;
+let mockWriteGate: Promise<void> | null = null;
 let mockConnected = true;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -57,6 +61,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
       return mockStore.get(key) ?? null;
     },
     setItem: async (key: string, value: string) => {
+      if (mockWriteGate !== null) await mockWriteGate;
       if (mockFailWrites) throw new Error('disk full');
       mockStore.set(key, value);
     },
@@ -94,8 +99,35 @@ function entry(id: string, pressedAt = NOW): PendingConfirm {
  * purpose: A queue over the real send with the faked clock.
  * @return: (ConfirmQueue) The queue.
  */
-function makeQueue(): ConfirmQueue {
-  return createConfirmQueue({ send: sendConfirm, now: () => Date.now() });
+function makeQueue(connection?: ConnectionSource): ConfirmQueue {
+  return createConfirmQueue({ send: sendConfirm, now: () => Date.now(), connection });
+}
+
+/**
+ * purpose: A connection source the test can drive.
+ * @param initial: (ConnectionState) The state at the start.
+ * @return: (object) The source and a function that announces a new state to the queue.
+ */
+function fakeConnection(initial: ConnectionState): {
+  source: ConnectionSource;
+  emit: (state: ConnectionState) => void;
+} {
+  let current = initial;
+  const listeners = new Set<(state: ConnectionState) => void>();
+  return {
+    source: {
+      current: () => current,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => void listeners.delete(listener);
+      },
+    },
+    emit: (state) => {
+      current = state;
+      mockConnected = state.connected;
+      listeners.forEach((listener) => listener(state));
+    },
+  };
 }
 
 /**
@@ -122,6 +154,7 @@ beforeEach(() => {
   mockFailWrites = false;
   mockFailReads = false;
   mockReadGate = null;
+  mockWriteGate = null;
   mockConnected = true;
   mockMutation.mockReset();
   mockMutation.mockResolvedValue({ status: 'confirmed' });
@@ -488,6 +521,94 @@ describe('expiry', () => {
     const queue = makeQueue();
     await queue.load();
     expect(queue.getEntries()).toEqual([entry('a')]);
+  });
+});
+
+describe('a press becomes visible only once it is stored', () => {
+  it('is not in the entries while the write hangs, and appears when it finishes', async () => {
+    const queue = makeQueue();
+    let release!: () => void;
+    mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+    const adding = queue.enqueue(entry('a'));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(queue.getEntries()).toEqual([]);
+    release();
+    await adding;
+    expect(queue.getEntries()).toEqual([entry('a')]);
+  });
+
+  it('a write queued behind a slow one never drops the press being added', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    let release!: () => void;
+    mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+    const adding = queue.enqueue(entry('b'));
+    await jest.advanceTimersByTimeAsync(0);
+    const removing = queue.replay();
+    await jest.advanceTimersByTimeAsync(0);
+    release();
+    await adding;
+    await removing;
+    expect(stored().map((e) => e.instanceId)).toContain('b');
+  });
+});
+
+describe('the queue follows the connection by itself (no screen involved)', () => {
+  it('sends a press queued before the first connect as soon as the socket connects', async () => {
+    const { source, emit } = fakeConnection({ connected: false, offline: false });
+    const queue = makeQueue(source);
+    await queue.enqueue(entry('a', NOW));
+    expect(mockMutation).not.toHaveBeenCalled();
+    jest.setSystemTime(NOW + 3_600_000);
+    emit({ connected: true, offline: false });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sentIds()).toEqual(['a']);
+    expect((mockMutation.mock.calls[0][1] as { pressedAgoMs: number }).pressedAgoMs).toBe(
+      3_600_000,
+    );
+  });
+
+  it('stays quiet while offline and replays on reconnect, with no screen mounted', async () => {
+    const { source, emit } = fakeConnection({ connected: true, offline: false });
+    const queue = makeQueue(source);
+    await queue.load();
+    emit({ connected: false, offline: true });
+    await queue.enqueue(entry('a'));
+    await queue.replay();
+    expect(mockMutation).not.toHaveBeenCalled();
+    emit({ connected: true, offline: false });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sentIds()).toEqual(['a']);
+  });
+});
+
+describe('a send that never settles', () => {
+  it('is re-awaited within its lifetime, then abandoned and replaced by a fresh send', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockReturnValue(new Promise(() => {}));
+    const first = queue.replay();
+    await jest.advanceTimersByTimeAsync(SEND_TIMEOUT_MS + 1);
+    await first;
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    jest.setSystemTime(NOW + SEND_MAX_LIFETIME_MS + 1000);
+    mockMutation.mockResolvedValue({ status: 'confirmed' });
+    await queue.replay();
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    expect(stored()).toEqual([]);
+  });
+});
+
+describe('backoff survives a connection flap', () => {
+  it('does not retry a server-error entry sooner because the connection dropped and returned', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockRejectedValue(new Error('boom'));
+    await queue.replay();
+    queue.setOffline(true);
+    queue.setOffline(false);
+    await queue.replay();
+    expect(mockMutation).toHaveBeenCalledTimes(1);
   });
 });
 

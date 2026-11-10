@@ -8,7 +8,10 @@
 //      window starts), otherwise
 //   3. nothing (anytime and missed tasks are never offered; the list still shows them).
 // Callers pass the day's tasks after applyPending, so a task with a queued press is not offered
-// again.
+// again, and only offer anything while the cached day is still today's (dayIsCurrent): offline
+// across midnight the last day stays on screen, and a press meant for this morning must not
+// confirm last night's task. The early step is skipped while the socket is down (allowEarly
+// false), because the `confirmable` flag comes from that same stale day view.
 //
 // useDoneAction turns a press into a queued confirm (pendingConfirms.ts): the press is stored
 // first, and only then does the screen show "Checked off: <label>" (with a note that it will be
@@ -16,8 +19,9 @@
 // with the age of the press. There is no spinner and no timeout on the send: the senior's part
 // is done once the press is stored. Storing is raced against STORE_TIMEOUT_MS so a hung
 // storage call cannot leave the button silently stuck; on a failure or timeout the line says
-// "Sunny could not save that. Please press Done again." and the task stays offered (a late
-// write is harmless: entries dedupe by instance id). A permanent rejection later is only
+// "Sunny could not save that. Please press Done again." and the task stays offered and does not
+// read checked (the queue shows a press only once it is stored). If a timed-out write finishes
+// later after all, the press is stored, so the result line and the settle block apply then. A permanent rejection later is only
 // logged by the queue; the senior sees nothing and the row follows the server.
 //
 // Guards: a second press within PRESS_GAP_MS is ignored and presses are ignored while one is
@@ -29,11 +33,8 @@
 // has finished, so a doubting tap cannot chain into an early medication; a task that is due is
 // offered after SETTLE_MS. A senior who presses Done again every ~11 s can still chain from a
 // due task into an early one (each press is deliberate, and each shows its own heading and
-// "Done early" label); the screen cannot prevent that. The `confirmable` flag comes from the
-// last day view, which does not advance while the phone is offline, so an early task that
-// becomes confirmable (or stops being so) offline is only noticed on reconnect; the server
-// still applies its own rule, except that a replayed press skips the early check (see
-// confirmPressedTask). Each line lasts MESSAGE_MS and is announced to VoiceOver from an
+// "Done early" label); the screen cannot prevent that. The server judges a
+// replayed press as of the time it was pressed (see confirmPressedTask). Each line lasts MESSAGE_MS and is announced to VoiceOver from an
 // effect, after the screen re-rendered without the button. After unmount nothing is set,
 // scheduled or announced.
 //
@@ -43,8 +44,10 @@ import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo } from 'react-native';
 
 import { isAnytime, isDue } from './format';
+import { currentLocalDate } from './localDate';
 import { toPending, type ConfirmQueue } from './pendingConfirms';
-import type { DayTask } from './types';
+import type { DayTask, DayViewData } from './types';
+import { withTimeout } from './withTimeout';
 
 /** Presses closer together than this (ms) count as one. */
 export const PRESS_GAP_MS = 700;
@@ -89,32 +92,32 @@ interface Line {
  * @param tasks: (DayTask[]) Today's tasks, in the day view's order (after applyPending).
  * @return: (DayTask | null) The task, or null when there is nothing to confirm.
  */
-export function doneTarget(tasks: DayTask[]): DayTask | null {
+export function doneTarget(tasks: DayTask[], allowEarly = true): DayTask | null {
   const due = tasks.find(isDue);
-  if (due !== undefined) return due;
+  if (due !== undefined || !allowEarly) return due ?? null;
   return tasks.find((t) => t.state === 'upcoming' && t.confirmable && !isAnytime(t)) ?? null;
 }
 
 /**
- * purpose: Wait for a storage call, but not longer than STORE_TIMEOUT_MS.
- * @param write: (Promise<void>) The call.
- * @return: (Promise<void>) Resolves when it finished.
- * @raises: The call's error, or an Error on timeout.
+ * purpose: Whether a day view is still today's. While the phone is offline the last day stays
+ *          on screen, so after a night offline it is yesterday's and its cards (a due or early
+ *          task) must not be offered: a press meant for this morning would confirm last
+ *          night's task.
+ * @param day: (Pick<DayViewData, 'localDate' | 'timezone'>) The cached day view.
+ * @param now: (number) Epoch ms.
+ * @return: (boolean) False only when the household's current date differs from the day's.
+ *          True when the date cannot be worked out (so a missing Intl never blocks Done).
  */
-async function withinStoreTimeout(write: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error('Storing the press took too long')),
-      STORE_TIMEOUT_MS,
-    );
-  });
-  try {
-    await Promise.race([write, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+export function dayIsCurrent(
+  day: Pick<DayViewData, 'localDate' | 'timezone'>,
+  now: number,
+): boolean {
+  const today = currentLocalDate(day.timezone, now);
+  return today === null || today === day.localDate;
 }
+
+/** Said in place of the Done card while the cached day is not today's. */
+export const STALE_DAY_MESSAGE = "Waiting for today's list to load.";
 
 /**
  * purpose: Wire the Done button to the pending-confirm queue.
@@ -178,22 +181,42 @@ export function useDoneAction(
   };
 
   /**
-   * purpose: Store the press, show the result and let the queue send it.
+   * purpose: Show that a press is stored: the result line, and the settle block.
+   * @param task: (DayTask) The task that was pressed.
+   * @return: (void)
+   */
+  const stored = (task: DayTask): void => {
+    const sent = isOffline ? ' It will be sent when the internet is back.' : '';
+    show(`Checked off: ${task.displayLabel}.${sent}`, task.instanceId);
+    enter('settle');
+  };
+
+  /**
+   * purpose: Store the press, show the result and let the queue send it. The task reads
+   *          checked only once the press is stored. If storing takes longer than
+   *          STORE_TIMEOUT_MS the senior is asked to press again and the same task stays
+   *          offered; should the write finish later after all, the press is stored, so the
+   *          result line and the settle block apply then.
    * @param task: (DayTask) The task on screen when the button was pressed.
    * @param pressedAt: (number) Epoch ms of the press.
    * @return: (Promise<void>) Resolves when the outcome is shown; never rejects.
    */
   const store = async (task: DayTask, pressedAt: number): Promise<void> => {
     storing.current = true;
+    const write = queue.enqueue(toPending(task, pressedAt));
     try {
-      await withinStoreTimeout(queue.enqueue(toPending(task, pressedAt)));
+      await withTimeout(write, STORE_TIMEOUT_MS, 'Storing the press took too long');
       if (!isOffline) void queue.replay();
-      if (!mounted.current) return;
-      const sent = isOffline ? ' It will be sent when the internet is back.' : '';
-      show(`Checked off: ${task.displayLabel}.${sent}`, task.instanceId);
-      enter('settle');
+      if (mounted.current) stored(task);
     } catch {
       if (mounted.current) show(NOT_STORED_MESSAGE, task.instanceId);
+      write.then(
+        () => {
+          if (!isOffline) void queue.replay();
+          if (mounted.current) stored(task);
+        },
+        () => undefined,
+      );
     } finally {
       storing.current = false;
     }

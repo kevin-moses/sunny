@@ -6,7 +6,10 @@
 // a conversation. When a task is due (or may be confirmed early, up to an hour ahead), a Done
 // card sits under the header (the task's label, its due time if early, and one large Done
 // button, see useDoneAction). Done presses go through a durable queue (pendingConfirms), so they
-// work offline; queued tasks show as checked at once. Talk stays fixed at the bottom, far from it.
+// work offline; queued tasks show as checked at once. Offline across midnight the cached day is
+// yesterday's: then no Done card is offered and a calm line says today's list is loading; an
+// early task is only offered while the socket is connected. Talk stays fixed at the bottom, far
+// from it.
 //
 // Last modified: 2026-11-09
 
@@ -33,10 +36,14 @@ import {
 import { buildAgenda } from '../day/format';
 import { applyPending, confirmQueue } from '../day/pendingConfirms';
 import type { DayViewState } from '../day/useDayView';
-import { doneTarget, useDoneAction } from '../day/useDoneAction';
+import { dayIsCurrent, doneTarget, STALE_DAY_MESSAGE, useDoneAction } from '../day/useDoneAction';
 import { usePendingConfirms } from '../day/usePendingConfirms';
+import { useTick } from '../day/useTick';
 import { colors, GRID } from '../theme/colors';
 import { TalkButton } from '../voice/TalkButton';
+
+/** How often (ms) the screen re-checks whether the cached day is still today's. */
+const TICK_MS = 30_000;
 
 /** Width (points) from which the phone layout uses the wide, tablet-style margins. */
 const REGULAR_WIDTH = 768;
@@ -54,14 +61,17 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { isWebSocketConnected } = useConvexConnectionState();
-  const pendingIds = usePendingConfirms(confirmQueue, isOffline, isWebSocketConnected);
+  const now = useTick(TICK_MS);
+  const pendingIds = usePendingConfirms(confirmQueue);
   const tasks = useMemo(() => applyPending(day?.tasks ?? [], pendingIds), [day, pendingIds]);
   const agenda = useMemo(
     () =>
       pendingIds.size === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
     [dayView.agenda, pendingIds, day, tasks],
   );
-  const done = useDoneAction(doneTarget(tasks), isOffline, confirmQueue);
+  const stale = day !== null && !dayIsCurrent(day, now);
+  const target = stale ? null : doneTarget(tasks, isWebSocketConnected);
+  const done = useDoneAction(target, isOffline, confirmQueue);
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 
   return (
@@ -77,7 +87,11 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         {day !== null ? (
           <>
             <OrientationHeader day={day} />
-            <DoneCard task={done.task} message={done.message} onPress={done.pressDone} />
+            <DoneCard
+              task={done.task}
+              message={done.message ?? (stale ? STALE_DAY_MESSAGE : null)}
+              onPress={done.pressDone}
+            />
             {day.nextUp !== null && <NextUpCard event={day.nextUp} today={day.localDate} />}
             <AgendaList items={agenda} />
             <UpcomingList events={day.upcoming} today={day.localDate} />

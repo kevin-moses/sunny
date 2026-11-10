@@ -34,6 +34,7 @@ import {
 } from '../pendingConfirms';
 import type { DayTask } from '../types';
 import {
+  dayIsCurrent,
   doneTarget,
   MESSAGE_MS,
   NOT_STORED_MESSAGE,
@@ -53,6 +54,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   default: {
     getItem: async (key: string) => mockStore.get(key) ?? null,
     setItem: async (key: string, value: string) => {
+      if (mockWriteGate !== null) await mockWriteGate;
       if (mockFailWrites) throw new Error('disk full');
       mockStore.set(key, value);
     },
@@ -61,6 +63,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 let mockConnected = true;
+let mockWriteGate: Promise<void> | null = null;
 
 jest.mock('../../backend/convex', () => ({
   convex: {
@@ -219,9 +222,39 @@ describe('doneTarget', () => {
     expect(doneTarget([])).toBeNull();
   });
 
+  it('skips the early step when early is not allowed (offline)', () => {
+    const early = task({ instanceId: 'e' as never, state: 'upcoming' });
+    expect(doneTarget([early], false)).toBeNull();
+    expect(doneTarget([early])).toBe(early);
+    const due = task({ instanceId: 'd' as never });
+    expect(doneTarget([early, due], false)).toBe(due);
+  });
+
   it('never targets an anytime task', () => {
     expect(doneTarget([task({ scheduledTime: 'anytime' })])).toBeNull();
     expect(doneTarget([task({ scheduledTime: 'anytime', state: 'upcoming' })])).toBeNull();
+  });
+});
+
+describe('dayIsCurrent', () => {
+  const day = { localDate: '2026-11-09', timezone: 'America/New_York' };
+
+  it('is true on the same local date', () => {
+    expect(dayIsCurrent(day, Date.parse('2026-11-09T15:00:00Z'))).toBe(true);
+  });
+
+  it('is false the next morning (offline across midnight)', () => {
+    expect(dayIsCurrent(day, Date.parse('2026-11-10T13:00:00Z'))).toBe(false);
+  });
+
+  it('uses the household zone, not UTC (11 PM in New York is still the same date)', () => {
+    expect(dayIsCurrent(day, Date.parse('2026-11-10T03:30:00Z'))).toBe(true);
+  });
+
+  it('is true when the zone is unknown, so Done is never blocked by it', () => {
+    expect(
+      dayIsCurrent({ ...day, timezone: 'Not/AZone' }, Date.parse('2030-01-01T00:00:00Z')),
+    ).toBe(true);
   });
 });
 
@@ -231,6 +264,8 @@ describe('useDoneAction', () => {
     jest.setSystemTime(NOW);
     mockStore.clear();
     mockFailWrites = false;
+    mockWriteGate = null;
+    mockWriteGate = null;
     mockMutation.mockReset();
     mockConnected = true;
     mockMutation.mockResolvedValue({ status: 'confirmed' });
@@ -449,6 +484,44 @@ describe('useDoneAction', () => {
     });
   });
 
+  describe('when storing hangs', () => {
+    /**
+     * purpose: A queue whose first storage write waits for the returned release function.
+     * @return: (object) the queue and the release function.
+     */
+    function gatedQueue(): { queue: ConfirmQueue; release: () => void } {
+      let release!: () => void;
+      mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+      return { queue: makeQueue(), release };
+    }
+
+    it('does not read checked, keeps the same task offered, and shows the press-again line', async () => {
+      const { queue } = gatedQueue();
+      const h = renderDone(queue, task());
+      await press(h);
+      await advance(STORE_TIMEOUT_MS + 1);
+      expect(queue.getEntries()).toEqual([]);
+      expect(h.get().task?.instanceId).toBe('inst1');
+      expect(h.get().message).toBe(NOT_STORED_MESSAGE);
+    });
+
+    it('a late successful write applies the checked-off line and the settle block', async () => {
+      const { queue, release } = gatedQueue();
+      const h = renderDone(queue, task());
+      await press(h);
+      await advance(STORE_TIMEOUT_MS + 1);
+      mockWriteGate = null;
+      await act(async () => release());
+      await advance(0);
+      expect(sentIds()).toEqual(['inst1']);
+      expect(h.get().message).toBe('Checked off: Morning pills.');
+      expect(h.get().task).toBeNull();
+      await advance(SETTLE_MS + 1);
+      h.rerender(second());
+      expect(h.get().task?.instanceId).toBe('inst2');
+    });
+  });
+
   describe('after unmount', () => {
     it('does not announce or schedule timers when a press finishes storing', async () => {
       const queue = makeQueue();
@@ -467,6 +540,7 @@ describe('useDoneAction', () => {
       announce.mockClear();
       const timers = jest.getTimerCount();
       await act(async () => release());
+      await advance(0);
       expect(announce).not.toHaveBeenCalled();
       expect(jest.getTimerCount()).toBeLessThanOrEqual(timers + 1);
     });
@@ -479,6 +553,7 @@ describe('usePendingConfirms', () => {
     jest.setSystemTime(NOW);
     mockStore.clear();
     mockFailWrites = false;
+    mockWriteGate = null;
     mockMutation.mockReset();
     mockConnected = true;
     mockMutation.mockResolvedValue({ status: 'confirmed' });
@@ -494,66 +569,34 @@ describe('usePendingConfirms', () => {
   /**
    * purpose: Render the hook and expose the latest set of queued ids.
    * @param queue: (ConfirmQueue) The queue.
-   * @param isOffline: (boolean) The offline flag.
-   * @return: (object) get and rerender.
+   * @return: (object) get.
    */
-  function renderPending(queue: ConfirmQueue, isOffline: boolean, isConnected = !isOffline) {
+  function renderPending(queue: ConfirmQueue) {
     let latest: ReadonlySet<string> = new Set();
     const record = (value: ReadonlySet<string>): void => {
       latest = value;
     };
     /**
      * purpose: Test component that records the hook's latest value.
-     * @param props: ({ off }) The offline flag.
      * @return: (null) Renders nothing.
      */
-    const Probe = ({ off, on }: { off: boolean; on: boolean }): null => {
-      record(usePendingConfirms(queue, off, on));
+    const Probe = (): null => {
+      record(usePendingConfirms(queue));
       return null;
     };
-    let renderer!: ReactTestRenderer;
     act(() => {
-      renderer = create(<Probe off={isOffline} on={isConnected} />);
-      mounted.push(renderer);
+      mounted.push(create(<Probe />));
     });
-    return {
-      get: () => latest,
-      rerender: (off: boolean, on = !off) =>
-        act(() => renderer.update(<Probe off={off} on={on} />)),
-    };
+    return { get: () => latest };
   }
 
   it('shows ids stored before the app was closed and replays them at launch', async () => {
     await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
     mockMutation.mockReturnValue(new Promise(() => {}));
-    const h = renderPending(makeQueue(), false);
+    const h = renderPending(makeQueue());
     await advance(0);
     expect(h.get().has('inst1')).toBe(true);
     expect(sentIds()).toEqual(['inst1']);
-  });
-
-  it('on a fresh launch, sends a queued press as soon as the socket connects (no offline edge)', async () => {
-    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
-    mockConnected = false;
-    const h = renderPending(makeQueue(), false, false);
-    await advance(0);
-    expect(mockMutation).not.toHaveBeenCalled();
-    mockConnected = true;
-    h.rerender(false, true);
-    await advance(0);
-    expect(sentIds()).toEqual(['inst1']);
-  });
-
-  it('does not send while offline, then replays when the connection returns', async () => {
-    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
-    const h = renderPending(makeQueue(), true);
-    await advance(0);
-    expect(h.get().has('inst1')).toBe(true);
-    expect(mockMutation).not.toHaveBeenCalled();
-    h.rerender(false);
-    await advance(0);
-    expect(sentIds()).toEqual(['inst1']);
-    expect(h.get().has('inst1')).toBe(false);
   });
 });
 
