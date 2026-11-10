@@ -20,7 +20,8 @@
 // senior prompts the escalation policy has sent for the instance (fired prompt_senior steps
 // that were notified), so the home display can repeat its due cue on each reprompt; snoozed
 // is true while a snooze ("not yet") holds the senior prompts back at `now`, the scheduler's
-// own test, so the display holds its cue until the snooze ends.
+// own test, so the display holds its cue until the snooze ends; snoozedUntil is when the
+// latest snooze ends (kept after it passed), so the display owes one cue per snooze end.
 //
 // Last modified: 2026-11-09
 
@@ -65,6 +66,8 @@ export interface TodayEntry {
   seniorPrompts: number;
   /** True while the instance is snoozed (now is before its snoozedUntil). */
   snoozed: boolean;
+  /** When the latest snooze ends or ended (epoch ms); null when never snoozed. */
+  snoozedUntil: number | null;
 }
 
 /**
@@ -139,6 +142,7 @@ export async function todayInstances(
       seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
         .length,
       snoozed: instance.snoozedUntil !== undefined && now < instance.snoozedUntil,
+      snoozedUntil: instance.snoozedUntil ?? null,
     });
   }
   return entries;

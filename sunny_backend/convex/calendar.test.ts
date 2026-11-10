@@ -1001,6 +1001,12 @@ describe("dayView", () => {
     ]);
     const after = await viewAt(w, "2027-03-18T12:45:00Z");
     expect(after.tasks.map((t) => t.snoozed)).toEqual([false, false, false]);
+    // The end of the latest snooze stays readable after it passed (null when never snoozed).
+    expect(after.tasks.map((t) => t.snoozedUntil)).toEqual([
+      at("2027-03-18T12:45:00Z"),
+      null,
+      at("2027-03-18T12:30:00Z"),
+    ]);
   });
 
   test("the minute argument is ignored", async () => {

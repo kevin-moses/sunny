@@ -341,6 +341,7 @@ describe("getContext", () => {
         resolutionNote: null,
         seniorPrompts: 0,
         snoozed: false,
+        snoozedUntil: null,
       },
     ]);
     expect(
