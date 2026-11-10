@@ -16,14 +16,17 @@
 // caregiver who marked it done (state "resolved"), null for a device confirmation or when the
 // member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
 // is the instance's own local date and carriedOver is true for yesterday's still-open
-// instances, and resolutionNote is the note the caregiver left.
+// instances, and resolutionNote is the note the caregiver left. confirmable says whether a
+// senior device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own
+// rule), so a surface can offer Done early without copying the 60 minute constant.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
+import { seniorCanConfirm } from "./confirmRule";
 import { addDays, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -57,6 +60,8 @@ export interface TodayEntry {
   /** The caregiver's display name; null unless state is "resolved", or when they left. */
   confirmedByName: string | null;
   resolutionNote: string | null;
+  /** A senior device may confirm it now (open and not more than 60 minutes early). */
+  confirmable: boolean;
 }
 
 /**
@@ -128,6 +133,7 @@ export async function todayInstances(
       confirmedBy,
       confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
+      confirmable: seniorCanConfirm(instance, now),
     });
   }
   return entries;

@@ -10,7 +10,7 @@
 // state, claim, snooze and note change is audited (lib/schedule.changeInstance). A bare "Done"
 // (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -26,6 +26,7 @@ import {
 import type { Actor, CaregiverActor } from "./lib/access";
 import { isAnytimeInstance } from "./lib/anytime";
 import { appError, isAppError } from "./lib/errors";
+import { EARLY_CONFIRM_MS, notTooEarly } from "./lib/confirmRule";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
 import { isLocalDate, isLocalTime, localDate, minutes } from "./lib/time";
@@ -34,7 +35,6 @@ import type { TodayEntry } from "./lib/today";
 import { confirmVia } from "./lib/validators";
 import type { ConfirmVia } from "./lib/validators";
 
-const EARLY_CONFIRM_MS = minutes(60);
 const DOSE_CLOCK_SKEW_MS = minutes(5);
 const DEFAULT_SNOOZE_MINUTES = 15;
 const MAX_SNOOZE_MINUTES = 120;
@@ -109,7 +109,13 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
  *          and returns it.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
- * @param args: ({instanceId, via, note}) The instance, the surface and an optional note.
+ * @param args: ({instanceId, via, note, pressedAt}) The instance, the surface, an optional note
+ *        and an optional press time. pressedAt is the instant the senior pressed Done on a
+ *        device that was offline and sent the confirm later: only a senior device may send it,
+ *        and it is recorded as confirmedAt clamped to between the instance's early-confirm point
+ *        (windowStart minus EARLY_CONFIRM_MS) and `now` (never the future); the audit detail
+ *        records pressedAt as sent, the recorded confirmedAt and receivedAt (now). The early
+ *        check itself still uses `now`. Without it confirmedAt is `now`.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
  * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the agent: more than 60 minutes
@@ -121,7 +127,7 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 export async function confirmInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; via: ConfirmVia; note?: string },
+  args: { instanceId: Id<"taskInstances">; via: ConfirmVia; note?: string; pressedAt?: number },
   now: number,
 ): Promise<Doc<"taskInstances">> {
   const instance = await loadInstance(ctx, args.instanceId);
@@ -132,6 +138,12 @@ export async function confirmInstance(
   if (!asCaregiver && args.via === "caregiver") {
     throw appError("invalid", "Only a caregiver can confirm as a caregiver");
   }
+  if (
+    args.pressedAt !== undefined &&
+    (actor.kind !== "senior_device" || !Number.isFinite(args.pressedAt))
+  ) {
+    throw appError("invalid", "Only the senior's device can send a press time");
+  }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   if (instance.state === "confirmed" || instance.state === "resolved") return instance;
   if (asCaregiver) {
@@ -139,19 +151,33 @@ export async function confirmInstance(
     if (instance.localDate > localDate(now, household.timezone)) {
       throw appError("invalid", "This task is not due yet");
     }
-  } else if (instance.state === "upcoming" && instance.windowStart - now > EARLY_CONFIRM_MS) {
+  } else if (!notTooEarly(instance, now)) {
     throw appError("invalid", "This task is not due yet");
   }
-  return await changeInstance(ctx, actor, instance, {
-    state: asCaregiver ? "resolved" : "confirmed",
-    confirmedAt: now,
-    confirmedBy: actorUserId(actor),
-    confirmedVia: asCaregiver ? "caregiver" : args.via,
-    resolvedFromState: asCaregiver ? instance.state : undefined,
-    resolvedFromSnoozedUntil: asCaregiver ? instance.snoozedUntil : undefined,
-    resolutionNote: note ?? instance.resolutionNote,
-    snoozedUntil: undefined,
-  });
+  const confirmedAt =
+    args.pressedAt === undefined
+      ? now
+      : Math.min(now, Math.max(args.pressedAt, instance.windowStart - EARLY_CONFIRM_MS));
+  const pressDetail =
+    args.pressedAt === undefined
+      ? undefined
+      : { pressedAt: args.pressedAt, confirmedAt, receivedAt: now };
+  return await changeInstance(
+    ctx,
+    actor,
+    instance,
+    {
+      state: asCaregiver ? "resolved" : "confirmed",
+      confirmedAt,
+      confirmedBy: actorUserId(actor),
+      confirmedVia: asCaregiver ? "caregiver" : args.via,
+      resolvedFromState: asCaregiver ? instance.state : undefined,
+      resolvedFromSnoozedUntil: asCaregiver ? instance.snoozedUntil : undefined,
+      resolutionNote: note ?? instance.resolutionNote,
+      snoozedUntil: undefined,
+    },
+    pressDetail,
+  );
 }
 
 /**
@@ -516,10 +542,17 @@ export async function logDoseCore(
  * @param instanceId: (Id<"taskInstances">) Instance.
  * @param via: (ConfirmVia) Surface that confirmed.
  * @param note: (string, optional) Resolution note.
+ * @param pressedAt: (number, optional) Epoch ms the senior pressed Done while offline; senior
+ *        devices only (see confirmInstance).
  * @return: (Doc<"taskInstances">) The instance after the call.
  */
 export const confirmTaskInstance = mutation({
-  args: { instanceId: v.id("taskInstances"), via: confirmVia, note: v.optional(v.string()) },
+  args: {
+    instanceId: v.id("taskInstances"),
+    via: confirmVia,
+    note: v.optional(v.string()),
+    pressedAt: v.optional(v.number()),
+  },
   handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
     const instance = await loadInstance(ctx, args.instanceId);
     const actor = await requireReader(ctx, instance.householdId);
