@@ -6,7 +6,7 @@
     "sensitiveTopics: topic is at most 200 characters, guidance at most 1500. The agent reads each one as 'If asked about <topic>: <guidance>', so write the topic as what she might ask about.",
     "facts: things Sunny should know, at most 300 characters each and at most 40 confirmed facts in all. They are saved as caregiver-verified facts.",
     "Every text is stored as one paragraph: line breaks become spaces.",
-    "Loading is safe to repeat: an item already stored is not added again. An entry or topic stored with different details or guidance is reported as 'differs' and left alone; add --update to replace it with this file's text. Each item starts its own convex process, so a full load takes a minute or two. Keys starting with an underscore, like this one, are ignored."
+    "Loading is safe to repeat: an item already stored is not added again. An entry or topic stored with different text is reported as 'differs' and left alone (names are compared exactly, so a change of capital letters counts); add --update to replace it with this file's text. With --update an entry's details change only when the item has a details key, and \"details\": null (or an empty string) clears them. Each item starts its own convex process, so a full load takes a minute or two. Keys starting with an underscore, like this one, are ignored."
   ],
   "lifeProfile": [
     {

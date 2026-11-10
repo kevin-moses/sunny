@@ -38,17 +38,14 @@
 //   confirm-phone <code>  Confirm that code (households:confirmMyPhone) and print the result.
 //   profile-load <file.json> [--update]
 //                      Load life profile entries, sensitive topics and caregiver facts from a
-//                      JSON file through profile:addEntry, profile:addTopic and profile:addFact
-//                      (format: scripts/profileLoader.ts; example: scripts/profile.example.json).
-//                      Keep real data in scripts/profile.local.json (any scripts/*.local.json is
-//                      git-ignored) so it is never committed. Safe to re-run: items already
-//                      stored are not added again. Prints each item as added, unchanged,
-//                      confirmed, differs (stored with other text, NOT updated), updated or
-//                      failed; exit code 1 when any failed or differs. With --update, items stored
-//                      with other text are replaced by the file's text (profile:updateEntry,
-//                      profile:updateTopic; an entry with no details in the file loses its
-//                      details). Slow: it starts one `npx convex run` process per item (and one
-//                      more per update), roughly a second or two each.
+//                      JSON file (example: scripts/profile.example.json) and print what happened
+//                      to each item; --update replaces items stored with other text. The file
+//                      format and the outcomes (added, unchanged, confirmed, differs, updated,
+//                      failed) are described in scripts/profileLoader.ts. Keep real data in
+//                      scripts/profile.local.json (any scripts/*.local.json is git-ignored).
+//                      Exit code 1 when any item failed or differs. Slow: it starts one
+//                      `npx convex run` process per item (and one more per update), roughly a
+//                      second or two each.
 //   profile            Print what is stored: life profile, sensitive topics, what Sunny
 //                      remembers (verified or not) and the recent family messages.
 //   message "<text>"   Send the senior a text message from the dev caregiver
@@ -75,7 +72,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EntryView, MemoryView, MessageView, TopicView } from "../convex/profile";
-import { deploymentProblem, parseEnvFile } from "./devGuard";
+import { deploymentProblem, readEnvFile, type EnvSource } from "./devGuard";
 import { cliError, loadProfile, parseProfileFile } from "./profileLoader";
 import type { LoadReport } from "./profileLoader";
 
@@ -95,11 +92,11 @@ const DEV_IDENTITY = {
 /**
  * purpose: The variables of a dotenv file in sunny_backend, or none when it does not exist.
  * @param name: (string) File name, ".env.local" or ".env".
- * @return: (Record<string, string | undefined>) Its variables.
+ * @return: (EnvSource) Its variables.
  */
-function envFile(name: string): Record<string, string | undefined> {
+function envFile(name: string): EnvSource {
   const path = join(BACKEND_DIR, name);
-  return existsSync(path) ? parseEnvFile(readFileSync(path, "utf8")) : {};
+  return existsSync(path) ? readEnvFile(readFileSync(path, "utf8")) : {};
 }
 
 /**
@@ -386,11 +383,11 @@ function confirmPhone(code: string): void {
 
 /** How each loader outcome is printed: a column label and an optional note. */
 const OUTCOME_LINES: Array<[keyof Omit<LoadReport, "failed">, string, string]> = [
-  ["added", "Added    ", ""],
+  ["added", "Added", ""],
   ["unchanged", "Unchanged", " (already stored)"],
   ["confirmed", "Confirmed", " (Sunny had heard this; now confirmed)"],
-  ["updated", "Updated  ", " (replaced by the file's text)"],
-  ["differs", "Differs  ", " (stored with other text, NOT updated; rerun with --update)"],
+  ["updated", "Updated", " (replaced by the file's text)"],
+  ["differs", "Differs", " (stored with other text, NOT updated; rerun with --update)"],
 ];
 
 /**
@@ -405,9 +402,10 @@ async function profileLoad(path: string, update: boolean): Promise<void> {
   const file = parseProfileFile(JSON.parse(readFileSync(path, "utf8")));
   const report = await loadProfile(file, loadState().householdId, convexRun, { update });
   for (const [key, label, note] of OUTCOME_LINES) {
-    for (const item of report[key]) console.log(`${label} ${item}${note}`);
+    for (const item of report[key]) console.log(`${label.padEnd(9)} ${item}${note}`);
   }
-  for (const { item, error } of report.failed) console.log(`Failed    ${item}: ${error}`);
+  for (const { item, error } of report.failed)
+    console.log(`${"Failed".padEnd(9)} ${item}: ${error}`);
   const counts = OUTCOME_LINES.map(([key]) => `${report[key].length} ${key}`);
   console.log(`\n${[...counts, `${report.failed.length} failed`].join(", ")}.`);
   if (report.failed.length > 0 || report.differs.length > 0) process.exitCode = 1;

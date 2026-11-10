@@ -19,7 +19,7 @@
 // householdMembers row is inserted; it enforces one household per caregiver) and memberNames
 // (display names of a household in one query).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-09 (requireCaregiver also refuses a devices row)
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
@@ -225,21 +225,29 @@ export async function findDevice(ctx: QueryCtx, userId: string): Promise<Doc<"de
 
 /**
  * purpose: Resolve the caller to a caregiver of the household, optionally restricted to roles.
+ *          A device account is refused whether it is recognized by the token's device claim or
+ *          by a devices row (isDeviceAccount), so the rule holds even if the Clerk JWT template
+ *          does not carry the claim.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param roles: (readonly string[] | null) Allowed roles, or null for any role.
  * @return: (CaregiverActor) The caregiver actor.
+ * @raises unauthenticated when signed out; forbidden for a device account, a non-member or a
+ *         member without an allowed role.
  */
 async function requireCaregiver(
   ctx: QueryCtx,
   householdId: Id<"households">,
   roles: readonly Doc<"householdMembers">["role"][] | null,
 ): Promise<CaregiverActor> {
-  const userId = await requireUserId(ctx);
-  if (isDeviceIdentity(await ctx.auth.getUserIdentity())) {
-    throw appError("forbidden", "Not allowed");
-  }
-  const member = await findMember(ctx, householdId, userId);
+  const identity = await ctx.auth.getUserIdentity();
+  if (identity === null) throw appError("unauthenticated", "Sign in first");
+  const userId = identity.subject;
+  const [device, member] = await Promise.all([
+    findDevice(ctx, userId),
+    findMember(ctx, householdId, userId),
+  ]);
+  if (isDeviceAccount(identity, device)) throw appError("forbidden", "Not allowed");
   if (!member || (roles !== null && !roles.includes(member.role))) {
     throw appError("forbidden", "Not allowed");
   }

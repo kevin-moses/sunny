@@ -197,6 +197,30 @@ describe("requireCaregiverReader", () => {
       claimed.run(async (ctx) => await requireCaregiverReader(ctx, w.householdId)),
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
   });
+
+  test("refuses a member who has a devices row but no device claim, for reads and writes", async () => {
+    const w = await setup();
+    await w.t.run(async (ctx) => {
+      await ctx.db.insert("devices", {
+        householdId: w.householdId,
+        userId: "max",
+        kind: "senior_phone",
+      });
+    });
+    for (const fn of [
+      api.profile.listEntries,
+      api.profile.listTopics,
+      api.profile.listMemory,
+      api.profile.listMessages,
+    ]) {
+      await expect(w.max.query(fn, { householdId: w.householdId })).rejects.toMatchObject({
+        data: { code: "forbidden" },
+      });
+    }
+    await expect(
+      w.max.mutation(api.profile.addFact, { householdId: w.householdId, fact: "Likes tea" }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+  });
 });
 
 describe("access", () => {
@@ -471,7 +495,11 @@ describe("life profile entries", () => {
     });
     expect(differs).toEqual({ id: first.id, created: false, same: false, confirmed: false });
     const noDetails = await w.max.mutation(api.profile.addEntry, { ...args, details: undefined });
-    expect(noDetails.same).toBe(false);
+    expect(noDetails.same).toBe(true);
+    const blankDetails = await w.max.mutation(api.profile.addEntry, { ...args, details: " " });
+    expect(blankDetails.same).toBe(false);
+    const otherCase = await w.max.mutation(api.profile.addEntry, { ...args, name: "SARAH" });
+    expect(otherCase.same).toBe(false);
     const row = await w.t.run(async (ctx) => await ctx.db.get(first.id));
     expect(row).toMatchObject({ name: "Sarah", details: "Daughter" });
     const doctor = await w.pat.mutation(api.profile.addEntry, { ...args, category: "doctor" });
@@ -551,7 +579,19 @@ describe("life profile entries", () => {
     await update({ name: "Dr Sarah Lee" });
     const rows = await auditRows(w, "lifeProfileEntry");
     expect(rows.map((r) => r.action)).toEqual(["insert", "update", "update"]);
-    expect(rows[1]).toMatchObject({ actorUserId: "max", detail: { name: "Dr Sarah Lee" } });
+    expect(rows[1]).toMatchObject({
+      actorUserId: "max",
+      detail: {
+        category: "doctor",
+        name: "Dr Sarah Lee",
+        details: "Daughter",
+        previous: { category: "person", name: "Sarah", details: "Daughter" },
+      },
+    });
+    expect(rows[2]!.detail).toMatchObject({
+      details: null,
+      previous: { name: "Dr Sarah Lee", details: "Daughter" },
+    });
   });
 
   test.each([
@@ -738,11 +778,12 @@ describe("sensitive topics", () => {
     await expect(update({ guidance: "" })).rejects.toMatchObject({ data: { code: "invalid" } });
     const row = await w.t.run(async (ctx) => await ctx.db.get(id));
     expect(row).toMatchObject({ topic: "driving", guidance: "Say the car is in the shop." });
-    expect((await auditRows(w, "sensitiveTopic")).map((r) => r.action)).toEqual([
-      "insert",
-      "insert",
-      "update",
-    ]);
+    const rows = await auditRows(w, "sensitiveTopic");
+    expect(rows.map((r) => r.action)).toEqual(["insert", "insert", "update"]);
+    expect(rows[2]!.detail).toEqual({
+      topic: "driving",
+      previous: { topic: "driving", guidance: "G" },
+    });
   });
 
   test("remove deletes the topic and audits it", async () => {

@@ -8,10 +8,16 @@
 //   added      inserted;
 //   unchanged  already stored with the same text;
 //   confirmed  a fact the senior had said, now confirmed by the load;
-//   differs    already stored with different text (details or guidance) and NOT updated;
+//   differs    already stored with different text and NOT updated. The server compares exactly,
+//              so a name that differs only in case counts as different; details count only
+//              when the item has a "details" key;
 //   updated    already stored with different text, and replaced because of --update (through
-//              profile:updateEntry or profile:updateTopic);
-//   failed     the server refused it (the rest still load).
+//              profile:updateEntry or profile:updateTopic; the server's audit row keeps the
+//              previous text). An entry's details are sent only when the item has a "details"
+//              key, and cleared only for an explicit null or empty string, which the report
+//              marks "(details cleared)";
+//   failed     the server refused it (the rest still load); a refused update is prefixed
+//              "update:".
 // cliError turns the stderr of a failed `npx convex run` into an Error carrying the server's
 // message (the ConvexError's message when there is one).
 //
@@ -23,24 +29,23 @@
 //     "facts": ["Her cat is called Biscuit", ...]
 //   }
 // Every section is optional. category is one of person, place, doctor, habit, interest,
-// preference, other; details is optional. Top-level keys starting with "_" are notes and are
-// ignored; any other unknown key, at the top or inside an item, is an error (it is most likely a
-// misspelling, such as "detials", that would otherwise load the item without it).
+// preference, other; details is optional (text, or null to clear with --update). Top-level keys
+// starting with "_" are notes and are ignored; any other unknown key, at the top or inside an
+// item, is an error (it is most likely a misspelling, such as "detials", that would otherwise
+// load the item without it).
 //
 // Last modified: 2026-11-09
 
-import { lifeCategory } from "../convex/lib/validators";
-
-/** The life profile categories the backend accepts. */
-const CATEGORIES: readonly string[] = lifeCategory.members.map((m) => m.value as string);
+import type { AddResult } from "../convex/profile";
+import { LIFE_CATEGORIES } from "../convex/lib/validators";
 
 /** The sections a profile file may have. */
 const SECTIONS = ["lifeProfile", "sensitiveTopics", "facts"] as const;
 
-/** A parsed profile file. */
+/** A parsed profile file. A "details" key is kept only when the item has one. */
 export interface ProfileFile {
-  lifeProfile: Array<{ category: string; name: string; details?: string }>;
-  sensitiveTopics: Array<{ topic: string; guidance: string }>;
+  lifeProfile: { category: string; name: string; details?: string | null }[];
+  sensitiveTopics: { topic: string; guidance: string }[];
   facts: string[];
 }
 
@@ -54,15 +59,7 @@ export interface LoadReport {
   confirmed: string[];
   differs: string[];
   updated: string[];
-  failed: Array<{ item: string; error: string }>;
-}
-
-/** What an add mutation returns (see profile.ts AddResult). */
-interface AddResult {
-  id: string;
-  created: boolean;
-  same: boolean;
-  confirmed: boolean;
+  failed: { item: string; error: string }[];
 }
 
 /** One item to load: its label, add mutation and arguments, and how to update it. */
@@ -70,8 +67,8 @@ interface LoadItem {
   label: string;
   fn: string;
   args: Record<string, unknown>;
-  /** The update mutation and its arguments for an existing row id; absent for facts. */
-  update?: (id: string) => [string, Record<string, unknown>];
+  /** The update mutation, its arguments for an existing row id and a note; absent for facts. */
+  update?: (id: string) => { fn: string; args: Record<string, unknown>; note: string };
 }
 
 /**
@@ -106,22 +103,15 @@ function itemObject(
 }
 
 /**
- * purpose: Read one string field of an item.
+ * purpose: Read one required string field of an item.
  * @param item: (Record<string, unknown>) The item.
  * @param key: (string) Field name.
  * @param where: (string) The item's position, for the error message.
- * @param optional: (boolean) Whether the field may be absent.
- * @return: (string | undefined) The value.
- * @raises Error when the field is not a string (or is missing and required).
+ * @return: (string) The value.
+ * @raises Error when the field is missing or not a string.
  */
-function stringField(
-  item: Record<string, unknown>,
-  key: string,
-  where: string,
-  optional = false,
-): string | undefined {
+function stringField(item: Record<string, unknown>, key: string, where: string): string {
   const value = item[key];
-  if (value === undefined && optional) return undefined;
   if (typeof value !== "string") throw new Error(`${where}: "${key}" must be text`);
   return value;
 }
@@ -140,6 +130,28 @@ function section(raw: Record<string, unknown>, key: string): unknown[] {
 }
 
 /**
+ * purpose: Read one life profile item.
+ * @param value: (unknown) The item.
+ * @param where: (string) Its position, for error messages.
+ * @return: (ProfileFile["lifeProfile"][number]) The entry; details only when the item has the key.
+ * @raises Error for an unknown key, an unknown category, a missing name or non-text details.
+ */
+function parseEntry(value: unknown, where: string): ProfileFile["lifeProfile"][number] {
+  const item = itemObject(value, where, ["category", "name", "details"]);
+  const category = stringField(item, "category", where);
+  if (!LIFE_CATEGORIES.includes(category)) {
+    throw new Error(`${where}: category must be one of ${LIFE_CATEGORIES.join(", ")}`);
+  }
+  const entry = { category, name: stringField(item, "name", where) };
+  if (!("details" in item)) return entry;
+  const details = item.details;
+  if (details !== null && typeof details !== "string") {
+    throw new Error(`${where}: "details" must be text or null`);
+  }
+  return { ...entry, details };
+}
+
+/**
  * purpose: Check a profile file's shape and return its items. Text is not trimmed or capped
  *          here; the server does that (and refuses what is too long).
  * @param raw: (unknown) The parsed JSON.
@@ -155,26 +167,15 @@ export function parseProfileFile(raw: unknown): ProfileFile {
       throw new Error(`Unknown key "${key}"; expected ${SECTIONS.join(", ")}`);
     }
   }
-  const lifeProfile = section(raw, "lifeProfile").map((value, i) => {
-    const where = `lifeProfile[${i}]`;
-    const item = itemObject(value, where, ["category", "name", "details"]);
-    const category = stringField(item, "category", where)!;
-    if (!CATEGORIES.includes(category)) {
-      throw new Error(`${where}: category must be one of ${CATEGORIES.join(", ")}`);
-    }
-    const details = stringField(item, "details", where, true);
-    return {
-      category,
-      name: stringField(item, "name", where)!,
-      ...(details === undefined ? {} : { details }),
-    };
-  });
+  const lifeProfile = section(raw, "lifeProfile").map((value, i) =>
+    parseEntry(value, `lifeProfile[${i}]`),
+  );
   const sensitiveTopics = section(raw, "sensitiveTopics").map((value, i) => {
     const where = `sensitiveTopics[${i}]`;
     const item = itemObject(value, where, ["topic", "guidance"]);
     return {
-      topic: stringField(item, "topic", where)!,
-      guidance: stringField(item, "guidance", where)!,
+      topic: stringField(item, "topic", where),
+      guidance: stringField(item, "guidance", where),
     };
   });
   const facts = section(raw, "facts").map((item, i) => {
@@ -224,29 +225,45 @@ export function cliError(stderr: string, fallback: string): Error {
 }
 
 /**
+ * purpose: The load item of a life profile entry. The add sends details only when they are
+ *          text (null asks for none); the update sends details only when the file has the key,
+ *          and an explicit null or empty string clears them.
+ * @param entry: (ProfileFile["lifeProfile"][number]) The entry.
+ * @return: (LoadItem) Its label, add and update.
+ */
+function entryItem(entry: ProfileFile["lifeProfile"][number]): LoadItem {
+  const { category, name, details } = entry;
+  const hasDetails = "details" in entry;
+  const clears = hasDetails && (details ?? "").trim() === "";
+  return {
+    label: `${category}: ${name}`,
+    fn: "profile:addEntry",
+    args: { category, name, ...(hasDetails ? { details: details ?? "" } : {}) },
+    update: (id) => ({
+      fn: "profile:updateEntry",
+      args: { entryId: id, name, ...(hasDetails ? { details: clears ? null : details } : {}) },
+      note: clears ? " (details cleared)" : "",
+    }),
+  };
+}
+
+/**
  * purpose: The items of a profile file in load order, with their add and update mutations.
  * @param file: (ProfileFile) Parsed file.
  * @return: (LoadItem[]) Entries, then topics, then facts.
  */
 function loadItems(file: ProfileFile): LoadItem[] {
   return [
-    ...file.lifeProfile.map((args) => ({
-      label: `${args.category}: ${args.name}`,
-      fn: "profile:addEntry",
-      args,
-      update: (id: string): [string, Record<string, unknown>] => [
-        "profile:updateEntry",
-        { entryId: id, name: args.name, details: args.details ?? null },
-      ],
-    })),
+    ...file.lifeProfile.map(entryItem),
     ...file.sensitiveTopics.map((args) => ({
       label: `topic: ${args.topic}`,
       fn: "profile:addTopic",
       args,
-      update: (id: string): [string, Record<string, unknown>] => [
-        "profile:updateTopic",
-        { topicId: id, topic: args.topic, guidance: args.guidance },
-      ],
+      update: (id: string) => ({
+        fn: "profile:updateTopic",
+        args: { topicId: id, ...args },
+        note: "",
+      }),
     })),
     ...file.facts.map((fact) => ({
       label: `fact: ${fact}`,
@@ -262,7 +279,7 @@ function loadItems(file: ProfileFile): LoadItem[] {
  * @param householdId: (string) The household to load into.
  * @param call: (MutationCaller) Runs a mutation as the caregiver.
  * @param options: ({ update?: boolean }) With update, an item stored with different text is
- *        replaced by the file's text (an entry without details in the file loses its details).
+ *        replaced by the file's text (see the header for how details are handled).
  * @return: (Promise<LoadReport>) What happened to each item.
  */
 export async function loadProfile(
@@ -280,19 +297,25 @@ export async function loadProfile(
     failed: [],
   };
   for (const { label, fn, args, update } of loadItems(file)) {
+    let result: AddResult<"lifeProfileEntries" | "sensitiveTopics" | "agentMemory">;
     try {
-      const result = (await call(fn, { householdId, ...args })) as AddResult;
-      if (result.created) report.added.push(label);
-      else if (result.confirmed) report.confirmed.push(label);
-      else if (result.same || update === undefined) report.unchanged.push(label);
-      else if (!options.update) report.differs.push(label);
-      else {
-        const [updateFn, updateArgs] = update(result.id);
-        await call(updateFn, { householdId, ...updateArgs });
-        report.updated.push(label);
-      }
+      result = (await call(fn, { householdId, ...args })) as typeof result;
     } catch (e) {
       report.failed.push({ item: label, error: errorText(e) });
+      continue;
+    }
+    if (result.created) report.added.push(label);
+    else if (result.confirmed) report.confirmed.push(label);
+    else if (result.same || update === undefined) report.unchanged.push(label);
+    else if (!options.update) report.differs.push(label);
+    else {
+      const change = update(result.id);
+      try {
+        await call(change.fn, { householdId, ...change.args });
+        report.updated.push(`${label}${change.note}`);
+      } catch (e) {
+        report.failed.push({ item: label, error: `update: ${errorText(e)}` });
+      }
     }
   }
   return report;

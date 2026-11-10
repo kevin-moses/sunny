@@ -12,29 +12,27 @@
 // - otherwise CONVEX_SELF_HOSTED_URL with CONVEX_SELF_HOSTED_ADMIN_KEY, or CONVEX_DEPLOYMENT
 //   ("dev:<name>" or "prod:<name>").
 // deploymentProblem returns why the target is not a dev deployment, or null when it is.
+// readEnvFile parses a file with the dotenv package's own parse (the same major version the CLI
+// bundles), so every form the CLI accepts (export, quotes, comments, "NAME: value") is read the
+// same way here.
+//
+// Limit: a CONVEX_DEPLOYMENT prefix is what the developer (or `npx convex dev`) wrote into the
+// file, not proof of where the deployment really is; a deploy key's prefix comes from Convex.
 //
 // Last modified: 2026-11-09
+
+import { parse } from "dotenv";
 
 /** Variables a source may define, by name. */
 export type EnvSource = Record<string, string | undefined>;
 
 /**
- * purpose: Parse a dotenv file's NAME=value lines (optional "export ", optional quotes, "#"
- *          comments). Enough for the deployment variables; not a full dotenv parser.
+ * purpose: Parse a dotenv file's contents exactly as the Convex CLI does.
  * @param text: (string) File contents.
  * @return: (EnvSource) The variables.
  */
-export function parseEnvFile(text: string): EnvSource {
-  const vars: EnvSource = {};
-  for (const line of text.split("\n")) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!match) continue;
-    let value = match[2]!.trim();
-    const quoted = /^(["'])(.*)\1$/.exec(value);
-    value = quoted ? quoted[2]! : value.replace(/\s+#.*$/, "");
-    vars[match[1]!] = value;
-  }
-  return vars;
+export function readEnvFile(text: string): EnvSource {
+  return parse(text);
 }
 
 /**
@@ -57,11 +55,9 @@ function effective(sources: EnvSource[], name: string): string | undefined {
  * @return: (string | null) The problem, or null when the target is a dev deployment.
  */
 export function deploymentProblem(sources: EnvSource[]): string | null {
-  const keyName = effective(sources, "CONVEX_DEPLOY_KEY")
-    ? "CONVEX_DEPLOY_KEY"
-    : "CONVEX_DEPLOYMENT_TOKEN";
-  const deployKey = effective(sources, keyName);
-  if (deployKey !== undefined) {
+  for (const keyName of ["CONVEX_DEPLOY_KEY", "CONVEX_DEPLOYMENT_TOKEN"]) {
+    const deployKey = effective(sources, keyName);
+    if (deployKey === undefined) continue;
     return deployKey.startsWith("dev:")
       ? null
       : `${keyName} is set to a key that is not for a dev deployment`;

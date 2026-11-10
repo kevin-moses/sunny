@@ -1,26 +1,26 @@
 // scripts/devGuard.test.ts
-// Purpose: Tests for scripts/devGuard.ts: dotenv line parsing (export, quotes, comments) and the
-// deployment decision in the Convex CLI's precedence: a shell variable beats .env.local, which
-// beats .env; empty values are unset; a deploy key (or its CONVEX_DEPLOYMENT_TOKEN alias) wins
-// over CONVEX_DEPLOYMENT; self-hosted targets and non-dev keys or deployments are refused.
+// Purpose: Tests for scripts/devGuard.ts: env files read with dotenv's own parse (export, quotes,
+// comments and the "NAME: value" colon form the CLI also accepts) and the deployment decision in
+// the Convex CLI's precedence: a shell variable beats .env.local, which beats .env; empty values
+// are unset; a deploy key (or its CONVEX_DEPLOYMENT_TOKEN alias) wins over CONVEX_DEPLOYMENT;
+// self-hosted targets and non-dev keys or deployments are refused.
 //
 // Last modified: 2026-11-09
 
 import { describe, expect, test } from "vitest";
-import { deploymentProblem, parseEnvFile } from "./devGuard";
+import { deploymentProblem, readEnvFile } from "./devGuard";
 
 const DEV = { CONVEX_DEPLOYMENT: "dev:example-dev-123" };
 
-describe("parseEnvFile", () => {
+describe("readEnvFile", () => {
   test("reads plain, exported, quoted and commented lines", () => {
     expect(
-      parseEnvFile(
+      readEnvFile(
         [
           "# comment",
           "CONVEX_DEPLOYMENT=dev:abc # team: x",
           "export CONVEX_DEPLOY_KEY='prod:xyz|secret'",
           'CONVEX_URL="https://x.convex.cloud"',
-          "not a line",
         ].join("\n"),
       ),
     ).toEqual({
@@ -28,6 +28,12 @@ describe("parseEnvFile", () => {
       CONVEX_DEPLOY_KEY: "prod:xyz|secret",
       CONVEX_URL: "https://x.convex.cloud",
     });
+  });
+
+  test("reads the colon form, so a prod deployment written that way is refused", () => {
+    const file = readEnvFile("CONVEX_DEPLOYMENT: prod:live-123\n");
+    expect(file).toEqual({ CONVEX_DEPLOYMENT: "prod:live-123" });
+    expect(deploymentProblem([{}, file, {}])).toMatch(/not a dev deployment/);
   });
 });
 
