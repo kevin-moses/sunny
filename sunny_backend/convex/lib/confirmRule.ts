@@ -16,6 +16,9 @@ import type { InstanceState } from "./validators";
 /** How long (ms) before its window starts an upcoming instance may already be confirmed. */
 export const EARLY_CONFIRM_MS = minutes(60);
 
+/** A confirm recorded this much (ms) before the server received it counts as late-synced. */
+export const LATE_SYNC_MS = minutes(5);
+
 /** The instance fields the rule reads. */
 export interface ConfirmRuleInput {
   state: InstanceState;

@@ -10,7 +10,7 @@
 // the `now` argument. Also the logTurn length cap, today for an unknown household, and the
 // accepted trust model (a valid key may log to or finish any conversation).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -339,6 +339,8 @@ describe("getContext", () => {
         confirmedBy: null,
         confirmedByName: null,
         resolutionNote: null,
+        confirmReceivedAt: null,
+        confirmReceivedLocalTime: null,
         confirmable: true,
       },
     ]);

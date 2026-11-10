@@ -8,9 +8,10 @@
 // DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
 // Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
 // no alerts and the digest never reports them as not done. Nothing from other days is read.
-// Lists are capped so a busy day stays within one query.
+// Lists are capped so a busy day stays within one query. A confirm pressed offline and synced
+// late carries sentAt, when the server received it.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
@@ -35,6 +36,8 @@ export interface TaskFact {
   /** 12-hour time it was confirmed or resolved. */
   doneAt?: string;
   via?: ConfirmVia;
+  /** 12-hour time the server received a confirm that was pressed offline and sent late. */
+  sentAt?: string;
   /** Caregiver who resolved it on the senior's behalf. */
   resolvedBy?: string;
   claimedBy?: string;
@@ -139,6 +142,9 @@ async function taskFacts(
       fact.doneAt = formatTime12(localTime(instance.confirmedAt, household.timezone));
     }
     if (instance.confirmedVia !== undefined) fact.via = instance.confirmedVia;
+    if (instance.confirmReceivedAt !== undefined) {
+      fact.sentAt = formatTime12(localTime(instance.confirmReceivedAt, household.timezone));
+    }
     if (state === "resolved") fact.resolvedBy = nameOf(names, instance.confirmedBy);
     const claimedBy = nameOf(names, instance.claimedBy);
     if (claimedBy !== undefined) fact.claimedBy = claimedBy;

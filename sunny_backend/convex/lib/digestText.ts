@@ -8,9 +8,10 @@
 // within the leftover budget (modelBudget), and its reply is rejected when it has markup, URLs,
 // "@", or a number that is not in the facts. A day with nothing at all (no task of any state, no
 // dose, no question) reads "<name>: no activity was logged." The one network call,
-// composeWithClaude, sits at the end so tests can replace it.
+// composeWithClaude, sits at the end so tests can replace it. A confirm pressed offline and
+// synced late reads "(voice, sent at 11:00 AM)".
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import type { DigestFacts, TaskFact } from "./digestFacts";
 import { client } from "./managedAgents";
@@ -129,8 +130,10 @@ function donePhrase(task: TaskFact): string {
   if (task.outcome === "resolved") {
     return `${task.label} at ${at} (marked done by ${task.resolvedBy ?? "a caregiver"})`;
   }
-  const via = task.via === undefined ? "" : ` (${VIA_WORDS[task.via] ?? task.via})`;
-  return `${task.label} at ${at}${via}`;
+  const notes: string[] = [];
+  if (task.via !== undefined) notes.push(VIA_WORDS[task.via] ?? task.via);
+  if (task.sentAt !== undefined) notes.push(`sent at ${task.sentAt}`);
+  return `${task.label} at ${at}${notes.length === 0 ? "" : ` (${notes.join(", ")})`}`;
 }
 
 /**
@@ -253,6 +256,7 @@ export function factsForPrompt(facts: DigestFacts): string {
     const parts = [`${t.label}, scheduled ${t.scheduledAt}: ${t.outcome}`];
     if (t.doneAt !== undefined) parts.push(`at ${t.doneAt}`);
     if (t.via !== undefined) parts.push(`via ${VIA_WORDS[t.via] ?? t.via}`);
+    if (t.sentAt !== undefined) parts.push(`sent to the server at ${t.sentAt}`);
     if (t.resolvedBy !== undefined) parts.push(`by ${t.resolvedBy}`);
     rows.push(`Task: ${parts.join(", ")}`);
   }

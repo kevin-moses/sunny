@@ -25,8 +25,8 @@ import {
 } from "./lib/access";
 import type { Actor, CaregiverActor } from "./lib/access";
 import { isAnytimeInstance } from "./lib/anytime";
+import { EARLY_CONFIRM_MS, LATE_SYNC_MS, notTooEarly } from "./lib/confirmRule";
 import { appError, isAppError } from "./lib/errors";
-import { EARLY_CONFIRM_MS, notTooEarly } from "./lib/confirmRule";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
 import { isLocalDate, isLocalTime, localDate, minutes } from "./lib/time";
@@ -109,13 +109,17 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
  *          and returns it.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
- * @param args: ({instanceId, via, note, pressedAt}) The instance, the surface, an optional note
- *        and an optional press time. pressedAt is the instant the senior pressed Done on a
- *        device that was offline and sent the confirm later: only a senior device may send it,
- *        and it is recorded as confirmedAt clamped to between the instance's early-confirm point
- *        (windowStart minus EARLY_CONFIRM_MS) and `now` (never the future); the audit detail
- *        records pressedAt as sent, the recorded confirmedAt and receivedAt (now). The early
- *        check itself still uses `now`. Without it confirmedAt is `now`.
+ * @param args: ({instanceId, via, note, pressedAgoMs}) The instance, the surface, an optional
+ *        note and an optional press age. pressedAgoMs is how long before this call the senior
+ *        pressed Done on a device that held the press (offline) and sent it later. An age, not
+ *        a time, so the device's clock skew cannot move the record. Only a senior device may
+ *        send it, and it must be a finite number of at least 0. confirmedAt is `now` minus the
+ *        age, clamped to between the instance's early-confirm point (windowStart minus
+ *        EARLY_CONFIRM_MS) and `now` (never the future); when that is more than
+ *        LATE_SYNC_MS before `now`, confirmReceivedAt records `now` so readers can tell a
+ *        late-synced confirm from a live one. The audit detail records pressedAgoMs,
+ *        confirmedAt and receivedAt. The early check itself still uses `now`. Without an age
+ *        confirmedAt is `now`.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
  * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the agent: more than 60 minutes
@@ -127,7 +131,12 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 export async function confirmInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; via: ConfirmVia; note?: string; pressedAt?: number },
+  args: {
+    instanceId: Id<"taskInstances">;
+    via: ConfirmVia;
+    note?: string;
+    pressedAgoMs?: number;
+  },
   now: number,
 ): Promise<Doc<"taskInstances">> {
   const instance = await loadInstance(ctx, args.instanceId);
@@ -138,11 +147,13 @@ export async function confirmInstance(
   if (!asCaregiver && args.via === "caregiver") {
     throw appError("invalid", "Only a caregiver can confirm as a caregiver");
   }
-  if (
-    args.pressedAt !== undefined &&
-    (actor.kind !== "senior_device" || !Number.isFinite(args.pressedAt))
-  ) {
-    throw appError("invalid", "Only the senior's device can send a press time");
+  if (args.pressedAgoMs !== undefined) {
+    if (actor.kind !== "senior_device") {
+      throw appError("invalid", "Only the senior's device can send a press age");
+    }
+    if (!Number.isFinite(args.pressedAgoMs) || args.pressedAgoMs < 0) {
+      throw appError("invalid", "The press age must be zero or more");
+    }
   }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   if (instance.state === "confirmed" || instance.state === "resolved") return instance;
@@ -155,13 +166,14 @@ export async function confirmInstance(
     throw appError("invalid", "This task is not due yet");
   }
   const confirmedAt =
-    args.pressedAt === undefined
+    args.pressedAgoMs === undefined
       ? now
-      : Math.min(now, Math.max(args.pressedAt, instance.windowStart - EARLY_CONFIRM_MS));
+      : Math.min(now, Math.max(now - args.pressedAgoMs, instance.windowStart - EARLY_CONFIRM_MS));
+  const lateSynced = now - confirmedAt > LATE_SYNC_MS;
   const pressDetail =
-    args.pressedAt === undefined
+    args.pressedAgoMs === undefined
       ? undefined
-      : { pressedAt: args.pressedAt, confirmedAt, receivedAt: now };
+      : { pressedAgoMs: args.pressedAgoMs, confirmedAt, receivedAt: now };
   return await changeInstance(
     ctx,
     actor,
@@ -169,6 +181,7 @@ export async function confirmInstance(
     {
       state: asCaregiver ? "resolved" : "confirmed",
       confirmedAt,
+      confirmReceivedAt: lateSynced ? now : undefined,
       confirmedBy: actorUserId(actor),
       confirmedVia: asCaregiver ? "caregiver" : args.via,
       resolvedFromState: asCaregiver ? instance.state : undefined,
@@ -542,8 +555,8 @@ export async function logDoseCore(
  * @param instanceId: (Id<"taskInstances">) Instance.
  * @param via: (ConfirmVia) Surface that confirmed.
  * @param note: (string, optional) Resolution note.
- * @param pressedAt: (number, optional) Epoch ms the senior pressed Done while offline; senior
- *        devices only (see confirmInstance).
+ * @param pressedAgoMs: (number, optional) How long ago (ms) the senior pressed Done while
+ *        offline; senior devices only (see confirmInstance).
  * @return: (Doc<"taskInstances">) The instance after the call.
  */
 export const confirmTaskInstance = mutation({
@@ -551,7 +564,7 @@ export const confirmTaskInstance = mutation({
     instanceId: v.id("taskInstances"),
     via: confirmVia,
     note: v.optional(v.string()),
-    pressedAt: v.optional(v.number()),
+    pressedAgoMs: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
     const instance = await loadInstance(ctx, args.instanceId);

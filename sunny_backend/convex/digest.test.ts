@@ -13,7 +13,9 @@
 // text and the template as pure functions; the completion handler; and one end-to-end run
 // through the workpool.
 //
-// Last modified: 2026-10-29
+// Also: a late-synced confirm reads "(phone app, sent at 11:00 AM)".
+//
+// Last modified: 2026-11-09
 
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -304,6 +306,21 @@ describe("facts", () => {
     expect(input?.template).toContain("Today pills");
     expect(input?.template).not.toContain("Yesterday pills");
     expect(input?.factsMessage).not.toContain("next day");
+  });
+
+  test("a confirm pressed offline and synced late says when it was sent", async () => {
+    const f = await setup();
+    await addDayInstance(f, "Morning pills", {
+      scheduledTime: "08:00",
+      windowStart: 1,
+      state: "confirmed",
+      confirmedAt: Date.parse("2026-11-02T13:05:00Z"),
+      confirmReceivedAt: Date.parse("2026-11-02T16:00:00Z"),
+      confirmedVia: "phone_app",
+    });
+    const input = await load(f, await pendingDigest(f));
+    expect(input?.template).toContain("Morning pills at 8:05 AM (phone app, sent at 11:00 AM)");
+    expect(input?.factsMessage).toContain("sent to the server at 11:00 AM");
   });
 
   test("tasks, resolutions, claims, doses and questions are all reported", async () => {

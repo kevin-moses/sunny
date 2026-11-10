@@ -16,7 +16,8 @@
 // caregiver who marked it done (state "resolved"), null for a device confirmation or when the
 // member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
 // is the instance's own local date and carriedOver is true for yesterday's still-open
-// instances, and resolutionNote is the note the caregiver left. confirmable says whether a
+// instances, and resolutionNote is the note the caregiver left. confirmReceivedAt is set when a confirm pressed offline reached the server late.
+// confirmable says whether a
 // senior device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own
 // rule), so a surface can offer Done early without copying the 60 minute constant.
 //
@@ -50,6 +51,10 @@ export interface TodayEntry {
   /** Household-local "HH:MM" of confirmedAt; null when not confirmed. */
   confirmedLocalTime: string | null;
   confirmedVia: ConfirmVia | null;
+  /** When the server received a late-synced confirm (pressed offline); null for a live one. */
+  confirmReceivedAt: number | null;
+  /** Household-local "HH:MM" of confirmReceivedAt; null when it is null. */
+  confirmReceivedLocalTime: string | null;
   claimedBy: string | null;
   claimedByName: string | null;
   /**
@@ -128,6 +133,11 @@ export async function todayInstances(
       confirmedAt,
       confirmedLocalTime: confirmedAt === null ? null : localTime(confirmedAt, household.timezone),
       confirmedVia: instance.confirmedVia ?? null,
+      confirmReceivedAt: instance.confirmReceivedAt ?? null,
+      confirmReceivedLocalTime:
+        instance.confirmReceivedAt === undefined
+          ? null
+          : localTime(instance.confirmReceivedAt, household.timezone),
       claimedBy,
       claimedByName: nameOf(claimedBy),
       confirmedBy,
