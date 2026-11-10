@@ -27,7 +27,13 @@
 // the task it is about (or when there is no button). A task that is not due yet (an early
 // target) is not offered again until MESSAGE_MS after the press, when the "Checked off" line
 // has finished, so a doubting tap cannot chain into an early medication; a task that is due is
-// offered after SETTLE_MS. Each line lasts MESSAGE_MS and is announced to VoiceOver from an
+// offered after SETTLE_MS. A senior who presses Done again every ~11 s can still chain from a
+// due task into an early one (each press is deliberate, and each shows its own heading and
+// "Done early" label); the screen cannot prevent that. The `confirmable` flag comes from the
+// last day view, which does not advance while the phone is offline, so an early task that
+// becomes confirmable (or stops being so) offline is only noticed on reconnect; the server
+// still applies its own rule, except that a replayed press skips the early check (see
+// confirmPressedTask). Each line lasts MESSAGE_MS and is announced to VoiceOver from an
 // effect, after the screen re-rendered without the button. After unmount nothing is set,
 // scheduled or announced.
 //

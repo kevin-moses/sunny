@@ -10,30 +10,49 @@
 //     instance id, its label and pressedAt (epoch ms on this device's clock). enqueue refuses
 //     (rejects) while the stored queue has not been read successfully, so a failed read is never
 //     treated as an empty queue and stored presses are never overwritten.
-//  2. replay() sends entries oldest first, one at a time, through instances.confirmTaskInstance
+//  2. replay() sends entries oldest first, one at a time, through instances.confirmPressedTask
 //     with via "phone_app" and pressedAgoMs, the age of the press at send time. An age, not a
 //     time, so a wrong device clock cannot move the record; the server records now minus the
-//     age. Replay runs after every enqueue while online, at launch and when the connection
-//     returns (usePendingConfirms calls replay and setOffline), and again after RETRY_MS while
-//     entries remain. While the connection is known to be down, replay does nothing. The queue
-//     keeps one send promise per instance id and re-awaits it on later passes instead of calling
-//     again, so retries do not pile up held mutations in the Convex client; a held send that
-//     lands later removes its entry.
-//  3. An entry is removed only when the server has answered: success (the backend confirm is
-//     idempotent for an instance that is already confirmed and writes no second audit row), or
-//     a permanent rejection (a BackendError status other than 0, 401 and 429: the instance no
-//     longer exists, the device is no longer paired, the confirm was refused). No answer at all
-//     (network error, SEND_TIMEOUT_MS, 401 which can be a brief sign-in hiccup, 429) keeps the
-//     entry and ends the pass; a server error (status 0 with another message) keeps the entry
-//     and moves on to the next one, so one bad entry never blocks the rest. A pass walks the
-//     live queue, so a press made during a pass is sent in it.
-//  4. A rejected or expired entry (older than MAX_AGE_MS, which also clears entries left from
+//     age. Replay runs after every enqueue while online, at launch, whenever the socket
+//     connects (usePendingConfirms) and again after the retry delay while entries remain.
+//  3. Never send while the socket is down. The Convex client never rejects a mutation while it
+//     is disconnected: it holds the original message and resends it on reconnect, so an age
+//     computed at call time would be hours stale when it arrives and would look like a live
+//     press. sendConfirm therefore checks convex.connectionState().isWebSocketConnected
+//     immediately before computing the age and calling, and treats "not connected" as no answer
+//     (the entry stays, the pass ends). This also covers a fresh launch, where isOffline is
+//     false until the first connect. The pass re-checks offline and the generation at the top
+//     of every iteration. One race remains: the socket can drop between the check and the
+//     server's acknowledgement; the held message then goes out on reconnect with its age from
+//     send time, so the record errs late, by at most the time the client needs to notice the
+//     drop (its ping detection), and the server still marks it late-synced if over 5 minutes.
+//     The queue keeps one send promise per instance id and re-awaits it on later passes instead
+//     of calling again, so retries never pile up held mutations; a held send that lands later
+//     removes its entry.
+//  4. An entry is removed only when the server has answered: success (the backend confirm is
+//     idempotent for an instance that is already confirmed and writes no second audit row), a
+//     "rejected" result (the server could not apply the press and wrote an audit row, see
+//     confirmPressedTask), or any other permanent error (a BackendError status other than 0,
+//     401 and 429: the device is no longer paired, ...).
+//  5. No answer at all (network error, SEND_TIMEOUT_MS, not connected, 401 which can be a brief
+//     sign-in hiccup, 429) keeps the entry and ends the pass. By design that blocks the entries
+//     behind it, including during a sustained 401: order matters and nothing behind it could
+//     succeed either. A server error (status 0 with another message) keeps the entry and moves
+//     on to the next one, with per-entry backoff (BACKOFF_MS). A pass walks the live queue, so a
+//     press made during a pass is sent in it.
+//  6. A rejected or expired entry (older than MAX_AGE_MS, which also clears entries left from
 //     previous days) is logged as an error with the instance id, label, press time and reason.
-//     The senior is told nothing: the row simply follows the server's state. An entry that has
-//     failed while online for more than STUCK_MS is logged as an error on every pass, because
-//     the phone would be showing a check while the server escalates.
-//  5. clear() (unpair) drops everything: memory, storage, timer and in-flight sends, and logs
-//     what was dropped, so entries from one pairing are never sent or shown under another.
+//     The senior is told nothing: the row follows the server's state. An entry that has failed
+//     while online for more than STUCK_MS (any failure kind, so a sustained 401 counts) is logged
+//     as an error once when it crosses the threshold and then every STUCK_LOG_EVERY_MS; the
+//     failure clock restarts when the connection drops, so offline time does not count.
+//  7. Storage: a read that throws is retried on the next call (and logged as an error after
+//     several in a row); a stored value that does not parse or is not an array is copied to
+//     CORRUPT_KEY, logged as an error, and the queue starts empty and usable.
+//  8. clear() (unpair, and again at pairing) drops everything: memory, storage (on the write
+//     chain, so a queued write cannot restore it), timer and in-flight sends, and logs what was
+//     dropped. A load, write or pass that started before clear() is discarded (generation
+//     counter), so entries from one pairing are never sent or shown under another.
 //
 // The optimistic display (a queued task shows as checked and is not offered again) reads the
 // entries; it ends when the entry is removed.
@@ -42,13 +61,17 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { callMutation, OFFLINE_ERROR_MESSAGE, toBackendError } from '../backend/api';
+import { BackendError, callMutation, OFFLINE_ERROR_MESSAGE, toBackendError } from '../backend/api';
+import { convex } from '../backend/convex';
 import { api } from '../backend/convexApi';
 import { logger } from '../logging/logger';
 import type { DayTask } from './types';
 
 /** AsyncStorage key of the persisted queue. */
 export const STORAGE_KEY = 'sunny.pendingConfirms.v1';
+
+/** AsyncStorage key a stored value that cannot be parsed is copied to. */
+export const CORRUPT_KEY = `${STORAGE_KEY}.corrupt`;
 
 /** Entries older than this (ms since the press) are dropped as expired. */
 export const MAX_AGE_MS = 48 * 60 * 60 * 1000;
@@ -59,8 +82,17 @@ export const SEND_TIMEOUT_MS = 15_000;
 /** How long (ms) after a pass that left entries behind the next pass runs by itself. */
 export const RETRY_MS = 30_000;
 
+/** Waits (ms) before retrying after the first, second, ... server error; the last repeats. */
+export const BACKOFF_MS = [30_000, 60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+
 /** An entry failing while online for longer than this (ms) is logged loudly. */
 export const STUCK_MS = 10 * 60 * 1000;
+
+/** After the first stuck log, the next ones follow this far (ms) apart. */
+export const STUCK_LOG_EVERY_MS = 60 * 60 * 1000;
+
+/** Reads that failed this many times in a row are logged as an error. */
+export const READ_FAILURES_LOUD = 3;
 
 /** One Done press waiting for the server. */
 export interface PendingConfirm {
@@ -108,20 +140,31 @@ interface Failure {
   attempts: number;
   /** When it first failed while online. */
   since: number;
+  /** Do not try again before this time (server errors only). */
+  nextAt?: number;
+  /** When the stuck error was last logged. */
+  lastLoggedAt?: number;
 }
 
 /**
- * purpose: Send one entry to the backend as a senior device.
+ * purpose: Send one entry to the backend as a senior device. Refuses to call while the socket
+ *          is down (see the header), and computes the press age immediately before the call.
  * @param entry: (PendingConfirm) The press.
- * @return: (Promise<void>) Resolves when the server accepted it.
- * @raises: BackendError when the call failed.
+ * @return: (Promise<void>) Resolves when the server applied it.
+ * @raises: BackendError status 0 (offline message) when not connected; BackendError status
+ *          400 with the server's reason when the server answered "rejected"; BackendError
+ *          for any other failure of the call.
  */
 export async function sendConfirm(entry: PendingConfirm): Promise<void> {
-  await callMutation(api.instances.confirmTaskInstance, {
+  if (!convex.connectionState().isWebSocketConnected) {
+    throw new BackendError(OFFLINE_ERROR_MESSAGE, 0);
+  }
+  const result = await callMutation(api.instances.confirmPressedTask, {
     instanceId: entry.instanceId,
     via: 'phone_app',
     pressedAgoMs: Math.max(0, Date.now() - entry.pressedAt),
   });
+  if (result.status === 'rejected') throw new BackendError(result.reason, 400);
 }
 
 /**
@@ -183,6 +226,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   let entries: readonly PendingConfirm[] = [];
   let loading: Promise<void> | null = null;
   let loadedOk = false;
+  let readFailures = 0;
   let replaying: Promise<void> | null = null;
   let writes: Promise<void> = Promise.resolve();
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -203,20 +247,24 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   };
 
   /**
-   * purpose: Write the current entries to storage, after earlier writes finished.
+   * purpose: Write the current entries to storage, after earlier writes finished. The write is
+   *          skipped if clear() ran meanwhile.
    * @return: (Promise<void>) Resolves when written; rejects when storage fails or the stored
    *          queue has not been read yet (so stored presses are never overwritten).
    */
   const persist = (): Promise<void> => {
     if (!loadedOk) return Promise.reject(new Error('The stored queue has not been read'));
+    const gen = generation;
     const snapshot = JSON.stringify(entries);
-    const write = writes.then(() => AsyncStorage.setItem(STORAGE_KEY, snapshot));
+    const write = writes.then(() =>
+      gen === generation ? AsyncStorage.setItem(STORAGE_KEY, snapshot) : undefined,
+    );
     writes = write.catch(() => undefined);
     return write;
   };
 
   /**
-   * purpose: Log an entry that left the queue without the server accepting it.
+   * purpose: Log an entry that left the queue without the server applying it.
    * @param entry: (PendingConfirm) The entry.
    * @param reason: ('rejected' | 'expired') Why it left.
    * @param detail: (string) The server's message, or a note.
@@ -237,12 +285,15 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   };
 
   /**
-   * purpose: Remove one entry, persist the removal and tell subscribers.
+   * purpose: Remove one entry, persist the removal and tell subscribers. Does nothing if
+   *          clear() ran since `gen`.
    * @param instanceId: (string) The entry's instance.
+   * @param gen: (number) The generation the caller started in.
    * @return: (Promise<void>) Resolves when the removal is stored (a storage failure is logged;
    *          the entry would then be sent again later, which is harmless).
    */
-  const remove = async (instanceId: string): Promise<void> => {
+  const remove = async (instanceId: string, gen: number): Promise<void> => {
+    if (gen !== generation) return;
     failures.delete(instanceId);
     if (!entries.some((e) => e.instanceId === instanceId)) return;
     setEntries(entries.filter((e) => e.instanceId !== instanceId));
@@ -253,36 +304,76 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
 
   /**
    * purpose: Drop entries older than MAX_AGE_MS, logging each as expired.
+   * @param gen: (number) The generation the caller started in.
    * @return: (Promise<void>) Resolves when the removals are stored.
    */
-  const dropExpired = async (): Promise<void> => {
+  const dropExpired = async (gen: number): Promise<void> => {
     const expired = entries.filter((e) => now() - e.pressedAt > MAX_AGE_MS);
     for (const entry of expired) {
-      await remove(entry.instanceId);
+      if (gen !== generation) return;
+      await remove(entry.instanceId, gen);
       logDropped(entry, 'expired', 'The press is too old to send.');
     }
   };
 
   /**
-   * purpose: Read the persisted entries once and drop expired ones. Resolves either way; after
-   *          a failed read the next call reads again and nothing is persisted meanwhile.
+   * purpose: Keep a stored value that cannot be used, so nothing is lost silently.
+   * @param raw: (string) The stored text.
+   * @return: (Promise<void>) Resolves when copied (a failure is logged).
+   */
+  const quarantine = async (raw: string): Promise<void> => {
+    logger.error('PendingConfirms', 'The stored queue was corrupt; starting empty', {
+      length: raw.length,
+      copiedTo: CORRUPT_KEY,
+    });
+    await AsyncStorage.setItem(CORRUPT_KEY, raw).catch((error: unknown) =>
+      logger.warning('PendingConfirms', 'Could not copy the corrupt queue', {
+        error: String(error),
+      }),
+    );
+  };
+
+  /**
+   * purpose: Read the persisted entries once and drop expired ones. Resolves either way. A read
+   *          that throws is retried on the next call and nothing is persisted meanwhile; a
+   *          value that does not parse (or is not an array) is quarantined and the queue
+   *          starts empty. A clear() during the read discards its result.
    * @return: (Promise<void>) Resolves when the attempt ended.
    */
   const load = (): Promise<void> => {
     loading ??= (async () => {
+      const gen = generation;
+      let raw: string | null;
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        const parsed: unknown = raw === null ? [] : JSON.parse(raw);
-        const stored = Array.isArray(parsed) ? parsed.filter(isEntry) : [];
-        const known = new Set(entries.map((e) => e.instanceId));
-        setEntries([...stored.filter((e) => !known.has(e.instanceId)), ...entries]);
-        loadedOk = true;
+        raw = await AsyncStorage.getItem(STORAGE_KEY);
       } catch (error) {
-        logger.warning('PendingConfirms', 'Could not read the queue', { error: String(error) });
-        loading = null;
+        readFailures += 1;
+        const log = readFailures === READ_FAILURES_LOUD ? logger.error : logger.warning;
+        log('PendingConfirms', 'Could not read the queue', {
+          error: String(error),
+          failuresInARow: readFailures,
+        });
+        if (gen === generation) loading = null;
         return;
       }
-      await dropExpired();
+      if (gen !== generation) return;
+      readFailures = 0;
+      let stored: PendingConfirm[] = [];
+      if (raw !== null) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          parsed = undefined;
+        }
+        if (Array.isArray(parsed)) stored = parsed.filter(isEntry);
+        else await quarantine(raw);
+      }
+      if (gen !== generation) return;
+      const known = new Set(entries.map((e) => e.instanceId));
+      setEntries([...stored.filter((e) => !known.has(e.instanceId)), ...entries]);
+      loadedOk = true;
+      await dropExpired(gen);
     })();
     return loading;
   };
@@ -322,7 +413,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     send.then(
       () => {
         if (inflight.get(entry.instanceId) === send) inflight.delete(entry.instanceId);
-        if (gen === generation) void remove(entry.instanceId);
+        void remove(entry.instanceId, gen);
       },
       () => {
         if (inflight.get(entry.instanceId) === send) inflight.delete(entry.instanceId);
@@ -332,61 +423,92 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   };
 
   /**
-   * purpose: Note a failed send; log loudly when it has been failing online for STUCK_MS.
+   * purpose: Note a failed send: count it, set the backoff for a server error, and log loudly
+   *          (once, then hourly) when the entry has been failing online for STUCK_MS.
    * @param entry: (PendingConfirm) The entry.
    * @param error: (unknown) What the send threw.
+   * @param kind: (FailureKind) How the failure was classified.
    * @return: (void)
    */
-  const noteFailure = (entry: PendingConfirm, error: unknown): void => {
+  const noteFailure = (entry: PendingConfirm, error: unknown, kind: FailureKind): void => {
     if (offline) return;
-    const known = failures.get(entry.instanceId) ?? { attempts: 0, since: now() };
-    const next = { attempts: known.attempts + 1, since: known.since };
-    failures.set(entry.instanceId, next);
-    if (now() - next.since > STUCK_MS) {
+    const t = now();
+    const known = failures.get(entry.instanceId) ?? { attempts: 0, since: t };
+    const attempts = known.attempts + 1;
+    const next: Failure = {
+      attempts,
+      since: known.since,
+      lastLoggedAt: known.lastLoggedAt,
+      nextAt:
+        kind === 'server_error'
+          ? t + BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)]!
+          : undefined,
+    };
+    const stuck = t - next.since > STUCK_MS;
+    if (stuck && (next.lastLoggedAt === undefined || t - next.lastLoggedAt >= STUCK_LOG_EVERY_MS)) {
+      next.lastLoggedAt = t;
       logger.error('PendingConfirms', 'A queued Done has failed for over 10 minutes while online', {
         instanceId: entry.instanceId,
         label: entry.label,
         pressedAt: entry.pressedAt,
-        attempts: next.attempts,
+        attempts,
         error: toBackendError(error).message,
       });
     }
+    failures.set(entry.instanceId, next);
   };
 
   /**
-   * purpose: One pass over the live queue, oldest first.
+   * purpose: Schedule the next pass: at the earliest backoff end among the entries, or after
+   *          RETRY_MS for entries without one. Nothing is scheduled while offline.
+   * @param gen: (number) The generation the pass started in.
+   * @return: (void)
+   */
+  const scheduleNext = (gen: number): void => {
+    clearTimeout(retryTimer);
+    if (entries.length === 0 || offline || gen !== generation) return;
+    const t = now();
+    const waits = entries.map((e) => {
+      const nextAt = failures.get(e.instanceId)?.nextAt;
+      return nextAt === undefined ? RETRY_MS : nextAt - t;
+    });
+    retryTimer = setTimeout(() => void replay(), Math.max(1000, Math.min(...waits)));
+  };
+
+  /**
+   * purpose: One pass over the live queue, oldest first. Offline and the generation are
+   *          re-checked before every send.
    * @return: (Promise<void>) Resolves when every entry was tried or one got no answer.
    */
   const pass = async (): Promise<void> => {
     const gen = generation;
     await load();
     if (!loadedOk || offline || gen !== generation) return;
-    await dropExpired();
+    await dropExpired(gen);
     const tried = new Set<string>();
     for (;;) {
+      if (offline || gen !== generation) return;
       const entry = entries.find((e) => !tried.has(e.instanceId));
       if (entry === undefined) break;
       tried.add(entry.instanceId);
+      const waitUntil = failures.get(entry.instanceId)?.nextAt;
+      if (waitUntil !== undefined && waitUntil > now()) continue;
       try {
         await withTimeout(sendOnce(entry, gen));
-        if (gen !== generation) return;
-        await remove(entry.instanceId);
+        await remove(entry.instanceId, gen);
       } catch (error) {
         if (gen !== generation) return;
         const kind = classifyFailure(error);
         if (kind === 'permanent') {
-          await remove(entry.instanceId);
+          await remove(entry.instanceId, gen);
           logDropped(entry, 'rejected', toBackendError(error).message);
           continue;
         }
-        noteFailure(entry, error);
+        noteFailure(entry, error, kind);
         if (kind === 'no_answer') break;
       }
     }
-    clearTimeout(retryTimer);
-    if (entries.length > 0 && !offline && gen === generation) {
-      retryTimer = setTimeout(() => void replay(), RETRY_MS);
-    }
+    scheduleNext(gen);
   };
 
   /**
@@ -394,25 +516,32 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
    * @return: (Promise<void>) Resolves when that pass ends.
    */
   const replay = (): Promise<void> => {
-    replaying ??= pass().finally(() => {
-      replaying = null;
+    if (replaying !== null) return replaying;
+    const run: Promise<void> = pass().finally(() => {
+      if (replaying === run) replaying = null;
     });
-    return replaying;
+    replaying = run;
+    return run;
   };
 
   /**
-   * purpose: Record whether the connection is known to be down; going offline stops the retry
-   *          timer.
+   * purpose: Record whether the connection is known to be down. Going offline stops the retry
+   *          timer and restarts every failure clock, so offline time never counts as failing
+   *          online.
    * @param next: (boolean) True when offline.
    * @return: (void)
    */
   const setOffline = (next: boolean): void => {
     offline = next;
-    if (next) clearTimeout(retryTimer);
+    if (next) {
+      clearTimeout(retryTimer);
+      failures.clear();
+    }
   };
 
   /**
-   * purpose: Forget every queued press (the device was unpaired), logging what was dropped.
+   * purpose: Forget every queued press (the device was unpaired or is pairing), logging what
+   *          was dropped. The storage removal is chained after earlier writes.
    * @return: (Promise<void>) Resolves when storage is cleared (a storage failure is logged).
    */
   const clear = async (): Promise<void> => {
@@ -424,6 +553,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     loading = null;
     loadedOk = false;
     replaying = null;
+    readFailures = 0;
     if (dropped.length > 0) {
       logger.error('PendingConfirms', 'Dropped queued Done presses on unpair', {
         count: dropped.length,
@@ -435,7 +565,9 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
       });
     }
     setEntries([]);
-    await AsyncStorage.removeItem(STORAGE_KEY).catch((error: unknown) =>
+    const removal = writes.then(() => AsyncStorage.removeItem(STORAGE_KEY));
+    writes = removal.catch(() => undefined);
+    await removal.catch((error: unknown) =>
       logger.warning('PendingConfirms', 'Could not clear the stored queue', {
         error: String(error),
       }),

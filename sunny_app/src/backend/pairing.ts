@@ -23,7 +23,8 @@
 // remembered-home rule as pure functions.
 //
 // unpair() unregisters the stored push token first (the device row survives a local
-// unpair, so the server could not reclaim the token later) and never rejects.
+// unpair, so the server could not reclaim the token later), drops the queued Done presses
+// (pair() clears them again, so a new pairing starts empty) and never rejects.
 //
 // Last modified: 2026-11-09
 
@@ -379,6 +380,8 @@ async function signInWithTicket(ticket: string): Promise<void> {
  */
 export async function pair(code: string): Promise<void> {
   if (unpairRun !== null) await unpairRun;
+  // A new pairing always starts with an empty queue of Done presses, even if unpair's clear failed.
+  await confirmQueue.clear();
   const cleaned = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const nonce = await nonceForCode(cleaned);
   const ticket = await requestPairing(cleaned, nonce);
@@ -389,8 +392,8 @@ export async function pair(code: string): Promise<void> {
 /**
  * purpose: Run the unpair steps: with a session, unregister the push token while still signed
  *          in, then forget the pending attempt, drop the queued Done presses (they belong to
- *          this pairing and must never be sent or shown under another) and sign out of Clerk. Every step is isolated, so
- *          a failure never stops the sign out.
+ *          this pairing and must never be sent or shown under another) and sign out of Clerk.
+ *          Every step is isolated, so a failure never stops the sign out.
  * @return: (Promise<void>) Always resolves; failures are logged.
  */
 async function runUnpair(): Promise<void> {

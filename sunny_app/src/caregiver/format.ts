@@ -209,13 +209,28 @@ const SURFACE_PHRASE: Record<DeviceSurface, string> = {
 };
 
 /**
+ * purpose: When a late-synced confirm reached the server: "sent at 11:00 AM", "sent the next day
+ *          at 2:10 AM" or "sent 3 days later at 2:10 AM".
+ * @param localTime: (string) Household-local "HH:MM" it was received.
+ * @param daysLater: (number) Local days after the confirmation.
+ * @return: (string) The phrase.
+ */
+function sentPhrase(localTime: string, daysLater: number): string {
+  const time = displayTime(localTime);
+  if (daysLater <= 0) return `sent at ${time}`;
+  if (daysLater === 1) return `sent the next day at ${time}`;
+  return `sent ${daysLater} days later at ${time}`;
+}
+
+/**
  * purpose: The detail text under a done task: who confirmed it and when.
  *          Caregiver-resolved (state "resolved"): "Marked done by <name> at <time>" ("by you"
  *          for the signed-in caregiver, "by a caregiver" when their name is unknown).
  *          Device-confirmed: "Done at <time>" plus where it happened ("on the display", "by
- *          voice", ...), plus " (sent at <time>)" when the confirm was pressed offline and
- *          reached the server late. The note is not part of it (see the row's note), because a
- *          task can have a note before it is done.
+ *          voice", ...), plus " (sent at <time>)" ("sent the next day at <time>" across
+ *          midnight) when the confirm was pressed offline and reached the server late. The note is
+ *          not part of it (see the row's note), because a task can have a note before it is
+ *          done.
  * @param task: (DayTask) The task.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id.
  * @return: (string | null) The text; null when the task is not done, or a device confirmation
@@ -240,7 +255,7 @@ export function doneDetail(task: DayTask, userId: string | null): string | null 
     const sent =
       task.confirmReceivedLocalTime === null
         ? ''
-        : ` (sent at ${displayTime(task.confirmReceivedLocalTime)})`;
+        : ` (${sentPhrase(task.confirmReceivedLocalTime, task.confirmReceivedDaysLater ?? 0)})`;
     first = `Done${at}${surface === undefined ? '' : ` ${surface}`}${sent}`;
   }
   return first;

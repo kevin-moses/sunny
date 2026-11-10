@@ -112,6 +112,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     confirmedVia: null,
     confirmReceivedAt: null,
     confirmReceivedLocalTime: null,
+    confirmReceivedDaysLater: null,
     claimedBy: null,
     claimedByName: null,
     confirmedBy: null,
@@ -904,6 +905,29 @@ describe('doneDetail', () => {
       confirmReceivedLocalTime: '11:00',
     });
     expect(doneDetail(task, USER)).toBe('Done at 8:05 AM on the phone (sent at 11:00 AM)');
+  });
+
+  it('says "the next day" when the confirm reached the server after midnight', () => {
+    const task = makeTask({
+      state: 'confirmed',
+      confirmedVia: 'phone_app',
+      confirmedLocalTime: '23:30',
+      confirmReceivedLocalTime: '02:10',
+      confirmReceivedDaysLater: 1,
+    });
+    expect(doneDetail(task, USER)).toBe(
+      'Done at 11:30 PM on the phone (sent the next day at 2:10 AM)',
+    );
+    const later = makeTask({
+      state: 'confirmed',
+      confirmedVia: 'phone_app',
+      confirmedLocalTime: '23:30',
+      confirmReceivedLocalTime: '02:10',
+      confirmReceivedDaysLater: 3,
+    });
+    expect(doneDetail(later, USER)).toBe(
+      'Done at 11:30 PM on the phone (sent 3 days later at 2:10 AM)',
+    );
   });
 
   it('adds nothing for a live confirm', () => {

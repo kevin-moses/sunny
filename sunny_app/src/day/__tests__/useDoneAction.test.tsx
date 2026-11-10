@@ -60,7 +60,14 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-jest.mock('../../backend/convex', () => ({ convex: { mutation: jest.fn() } }));
+let mockConnected = true;
+
+jest.mock('../../backend/convex', () => ({
+  convex: {
+    mutation: jest.fn(),
+    connectionState: () => ({ isWebSocketConnected: mockConnected, hasEverConnected: true }),
+  },
+}));
 
 jest.mock('../../logging/logger', () => ({
   logger: { warning: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
@@ -225,7 +232,8 @@ describe('useDoneAction', () => {
     mockStore.clear();
     mockFailWrites = false;
     mockMutation.mockReset();
-    mockMutation.mockResolvedValue(null);
+    mockConnected = true;
+    mockMutation.mockResolvedValue({ status: 'confirmed' });
     announce = jest
       .spyOn(AccessibilityInfo, 'announceForAccessibility')
       .mockImplementation(() => {});
@@ -407,6 +415,19 @@ describe('useDoneAction', () => {
       expect(h.get().message).toBeNull();
     });
 
+    it('a press handler captured before the previous press cannot record the early task', async () => {
+      const h = renderDone(makeQueue(), early());
+      const stale = h.get().pressDone;
+      h.rerender(task());
+      await press(h);
+      expect(sentIds()).toEqual(['inst1']);
+      await advance(SETTLE_MS + 1);
+      await act(async () => {
+        stale();
+      });
+      expect(sentIds()).toEqual(['inst1']);
+    });
+
     it('still offers a due task after the normal settle period', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
@@ -459,7 +480,8 @@ describe('usePendingConfirms', () => {
     mockStore.clear();
     mockFailWrites = false;
     mockMutation.mockReset();
-    mockMutation.mockResolvedValue(null);
+    mockConnected = true;
+    mockMutation.mockResolvedValue({ status: 'confirmed' });
   });
 
   afterEach(() => {
@@ -475,7 +497,7 @@ describe('usePendingConfirms', () => {
    * @param isOffline: (boolean) The offline flag.
    * @return: (object) get and rerender.
    */
-  function renderPending(queue: ConfirmQueue, isOffline: boolean) {
+  function renderPending(queue: ConfirmQueue, isOffline: boolean, isConnected = !isOffline) {
     let latest: ReadonlySet<string> = new Set();
     const record = (value: ReadonlySet<string>): void => {
       latest = value;
@@ -485,18 +507,19 @@ describe('usePendingConfirms', () => {
      * @param props: ({ off }) The offline flag.
      * @return: (null) Renders nothing.
      */
-    const Probe = ({ off }: { off: boolean }): null => {
-      record(usePendingConfirms(queue, off));
+    const Probe = ({ off, on }: { off: boolean; on: boolean }): null => {
+      record(usePendingConfirms(queue, off, on));
       return null;
     };
     let renderer!: ReactTestRenderer;
     act(() => {
-      renderer = create(<Probe off={isOffline} />);
+      renderer = create(<Probe off={isOffline} on={isConnected} />);
       mounted.push(renderer);
     });
     return {
       get: () => latest,
-      rerender: (off: boolean) => act(() => renderer.update(<Probe off={off} />)),
+      rerender: (off: boolean, on = !off) =>
+        act(() => renderer.update(<Probe off={off} on={on} />)),
     };
   }
 
@@ -506,6 +529,18 @@ describe('usePendingConfirms', () => {
     const h = renderPending(makeQueue(), false);
     await advance(0);
     expect(h.get().has('inst1')).toBe(true);
+    expect(sentIds()).toEqual(['inst1']);
+  });
+
+  it('on a fresh launch, sends a queued press as soon as the socket connects (no offline edge)', async () => {
+    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
+    mockConnected = false;
+    const h = renderPending(makeQueue(), false, false);
+    await advance(0);
+    expect(mockMutation).not.toHaveBeenCalled();
+    mockConnected = true;
+    h.rerender(false, true);
+    await advance(0);
     expect(sentIds()).toEqual(['inst1']);
   });
 

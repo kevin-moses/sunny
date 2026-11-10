@@ -33,6 +33,9 @@ import {
   SEND_TIMEOUT_MS,
   sendConfirm,
   STORAGE_KEY,
+  CORRUPT_KEY,
+  BACKOFF_MS,
+  STUCK_LOG_EVERY_MS,
   STUCK_MS,
   toPending,
   type ConfirmQueue,
@@ -42,11 +45,14 @@ import {
 const mockStore = new Map<string, string>();
 let mockFailWrites = false;
 let mockFailReads = false;
+let mockReadGate: Promise<void> | null = null;
+let mockConnected = true;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
   default: {
     getItem: async (key: string) => {
+      if (mockReadGate !== null) await mockReadGate;
       if (mockFailReads) throw new Error('read failed');
       return mockStore.get(key) ?? null;
     },
@@ -58,7 +64,12 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-jest.mock('../../backend/convex', () => ({ convex: { mutation: jest.fn() } }));
+jest.mock('../../backend/convex', () => ({
+  convex: {
+    mutation: jest.fn(),
+    connectionState: () => ({ isWebSocketConnected: mockConnected, hasEverConnected: true }),
+  },
+}));
 
 jest.mock('../../logging/logger', () => ({
   logger: { warning: jest.fn(), error: jest.fn() },
@@ -110,8 +121,10 @@ beforeEach(() => {
   mockStore.clear();
   mockFailWrites = false;
   mockFailReads = false;
+  mockReadGate = null;
+  mockConnected = true;
   mockMutation.mockReset();
-  mockMutation.mockResolvedValue(null);
+  mockMutation.mockResolvedValue({ status: 'confirmed' });
   (logger.error as jest.Mock).mockClear();
   (logger.warning as jest.Mock).mockClear();
 });
@@ -175,13 +188,13 @@ describe('replay', () => {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await Promise.resolve();
       inFlight -= 1;
-      return null;
+      return { status: 'confirmed' };
     });
     await queue.replay();
     expect(sentIds()).toEqual(['a', 'b']);
     expect(maxInFlight).toBe(1);
     const [ref, args] = mockMutation.mock.calls[0];
-    expect(getFunctionName(ref as never)).toBe('instances:confirmTaskInstance');
+    expect(getFunctionName(ref as never)).toBe('instances:confirmPressedTask');
     expect(args).toEqual({ instanceId: 'a', via: 'phone_app', pressedAgoMs: 2000 });
     expect(stored()).toEqual([]);
     expect(queue.getEntries()).toEqual([]);
@@ -300,7 +313,7 @@ describe('replay', () => {
   it('treats an already confirmed instance as success (the server answers normally)', async () => {
     const queue = makeQueue();
     await queue.enqueue(entry('a'));
-    mockMutation.mockResolvedValueOnce({ state: 'confirmed' });
+    mockMutation.mockResolvedValueOnce({ status: 'confirmed', instance: {} });
     await queue.replay();
     expect(stored()).toEqual([]);
   });
@@ -309,7 +322,9 @@ describe('replay', () => {
     const queue = makeQueue();
     await queue.enqueue(entry('a'));
     let finish!: () => void;
-    mockMutation.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    mockMutation.mockReturnValue(
+      new Promise((resolve) => (finish = () => resolve({ status: 'confirmed' }))),
+    );
     const first = queue.replay();
     await jest.advanceTimersByTimeAsync(SEND_TIMEOUT_MS + 1);
     await first;
@@ -430,13 +445,42 @@ describe('expiry', () => {
     expect(stored()).toEqual([]);
   });
 
-  it('treats unreadable stored data as unreadable, not as an empty queue', async () => {
+  it('recovers from corrupt stored JSON: copies it aside, logs, and starts empty and usable', async () => {
     mockStore.set(STORAGE_KEY, '{not json');
     const queue = makeQueue();
     await queue.load();
     expect(queue.getEntries()).toEqual([]);
-    await expect(queue.enqueue(entry('a'))).rejects.toThrow('could not be read');
-    expect(mockStore.get(STORAGE_KEY)).toBe('{not json');
+    expect(mockStore.get(CORRUPT_KEY)).toBe('{not json');
+    expect(logger.error).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'The stored queue was corrupt; starting empty',
+      expect.objectContaining({ copiedTo: CORRUPT_KEY }),
+    );
+    await queue.enqueue(entry('a'));
+    expect(stored()).toEqual([entry('a')]);
+  });
+
+  it('treats a stored value that is not an array as corrupt too', async () => {
+    mockStore.set(STORAGE_KEY, '{"a":1}');
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    expect(mockStore.get(CORRUPT_KEY)).toBe('{"a":1}');
+    expect(stored()).toEqual([entry('a')]);
+  });
+
+  it('logs once at error level after several failed reads in a row, and keeps retrying', async () => {
+    const queue = makeQueue();
+    mockFailReads = true;
+    for (let i = 0; i < 4; i++) await queue.load();
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Could not read the queue',
+      expect.objectContaining({ failuresInARow: 3 }),
+    );
+    mockFailReads = false;
+    await queue.enqueue(entry('a'));
+    expect(stored()).toEqual([entry('a')]);
   });
 
   it('ignores stored items that are not entries', async () => {
@@ -444,6 +488,196 @@ describe('expiry', () => {
     const queue = makeQueue();
     await queue.load();
     expect(queue.getEntries()).toEqual([entry('a')]);
+  });
+});
+
+describe('never sends while the socket is down', () => {
+  it('does not call the mutation and keeps the entry', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockConnected = false;
+    await queue.replay();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(stored()).toEqual([entry('a')]);
+  });
+
+  it('sends a press queued before the first connect once connected, with the age at that send', async () => {
+    const queue = makeQueue();
+    mockConnected = false;
+    await queue.enqueue(entry('a', NOW));
+    await queue.replay();
+    expect(mockMutation).not.toHaveBeenCalled();
+    jest.setSystemTime(NOW + 2 * 3_600_000);
+    mockConnected = true;
+    await queue.replay();
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect((mockMutation.mock.calls[0][1] as { pressedAgoMs: number }).pressedAgoMs).toBe(
+      2 * 3_600_000,
+    );
+  });
+
+  it('retries by itself and sends once the socket is back', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockConnected = false;
+    await queue.replay();
+    mockConnected = true;
+    await jest.advanceTimersByTimeAsync(RETRY_MS + 1);
+    expect(sentIds()).toEqual(['a']);
+  });
+
+  it('stops the pass when the connection goes offline mid-pass', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(entry('b'));
+    let finish!: () => void;
+    mockMutation.mockReturnValueOnce(
+      new Promise((resolve) => (finish = () => resolve({ status: 'confirmed' }))),
+    );
+    const pass = queue.replay();
+    await jest.advanceTimersByTimeAsync(0);
+    queue.setOffline(true);
+    finish();
+    await pass;
+    expect(sentIds()).toEqual(['a']);
+    expect(stored()).toEqual([entry('b')]);
+  });
+});
+
+describe('a rejected result', () => {
+  it('removes the entry and logs it as an error', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockResolvedValueOnce({ status: 'rejected', reason: 'The task no longer exists' });
+    await queue.replay();
+    expect(stored()).toEqual([]);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Dropped a queued Done (rejected)',
+      expect.objectContaining({ instanceId: 'a', detail: 'The task no longer exists' }),
+    );
+  });
+});
+
+describe('backoff and stuck logging', () => {
+  it('waits out the backoff after a server error, then retries with a longer wait', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockRejectedValue(new Error('boom'));
+    await queue.replay();
+    await queue.replay();
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(BACKOFF_MS[0]! + 1);
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(BACKOFF_MS[0]! + 1);
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(BACKOFF_MS[1]! - BACKOFF_MS[0]!);
+    expect(mockMutation).toHaveBeenCalledTimes(3);
+  });
+
+  it('logs the stuck error once on crossing the threshold, then hourly', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockRejectedValue(new Error('boom'));
+    await queue.replay();
+    jest.setSystemTime(NOW + STUCK_MS + 1000);
+    await queue.replay();
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    jest.setSystemTime(NOW + STUCK_MS + 1000 + 30 * 60_000);
+    await queue.replay();
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    jest.setSystemTime(NOW + STUCK_MS + 1000 + STUCK_LOG_EVERY_MS + 1000);
+    await queue.replay();
+    expect(logger.error).toHaveBeenCalledTimes(2);
+  });
+
+  it('a sustained 401 produces the stuck log', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockRejectedValue(new ConvexError({ code: 'unauthenticated', message: 'x' }));
+    await queue.replay();
+    jest.setSystemTime(NOW + STUCK_MS + 1000);
+    await queue.replay();
+    expect(logger.error).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'A queued Done has failed for over 10 minutes while online',
+      expect.objectContaining({ instanceId: 'a' }),
+    );
+  });
+
+  it('going offline restarts the failure clock', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    mockMutation.mockRejectedValue(new Error('boom'));
+    await queue.replay();
+    queue.setOffline(true);
+    jest.setSystemTime(NOW + STUCK_MS + 60_000);
+    queue.setOffline(false);
+    await queue.replay();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe('clear racing other work', () => {
+  it('discards a load that was in flight when clear ran', async () => {
+    mockStore.set(STORAGE_KEY, JSON.stringify([entry('old')]));
+    const queue = makeQueue();
+    let release!: () => void;
+    mockReadGate = new Promise<void>((resolve) => (release = resolve));
+    const loading = queue.load();
+    await jest.advanceTimersByTimeAsync(0);
+    await queue.clear();
+    mockReadGate = null;
+    release();
+    await loading;
+    expect(queue.getEntries()).toEqual([]);
+    expect(stored()).toEqual([]);
+    await queue.enqueue(entry('new'));
+    expect(stored()).toEqual([entry('new')]);
+  });
+
+  it('a queued write cannot restore the old snapshot after clear', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    const second = queue.enqueue(entry('b'));
+    await queue.clear();
+    await second.catch(() => undefined);
+    expect(stored()).toEqual([]);
+  });
+
+  it('an old pass does not null the replaying handle of a newer pass', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    let finishFirst!: () => void;
+    mockMutation.mockReturnValueOnce(
+      new Promise((resolve) => (finishFirst = () => resolve({ status: 'confirmed' }))),
+    );
+    const first = queue.replay();
+    await jest.advanceTimersByTimeAsync(0);
+    await queue.clear();
+    await queue.enqueue(entry('b'));
+    mockMutation.mockReturnValueOnce(new Promise(() => {}));
+    const second = queue.replay();
+    await jest.advanceTimersByTimeAsync(0);
+    finishFirst();
+    await first;
+    expect(queue.replay()).toBe(second);
+  });
+
+  it('a send that lands after clear does not touch the new pairing', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    let finish!: () => void;
+    mockMutation.mockReturnValueOnce(
+      new Promise((resolve) => (finish = () => resolve({ status: 'confirmed' }))),
+    );
+    const pass = queue.replay();
+    await jest.advanceTimersByTimeAsync(0);
+    await queue.clear();
+    await queue.enqueue(entry('a', NOW + 1));
+    finish();
+    await pass;
+    expect(queue.getEntries()).toEqual([entry('a', NOW + 1)]);
   });
 });
 

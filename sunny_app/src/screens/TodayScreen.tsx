@@ -10,6 +10,7 @@
 //
 // Last modified: 2026-11-09
 
+import { useConvexConnectionState } from 'convex/react';
 import { useMemo } from 'react';
 import {
   ActivityIndicator,
@@ -52,7 +53,8 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const { day, errorMessage, isOffline } = dayView;
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const pendingIds = usePendingConfirms(confirmQueue, isOffline);
+  const { isWebSocketConnected } = useConvexConnectionState();
+  const pendingIds = usePendingConfirms(confirmQueue, isOffline, isWebSocketConnected);
   const tasks = useMemo(() => applyPending(day?.tasks ?? [], pendingIds), [day, pendingIds]);
   const agenda = useMemo(
     () =>
