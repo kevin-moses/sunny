@@ -16,15 +16,26 @@
 // caregiver who marked it done (state "resolved"), null for a device confirmation or when the
 // member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
 // is the instance's own local date and carriedOver is true for yesterday's still-open
-// instances, and resolutionNote is the note the caregiver left.
+// instances, and resolutionNote is the note the caregiver left. confirmReceivedAt is set when a
+// confirm pressed offline reached the server late (confirmReceivedLocalTime and
+// confirmReceivedDaysLater say when, in household time). confirmable says whether a senior
+// device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own rule), so
+// a surface can offer Done early without copying the 60 minute constant. seniorPrompts counts
+// the senior prompts the escalation policy has sent for the instance (fired prompt_senior
+// steps that were notified), so the home display can repeat its due cue on each reprompt;
+// snoozed is true while a snooze ("not yet") holds the senior prompts back at `now`, the
+// scheduler's own test, so the display holds its cue until the snooze ends; snoozedUntil is
+// when the latest snooze ends (kept after it passed), so the display owes one cue per snooze
+// end.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
-import { addDays, localDate, localTime } from "./time";
+import { seniorCanConfirm } from "./confirmRule";
+import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
 /** One of today's instances joined with its task. */
@@ -47,6 +58,12 @@ export interface TodayEntry {
   /** Household-local "HH:MM" of confirmedAt; null when not confirmed. */
   confirmedLocalTime: string | null;
   confirmedVia: ConfirmVia | null;
+  /** When the server received a late-synced confirm (pressed offline); null for a live one. */
+  confirmReceivedAt: number | null;
+  /** Household-local "HH:MM" of confirmReceivedAt; null when it is null. */
+  confirmReceivedLocalTime: string | null;
+  /** Local days from confirmedAt to confirmReceivedAt (0 same day); null when absent. */
+  confirmReceivedDaysLater: number | null;
   claimedBy: string | null;
   claimedByName: string | null;
   /**
@@ -57,6 +74,32 @@ export interface TodayEntry {
   /** The caregiver's display name; null unless state is "resolved", or when they left. */
   confirmedByName: string | null;
   resolutionNote: string | null;
+  /** A senior device may confirm it now (open and not more than 60 minutes early). */
+  confirmable: boolean;
+  /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
+  seniorPrompts: number;
+  /** True while the instance is snoozed (now is before its snoozedUntil). */
+  snoozed: boolean;
+  /** When the latest snooze ends or ended (epoch ms); null when never snoozed. */
+  snoozedUntil: number | null;
+}
+
+/**
+ * purpose: How many local days after the confirmation a late-synced confirm reached the server.
+ * @param instance: (object) The instance's confirmedAt and confirmReceivedAt.
+ * @param timezone: (string) The household's IANA zone.
+ * @return: (number | null) 0 for the same local day, 1 for the next, and so on; null when the
+ *          instance has no confirmReceivedAt (or no confirmedAt).
+ */
+export function receivedDaysLater(
+  instance: { confirmedAt?: number; confirmReceivedAt?: number },
+  timezone: string,
+): number | null {
+  if (instance.confirmedAt === undefined || instance.confirmReceivedAt === undefined) return null;
+  return daysBetween(
+    localDate(instance.confirmedAt, timezone),
+    localDate(instance.confirmReceivedAt, timezone),
+  );
 }
 
 /**
@@ -123,11 +166,22 @@ export async function todayInstances(
       confirmedAt,
       confirmedLocalTime: confirmedAt === null ? null : localTime(confirmedAt, household.timezone),
       confirmedVia: instance.confirmedVia ?? null,
+      confirmReceivedAt: instance.confirmReceivedAt ?? null,
+      confirmReceivedLocalTime:
+        instance.confirmReceivedAt === undefined
+          ? null
+          : localTime(instance.confirmReceivedAt, household.timezone),
+      confirmReceivedDaysLater: receivedDaysLater(instance, household.timezone),
       claimedBy,
       claimedByName: nameOf(claimedBy),
       confirmedBy,
       confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
+      confirmable: seniorCanConfirm(instance, now),
+      seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
+        .length,
+      snoozed: instance.snoozedUntil !== undefined && now < instance.snoozedUntil,
+      snoozedUntil: instance.snoozedUntil ?? null,
     });
   }
   return entries;

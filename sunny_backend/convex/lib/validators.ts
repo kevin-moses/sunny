@@ -1,7 +1,8 @@
 // lib/validators.ts
 // Purpose: Shared value validators (enums and formatted strings) used by the schema and
 // by function arguments, so a type such as a task state or a local date has one
-// definition. Mirrors the Postgres enums from the Supabase schema.
+// definition. Mirrors the Postgres enums from the Supabase schema. LIFE_CATEGORIES lists the
+// life categories in order for code that sorts or checks them (profile.ts, the profile loader).
 //
 // Last modified: 2026-11-09
 
@@ -167,6 +168,9 @@ export const lifeCategory = v.union(
   v.literal("preference"),
   v.literal("other"),
 );
+
+/** The life categories in declaration order (the order the agent groups the profile by). */
+export const LIFE_CATEGORIES: readonly string[] = lifeCategory.members.map((m) => m.value);
 
 /** Who contributed a life-story memory. */
 export const memorySource = v.union(v.literal("caregiver"), v.literal("senior"));

@@ -1,9 +1,9 @@
 // sunny_app/src/voice/VoiceProvider.tsx
 //
 // Purpose: Owns the LiveKit voice session for the app. It wraps the app and provides
-// useVoice() (connect, disconnect, status, error) plus useConversation() (microphone, agent
-// state and tracks, transcript). An unpaired device gets an idle useVoice() and nothing
-// else; for a paired device an inner provider owns the session:
+// useVoice() (connect, disconnect, status, error) plus useConversation() (microphone, whether
+// the senior is speaking, agent state and tracks, transcript). An unpaired device gets an idle
+// useVoice() and nothing else; for a paired device an inner provider owns the session:
 //   - Token: useSession with a non-caching token source (voiceToken.ts) that calls the
 //     voice.livekitToken Convex action on every session start. The request (trigger 'talk' for
 //     the Talk button, 'notification_tap' with an optional taskInstanceId for a tapped
@@ -13,22 +13,35 @@
 //   - Cancel: session.start() gets an AbortSignal that endSession() aborts, so pressing End
 //     while the token is being fetched (the room is still disconnected) stops the start; a
 //     cancelled start shows no error.
-//   - Connect: session.start() with its defaults (microphone enabled with LiveKit's
-//     pre-connect audio buffer, so speech said while connecting is kept).
-//   - Agent failure: useSession is given a 20 second agent connect timeout; when the agent
-//     state becomes 'failed' (no agent in time, or the agent left) the failure reasons are
-//     surfaced as the error and the session is ended.
+//   - Connect: session.start() connects the room while this provider turns the microphone on
+//     beside it, as LiveKit's own start would (with the pre-connect audio buffer, so speech
+//     said while connecting is kept). Owning that promise means a start ended before the
+//     microphone came on turns it off again the moment it does.
+//   - Agent failure: useSession is given an agent connect timeout (agentTimeouts.ts: 20 s on
+//     the phone; on the home display the longest its start timeout may be tuned to, because
+//     the display's own start timeout, counted from the Talk press, must always fire first).
+//     When the agent state becomes 'failed' (no agent in time, or the agent left) the failure
+//     reasons are surfaced as the error and the session is ended, once per failure.
 //   - isInteractive: true while connecting after a Talk press, connected, or reconnecting.
-//   - Phone RPC (findContact, sendMessage) is registered on the room; app logs are forwarded
-//     to the agent while connected; push notification taps start a session.
+//   - Phone RPC (findContact, sendMessage) is registered on the room on the senior phone only
+//     (the home display answers such calls with LiveKit's UNSUPPORTED_METHOD error); app logs
+//     are forwarded to the agent while connected; push notification taps start a session.
+//   - Ending or cancelling a session, a start that fails, and unmounting all stop and
+//     unpublish every local audio track (localAudio.ts), also one that comes on afterwards,
+//     so no start can leave the microphone recording.
 //   - The iOS audio session is configured and activated by registerGlobals() in index.ts
-//     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here.
+//     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here. Its
+//     default policy prefers the speaker and deactivates the session when the call's audio
+//     stops, so the home display's due cue (expo-audio, expo-speech) can take it afterwards.
+//   - The same provider serves the senior phone and the home display: the token action only
+//     requires a paired device of either kind. What each surface shows is up to the app shell.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import {
   SessionProvider,
   useAgent,
+  useIsSpeaking,
   useLocalParticipant,
   useSession,
   useSessionMessages,
@@ -49,6 +62,8 @@ import type { PairedDevice } from '../backend/pairing';
 import { errorMessage } from '../errors';
 import { attachLogRoom, detachLogRoom, logger } from '../logging/logger';
 import { usePushNotifications, type NotificationTap } from '../notifications/push';
+import { AGENT_CONNECT_TIMEOUT_MS, DISPLAY_AGENT_CONNECT_TIMEOUT_MS } from './agentTimeouts';
+import { stopLocalAudio } from './localAudio';
 import { registerPhoneRpcMethods } from './rpc';
 import {
   ConversationContext,
@@ -65,9 +80,6 @@ import {
 } from './voiceToken';
 
 export { useConversation, useVoice } from './voiceContext';
-
-/** How long to wait for an agent to join after connecting, in milliseconds. */
-const AGENT_CONNECT_TIMEOUT_MS = 20_000;
 
 /** Error shown when the agent failed without LiveKit giving a reason. */
 const AGENT_NOT_CONNECTED_MESSAGE = 'Agent did not connect to the Room';
@@ -119,10 +131,17 @@ function isStaleTaskTap(request: SessionRequest, error: unknown): boolean {
 
 /**
  * purpose: Own the LiveKit session for a paired device and provide the voice contexts.
- * @param props: ({ children: ReactNode }) the app subtree
+ * @param props: ({ phone: boolean, children: ReactNode }) whether the device is the senior's
+ *               phone (only the phone serves the phone RPC methods), and the app subtree
  * @return: (ReactElement) the children wrapped in the session and voice contexts
  */
-function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElement {
+function PairedVoiceProvider({
+  phone,
+  children,
+}: {
+  phone: boolean;
+  children: ReactNode;
+}): ReactElement {
   const [{ source: tokenSource, beginStart, cancelStart }] = useState(createTokenSource);
   // Bumped when a session is ended, so a start that fails afterwards is not reported.
   const generationRef = useRef(0);
@@ -134,11 +153,14 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
   const [error, setError] = useState<string | null>(null);
 
   const session = useSession(tokenSource, {
-    agentConnectTimeoutMilliseconds: AGENT_CONNECT_TIMEOUT_MS,
+    agentConnectTimeoutMilliseconds: phone
+      ? AGENT_CONNECT_TIMEOUT_MS
+      : DISPLAY_AGENT_CONNECT_TIMEOUT_MS,
   });
   const agent = useAgent(session);
   const { messages, send } = useSessionMessages(session);
-  const { isMicrophoneEnabled } = useLocalParticipant({ room: session.room });
+  const { isMicrophoneEnabled, localParticipant } = useLocalParticipant({ room: session.room });
+  const userSpeaking = useIsSpeaking(localParticipant);
 
   const rawState = session.connectionState;
   const connectionState = toVoiceConnectionState(rawState, isStarting);
@@ -189,8 +211,27 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
       const controller = new AbortController();
       startAbortRef.current = controller;
       beginStart(request, controller.signal);
+      const generation = generationRef.current;
+      const { room } = session;
+      const mic = room.localParticipant.setMicrophoneEnabled(true, undefined, {
+        preConnectBuffer: true,
+      });
+      // A start ended before the microphone came on turns it off as soon as it does.
+      void mic.then(
+        () => {
+          if (generationRef.current !== generation) void stopLocalAudio(room);
+        },
+        () => undefined,
+      );
       try {
-        await session.start({ signal: controller.signal });
+        await Promise.all([
+          session.start({ signal: controller.signal, tracks: { microphone: { enabled: false } } }),
+          mic.catch((e: unknown) => {
+            // Without a microphone the session must not connect.
+            controller.abort();
+            throw e;
+          }),
+        ]);
       } finally {
         cancelStart();
         if (startAbortRef.current === controller) startAbortRef.current = null;
@@ -228,14 +269,20 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
           await startOnce(TALK_REQUEST);
         }
       } catch (e) {
-        if (generation === generationRef.current && !(e instanceof StartCancelledError)) {
-          logger.error('Voice', `Connect failed: ${errorMessage(e)}`);
-          setError(errorMessage(e));
+        if (generation === generationRef.current) {
+          if (!(e instanceof StartCancelledError)) {
+            logger.error('Voice', `Connect failed: ${errorMessage(e)}`);
+            setError(errorMessage(e));
+          }
+          // A failed start must not leave the microphone on: turn it off now, and (by ending
+          // this start's generation) as soon as it comes on if that happens later.
+          generationRef.current += 1;
+          await stopLocalAudio(session.room);
         }
         resetSessionState();
       }
     },
-    [isActive, startOnce, resetSessionState],
+    [isActive, startOnce, resetSessionState, session.room],
   );
 
   /**
@@ -246,7 +293,9 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
 
   /**
    * purpose: End the session in LiveKit and cancel a start that is still fetching its token;
-   *          later start failures are then not reported as errors.
+   *          later start failures are then not reported as errors. The aborted start never
+   *          connects (the token source throws StartCancelledError for it), and the local
+   *          microphone, which LiveKit opens while the token is fetched, is turned off too.
    * @return: (Promise<void>) resolves when LiveKit has ended the session
    */
   const endSession = useCallback(async (): Promise<void> => {
@@ -257,7 +306,21 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     } catch (e) {
       logger.error('Voice', `Disconnect failed: ${errorMessage(e)}`);
     }
+    await stopLocalAudio(session.room);
   }, [session]);
+
+  // Unmounting (unpairing, sign-out) ends any session and turns the microphone off. Keyed on
+  // the room, which lives as long as the provider (the session object changes every render).
+  const sessionRoom = session.room;
+  useEffect(
+    () => () => {
+      generationRef.current += 1;
+      startAbortRef.current?.abort();
+      void sessionRoom.disconnect();
+      void stopLocalAudio(sessionRoom);
+    },
+    [sessionRoom],
+  );
 
   /**
    * purpose: Public disconnect: end the session and reset the per-session state.
@@ -309,8 +372,13 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     return detachLogRoom;
   }, [isConnected, session.room]);
 
-  // Phone RPC methods the agent calls (findContact, sendMessage).
-  useEffect(() => registerPhoneRpcMethods(session.room), [session.room]);
+  // Phone RPC methods the agent calls (findContact, sendMessage), on the phone only: on the
+  // home display a contacts dialog or SMS composer must never cover the panel. An agent call
+  // to a method that is not registered gets LiveKit's UNSUPPORTED_METHOD error (1400) at once.
+  useEffect(
+    () => (phone ? registerPhoneRpcMethods(session.room) : undefined),
+    [phone, session.room],
+  );
 
   /**
    * purpose: Toggle the local microphone.
@@ -347,6 +415,7 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     () => ({
       isMicrophoneEnabled,
       toggleMicrophone,
+      userSpeaking,
       agentJoined,
       agentState: agent.state,
       agentAudioTrack: agent.microphoneTrack,
@@ -357,6 +426,7 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     [
       isMicrophoneEnabled,
       toggleMicrophone,
+      userSpeaking,
       agentJoined,
       agent.state,
       agent.microphoneTrack,
@@ -392,5 +462,9 @@ export function VoiceProvider(props: {
   if (pairedDevice === null) {
     return <VoiceContext.Provider value={IDLE_VOICE}>{children}</VoiceContext.Provider>;
   }
-  return <PairedVoiceProvider>{children}</PairedVoiceProvider>;
+  return (
+    <PairedVoiceProvider phone={pairedDevice.kind === 'senior_phone'}>
+      {children}
+    </PairedVoiceProvider>
+  );
 }

@@ -1,12 +1,13 @@
 // sunny_app/src/caregiver/CaregiverTabBar.tsx
 //
 // Purpose: The caregiver app's floating tab bar: a translucent pill centered above the home
-// indicator with two tabs (Home and Chat). The active tab has an accent-tinted background and
-// a filled icon. The bar's size is derived from its own style constants (TAB_BAR_HEIGHT), and
-// tabBarClearance says how much room screens leave for it; CaregiverApp passes that to the
-// screens (see tabBarInset). Screens scroll under the bar.
+// indicator with three tabs (Home, Chat and About, whose label names the senior when it fits,
+// for example "About Mom"). The active tab has an accent-tinted background and a filled icon.
+// The bar's size is derived from its own style constants (TAB_BAR_HEIGHT), and tabBarClearance
+// says how much room screens leave for it; CaregiverApp passes that to the screens (see
+// tabBarInset). Screens scroll under the bar.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-09
 
 import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -17,12 +18,18 @@ import { useTheme } from '../theme/ThemeProvider';
 import { type } from '../theme/typography';
 
 /** The caregiver app's tabs. */
-export type CaregiverTab = 'home' | 'chat';
+export type CaregiverTab = 'home' | 'chat' | 'about';
 
-/** One tab's label and its outline and filled icons. */
+/** One tab's label (the About tab's comes from a prop) and its outline and filled icons. */
 const TABS = [
   { id: 'home', label: 'Home', icon: 'house', activeIcon: 'house.fill' },
   { id: 'chat', label: 'Chat', icon: 'bubble.left', activeIcon: 'bubble.left.fill' },
+  {
+    id: 'about',
+    label: 'About',
+    icon: 'person.text.rectangle',
+    activeIcon: 'person.text.rectangle.fill',
+  },
 ] as const;
 
 /** Padding (points) between the pill edge and the tabs. */
@@ -57,14 +64,17 @@ export function tabBarClearance(bottomInset: number): number {
 interface CaregiverTabBarProps {
   active: CaregiverTab;
   onChange: (tab: CaregiverTab) => void;
+  /** The About tab's label, for example "About Mom" (see aboutTabLabel). */
+  aboutLabel: string;
 }
 
 /**
  * purpose: Render the floating tab bar.
- * @param props: (CaregiverTabBarProps) The active tab and the change handler.
+ * @param props: (CaregiverTabBarProps) The active tab, the change handler and the About tab's
+ *        label.
  * @return: (JSX.Element) The bar, absolutely positioned at the bottom of its parent.
  */
-export function CaregiverTabBar({ active, onChange }: CaregiverTabBarProps) {
+export function CaregiverTabBar({ active, onChange, aboutLabel }: CaregiverTabBarProps) {
   const { accentColor } = useTheme();
   const insets = useSafeAreaInsets();
   return (
@@ -76,11 +86,12 @@ export function CaregiverTabBar({ active, onChange }: CaregiverTabBarProps) {
         {TABS.map((tab) => {
           const selected = tab.id === active;
           const color = selected ? colors.text : colors.secondaryText;
+          const label = tab.id === 'about' ? aboutLabel : tab.label;
           return (
             <Pressable
               key={tab.id}
               accessibilityRole="tab"
-              accessibilityLabel={tab.label}
+              accessibilityLabel={label}
               accessibilityState={{ selected }}
               onPress={() => onChange(tab.id)}
               style={[styles.tab, selected && { backgroundColor: `${accentColor}40` }]}
@@ -90,8 +101,11 @@ export function CaregiverTabBar({ active, onChange }: CaregiverTabBarProps) {
                 size={ICON_SIZE}
                 tintColor={color}
               />
-              <Text style={[type.caption, { color, lineHeight: LABEL_LINE_HEIGHT }]}>
-                {tab.label}
+              <Text
+                numberOfLines={1}
+                style={[type.caption, { color, lineHeight: LABEL_LINE_HEIGHT }]}
+              >
+                {label}
               </Text>
             </Pressable>
           );

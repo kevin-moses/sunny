@@ -8,7 +8,15 @@
 // - NowBody: the 600 pt Now card on the left and the Next up card on the right. The Now card
 //   shows the task to act on (title, pill description, "Taken them? Press [Done]"), the
 //   overdue form ("Still to do", plus "Not sure? Press [Talk]"), one step of a multi-step
-//   task with its progress boxes, or a calm clear state.
+//   task with its progress boxes, or a calm clear state. A snoozed task (the senior said "not
+//   yet") keeps its card, since Done still confirms it, but its tab reads "Later · 8:00 AM"
+//   (the one time on the panel written with AM or PM) instead of "Now" or "Still to do",
+//   matching the due cue, which stays quiet until the snooze ends.
+//   While the senior talks to Sunny, and for a few minutes after, the voice card (VoiceCardView: "Listening", "Thinking", then the
+//   answer as large text) takes the Next up card's place, so a waiting task stays in view on
+//   the left and Done still confirms what the screen shows. With nothing waiting, the voice
+//   card takes the whole body instead, because an answer of a few sentences only fits the
+//   full width at a size the senior can read across the room.
 // - TodayBody: today's tasks and events as rows; finished ones grey with a check, the Now task
 //   boxed with a black "Now" tag.
 // The drawn keycaps only point at the physical Done and Talk keys; nothing here is pressable.
@@ -22,14 +30,22 @@ import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';
 
-import { clockTime } from '../day/format';
+import { clockTime, displayTime } from '../day/format';
 import type { DayViewData } from '../day/types';
 import { doneQuestion, fullDate, taskIcon } from './model';
 import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
-import { CANVAS, font, ink } from './theme';
+import { CANVAS, TAB_SEPARATOR, font, ink } from './theme';
+import type { VoiceCard } from './voiceModel';
 
 /** Up to this many steps get progress boxes; longer tasks show only "Step 2 of 7". */
 const MAX_PROGRESS_BOXES = 5;
+
+/** The smallest an answer's text may shrink to fit its card, as a fraction of its size. */
+const ANSWER_MIN_SCALE = 0.6;
+
+/** Lines an answer may take at its smallest: in the Next up column, and across the body. */
+const ANSWER_LINES = 11;
+const ANSWER_LINES_WIDE = 9;
 
 /**
  * purpose: Text at the canvas's fixed size (system text size is ignored; the page scales).
@@ -135,39 +151,126 @@ function PromptLine({
 }
 
 /**
- * purpose: The Now screen's body: the Now card and the Next up card side by side.
- * @param props: ({ card: NowCard, step: number, next: NextItem | null }) The Now card, the
- *        current step index of a multi-step task (0 for others), and the next item.
+ * purpose: The Now screen's body: the Now card and the Next up card side by side. A voice card
+ *          replaces the Next up card, or the whole body when nothing is waiting.
+ * @param props: ({ card: NowCard, step: number, next: NextItem | null, voice: VoiceCard |
+ *        null }) The Now card, the current step index of a multi-step task (0 for others), the
+ *        next item, and the voice card (null when there is no voice session or answer).
  * @return: (JSX.Element) The body.
  */
 export function NowBody({
   card,
   step,
   next,
+  voice,
 }: {
   card: NowCard;
   step: number;
   next: NextItem | null;
+  voice: VoiceCard | null;
 }) {
+  if (voice !== null && card.kind === 'clear') {
+    return (
+      <View style={styles.nowBody}>
+        <VoiceCardView card={voice} wide />
+      </View>
+    );
+  }
   return (
     <View style={styles.nowBody}>
       <NowColumn card={card} step={step} />
-      <View style={styles.nextColumn}>{next !== null && <NextCard item={next} />}</View>
+      <View style={styles.nextColumn}>
+        {voice !== null ? (
+          <VoiceCardView card={voice} wide={false} />
+        ) : (
+          next !== null && <NextCard item={next} />
+        )}
+      </View>
     </View>
   );
 }
 
 /**
- * purpose: The tab above the Now card: "Now", or "Still to do" for an overdue task, followed
- *          by the task's time (one-step task) or name (multi-step task).
+ * purpose: The voice card: a black tab ("Talk", "Sunny", "Sunny said · 10:42") over a
+ *          thick-bordered box holding a symbol with a large title and a detail line
+ *          ("Listening", "Ask your question."), or the answer as large text, shrunk only as
+ *          far as needed to fit.
+ * @param props: ({ card: VoiceCard, wide: boolean }) The card, and whether it has the whole
+ *        body (larger answer text) or the Next up column.
+ * @return: (JSX.Element) The card.
+ */
+function VoiceCardView({ card, wide }: { card: VoiceCard; wide: boolean }) {
+  const parts =
+    card.kind === 'answer' ? [card.tab, card.text] : [card.tab, card.title, card.detail];
+  const label = parts.filter(Boolean).join('. ');
+  return (
+    <View accessible accessibilityLabel={label} style={styles.voiceColumn}>
+      <View style={styles.tab}>
+        <DText style={[font.tab, styles.onInk]} numberOfLines={1}>
+          {card.tab}
+        </DText>
+      </View>
+      <View style={[styles.nowBox, styles.voiceBox]}>
+        {card.kind === 'answer' ? (
+          <DText
+            style={[wide ? font.answerWide : font.answer, styles.answerText]}
+            numberOfLines={wide ? ANSWER_LINES_WIDE : ANSWER_LINES}
+            adjustsFontSizeToFit
+            minimumFontScale={ANSWER_MIN_SCALE}
+          >
+            {card.text}
+          </DText>
+        ) : (
+          <View style={styles.stack}>
+            <SymbolView name={card.icon} size={64} weight="bold" tintColor={ink.ink} />
+            <DText style={font.voiceTitle}>{card.title}</DText>
+            {card.detail !== null && (
+              <DText style={font.taskDetail} numberOfLines={4}>
+                {card.detail}
+              </DText>
+            )}
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * purpose: The first word of a task's tab: "Later" for a snoozed task, "Still to do" for an
+ *          overdue one, otherwise "Now".
+ * @param card: (TaskCard) The task card.
+ * @return: (string) The word.
+ */
+function tabLead(card: TaskCard): string {
+  if (card.task.snoozed) return 'Later';
+  if (card.overdue) return 'Still to do';
+  return 'Now';
+}
+
+/**
+ * purpose: The time on a one-step task's tab: with AM or PM after "Later" ("8:00 AM",
+ *          "12:30 PM"), as the rest of the app writes a time it is waiting for; otherwise the
+ *          display's plain clock form ("8:00").
+ * @param card: (TaskCard) The task card.
+ * @return: (string) The time.
+ */
+function tabTime(card: TaskCard): string {
+  const time = card.task.scheduledTime;
+  return card.task.snoozed ? displayTime(time) : clockTime(time);
+}
+
+/**
+ * purpose: The tab above the Now card: its lead (tabLead), followed by the task's time
+ *          (one-step task, tabTime) or name (multi-step task); "Now" alone when nothing is
+ *          waiting.
  * @param card: (NowCard) The card.
  * @return: (string) The tab text.
  */
-function tabText(card: NowCard): string {
+export function tabText(card: NowCard): string {
   if (card.kind === 'clear') return 'Now';
-  const lead = card.overdue ? 'Still to do' : 'Now';
-  const tail = card.steps !== null ? card.task.displayLabel : clockTime(card.task.scheduledTime);
-  return `${lead}  ·  ${tail}`;
+  const tail = card.steps !== null ? card.task.displayLabel : tabTime(card);
+  return `${tabLead(card)}${TAB_SEPARATOR}${tail}`;
 }
 
 /**
@@ -443,6 +546,10 @@ const styles = StyleSheet.create({
   progressDone: { backgroundColor: ink.ink },
   progressNow: { borderWidth: 6 },
   nextColumn: { flex: 1 },
+  voiceColumn: { flex: 1 },
+  voiceBox: { justifyContent: 'flex-start' },
+  // Fills the box, so the text has a bounded height to shrink into.
+  answerText: { flex: 1 },
   nextLabel: { paddingVertical: 8 },
   nextBox: {
     flexDirection: 'row',

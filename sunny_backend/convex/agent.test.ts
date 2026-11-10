@@ -371,6 +371,13 @@ describe("getContext", () => {
         confirmedBy: null,
         confirmedByName: null,
         resolutionNote: null,
+        confirmReceivedAt: null,
+        confirmReceivedLocalTime: null,
+        confirmReceivedDaysLater: null,
+        confirmable: true,
+        seniorPrompts: 0,
+        snoozed: false,
+        snoozedUntil: null,
       },
     ]);
     expect(

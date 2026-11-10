@@ -8,7 +8,8 @@
 // DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
 // Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
 // no alerts and the digest never reports them as not done. Nothing from other days is read.
-// Lists are capped so a busy day stays within one query.
+// Lists are capped so a busy day stays within one query. A confirm pressed offline and synced
+// late carries sentAt, when the server received it.
 // Privacy: unanswered and routed questions are given in the senior's words only when the
 // household shares transcripts (households.shareTranscripts); otherwise by their topic.
 // List: the household list items the senior added that day (listAdded).
@@ -21,6 +22,7 @@ import { isAsNeededTask } from "../tasks";
 import { memberNames } from "./access";
 import { isAnytimeInstance } from "./anytime";
 import { addDays, formatTime12, localTime, zonedInstant } from "./time";
+import { receivedDaysLater } from "./today";
 import type { ConfirmVia } from "./validators";
 
 /** The most task instances, questions and doses read for one day. */
@@ -38,6 +40,10 @@ export interface TaskFact {
   /** 12-hour time it was confirmed or resolved. */
   doneAt?: string;
   via?: ConfirmVia;
+  /** 12-hour time the server received a confirm that was pressed offline and sent late. */
+  sentAt?: string;
+  /** Local days from the confirmation to sentAt (0 same day); set with sentAt. */
+  sentDaysLater?: number;
   /** Caregiver who resolved it on the senior's behalf. */
   resolvedBy?: string;
   claimedBy?: string;
@@ -144,6 +150,10 @@ async function taskFacts(
       fact.doneAt = formatTime12(localTime(instance.confirmedAt, household.timezone));
     }
     if (instance.confirmedVia !== undefined) fact.via = instance.confirmedVia;
+    if (instance.confirmReceivedAt !== undefined) {
+      fact.sentAt = formatTime12(localTime(instance.confirmReceivedAt, household.timezone));
+      fact.sentDaysLater = receivedDaysLater(instance, household.timezone) ?? 0;
+    }
     if (state === "resolved") fact.resolvedBy = nameOf(names, instance.confirmedBy);
     const claimedBy = nameOf(names, instance.claimedBy);
     if (claimedBy !== undefined) fact.claimedBy = claimedBy;

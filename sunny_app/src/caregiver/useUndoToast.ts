@@ -5,11 +5,11 @@
 // (a newer tick) replaces the task and restarts the timer, so only the latest tick has a toast.
 // dismiss() hides it at once. The timer is cleared on unmount, and a show() after unmount (a late server reply) does
 // nothing, so no timer is armed. show and dismiss keep their
-// identity between renders.
+// identity between renders. The timing is the shared useTimedValue (src/components).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTimedValue } from '../components/useTimedValue';
 
 /** How long (milliseconds) the toast stays up. */
 export const UNDO_TOAST_MS = 5000;
@@ -30,51 +30,6 @@ export interface UndoToast<T> {
  * @return: (UndoToast<T>) The current task id and the show and dismiss actions.
  */
 export function useUndoToast<T>(durationMs: number = UNDO_TOAST_MS): UndoToast<T> {
-  const [id, setId] = useState<T | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
-
-  /**
-   * purpose: Stop the running timer, if any.
-   * @return: (void)
-   */
-  const clearTimer = useCallback((): void => {
-    if (timerRef.current !== null) clearTimeout(timerRef.current);
-    timerRef.current = null;
-  }, []);
-
-  /**
-   * purpose: Hide the toast now.
-   * @return: (void)
-   */
-  const dismiss = useCallback((): void => {
-    clearTimer();
-    setId(null);
-  }, [clearTimer]);
-
-  /**
-   * purpose: Show the toast for a task, replacing any current one and restarting the timer.
-   *          Does nothing once the component has unmounted.
-   * @param next: (T) The task the toast is for.
-   * @return: (void)
-   */
-  const show = useCallback(
-    (next: T): void => {
-      if (!mountedRef.current) return;
-      clearTimer();
-      setId(next);
-      timerRef.current = setTimeout(dismiss, durationMs);
-    },
-    [clearTimer, dismiss, durationMs],
-  );
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      clearTimer();
-    };
-  }, [clearTimer]);
-
-  return { id, show, dismiss };
+  const { value, show, dismiss } = useTimedValue<T>(durationMs);
+  return { id: value, show, dismiss };
 }

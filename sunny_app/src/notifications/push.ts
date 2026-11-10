@@ -6,7 +6,8 @@
 //
 // Behavior:
 //   - Foreground banners: importing this module makes notifications show a banner, list
-//     entry and sound while the app is open.
+//     entry and sound while the app is open (DEFAULT_NOTIFICATION_HANDLER, exported so the
+//     home display can restore it after silencing them).
 //   - Registration (usePushNotifications): about 1 second after mounting (letting the first
 //     screen settle) notification permission is requested (alert, sound, badge); if granted,
 //     the APNs token is registered with the backend. The token is registered again whenever
@@ -26,7 +27,7 @@
 //   task_instance_id is optional. When it is a string it is forwarded to voice.livekitToken
 //   as taskInstanceId so the agent opens the conversation in the context of that task.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
@@ -51,14 +52,17 @@ export interface NotificationTap {
   taskInstanceId?: TaskInstanceId;
 }
 
-Notifications.setNotificationHandler({
+/** How the app presents a notification that arrives while it is open. */
+export const DEFAULT_NOTIFICATION_HANDLER: Notifications.NotificationHandler = {
   handleNotification: async () => ({
     shouldShowBanner: true,
     shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
-});
+};
+
+Notifications.setNotificationHandler(DEFAULT_NOTIFICATION_HANDLER);
 
 /**
  * purpose: Extract the tap context from a notification's data payload.

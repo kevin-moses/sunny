@@ -13,6 +13,8 @@
 // text and the template as pure functions; the completion handler; and one end-to-end run
 // through the workpool. Questions are given by topic unless transcripts are shared.
 //
+// Also: a late-synced confirm reads "(phone app, sent at 11:00 AM)".
+//
 // Last modified: 2026-11-09
 
 import type { WorkId } from "@convex-dev/workpool";
@@ -304,6 +306,40 @@ describe("facts", () => {
     expect(input?.template).toContain("Today pills");
     expect(input?.template).not.toContain("Yesterday pills");
     expect(input?.factsMessage).not.toContain("next day");
+  });
+
+  test("a confirm pressed offline and synced late says when it was sent", async () => {
+    const f = await setup();
+    await addDayInstance(f, "Morning pills", {
+      scheduledTime: "08:00",
+      windowStart: 1,
+      state: "confirmed",
+      confirmedAt: Date.parse("2026-11-02T13:05:00Z"),
+      confirmReceivedAt: Date.parse("2026-11-02T16:00:00Z"),
+      confirmedVia: "phone_app",
+    });
+    const input = await load(f, await pendingDigest(f));
+    expect(input?.template).toContain("Morning pills at 8:05 AM (phone app, sent at 11:00 AM)");
+    expect(input?.factsMessage).toContain("sent at 11:00 AM");
+  });
+
+  test("a press at 11:30 PM that reached the server after midnight says the next day", async () => {
+    const f = await setup();
+    await addDayInstance(f, "Evening pills", {
+      scheduledTime: "21:00",
+      windowStart: 1,
+      state: "confirmed",
+      confirmedAt: Date.parse("2026-11-03T04:30:00Z"),
+      confirmReceivedAt: Date.parse("2026-11-03T07:10:00Z"),
+      confirmedVia: "phone_app",
+    });
+    const input = await load(f, await pendingDigest(f));
+    const phrase = "sent the next day at 2:10 AM";
+    expect(input?.template).toContain(`Evening pills at 11:30 PM (phone app, ${phrase})`);
+    expect(input?.factsMessage).toContain(phrase);
+    expect(
+      validateDigestReply(`Evening pills were taken at 11:30 PM, ${phrase}.`, input!.factsMessage),
+    ).not.toBeNull();
   });
 
   test("tasks, resolutions, claims, doses and questions are all reported", async () => {

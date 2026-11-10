@@ -1,0 +1,108 @@
+{
+  "_about": [
+    "Example input for: npx tsx scripts/caregiver.ts profile-load scripts/profile.example.json",
+    "Everyone and everything below is made up. For real data, copy this file to scripts/profile.local.json (every scripts/*.local.json is git-ignored, so it is never committed), replace the entries with the real ones, and run: npx tsx scripts/caregiver.ts profile-load scripts/profile.local.json",
+    "lifeProfile: category is one of person, place, doctor, habit, interest, preference, other. name is at most 120 characters; details (optional) at most 600. Only these three keys are allowed. The voice agent reads each entry as '<category> - <name>: <details>'.",
+    "sensitiveTopics: topic is at most 200 characters, guidance at most 1500. The agent reads each one as 'If asked about <topic>: <guidance>', so write the topic as what she might ask about.",
+    "facts: things Sunny should know, at most 300 characters each and at most 40 confirmed facts in all. They are saved as caregiver-verified facts.",
+    "Every text is stored as one paragraph: line breaks become spaces.",
+    "Loading is safe to repeat: an item already stored is not added again. An entry or topic stored with different text is reported as 'differs' and left alone (names are compared exactly, so a change of capital letters counts); add --update to replace it with this file's text. With --update an entry's details change only when the item has a details key, and \"details\": null (or an empty string) clears them. Each item starts its own convex process, so a full load takes a minute or two. Keys starting with an underscore, like this one, are ignored."
+  ],
+  "lifeProfile": [
+    {
+      "category": "person",
+      "name": "Jordan",
+      "details": "Her son. Lives twenty minutes away and calls most evenings around 7."
+    },
+    {
+      "category": "person",
+      "name": "Priya",
+      "details": "Jordan's wife. Brings dinner on Sundays."
+    },
+    {
+      "category": "person",
+      "name": "Theo and Mia",
+      "details": "Her grandchildren, 9 and 6. Theo loves trains, Mia is learning piano."
+    },
+    {
+      "category": "person",
+      "name": "Walter",
+      "details": "Her late husband. They were married for 48 years."
+    },
+    {
+      "category": "person",
+      "name": "Mrs. Alvarez",
+      "details": "Neighbor across the hall. Has a spare key."
+    },
+    {
+      "category": "place",
+      "name": "Maple Street Library",
+      "details": "Where she goes on Tuesday mornings for the book club."
+    },
+    {
+      "category": "place",
+      "name": "Corner Market",
+      "details": "Two blocks east. She buys bread and the newspaper there."
+    },
+    {
+      "category": "doctor",
+      "name": "Dr. Fenwick",
+      "details": "Her primary care doctor at Riverside Clinic."
+    },
+    {
+      "category": "doctor",
+      "name": "Dr. Osei",
+      "details": "Eye doctor; checkups every six months."
+    },
+    {
+      "category": "habit",
+      "name": "Morning walk",
+      "details": "Around the block after breakfast, about 20 minutes."
+    },
+    {
+      "category": "habit",
+      "name": "Afternoon tea",
+      "details": "Black tea with milk around 3."
+    },
+    {
+      "category": "interest",
+      "name": "Crossword puzzles",
+      "details": "Does the newspaper crossword every morning."
+    },
+    {
+      "category": "interest",
+      "name": "Baseball",
+      "details": "Follows the home team on the radio."
+    },
+    {
+      "category": "preference",
+      "name": "Be called by her first name",
+      "details": "Prefers 'Eleanor' to 'Ma'am' or 'Mrs.'."
+    },
+    {
+      "category": "preference",
+      "name": "Short answers",
+      "details": "Likes one or two sentences, spoken slowly."
+    }
+  ],
+  "sensitiveTopics": [
+    {
+      "topic": "her husband Walter",
+      "guidance": "Walter died in 2021. If she asks where he is, do not tell her he died as if it were news, and do not pretend he is alive. Say gently that he is not here right now, that he loved her very much, and ask her to tell you about him or about their garden. If she is upset, suggest calling Jordan."
+    },
+    {
+      "topic": "driving or the car",
+      "guidance": "She no longer drives. Do not offer to arrange driving. Say Jordan is happy to take her, or offer to call a taxi with her."
+    },
+    {
+      "topic": "money or bank accounts",
+      "guidance": "Say Jordan takes care of the bills and everything is paid. Never read out account details. Tell Jordan if someone has asked her for money."
+    }
+  ],
+  "facts": [
+    "Her cat is called Pepper.",
+    "Her birthday is May 14.",
+    "She keeps her reading glasses on the hall table.",
+    "The book club is reading a mystery this month."
+  ]
+}

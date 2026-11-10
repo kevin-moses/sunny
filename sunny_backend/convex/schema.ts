@@ -216,6 +216,9 @@ export default defineSchema({
     confirmedAt: v.optional(v.number()),
     confirmedBy: v.optional(v.string()),
     confirmedVia: v.optional(confirmVia),
+    // When the server received a confirm that a senior device had held (it was pressed offline)
+    // and sent later; set only when that is more than LATE_SYNC_MS after confirmedAt.
+    confirmReceivedAt: v.optional(v.number()),
     // The state an editor caregiver's resolve replaced, kept so instances.undoResolve can
     // restore it; cleared by the undo.
     resolvedFromState: v.optional(instanceState),
@@ -441,7 +444,11 @@ export default defineSchema({
     verifiedBy: v.optional(v.string()),
     verifiedAt: v.optional(v.number()),
     conversationId: v.optional(v.id("conversations")),
-  }).index("by_household", ["householdId"]),
+  })
+    .index("by_household", ["householdId"])
+    // Verified facts (verifiedAt set) and the newest unverified ones (verifiedAt absent), read
+    // without scanning every fact (profile.ts).
+    .index("by_household_verified", ["householdId", "verifiedAt"]),
 
   conversations: defineTable({
     householdId: v.id("households"),

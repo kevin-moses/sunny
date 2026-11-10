@@ -11,7 +11,7 @@ Sunny is a memory-care agent for seniors with MCI or early dementia who live alo
 | Folder | What it is |
 | --- | --- |
 | `sunny_backend/` | Convex backend (TypeScript): schema, access rules, scheduler, agent runtime, integrations, tests, dev scripts |
-| `sunny_app/` | React Native / Expo (SDK 57) iOS app: the senior's phone (Today view, Talk) and the iPad home display stub. Clerk sign-in, Convex subscriptions, LiveKit voice |
+| `sunny_app/` | React Native / Expo (SDK 57) iOS app: the senior's phone (Today view, Talk) and the iPad home display (standing in for the e-ink device: Done and Talk keys, voice on the panel, due cue). Clerk sign-in, Convex subscriptions, LiveKit voice |
 | `sunny_agent/` | LiveKit Python voice agent (Deepgram STT, Claude Haiku, Cartesia TTS, Tavily search) that reads and writes household state through Convex |
 | `notes/` | Specs and design notes |
 
@@ -25,11 +25,11 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | --- | --- |
 | Schema and enums | `schema.ts`, `lib/validators.ts` |
 | Auth config (Clerk issuer, `applicationID: "convex"`) | `auth.config.ts` |
-| Access rules (`requireReader`, `requireEditor`, `requirePrimary`, `requireSenior`, device claim) | `lib/access.ts` |
+| Access rules (`requireReader`, `requireCaregiverReader`, `requireEditor`, `requirePrimary`, `requireSenior`, device claim) | `lib/access.ts` |
 | Households, members, roles, join codes, devices, push tokens | `households.ts` |
 | Device pairing over HTTP (`POST /pair`, Clerk device users, rate limits) | `pairing.ts`, `http.ts` |
 | Tasks and escalation policies | `tasks.ts`, `lib/policies.ts` |
-| Task instances (confirm, snooze, claim, dose log, senior reminders) | `instances.ts` |
+| Task instances (confirm, snooze, claim, dose log, senior reminders); the rule for when a senior device may confirm (60 minutes early) and the day view's `confirmable` flag | `instances.ts`, `lib/confirmRule.ts` |
 | Scheduler tick (expand, open and close windows, escalation) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
 | Calendar events, occurrences, day view (`calendar.dayView`) | `calendar.ts`, `lib/occurrences.ts`, `lib/today.ts`, `lib/eventNotices.ts` |
 | Time zones | `lib/time.ts` |
@@ -38,6 +38,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
 | Daily digest | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts` |
 | Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` (the agent's calendar and task tools, run as an agent actor acting for the requesting caregiver; sessions pass the deployed prompt, model and tools as overrides, and a config change starts a new session with the recent chat carried over, so a backend deploy is enough) |
+| Life profile, sensitive topics, agent memory and family messages (caregiver read and write path) | `profile.ts` |
 | Functions the Python voice agent calls (`agent:*`): context, today, medication status, confirm, snooze, self-reported doses and undo, reminders, memory, caregiver flags, family messages, the household list, conversation and question logs | `agent.ts`, `lib/voiceRouting.ts` (flags and family messages through the outbox, reachable caregivers only, caps), `lib/voiceDoses.ts` and `lib/doseLimits.ts` (as-needed doses; the maximum applies to 24 hours and the local day), `lib/dueTask.ts` (the task "Done" and "not yet" mean), `lib/memoryLimits.ts` (agentMemory limits) |
 | Household list (one shared list per household) | `lists.ts` (caregivers and devices), `lib/householdList.ts` (the only write path) |
 | LiveKit room token for a senior device | `voice.ts` |
@@ -57,7 +58,7 @@ npx prettier --check convex scripts
 The dev deployment is `enduring-ostrich-959` (`https://enduring-ostrich-959.convex.cloud`, HTTP actions at `.convex.site`). Dev scripts refuse to run unless `CONVEX_DEPLOYMENT` in `sunny_backend/.env.local` starts with `dev:`.
 
 Scripts (not part of the deployed backend):
-- `scripts/caregiver.ts` is a command-line stand-in for the caregiver app, acting as a fixed dev caregiver through `convex run --identity`. Commands: `setup` (create a dev household and print join codes), `chat "<message>" [--continue]` (request to the household agent), `day`, `codes`, `invite [primary|member|viewer]` (caregiver invite code, default member), `google` (consent link), `phone <number>` (waits for the text to go out, then prints "Texted a code" or the failure reason), `confirm-phone <code>`, `list`, `list-add "<text>"`, `weather-location "<place>"` (sets `households.weatherLocation`; "" clears it). Run as `npx tsx scripts/caregiver.ts <command>`; it keeps the household id in a git-ignored `scripts/.dev-state.json`.
+- `scripts/caregiver.ts` is a command-line stand-in for the caregiver app, acting as a fixed dev caregiver through `convex run --identity`. Commands: `setup` (create a dev household and print join codes), `chat "<message>" [--continue]` (request to the household agent), `day`, `codes`, `invite [primary|member|viewer]` (caregiver invite code, default member), `google` (consent link), `phone <number>` (waits for the text to go out, then prints "Texted a code" or the failure reason), `confirm-phone <code>`, `profile-load <file.json> [--update]` (loads life profile entries, sensitive topics and caregiver facts through the public `profile:*` mutations, one `convex run` process per item, so it is slow; re-running adds nothing; an item stored with other text is reported "differs" and left alone unless `--update` is given, which changes an entry's details only when the item has a `details` key and clears them only for `null` or `""`; format in `scripts/profileLoader.ts`, example in `scripts/profile.example.json`, which is made up; keep real data in `scripts/profile.local.json`, since `scripts/*.local.json` is git-ignored), `profile` (prints what is stored), `message "<text>"` (sends the senior a text), `list`, `list-add "<text>"` and `weather-location "<place>"` (sets `households.weatherLocation`; "" clears it). Run as `npx tsx scripts/caregiver.ts <command>`; it keeps the household id in a git-ignored `scripts/.dev-state.json`. It refuses to run unless `convex run` would target a dev deployment, applying the CLI's precedence (shell variables over `.env.local` over `.env`; a `CONVEX_DEPLOY_KEY` over `CONVEX_DEPLOYMENT`; `scripts/devGuard.ts`), and prints the server's message when a call fails.
 - `scripts/setup_managed_agent.ts` creates or updates the Managed Agents agent and environment; run `npm run setup:agent` (from `sunny_backend`; `-- --prod` for production) once per Anthropic workspace to create the agent and environment (it also keeps the console copy in sync; changes to `lib/agentConfig.ts` or `lib/agentTools.ts` take effect on backend deploy). It reads `ANTHROPIC_API_KEY` from the root `.env`, reads the ids from the Convex deployment, and stores newly created ids there.
 
 Environment (set on the Convex deployment with `npx convex env set`, never in a committed file):
@@ -73,7 +74,7 @@ Environment (set on the Convex deployment with `npx convex env set`, never in a 
 
 ## sunny_app
 
-Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `useSession.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`. Full explanation of pairing and setup: `sunny_app/README.md`.
+Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone with its Done button in `src/day/useDoneAction.ts` and the offline press queue in `src/day/pendingConfirms.ts`, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `useSession.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`, the home display in `src/display` (panel parts and rules, keys, its voice card in `useDisplayVoice.ts` and `voiceModel.ts`, the due cue in `useDueCue.ts`, `cue.ts` and `cueAudio.ts` with the chime in `assets/sounds`, made by `scripts/makeChime.js`; every timing in `tuning.ts`, live values in `TuningProvider.tsx`, edited from the developer sheet's "Home display" section). Full explanation of pairing and setup: `sunny_app/README.md`.
 
 Run: `npm install`, then `npm run ios -- --device` for the first development build (Expo Go does not work; voice needs a physical iPhone), then `npm start`. Checks: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (jest).
 
@@ -81,7 +82,9 @@ Environment: all optional, with defaults for the dev deployment and dev Clerk in
 
 The app imports only the type of the backend's generated API; after backend changes, regenerate `sunny_backend/convex/_generated` (`npx convex dev` or `npx convex codegen`).
 
-Not built: the caregiver app, the e-ink display client, widget and Live Activity (native Swift extensions to add to the Expo project).
+The caregiver app (`src/caregiver`, shown to a signed-in caregiver) has three tabs: Home (the week, alerts, tasks), Chat (the household agent) and About (what Sunny knows: life profile, hard questions, memory facts to confirm, family messages).
+
+Not built: the e-ink display client, widget and Live Activity (native Swift extensions to add to the Expo project).
 
 ## sunny_agent
 
@@ -108,11 +111,12 @@ Style is enforced by pre-commit: `uv tool run pre-commit run --all-files` from t
 | Day clock and Next up | `calendar.dayView`, `sunny_app/src/day` |
 | Calendar events, Google sync | `calendar.ts`, `googleCalendar.ts`, `calendarPush.ts` |
 | Done button, widget, voice confirm | `instances.confirmDueTask` (button via the app, voice via `agent.confirmDueTask`) |
-| Voice (Talk) | `voice.ts`, `sunny_agent`, `sunny_app/src/voice` |
+| Voice (Talk) | `voice.ts`, `sunny_agent`, `sunny_app/src/voice`; on the home display `sunny_app/src/display/useDisplayVoice.ts` |
+| Display due cue (chime and spoken prompt, repeated per reprompt) | `sunny_app/src/display/useDueCue.ts`, `cue.ts`, `cueAudio.ts`; reprompt count `seniorPrompts` in `lib/today.ts` |
 | Caregiver requests to the agent | `agentRequests.ts`, `agentRuntime.ts` |
 | Alerts to family | `delivery.ts` (APNs and SMS), `sms.ts` (reply to claim) |
 | Daily digest | `digest.ts` |
-| Life profile, playbook, agent memory, family messages | Read by `agent.getContext`; voice writes: `agent.rememberFact`, `agent.sendFamilyMessage`, `agent.readLatestMessage` (seen) |
+| Life profile, playbook, agent memory, family messages | `profile.ts` (caregiver writes, lists), the caregiver About tab (`sunny_app/src/caregiver/CaregiverAboutScreen.tsx`), `scripts/caregiver.ts profile-load`; read by `agent.getContext`; voice writes: `agent.rememberFact`, `agent.sendFamilyMessage`, `agent.readLatestMessage` (seen) |
 | Route to a person (flags), medication facts, "not yet" | `agent.flagCaregiver`, `agent.logAsNeededDose`, `agent.undoLastDose`, `agent.medicationStatus`, `agent.snoozeDueTask` |
 | Small errands: "Add milk to the list" | `agent.addListItems` / `listItems` / `tickListItem`, `lists.ts`; one digest line for items the senior added |
 | Question log for the digest | `agent.logQuestions` (written after each call by `sunny_agent/src/memory.py`), read by `lib/digestFacts.ts` |
