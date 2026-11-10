@@ -157,6 +157,13 @@ describe('pair', () => {
     expect(mockSetActive).toHaveBeenCalledWith({ session: 'sess_1' });
   });
 
+  it('starts a new pairing with an empty queue of Done presses', async () => {
+    await confirmQueue.enqueue({ instanceId: 'inst_old' as never, label: 'Pills', pressedAt: 1 });
+    expect(confirmQueue.getEntries()).toHaveLength(1);
+    await pair('ABCD1234');
+    expect(confirmQueue.getEntries()).toEqual([]);
+  });
+
   it('clears the pending attempt once pairing succeeds', async () => {
     await pair('ABCD1234');
     expect(mockStore.has('sunny.pairingAttempt')).toBe(false);

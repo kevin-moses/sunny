@@ -71,6 +71,12 @@ export interface DoneAction {
   pressDone: () => void;
 }
 
+/**
+ * What a stored press withdraws: 'settle' hides the button for SETTLE_MS, 'early' then hides
+ * only a task that is not due yet until MESSAGE_MS after the press.
+ */
+type Block = 'none' | 'settle' | 'early';
+
 /** A result line and the task it is about. */
 interface Line {
   text: string;
@@ -124,15 +130,12 @@ export function useDoneAction(
   queue: ConfirmQueue,
 ): DoneAction {
   const [line, setLine] = useState<Line | null>(null);
-  const [settling, setSettling] = useState(false);
-  const [earlyBlocked, setEarlyBlocked] = useState(false);
+  const [block, setBlock] = useState<Block>('none');
   const mounted = useRef(true);
   const lastPress = useRef(0);
   const storing = useRef(false);
-  const settlingRef = useRef(false);
-  const earlyBlockedRef = useRef(false);
+  const blockRef = useRef<Block>('none');
   const clearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const blockTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
@@ -140,7 +143,6 @@ export function useDoneAction(
     return () => {
       mounted.current = false;
       clearTimeout(clearTimer.current);
-      clearTimeout(settleTimer.current);
       clearTimeout(blockTimer.current);
     };
   }, []);
@@ -162,25 +164,17 @@ export function useDoneAction(
   };
 
   /**
-   * purpose: After a stored press, withdraw the button for SETTLE_MS and keep early tasks
-   *          from being offered until the result line has finished (MESSAGE_MS).
+   * purpose: Move to a blocking phase and schedule the next one.
+   * @param next: (Block) The phase to enter.
    * @return: (void)
    */
-  const settle = (): void => {
-    clearTimeout(settleTimer.current);
+  const enter = (next: Block): void => {
     clearTimeout(blockTimer.current);
-    settlingRef.current = true;
-    setSettling(true);
-    earlyBlockedRef.current = true;
-    setEarlyBlocked(true);
-    settleTimer.current = setTimeout(() => {
-      settlingRef.current = false;
-      setSettling(false);
-    }, SETTLE_MS);
-    blockTimer.current = setTimeout(() => {
-      earlyBlockedRef.current = false;
-      setEarlyBlocked(false);
-    }, MESSAGE_MS);
+    blockRef.current = next;
+    setBlock(next);
+    if (next === 'settle') blockTimer.current = setTimeout(() => enter('early'), SETTLE_MS);
+    if (next === 'early')
+      blockTimer.current = setTimeout(() => enter('none'), MESSAGE_MS - SETTLE_MS);
   };
 
   /**
@@ -197,7 +191,7 @@ export function useDoneAction(
       if (!mounted.current) return;
       const sent = isOffline ? ' It will be sent when the internet is back.' : '';
       show(`Checked off: ${task.displayLabel}.${sent}`, task.instanceId);
-      settle();
+      enter('settle');
     } catch {
       if (mounted.current) show(NOT_STORED_MESSAGE, task.instanceId);
     } finally {
@@ -212,15 +206,15 @@ export function useDoneAction(
    */
   const pressDone = (): void => {
     const now = Date.now();
-    if (target === null || storing.current || settlingRef.current) return;
-    if (earlyBlockedRef.current && target.state === 'upcoming') return;
+    if (target === null || storing.current || blockRef.current === 'settle') return;
+    if (blockRef.current === 'early' && target.state === 'upcoming') return;
     if (now - lastPress.current < PRESS_GAP_MS) return;
     lastPress.current = now;
     void store(target, now);
   };
 
   // A line belongs to one task: show it under that task's button, or when no button is shown.
-  const hidden = settling || (earlyBlocked && target !== null && target.state === 'upcoming');
+  const hidden = block === 'settle' || (block === 'early' && target?.state === 'upcoming');
   const task = hidden ? null : target;
   const message =
     line !== null && (task === null || line.instanceId === task.instanceId) ? line.text : null;

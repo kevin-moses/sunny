@@ -102,6 +102,18 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 }
 
 /**
+ * purpose: Check a press age sent by a senior device.
+ * @param ageMs: (number) The age in ms.
+ * @return: (void)
+ * @raises invalid unless it is a finite number of at least 0.
+ */
+function requirePressAge(ageMs: number): void {
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    throw appError("invalid", "The press age must be zero or more");
+  }
+}
+
+/**
  * purpose: Confirm a task instance from any surface. The senior's device or the backend
  *          produces "confirmed"; an editor caregiver produces "resolved" under their name with
  *          confirmedVia "caregiver". A senior device can confirm an upcoming instance
@@ -157,9 +169,7 @@ export async function confirmInstance(
     if (actor.kind !== "senior_device") {
       throw appError("invalid", "Only the senior's device can send a press age");
     }
-    if (!Number.isFinite(args.pressedAgoMs) || args.pressedAgoMs < 0) {
-      throw appError("invalid", "The press age must be zero or more");
-    }
+    requirePressAge(args.pressedAgoMs);
   }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
@@ -612,9 +622,7 @@ export async function confirmPressedInstance(
   if (actor.kind !== "senior_device") {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
-  if (!Number.isFinite(args.pressedAgoMs) || args.pressedAgoMs < 0) {
-    throw appError("invalid", "The press age must be zero or more");
-  }
+  requirePressAge(args.pressedAgoMs);
   const instance = await ctx.db.get(args.instanceId);
   if (instance !== null && instance.householdId !== actor.householdId) {
     throw appError("forbidden", "Not allowed to confirm this task");
