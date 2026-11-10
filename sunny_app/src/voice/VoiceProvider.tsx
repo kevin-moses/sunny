@@ -19,8 +19,11 @@
 //     state becomes 'failed' (no agent in time, or the agent left) the failure reasons are
 //     surfaced as the error and the session is ended.
 //   - isInteractive: true while connecting after a Talk press, connected, or reconnecting.
-//   - Phone RPC (findContact, sendMessage) is registered on the room; app logs are forwarded
-//     to the agent while connected; push notification taps start a session.
+//   - Phone RPC (findContact, sendMessage) is registered on the room on the senior phone only
+//     (the home display answers such calls with LiveKit's UNSUPPORTED_METHOD error); app logs
+//     are forwarded to the agent while connected; push notification taps start a session.
+//   - Ending a session also turns the local microphone off, so a cancelled start cannot leave
+//     it recording.
 //   - The iOS audio session is configured and activated by registerGlobals() in index.ts
 //     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here. Its
 //     default policy prefers the speaker and deactivates the session when the call's audio
@@ -124,10 +127,17 @@ function isStaleTaskTap(request: SessionRequest, error: unknown): boolean {
 
 /**
  * purpose: Own the LiveKit session for a paired device and provide the voice contexts.
- * @param props: ({ children: ReactNode }) the app subtree
+ * @param props: ({ phone: boolean, children: ReactNode }) whether the device is the senior's
+ *               phone (only the phone serves the phone RPC methods), and the app subtree
  * @return: (ReactElement) the children wrapped in the session and voice contexts
  */
-function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElement {
+function PairedVoiceProvider({
+  phone,
+  children,
+}: {
+  phone: boolean;
+  children: ReactNode;
+}): ReactElement {
   const [{ source: tokenSource, beginStart, cancelStart }] = useState(createTokenSource);
   // Bumped when a session is ended, so a start that fails afterwards is not reported.
   const generationRef = useRef(0);
@@ -252,7 +262,9 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
 
   /**
    * purpose: End the session in LiveKit and cancel a start that is still fetching its token;
-   *          later start failures are then not reported as errors.
+   *          later start failures are then not reported as errors. The aborted start never
+   *          connects (the token source throws StartCancelledError for it), and the local
+   *          microphone, which LiveKit opens while the token is fetched, is turned off too.
    * @return: (Promise<void>) resolves when LiveKit has ended the session
    */
   const endSession = useCallback(async (): Promise<void> => {
@@ -263,6 +275,9 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     } catch (e) {
       logger.error('Voice', `Disconnect failed: ${errorMessage(e)}`);
     }
+    session.room.localParticipant
+      .setMicrophoneEnabled(false)
+      .catch((e: unknown) => logger.warning('Voice', `Microphone off failed: ${errorMessage(e)}`));
   }, [session]);
 
   /**
@@ -315,8 +330,13 @@ function PairedVoiceProvider({ children }: { children: ReactNode }): ReactElemen
     return detachLogRoom;
   }, [isConnected, session.room]);
 
-  // Phone RPC methods the agent calls (findContact, sendMessage).
-  useEffect(() => registerPhoneRpcMethods(session.room), [session.room]);
+  // Phone RPC methods the agent calls (findContact, sendMessage), on the phone only: on the
+  // home display a contacts dialog or SMS composer must never cover the panel. An agent call
+  // to a method that is not registered gets LiveKit's UNSUPPORTED_METHOD error (1400) at once.
+  useEffect(
+    () => (phone ? registerPhoneRpcMethods(session.room) : undefined),
+    [phone, session.room],
+  );
 
   /**
    * purpose: Toggle the local microphone.
@@ -400,5 +420,9 @@ export function VoiceProvider(props: {
   if (pairedDevice === null) {
     return <VoiceContext.Provider value={IDLE_VOICE}>{children}</VoiceContext.Provider>;
   }
-  return <PairedVoiceProvider>{children}</PairedVoiceProvider>;
+  return (
+    <PairedVoiceProvider phone={pairedDevice.kind === 'senior_phone'}>
+      {children}
+    </PairedVoiceProvider>
+  );
 }

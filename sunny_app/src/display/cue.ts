@@ -7,6 +7,9 @@
 // identified by the instance and that count (cueKey). Keys already cued are remembered on the
 // device, so a restart does not cue a task again. Anytime (untimed) tasks are never due, so
 // they never cue; a confirmed task is no longer due, so a cue still owed for it is dropped.
+// A snoozed task ("not yet") is not cued: the cue it was owed is passed over for good
+// (cueChoice's skip), and the next cue comes when the backend sends the reprompt that
+// follows the snooze (seniorPrompts goes up), so the display follows the backend.
 //
 // The words are the same every time: the caregiver's spoken prompt when they wrote one,
 // otherwise a fixed template from the display label and time ("Time for Morning pills, at
@@ -28,13 +31,32 @@ export function cueKey(task: Pick<DayTask, 'instanceId' | 'seniorPrompts'>): str
 }
 
 /**
- * purpose: The tasks owed a cue: due timed tasks whose current cue has not been played.
- * @param tasks: (DayTask[]) The day view's tasks, in its order.
- * @param cued: (ReadonlySet<string>) Cue keys already played on this device.
- * @return: (DayTask[]) The tasks to cue now, in day order.
+ * purpose: Whether a task may be cued at all: due (timed, due or escalated) and not snoozed.
+ * @param task: (DayTask) The task.
+ * @return: (boolean) True when a cue for it may play.
  */
-export function tasksToCue(tasks: DayTask[], cued: ReadonlySet<string>): DayTask[] {
-  return tasks.filter((task) => isDue(task) && !cued.has(cueKey(task)));
+export function isCueable(task: DayTask): boolean {
+  return isDue(task) && !task.snoozed;
+}
+
+/** Which owed cues to play now and which to pass over. */
+export interface CueChoice {
+  /** Tasks to cue now, in day order. */
+  play: DayTask[];
+  /** Snoozed tasks whose owed cue is passed over (remembered as played, never sounded). */
+  skip: DayTask[];
+}
+
+/**
+ * purpose: The cues owed now: due timed tasks whose current cue has not been played, split
+ *          into those to play and the snoozed ones to pass over.
+ * @param tasks: (DayTask[]) The day view's tasks, in its order.
+ * @param cued: (ReadonlySet<string>) Cue keys already played (or passed over) on this device.
+ * @return: (CueChoice) The tasks to play and to skip.
+ */
+export function cueChoice(tasks: DayTask[], cued: ReadonlySet<string>): CueChoice {
+  const owed = tasks.filter((task) => isDue(task) && !cued.has(cueKey(task)));
+  return { play: owed.filter((t) => !t.snoozed), skip: owed.filter((t) => t.snoozed) };
 }
 
 /**

@@ -1,7 +1,8 @@
 // sunny_app/src/display/__tests__/cue.test.ts
 //
 // Purpose: Unit tests for the due cue rules (cue.ts): which tasks are owed a cue (due timed
-// tasks, once per sent prompt, never anytime or finished ones), how the remembered keys are
+// tasks, once per sent prompt, never anytime or finished ones; snoozed ones passed over),
+// how the remembered keys are
 // kept to today's instances, the spoken time, and the words spoken (the caregiver's prompt,
 // or the fixed template when the prompt is the backend's default).
 //
@@ -10,7 +11,15 @@
 import { describe, expect, it } from '@jest/globals';
 
 import type { DayTask } from '../../day/types';
-import { cueKey, cueSpeech, hasWrittenPrompt, rememberCued, spokenTime, tasksToCue } from '../cue';
+import {
+  cueChoice,
+  cueKey,
+  cueSpeech,
+  hasWrittenPrompt,
+  isCueable,
+  rememberCued,
+  spokenTime,
+} from '../cue';
 
 /**
  * purpose: Build a task.
@@ -26,11 +35,22 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     scheduledTime: '08:00',
     state: 'due',
     seniorPrompts: 0,
+    snoozed: false,
     ...overrides,
   } as DayTask;
 }
 
-describe('tasksToCue', () => {
+/**
+ * purpose: The tasks a cue plays for now.
+ * @param tasks: (DayTask[]) The day view's tasks.
+ * @param cued: (ReadonlySet<string>) Keys already played.
+ * @return: (DayTask[]) The tasks to play.
+ */
+function tasksToCue(tasks: DayTask[], cued: ReadonlySet<string>): DayTask[] {
+  return cueChoice(tasks, cued).play;
+}
+
+describe('cueChoice', () => {
   it('cues a due task that was not cued yet', () => {
     const task = makeTask();
     expect(tasksToCue([task], new Set())).toEqual([task]);
@@ -65,6 +85,25 @@ describe('tasksToCue', () => {
     const a = makeTask({ instanceId: 'a' });
     const b = makeTask({ instanceId: 'b' });
     expect(tasksToCue([a, b], new Set()).map((t) => t.instanceId)).toEqual(['a', 'b']);
+  });
+
+  it('passes over the owed cue of a snoozed task instead of playing it', () => {
+    const snoozed = makeTask({ instanceId: 's', snoozed: true });
+    const due = makeTask({ instanceId: 'd' });
+    expect(cueChoice([snoozed, due], new Set())).toEqual({ play: [due], skip: [snoozed] });
+  });
+
+  it('does not pass over a snoozed task again once its key is remembered', () => {
+    const snoozed = makeTask({ snoozed: true });
+    expect(cueChoice([snoozed], new Set(['t1:0']))).toEqual({ play: [], skip: [] });
+  });
+});
+
+describe('isCueable', () => {
+  it('is true only for a due task that is not snoozed', () => {
+    expect(isCueable(makeTask())).toBe(true);
+    expect(isCueable(makeTask({ snoozed: true }))).toBe(false);
+    expect(isCueable(makeTask({ state: 'confirmed' }))).toBe(false);
   });
 });
 

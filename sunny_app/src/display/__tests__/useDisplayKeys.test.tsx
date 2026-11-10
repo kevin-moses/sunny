@@ -1,10 +1,11 @@
 // sunny_app/src/display/__tests__/useDisplayKeys.test.tsx
 //
 // Purpose: Tests for the display's keys, rendering the real useDisplayKeys with
-// react-test-renderer and fake timers; the backend call is the mocked boundary. Covers Talk
-// handing each press to the voice layer with a second press inside PRESS_GAP_MS ignored (also
-// across keys), and Done confirming the task on the screen on its own, whatever the voice
-// layer is doing.
+// react-test-renderer and fake timers; the backend call is the mocked boundary and the
+// tuning values are injected through TuningContext. Covers Talk handing each press to the
+// voice layer with a second press inside pressGapMs ignored (also across keys, and with a
+// tuned gap), and Done confirming the task on the screen on its own, whatever the voice layer
+// is doing.
 //
 // Last modified: 2026-11-09
 
@@ -13,10 +14,17 @@ import React from 'react';
 import { act, create } from 'react-test-renderer';
 
 import type { TaskCard } from '../model';
-import { PRESS_GAP_MS, useDisplayKeys } from '../useDisplayKeys';
+import { DEFAULT_TUNING } from '../tuning';
+import { TuningContext } from '../TuningProvider';
+import type { TuningControls } from '../TuningProvider';
+import { useDisplayKeys } from '../useDisplayKeys';
 import type { DisplayKeys } from '../useDisplayKeys';
 
 const mockMutation = jest.fn(async (..._args: unknown[]) => null);
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 
 jest.mock('../../backend/api', () => ({
   callMutation: (...args: unknown[]) => mockMutation(...args),
@@ -35,18 +43,27 @@ const CARD = {
 } as unknown as TaskCard;
 
 /**
- * purpose: Render the real hook.
+ * purpose: Render the real hook with a press gap.
  * @param card: (TaskCard | null) The Now task.
+ * @param pressGapMs: (number) The tuned press gap.
  * @return: (() => DisplayKeys) A getter for the latest result.
  */
-function renderKeys(card: TaskCard | null): () => DisplayKeys {
+function renderKeys(
+  card: TaskCard | null,
+  pressGapMs: number = DEFAULT_TUNING.pressGapMs,
+): () => DisplayKeys {
   let current!: DisplayKeys;
   const Probe = (): null => {
     current = useDisplayKeys(card, onPress, show, talk);
     return null;
   };
+  const controls = { tuning: { ...DEFAULT_TUNING, pressGapMs } } as TuningControls;
   act(() => {
-    create(<Probe />);
+    create(
+      <TuningContext.Provider value={controls}>
+        <Probe />
+      </TuningContext.Provider>,
+    );
   });
   return () => current;
 }
@@ -68,11 +85,21 @@ describe('useDisplayKeys', () => {
     act(() => get().pressTalk());
     expect(talk).toHaveBeenCalledTimes(1);
     act(() => {
-      jest.advanceTimersByTime(PRESS_GAP_MS);
+      jest.advanceTimersByTime(DEFAULT_TUNING.pressGapMs);
     });
     act(() => get().pressTalk());
     expect(talk).toHaveBeenCalledTimes(2);
     expect(onPress).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the tuned press gap', () => {
+    const get = renderKeys(null, 1_500);
+    act(() => get().pressTalk());
+    act(() => {
+      jest.advanceTimersByTime(1_000);
+    });
+    act(() => get().pressTalk());
+    expect(talk).toHaveBeenCalledTimes(1);
   });
 
   it('treats Done then Talk inside the gap as one press', () => {

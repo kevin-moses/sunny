@@ -17,9 +17,11 @@
 // registration (VoiceProvider is idle without a paired device). Nothing about the pairing or the
 // role is stored locally, so an offline cold start shows "Connecting..." until Clerk and Convex
 // answer. Stale notification taps are discarded while signed out. Shows a "Trying to reconnect"
-// warning and voice errors as banners; __DEV__ builds add a DEV pill for developer settings.
-// Provider order: SafeAreaProvider > ThemeProvider > ClerkProvider > ConvexProviderWithClerk >
-// VoiceProvider.
+// warning and voice errors as banners; __DEV__ builds add a DEV pill for developer settings
+// (on the home display it opens only on a long press, so the senior cannot open it by
+// accident; the sheet then also shows the display's tunables).
+// Provider order: SafeAreaProvider > ThemeProvider > TuningProvider > ClerkProvider >
+// ConvexProviderWithClerk > VoiceProvider.
 //
 // Last modified: 2026-11-09
 
@@ -43,6 +45,7 @@ import { CaregiverOnboardingScreen } from './src/screens/CaregiverOnboardingScre
 import { CaregiverSignInScreen } from './src/screens/CaregiverSignInScreen';
 import { ConfigErrorScreen } from './src/screens/ConfigErrorScreen';
 import { DevSettingsSheet } from './src/screens/DevSettingsSheet';
+import { TuningProvider } from './src/display/TuningProvider';
 import { DisplayScreen } from './src/screens/DisplayScreen';
 import { PairingScreen } from './src/screens/PairingScreen';
 import { TodayScreen } from './src/screens/TodayScreen';
@@ -99,12 +102,17 @@ function Banners({ voiceBanners }: { voiceBanners: boolean }) {
   );
 }
 
+/** How long (ms) the DEV pill must be held on the home display to open the sheet. */
+const DISPLAY_DEV_HOLD_MS = 2_000;
+
 /**
  * purpose: Debug-only developer tools: a floating pill (top right) that opens the developer
- *          settings sheet in a modal.
+ *          settings sheet in a modal. On the home display it opens only after a
+ *          DISPLAY_DEV_HOLD_MS press, and the sheet adds the display's tunables.
+ * @param props: ({ display: boolean }) Whether this is the paired home display.
  * @return: (JSX.Element) The pill and the modal.
  */
-function DevTools() {
+function DevTools({ display }: { display: boolean }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const [open, setOpen] = useState(false);
@@ -113,7 +121,10 @@ function DevTools() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Open developer settings"
-        onPress={() => setOpen(true)}
+        accessibilityHint={display ? 'Press and hold' : undefined}
+        onPress={display ? undefined : () => setOpen(true)}
+        onLongPress={display ? () => setOpen(true) : undefined}
+        delayLongPress={DISPLAY_DEV_HOLD_MS}
         style={[styles.pill, { top: insets.top + 8, borderColor: `${theme.accentColor}66` }]}
       >
         <View style={[styles.dot, { backgroundColor: theme.accentColor }]} />
@@ -125,7 +136,7 @@ function DevTools() {
         presentationStyle="pageSheet"
         onRequestClose={() => setOpen(false)}
       >
-        <DevSettingsSheet onClose={() => setOpen(false)} />
+        <DevSettingsSheet display={display} onClose={() => setOpen(false)} />
       </Modal>
     </>
   );
@@ -192,7 +203,7 @@ function Shell({ decision }: { decision: SessionDecision }) {
     <View style={styles.root}>
       <SessionScreen decision={decision} />
       <Banners voiceBanners={!isHomeDisplay(decision)} />
-      {__DEV__ && <DevTools />}
+      {__DEV__ && <DevTools display={isHomeDisplay(decision)} />}
     </View>
   );
 }
@@ -257,8 +268,10 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ThemeProvider>
-        <StatusBar style="dark" />
-        {CLERK_PUBLISHABLE_KEY === '' ? <ConfigErrorScreen /> : <BackendProviders />}
+        <TuningProvider>
+          <StatusBar style="dark" />
+          {CLERK_PUBLISHABLE_KEY === '' ? <ConfigErrorScreen /> : <BackendProviders />}
+        </TuningProvider>
       </ThemeProvider>
     </SafeAreaProvider>
   );

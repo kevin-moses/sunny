@@ -2,15 +2,20 @@
 //
 // Purpose: Pure rules for the home display's voice experience (useDisplayVoice wires them to
 // LiveKit). They decide:
-// - the voice phase from the connection and agent states: off, starting (fetching the token,
-//   before the microphone opens), listening (the microphone is open: LiveKit's pre-connect
-//   buffer keeps speech said before the agent joins), thinking, speaking;
+// - the voice phase from the connection and agent states: off (also when the agent failed),
+//   starting (fetching the token, before the microphone opens), listening (the microphone is
+//   open: LiveKit's pre-connect buffer keeps speech said before the agent joins), thinking,
+//   speaking;
 // - the latest exchange from the transcript: the senior's last question and the agent's
-//   answer to it (every agent line after that question, joined);
-// - how long the session may stay quiet before it ends by itself (idleTimeoutMs);
+//   answer to it (every agent line after that question, joined). Agent lines before the
+//   senior has said anything (a greeting, or a tapped notification's task prompt) are the
+//   opening: shown while spoken, but never an answer, so they neither shorten the wait for
+//   the first question nor linger on the panel;
+// - how long the session may stay quiet before it ends by itself (idleTimeoutMs, from the
+//   tuning values; no idle end before the agent has joined, which the start timeout covers);
 // - what the voice card on the panel shows (voiceCard): a tab and either a large title with a
 //   detail line, or the answer as large text. A finished session's answer lingers (the hook
-//   keeps it for ANSWER_LINGER_MS) so a repeated question can be answered by a glance.
+//   keeps it for the tuned answerLingerMs) so a repeated question can be answered by a glance.
 // - the plain-words failure line for a session that failed (failureMessage).
 // Nothing here starts timers or touches LiveKit.
 //
@@ -20,18 +25,10 @@ import type { AgentState } from '@livekit/components-react';
 import type { SFSymbol } from 'expo-symbols';
 
 import type { VoiceConnectionState } from '../voice/voiceContext';
+import type { DisplayTuning } from './tuning';
 
-/** How long (ms) the senior may stay quiet after pressing Talk before the session ends. */
-export const FIRST_QUESTION_MS = 20_000;
-
-/** How long (ms) the session waits for a follow-up question after an answer. */
-export const FOLLOW_UP_MS = 10_000;
-
-/** How long (ms) the agent may think or speak with nothing changing before the session ends. */
-export const STUCK_MS = 60_000;
-
-/** How long (ms) an answer stays on the panel after the session ends. */
-export const ANSWER_LINGER_MS = 3 * 60_000;
+/** The plain-words line when a session never reached the agent. */
+export const CONNECT_FAILED_MESSAGE = 'Could not connect. Try again.';
 
 /** Where the voice session is, as the display shows it. */
 export type VoicePhase = 'off' | 'starting' | 'listening' | 'thinking' | 'speaking';
@@ -47,9 +44,11 @@ export interface TranscriptLine {
 export interface Exchange {
   question: string | null;
   answer: string | null;
+  /** What the agent said before the senior said anything, or null. Never an answer. */
+  opening: string | null;
 }
 
-/** An answer kept on the panel for ANSWER_LINGER_MS after its session ended. */
+/** An answer kept on the panel for a while after its session ended. */
 export interface LingeringAnswer {
   text: string;
   /** The clock time it was given ("10:42"), or null when the day has not loaded. */
@@ -70,6 +69,13 @@ export type VoiceCard =
 export function voicePhase(connection: VoiceConnectionState, agent: AgentState): VoicePhase {
   if (connection === 'disconnected') return 'off';
   switch (agent) {
+    case 'failed':
+      return 'off';
+    case 'disconnected':
+      // Only while the token is being fetched (the room is not connected yet).
+      return connection === 'connecting' ? 'starting' : 'off';
+    case 'connecting':
+      return 'starting';
     case 'pre-connect-buffering':
     case 'initializing':
     case 'idle':
@@ -79,55 +85,69 @@ export function voicePhase(connection: VoiceConnectionState, agent: AgentState):
       return 'thinking';
     case 'speaking':
       return 'speaking';
-    default:
-      return 'starting';
   }
 }
 
 /**
  * purpose: The latest exchange in a transcript: the senior's last line, and the agent's lines
- *          after it joined with spaces (the answer). Lines in `ignore` (left over from an
- *          earlier session) and blank lines are skipped.
+ *          after it joined with spaces (the answer); agent lines before any senior line are
+ *          the opening. Lines in `ignore` (left over from an earlier session) and blank lines
+ *          are skipped.
  * @param lines: (TranscriptLine[]) The transcript, oldest first.
  * @param ignore: (ReadonlySet<string>) Ids of lines to skip.
- * @return: (Exchange) The question and answer, each null when there is none.
+ * @return: (Exchange) The question, answer and opening, each null when there is none.
  */
 export function latestExchange(lines: TranscriptLine[], ignore: ReadonlySet<string>): Exchange {
   let question: string | null = null;
-  let answer: string[] = [];
+  let agent: string[] = [];
   for (const line of lines) {
     const text = line.message.trim();
     if (ignore.has(line.id) || text === '') continue;
     if (line.type === 'userTranscript') {
       question = text;
-      answer = [];
+      agent = [];
     } else if (line.type === 'agentTranscript') {
-      answer.push(text);
+      agent.push(text);
     }
   }
-  return { question, answer: answer.length > 0 ? answer.join(' ') : null };
+  const said = agent.length > 0 ? agent.join(' ') : null;
+  return question === null
+    ? { question, answer: null, opening: said }
+    : { question, answer: said, opening: null };
+}
+
+/** What decides the idle end of a session. */
+export interface IdleInput {
+  phase: VoicePhase;
+  /** The agent participant is in the room. */
+  agentJoined: boolean;
+  /** The senior is speaking. */
+  userSpeaking: boolean;
+  /** An answer to a question has been given in this session. */
+  answered: boolean;
 }
 
 /**
  * purpose: How long the session may go on with nothing changing before it ends by itself.
- * @param phase: (VoicePhase) The phase.
- * @param userSpeaking: (boolean) The senior is speaking.
- * @param answered: (boolean) An answer has been given in this session.
- * @return: (number | null) Milliseconds, or null when the session must not end now (off,
- *          starting, which the provider's own timeout covers, or while the senior speaks).
+ * @param input: (IdleInput) The phase, whether the agent joined, whether the senior speaks,
+ *        and whether a question was answered.
+ * @param tuning: (Pick<DisplayTuning, 'firstQuestionMs' | 'followUpMs' | 'stuckMs'>) The
+ *        tuned waits.
+ * @return: (number | null) Milliseconds, or null when the session must not end now (no
+ *          session, the agent not joined yet, which the start timeout covers, or while the
+ *          senior speaks).
  */
 export function idleTimeoutMs(
-  phase: VoicePhase,
-  userSpeaking: boolean,
-  answered: boolean,
+  input: IdleInput,
+  tuning: Pick<DisplayTuning, 'firstQuestionMs' | 'followUpMs' | 'stuckMs'>,
 ): number | null {
-  if (userSpeaking) return null;
-  switch (phase) {
+  if (input.userSpeaking || !input.agentJoined) return null;
+  switch (input.phase) {
     case 'listening':
-      return answered ? FOLLOW_UP_MS : FIRST_QUESTION_MS;
+      return input.answered ? tuning.followUpMs : tuning.firstQuestionMs;
     case 'thinking':
     case 'speaking':
-      return STUCK_MS;
+      return tuning.stuckMs;
     default:
       return null;
   }
@@ -180,20 +200,20 @@ export function voiceCard(
         title: 'Thinking',
         detail: exchange.question === null ? null : `"${exchange.question}"`,
       };
-    case 'speaking':
-      return exchange.answer === null
+    case 'speaking': {
+      const said = exchange.answer ?? exchange.opening;
+      return said === null
         ? { kind: 'prompt', tab: 'Sunny', icon: 'speaker.wave.2', title: 'Answering', detail: null }
-        : { kind: 'answer', tab: 'Sunny', text: exchange.answer };
+        : { kind: 'answer', tab: 'Sunny', text: said };
+    }
   }
 }
 
 /**
  * purpose: The plain-words line for a voice session that failed.
- * @param reachedListening: (boolean) The failed session had opened the microphone.
+ * @param agentJoined: (boolean) The agent had joined the failed session.
  * @return: (string) The line for the status area.
  */
-export function failureMessage(reachedListening: boolean): string {
-  return reachedListening
-    ? 'Sunny stopped. Press Talk to try again.'
-    : 'Could not connect. Try again.';
+export function failureMessage(agentJoined: boolean): string {
+  return agentJoined ? 'Sunny stopped. Press Talk to try again.' : CONNECT_FAILED_MESSAGE;
 }

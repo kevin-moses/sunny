@@ -6,8 +6,9 @@
 // (instances.confirmTaskInstance), so it can only confirm the task the screen shows. With
 // nothing waiting, Done says so without calling the backend. Done works the same during and
 // after a voice session. Talk hands over to the display's voice layer (useDisplayVoice), which
-// starts or ends a session. A second press of either key within PRESS_GAP_MS is ignored so a
-// tremor or a double tap cannot skip a step, and Done is ignored while a confirm is in flight
+// starts or ends a session. A second press of either key within the tuned pressGapMs is
+// ignored so a tremor or a double tap cannot skip a step, and Done is ignored while a confirm
+// is in flight
 // ("Saving" shows until it lands, which offline is when the connection is back). Results go to
 // the status line (useStatusMessage), which shows and announces them.
 //
@@ -18,9 +19,7 @@ import { useRef, useState } from 'react';
 import { callMutation, toBackendError } from '../backend/api';
 import { api } from '../backend/convexApi';
 import type { TaskCard } from './model';
-
-/** Presses closer together than this (ms) count as one. */
-export const PRESS_GAP_MS = 700;
+import { useTuning } from './TuningProvider';
 
 /** What useDisplayKeys returns. */
 export interface DisplayKeys {
@@ -46,6 +45,7 @@ export function useDisplayKeys(
   show: (text: string) => void,
   talk: () => void,
 ): DisplayKeys {
+  const { pressGapMs } = useTuning();
   const [progress, setProgress] = useState<{ instanceId: string; index: number } | null>(null);
   const [doneBusy, setDoneBusy] = useState(false);
   const lastPress = useRef(0);
@@ -58,7 +58,7 @@ export function useDisplayKeys(
    */
   const accept = (): boolean => {
     const now = Date.now();
-    if (now - lastPress.current < PRESS_GAP_MS) return false;
+    if (now - lastPress.current < pressGapMs) return false;
     lastPress.current = now;
     onPress();
     return true;

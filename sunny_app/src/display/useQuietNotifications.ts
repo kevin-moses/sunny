@@ -6,28 +6,25 @@
 // the display that would draw a colored iOS banner over the paper panel and play the system
 // sound on top of the display's own due cue (useDueCue), which already covers the same prompt.
 // While the display is mounted, notifications that arrive in the foreground are kept in the
-// notification list only; when it unmounts, the app's default presentation is restored.
+// notification list only; when it unmounts, push.ts's DEFAULT_NOTIFICATION_HANDLER is
+// restored, so the two cannot drift apart.
 //
 // Last modified: 2026-11-09
 
 import * as Notifications from 'expo-notifications';
 import { useEffect } from 'react';
 
-/**
- * purpose: How a foreground notification is presented.
- * @param loud: (boolean) Show a banner and play the sound (the app's default), or neither.
- * @return: (Notifications.NotificationHandler) The handler for setNotificationHandler.
- */
-function presentation(loud: boolean): Notifications.NotificationHandler {
-  return {
-    handleNotification: async () => ({
-      shouldShowBanner: loud,
-      shouldShowList: true,
-      shouldPlaySound: loud,
-      shouldSetBadge: false,
-    }),
-  };
-}
+import { DEFAULT_NOTIFICATION_HANDLER } from '../notifications/push';
+
+/** Foreground presentation on the display: in the list only, no banner, no sound. */
+export const QUIET_NOTIFICATION_HANDLER: Notifications.NotificationHandler = {
+  handleNotification: async () => ({
+    shouldShowBanner: false,
+    shouldShowList: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+};
 
 /**
  * purpose: Silence foreground notification banners and sounds while the display is mounted.
@@ -35,8 +32,7 @@ function presentation(loud: boolean): Notifications.NotificationHandler {
  */
 export function useQuietNotifications(): void {
   useEffect(() => {
-    Notifications.setNotificationHandler(presentation(false));
-    // Restores the presentation push.ts sets for the phone (banner, list and sound).
-    return () => Notifications.setNotificationHandler(presentation(true));
+    Notifications.setNotificationHandler(QUIET_NOTIFICATION_HANDLER);
+    return () => Notifications.setNotificationHandler(DEFAULT_NOTIFICATION_HANDLER);
   }, []);
 }

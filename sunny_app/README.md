@@ -31,20 +31,31 @@ conversation screen. Its voice states live on the paper panel:
   The voice card reads "One moment", then "Listening" once the microphone is open (LiveKit
   keeps what is said while the agent joins), "Thinking" with the question heard, then the
   agent's answer as large text while it is spoken. The card takes the Next up card's place
-  beside a waiting task, or the whole body when nothing is waiting. Pressing Talk while the
-  session is starting is ignored; pressing it during a session ends it. The session ends by
-  itself after 20 s without a question or 10 s after an answer (constants in
-  `src/display/voiceModel.ts`). The last answer stays on the panel for 3 minutes, unless a
-  task comes due. Failures show on the status line in plain words. The display asks for
-  microphone permission when it opens, so the senior never meets the iOS dialog.
+  beside a waiting task, or the whole body when nothing is waiting. Pressing Talk during a
+  session, also while it is still connecting, ends it. A session that has not reached the
+  agent in 15 s gives up ("Could not connect. Try again."); once the agent is there, the
+  session ends by itself after 20 s without a question or 10 s after an answer. Only an answer
+  to a question counts: a line the agent says first is shown but never lingers. The last answer
+  stays on the panel for 3 minutes, unless a task comes due. Failures show on the status line
+  in plain words; Talk while offline says so instead of connecting. The display asks for
+  microphone permission when it opens, so the senior never meets the iOS dialog. The phone's
+  contact and message tools are not offered to the agent on the display.
 - **Due cue:** when a timed task comes due, and on each reprompt the backend sends (the day
   view's `seniorPrompts` count), the display plays a soft chime (`assets/sounds/chime.wav`,
   synthesized by `node scripts/makeChime.js`) and speaks the task's prompt with on-device
   speech (`expo-speech`, slow rate): the caregiver's spoken prompt, or "Time for <label>, at
   <time>. Press Done when you have taken them / finished." Never during a voice session (it
-  waits, and is dropped if the task was confirmed meanwhile), never for anytime tasks, and
-  once per prompt across restarts (played cues are kept in AsyncStorage). Audio uses the
-  playback category, so it plays with the device muted.
+  waits until 2 s after the session, and is dropped if the task was confirmed meanwhile),
+  never for a snoozed task (the day view's `snoozed`; the next cue comes with the backend's
+  reprompt after the snooze, and the Now card's tab reads "Later"), never for anytime tasks,
+  and once per prompt across restarts (played cues are kept in AsyncStorage). A cue that fails
+  to sound, or whose speech gets stuck, is tried once more. Audio uses the playback category,
+  so it plays with the device muted.
+- **Tuning:** every timing and the speech rate live in `src/display/tuning.ts` (default,
+  unit, allowed range and step for each). On a debug build, hold the DEV pill on the display
+  for 2 seconds to open the developer sheet: its "Home display" section edits each value
+  within its range, saves it on the device and applies it at once, resets to the defaults,
+  and has "Play due cue now" and "Show sample answer" for quick checks.
 
 `expo-audio`, `expo-speech` and `expo-asset` are native modules: after pulling them, rebuild
 the development client with `npm run ios -- --device`.

@@ -7,7 +7,8 @@
 // below it in portrait. The display is meant to stand in landscape; portrait is laid out rather
 // than locked because iPadOS 26 no longer reliably honors an orientation lock.
 //
-// The panel is a carousel of two screens, switched every CAROUSEL_MS with no motion: Now (the
+// The panel is a carousel of two screens, switched every tuned carouselMs (display/tuning.ts)
+// with no motion: Now (the
 // Now card and Next up) and Today (the day's rows, the waiting task boxed). A newly due task
 // and any key press bring Now back and restart the timer; during a multi-step task, a voice
 // session or while an answer lingers, the carousel holds on Now so it stays in view. Nothing on
@@ -36,14 +37,12 @@ import { DisplayCanvas, DisplayMessage, NowBody, TodayBody } from '../display/Di
 import { KEY_ROW_HEIGHT, KEY_WIDTH, KeyPanel } from '../display/KeyPanel';
 import { nextItem, nowCard, nowTime, todayRows } from '../display/model';
 import { CANVAS, ink, useDisplayFonts } from '../display/theme';
+import { useTuning } from '../display/TuningProvider';
 import { useDisplayKeys } from '../display/useDisplayKeys';
 import { useDisplayVoice } from '../display/useDisplayVoice';
 import { useDueCue } from '../display/useDueCue';
 import { useQuietNotifications } from '../display/useQuietNotifications';
 import { useStatusMessage } from '../display/useStatusMessage';
-
-/** How long (ms) each carousel screen stays up. */
-const CAROUSEL_MS = 45_000;
 
 /** Space (points) inside the safe area around the panel and keys, and between them. */
 const MARGIN = 16;
@@ -65,7 +64,8 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   const taskCard = card?.kind === 'task' ? card : null;
   const nowTaskId = taskCard?.task.instanceId ?? null;
   const status = useStatusMessage();
-  const voice = useDisplayVoice(day === null ? null : nowTime(day), status.show);
+  const voice = useDisplayVoice(day === null ? null : nowTime(day), isOffline, status.show);
+  const { carouselMs } = useTuning();
 
   const [page, setPage] = useState<Page>('now');
   const [cycle, setCycle] = useState(0);
@@ -102,9 +102,9 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   const hold = taskCard?.steps != null || voice.card !== null;
   useEffect(() => {
     if (hold) return undefined;
-    const timer = setInterval(() => setPage((p) => (p === 'now' ? 'today' : 'now')), CAROUSEL_MS);
+    const timer = setInterval(() => setPage((p) => (p === 'now' ? 'today' : 'now')), carouselMs);
     return () => clearInterval(timer);
-  }, [hold, cycle]);
+  }, [hold, cycle, carouselMs]);
   const shown: Page = hold ? 'now' : page;
 
   const keys = useDisplayKeys(taskCard, showNow, status.show, voice.talk);
@@ -173,7 +173,6 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
         length={right ? panelHeight : panelWidth}
         status={statusLine}
         doneBusy={keys.doneBusy}
-        talkBusy={voice.busy}
         onDone={keys.pressDone}
         onTalk={keys.pressTalk}
       />

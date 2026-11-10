@@ -3,21 +3,29 @@
 // Purpose: The home display's voice experience on top of the shared LiveKit session
 // (VoiceProvider). The display never swaps to the phone's conversation screen; this hook turns
 // the session into the voice card drawn on the paper panel (voiceModel.ts rules) and decides
-// what the Talk key does:
+// what the Talk key does. All waits come from the tuning values (useTuning).
 // - Talk with no session starts one (one press; LiveKit opens the microphone right away and
-//   keeps what is said while the agent joins). The card reads "Listening", then "Thinking"
-//   with the question heard, then the agent's answer as large text while it is spoken.
-// - Talk while the session is starting is ignored (the key is dimmed). Talk during a live
-//   session ends it ("Stopped listening"): the agent cannot be interrupted from the device,
-//   so a second press always means stop, which is easy to predict.
-// - The session ends by itself when nothing happens for a while (voiceModel.idleTimeoutMs:
-//   FIRST_QUESTION_MS before a question, FOLLOW_UP_MS after an answer); the microphone is
-//   never left open.
-// - After the session, its last answer stays on the card for ANSWER_LINGER_MS, tabbed with the
-//   time it was given; dismissAnswer clears it early (a newly due task takes priority).
-// - Failures show in plain words on the status line and are announced: a refused microphone
-//   (checked before connecting), "Could not connect. Try again." when the session never
-//   opened the microphone, "Sunny stopped. Press Talk to try again." when it failed later.
+//   keeps what is said while the agent joins). The card reads "One moment", "Listening", then
+//   "Thinking" with the question heard, then the agent's answer as large text while it is
+//   spoken. Talk is refused up front, in plain words, when the display is offline or the
+//   microphone permission was refused.
+// - Talk during a session, also while it is still connecting, ends it ("Stopped listening"):
+//   the agent cannot be interrupted from the device, so a second press always means stop.
+//   Ending aborts a start still waiting for its token, so a token that arrives later never
+//   opens the microphone (VoiceProvider's abort path).
+// - A session that has not reached the agent within startTimeoutMs is ended the same way, with
+//   "Could not connect. Try again.", so an outage cannot leave "One moment" up (and the due
+//   cue held back) indefinitely.
+// - Once the agent has joined, the session ends by itself when nothing happens for a while
+//   (voiceModel.idleTimeoutMs: firstQuestionMs before a question, followUpMs after an answer,
+//   stuckMs while thinking or speaking); the microphone is never left open.
+// - After the session, its last answer to a question stays on the card for answerLingerMs,
+//   tabbed with the time it was given; an opening line the agent said before any question
+//   never lingers. dismissAnswer clears it early (a newly due task takes priority). The
+//   developer sheet's "Show sample answer" puts a sample here the same way.
+// - Failures show in plain words on the status line and are announced: "Could not connect.
+//   Try again." when the agent never joined, "Sunny stopped. Press Talk to try again." when it
+//   failed after joining.
 // Saying "done" is the agent's job, not this hook's; the Done key keeps working throughout.
 // VoiceOver announces the status-line messages (useStatusMessage) but not the listening and
 // thinking states, which it would speak into the open microphone; the voice card carries an
@@ -29,9 +37,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { clockTime } from '../day/format';
 import { useConversation, useVoice } from '../voice/voiceContext';
+import { useSampleAnswer, useTuning } from './TuningProvider';
 import { useMicrophoneAllowed } from './useMicrophoneAllowed';
 import {
-  ANSWER_LINGER_MS,
+  CONNECT_FAILED_MESSAGE,
   failureMessage,
   idleTimeoutMs,
   latestExchange,
@@ -46,15 +55,18 @@ export const STOPPED_MESSAGE = 'Stopped listening';
 /** Status line when Talk is pressed but the microphone permission was refused. */
 export const MIC_OFF_MESSAGE = 'The microphone is off. Ask your family to turn it on.';
 
+/** Status line when Talk is pressed while the display has no connection. */
+export const OFFLINE_MESSAGE = 'Not connected. Try again later.';
+
 /** What the display tracks about the current or last session. */
 interface SessionTrack {
   active: boolean;
   /** Transcript lines from before the session started, left out of its exchange. */
   ignored: ReadonlySet<string>;
-  /** The session's latest answer, kept so it survives the transcript being cleared. */
+  /** The session's latest answer to a question, kept so it survives the transcript clearing. */
   answer: string | null;
-  /** The session opened the microphone. */
-  heard: boolean;
+  /** The agent joined the session. */
+  joined: boolean;
 }
 
 /** What useDisplayVoice returns. */
@@ -63,8 +75,6 @@ export interface DisplayVoice {
   card: VoiceCard | null;
   /** A session is live (starting, listening, thinking or speaking). */
   active: boolean;
-  /** The session is starting; the Talk key shows as busy. */
-  busy: boolean;
   /** A standing status line while a session is live, or null. */
   status: string | null;
   /** The Talk key's action. */
@@ -76,24 +86,34 @@ export interface DisplayVoice {
 /**
  * purpose: Drive the display's voice card and Talk key from the voice session.
  * @param clock: (string | null) The household-local time now, "HH:MM", stamped on answers.
+ * @param offline: (boolean) The display has no connection to the backend.
  * @param show: ((text: string) => void) Shows and announces a line on the status line.
  * @return: (DisplayVoice) The card, flags, status line and actions.
  */
-export function useDisplayVoice(clock: string | null, show: (text: string) => void): DisplayVoice {
+export function useDisplayVoice(
+  clock: string | null,
+  offline: boolean,
+  show: (text: string) => void,
+): DisplayVoice {
   const voice = useVoice();
   const conversation = useConversation();
+  const tuning = useTuning();
+  const sample = useSampleAnswer();
   const micAllowed = useMicrophoneAllowed();
   const phase = voicePhase(voice.connectionState, conversation.agentState);
   const active = phase !== 'off';
+  const { agentJoined } = conversation;
+  const at = clock === null ? null : clockTime(clock);
 
   // A session already live when the display mounts owns the whole transcript.
   const [track, setTrack] = useState<SessionTrack>(() => ({
     active,
     ignored: new Set(),
     answer: null,
-    heard: false,
+    joined: agentJoined,
   }));
   const [lingering, setLingering] = useState<LingeringAnswer | null>(null);
+  const [seenSample, setSeenSample] = useState(sample?.id ?? 0);
   const exchange = useMemo(
     () => latestExchange(conversation.messages, track.ignored),
     [conversation.messages, track.ignored],
@@ -101,41 +121,65 @@ export function useDisplayVoice(clock: string | null, show: (text: string) => vo
 
   // Follow the session while rendering (React's pattern for reacting to a changed value): a
   // new session ignores the transcript so far and clears the old answer; a live session keeps
-  // its latest answer (a new question clears it until it is answered) and notes the
-  // microphone opened; an ending session leaves its answer lingering. The kept answer
-  // survives LiveKit clearing the transcript when the room disconnects.
+  // its latest answer (a new question clears it until it is answered) and notes the agent
+  // joined; an ending session leaves its answer lingering. The kept answer survives LiveKit
+  // clearing the transcript when the room disconnects.
   if (active && !track.active) {
     setTrack({
       active: true,
       ignored: new Set(conversation.messages.map((m) => m.id)),
       answer: null,
-      heard: false,
+      joined: agentJoined,
     });
     setLingering(null);
   } else if (!active && track.active) {
     setTrack({ ...track, active: false });
-    if (track.answer !== null) {
-      setLingering({ text: track.answer, at: clock === null ? null : clockTime(clock) });
-    }
+    if (track.answer !== null) setLingering({ text: track.answer, at });
   } else if (active) {
     const cleared = exchange.question === null && exchange.answer === null;
     const answer = cleared ? track.answer : exchange.answer;
-    const heard = track.heard || phase !== 'starting';
-    if (answer !== track.answer || heard !== track.heard) setTrack({ ...track, answer, heard });
+    const joined = track.joined || agentJoined;
+    if (answer !== track.answer || joined !== track.joined) setTrack({ ...track, answer, joined });
+  }
+  // The developer sheet asked for a sample answer.
+  if (sample !== null && sample.id !== seenSample) {
+    setSeenSample(sample.id);
+    setLingering({ text: sample.text, at });
   }
 
-  // The lingering answer leaves the panel ANSWER_LINGER_MS after the session ended.
+  // The lingering answer leaves the panel answerLingerMs after it appeared.
+  const lingerMs = tuning.answerLingerMs;
   useEffect(() => {
     if (lingering === null) return undefined;
-    const timer = setTimeout(() => setLingering(null), ANSWER_LINGER_MS);
+    const timer = setTimeout(() => setLingering(null), lingerMs);
     return () => clearTimeout(timer);
-  }, [lingering]);
+  }, [lingering, lingerMs]);
+
+  // Give up on a session that has not reached the agent within startTimeoutMs.
+  const { disconnect } = voice;
+  const connecting = active && !agentJoined;
+  const startTimeoutMs = tuning.startTimeoutMs;
+  useEffect(() => {
+    if (!connecting) return undefined;
+    const timer = setTimeout(() => {
+      void disconnect();
+      show(CONNECT_FAILED_MESSAGE);
+    }, startTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [connecting, startTimeoutMs, disconnect, show]);
 
   // End a session that stays quiet: the timer restarts whenever anything changes.
-  const timeout = idleTimeoutMs(phase, conversation.userSpeaking, track.answer !== null);
+  const timeout = idleTimeoutMs(
+    {
+      phase,
+      agentJoined,
+      userSpeaking: conversation.userSpeaking,
+      answered: track.answer !== null,
+    },
+    tuning,
+  );
   const last = conversation.messages.at(-1);
   const activity = `${phase}|${conversation.messages.length}|${last?.message.length ?? 0}`;
-  const { disconnect } = voice;
   useEffect(() => {
     if (timeout === null) return undefined;
     const timer = setTimeout(() => {
@@ -147,38 +191,39 @@ export function useDisplayVoice(clock: string | null, show: (text: string) => vo
 
   // A failed session is reported in plain words.
   const { error } = voice;
-  const heard = track.heard;
+  const joined = track.joined;
   useEffect(() => {
-    if (error !== null) show(failureMessage(heard));
-  }, [error, heard, show]);
+    if (error !== null) show(failureMessage(joined));
+  }, [error, joined, show]);
 
   const { connect } = voice;
+  /**
+   * purpose: The Talk key: end a live (or connecting) session, otherwise start one unless the
+   *          display is offline or the microphone is refused.
+   * @return: (void)
+   */
   const talk = useCallback((): void => {
-    if (phase === 'starting') return;
     if (active) {
       void disconnect();
       show(STOPPED_MESSAGE);
-      return;
-    }
-    if (micAllowed === false) {
+    } else if (offline) {
+      show(OFFLINE_MESSAGE);
+    } else if (micAllowed === false) {
       show(MIC_OFF_MESSAGE);
-      return;
+    } else {
+      void connect();
     }
-    void connect();
-  }, [phase, active, micAllowed, connect, disconnect, show]);
+  }, [active, offline, micAllowed, connect, disconnect, show]);
 
+  /**
+   * purpose: Take a lingering answer off the panel.
+   * @return: (void)
+   */
   const dismissAnswer = useCallback((): void => setLingering(null), [setLingering]);
 
   let status: string | null = null;
   if (voice.connectionState === 'reconnecting') status = 'Reconnecting';
-  else if (active && phase !== 'starting') status = 'Press Talk to stop';
+  else if (active) status = 'Press Talk to stop';
 
-  return {
-    card: voiceCard(phase, exchange, lingering),
-    active,
-    busy: phase === 'starting',
-    status,
-    talk,
-    dismissAnswer,
-  };
+  return { card: voiceCard(phase, exchange, lingering), active, status, talk, dismissAnswer };
 }
