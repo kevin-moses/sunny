@@ -17,17 +17,18 @@
 //     beside it, as LiveKit's own start would (with the pre-connect audio buffer, so speech
 //     said while connecting is kept). Owning that promise means a start ended before the
 //     microphone came on turns it off again the moment it does.
-//   - Agent failure: useSession is given an agent connect timeout (20 s on the phone; on the
-//     home display the longest allowed startTimeoutMs, because the display's own start
-//     timeout, counted from the Talk press, must always be the one that fires); when the
-//     agent state becomes 'failed' (no agent in time, or the agent left) the failure reasons
-//     are surfaced as the error and the session is ended, once per failure.
+//   - Agent failure: useSession is given an agent connect timeout (agentTimeouts.ts: 20 s on
+//     the phone; on the home display the longest its start timeout may be tuned to, because
+//     the display's own start timeout, counted from the Talk press, must always fire first).
+//     When the agent state becomes 'failed' (no agent in time, or the agent left) the failure
+//     reasons are surfaced as the error and the session is ended, once per failure.
 //   - isInteractive: true while connecting after a Talk press, connected, or reconnecting.
 //   - Phone RPC (findContact, sendMessage) is registered on the room on the senior phone only
 //     (the home display answers such calls with LiveKit's UNSUPPORTED_METHOD error); app logs
 //     are forwarded to the agent while connected; push notification taps start a session.
-//   - Ending or cancelling a session, and unmounting, stop and unpublish every local audio
-//     track (localAudio.ts), so a cancelled start cannot leave the microphone recording.
+//   - Ending or cancelling a session, a start that fails, and unmounting all stop and
+//     unpublish every local audio track (localAudio.ts), also one that comes on afterwards,
+//     so no start can leave the microphone recording.
 //   - The iOS audio session is configured and activated by registerGlobals() in index.ts
 //     (autoConfigureAudioSession), so no AudioSession start/stop calls are needed here. Its
 //     default policy prefers the speaker and deactivates the session when the call's audio
@@ -61,7 +62,7 @@ import type { PairedDevice } from '../backend/pairing';
 import { errorMessage } from '../errors';
 import { attachLogRoom, detachLogRoom, logger } from '../logging/logger';
 import { usePushNotifications, type NotificationTap } from '../notifications/push';
-import { TUNING_SPECS } from '../display/tuning';
+import { AGENT_CONNECT_TIMEOUT_MS, DISPLAY_AGENT_CONNECT_TIMEOUT_MS } from './agentTimeouts';
 import { stopLocalAudio } from './localAudio';
 import { registerPhoneRpcMethods } from './rpc';
 import {
@@ -79,16 +80,6 @@ import {
 } from './voiceToken';
 
 export { useConversation, useVoice } from './voiceContext';
-
-/** How long the phone waits for an agent to join after connecting, in milliseconds. */
-const AGENT_CONNECT_TIMEOUT_MS = 20_000;
-
-/**
- * The home display's agent connect timeout: the longest its tuned start timeout may be. The
- * display ends a session that has not reached the agent startTimeoutMs after the Talk press,
- * and LiveKit counts this one only from the room connect, so LiveKit's never fires first.
- */
-const DISPLAY_AGENT_CONNECT_TIMEOUT_MS = TUNING_SPECS.startTimeoutMs.max;
 
 /** Error shown when the agent failed without LiveKit giving a reason. */
 const AGENT_NOT_CONNECTED_MESSAGE = 'Agent did not connect to the Room';
@@ -278,14 +269,20 @@ function PairedVoiceProvider({
           await startOnce(TALK_REQUEST);
         }
       } catch (e) {
-        if (generation === generationRef.current && !(e instanceof StartCancelledError)) {
-          logger.error('Voice', `Connect failed: ${errorMessage(e)}`);
-          setError(errorMessage(e));
+        if (generation === generationRef.current) {
+          if (!(e instanceof StartCancelledError)) {
+            logger.error('Voice', `Connect failed: ${errorMessage(e)}`);
+            setError(errorMessage(e));
+          }
+          // A failed start must not leave the microphone on: turn it off now, and (by ending
+          // this start's generation) as soon as it comes on if that happens later.
+          generationRef.current += 1;
+          await stopLocalAudio(session.room);
         }
         resetSessionState();
       }
     },
-    [isActive, startOnce, resetSessionState],
+    [isActive, startOnce, resetSessionState, session.room],
   );
 
   /**

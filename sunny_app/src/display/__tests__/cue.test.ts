@@ -1,8 +1,8 @@
 // sunny_app/src/display/__tests__/cue.test.ts
 //
 // Purpose: Unit tests for the due cue rules (cue.ts): which tasks are owed a cue (due timed
-// tasks, once per sent prompt, never anytime or finished ones; snoozed ones kept owed; a
-// task cued within the minimum gap absorbed),
+// tasks, once per sent prompt and per snooze end, never anytime or finished ones; snoozed
+// ones kept owed; only a prompt around an already-cued snooze end absorbed),
 // how the remembered keys are
 // kept to today's instances, the spoken time, and the words spoken (the caregiver's prompt,
 // or the fixed template when the prompt is the backend's default).
@@ -37,6 +37,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     state: 'due',
     seniorPrompts: 0,
     snoozed: false,
+    snoozedUntil: null,
     ...overrides,
   } as DayTask;
 }
@@ -104,15 +105,43 @@ describe('cueChoice', () => {
     expect(cueChoice([makeTask()], new Set(), NO_SPACING).play).toHaveLength(1);
   });
 
-  it('absorbs a new prompt for a task cued within the minimum gap, and plays it after', () => {
-    const task = makeTask({ seniorPrompts: 2 });
+  it('owes a new cue for each snooze, even when the task was already cued', () => {
+    const cued = new Set(['t1:1']);
+    const ended = makeTask({ seniorPrompts: 1, snoozedUntil: 50_000 });
+    expect(cueChoice([ended], cued, NO_SPACING).play).toEqual([ended]);
+    expect(cueKey(ended)).toBe('t1:1:50000');
+  });
+
+  it('absorbs the backend prompt around a snooze end that was already cued', () => {
+    // The snooze ended at 50 s and its cue played at 51 s.
+    const lastCueAt = new Map([['t1', 51_000]]);
+    const task = makeTask({ seniorPrompts: 2, snoozedUntil: 50_000 });
+    const cued = new Set(['t1:1:50000']);
+    expect(cueChoice([task], cued, { lastCueAt, now: 90_000, minGapMs: 120_000 })).toEqual({
+      play: [],
+      absorb: [task],
+    });
+    // A prompt long after the snooze end is a cue of its own.
+    expect(cueChoice([task], cued, { lastCueAt, now: 200_000, minGapMs: 120_000 }).play).toEqual([
+      task,
+    ]);
+  });
+
+  it('never absorbs prompts that are not around a snooze end, however close together', () => {
     const lastCueAt = new Map([['t1', 1_000]]);
+    const task = makeTask({ seniorPrompts: 2 });
     expect(
-      cueChoice([task], new Set(['t1:1']), { lastCueAt, now: 61_000, minGapMs: 120_000 }),
-    ).toEqual({ play: [], absorb: [task] });
+      cueChoice([task], new Set(['t1:1']), { lastCueAt, now: 31_000, minGapMs: 120_000 }).play,
+    ).toEqual([task]);
+  });
+
+  it('plays the snooze-end cue when the backend prompt arrives at the same moment', () => {
+    // No cue since the snooze ended: the combined update plays once.
+    const lastCueAt = new Map([['t1', 1_000]]);
+    const task = makeTask({ seniorPrompts: 2, snoozedUntil: 50_000 });
     expect(
-      cueChoice([task], new Set(['t1:1']), { lastCueAt, now: 121_000, minGapMs: 120_000 }),
-    ).toEqual({ play: [task], absorb: [] });
+      cueChoice([task], new Set(['t1:1']), { lastCueAt, now: 60_000, minGapMs: 120_000 }).play,
+    ).toEqual([task]);
   });
 });
 
@@ -134,6 +163,14 @@ describe('rememberCued', () => {
   it('keeps instance ids that contain a colon intact', () => {
     const task = makeTask({ instanceId: 'a:b', seniorPrompts: 3 });
     expect([...rememberCued(new Set(), [task], [task])]).toEqual([cueKey(task)]);
+  });
+
+  it('keeps keys that carry a snooze end', () => {
+    const task = makeTask({ seniorPrompts: 1, snoozedUntil: 50_000 });
+    expect([...rememberCued(new Set(['t1:0']), [task], [task])].sort()).toEqual([
+      't1:0',
+      't1:1:50000',
+    ]);
   });
 });
 

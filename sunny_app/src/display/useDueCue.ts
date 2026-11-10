@@ -13,10 +13,12 @@
 // - Blocked (a voice session is live): nothing new starts and a cue in progress stops; cues
 //   owed meanwhile play cueSettleMs after the session ends (LiveKit releases the iOS audio
 //   session first), if their task is still due then. A stopped cue is not replayed.
-// - Snoozed: a snoozed task's owed cue waits (it is not remembered) and plays when the snooze
-//   ends, unless the task was confirmed meanwhile. A new prompt count for a task cued less
-//   than cueMinGapMs ago is absorbed, so a snooze end that releases the owed cue and the
-//   backend's withheld reprompt firing a moment later give one cue, not two.
+// - Snoozed: each snooze owes one cue (cue.ts keys cues by the snooze end too), which waits
+//   while the task is snoozed and plays when the snooze ends, unless the task was confirmed
+//   meanwhile; also when the task's cue already played before the "not yet". A prompt the
+//   backend sends within cueMinGapMs of that snooze end, after its cue, is absorbed, so the
+//   snooze end gives one cue in either order. The keys persist, so a restart during a snooze
+//   does not cue twice.
 // - Confirmed or snoozed during a cue: its line is skipped, and a cue whose tasks are all no
 //   longer cueable stops at once.
 // - Failed (the cue made no sound, or a line got stuck): after cueRetryMs it is tried once

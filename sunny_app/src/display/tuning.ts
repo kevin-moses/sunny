@@ -10,6 +10,8 @@
 //
 // Last modified: 2026-11-09
 
+import { DISPLAY_AGENT_CONNECT_TIMEOUT_MS } from '../voice/agentTimeouts';
+
 /** How a tunable is shown and bounded. */
 interface TuningSpec {
   /** Label in the developer sheet. */
@@ -25,13 +27,16 @@ interface TuningSpec {
 
 /** The tunables in the order the developer sheet lists them. */
 export const TUNING_SPECS = {
-  /** Longest a Talk press may take to reach the agent before it gives up. */
+  /**
+   * Longest a Talk press may take to reach the agent before it gives up. Never above LiveKit's
+   * own agent wait on the display, so this one always decides.
+   */
   startTimeoutMs: {
     label: 'Give up connecting after',
     unit: 'ms',
     default: 15_000,
     min: 5_000,
-    max: 60_000,
+    max: DISPLAY_AGENT_CONNECT_TIMEOUT_MS,
     step: 1_000,
   },
   /** How long the session waits for the first question before it ends. */
@@ -151,9 +156,9 @@ export const TUNING_SPECS = {
     max: 60_000,
     step: 1_000,
   },
-  /** Shortest time between two cues for the same task; a reprompt sooner is absorbed. */
+  /** How long after a snooze ends the backend's prompt counts as the same cue. */
   cueMinGapMs: {
-    label: 'Shortest gap between cues for a task',
+    label: 'Snooze end and its reprompt count as one within',
     unit: 'ms',
     default: 120_000,
     min: 30_000,

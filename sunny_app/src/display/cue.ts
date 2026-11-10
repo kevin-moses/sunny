@@ -4,15 +4,19 @@
 // chime followed by the task's fixed spoken prompt. It is owed once when a timed task comes
 // due, and again each time the backend sends the senior a reprompt: the day view's
 // seniorPrompts counts the prompts the task's escalation policy has sent, so a cue is
-// identified by the instance and that count (cueKey). Keys already cued are remembered on the
-// device, so a restart does not cue a task again. Anytime (untimed) tasks are never due, so
-// they never cue; a confirmed task is no longer due, so a cue still owed for it is dropped.
-// A snoozed task ("not yet") is not cued while snoozed, but its owed cue stays owed (it is not
-// remembered) and plays when the snooze ends, unless the task was confirmed meanwhile; this
-// holds even when the backend has no prompt step left to send. Two cues for the same task are
-// never closer than the tuned cueMinGapMs: a new prompt count that arrives sooner (the
-// backend's withheld reprompt firing just after the snooze end already released the owed
-// cue) is absorbed, remembered as played without sounding, so the snooze end gives one cue.
+// identified by the instance, that count and the end of its latest snooze (cueKey). Keys
+// already cued are remembered on the device, so a restart does not cue a task again. Anytime
+// (untimed) tasks are never due, so they never cue; a confirmed task is no longer due, so a
+// cue still owed for it is dropped.
+//
+// Snooze: each snooze ("not yet") changes the task's snoozedUntil, so it owes one new cue,
+// even when the task's cue already played and the backend has no prompt step left to send.
+// That cue waits while the task is snoozed and plays when the snooze ends, unless the task was
+// confirmed meanwhile. When the snooze ends the backend may also send the prompt it held back,
+// a moment before or after: a new prompt count within cueMinGapMs of the snooze end, for a
+// task already cued since that snooze ended, is absorbed (remembered as played without
+// sounding), so the snooze end gives one cue in either order. Prompts that are not around a
+// snooze end are never absorbed, however close together the policy sends them.
 //
 // The words are the same every time: the caregiver's spoken prompt when they wrote one,
 // otherwise a fixed template from the display label and time ("Time for Morning pills, at
@@ -29,12 +33,25 @@ export const SAMPLE_PROMPT =
   "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.";
 
 /**
- * purpose: The identity of one cue: the instance and how many prompts the backend has sent.
- * @param task: (Pick<DayTask, 'instanceId' | 'seniorPrompts'>) The task.
- * @return: (string) "<instanceId>:<seniorPrompts>".
+ * purpose: The identity of one cue: the instance, how many prompts the backend has sent, and
+ *          when its latest snooze ends (so each snooze owes a cue of its own).
+ * @param task: (Pick<DayTask, 'instanceId' | 'seniorPrompts' | 'snoozedUntil'>) The task.
+ * @return: (string) "<instanceId>:<seniorPrompts>", plus ":<snoozedUntil>" once snoozed.
  */
-export function cueKey(task: Pick<DayTask, 'instanceId' | 'seniorPrompts'>): string {
-  return `${task.instanceId}:${task.seniorPrompts}`;
+export function cueKey(
+  task: Pick<DayTask, 'instanceId' | 'seniorPrompts' | 'snoozedUntil'>,
+): string {
+  const base = `${task.instanceId}:${task.seniorPrompts}`;
+  return task.snoozedUntil == null ? base : `${base}:${task.snoozedUntil}`;
+}
+
+/**
+ * purpose: The instance a cue key belongs to: the key without its trailing number parts.
+ * @param key: (string) A cue key.
+ * @return: (string) The instance id.
+ */
+function keyInstance(key: string): string {
+  return key.replace(/(:\d+)+$/, '');
 }
 
 /**
@@ -50,24 +67,24 @@ export function isCueable(task: DayTask): boolean {
 interface CueChoice {
   /** Tasks to cue now, in day order. */
   play: DayTask[];
-  /** Tasks cued too recently: their new cue is remembered as played without sounding. */
+  /** Prompts arriving around a snooze end that already cued: remembered, not sounded. */
   absorb: DayTask[];
 }
 
-/** When each task was last cued, to keep cues for one task apart. */
+/** When each task was last cued, to tell a snooze-end reprompt from a cue of its own. */
 interface CueSpacing {
   /** Epoch ms of the last cue that played, by instance id. */
   lastCueAt: ReadonlyMap<string, number>;
   /** Epoch ms now. */
   now: number;
-  /** Shortest time between two cues for the same task (ms). */
+  /** How long after a snooze end a new prompt counts as part of it (ms). */
   minGapMs: number;
 }
 
 /**
  * purpose: The cues owed now: due timed tasks whose current cue has not been played. Snoozed
- *          ones stay owed (neither played nor absorbed); a task cued less than minGapMs ago
- *          is absorbed; the rest play.
+ *          ones stay owed (neither played nor absorbed). A task whose snooze ended less than
+ *          minGapMs ago and that has been cued since it ended is absorbed; the rest play.
  * @param tasks: (DayTask[]) The day view's tasks, in its order.
  * @param cued: (ReadonlySet<string>) Cue keys already played (or absorbed) on this device.
  * @param spacing: (CueSpacing) When each task was last cued, now, and the minimum gap.
@@ -80,15 +97,18 @@ export function cueChoice(
 ): CueChoice {
   const owed = tasks.filter((task) => isCueable(task) && !cued.has(cueKey(task)));
   /**
-   * purpose: Whether a task was cued within the minimum gap.
+   * purpose: Whether a task's new cue is the backend's prompt around a snooze end that has
+   *          already been cued.
    * @param task: (DayTask) The task.
-   * @return: (boolean) True when its last cue was less than minGapMs ago.
+   * @return: (boolean) True when its snooze ended less than minGapMs ago and it was cued since.
    */
-  const recent = (task: DayTask): boolean => {
+  const snoozeEndRepeat = (task: DayTask): boolean => {
+    const ended = task.snoozedUntil;
     const last = spacing.lastCueAt.get(task.instanceId);
-    return last !== undefined && spacing.now - last < spacing.minGapMs;
+    if (ended == null || last === undefined) return false;
+    return last >= ended && spacing.now - ended < spacing.minGapMs;
   };
-  return { play: owed.filter((t) => !recent(t)), absorb: owed.filter(recent) };
+  return { play: owed.filter((t) => !snoozeEndRepeat(t)), absorb: owed.filter(snoozeEndRepeat) };
 }
 
 /**
@@ -107,7 +127,7 @@ export function rememberCued(
   const live = new Set<string>(tasks.map((t) => t.instanceId));
   const next = new Set<string>();
   for (const key of [...cued, ...played.map(cueKey)]) {
-    if (live.has(key.slice(0, key.lastIndexOf(':')))) next.add(key);
+    if (live.has(keyInstance(key))) next.add(key);
   }
   return next;
 }

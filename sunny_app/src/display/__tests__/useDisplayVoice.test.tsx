@@ -9,7 +9,7 @@
 // voice card through listening, thinking and speaking (ignoring the previous session's
 // lines), an agent that speaks first (an opening, not an answer: no follow-up window, no
 // lingering), the idle end before a question and after an answer (none before the agent
-// joins), the cap on continuous speaking, the absolute session ceiling (letting an answer
+// joins; the start timeout only before the agent first joined), the cap on continuous speaking, the absolute session ceiling (letting an answer
 // being spoken finish, within the grace), the start timeout counted from the press however
 // the session state churns (also above 20 s), injected tuning values, the answer lingering after the
 // session (also when the transcript is cleared) and leaving when dismissed, the sample answer
@@ -261,6 +261,17 @@ describe('start timeout', () => {
     await advance(1);
     expect(disconnect).toHaveBeenCalledTimes(1);
     expect(show).toHaveBeenCalledWith(CONNECT_FAILED_MESSAGE);
+  });
+
+  it('does not apply once the agent has joined, even if the agent then leaves', async () => {
+    const h = await renderVoice({ ...LISTENING, messages: QA });
+    // The agent drops out while the session is still live; the provider reports it.
+    await h.set({ ...LISTENING, messages: QA, agentJoined: false });
+    await h.set({ ...LISTENING, messages: QA, agentJoined: false, error: 'Agent left' });
+    await advance(T.startTimeoutMs + 1000);
+    expect(show).not.toHaveBeenCalledWith(CONNECT_FAILED_MESSAGE);
+    expect(show).toHaveBeenCalledWith('Sunny stopped. Press Talk to try again.');
+    expect(show).toHaveBeenCalledTimes(1);
   });
 
   it('honors a tuned value above 20 s', async () => {

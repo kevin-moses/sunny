@@ -53,12 +53,14 @@ conversation screen. Its voice states live on the paper panel:
   waits until 2 s after the session, and is dropped if the task was confirmed meanwhile),
   never while a task is snoozed (the day view's `snoozed`; the Now card's tab reads
   "Later · 8:00 AM", the one time on the panel written with AM or PM):
-  its owed cue plays when the snooze ends, within about a minute, unless the task was
-  confirmed. Two cues for one task are at least 2 minutes apart, so the snooze end and the
-  backend's reprompt that may follow give one cue. Never for anytime tasks, and once per
-  prompt across restarts (played cues are kept in AsyncStorage). A cue that fails to sound, or
-  whose speech gets stuck, is tried once more from the line that failed. Audio uses the
-  playback category, so it plays with the device muted.
+  each snooze owes one cue, which plays when the snooze ends (within about a minute) unless
+  the task was confirmed, also when the task had already been cued before the "not yet". A
+  prompt the backend sends within 2 minutes of that snooze end counts as the same cue, so the
+  snooze end gives one cue; prompts at other times are never merged. Never for anytime tasks,
+  and once per prompt across restarts (played cues are kept in AsyncStorage). If the chime
+  cannot play, the prompt is still spoken. A cue that fails to sound, or whose speech gets
+  stuck, is tried once more from the line that failed. Audio uses the playback category, so it
+  plays with the device muted.
 - **Tuning:** every timing and the speech rate live in `src/display/tuning.ts` (default,
   unit, allowed range and step for each). On a debug build, hold the DEV pill on the display
   for 2 seconds to open the developer sheet: its "Home display" section edits each value

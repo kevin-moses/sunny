@@ -1,6 +1,7 @@
 // sunny_app/src/display/__tests__/tuning.test.tsx
 //
-// Purpose: Tests for the display's tunables: clamping and rounding (tuning.ts), turning
+// Purpose: Tests for the display's tunables: clamping and rounding (tuning.ts), the start
+// timeout's bound against the voice layer's agent wait on the display, turning
 // stored data back into valid values, the display text, and TuningProvider rendered for real
 // with AsyncStorage mocked: defaults before anything is saved, saved values loaded at start,
 // a change made before they load kept, saved values ignored (and nothing saved) where the
@@ -30,6 +31,7 @@ import {
 } from '../TuningProvider';
 import type { TuningControls } from '../TuningProvider';
 import type { DisplayTuning } from '../tuning';
+import { DISPLAY_AGENT_CONNECT_TIMEOUT_MS } from '../../voice/agentTimeouts';
 
 const mockStore = new Map<string, string>();
 // When set, reads wait for it, so a test can change a value before the load lands.
@@ -76,6 +78,15 @@ describe('clampTuning', () => {
   it('turns a non-number into the default', () => {
     expect(clampTuning('speechRate', '1')).toBe(DEFAULT_TUNING.speechRate);
     expect(clampTuning('speechRate', Number.NaN)).toBe(DEFAULT_TUNING.speechRate);
+  });
+});
+
+describe('startTimeoutMs', () => {
+  it("can never be tuned above LiveKit's agent wait on the display", () => {
+    expect(TUNING_SPECS.startTimeoutMs.max).toBeLessThanOrEqual(DISPLAY_AGENT_CONNECT_TIMEOUT_MS);
+    expect(clampTuning('startTimeoutMs', 10 * DISPLAY_AGENT_CONNECT_TIMEOUT_MS)).toBe(
+      DISPLAY_AGENT_CONNECT_TIMEOUT_MS,
+    );
   });
 });
 

@@ -10,11 +10,15 @@
 // LiveKit call takes the session back (play-and-record) when a Talk session starts, and
 // releases it when the call ends; no cue plays during a call.
 //
+// The words matter more than the chime: if the chime cannot play, that is logged, the player
+// is released (the next cue creates a fresh one, so a broken player never sticks), and the
+// lines are still spoken; the cue then counts as played.
+//
 // playCue never rejects; it reports how the cue ended (CueResult): played, stopped (its
-// AbortSignal fired) or failed (the audio mode, the chime or the speech failed, or a line did
-// not finish within its time limit, after which the speech is stopped), with how many lines
-// were done before that, so a retry can start from the line that failed. A line can be
-// skipped at the moment it is due (its task was confirmed during the cue).
+// AbortSignal fired) or failed (the audio mode or the speech failed, or a line did not finish
+// within its time limit, after which the speech is stopped), with how many lines were done
+// before that, so a retry can start from the line that failed. A line can be skipped at the
+// moment it is due (its task was confirmed during the cue).
 //
 // Last modified: 2026-11-09
 
@@ -125,6 +129,35 @@ async function playChime(signal: AbortSignal): Promise<void> {
 }
 
 /**
+ * purpose: Free the chime player so the next cue creates a fresh one.
+ * @return: (void)
+ */
+function releaseChime(): void {
+  const player = chimePlayer;
+  chimePlayer = null;
+  try {
+    player?.remove();
+  } catch (error) {
+    logger.warning('Cue', `Releasing the chime player failed: ${errorMessage(error)}`);
+  }
+}
+
+/**
+ * purpose: Play the chime; if it cannot play, log it and release the player instead of
+ *          failing the cue.
+ * @param signal: (AbortSignal) Stops the chime.
+ * @return: (Promise<void>) Resolves when the chime is over or has failed; never rejects.
+ */
+async function chimeIfPossible(signal: AbortSignal): Promise<void> {
+  try {
+    await playChime(signal);
+  } catch (error) {
+    logger.warning('Cue', `Chime failed; speaking without it: ${errorMessage(error)}`);
+    releaseChime();
+  }
+}
+
+/**
  * purpose: The longest a line may take before it counts as stuck: the tuned minimum, or the
  *          tuned time per character slowed down by the speech rate, whichever is longer.
  * @param text: (string) The line.
@@ -220,7 +253,7 @@ export async function playCue(
       shouldPlayInBackground: false,
     });
     if (signal.aborted) return end('stopped');
-    await playChime(signal);
+    await chimeIfPossible(signal);
     await wait(tuning.afterChimeMs, signal);
     for (const line of lines) {
       if (signal.aborted) return end('stopped');

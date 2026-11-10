@@ -6,7 +6,9 @@
 // microphone, publications and RPC registry the test can see. The backend token action is a
 // promise the test resolves. Covers: a start cancelled during the token fetch never connects
 // and leaves no live microphone, including a microphone that comes on only after the cancel
-// and one still waiting to publish; unmounting turns the microphone off; a failed agent ends
+// and one still waiting to publish; a start that fails (the token action errors) turns the
+// microphone off too, whether it came on before or after the failure, and reports the error
+// once; unmounting turns the microphone off; a failed agent ends
 // the session exactly once; the agent connect timeout on the home display is never shorter than
 // any tuned start timeout (so the display's own timeout always decides) and 20 s on the phone;
 // and the phone RPC methods are registered on
@@ -29,18 +31,21 @@ import type { VoiceApi } from '../voiceContext';
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (error: Error) => void;
 }
 
 /**
  * purpose: Make a promise the test settles by hand.
- * @return: (Deferred<T>) The promise and its resolve function.
+ * @return: (Deferred<T>) The promise and its resolve and reject functions.
  */
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 /** A fake local audio track. */
@@ -253,6 +258,36 @@ describe('cancelling a start', () => {
     expect(mockRoom.localParticipant.unpublishTrack).toHaveBeenCalledWith(mockMicTrack);
     act(() => renderer.unmount());
   });
+
+  it.each([
+    ['before', true],
+    ['after', false],
+  ])(
+    'a failed start turns off a microphone that came on %s the failure, and says so once',
+    async (_when, micFirst) => {
+      const renderer = renderProvider(PHONE);
+      act(() => {
+        void voiceApi().connect();
+      });
+      await flush();
+      if (micFirst) {
+        mockMic.resolve();
+        await flush();
+      }
+      mockToken.reject(new Error('Token service failed'));
+      await flush();
+      if (!micFirst) {
+        mockMic.resolve();
+        await flush();
+      }
+      expect(mockRoom.connect).not.toHaveBeenCalled();
+      expect(mockMicTrack.stop).toHaveBeenCalled();
+      expect(mockRoom.localParticipant.unpublishTrack).toHaveBeenCalledWith(mockMicTrack);
+      expect(voiceApi().error).toBe('Token service failed');
+      expect(voiceApi().connectionState).toBe('disconnected');
+      act(() => renderer.unmount());
+    },
+  );
 
   it('turns the microphone off when the provider unmounts', async () => {
     const renderer = renderProvider(DISPLAY);

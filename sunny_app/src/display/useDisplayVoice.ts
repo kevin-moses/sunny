@@ -189,9 +189,11 @@ export function useDisplayVoice(
   };
 
   // Give up on a session that has not reached the agent within startTimeoutMs of the press.
-  // (Timers read their callbacks when they fire, so LiveKit changing the session's callbacks on
-  // every state change never restarts them.)
-  const connecting = active && !agentJoined;
+  // Only until the agent has first joined: an agent that leaves later is the provider's
+  // failure ("Sunny stopped"), not a connection that never happened. (Timers read their
+  // callbacks when they fire, so LiveKit changing the session's callbacks on every state
+  // change never restarts them.)
+  const connecting = active && !(track.joined || agentJoined);
   useTimeout(() => endWith(CONNECT_FAILED_MESSAGE), connecting ? tuning.startTimeoutMs : null);
 
   // Continuous speaking holds the session open for at most speakingCapMs.
