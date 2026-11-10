@@ -1,44 +1,68 @@
 // sunny_app/src/day/__tests__/useDoneAction.test.tsx
 //
-// Purpose: Tests for the phone's Done button. doneTarget (pure): the first due or escalated
-// timed task, none when nothing is due, anytime and upcoming tasks never targeted. The real
-// useDoneAction hook and the real callMutation / toBackendError, with only convex.mutation
-// stubbed (the network boundary): a press confirms the target by instance id via "phone_app"
-// and announces the result; no target sends nothing; presses inside the gap and while in flight
-// are ignored; a real ConvexError and a plain network Error show their messages and say the
-// task is not checked off; offline sends nothing; the result clears itself; a target change
-// while in flight keeps the original id; with two tasks due the button is withdrawn for the
-// settle period after a success (a second press sends nothing, then the next task is offered
-// and can be confirmed, and the first task's line never shows under the second button); a
-// hung call shows "Still trying", frees the button, and a late success corrects the line only
-// while that line is showing; nothing is set, scheduled or announced after unmount. DoneCard:
-// label, one button with its accessibility label, onPress wiring, busy state, message only.
+// Purpose: Tests for the phone's Done button. doneTarget (pure): due or escalated wins over an
+// earlier-listed upcoming task, otherwise the first upcoming task that is confirmable, never an
+// unconfirmable, missed or anytime task. The real useDoneAction hook over a real queue and the
+// real callMutation / toBackendError, with only convex.mutation (the network) and AsyncStorage
+// (in memory) stubbed: a press is stored before "Checked off" shows and is sent with via
+// phone_app and the press time; offline it is stored, not sent, and sent after the connection
+// returns or the app restarts; a network failure keeps the press while the senior still sees
+// "Checked off"; presses inside the gap and while being stored are ignored; the button is
+// withdrawn for the settle period (two tasks due: a doubting second press sends nothing, then
+// the next task is offered and its line is not shown under another task's button); a storage
+// failure says so and keeps the task offered; a permanent rejection shows a calm line;
+// announcements; nothing happens after unmount. usePendingConfirms: ids follow the queue, load
+// at mount, replay at mount and on reconnect. DoneCard: label, due time for an early task,
+// exactly one button with its label, onPress, message only, nothing.
 //
 // Last modified: 2026-11-09
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
-import { getFunctionName } from 'convex/server';
 import React from 'react';
 import { AccessibilityInfo } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { convex } from '../../backend/convex';
 import { DoneCard } from '../../components/DayComponents';
+import {
+  createConfirmQueue,
+  sendConfirm,
+  STORAGE_KEY,
+  type ConfirmQueue,
+} from '../pendingConfirms';
 import type { DayTask } from '../types';
 import {
-  CONFIRM_TIMEOUT_MS,
   doneTarget,
   MESSAGE_MS,
-  OFFLINE_DONE_MESSAGE,
+  NOT_STORED_MESSAGE,
   PRESS_GAP_MS,
   SETTLE_MS,
-  STILL_TRYING_MESSAGE,
   useDoneAction,
   type DoneAction,
 } from '../useDoneAction';
+import { usePendingConfirms } from '../usePendingConfirms';
+
+const mockStore = new Map<string, string>();
+let mockFailWrites = false;
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: async (key: string) => mockStore.get(key) ?? null,
+    setItem: async (key: string, value: string) => {
+      if (mockFailWrites) throw new Error('disk full');
+      mockStore.set(key, value);
+    },
+    removeItem: async (key: string) => void mockStore.delete(key),
+  },
+}));
 
 jest.mock('../../backend/convex', () => ({ convex: { mutation: jest.fn() } }));
+
+jest.mock('../../logging/logger', () => ({
+  logger: { warning: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
 
@@ -47,6 +71,7 @@ jest.mock('../../theme/ThemeProvider', () => ({ useTheme: () => ({ accentColor: 
 const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const mounted: ReactTestRenderer[] = [];
 let announce: jest.SpiedFunction<typeof AccessibilityInfo.announceForAccessibility>;
+const NOW = Date.parse('2026-11-09T08:00:00Z');
 
 /**
  * purpose: Build a task fixture.
@@ -59,22 +84,33 @@ function task(overrides: Partial<DayTask> = {}): DayTask {
     displayLabel: 'Morning pills',
     scheduledTime: '08:00',
     state: 'due',
+    confirmable: true,
     ...overrides,
   } as unknown as DayTask;
 }
 
 /** A second due task. */
-const SECOND = (): DayTask =>
+const second = (): DayTask =>
   task({ instanceId: 'inst2' as never, displayLabel: 'Evening pills', scheduledTime: '09:00' });
+
+/**
+ * purpose: A queue over the real send and the in-memory storage.
+ * @return: (ConfirmQueue) The queue.
+ */
+function makeQueue(): ConfirmQueue {
+  return createConfirmQueue({ send: sendConfirm, now: () => Date.now() });
+}
 
 /**
  * purpose: Render the real hook and expose its latest return value; the target and offline
  *          flag can be changed with rerender.
+ * @param queue: (ConfirmQueue) The queue presses go to.
  * @param target: (DayTask | null) The task Done confirms.
  * @param isOffline: (boolean) Whether the phone is offline.
  * @return: (object) get (the current DoneAction), rerender and unmount.
  */
 function renderDone(
+  queue: ConfirmQueue,
   target: DayTask | null,
   isOffline = false,
 ): {
@@ -92,7 +128,7 @@ function renderDone(
    * @return: (null) Renders nothing.
    */
   const Probe = ({ t, off }: { t: DayTask | null; off: boolean }): null => {
-    record(useDoneAction(t, off));
+    record(useDoneAction(t, off, queue));
     return null;
   };
   let renderer!: ReactTestRenderer;
@@ -125,16 +161,23 @@ async function press(h: { get: () => DoneAction }): Promise<void> {
  */
 async function advance(ms: number): Promise<void> {
   await act(async () => {
-    jest.advanceTimersByTime(ms);
+    await jest.advanceTimersByTimeAsync(ms);
   });
+}
+
+/**
+ * purpose: The instance ids sent to the backend so far.
+ * @return: (string[]) Ids in order.
+ */
+function sentIds(): string[] {
+  return mockMutation.mock.calls.map((c) => (c[1] as { instanceId: string }).instanceId);
 }
 
 describe('doneTarget', () => {
   it('picks the first due task', () => {
     const first = task({ instanceId: 'a' as never });
-    const second = task({ instanceId: 'b' as never });
-    const done = task({ instanceId: 'x' as never, state: 'confirmed' });
-    expect(doneTarget([done, first, second])).toBe(first);
+    const done = task({ instanceId: 'x' as never, state: 'confirmed', confirmable: false });
+    expect(doneTarget([done, first, task({ instanceId: 'b' as never })])).toBe(first);
   });
 
   it('picks an escalated task', () => {
@@ -142,20 +185,43 @@ describe('doneTarget', () => {
     expect(doneTarget([late])).toBe(late);
   });
 
-  it('is null when nothing is due', () => {
-    expect(doneTarget([task({ state: 'upcoming' }), task({ state: 'missed' })])).toBeNull();
+  it('prefers a due task over an earlier-listed confirmable upcoming one', () => {
+    const early = task({ instanceId: 'e' as never, state: 'upcoming' });
+    const due = task({ instanceId: 'd' as never });
+    expect(doneTarget([early, due])).toBe(due);
+  });
+
+  it('otherwise picks the first confirmable upcoming task', () => {
+    const tooEarly = task({ instanceId: 't' as never, state: 'upcoming', confirmable: false });
+    const early = task({ instanceId: 'e' as never, state: 'upcoming' });
+    expect(
+      doneTarget([tooEarly, early, task({ instanceId: 'f' as never, state: 'upcoming' })]),
+    ).toBe(early);
+  });
+
+  it('is null when nothing may be confirmed', () => {
+    expect(
+      doneTarget([
+        task({ state: 'upcoming', confirmable: false }),
+        task({ state: 'missed' }),
+        task({ state: 'confirmed', confirmable: false }),
+      ]),
+    ).toBeNull();
     expect(doneTarget([])).toBeNull();
   });
 
   it('never targets an anytime task', () => {
     expect(doneTarget([task({ scheduledTime: 'anytime' })])).toBeNull();
+    expect(doneTarget([task({ scheduledTime: 'anytime', state: 'upcoming' })])).toBeNull();
   });
 });
 
 describe('useDoneAction', () => {
   beforeEach(() => {
     jest.useFakeTimers();
-    jest.setSystemTime(new Date('2026-11-09T08:00:00Z'));
+    jest.setSystemTime(NOW);
+    mockStore.clear();
+    mockFailWrites = false;
     mockMutation.mockReset();
     mockMutation.mockResolvedValue(null);
     announce = jest
@@ -171,213 +237,226 @@ describe('useDoneAction', () => {
     jest.useRealTimers();
   });
 
-  it('confirms the target by instance id as phone_app, shows and announces the result', async () => {
-    const h = renderDone(task());
+  it('stores the press, shows and announces the result, and sends it with the press time', async () => {
+    const h = renderDone(makeQueue(), task());
     await press(h);
+    expect(h.get().message).toBe('Checked off: Morning pills.');
+    expect(announce).toHaveBeenCalledWith('Checked off: Morning pills.');
     expect(mockMutation).toHaveBeenCalledTimes(1);
-    const [ref, args] = mockMutation.mock.calls[0];
-    expect(getFunctionName(ref as never)).toBe('instances:confirmTaskInstance');
-    expect(args).toEqual({ instanceId: 'inst1', via: 'phone_app' });
-    expect(h.get().message).toBe('Checked off: Morning pills');
-    expect(h.get().busy).toBe(false);
-    expect(announce).toHaveBeenCalledWith('Checked off: Morning pills');
+    expect(mockMutation.mock.calls[0][1]).toEqual({
+      instanceId: 'inst1',
+      via: 'phone_app',
+      pressedAt: NOW,
+    });
+    expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toEqual([]);
+  });
+
+  it('stores the press before showing success', async () => {
+    mockMutation.mockReturnValue(new Promise(() => {}));
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toHaveLength(1);
+    expect(h.get().message).toBe('Checked off: Morning pills.');
+  });
+
+  it('offline: stores without sending, says it will be sent, and sends after reconnect', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(h.get().message).toBe(
+      'Checked off: Morning pills. It will be sent when the internet is back.',
+    );
+    await act(async () => {
+      await queue.replay();
+    });
+    expect(sentIds()).toEqual(['inst1']);
+    expect((mockMutation.mock.calls[0][1] as { pressedAt: number }).pressedAt).toBe(NOW);
+  });
+
+  it('offline press survives an app restart and is sent with the original press time', async () => {
+    const h = renderDone(makeQueue(), task(), true);
+    await press(h);
+    h.unmount();
+    jest.setSystemTime(NOW + 3 * 3_600_000);
+    const restarted = makeQueue();
+    await act(async () => {
+      await restarted.replay();
+    });
+    expect(sentIds()).toEqual(['inst1']);
+    expect((mockMutation.mock.calls[0][1] as { pressedAt: number }).pressedAt).toBe(NOW);
+  });
+
+  it('a network failure keeps the press and the senior still sees "Checked off"', async () => {
+    mockMutation.mockRejectedValue(new Error('Network request failed'));
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    expect(h.get().message).toBe('Checked off: Morning pills.');
+    expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toHaveLength(1);
   });
 
   it('sends nothing without a target', async () => {
-    const h = renderDone(null);
+    const h = renderDone(makeQueue(), null);
     await press(h);
     expect(mockMutation).not.toHaveBeenCalled();
     expect(h.get().message).toBeNull();
   });
 
   it('ignores a second press within the gap', async () => {
-    const h = renderDone(task());
-    mockMutation.mockRejectedValueOnce(new Error('Network request failed'));
+    const h = renderDone(makeQueue(), task());
+    mockMutation.mockRejectedValue(new Error('Network request failed'));
     await press(h);
+    h.rerender(task());
     await advance(PRESS_GAP_MS - 100);
     await press(h);
     expect(mockMutation).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts a press after the gap', async () => {
-    const h = renderDone(task());
-    mockMutation.mockRejectedValueOnce(new Error('Network request failed'));
+  it('says so and keeps the task offered when the press cannot be stored', async () => {
+    mockFailWrites = true;
+    const h = renderDone(makeQueue(), task());
     await press(h);
-    await advance(PRESS_GAP_MS + 100);
-    await press(h);
-    expect(mockMutation).toHaveBeenCalledTimes(2);
-  });
-
-  it('ignores presses while a confirm is in flight', async () => {
-    let finish!: () => void;
-    mockMutation.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
-    const h = renderDone(task());
-    await press(h);
-    expect(h.get().busy).toBe(true);
-    await advance(PRESS_GAP_MS + 100);
-    await press(h);
-    expect(mockMutation).toHaveBeenCalledTimes(1);
-    await act(async () => finish());
-    expect(h.get().busy).toBe(false);
-  });
-
-  it('shows a backend error message and says the task is not checked off', async () => {
-    mockMutation.mockRejectedValue(
-      new ConvexError({ code: 'invalid', message: 'This task is not due yet' }),
-    );
-    const h = renderDone(task());
-    await press(h);
-    expect(h.get().message).toBe('This task is not due yet It is not checked off yet.');
+    expect(h.get().message).toBe(NOT_STORED_MESSAGE);
     expect(h.get().task).not.toBeNull();
-    expect(h.get().busy).toBe(false);
-  });
-
-  it('shows the offline message for a network failure', async () => {
-    mockMutation.mockRejectedValue(new Error('Network request failed'));
-    const h = renderDone(task());
-    await press(h);
-    expect(h.get().message).toBe(
-      'Could not reach Sunny. Check the internet connection. It is not checked off yet.',
-    );
-  });
-
-  it('sends nothing offline and says so', async () => {
-    const h = renderDone(task(), true);
-    await press(h);
     expect(mockMutation).not.toHaveBeenCalled();
-    expect(h.get().message).toBe(OFFLINE_DONE_MESSAGE);
   });
 
   it('clears the result line after MESSAGE_MS', async () => {
-    const h = renderDone(task());
+    const h = renderDone(makeQueue(), task());
     await press(h);
     await advance(MESSAGE_MS + 1);
     expect(h.get().message).toBeNull();
   });
 
-  it('confirms the original instance when the target changes while in flight', async () => {
-    let finish!: () => void;
-    mockMutation.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
-    const h = renderDone(task());
+  it('shows a calm line when the server permanently refuses a queued press', async () => {
+    mockMutation.mockRejectedValue(new ConvexError({ code: 'not_found', message: 'gone' }));
+    const h = renderDone(makeQueue(), task());
     await press(h);
-    h.rerender(SECOND());
-    await act(async () => finish());
-    expect(mockMutation.mock.calls[0][1]).toEqual({ instanceId: 'inst1', via: 'phone_app' });
-    expect(h.get().message).toBe('Checked off: Morning pills');
+    await advance(SETTLE_MS + 1);
+    expect(h.get().message).toBe('Morning pills could not be saved. It is still on your list.');
+    expect(announce).toHaveBeenCalledWith(
+      'Morning pills could not be saved. It is still on your list.',
+    );
   });
 
   describe('two tasks due', () => {
-    it('withdraws the button after a success and refuses a doubting second press', async () => {
-      const h = renderDone(task());
+    it('withdraws the button after a press and refuses a doubting second press', async () => {
+      const h = renderDone(makeQueue(), task());
       await press(h);
-      h.rerender(SECOND());
+      h.rerender(second());
       expect(h.get().task).toBeNull();
-      expect(h.get().message).toBe('Checked off: Morning pills');
+      expect(h.get().message).toBe('Checked off: Morning pills.');
       await advance(1000);
       await press(h);
-      expect(mockMutation).toHaveBeenCalledTimes(1);
+      expect(sentIds()).toEqual(['inst1']);
     });
 
     it('offers the next task after the settle period, without the first task line', async () => {
-      const h = renderDone(task());
+      const h = renderDone(makeQueue(), task());
       await press(h);
-      h.rerender(SECOND());
+      h.rerender(second());
       await advance(SETTLE_MS + 1);
       expect(h.get().task?.instanceId).toBe('inst2');
       expect(h.get().message).toBeNull();
       await press(h);
-      expect(mockMutation).toHaveBeenCalledTimes(2);
-      expect(mockMutation.mock.calls[1][1]).toEqual({ instanceId: 'inst2', via: 'phone_app' });
-      expect(h.get().message).toBe('Checked off: Evening pills');
-    });
-  });
-
-  describe('a hung call', () => {
-    it('shows "Still trying", frees the button and keeps the task offered', async () => {
-      mockMutation.mockReturnValue(new Promise(() => {}));
-      const h = renderDone(task());
-      await press(h);
-      expect(h.get().busy).toBe(true);
-      await advance(CONFIRM_TIMEOUT_MS + 1);
-      expect(h.get().busy).toBe(false);
-      expect(h.get().message).toBe(STILL_TRYING_MESSAGE);
-      expect(h.get().task).not.toBeNull();
-      expect(announce).toHaveBeenCalledWith(STILL_TRYING_MESSAGE);
-    });
-
-    it('corrects the line when the late call succeeds while it is still showing', async () => {
-      let finish!: () => void;
-      mockMutation.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
-      const h = renderDone(task());
-      await press(h);
-      await advance(CONFIRM_TIMEOUT_MS + 1);
-      await act(async () => finish());
-      expect(h.get().message).toBe('Checked off: Morning pills');
-      expect(announce).toHaveBeenLastCalledWith('Checked off: Morning pills');
-    });
-
-    it('says nothing when the late call succeeds after the line is gone', async () => {
-      let finish!: () => void;
-      mockMutation.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
-      const h = renderDone(task());
-      await press(h);
-      await advance(CONFIRM_TIMEOUT_MS + 1);
-      await advance(MESSAGE_MS + 1);
-      expect(h.get().message).toBeNull();
-      announce.mockClear();
-      await act(async () => finish());
-      expect(h.get().message).toBeNull();
-      expect(announce).not.toHaveBeenCalled();
-    });
-
-    it('leaves the line alone when the late call fails', async () => {
-      let fail!: (error: Error) => void;
-      mockMutation.mockReturnValue(new Promise<void>((_, reject) => (fail = reject)));
-      const h = renderDone(task());
-      await press(h);
-      await advance(CONFIRM_TIMEOUT_MS + 1);
-      await act(async () => fail(new Error('Network request failed')));
-      expect(h.get().message).toBe(STILL_TRYING_MESSAGE);
+      expect(sentIds()).toEqual(['inst1', 'inst2']);
+      expect(h.get().message).toBe('Checked off: Evening pills.');
     });
   });
 
   describe('after unmount', () => {
-    it('does not announce, set state or schedule timers when a confirm resolves', async () => {
-      let finish!: () => void;
-      mockMutation.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
-      const h = renderDone(task());
+    it('does not announce or schedule timers when a press finishes storing', async () => {
+      const queue = makeQueue();
+      let release!: () => void;
+      const realEnqueue = queue.enqueue;
+      const gated: ConfirmQueue = {
+        ...queue,
+        enqueue: async (e) => {
+          await new Promise<void>((resolve) => (release = resolve));
+          await realEnqueue(e);
+        },
+      };
+      const h = renderDone(gated, task());
       await press(h);
       h.unmount();
+      announce.mockClear();
       const timers = jest.getTimerCount();
-      await act(async () => finish());
+      await act(async () => release());
       expect(announce).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBeLessThanOrEqual(timers);
-    });
-
-    it('does not announce when a confirm fails', async () => {
-      let fail!: (error: Error) => void;
-      mockMutation.mockReturnValue(new Promise<void>((_, reject) => (fail = reject)));
-      const h = renderDone(task());
-      await press(h);
-      h.unmount();
-      const timers = jest.getTimerCount();
-      await act(async () => fail(new Error('Network request failed')));
-      expect(announce).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBeLessThanOrEqual(timers);
+      expect(jest.getTimerCount()).toBeLessThanOrEqual(timers + 1);
     });
   });
 });
 
-/**
- * purpose: Whether a rendered node is the outermost composite that carries the button role.
- * @param node: (ReactTestInstance) The node.
- * @return: (boolean) True for a non-host node with accessibilityRole "button" whose parent is not one.
- */
-function isButton(node: ReactTestInstance): boolean {
-  const own = (n: ReactTestInstance): boolean =>
-    typeof n.type !== 'string' && n.props.accessibilityRole === 'button';
-  return own(node) && !(node.parent !== null && own(node.parent));
-}
+describe('usePendingConfirms', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+    mockStore.clear();
+    mockFailWrites = false;
+    mockMutation.mockReset();
+    mockMutation.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+    jest.useRealTimers();
+  });
+
+  /**
+   * purpose: Render the hook and expose the latest set of queued ids.
+   * @param queue: (ConfirmQueue) The queue.
+   * @param isOffline: (boolean) The offline flag.
+   * @return: (object) get and rerender.
+   */
+  function renderPending(queue: ConfirmQueue, isOffline: boolean) {
+    let latest: ReadonlySet<string> = new Set();
+    const record = (value: ReadonlySet<string>): void => {
+      latest = value;
+    };
+    /**
+     * purpose: Test component that records the hook's latest value.
+     * @param props: ({ off }) The offline flag.
+     * @return: (null) Renders nothing.
+     */
+    const Probe = ({ off }: { off: boolean }): null => {
+      record(usePendingConfirms(queue, off));
+      return null;
+    };
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(<Probe off={isOffline} />);
+      mounted.push(renderer);
+    });
+    return {
+      get: () => latest,
+      rerender: (off: boolean) => act(() => renderer.update(<Probe off={off} />)),
+    };
+  }
+
+  it('shows ids stored before the app was closed and replays them at launch', async () => {
+    await makeQueue().enqueue({ instanceId: 'inst1', label: 'Pills', pressedAt: NOW });
+    mockMutation.mockReturnValue(new Promise(() => {}));
+    const h = renderPending(makeQueue(), false);
+    await advance(0);
+    expect(h.get().has('inst1')).toBe(true);
+    expect(sentIds()).toEqual(['inst1']);
+  });
+
+  it('does not send while offline, then replays when the connection returns', async () => {
+    await makeQueue().enqueue({ instanceId: 'inst1', label: 'Pills', pressedAt: NOW });
+    const h = renderPending(makeQueue(), true);
+    await advance(0);
+    expect(h.get().has('inst1')).toBe(true);
+    expect(mockMutation).not.toHaveBeenCalled();
+    h.rerender(false);
+    await advance(0);
+    expect(sentIds()).toEqual(['inst1']);
+    expect(h.get().has('inst1')).toBe(false);
+  });
+});
 
 describe('DoneCard', () => {
   afterEach(() => {
@@ -387,27 +466,28 @@ describe('DoneCard', () => {
   });
 
   /**
+   * purpose: Whether a node is the outermost composite that carries the button role.
+   * @param node: (ReactTestInstance) The node.
+   * @return: (boolean) True for such a node.
+   */
+  function isButton(node: ReactTestInstance): boolean {
+    const own = (n: ReactTestInstance): boolean =>
+      typeof n.type !== 'string' && n.props.accessibilityRole === 'button';
+    return own(node) && !(node.parent !== null && own(node.parent));
+  }
+
+  /**
    * purpose: Render the card and report what it shows.
-   * @param props: (object) The task, message, busy flag and press handler.
+   * @param props: (object) The task, message and press handler.
    * @return: (object) texts, the buttons found, and whether nothing rendered.
    */
-  function render(props: {
-    task: DayTask | null;
-    message: string | null;
-    busy?: boolean;
-    onPress?: () => void;
-  }): {
-    texts: string[];
-    buttons: ReturnType<ReactTestRenderer['root']['findAll']>;
-    empty: boolean;
-  } {
+  function render(props: { task: DayTask | null; message: string | null; onPress?: () => void }) {
     let renderer!: ReactTestRenderer;
     act(() => {
       renderer = create(
         <DoneCard
           task={props.task}
           message={props.message}
-          busy={props.busy ?? false}
           onPress={props.onPress ?? (() => {})}
         />,
       );
@@ -427,8 +507,19 @@ describe('DoneCard', () => {
     const out = render({ task: task(), message: null });
     expect(out.texts).toContain('Morning pills');
     expect(out.texts).toContain('Done');
+    expect(out.texts.some((t) => t.startsWith('Due at'))).toBe(false);
     expect(out.buttons).toHaveLength(1);
     expect(out.buttons[0].props.accessibilityLabel).toBe('Done: Morning pills');
+  });
+
+  it('says when an early task is due, in words, on the card and the button label', () => {
+    const out = render({
+      task: task({ state: 'upcoming', scheduledTime: '12:30' }),
+      message: null,
+    });
+    expect(out.texts).toContain('Morning pills');
+    expect(out.texts).toContain('Due at 12:30 PM');
+    expect(out.buttons[0].props.accessibilityLabel).toBe('Done: Morning pills, due at 12:30 PM');
   });
 
   it('calls onPress when the button is pressed', () => {
@@ -438,17 +529,9 @@ describe('DoneCard', () => {
     expect(onPress).toHaveBeenCalledTimes(1);
   });
 
-  it('shows Saving and a disabled button while busy', () => {
-    const out = render({ task: task(), message: null, busy: true });
-    expect(out.texts).toContain('Saving');
-    expect(out.texts).not.toContain('Done');
-    expect(out.buttons[0].props.disabled).toBe(true);
-    expect(out.buttons[0].props.accessibilityState).toEqual({ disabled: true, busy: true });
-  });
-
-  it('shows only the message, with no button, when nothing is due', () => {
-    const out = render({ task: null, message: 'Checked off: Morning pills' });
-    expect(out.texts).toEqual(['Checked off: Morning pills']);
+  it('shows only the message, with no button, when there is no task', () => {
+    const out = render({ task: null, message: 'Checked off: Morning pills.' });
+    expect(out.texts).toEqual(['Checked off: Morning pills.']);
     expect(out.buttons).toHaveLength(0);
   });
 

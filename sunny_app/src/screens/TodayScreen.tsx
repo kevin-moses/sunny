@@ -3,11 +3,14 @@
 // Purpose: The senior phone's home screen: the day clock (orientation header, Next up,
 // today's tasks and events, the coming week) from calendar.dayView, with the Talk button at
 // the bottom. The day view state comes from the app shell (see useDayView), so it survives
-// a conversation. When a task is due, a Done card sits under the header (the task's label and
-// one large Done button, see useDoneAction); Talk stays fixed at the bottom, far from it.
+// a conversation. When a task is due (or may be confirmed early, up to an hour ahead), a Done
+// card sits under the header (the task's label, its due time if early, and one large Done
+// button, see useDoneAction). Done presses go through a durable queue (pendingConfirms), so they
+// work offline; queued tasks show as checked at once. Talk stays fixed at the bottom, far from it.
 //
 // Last modified: 2026-11-09
 
+import { useMemo } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -26,8 +29,11 @@ import {
   OrientationHeader,
   UpcomingList,
 } from '../components/DayComponents';
-import { doneTarget, useDoneAction } from '../day/useDoneAction';
+import { buildAgenda } from '../day/format';
+import { applyPending, confirmQueue } from '../day/pendingConfirms';
 import type { DayViewState } from '../day/useDayView';
+import { doneTarget, useDoneAction } from '../day/useDoneAction';
+import { usePendingConfirms } from '../day/usePendingConfirms';
 import { colors, GRID } from '../theme/colors';
 import { TalkButton } from '../voice/TalkButton';
 
@@ -36,16 +42,20 @@ const REGULAR_WIDTH = 768;
 
 /**
  * purpose: Today screen for a paired senior phone: the day clock, the Done card for the task
- *          that is due (hidden when nothing is due or just after a confirm) and the Talk button.
+ *          to confirm (the due one, else one that may be confirmed early; hidden when there is
+ *          none or just after a press) and the Talk button. Tasks with a queued Done press show
+ *          as checked at once, also offline and after a restart.
  * @param props: ({ dayView: DayViewState }) The household's day view, loaded by the app shell.
  * @return: (JSX.Element) The screen.
  */
 export function TodayScreen({ dayView }: { dayView: DayViewState }) {
-  const { day, agenda, errorMessage, isOffline } = dayView;
+  const { day, errorMessage, isOffline } = dayView;
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const target = doneTarget(day?.tasks ?? []);
-  const done = useDoneAction(target, isOffline);
+  const pendingIds = usePendingConfirms(confirmQueue, isOffline);
+  const tasks = useMemo(() => applyPending(day?.tasks ?? [], pendingIds), [day, pendingIds]);
+  const agenda = useMemo(() => buildAgenda(day === null ? null : { ...day, tasks }), [day, tasks]);
+  const done = useDoneAction(doneTarget(tasks), isOffline, confirmQueue);
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 
   return (
@@ -61,12 +71,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         {day !== null ? (
           <>
             <OrientationHeader day={day} />
-            <DoneCard
-              task={done.task}
-              busy={done.busy}
-              message={done.message}
-              onPress={done.pressDone}
-            />
+            <DoneCard task={done.task} message={done.message} onPress={done.pressDone} />
             {day.nextUp !== null && <NextUpCard event={day.nextUp} today={day.localDate} />}
             <AgendaList items={agenda} />
             <UpcomingList events={day.upcoming} today={day.localDate} />

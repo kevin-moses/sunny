@@ -2,13 +2,13 @@
 //
 // Purpose: The building blocks of the senior phone's day clock: the orientation header
 // ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
-// coming week, the Done card (the due task's label above one large Done button, with the
-// result line of the last press), plus the offline mark the caregiver home also uses. The home
+// coming week, the Done card (the task's label above one large Done button, with its due
+// time when it is not due yet, and the result line of the last press), plus the offline mark the caregiver home also uses. The home
 // display has its own parts in src/display. Calm, high contrast, no motion.
 //
 // Last modified: 2026-11-09
 
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
 import { displayTime, eventDetails, eventKey, isDone, isDue, whenText } from '../day/format';
@@ -242,52 +242,59 @@ const DONE_BUTTON_HEIGHT = 96;
 const DONE_PRESSED_COLOR = '#14582A';
 
 /**
- * purpose: The Done card: the due task's label above one large Done button, and the result
- *          of the last press below. With nothing due it shows only the result line, or
- *          nothing at all (never a button that does nothing).
- * @param props: ({ task, busy, message, onPress }) The task Done confirms (null when nothing
- *        is due), whether a confirm is in flight, the result line (null for none) and the
- *        press handler.
+ * purpose: The Done card: the task's label above one large Done button, and the result of the
+ *          last press below. A task that is not due yet (confirmed early) gets a line with its
+ *          time ("Due at 12:30 PM") between the label and the button, so it is plain what is
+ *          being checked off. With no task it shows only the result line, or nothing at all
+ *          (never a button that does nothing).
+ * @param props: ({ task, message, onPress }) The task Done confirms (null when there is none),
+ *        the result line (null for none) and the press handler.
  * @return: (JSX.Element | null) The card.
  */
 export function DoneCard({
   task,
-  busy,
   message,
   onPress,
 }: {
   task: DayTask | null;
-  busy: boolean;
   message: string | null;
   onPress: () => void;
 }) {
   if (task === null && message === null) return null;
+  const early = task !== null && task.state === 'upcoming';
   return (
     <View style={{ gap: 12, alignSelf: 'stretch' }}>
       {task !== null && (
         <>
-          <Text style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}>
-            {task.displayLabel}
-          </Text>
+          <View style={{ gap: 4 }}>
+            <Text style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}>
+              {task.displayLabel}
+            </Text>
+            {early && (
+              <Text
+                style={[
+                  styles.rounded,
+                  { fontSize: 24, fontWeight: '500', color: colors.secondaryText },
+                ]}
+              >
+                {`Due at ${displayTime(task.scheduledTime)}`}
+              </Text>
+            )}
+          </View>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Done: ${task.displayLabel}`}
-            accessibilityState={{ disabled: busy, busy }}
-            disabled={busy}
+            accessibilityLabel={
+              early
+                ? `Done: ${task.displayLabel}, due at ${displayTime(task.scheduledTime)}`
+                : `Done: ${task.displayLabel}`
+            }
             onPress={onPress}
             style={({ pressed }) => [
               styles.doneButton,
               pressed && { backgroundColor: DONE_PRESSED_COLOR },
             ]}
           >
-            {busy ? (
-              <View style={styles.savingRow}>
-                <ActivityIndicator size="large" color={colors.surface} />
-                <Text style={styles.doneText}>Saving</Text>
-              </View>
-            ) : (
-              <Text style={styles.doneText}>Done</Text>
-            )}
+            <Text style={styles.doneText}>Done</Text>
           </Pressable>
         </>
       )}
@@ -321,7 +328,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: colors.success,
   },
-  savingRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   doneText: { fontFamily: ROUNDED_FONT, fontSize: 40, fontWeight: '700', color: colors.surface },
   offline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });

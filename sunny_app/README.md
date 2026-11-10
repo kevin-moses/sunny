@@ -13,15 +13,16 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
   Next up, today's tasks and events, the coming week). It is a Convex subscription, so changes
   push automatically; the app only passes the current minute so "Next up" stays current. The
   offline banner shows when the Convex socket is down.
-- **Done (phone):** when a timed task is due (or escalated), the phone shows its label and one
-  large Done button under the header. It confirms that task by instance id with
-  `instances.confirmTaskInstance` (`via: "phone_app"`); the first due task if two are due.
-  Nothing due: no button. Presses within 700 ms of each other, or while a confirm is running,
-  are ignored. After a success the button is withdrawn for 4 s (only "Checked off: ..." shows), so a
-  doubting second tap cannot confirm the next due task. A call pending over 8 s shows "Still
-  trying. It is not checked off yet." and frees the button; if it lands later while that line
-  is still up, the line becomes "Checked off: ...". Offline, Done sends nothing and says the task is not checked off yet (no offline
-  queue). Logic in `src/day/useDoneAction.ts`.
+- **Done (phone):** under the header the phone shows one large Done button for the task to
+  confirm: the first due or escalated task, else the first upcoming task the backend marks
+  `confirmable` (up to 60 minutes early; the day view computes it with the confirm mutation's
+  own rule), shown with "Due at ...". A press is stored in a durable queue (AsyncStorage) first,
+  then the screen says "Checked off" and the task shows checked; the queue sends it with
+  `instances.confirmTaskInstance` (`via: "phone_app"`, `pressedAt`) now, on reconnect, or at the
+  next launch, so it works offline. The button is withdrawn for 4 s after a press. A press the
+  server permanently refuses is dropped, logged, and the task shows open again with a calm line.
+  While the phone is offline the server does not know, so reprompts and caregiver alerts still
+  fire. Logic in `src/day/useDoneAction.ts` and `src/day/pendingConfirms.ts`.
 - **Talk:** the phone joins a LiveKit room with a token from the `voice.livekitToken` action.
   The agent can call two RPCs on the phone: `findContact` (contacts search) and `sendMessage`
   (opens the SMS composer). App logs are forwarded to the agent on the `ios.log` data topic
