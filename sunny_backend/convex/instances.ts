@@ -28,7 +28,7 @@ import {
 import type { Actor, CaregiverActor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { isAnytimeInstance } from "./lib/anytime";
-import { EARLY_CONFIRM_MS, LATE_SYNC_MS, notTooEarly } from "./lib/confirmRule";
+import { EARLY_CONFIRM_MS, LATE_SYNC_MS, REPLAY_GRACE_MS, notTooEarly } from "./lib/confirmRule";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -114,6 +114,23 @@ function requirePressAge(ageMs: number): void {
 }
 
 /**
+ * purpose: Judge a replayed press as of the moment it was pressed.
+ * @param instance: (Doc<"taskInstances">) The instance.
+ * @param pressedAt: (number) Epoch ms the senior pressed (server now minus the press age).
+ * @return: (void)
+ * @raises invalid when the press was more than EARLY_CONFIRM_MS before the window started, or
+ *         more than REPLAY_GRACE_MS after it ended.
+ */
+function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number): void {
+  if (pressedAt < instance.windowStart - EARLY_CONFIRM_MS) {
+    throw appError("invalid", "This task was not due yet when it was pressed");
+  }
+  if (pressedAt > instance.windowEnd + REPLAY_GRACE_MS) {
+    throw appError("invalid", "This press was too long after the task's window");
+  }
+}
+
+/**
  * purpose: Confirm a task instance from any surface. The senior's device or the backend
  *          produces "confirmed"; an editor caregiver produces "resolved" under their name with
  *          confirmedVia "caregiver". A senior device can confirm an upcoming instance
@@ -134,10 +151,12 @@ function requirePressAge(ageMs: number): void {
  *        LATE_SYNC_MS before `now`, confirmReceivedAt records `now` so readers can tell a
  *        late-synced confirm from a live one. The audit detail records pressedAgoMs,
  *        confirmedAt and receivedAt. A live press (age of at most LATE_SYNC_MS) is subject to
- *        the early check at `now`. A replayed press (an older age) skips it: the age is evidence
- *        of an earlier real press, and the limit exists to stop accidental live presses (the
- *        client and the live path still enforce it); the audit detail then records
- *        earlyCheckBypassed and confirmReceivedAt is set. Without an age confirmedAt is `now`.
+ *        the early check at `now`. A replayed press (an older age) is judged as of the time it
+ *        was pressed, not the time it arrived: it is refused (invalid) if it was pressed more
+ *        than EARLY_CONFIRM_MS before the instance's windowStart (the task was not due yet when
+ *        she pressed, for example because a caregiver moved it while the phone was offline) or
+ *        more than REPLAY_GRACE_MS after its windowEnd (a stale card pressed the morning after
+ *        is not an on-time record of last night's task). Without an age confirmedAt is `now`.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
  * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the
@@ -179,15 +198,15 @@ export async function confirmInstance(
     if (instance.localDate > localDate(now, household.timezone)) {
       throw appError("invalid", "This task is not due yet");
     }
-  } else if (!replayed && !notTooEarly(instance, now)) {
+  } else if (!notTooEarly(instance, now)) {
     throw appError("invalid", "This task is not due yet");
   }
-  const bypassed = replayed && !asCaregiver && !notTooEarly(instance, now);
+  if (replayed) requirePressInWindow(instance, now - (args.pressedAgoMs ?? 0));
   const confirmedAt =
     args.pressedAgoMs === undefined
       ? now
       : Math.min(now, Math.max(now - args.pressedAgoMs, instance.windowStart - EARLY_CONFIRM_MS));
-  const lateSynced = bypassed || now - confirmedAt > LATE_SYNC_MS;
+  const lateSynced = now - confirmedAt > LATE_SYNC_MS;
   const pressDetail =
     args.pressedAgoMs === undefined
       ? undefined
@@ -196,7 +215,6 @@ export async function confirmInstance(
           confirmedAt,
           receivedAt: now,
           replayed,
-          earlyCheckBypassed: bypassed,
         };
   return await changeInstance(
     ctx,

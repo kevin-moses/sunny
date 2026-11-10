@@ -19,6 +19,13 @@ export const EARLY_CONFIRM_MS = minutes(60);
 /** A confirm recorded this much (ms) before the server received it counts as late-synced. */
 export const LATE_SYNC_MS = minutes(5);
 
+/**
+ * How long (ms) after its window ended a replayed press may still be recorded for the instance.
+ * Generous enough for a task done a little late, short enough that a stale card pressed the
+ * next morning is not recorded as last night's dose.
+ */
+export const REPLAY_GRACE_MS = minutes(180);
+
 /** The instance fields the rule reads. */
 export interface ConfirmRuleInput {
   state: InstanceState;

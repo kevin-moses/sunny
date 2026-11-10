@@ -7,7 +7,8 @@
 // closed or the task escalated), clamped to now and to the early-confirm point, audited, marked
 // late with confirmReceivedAt (more than five minutes; the day view exposes its local time and
 // days later, so a press at 11:30 PM received after midnight reads as the next day); a replay
-// skips the early check (audited) while a live press is refused as a result with an audit row;
+// is judged as of its press time (refused if pressed before the early window or long after the
+// window, with an audit row) while a live press is refused at the server clock;
 // a press for a deleted task returns rejected with an audit row instead of throwing; another
 // household's instance, caregivers and non-finite or negative ages throw; allowed from a
 // display device; only the named instance confirmed; no second audit row on a repeat.
@@ -304,7 +305,7 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
 
   test("a press at 11:30 PM that reaches the server after midnight is one day later", async () => {
     const f = await setup();
-    await force(f, { state: "due" });
+    await force(f, { state: "due", windowEnd: Date.parse("2027-03-15T05:00:00Z") });
     const pressed = Date.parse("2027-03-15T03:30:00Z");
     const received = Date.parse("2027-03-15T06:10:00Z");
     await confirmed(f, "2027-03-15T06:10:00Z", received - pressed);
@@ -340,11 +341,46 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
     expect(row).toMatchObject({ state: "confirmed", confirmedAt: pressed });
   });
 
-  test("an age that would put the press before the early-confirm point is clamped up to it", async () => {
+  test("a replay pressed within the early window keeps its press time", async () => {
     const f = await setup();
-    await force(f, { state: "due" });
-    const row = await confirmed(f, "2027-03-14T12:30:00Z", 50 * HOUR);
-    expect(row.confirmedAt).toBe(WINDOW_START - HOUR);
+    const now = Date.parse("2027-03-14T12:30:00Z");
+    const pressed = Date.parse("2027-03-14T11:50:00Z");
+    const row = await confirmed(f, "2027-03-14T12:30:00Z", now - pressed);
+    expect(row).toMatchObject({ confirmedAt: pressed, confirmReceivedAt: now });
+  });
+
+  test("a replay pressed before the early window is refused and audited (task moved while offline)", async () => {
+    const f = await setup();
+    const result = await confirmAgo(f, "2027-03-14T12:30:00Z", 2 * HOUR);
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "This task was not due yet when it was pressed",
+    });
+    const [row] = await auditRows(f, "press_not_applied");
+    expect(row!.detail).toMatchObject({ pressedAgoMs: 2 * HOUR });
+    const after = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(after!.state).toBe("upcoming");
+  });
+
+  test("a stale card pressed the morning after is refused, not recorded as last night's dose", async () => {
+    const f = await setup();
+    await force(f, { state: "missed" });
+    const result = await confirmAgo(f, "2027-03-15T12:30:00Z", 20 * 60_000);
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "This press was too long after the task's window",
+    });
+    expect(await auditRows(f, "press_not_applied")).toHaveLength(1);
+  });
+
+  test("a replay pressed within the grace after the window still counts", async () => {
+    const f = await setup();
+    await force(f, { state: "missed" });
+    const windowEnd = (await f.t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.windowEnd;
+    const received = windowEnd + 5 * HOUR;
+    const pressed = windowEnd + 2 * HOUR;
+    const row = await confirmed(f, new Date(received).toISOString(), received - pressed);
+    expect(row.confirmedAt).toBe(pressed);
   });
 
   test("a live press on a task that is too early is refused with a result, not an error, and audited", async () => {
@@ -360,15 +396,6 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
     expect(row!.entityId).toBe(f.instanceId);
     const after = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
     expect(after!.state).toBe("upcoming");
-  });
-
-  test("a replayed press skips the early check and says so in the audit", async () => {
-    const f = await setup();
-    const now = Date.parse("2027-03-14T10:00:00Z");
-    const row = await confirmed(f, "2027-03-14T10:00:00Z", 30 * 60_000);
-    expect(row).toMatchObject({ state: "confirmed", confirmedAt: now, confirmReceivedAt: now });
-    const [audit] = await auditRows(f, "state_change");
-    expect(audit!.detail).toMatchObject({ replayed: true, earlyCheckBypassed: true });
   });
 
   test("a replayed press for a task that no longer exists returns rejected and writes an audit row", async () => {
