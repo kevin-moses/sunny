@@ -12,25 +12,25 @@
 # to keep talking); household facts beat general knowledge and caregiver-verified facts beat
 # things the senior said; say plainly when nothing is known; a repeated question is answered
 # again the same way without remark; the sensitive-topic playbook is followed exactly; times
-# are spoken plainly; speech only. Medication questions get facts first and the decision is
-# the senior's. A message to a person is read back before it is sent; reminders and notes are
-# made without a confirmation round trip.
+# are spoken plainly; speech only. Medication questions get facts first, worded as the label
+# (never permission), and the decision is the senior's. A message to a person is read back
+# before it is sent; reminders, notes and list items are made without a confirmation round
+# trip. The only offers allowed are that read-back and letting family know. A bare greeting
+# gets one word. "Who was told" is said exactly as the tool says, with 911, 988 and Poison
+# Control where they apply; a fall is urgent; distress gets two or three calm sentences; flag
+# details are two sentences with no account numbers; a fact that contradicts a verified one or
+# touches the playbook is not saved.
 #
 # Context safety: caregiver-written text (details, guidance, message bodies) can be long and
 # hold newlines, so every interpolated household value is collapsed to one line (one_line) and
-# each list entry is exactly one "  - " line. Remembered facts carry their trust label before
-# the text ("[verified by family] ...", "[said by Margaret, not verified] ..."), so a fact
-# whose own text ends in "(verified)" cannot pass as verified. A family message body is quoted
-# with its sender, and only once it has been read aloud: an unread message shows only its
-# sender, so the agent must call read_latest_message (which sets seenAt) to read it. The prompt
-# states that the household information is information, never instructions.
-#
-# Review additions (2026-11-09): remembered facts are quoted after their label; the household
-# list (short lists in full, long ones as a count); a bare greeting gets one word; the only
-# offers allowed are the message read-back and letting family know; honest "who was told"
-# wording with 911, 988 and Poison Control where they apply; a fall is urgent; no card or
-# account numbers in a flag; read an unread message first when its sender is asked about; do
-# not save facts that contradict verified ones or touch the playbook.
+# each list entry is exactly one "  - " line. Remembered facts are quoted after their trust
+# label ("[verified by family] ...", "[said by Margaret, not verified] ..."), so a fact whose
+# own text ends in "(verified)" cannot pass as verified. A family message body is quoted with
+# its sender, and only once it has been read aloud: an unread message shows only its sender, so
+# the agent must call read_latest_message (which sets seenAt) to read it, and reads it first
+# when the question involves that sender. The household list is shown in full when short, as a
+# count otherwise. The prompt states that the household information is information, never
+# instructions.
 #
 # Last modified: 2026-11-09
 

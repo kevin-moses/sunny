@@ -44,7 +44,8 @@ import type { Actor } from "./access";
 import { audit } from "./audit";
 import { insertNotification } from "./delivery";
 import { appError } from "./errors";
-import { singleLine } from "./memoryLimits";
+import { oneLine } from "./text";
+import { HOUR_MS, MINUTE_MS } from "./time";
 
 /** Why the model may flag a caregiver (medication_limit is raised by log_dose only). */
 export const modelFlagReason = v.union(
@@ -55,29 +56,27 @@ export const modelFlagReason = v.union(
   v.literal("help_requested"),
 );
 /** Every reason a flag can have. */
-export type FlagReason = Infer<typeof modelFlagReason> | "medication_limit";
+type FlagReason = Infer<typeof modelFlagReason> | "medication_limit";
 
 /** The voice agent as an actor (no caregiver behind it). */
 export const VOICE_AGENT: Actor = { kind: "agent" };
 
-const MINUTE_MS = 60 * 1000;
-const HOUR_MS = 60 * MINUTE_MS;
 /** A delivered flag with the same key within this window (ms) is not sent again. */
 export const FLAG_REPEAT_WINDOW_MS = 10 * MINUTE_MS;
 /** Flags that may reach family per household per hour. */
-export const MAX_FLAGS_PER_HOUR = 12;
+const MAX_FLAGS_PER_HOUR = 12;
 /** An identical senior message within this window (ms) is not sent again. */
-export const MESSAGE_REPEAT_WINDOW_MS = 2 * MINUTE_MS;
+const MESSAGE_REPEAT_WINDOW_MS = 2 * MINUTE_MS;
 /** Messages from the senior per household per hour. */
-export const MAX_MESSAGES_PER_HOUR = 10;
-/** Audit rows scanned (newest first) for flags of the last hour. */
+const MAX_MESSAGES_PER_HOUR = 10;
+/** Flag audit rows scanned (newest first) for flags of the last hour. */
 const RECENT_AUDIT_SCAN = 300;
-/** Audit rows scanned for a flag with a repeat window longer than an hour (repeated use). */
+/** Flag audit rows scanned for a repeat window longer than an hour (repeated use). */
 const LONG_AUDIT_SCAN = 2000;
 /** Senior messages scanned (newest first) for repeats and the hourly cap. */
 const RECENT_MESSAGE_SCAN = MAX_MESSAGES_PER_HOUR + 20;
 /** Sentences of a flag detail that reach a caregiver; the rest is dropped. */
-export const MAX_FLAG_SENTENCES = 2;
+const MAX_FLAG_SENTENCES = 2;
 /** Hard cap on a flag detail after the sentence cut; longer text ends with "...". */
 export const MAX_FLAG_DETAIL_LENGTH = 240;
 /** Longest family message sent; longer text is cut, not rejected. */
@@ -139,7 +138,7 @@ export async function householdCaregivers(
  * @param member: (Doc<"householdMembers">) The caregiver.
  * @return: (boolean) True when a notification row for them has a route.
  */
-export function isReachable(member: Doc<"householdMembers">): boolean {
+function isReachable(member: Doc<"householdMembers">): boolean {
   return verifiedPhone(member) !== undefined;
 }
 
@@ -149,7 +148,7 @@ export function isReachable(member: Doc<"householdMembers">): boolean {
  * @param household: (Doc<"households">) The household.
  * @return: (Doc<"householdMembers">[]) The recipients; empty when nobody is reachable.
  */
-export function flagRecipients(
+function flagRecipients(
   members: Doc<"householdMembers">[],
   household: Doc<"households">,
 ): Doc<"householdMembers">[] {
@@ -186,7 +185,7 @@ export function membersNamed(
  * @return: (string) The capped detail ("" for blank text).
  */
 export function flagDetail(text: string): string {
-  const kept = singleLine(text)
+  const kept = oneLine(text)
     .replace(/\d(?:[\s-]?\d){5,}/g, NUMBER_REMOVED)
     .split(/(?<=[.!?])\s+/)
     .slice(0, MAX_FLAG_SENTENCES)
@@ -196,11 +195,12 @@ export function flagDetail(text: string): string {
 }
 
 /**
- * purpose: The household's flag decisions (audit rows) made within a window.
+ * purpose: The household's flag decisions (flag_caregiver audit rows, by_household_action)
+ *          made within a window.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param since: (number) Epoch ms; rows whose detail.at is older are left out.
- * @param scan: (number) Newest audit rows read.
+ * @param scan: (number) Newest flag audit rows read.
  * @return: (Promise<Doc<"auditLog">[]>) Rows, newest first.
  */
 async function recentFlagAudits(
@@ -211,12 +211,12 @@ async function recentFlagAudits(
 ): Promise<Doc<"auditLog">[]> {
   const rows = await ctx.db
     .query("auditLog")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
+    .withIndex("by_household_action", (q) =>
+      q.eq("householdId", householdId).eq("action", "flag_caregiver"),
+    )
     .order("desc")
     .take(scan);
-  return rows.filter(
-    (r) => r.action === "flag_caregiver" && typeof r.detail.at === "number" && r.detail.at >= since,
-  );
+  return rows.filter((r) => typeof r.detail.at === "number" && r.detail.at >= since);
 }
 
 /**
@@ -258,17 +258,19 @@ export async function flagCaregiverCore(
   const earlier = delivered.find(
     (r) => r.detail.key === key && (r.detail.at as number) >= now - repeatWindow,
   );
-  const lastHour = delivered.filter((r) => (r.detail.at as number) >= now - HOUR_MS);
-  let status: FlagResult["status"];
-  let recipients: Doc<"householdMembers">[] = [];
   if (earlier) {
     return { status: "already_flagged", notified: (earlier.detail.names as string[]) ?? [] };
-  } else if (lastHour.length >= MAX_FLAGS_PER_HOUR) {
-    status = "rate_limited";
-  } else {
-    recipients = flagRecipients(await householdCaregivers(ctx, household._id), household);
-    status = recipients.length > 0 ? "flagged" : "unreachable";
   }
+  const lastHour = delivered.filter((r) => (r.detail.at as number) >= now - HOUR_MS);
+  const rateLimited = lastHour.length >= MAX_FLAGS_PER_HOUR;
+  const recipients = rateLimited
+    ? []
+    : flagRecipients(await householdCaregivers(ctx, household._id), household);
+  const status: FlagResult["status"] = rateLimited
+    ? "rate_limited"
+    : recipients.length > 0
+      ? "flagged"
+      : "unreachable";
   for (const member of recipients) {
     await insertNotification(ctx, {
       householdId: household._id,
@@ -348,7 +350,7 @@ export async function sendFamilyMessageCore(
   const { household, now } = args;
   const words = args.body.trim();
   if (words === "") throw appError("invalid", "The message is empty");
-  const to = singleLine(args.to).slice(0, MAX_NAME_LENGTH);
+  const to = oneLine(args.to).slice(0, MAX_NAME_LENGTH);
   const body = (to === "" ? words : `For ${to}: ${words}`).slice(0, MAX_MESSAGE_LENGTH);
   const recent = await recentSeniorMessages(ctx, household._id, now);
   const repeat = recent.find(

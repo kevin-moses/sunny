@@ -22,7 +22,8 @@ import { actorUserId } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
 import { appError } from "./errors";
-import { factKey, singleLine } from "./memoryLimits";
+import { oneLine, textKey } from "./text";
+import { DAY_MS } from "./time";
 import type { ListActorKind } from "./validators";
 
 /** Longest list item, after collapsing whitespace. */
@@ -30,13 +31,13 @@ export const MAX_LIST_ITEM_LENGTH = 80;
 /** Open items a household list may hold. */
 export const MAX_OPEN_LIST_ITEMS = 50;
 /** Items one voice add may carry ("milk, eggs and bread"). */
-export const MAX_ITEMS_PER_ADD = 10;
+const MAX_ITEMS_PER_ADD = 10;
 /** Open items the voice agent's context lists; a longer list gives only the count. */
 export const LIST_CONTEXT_MAX = 8;
 /** Ticked items caregivers see: those ticked within this long (ms)... */
-export const RECENT_DONE_MS = 7 * 24 * 60 * 60 * 1000;
+const RECENT_DONE_MS = 7 * DAY_MS;
 /** ...at most this many. */
-export const MAX_DONE_SHOWN = 50;
+const MAX_DONE_SHOWN = 50;
 
 /** What happened to one item of an add. */
 export interface AddedItem {
@@ -57,8 +58,15 @@ export interface ListItemView {
   doneByName: string | null;
 }
 
+/** What ticking by spoken words did. */
+export interface TickItemResult {
+  status: "ticked" | "not_found" | "ambiguous";
+  text: string | null;
+  options: string[];
+}
+
 /** Which open item some words mean. */
-export type ItemMatch =
+type ItemMatch =
   | { status: "found"; item: Doc<"listItems"> }
   | { status: "not_found" | "ambiguous"; options: string[] };
 
@@ -69,9 +77,7 @@ export type ItemMatch =
  * @return: ({kind, userId}) The list actor kind and the user id to record, if any.
  */
 function listActor(actor: Actor): { kind: ListActorKind; userId: string | undefined } {
-  if (actor.kind === "caregiver") return { kind: "caregiver", userId: actor.userId };
-  if (actor.kind === "senior_device") return { kind: "senior", userId: actor.userId };
-  return { kind: "senior", userId: actorUserId(actor) };
+  return { kind: actor.kind === "caregiver" ? "caregiver" : "senior", userId: actorUserId(actor) };
 }
 
 /**
@@ -80,8 +86,8 @@ function listActor(actor: Actor): { kind: ListActorKind; userId: string | undefi
  * @return: (string) The text, "" when blank.
  * @raises invalid when longer than MAX_LIST_ITEM_LENGTH.
  */
-export function cleanItemText(text: string): string {
-  const line = singleLine(text);
+function cleanItemText(text: string): string {
+  const line = oneLine(text);
   if (line.length > MAX_LIST_ITEM_LENGTH) {
     throw appError("invalid", `A list item is ${MAX_LIST_ITEM_LENGTH} characters at most`);
   }
@@ -144,13 +150,13 @@ export async function addListItemsCore(
 ): Promise<AddedItem[]> {
   const who = listActor(actor);
   const open = await openListItems(ctx, householdId);
-  const onList = new Map(open.map((item) => [factKey(item.text), item._id]));
+  const onList = new Map(open.map((item) => [textKey(item.text), item._id]));
   let openCount = open.length;
   const seen = new Set<string>();
   const results: AddedItem[] = [];
   for (const raw of texts) {
     const text = cleanItemText(raw);
-    const key = factKey(text);
+    const key = textKey(text);
     if (text === "" || seen.has(key)) continue;
     seen.add(key);
     const existing = onList.get(key);
@@ -228,7 +234,7 @@ export async function untickListItemCore(
   if (item.doneAt === undefined) return item;
   const open = await openListItems(ctx, item.householdId);
   if (open.length >= MAX_OPEN_LIST_ITEMS) throw appError("limit", "The list is full");
-  if (open.some((o) => factKey(o.text) === factKey(item.text))) {
+  if (open.some((o) => textKey(o.text) === textKey(item.text))) {
     throw appError("invalid", "That item is already on the list");
   }
   await ctx.db.patch(item._id, { doneAt: undefined, doneByKind: undefined, doneBy: undefined });
@@ -272,17 +278,63 @@ export async function removeListItemCore(
  * @param words: (string) What the senior said, e.g. "the milk".
  * @return: (ItemMatch) found, or not_found / ambiguous with the candidates' text.
  */
-export function matchOpenItem(open: Doc<"listItems">[], words: string): ItemMatch {
-  const key = factKey(words).replace(/^(the|my|some)\s+/, "");
+function matchOpenItem(open: Doc<"listItems">[], words: string): ItemMatch {
+  const key = textKey(words).replace(/^(the|my|some)\s+/, "");
   if (key === "") return { status: "not_found", options: [] };
-  const exact = open.filter((i) => factKey(i.text) === key);
+  const exact = open.filter((i) => textKey(i.text) === key);
   const matches =
     exact.length > 0
       ? exact
-      : open.filter((i) => factKey(i.text).includes(key) || key.includes(factKey(i.text)));
+      : open.filter((i) => textKey(i.text).includes(key) || key.includes(textKey(i.text)));
   if (matches.length === 1) return { status: "found", item: matches[0]! };
   if (matches.length === 0) return { status: "not_found", options: [] };
   return { status: "ambiguous", options: matches.map((i) => i.text) };
+}
+
+/**
+ * purpose: Add the items the senior named by voice ("add milk and eggs"): each cut to one line
+ *          of MAX_LIST_ITEM_LENGTH (spoken items are never refused for length), at most
+ *          MAX_ITEMS_PER_ADD of them.
+ * @param ctx: (MutationCtx) Context.
+ * @param actor: (Actor) The voice agent.
+ * @param householdId: (Id<"households">) Household.
+ * @param items: (string[]) The items as said.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<AddedItem[]>) Per item: added, already_on_list or list_full.
+ */
+export async function addSpokenItemsCore(
+  ctx: MutationCtx,
+  actor: Actor,
+  householdId: Id<"households">,
+  items: string[],
+  now: number,
+): Promise<AddedItem[]> {
+  const texts = items
+    .slice(0, MAX_ITEMS_PER_ADD)
+    .map((t) => oneLine(t).slice(0, MAX_LIST_ITEM_LENGTH).trim());
+  return await addListItemsCore(ctx, actor, householdId, texts, now);
+}
+
+/**
+ * purpose: Tick the open item the senior's words mean ("I bought the milk").
+ * @param ctx: (MutationCtx) Context.
+ * @param actor: (Actor) The voice agent.
+ * @param householdId: (Id<"households">) Household.
+ * @param words: (string) The words naming the item.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<TickItemResult>) ticked with the item's text, or not_found / ambiguous.
+ */
+export async function tickItemByWordsCore(
+  ctx: MutationCtx,
+  actor: Actor,
+  householdId: Id<"households">,
+  words: string,
+  now: number,
+): Promise<TickItemResult> {
+  const match = matchOpenItem(await openListItems(ctx, householdId), words);
+  if (match.status !== "found") return { status: match.status, text: null, options: match.options };
+  await tickListItemCore(ctx, actor, match.item, now);
+  return { status: "ticked", text: match.item.text, options: [] };
 }
 
 /**

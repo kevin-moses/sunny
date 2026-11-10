@@ -28,24 +28,23 @@ import { isAsNeededTask } from "../tasks";
 import { logDoseCore } from "../instances";
 import { audit } from "./audit";
 import { daysUsed, doseStatus, limitBreaches } from "./doseLimits";
+import { appError } from "./errors";
 import type { DayOf, DoseLimits, LimitBreaches } from "./doseLimits";
-import { addDays, formatTime12, localDate, localMidnight, localTime, zonedInstant } from "./time";
+import { DAY_MS, MINUTE_MS, dayRange, formatTime12, localDate, localTime } from "./time";
 import type { TodayEntry } from "./today";
 import { VOICE_AGENT, flagCaregiverCore } from "./voiceRouting";
 import type { FlagResult } from "./voiceRouting";
 
-const MINUTE_MS = 60_000;
-const DAY_MS = 24 * 60 * MINUTE_MS;
 /** A dose of the same medication this close (ms) to a reported one is the same dose. */
-export const DOSE_REPEAT_WINDOW_MS = 30 * MINUTE_MS;
+const DOSE_REPEAT_WINDOW_MS = 30 * MINUTE_MS;
 /** Longest a self-reported dose may be back-dated ("I took one an hour ago"), in minutes. */
-export const MAX_DOSE_MINUTES_AGO = 12 * 60;
+const MAX_DOSE_MINUTES_AGO = 12 * 60;
 /** Repeated use: a symptom flag once the medication was used on this many days... */
-export const REPEATED_USE_DAYS = 4;
+const REPEATED_USE_DAYS = 4;
 /** ...of this many local days (today included)... */
-export const REPEATED_USE_WINDOW_DAYS = 7;
+const REPEATED_USE_WINDOW_DAYS = 7;
 /** ...at most once in this long (ms) per medication. */
-export const REPEATED_USE_FLAG_REPEAT_MS = 7 * DAY_MS;
+const REPEATED_USE_FLAG_REPEAT_MS = 7 * DAY_MS;
 /** Doses read back this far (ms): the 7-day use count plus the 24-hour window, with margin. */
 const DOSE_LOOKBACK_MS = (REPEATED_USE_WINDOW_DAYS + 2) * DAY_MS;
 /** Most dose rows read per medication. */
@@ -74,7 +73,7 @@ export interface AsNeededEntry {
 }
 
 /** An as-needed medication task with its recent dose rows. */
-export interface AsNeededMed {
+interface AsNeededMed {
   task: Doc<"tasks">;
   /** Dose rows in the lookback, ascending by takenAt. */
   rows: Doc<"doseLog">[];
@@ -110,12 +109,9 @@ export type UndoDoseResult =
  * @param household: (Doc<"households">) The household.
  * @return: (DayOf) Instant to its local midnight and the next local midnight.
  */
-export function householdDayOf(household: Doc<"households">): DayOf {
+function householdDayOf(household: Doc<"households">): DayOf {
   const tz = household.timezone;
-  return (t) => ({
-    start: localMidnight(t, tz),
-    end: zonedInstant(addDays(localDate(t, tz), 1), "00:00", tz),
-  });
+  return (t) => dayRange(localDate(t, tz), tz);
 }
 
 /**
@@ -138,7 +134,7 @@ function limitsOf(task: Doc<"tasks">): DoseLimits {
  * @param now: (number) Epoch ms.
  * @return: (Promise<AsNeededMed[]>) In task creation order.
  */
-export async function asNeededMeds(
+async function asNeededMeds(
   ctx: QueryCtx,
   household: Doc<"households">,
   now: number,
@@ -147,20 +143,20 @@ export async function asNeededMeds(
     .query("tasks")
     .withIndex("by_household_active", (q) => q.eq("householdId", household._id).eq("active", true))
     .collect();
-  const meds: AsNeededMed[] = [];
-  for (const task of tasks.filter(isAsNeededTask)) {
-    const rows = await ctx.db
-      .query("doseLog")
-      .withIndex("by_household_task_taken", (q) =>
-        q
-          .eq("householdId", household._id)
-          .eq("taskId", task._id)
-          .gte("takenAt", now - DOSE_LOOKBACK_MS),
-      )
-      .take(MAX_DOSE_ROWS);
-    meds.push({ task, rows });
-  }
-  return meds;
+  return await Promise.all(
+    tasks.filter(isAsNeededTask).map(async (task) => ({
+      task,
+      rows: await ctx.db
+        .query("doseLog")
+        .withIndex("by_household_task_taken", (q) =>
+          q
+            .eq("householdId", household._id)
+            .eq("taskId", task._id)
+            .gte("takenAt", now - DOSE_LOOKBACK_MS),
+        )
+        .take(MAX_DOSE_ROWS),
+    })),
+  );
 }
 
 /**
@@ -170,7 +166,7 @@ export async function asNeededMeds(
  * @param now: (number) Epoch ms.
  * @return: (AsNeededEntry) The entry.
  */
-export function asNeededEntry(med: AsNeededMed, dayOf: DayOf, now: number): AsNeededEntry {
+function asNeededEntry(med: AsNeededMed, dayOf: DayOf, now: number): AsNeededEntry {
   const limits = limitsOf(med.task);
   const doses = med.rows.map((r) => r.takenAt);
   return {
@@ -221,7 +217,7 @@ function matching(meds: AsNeededMed[], words: string): AsNeededMed[] {
  * @return: (AsNeededMed | LogDoseResult) The medication, or the no_rule, not_found, ambiguous
  *          or scheduled_due result.
  */
-export function pickAsNeeded(
+function pickAsNeeded(
   meds: AsNeededMed[],
   words: string,
   dueScheduled: TodayEntry | null,
@@ -281,9 +277,11 @@ function limitFlagDetail(
  * @param ctx: (MutationCtx) Context.
  * @param args: ({household, words, minutesAgo, dueScheduled, conversationId, now}) The
  *        household, lower-cased words naming the medication ("" for none), whole minutes since
- *        the dose (already validated), a scheduled medication due now if any, the
+ *        the dose (0..MAX_DOSE_MINUTES_AGO), a loader for the scheduled medication due now
+ *        (awaited only when it can matter: no words and one as-needed medication), the
  *        conversation and the clock.
  * @return: (Promise<LogDoseResult>) The outcome.
+ * @raises invalid for minutesAgo outside 0..720 or not whole.
  */
 export async function logAsNeededDoseCore(
   ctx: MutationCtx,
@@ -291,17 +289,18 @@ export async function logAsNeededDoseCore(
     household: Doc<"households">;
     words: string;
     minutesAgo: number;
-    dueScheduled: TodayEntry | null;
+    dueScheduled: () => Promise<TodayEntry | null>;
     conversationId?: Id<"conversations">;
     now: number;
   },
 ): Promise<LogDoseResult> {
-  const { household, now } = args;
-  const picked = pickAsNeeded(
-    await asNeededMeds(ctx, household, now),
-    args.words,
-    args.dueScheduled,
-  );
+  const { household, now, minutesAgo } = args;
+  if (!Number.isInteger(minutesAgo) || minutesAgo < 0 || minutesAgo > MAX_DOSE_MINUTES_AGO) {
+    throw appError("invalid", "minutesAgo must be a whole number from 0 to 720");
+  }
+  const meds = await asNeededMeds(ctx, household, now);
+  const dueScheduled = args.words === "" && meds.length === 1 ? await args.dueScheduled() : null;
+  const picked = pickAsNeeded(meds, args.words, dueScheduled);
   if ("status" in picked) return picked;
   const dayOf = householdDayOf(household);
   const takenAt = now - args.minutesAgo * MINUTE_MS;

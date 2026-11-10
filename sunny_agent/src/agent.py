@@ -8,35 +8,32 @@
 # through Convex (send_family_message), not the phone's contacts or SMS.
 #
 # Tools (each backed by an agent:* Convex function except web_search and get_weather):
-# web_search (Tavily), get_weather (Open-Meteo, weather.py, for the household's
-# weatherLocation), list_today, confirm_task (already-done guard), snooze_task ("not yet",
-# 15 minutes), medication_status, log_dose and undo_last_dose (label facts; a dose past a
-# limit flags the caregiver), create_reminder and cancel_reminder (senior-created reminders
-# only), remember_fact (unverified senior memory), flag_caregiver, send_family_message,
-# read_latest_message, and the household list: add_to_list, read_list, take_off_list. The
-# phone-RPC tools find_contact and send_message were removed
-# (2026-11-09): the display has no contacts or SMS.
+# web_search (Tavily, run off the event loop), get_weather (Open-Meteo, weather.py, for the
+# household's weatherLocation), list_today, confirm_task (already-done guard), snooze_task
+# ("not yet", 15 minutes), medication_status, log_dose and undo_last_dose (label facts; a
+# dose past a limit flags the caregiver), create_reminder and cancel_reminder
+# (senior-created reminders only), remember_fact (unverified senior memory), flag_caregiver
+# (medication_limit is raised by log_dose, never by the model), send_family_message,
+# read_latest_message, and the household list: add_to_list, read_list, take_off_list
+# (list_tools.py). There are no phone-RPC tools: the display has no contacts or SMS.
 #
-# Error handling: STT garbage filter silences short/non-alphabetic transcripts; progressive
-# error recovery speaks escalating messages on LLM/STT/TTS failures; the participant
-# disconnect handler finalizes the conversation. A failing tool returns a short plain sentence
-# for the model, never a raw error.
+# Error handling: the STT filter drops noise (no letters, a single letter, filler sounds such
+# as "um") but lets short words like "Hi" through; progressive error recovery speaks
+# escalating messages on LLM/STT/TTS failures; the participant disconnect handler finalizes
+# the conversation; watch_inactivity ends a session with no speech for INACTIVITY_TIMEOUT_S,
+# without relying on the display. A failing tool returns a short plain sentence for the
+# model, never a raw error. TTS speaks at TTS_SPEED on TTS_MODEL (config.py).
 #
-# Opening (2026-11-09): a Talk press means the senior has a question, so a "talk" session
-# opens silently and listens; the display shows that it is listening. Only a session started
-# by a task that is still open (scheduled_prompt or notification_tap with task_instance_id)
-# opens by speaking that task's fixed spoken prompt. Nothing else is spoken unprompted: no
-# greeting, no "welcome back" on reconnect. A spoken cue was rejected because a one-word cue
-# echoed back through the microphone would pass the echo filter (single words are never
-# treated as echo) and be answered as if the senior had said it.
-#
-# Review fixes (2026-11-09): the opening prompt is spoken only for a task that is due or
-# escalated, in the task's own words or the spec template (label, pills, "Press Done when
-# you've taken them"; no clock time); short real words ("Hi", "no") pass the garbage filter,
-# filler sounds do not; watch_inactivity ends a session with no speech for
-# INACTIVITY_TIMEOUT_S; TTS speaks at TTS_SPEED on TTS_MODEL; Tavily runs off the event loop;
-# medication_limit is not a model-facing flag reason; new tools undo_last_dose, add_to_list,
-# read_list and take_off_list (list_tools.py).
+# Opening: a Talk press means the senior has a question, so a "talk" session opens silently
+# and listens (the display shows that it is listening). A spoken cue was rejected because a
+# one-word cue echoed back through the microphone would pass the echo filter and be answered
+# as if the senior had said it. Only a session started by a task that is due or escalated
+# (scheduled_prompt or notification_tap with task_instance_id) speaks first, with the same
+# sentence the display's due cue speaks (_task_prompt). Nothing else is spoken unprompted.
+# What the display shows (it treats an agent line after a user line as the answer, and an
+# agent line before any user line as an opening that never lingers): the task prompt is an
+# opening, shown while spoken; a bare "Hi" gets "Yes?" (prompts.py), which the display shows
+# as the answer to "Hi" until the senior asks her question, a harmless one-word line.
 #
 # Session context: resolve_session() reads household_id, trigger, task_instance_id and
 # device_id from participant metadata. Session context is also persisted to the
@@ -113,6 +110,7 @@ from memory import (
 )
 from prompts import format_user_context, render_system_prompt
 from tools import (
+    ANYTIME,
     db_cancel_senior_reminder,
     db_confirm_task,
     db_create_senior_reminder,
@@ -125,6 +123,7 @@ from tools import (
     db_send_family_message,
     db_snooze_task,
     db_undo_last_dose,
+    one_line,
 )
 from weather import Place, WeatherError, lookup_place, weather_report
 
@@ -677,28 +676,39 @@ def _opening_prompt(
 
 def _task_prompt(instance: dict) -> str:
     """
-    purpose: The fixed words for a task's prompt: the caregiver's own spoken prompt, or when
-             there is none (or only the backend's bare "Time for <label>."), the spec template:
-             the label, the pill description when present, and how to confirm. No clock time,
-             so a reprompt is never wrong, and the same words every day.
-    @param instance: (dict) A today entry (displayLabel, spokenPrompt, type, pillDescription).
-    @return: (str) e.g. "Time for your morning pills, the small white ones. Press Done when
-             you've taken them."
+    purpose: The fixed words for a task's prompt, the same sentence the home display's due cue
+             speaks (sunny_app/src/display/cue.ts cueSpeech), so she hears identical wording
+             from both: the caregiver's own spoken prompt, or when there is none (or only the
+             backend's default "Time for <label>."), "Time for <label>, at <scheduled time>.
+             Press Done when you have taken them." ("finished" for other tasks). The time is
+             the scheduled time, so it stays right on a reprompt; an anytime task, which the
+             display never cues, has no time.
+    @param instance: (dict) A today entry (displayLabel, spokenPrompt, type, scheduledTime).
+    @return: (str) e.g. "Time for Morning pills, at 8 o'clock. Press Done when you have taken
+             them."
     """
-    label = " ".join(str(instance.get("displayLabel") or "your task").split())
-    spoken = " ".join(str(instance.get("spokenPrompt") or "").split())
+    label = str(instance.get("displayLabel") or "")
+    spoken = str(instance.get("spokenPrompt") or "").strip()
     if spoken and spoken != f"Time for {label}.":
-        return spoken
-    name = label[:1].lower() + label[1:]
-    text = (
-        f"Time for your {name}" if not name.startswith("your ") else f"Time for {name}"
-    )
-    pills = " ".join(str(instance.get("pillDescription") or "").split())
-    if pills:
-        text += f", the {pills}"
-    if instance.get("type") == "medication":
-        return f"{text}. Press Done when you've taken them."
-    return f"{text}. Press Done when it's done."
+        return one_line(spoken)
+    finish = "taken them" if instance.get("type") == "medication" else "finished"
+    scheduled = str(instance.get("scheduledTime") or "")
+    when = "" if scheduled == ANYTIME else f", at {_cue_time(scheduled)}"
+    return f"Time for {label}{when}. Press Done when you have {finish}."
+
+
+def _cue_time(local_time: str) -> str:
+    """
+    purpose: A scheduled time as the display's cue says it (cue.ts spokenTime): a 12-hour clock
+             without AM or PM, whole hours as "o'clock".
+    @param local_time: (str) "HH:MM".
+    @return: (str) e.g. "8 o'clock", "2:30"; the input unchanged when it is not a time.
+    """
+    hour_text, _, minute = local_time.partition(":")
+    if not hour_text.isdigit() or len(minute) != 2 or not minute.isdigit():
+        return local_time
+    hour = int(hour_text) % 12 or 12
+    return f"{hour} o'clock" if minute == "00" else f"{hour}:{minute}"
 
 
 def prewarm(proc: JobProcess):

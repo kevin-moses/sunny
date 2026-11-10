@@ -1,11 +1,43 @@
 // lib/text.ts
 // Purpose: Small input-normalization helpers shared by the Convex functions: blank-string
 // and length checks and ISO weekday lists. Each throws the "invalid" application error with a
-// caller-supplied message so every function keeps its own wording.
+// caller-supplied message so every function keeps its own wording. Also the one way text is
+// flattened to a single line (oneLine) and the one comparison key for duplicates (textKey:
+// one line, lower case), used by the life profile, agent memory and the household list;
+// searchWords is the one normalization of words that name a task or medication.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-11-09
 
 import { appError } from "./errors";
+
+/**
+ * purpose: Text as one trimmed line: every run of whitespace, line breaks included, becomes
+ *          a single space.
+ * @param value: (string) Raw text.
+ * @return: (string) The single-line text ("" for blank text).
+ */
+export function oneLine(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * purpose: The key two texts are compared by for duplicates: one line, lower case.
+ * @param value: (string) Text.
+ * @return: (string) The key.
+ */
+export function textKey(value: string): string {
+  return oneLine(value).toLowerCase();
+}
+
+/**
+ * purpose: Words that name a task or medication, normalized for a contains-match against a
+ *          label: trimmed and lower case (inner spacing kept as said).
+ * @param words: (string | null | undefined) The words, if any.
+ * @return: (string) The normalized words; "" for none.
+ */
+export function searchWords(words: string | null | undefined): string {
+  return (words ?? "").trim().toLowerCase();
+}
 
 /**
  * purpose: Reject a blank string.

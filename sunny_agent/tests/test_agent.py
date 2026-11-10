@@ -106,7 +106,7 @@ CONTEXT: dict[str, Any] = {
             "pillDescription": "small white",
             "maxPerDay": 3,
             "minHoursBetween": 6,
-            "takenToday": [_ms("2027-03-13T11:00")],
+            "takenLast24h": [_ms("2027-03-13T11:00")],
         }
     ],
     "events": [

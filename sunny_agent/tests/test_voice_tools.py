@@ -143,7 +143,7 @@ class TestDescribeAsNeeded:
 
     def test_no_limits_and_no_doses(self) -> None:
         """Without limits or doses it says so; without now it has no time sentence."""
-        med = {"displayLabel": "Antacid", "takenToday": []}
+        med = {"displayLabel": "Antacid", "takenLast24h": []}
         assert describe_as_needed(med, TZ) == (
             "Antacid: no limits are on file. Taken in the last 24 hours: none."
         )
@@ -1144,29 +1144,40 @@ class TestReviewFixes:
             }
             assert _opening_prompt(context, "i1") == (None, "Morning pills")
 
-    def test_default_prompt_follows_the_spec_template(self) -> None:
-        """Without a caregiver prompt the spec template is used, with no clock time."""
+    def test_default_prompt_is_the_display_cue_sentence(self) -> None:
+        """Without a caregiver prompt the agent says exactly what the display cue says
+        (the strings below are cue.test.ts's expectations for the same tasks)."""
         entry = {
             "instanceId": "i1",
             "displayLabel": "Morning pills",
             "spokenPrompt": "Time for Morning pills.",
-            "pillDescription": "small white ones",
+            "scheduledTime": "08:00",
             "type": "medication",
             "state": "escalated",
         }
         assert _opening_prompt({"today": [entry]}, "i1")[0] == (
-            "Time for your morning pills, the small white ones. Press Done when you've "
-            "taken them."
+            "Time for Morning pills, at 8 o'clock. Press Done when you have taken them."
         )
         walk = {
             **entry,
             "displayLabel": "Walk",
             "type": "routine",
-            "pillDescription": None,
+            "scheduledTime": "15:30",
+            "spokenPrompt": "",
         }
-        walk["spokenPrompt"] = ""
         assert _opening_prompt({"today": [walk]}, "i1")[0] == (
-            "Time for your walk. Press Done when it's done."
+            "Time for Walk, at 3:30. Press Done when you have finished."
+        )
+        written = {
+            **entry,
+            "spokenPrompt": "  Time for your pills, the small white ones. ",
+        }
+        assert _opening_prompt({"today": [written]}, "i1")[0] == (
+            "Time for your pills, the small white ones."
+        )
+        anytime = {**walk, "scheduledTime": "anytime"}
+        assert _opening_prompt({"today": [anytime]}, "i1")[0] == (
+            "Time for Walk. Press Done when you have finished."
         )
 
     def test_short_real_words_pass_the_garbage_filter(self) -> None:

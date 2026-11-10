@@ -31,6 +31,8 @@ import type { MutationCtx } from "./_generated/server";
 import { findMember, verifiedPhone } from "./lib/access";
 import type { CaregiverActor } from "./lib/access";
 import { audit } from "./lib/audit";
+import { SMS_KIND_POLICY } from "./lib/delivery";
+import type { NotificationKind } from "./lib/validators";
 import { claimInstance } from "./instances";
 import { isE164, twiml, validateTwilioSignature, webhookUrl } from "./lib/twilio";
 
@@ -130,11 +132,13 @@ async function newestSentAlert(
 }
 
 /**
- * Texts a caregiver may answer with "1" that are not task alerts: the voice agent's flags and
- * the senior's family messages. A "1" after one of them claims nothing. (Event notices and
- * digests keep the older behavior: they do not hide the alert before them.)
+ * Texts a caregiver may answer with "1" that are not task alerts (lib/delivery SMS_KIND_POLICY
+ * hidesOlderAlert: the voice agent's flags and the senior's family messages). A "1" after one of
+ * them claims nothing.
  */
-const NOT_ALERT_KINDS = ["agent_flag", "family_message"] as const;
+const NOT_ALERT_KINDS = (Object.keys(SMS_KIND_POLICY) as NotificationKind[]).filter(
+  (kind) => SMS_KIND_POLICY[kind].hidesOlderAlert,
+);
 
 /**
  * purpose: Whether the member was texted a voice agent flag or a family message after an

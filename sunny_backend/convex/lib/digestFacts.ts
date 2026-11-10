@@ -21,7 +21,7 @@ import type { QueryCtx } from "../_generated/server";
 import { isAsNeededTask } from "../tasks";
 import { memberNames } from "./access";
 import { isAnytimeInstance } from "./anytime";
-import { addDays, formatTime12, localTime, zonedInstant } from "./time";
+import { dayRange, formatTime12, localTime } from "./time";
 import { receivedDaysLater } from "./today";
 import type { ConfirmVia } from "./validators";
 
@@ -76,19 +76,6 @@ export interface DigestFacts {
   repeats: RepeatFact[];
   /** Household list items the senior added that day (absent in facts built before the list). */
   listAdded?: string[];
-}
-
-/**
- * purpose: The instant range [start, end) of a household-local day.
- * @param localDate: (string) "YYYY-MM-DD".
- * @param timezone: (string) IANA zone.
- * @return: ({ start: number; end: number }) Local midnight to the next local midnight.
- */
-function dayRange(localDate: string, timezone: string): { start: number; end: number } {
-  return {
-    start: zonedInstant(localDate, "00:00", timezone),
-    end: zonedInstant(addDays(localDate, 1), "00:00", timezone),
-  };
 }
 
 /**

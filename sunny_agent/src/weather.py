@@ -5,9 +5,10 @@
 # sets, e.g. "Brooklyn, NY": the part before the first comma is searched by name and the next
 # part (a US state abbreviation or name, a region, a country or a country code) picks among the
 # matches; with no such part the first match is used, and a part that matches nothing finds no
-# place rather than a namesake elsewhere. A US location gets Fahrenheit and mph, anywhere else Celsius and km/h. The hourly
-# lines run from the current local hour to the end of the household's day, so a question like
-# "Do I need an umbrella for my walk at 2?" can be answered from the hour of the walk.
+# place rather than a namesake elsewhere. A US location gets Fahrenheit and mph, anywhere else
+# Celsius and km/h. The hourly lines run from the current local hour to the end of the
+# household's day, so a question like "Do I need an umbrella for my walk at 2?" can be
+# answered from the hour of the walk.
 #
 # No LiveKit imports; Assistant.get_weather in agent.py calls lookup_place and weather_report.
 # Every network call has a short timeout; failures raise WeatherError, which the tool turns
@@ -21,6 +22,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+
+from tools import format_time_for_voice
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -247,7 +250,7 @@ def describe_forecast(name: str, data: dict[str, Any], now: datetime, us: bool) 
         rain = hourly["precipitation_probability"][i]
         rain_text = f", {rain}% chance of rain" if rain is not None else ""
         hours.append(
-            f"{_hour_for_voice(moment.hour)} {round(hourly['temperature_2m'][i])} degrees, "
+            f"{format_time_for_voice(f'{moment.hour:02d}:00')} {round(hourly['temperature_2m'][i])} degrees, "
             f"{_condition(hourly['weather_code'][i])}{rain_text}"
         )
     if hours:
@@ -265,19 +268,6 @@ def _condition(code: Any) -> str:
         return _WEATHER_CODES.get(int(code), "unknown conditions")
     except (TypeError, ValueError):
         return "unknown conditions"
-
-
-def _hour_for_voice(hour: int) -> str:
-    """
-    purpose: A whole hour as people say it.
-    @param hour: (int) 0..23.
-    @return: (str) e.g. "midnight", "9 AM", "noon", "3 PM".
-    """
-    if hour == 0:
-        return "midnight"
-    if hour == 12:
-        return "noon"
-    return f"{hour % 12} {'AM' if hour < 12 else 'PM'}"
 
 
 async def _get_json(

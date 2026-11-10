@@ -1,11 +1,13 @@
 // lib/dueTask.ts
 // Purpose: Which of today's entries "the task" means, the one rule shared by "Done"
 // (instances.confirmDueTaskCore: the button, the widget and voice confirm) and "not yet" (the
-// voice agent's agent.snoozeDueTask). Moved out of instances.ts so both use it.
+// voice agent's agent.snoozeDueTask). Moved out of instances.ts so both use it. The label is
+// normalized here (text.searchWords), so callers pass what was said or typed.
 //
 // Last modified: 2026-11-09
 
 import { isAnytimeInstance } from "./anytime";
+import { searchWords } from "./text";
 import type { TodayEntry } from "./today";
 
 /** A final answer (no entry to act on), shaped like instances.ConfirmDueResult. */
@@ -29,14 +31,16 @@ export function isDueEntry(e: Pick<TodayEntry, "state">): boolean {
  *          display label contains it (case-insensitive), preferring those due now, then any
  *          still open, else already done.
  * @param today: (TodayEntry[]) Today's entries in schedule order.
- * @param label: (string | null) Lower-cased, trimmed label, or null for none.
+ * @param said: (string | null | undefined) The label as said or typed; blank or absent for
+ *        none.
  * @return: (DuePickStatus | {entry: TodayEntry}) A final result, or the entry to act on.
  */
 export function pickDueEntry(
   today: TodayEntry[],
-  label: string | null,
+  said: string | null | undefined,
 ): DuePickStatus | { entry: TodayEntry } {
-  if (label === null) {
+  const label = searchWords(said);
+  if (label === "") {
     // An anytime entry is open all day, so a bare "Done" never means it; it needs its label.
     const entry = today.find((e) => isDueEntry(e) && !isAnytimeInstance(e));
     return entry ? { entry } : { status: "nothing_due" };

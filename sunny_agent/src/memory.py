@@ -6,32 +6,25 @@
 # sentence post-session summary stored when the conversation is finished
 # (agent:finishConversation, which also sets the end time).
 #
-# Memory-care pivot (2026-10-25): sessions are scoped to a household instead of a user.
-# The LLM-rewritten users.profile_summary paragraph was removed: it mixed caregiver facts
-# with things the senior said and broke the memory-hygiene rule in notes/SPEC.md. Facts
-# now live in agent_memory with a source and verified flag (written by later agent tools).
-# Session context carries task_instance_id instead of reminder_id/adherence_log_id.
-# Convex migration (2026-10-29): replaced supabase-py with ConvexClient (convex_client.py).
-# Shutdown ordering (2026-10-29): ConversationLogger tracks its pending logTurn tasks and the
-# finalize task. finalize waits for pending turns before it summarizes, and a second call
-# awaits the first run instead of returning early; wait_idle drains outstanding writes and
-# shutdown_conversation finalizes, drains and only then closes the Convex client (in a
-# finally), so the end-of-session writes never hit a closed client.
+# Sessions are scoped to a household. Facts the agent knows come from getContext (verified
+# caregiver facts and unverified things the senior said, each labelled); no LLM-rewritten
+# profile paragraph is kept, per the memory-hygiene rule in notes/SPEC.md.
 #
-# Question log (2026-11-09): finalize makes one model call after the session that returns both
-# the summary and the senior's questions (question, a short topic, outcome answered / routed /
-# unsure, and the tools used), and writes the questions with agent:logQuestions after
-# agent:finishConversation, for the digest's repeat and unanswered counts. Doing it after the
-# call adds no spoken latency and does not depend on the voice model remembering to call a
-# tool. The transcript given to the extractor marks each user turn [T1], [T2], ... and each tool
-# call as "TOOL: name"; a question's askedAt is its user turn's time. The topics asked in the
-# last week (getContext recentQuestionTopics) are offered so a repeated question reuses its
-# topic.
-# Robustness (2026-11-09): finalize ends the conversation (agent:finishConversation, endedAt)
-# before the model call, so a slow or failing model never loses the record; the call has a
-# 20-second timeout per attempt and one retry; the summary is written with a second
-# finishConversation; a reply that is not JSON becomes a plain summary with no questions; and
-# agent:logQuestions is idempotent per conversation on the backend.
+# Shutdown: ConversationLogger tracks its pending logTurn tasks and the finalize task. finalize
+# waits for pending turns, and a second call awaits the first run; wait_idle drains outstanding
+# writes, and shutdown_conversation finalizes, drains and only then closes the Convex client
+# (in a finally), so the end-of-session writes never hit a closed client.
+#
+# Summary and question log: finalize first ends the conversation (agent:finishConversation sets
+# endedAt), so a slow or failing model never loses the record. It then makes one model call
+# (20-second timeout per attempt, one retry) that returns both the summary and the senior's
+# questions (question, short topic, outcome answered / routed / unsure, tools used). The
+# summary is written with a second finishConversation, and the questions with
+# agent:logQuestions (idempotent per conversation) for the digest's repeat and unanswered
+# counts. Doing this after the call adds no spoken latency. The extractor's transcript marks
+# each user turn [T1], [T2], ... and each tool call "TOOL: name"; a question's askedAt is its
+# user turn's time. Last week's topics (getContext recentQuestionTopics) are offered so a
+# repeated question reuses its topic. A reply that is not JSON becomes a plain summary.
 #
 # Last modified: 2026-11-09
 
@@ -116,7 +109,7 @@ def build_transcript(items: list) -> tuple[str, dict[int, float]]:
                 lines.append(f"[T{turn}] USER: {item.text_content}")
             else:
                 lines.append(f"ASSISTANT: {item.text_content}")
-    if not any(not line.startswith("TOOL:") for line in lines):
+    if all(line.startswith("TOOL:") for line in lines):
         return "", {}
     return "\n".join(lines), turn_times
 

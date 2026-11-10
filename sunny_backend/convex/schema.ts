@@ -375,7 +375,9 @@ export default defineSchema({
     entity: v.string(),
     entityId: v.optional(v.string()),
     detail: v.record(v.string(), v.any()),
-  }).index("by_household", ["householdId"]),
+  })
+    .index("by_household", ["householdId"])
+    .index("by_household_action", ["householdId", "action"]),
 
   // Appointments and visits, scheduled in household-local terms so 2 PM stays 2 PM across
   // DST; occurrences are computed (lib/occurrences.ts). Cancelling is a soft delete

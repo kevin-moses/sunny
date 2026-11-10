@@ -25,7 +25,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_TURN_CONTENT_LENGTH } from "./agent";
 import { gatherDigestFacts } from "./lib/digestFacts";
 import {
-  MAX_FACT_LENGTH,
+  MAX_FACT,
   MAX_UNVERIFIED_SENIOR_FACTS,
   MEMORY_CONTEXT_LIMIT,
   MEMORY_UNVERIFIED_RESERVE,
@@ -1744,7 +1744,7 @@ describe("rememberFact", () => {
     const facts = (await f.t.run(async (ctx) => await ctx.db.query("agentMemory").collect())).map(
       (r) => r.fact,
     );
-    expect(facts).toEqual(["Keys are on the hook", "y".repeat(MAX_FACT_LENGTH)]);
+    expect(facts).toEqual(["Keys are on the hook", "y".repeat(MAX_FACT)]);
   });
 
   test("keeps the newest 200 unverified senior facts and never trims verified or family rows", async () => {
@@ -2489,5 +2489,105 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     });
     expect(later).toMatchObject({ status: "logged", repeatedUseFlagged: [] });
     expect(await outbox(f, "agent_flag")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The voice agent and the caregiver path (profile.ts) agree
+// ---------------------------------------------------------------------------------------------
+
+describe("agent and profile.ts agree", () => {
+  test("a caregiver message read aloud shows as seen, and the senior's reply is listed", async () => {
+    const f = await setup();
+    const anna = f.t.withIdentity({ subject: "user_a" });
+    await anna.mutation(api.profile.sendMessage, {
+      householdId: f.householdId,
+      body: "Coming at 2\nwith soup",
+    });
+    const before = await anna.query(api.profile.listMessages, { householdId: f.householdId });
+    expect(before[0]).toMatchObject({ senderKind: "caregiver", mine: true, seenAt: null });
+
+    const read = await f.t.mutation(api.agent.readLatestMessage, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(read).toMatchObject({ from: "Anna", body: "Coming at 2\nwith soup", seen: false });
+    const after = await anna.query(api.profile.listMessages, { householdId: f.householdId });
+    expect(after[0]!.seenAt).toBe(NOW);
+
+    await f.t.mutation(api.agent.sendFamilyMessage, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      to: "Anna",
+      body: "Thank you",
+    });
+    const listed = await anna.query(api.profile.listMessages, { householdId: f.householdId });
+    expect(listed[0]).toMatchObject({
+      senderKind: "senior",
+      senderName: "Margaret",
+      mine: false,
+      body: "For Anna: Thank you",
+      seenAt: null,
+    });
+  });
+
+  test("the context lists entries and facts in the caregiver app's order", async () => {
+    const f = await setup();
+    const anna = f.t.withIdentity({ subject: "user_a" });
+    for (const [category, name] of [
+      ["place", "Main Street library"],
+      ["person", "sarah"],
+      ["person", "Bob"],
+      ["doctor", "Dr. Patel"],
+    ] as const) {
+      await anna.mutation(api.profile.addEntry, { householdId: f.householdId, category, name });
+    }
+    await anna.mutation(api.profile.addFact, { householdId: f.householdId, fact: "Cat: Biscuit" });
+    for (const fact of ["Glasses in the hall drawer", "Keys on the hook"]) {
+      await f.t.mutation(api.agent.rememberFact, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        fact,
+      });
+    }
+    await anna.mutation(api.profile.addFact, { householdId: f.householdId, fact: "Likes jazz" });
+
+    const context = await f.t.query(api.agent.getContext, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    const entries = await anna.query(api.profile.listEntries, { householdId: f.householdId });
+    expect(context.lifeProfile.map((e) => e.name)).toEqual(entries.map((e) => e.name));
+    expect(entries.map((e) => e.name)).toEqual([
+      "Bob",
+      "sarah",
+      "Main Street library",
+      "Dr. Patel",
+    ]);
+    const memory = await anna.query(api.profile.listMemory, { householdId: f.householdId });
+    expect(context.memory.map((m) => m.fact)).toEqual(memory.facts.map((m) => m.fact));
+    expect(context.memory.map((m) => [m.fact, m.verified])).toEqual([
+      ["Likes jazz", true],
+      ["Cat: Biscuit", true],
+      ["Keys on the hook", false],
+      ["Glasses in the hall drawer", false],
+    ]);
+  });
+
+  test("one duplicate rule: a fact the caregiver stored is not stored again by voice", async () => {
+    const f = await setup();
+    await f.t.withIdentity({ subject: "user_a" }).mutation(api.profile.addFact, {
+      householdId: f.householdId,
+      fact: "Cat is  called Biscuit",
+    });
+    expect(
+      await f.t.mutation(api.agent.rememberFact, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        fact: "cat is called biscuit",
+      }),
+    ).toEqual({ status: "already_known" });
   });
 });

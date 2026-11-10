@@ -21,9 +21,10 @@
 //
 // Last modified: 2026-11-09
 
-const HOUR_MS = 3_600_000;
+import { DAY_MS, HOUR_MS } from "./time";
+
 /** The trailing window the maximum applies to. */
-export const DAY_WINDOW_MS = 24 * HOUR_MS;
+const DAY_WINDOW_MS = DAY_MS;
 
 /** The limits a caregiver copied from the label; null when not on file. */
 export interface DoseLimits {
@@ -32,7 +33,7 @@ export interface DoseLimits {
 }
 
 /** A household-local day as epoch ms [start, end). */
-export interface LocalDay {
+interface LocalDay {
   start: number;
   end: number;
 }
@@ -41,7 +42,7 @@ export interface LocalDay {
 export type DayOf = (instant: number) => LocalDay;
 
 /** What the agent says about one as-needed medication right now. */
-export interface DoseStatus {
+interface DoseStatus {
   /** Doses taken in the local day so far, ascending epoch ms. */
   takenToday: number[];
   /** Doses taken in the trailing 24 hours, ascending epoch ms. */
@@ -64,22 +65,14 @@ export interface LimitBreaches {
 }
 
 /**
- * purpose: Doses in a half-open range.
+ * purpose: Doses in the half-open range (from, to].
  * @param doses: (readonly number[]) Dose instants.
- * @param from: (number) Exclusive or inclusive start, see `inclusiveStart`.
+ * @param from: (number) Start, exclusive.
  * @param to: (number) End, inclusive.
- * @param inclusiveStart: (boolean) Whether a dose exactly at `from` counts.
  * @return: (number[]) The doses in range, ascending.
  */
-function between(
-  doses: readonly number[],
-  from: number,
-  to: number,
-  inclusiveStart: boolean,
-): number[] {
-  return doses
-    .filter((d) => (inclusiveStart ? d >= from : d > from) && d <= to)
-    .sort((a, b) => a - b);
+function between(doses: readonly number[], from: number, to: number): number[] {
+  return doses.filter((d) => d > from && d <= to).sort((a, b) => a - b);
 }
 
 /**
@@ -99,7 +92,7 @@ export function doseStatus(
   const day = dayOf(now);
   const past = doses.filter((d) => d <= now).sort((a, b) => a - b);
   const takenToday = past.filter((d) => d >= day.start && d < day.end);
-  const takenLast24h = between(past, now - DAY_WINDOW_MS, now, false);
+  const takenLast24h = between(past, now - DAY_WINDOW_MS, now);
   const lastTakenAt = past.at(-1) ?? null;
   const max = limits.maxPerDay;
   let next = now;
@@ -141,9 +134,7 @@ export function limitBreaches(
   const dayCount = all.filter((d) => d >= day.start && d < day.end).length;
   // Every 24-hour window containing takenAt ends at takenAt or at a later dose within 24 h.
   const ends = all.filter((d) => d >= takenAt && d < takenAt + DAY_WINDOW_MS);
-  const windowCount = Math.max(
-    ...ends.map((end) => between(all, end - DAY_WINDOW_MS, end, false).length),
-  );
+  const windowCount = Math.max(...ends.map((end) => between(all, end - DAY_WINDOW_MS, end).length));
   const count = Math.max(dayCount, windowCount);
   const minGap = limits.minHoursBetween === null ? null : limits.minHoursBetween * HOUR_MS;
   return {
@@ -167,7 +158,14 @@ export function daysUsed(
   now: number,
   days: number,
 ): number {
-  let first = dayOf(now).start;
-  for (let i = 1; i < days; i++) first = dayOf(first - 1).start;
-  return new Set(doses.filter((d) => d >= first && d <= now).map((d) => dayOf(d).start)).size;
+  // Day starts, newest first; each dose is placed by comparing numbers, not by a zone lookup.
+  const starts = [dayOf(now).start];
+  for (let i = 1; i < days; i++) starts.push(dayOf(starts[i - 1]! - 1).start);
+  const used = new Set<number>();
+  for (const d of doses) {
+    if (d > now) continue;
+    const start = starts.find((s) => s <= d);
+    if (start !== undefined) used.add(start);
+  }
+  return used.size;
 }

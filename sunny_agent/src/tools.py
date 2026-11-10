@@ -1,36 +1,28 @@
 # tools.py
-# Purpose: Async helpers behind the agent's task tools, plus voice-friendly time and date
-# formatting shared with prompts.py. Every decision lives in the Convex agent:* functions the
-# other surfaces also use: agent:today (today's schedule), agent:confirmDueTask (which task
-# "Done" means and the already-done guard), agent:createSeniorReminder and
-# agent:cancelSeniorReminder (senior-created reminders only). These helpers only call the
-# function and phrase the result for voice. Instants arrive as epoch milliseconds. They
-# contain no LiveKit imports; the @function_tool methods on Assistant in agent.py call them.
+# Purpose: Async helpers behind the agent's household tools, plus voice-friendly time and date
+# formatting shared with prompts.py. Every decision lives in the Convex agent:* functions; these
+# helpers only call one and phrase its result for the model. They contain no LiveKit imports;
+# the @function_tool methods on Assistant in agent.py call them. Instants arrive as epoch
+# milliseconds; now_epoch_ms is the one clock, so tests can fix it.
 #
-# Memory-care pivot (2026-10-25): replaced reminders-table CRUD with household task RPCs.
-# Convex migration (2026-10-29): RPCs became Convex calls; timestamps are epoch ms.
+# Helpers: db_list_today (agent:today), db_confirm_task (agent:confirmDueTask: which task "Done"
+# means and the already-done guard), db_snooze_task (agent:snoozeDueTask, "not yet"),
+# db_create_senior_reminder / db_cancel_senior_reminder (senior-created reminders only),
+# db_medication_status, db_log_dose and db_undo_last_dose (as-needed doses, with
+# describe_as_needed for the label facts), db_remember_fact, db_flag_caregiver,
+# db_send_family_message and db_read_latest_message.
 #
-# Anytime tasks (2026-11-01): a task with no time of day arrives with scheduledTime "anytime"
-# (ANYTIME). It is spoken as "<label>, anytime today" and is never "due now" or "not due until".
-#
-# Voice tools (2026-11-09): db_snooze_task (agent:snoozeDueTask, "not yet"),
-# db_medication_status (agent:medicationStatus) and db_log_dose (agent:logAsNeededDose) with
-# describe_as_needed for the label facts, db_remember_fact (agent:rememberFact),
-# db_flag_caregiver (agent:flagCaregiver), db_send_family_message (agent:sendFamilyMessage) and
-# db_read_latest_message (agent:readLatestMessage). The results are facts for the model to
-# phrase, never advice: a medication result states what was taken and what the label says.
-# one_line and quoted keep family-written text to one line (and a message body in quotes) in
-# the context block and tool results.
-#
-# Review fixes (2026-11-09): a result never names a caregiver no text was queued for (_told:
-# unreachable and rate_limited say so plainly; distress adds 911 and 988); doses already
-# logged, a scheduled medication that is due, and taking a dose back (db_undo_last_dose) have
-# their own wording; label facts are "in 24 hours" with days used in the last week; snoozing
-# an anytime task says there is no reminder to snooze.
+# Wording rules: results are facts, never advice (a medication result says what was taken and
+# what the label says, "in 24 hours", with days used in the last week); a result never names a
+# caregiver no text was queued for (_told: unreachable and rate_limited say so plainly, and
+# distress adds 911 and 988); a dose already written down is stated neutrally; an anytime task
+# (scheduledTime ANYTIME) is "<label>, anytime today", never "due now" or "not due until".
+# one_line and quoted keep family-written text to one line (a message body also in quotes).
 #
 # Last modified: 2026-11-09
 
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from convex_client import ConvexClient
@@ -189,21 +181,40 @@ async def db_confirm_task(
         or {}
     )
     status = r.get("status")
-    label = r.get("displayLabel", task_name)
+    label = r.get("displayLabel") or task_name
     if status == "confirmed":
         return f"Confirmed: {label} at {local_clock(r['confirmedAt'], tz)}."
-    if status == "already_done":
-        return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
+    shared = _task_outcome(r, label, task_name, tz)
+    if shared is not None:
+        return shared
     if status == "nothing_due":
         return "Nothing is due right now."
     if status == "not_due_yet":
-        if r.get("scheduledTime") == ANYTIME:
-            return f"{label} is not ready to be marked done yet."
-        return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
+        return f"{label} is not ready to be marked done yet."
     if status == "ambiguous":
         options = "; ".join(describe_instance(o, tz) for o in r.get("options") or [])
         return f"Several tasks match: {options}. Ask which one they mean."
     return f"I don't see {task_name} on today's schedule."
+
+
+def _task_outcome(r: dict[str, Any], label: str, task_name: str, tz: str) -> str | None:
+    """
+    purpose: The outcomes "Done" and "not yet" phrase the same way: already done, not due
+             until a time (a timed task), and not on today's schedule.
+    @param r: (dict) The agent:confirmDueTask or agent:snoozeDueTask result.
+    @param label: (str) The task's display label (or the words said).
+    @param task_name: (str) The words said.
+    @param tz: (str) IANA timezone of the household.
+    @return: (str | None) The sentence, or None for an outcome each tool phrases itself.
+    """
+    status = r.get("status")
+    if status == "already_done":
+        return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
+    if status == "not_due_yet" and r.get("scheduledTime") != ANYTIME:
+        return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
+    if status == "not_found":
+        return f"I don't see {task_name} on today's schedule."
+    return None
 
 
 async def db_create_senior_reminder(
@@ -244,7 +255,7 @@ async def db_create_senior_reminder(
     if not on_date:
         days_str = format_days_for_voice(day_list or _DAY_ORDER)
         return f"Done. I'll remind you to {title} at {spoken_time} {days_str}."
-    today = datetime.now(ZoneInfo(tz)).date()
+    today = to_local(now_epoch_ms(), tz).date()
     target = date.fromisoformat(on_date)
     if target == today:
         when = "today"
@@ -375,10 +386,7 @@ def describe_as_needed(med: dict, tz: str, now_ms: float | None = None) -> str:
     label_text = (
         f"the label says {', '.join(limits)}" if limits else "no limits are on file"
     )
-    doses = med.get("takenLast24h")
-    if doses is None:
-        doses = med.get("takenToday") or []
-    taken = [_dose_time(t, reference, tz) for t in doses]
+    taken = [_dose_time(t, reference, tz) for t in med.get("takenLast24h") or []]
     taken_text = ", ".join(taken) if taken else "none"
     if max_per_day:
         taken_text += f" ({len(taken)} of {max_per_day})"
@@ -423,16 +431,13 @@ async def db_snooze_task(
     label = r.get("displayLabel") or task_name
     if status == "snoozed":
         return f"Snoozed {label}; the next reminder is at {local_clock(r['snoozedUntil'], tz)}."
-    if status == "already_done":
-        return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
+    shared = _task_outcome(r, label, task_name, tz)
+    if shared is not None:
+        return shared
     if status == "not_due_yet":
-        if r.get("scheduledTime") == ANYTIME:
-            return f"{label} can be done anytime today; there is no reminder to snooze."
-        return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
+        return f"{label} can be done anytime today; there is no reminder to snooze."
     if status == "ambiguous":
         return f"Several tasks are due: {', '.join(r.get('options') or [])}. Ask which one."
-    if status == "not_found":
-        return f"I don't see {task_name} on today's schedule."
     return "Nothing is due right now."
 
 
@@ -559,9 +564,9 @@ def _told(status: str | None, names: list[str]) -> str:
     @param names: (list[str]) Caregivers a notification was queued for.
     @return: (str) One sentence for the model to pass on.
     """
-    if status in ("flagged", "already_flagged") and names:
-        if status == "already_flagged":
-            return f"{join_names(names)} was already told a few minutes ago."
+    if status == "already_flagged" and names:
+        return f"{join_names(names)} was already told a few minutes ago."
+    if status == "flagged" and names:
         return f"{join_names(names)} has been told."
     if status == "rate_limited":
         return "No more messages can be sent to family right now; say so plainly."
@@ -732,7 +737,7 @@ def _spoken_when(epoch_ms: float, tz: str) -> str:
     @return: (str) "today at 9 AM", "yesterday at 6 PM", or "on Monday, March 8".
     """
     moment = to_local(epoch_ms, tz)
-    today = datetime.now(ZoneInfo(tz)).date()
+    today = to_local(now_epoch_ms(), tz).date()
     if moment.date() == today:
         return f"today at {clock_for_voice(moment)}"
     if moment.date() == today - timedelta(days=1):

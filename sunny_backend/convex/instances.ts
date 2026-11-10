@@ -383,8 +383,7 @@ export async function confirmDueTaskCore(
   if (!actsForSenior(actor, args.householdId)) {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
-  const label = (args.label ?? "").trim().toLowerCase() || null;
-  const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now), label);
+  const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now), args.label);
   if (!("entry" in picked)) return picked;
   const { entry } = picked;
   let row: Doc<"taskInstances">;

@@ -136,7 +136,7 @@ def test_format_user_context_sections() -> None:
             "displayLabel": "Pain reliever",
             "maxPerDay": 3,
             "minHoursBetween": 6.0,
-            "takenToday": [1804950000000],
+            "takenLast24h": [1804950000000],
         }
     ]
     ctx["sensitiveTopics"] = [
