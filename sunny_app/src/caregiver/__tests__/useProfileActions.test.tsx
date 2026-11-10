@@ -4,9 +4,11 @@
 // mocked callMutation (the network layer): every edited text goes to the right profile mutation
 // with the right arguments (null clears an entry's details), adds, confirm, removals and messages
 // call their mutations, a running call shows "working" in its slot, success clears the slot, an
-// add that finds the item stored shows "Already saved.", a failure shows the server's message and
-// resolves false, a call that ends after a newer one in the same slot leaves the newer state
-// alone, and the actions keep their identity between renders.
+// add that finds the same text stored says "Already saved." and one that confirms a senior fact
+// says "Confirmed." (both resolve true), an add that finds other text stored resolves false and
+// says nothing was saved, a failure shows the server's message and resolves false, a call that
+// ends after a newer one in the same slot leaves the newer state alone, and the actions keep
+// their identity between renders.
 //
 // Last modified: 2026-11-09
 
@@ -18,11 +20,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { callMutation } from '../../backend/api';
 import type { FieldTarget } from '../aboutFormat';
-import {
-  ALREADY_SAVED_MESSAGE,
-  useProfileActions,
-  type ProfileActions,
-} from '../useProfileActions';
+import { useProfileActions, type ProfileActions } from '../useProfileActions';
 
 jest.mock('../../backend/convex', () => ({ convex: {} }));
 
@@ -166,17 +164,39 @@ describe('useProfileActions', () => {
     expect(h.get().states['fact:f1']).toBeUndefined();
   });
 
-  it('notes an add that found the item already stored', async () => {
-    mockCall.mockResolvedValue({ id: 'e1', created: false });
+  it('says Already saved when an add finds the same text stored, and lets the form clear', async () => {
+    mockCall.mockResolvedValue({ id: 'e1', created: false, same: true, confirmed: false });
     const h = renderActions();
     let ok = false;
     await act(async () => {
       ok = await h.get().addEntry({ category: 'person', name: 'Sarah' });
     });
     expect(ok).toBe(true);
-    expect(h.get().states['add:entry']).toEqual({
-      status: 'notice',
-      message: ALREADY_SAVED_MESSAGE,
+    expect(h.get().states['add:entry']).toEqual({ status: 'notice', message: 'Already saved.' });
+  });
+
+  it('says Confirmed when an add confirms a fact the senior had said', async () => {
+    mockCall.mockResolvedValue({ id: 'f1', created: false, same: true, confirmed: true });
+    const h = renderActions();
+    let ok = false;
+    await act(async () => {
+      ok = await h.get().addFact('Likes tea');
+    });
+    expect(ok).toBe(true);
+    expect(h.get().states['add:fact']).toEqual({ status: 'notice', message: 'Confirmed.' });
+  });
+
+  it('resolves false and says nothing was saved when the stored text differs', async () => {
+    mockCall.mockResolvedValue({ id: 't1', created: false, same: false, confirmed: false });
+    const h = renderActions();
+    let ok = true;
+    await act(async () => {
+      ok = await h.get().addTopic({ topic: 'money', guidance: 'New guidance' });
+    });
+    expect(ok).toBe(false);
+    expect(h.get().states['add:topic']).toEqual({
+      status: 'error',
+      message: 'Not saved: "money" already has guidance. Tap it in the list above to change it.',
     });
   });
 
@@ -218,6 +238,7 @@ describe('useProfileActions', () => {
   });
 
   it('keeps the action functions stable between renders', async () => {
+    mockCall.mockResolvedValue({ id: 'f1', created: true, same: true, confirmed: false });
     const h = renderActions();
     const first = h.get();
     await act(async () => {

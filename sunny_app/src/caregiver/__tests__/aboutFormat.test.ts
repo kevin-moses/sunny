@@ -4,7 +4,10 @@
 // life profile grouped by category in the backend's order (empty categories left out), field and
 // row keys, what closing an inline editor saves (unchanged, blank required, cleared details,
 // trimmed text), short dates, the fact status line (confirmed with or without a name, said by the
-// senior and not confirmed) and the message meta line (you or the sender, local time, seen state).
+// senior and not confirmed), the message meta line (You for the caller's own as the server marks
+// it, or the sender; local time; seen state), what the add form does after an add (clear, say
+// Already saved or Confirmed, or keep the text and say it was not saved) and the line counting
+// older unverified facts.
 //
 // Last modified: 2026-11-09
 
@@ -19,6 +22,10 @@ import {
   groupEntries,
   messageMeta,
   shortDate,
+  addOutcome,
+  OLDER_COUNT_LIMIT,
+  olderUnverifiedLine,
+  type AddResult,
   type FamilyMessage,
   type FieldTarget,
   type MemoryFact,
@@ -63,7 +70,7 @@ function message(fields: Partial<FamilyMessage> = {}): FamilyMessage {
   return {
     id: 'm1' as FamilyMessage['id'],
     senderKind: 'caregiver',
-    senderUserId: 'pat',
+    mine: false,
     senderName: 'Pat',
     body: 'Hi',
     hasPhoto: false,
@@ -180,22 +187,69 @@ describe('factStatus', () => {
 });
 
 describe('messageMeta', () => {
-  it('says You for the signed-in caregiver, with time and seen state', () => {
-    expect(messageMeta(message(), 'pat')).toBe('You, Nov 3 at 2:05 PM, not seen yet');
-    expect(messageMeta(message({ seenAt: 5 }), 'pat')).toBe('You, Nov 3 at 2:05 PM, seen');
+  it('says You for a message the server marks as mine, with time and seen state', () => {
+    expect(messageMeta(message({ mine: true }))).toBe('You, Nov 3 at 2:05 PM, not seen yet');
+    expect(messageMeta(message({ mine: true, seenAt: 5 }))).toBe('You, Nov 3 at 2:05 PM, seen');
   });
 
   it("names another caregiver and the senior, with no seen state for the senior's", () => {
-    expect(messageMeta(message(), 'max')).toBe('Pat, Nov 3 at 2:05 PM, not seen yet');
+    expect(messageMeta(message())).toBe('Pat, Nov 3 at 2:05 PM, not seen yet');
     expect(
-      messageMeta(
-        message({ senderKind: 'senior', senderUserId: null, senderName: 'Mom', sentTime: '09:15' }),
-        'pat',
-      ),
+      messageMeta(message({ senderKind: 'senior', senderName: 'Mom', sentTime: '09:15' })),
     ).toBe('Mom, Nov 3 at 9:15 AM');
   });
+});
 
-  it('names the sender when the signed-in user is unknown', () => {
-    expect(messageMeta(message(), null)).toBe('Pat, Nov 3 at 2:05 PM, not seen yet');
+describe('addOutcome', () => {
+  const result = (fields: Partial<AddResult>): AddResult => ({
+    created: false,
+    same: true,
+    confirmed: false,
+    ...fields,
+  });
+
+  it('clears quietly for a new item', () => {
+    expect(addOutcome('entry', result({ created: true }), 'Sarah')).toEqual({
+      clear: true,
+      message: null,
+    });
+  });
+
+  it('clears and says Already saved for the same stored text', () => {
+    expect(addOutcome('topic', result({}), 'money')).toEqual({
+      clear: true,
+      message: { status: 'notice', text: 'Already saved.' },
+    });
+  });
+
+  it('clears and says Confirmed for a fact the senior had said', () => {
+    expect(addOutcome('fact', result({ confirmed: true }), 'Likes tea')).toEqual({
+      clear: true,
+      message: { status: 'notice', text: 'Confirmed.' },
+    });
+  });
+
+  it('keeps the typed text and says it was not saved when the stored text differs', () => {
+    const entry = addOutcome('entry', result({ same: false }), 'Sarah');
+    expect(entry.clear).toBe(false);
+    expect(entry.message).toEqual({
+      status: 'error',
+      text: 'Not saved: Sarah is already listed with other details. Tap them in the list above to change them.',
+    });
+    const topic = addOutcome('topic', result({ same: false }), 'money');
+    expect(topic.clear).toBe(false);
+    expect(topic.message?.text).toBe(
+      'Not saved: "money" already has guidance. Tap it in the list above to change it.',
+    );
+  });
+});
+
+describe('olderUnverifiedLine', () => {
+  it('counts the older facts, singular and plural, and caps the count', () => {
+    expect(olderUnverifiedLine(1, 'Mom')).toBe('1 older thing Mom said is not listed.');
+    expect(olderUnverifiedLine(12, 'Mom')).toBe('12 older things Mom said are not listed.');
+    expect(olderUnverifiedLine(OLDER_COUNT_LIMIT, 'Mom')).toBe(
+      `${OLDER_COUNT_LIMIT} or more older things Mom said are not listed.`,
+    );
   });
 });

@@ -6,11 +6,14 @@
 //   Interests, Preferences, Other), with an add form (category chips, name, details);
 // - "Hard questions": the sensitive-topic playbook ("If asked about <topic>" and how to answer),
 //   with an add form;
-// - "What Sunny remembers": memory facts, confirmed ones first; facts the senior said that no
-//   one has confirmed are tinted amber with a one-tap Confirm; an add form for facts the family
-//   knows (saved as confirmed);
+// - "What Sunny remembers": memory facts, confirmed ones first, then the newest 50 the senior
+//   said (with a line counting older ones); facts no one has confirmed are tinted amber with a
+//   one-tap Confirm; an add form for facts the family knows (saved as confirmed);
 // - "Messages": the recent family messages in both directions, oldest first, with sent and seen
-//   state, and a field to send the senior a text message.
+//   state ("You" for the caregiver's own, as the server marks them), and a field to send the
+//   senior a text message.
+// An add that finds the item already listed with other text saves nothing and keeps the typed
+// text, saying where to change the stored one.
 // Editors tap any text to edit it inline; it autosaves when the field loses focus, when another
 // text is opened and when the app leaves (useInlineEditor), and a failed save keeps its draft.
 // Removing asks for confirmation. Viewers see everything read only, with a note saying so. Every
@@ -38,7 +41,7 @@ import {
   MessageRow,
   TopicRow,
 } from './AboutComponents';
-import { groupEntries, type LifeCategory } from './aboutFormat';
+import { groupEntries, olderUnverifiedLine, type LifeCategory } from './aboutFormat';
 import { ScreenHeader, SectionTitle } from './CaregiverComponents';
 import { useTabBarInset } from './tabBarInset';
 import { useInlineEditor } from './useInlineEditor';
@@ -51,8 +54,6 @@ interface CaregiverAboutScreenProps {
   seniorName: string | null;
   /** Whether this caregiver may change things (everyone but viewers). */
   canEdit: boolean;
-  /** The signed-in caregiver's Clerk user id, so their own messages read "You". */
-  userId: string | null;
 }
 
 /** What one section's subscription looks like to the section. */
@@ -161,7 +162,6 @@ export function CaregiverAboutScreen({
   householdId,
   seniorName,
   canEdit,
-  userId,
 }: CaregiverAboutScreenProps) {
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
@@ -172,6 +172,8 @@ export function CaregiverAboutScreen({
   const topics = loaded(useQueryWithStatus(api.profile.listTopics, args));
   const memory = loaded(useQueryWithStatus(api.profile.listMemory, args));
   const messages = loaded(useQueryWithStatus(api.profile.listMessages, args));
+  const facts = { data: memory.data?.facts, error: memory.error };
+  const olderUnverified = memory.data?.olderUnverified ?? 0;
   const name = seniorName ?? 'them';
   const rowProps = { canEdit, editor, onRemove: actions.remove };
 
@@ -262,7 +264,7 @@ export function CaregiverAboutScreen({
       </Section>
       <Section
         title="What Sunny remembers"
-        state={memory}
+        state={facts}
         emptyText={`Nothing yet. Facts ${name} mentions to Sunny show up here for you to confirm.`}
         form={
           canEdit && (
@@ -282,19 +284,26 @@ export function CaregiverAboutScreen({
           )
         }
       >
-        {(data) =>
-          data.map((fact, i) => (
-            <FactRow
-              key={fact.id}
-              fact={fact}
-              seniorName={seniorName}
-              onVerify={actions.verifyFact}
-              state={actions.states[`fact:${fact.id}`]}
-              divided={i > 0}
-              {...rowProps}
-            />
-          ))
-        }
+        {(data) => (
+          <>
+            {data.map((fact, i) => (
+              <FactRow
+                key={fact.id}
+                fact={fact}
+                seniorName={seniorName}
+                onVerify={actions.verifyFact}
+                state={actions.states[`fact:${fact.id}`]}
+                divided={i > 0}
+                {...rowProps}
+              />
+            ))}
+            {olderUnverified > 0 && (
+              <Text style={[type.callout, styles.emptyLine]}>
+                {olderUnverifiedLine(olderUnverified, name)}
+              </Text>
+            )}
+          </>
+        )}
       </Section>
       <Section
         title="Messages"
@@ -322,9 +331,7 @@ export function CaregiverAboutScreen({
         {(data) =>
           [...data]
             .reverse()
-            .map((message, i) => (
-              <MessageRow key={message.id} message={message} userId={userId} divided={i > 0} />
-            ))
+            .map((message, i) => <MessageRow key={message.id} message={message} divided={i > 0} />)
         }
       </Section>
     </ScrollView>

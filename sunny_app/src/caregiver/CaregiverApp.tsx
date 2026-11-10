@@ -108,7 +108,6 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
                 householdId={householdId}
                 seniorName={seniorName}
                 canEdit={isEditor}
-                userId={userId ?? null}
               />
             </View>
           )}

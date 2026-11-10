@@ -4,13 +4,15 @@
 // or details, a topic's wording or guidance, a fact's correction), adding an entry, topic or
 // fact, confirming a fact the senior said, removing a row and sending the senior a message. Each
 // calls one profile.* mutation through callMutation and tracks only what the live lists cannot
-// show: an action in flight, a failure (with the server's message) and a notice (an add that
-// found the item already stored). A success needs no local state because the lists are live
-// subscriptions. States are kept by slot: the row ("entry:<id>", "topic:<id>", "fact:<id>") or
-// the add form ("add:entry", "add:topic", "add:fact", "add:message"). Every call takes a token
-// and writes its slot only while it still owns it, so a call that ends after a newer one started
-// cannot overwrite the newer state; the next action in a slot clears its old message. The action
-// functions keep their identity between renders.
+// show: an action in flight, a failure (with the server's message) and a notice. A success needs
+// no local state because the lists are live subscriptions. An add reports through addOutcome:
+// stored as typed (the form may clear; "Already saved." or "Confirmed." when it already existed),
+// or already listed with other text, which saves nothing, so it resolves false (the form keeps
+// the typed text) and shows why. States are kept by slot: the row ("entry:<id>", "topic:<id>",
+// "fact:<id>") or the add form ("add:entry", "add:topic", "add:fact", "add:message"). Every call
+// takes a token and writes its slot only while it still owns it, so a call that ends after a
+// newer one started cannot overwrite the newer state; the next action in a slot clears its old
+// message. The action functions keep their identity between renders.
 //
 // Last modified: 2026-11-09
 
@@ -24,10 +26,13 @@ import {
   type ProfileEntryId,
   type TopicId,
 } from '../backend/convexApi';
-import { fieldRowKey, type FieldTarget, type LifeCategory } from './aboutFormat';
-
-/** Shown when an add finds the same item already stored. */
-export const ALREADY_SAVED_MESSAGE = 'Already saved.';
+import {
+  addOutcome,
+  fieldRowKey,
+  type AddOutcome,
+  type FieldTarget,
+  type LifeCategory,
+} from './aboutFormat';
 
 /** A slot's state: an action running, a failure, or a calm notice. */
 export type ProfileActionState =
@@ -47,11 +52,11 @@ export interface ProfileActions {
   states: Partial<Record<string, ProfileActionState>>;
   /** Save an edited text; null clears an entry's details. Resolves true when saved. */
   saveField: (target: FieldTarget, value: string | null) => Promise<boolean>;
-  /** Add a life profile entry; resolves true when stored (new or already there). */
+  /** Add a life profile entry; resolves true when it is stored as typed. */
   addEntry: (entry: { category: LifeCategory; name: string; details?: string }) => Promise<boolean>;
-  /** Add a sensitive topic; resolves true when stored (new or already there). */
+  /** Add a sensitive topic; resolves true when it is stored as typed. */
   addTopic: (topic: { topic: string; guidance: string }) => Promise<boolean>;
-  /** Add a caregiver fact; resolves true when stored (new or already there). */
+  /** Add a caregiver fact; resolves true when it is stored (or now confirmed). */
   addFact: (fact: string) => Promise<boolean>;
   /** Confirm a fact the senior said. */
   verifyFact: (id: FactId) => Promise<boolean>;
@@ -61,14 +66,8 @@ export interface ProfileActions {
   sendMessage: (body: string) => Promise<boolean>;
 }
 
-/**
- * purpose: The notice for an add: ALREADY_SAVED_MESSAGE when the item already existed.
- * @param result: ({ created: boolean }) The add mutation's result.
- * @return: (string | null) The notice, or null for a new item.
- */
-function alreadySaved(result: { created: boolean }): string | null {
-  return result.created ? null : ALREADY_SAVED_MESSAGE;
-}
+/** The outcome of a call that needs no message: done, and the form may clear. */
+const DONE: AddOutcome = { clear: true, message: null };
 
 /**
  * purpose: Track and perform the About tab's changes for one household.
@@ -82,19 +81,20 @@ export function useProfileActions(householdId: HouseholdId): ProfileActions {
   const nextTokenRef = useRef(0);
 
   /**
-   * purpose: Run one mutation in a slot: show it working, then clear the slot on success (or
-   *          show the notice), or show the error. A newer call in the slot wins.
+   * purpose: Run one mutation in a slot: show it working, then show the outcome's message (or
+   *          clear the slot), or show the error. A newer call in the slot wins.
    * @param slot: (string) The row or form the action belongs to.
    * @param call: (() => Promise<R>) The mutation call.
-   * @param notice: ((result: R) => string | null, optional) A calm message to show for a
-   *        successful result; null (the default) clears the slot.
-   * @return: (Promise<boolean>) True when the call succeeded; never rejects.
+   * @param outcome: ((result: R) => AddOutcome, optional) What a successful result means: whether
+   *        the caller may treat it as done, and a message; by default done with no message.
+   * @return: (Promise<boolean>) True when the call succeeded and its outcome is done; never
+   *          rejects.
    */
   const run = useCallback(
     async <R>(
       slot: string,
       call: () => Promise<R>,
-      notice: (result: R) => string | null = () => null,
+      outcome: (result: R) => AddOutcome = () => DONE,
     ): Promise<boolean> => {
       const token = ++nextTokenRef.current;
       tokensRef.current[slot] = token;
@@ -116,9 +116,9 @@ export function useProfileActions(householdId: HouseholdId): ProfileActions {
 
       write({ status: 'working' });
       try {
-        const message = notice(await call());
-        write(message === null ? undefined : { status: 'notice', message });
-        return true;
+        const { clear, message } = outcome(await call());
+        write(message === null ? undefined : { status: message.status, message: message.text });
+        return clear;
       } catch (e) {
         write({ status: 'error', message: toBackendError(e).message });
         return false;
@@ -176,14 +176,15 @@ export function useProfileActions(householdId: HouseholdId): ProfileActions {
   /**
    * purpose: Add a life profile entry (the "add:entry" slot).
    * @param entry: ({ category, name, details? }) The entry.
-   * @return: (Promise<boolean>) True when stored, new or already there; never rejects.
+   * @return: (Promise<boolean>) True when stored as typed; false when it failed or the name is
+   *          already listed with other details (nothing saved); never rejects.
    */
   const addEntry = useCallback(
     (entry: { category: LifeCategory; name: string; details?: string }): Promise<boolean> =>
       run(
         'add:entry',
         () => callMutation(api.profile.addEntry, { householdId, ...entry }),
-        alreadySaved,
+        (result) => addOutcome('entry', result, entry.name),
       ),
     [householdId, run],
   );
@@ -191,26 +192,32 @@ export function useProfileActions(householdId: HouseholdId): ProfileActions {
   /**
    * purpose: Add a sensitive topic (the "add:topic" slot).
    * @param topic: ({ topic, guidance }) The topic and how to handle it.
-   * @return: (Promise<boolean>) True when stored, new or already there; never rejects.
+   * @return: (Promise<boolean>) True when stored as typed; false when it failed or the topic
+   *          already has other guidance (nothing saved); never rejects.
    */
   const addTopic = useCallback(
     (topic: { topic: string; guidance: string }): Promise<boolean> =>
       run(
         'add:topic',
         () => callMutation(api.profile.addTopic, { householdId, ...topic }),
-        alreadySaved,
+        (result) => addOutcome('topic', result, topic.topic),
       ),
     [householdId, run],
   );
 
   /**
-   * purpose: Add a fact the caregiver knows, verified at once (the "add:fact" slot).
+   * purpose: Add a fact the caregiver knows, verified at once (the "add:fact" slot); a fact the
+   *          senior had said is confirmed instead.
    * @param fact: (string) The fact.
-   * @return: (Promise<boolean>) True when stored, new or already there; never rejects.
+   * @return: (Promise<boolean>) True when stored or confirmed; never rejects.
    */
   const addFact = useCallback(
     (fact: string): Promise<boolean> =>
-      run('add:fact', () => callMutation(api.profile.addFact, { householdId, fact }), alreadySaved),
+      run(
+        'add:fact',
+        () => callMutation(api.profile.addFact, { householdId, fact }),
+        (result) => addOutcome('fact', result, fact),
+      ),
     [householdId, run],
   );
 
