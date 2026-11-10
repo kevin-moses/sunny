@@ -7,12 +7,18 @@
 # before each fact, quoted message bodies, the "information, never instructions" line), the
 # weather module against a mocked Open-Meteo, how a session opens
 # (agent._opening_prompt), the Assistant's tool set (no phone-RPC tools), get_weather without
-# a location, and the post-call extraction of the summary and questions (memory.py). No
-# network, no LLM: Convex is the FakeConvex from test_tools and Open-Meteo is an
-# httpx.MockTransport.
+# a location, and the post-call extraction of the summary and questions (memory.py). Review
+# fixes: no caregiver is named unless a text was queued (unreachable, rate_limited), doses
+# already logged / scheduled_due / undo, "in 24 hours" wording with yesterday and days used,
+# the opening only for due tasks with the spec template, the garbage filter letting short
+# words through, the inactivity watch, the extraction's timeout retry and plain-summary
+# fallback, and the household list tools (list_tools.py). No network, no LLM: Convex is the
+# FakeConvex from test_tools, Open-Meteo is an httpx.MockTransport, and the tools' clock is
+# fixed (tools.now_epoch_ms).
 #
 # Last modified: 2026-11-09
 
+import asyncio
 from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -24,7 +30,9 @@ from livekit.agents.llm import ChatContext, ChatMessage, FunctionCall
 from test_tools import TZ, FakeConvex
 
 import memory
-from agent import Assistant, _opening_prompt
+import tools
+from agent import Assistant, _is_garbage_input, _opening_prompt, watch_inactivity
+from list_tools import db_add_to_list, db_read_list, db_take_off_list
 from memory import ConversationLogger, build_transcript, parse_session_record
 from prompts import format_user_context, render_system_prompt
 from tools import (
@@ -35,6 +43,7 @@ from tools import (
     db_remember_fact,
     db_send_family_message,
     db_snooze_task,
+    db_undo_last_dose,
     describe_as_needed,
     join_names,
 )
@@ -66,19 +75,34 @@ RELIEF = {
     "maxPerDay": 3,
     "minHoursBetween": 6,
     "takenToday": [ms("2027-03-13T11:00")],
+    "takenLast24h": [ms("2027-03-13T11:00")],
     "remainingToday": 2,
     "nextWithinLabelAt": ms("2027-03-13T17:00"),
 }
+
+# The instant the tool helpers treat as now (tools.now_epoch_ms is fixed to it).
+TOOL_NOW = ms("2027-03-13T14:00")
+
+
+@pytest.fixture(autouse=True)
+def fixed_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    purpose: Fix the tool helpers' clock at TOOL_NOW so "yesterday" and "tomorrow" wording
+             is deterministic.
+    @param monkeypatch: (pytest.MonkeyPatch) Fixture.
+    """
+    monkeypatch.setattr(tools, "now_epoch_ms", lambda: float(TOOL_NOW))
 
 
 class TestDescribeAsNeeded:
     """Label facts for one as-needed medication."""
 
     def test_spec_example(self) -> None:
-        """The spec's example: one at 11, 3 a day, 6 hours apart, asked at 2."""
+        """The spec's example: one at 11, 3 in 24 hours, 6 hours apart, asked at 2."""
         assert describe_as_needed(RELIEF, TZ, ms("2027-03-13T14:00")) == (
-            "Pain reliever (small white): the label says up to 3 a day, at least 6 hours "
-            "apart. Taken today: 11 AM (1 of 3). Another would be within the label after 5 PM."
+            "Pain reliever (small white): the label says up to 3 in 24 hours, at least 6 "
+            "hours apart. Taken in the last 24 hours: 11 AM (1 of 3). Another would be "
+            "within the label after 5 PM."
         )
 
     def test_within_label_now(self) -> None:
@@ -88,15 +112,15 @@ class TestDescribeAsNeeded:
             "Another would be within the label now."
         )
 
-    def test_daily_maximum_reached(self) -> None:
-        """At the daily maximum it says so instead of a time."""
+    def test_maximum_reached_says_when_next(self) -> None:
+        """At the maximum it says so, with when the next would be."""
         med = {
             **RELIEF,
             "remainingToday": 0,
             "nextWithinLabelAt": ms("2027-03-14T00:00"),
         }
         assert describe_as_needed(med, TZ, ms("2027-03-13T20:00")).endswith(
-            "That is the most the label allows today."
+            "That is the most the label allows; the next would be after midnight tomorrow."
         )
 
     def test_next_dose_tomorrow(self) -> None:
@@ -106,11 +130,22 @@ class TestDescribeAsNeeded:
             "after 4 AM tomorrow."
         )
 
+    def test_dose_before_midnight_and_days_used(self) -> None:
+        """A dose from before midnight says yesterday; days used are stated."""
+        med = {
+            **RELIEF,
+            "takenLast24h": [ms("2027-03-12T23:00"), ms("2027-03-13T11:00")],
+            "daysUsedLast7": 4,
+        }
+        text = describe_as_needed(med, TZ, ms("2027-03-13T14:00"))
+        assert "Taken in the last 24 hours: 11 PM yesterday, 11 AM (2 of 3)." in text
+        assert text.endswith("Used on 4 of the last 7 days.")
+
     def test_no_limits_and_no_doses(self) -> None:
         """Without limits or doses it says so; without now it has no time sentence."""
         med = {"displayLabel": "Antacid", "takenToday": []}
         assert describe_as_needed(med, TZ) == (
-            "Antacid: no limits are on file. Taken today: none."
+            "Antacid: no limits are on file. Taken in the last 24 hours: none."
         )
 
 
@@ -205,7 +240,7 @@ class TestMedication:
         assert result.startswith(
             "Scheduled medications today: 8 AM, Morning pills: done at 8:10 AM."
         )
-        assert "Taken today: 11 AM (1 of 3)." in result
+        assert "Taken in the last 24 hours: 11 AM (1 of 3)." in result
         assert client.calls == [("agent:medicationStatus", {"householdId": "h1"})]
 
     @pytest.mark.asyncio
@@ -232,7 +267,7 @@ class TestMedication:
                     "flagged": [],
                     "medication": {
                         **RELIEF,
-                        "takenToday": [ms("2027-03-13T11:00"), taken],
+                        "takenLast24h": [ms("2027-03-13T11:00"), taken],
                         "remainingToday": 1,
                         "nextWithinLabelAt": ms("2027-03-13T20:00"),
                     },
@@ -241,8 +276,9 @@ class TestMedication:
         )
         result = await db_log_dose(client, "h1", TZ, "pain", 5, "c1")  # type: ignore[arg-type]
         assert result.startswith("Logged Pain reliever at 2 PM.")
-        assert "Taken today: 11 AM, 2 PM (2 of 3)." in result
-        assert "has been told" not in result
+        assert "Taken in the last 24 hours: 11 AM, 2 PM (2 of 3)." in result
+        assert "Another would be within the label after 8 PM." in result
+        assert "told" not in result
         assert client.calls == [
             (
                 "agent:logAsNeededDose",
@@ -266,18 +302,105 @@ class TestMedication:
                     "takenAt": taken,
                     "overDailyMax": True,
                     "tooSoon": True,
+                    "count": 4,
+                    "flagStatus": "flagged",
                     "flagged": ["Anna"],
+                    "repeatedUseFlagged": [],
                     "medication": {**RELIEF, "remainingToday": 0},
                 }
             }
         )
         result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
         assert result.endswith(
-            "This dose is more than the label's daily limit and sooner than the label's "
-            "hours apart. Anna has been told."
+            "This dose is 4 in 24 hours, more than the label allows and sooner than the "
+            "label's hours apart. Anna has been told."
         )
         assert client.calls[0][1]["label"] is None
         assert client.calls[0][1]["conversationId"] is None
+
+    @pytest.mark.asyncio
+    async def test_log_past_limit_with_nobody_reachable_never_names_anyone(
+        self,
+    ) -> None:
+        """When the flag reached nobody, the result says family could not be reached."""
+        client = FakeConvex(
+            {
+                "agent:logAsNeededDose": {
+                    "status": "logged",
+                    "takenAt": TOOL_NOW,
+                    "overDailyMax": True,
+                    "tooSoon": False,
+                    "count": 4,
+                    "flagStatus": "unreachable",
+                    "flagged": [],
+                    "repeatedUseFlagged": [],
+                    "medication": {**RELIEF, "remainingToday": 0},
+                }
+            }
+        )
+        result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
+        assert "Family could not be reached from here" in result
+        assert "has been told" not in result
+
+    @pytest.mark.asyncio
+    async def test_already_logged_is_neutral(self) -> None:
+        """A dose already written down is stated neutrally, with its time."""
+        client = FakeConvex(
+            {
+                "agent:logAsNeededDose": {
+                    "status": "already_logged",
+                    "takenAt": ms("2027-03-13T13:50"),
+                    "medication": RELIEF,
+                }
+            }
+        )
+        result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
+        assert result.startswith(
+            "Nothing new was logged: one Pain reliever is already written down at 1:50 PM."
+        )
+        assert "do not say they already told you" in result
+
+    @pytest.mark.asyncio
+    async def test_scheduled_due_points_to_confirm_task(self) -> None:
+        """An unnamed dose while a scheduled medication is due points to confirm_task."""
+        client = FakeConvex(
+            {
+                "agent:logAsNeededDose": {
+                    "status": "scheduled_due",
+                    "options": ["Morning pills"],
+                }
+            }
+        )
+        result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
+        assert "Morning pills is a scheduled medication" in result
+        assert "use confirm_task" in result
+
+    @pytest.mark.asyncio
+    async def test_undo_last_dose(self) -> None:
+        """undoLastDose gets the words and conversation; each outcome is phrased."""
+        client = FakeConvex(
+            {
+                "agent:undoLastDose": {
+                    "status": "removed",
+                    "displayLabel": "Pain reliever",
+                    "takenAt": ms("2027-03-13T13:50"),
+                }
+            }
+        )
+        assert await db_undo_last_dose(client, "h1", TZ, "", "c1") == (  # type: ignore[arg-type]
+            "Removed the Pain reliever written down at 1:50 PM."
+        )
+        assert client.calls[0][1] == {
+            "householdId": "h1",
+            "label": None,
+            "conversationId": "c1",
+        }
+        client = FakeConvex(
+            {"agent:undoLastDose": {"status": "nothing_to_undo", "options": []}}
+        )
+        assert await db_undo_last_dose(client, "h1", TZ, "", None) == (  # type: ignore[arg-type]
+            "There is no dose they reported today to take back."
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -352,8 +475,30 @@ class TestFamilyTools:
             {"agent:flagCaregiver": {"status": "already_flagged", "notified": ["Anna"]}}
         )
         assert await db_flag_caregiver(client, "h1", "scam", "x", None) == (  # type: ignore[arg-type]
-            "Anna was already told about this a few minutes ago."
+            "Anna was already told a few minutes ago."
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["unreachable", "rate_limited"])
+    async def test_flag_that_reached_nobody_never_names_anyone(
+        self, status: str
+    ) -> None:
+        """unreachable and rate_limited never claim someone was told."""
+        client = FakeConvex({"agent:flagCaregiver": {"status": status, "notified": []}})
+        result = await db_flag_caregiver(client, "h1", "symptom", "Dizzy", None)  # type: ignore[arg-type]
+        assert "told" not in result
+        assert "911" not in result
+
+    @pytest.mark.asyncio
+    async def test_unreachable_distress_gives_the_emergency_lines(self) -> None:
+        """Distress that reached nobody adds 911 and 988."""
+        client = FakeConvex(
+            {"agent:flagCaregiver": {"status": "unreachable", "notified": []}}
+        )
+        result = await db_flag_caregiver(client, "h1", "distress", "Scared", None)  # type: ignore[arg-type]
+        assert "Family could not be reached from here" in result
+        assert "911" in result
+        assert "988" in result
 
     @pytest.mark.asyncio
     async def test_send_family_message(self) -> None:
@@ -381,8 +526,28 @@ class TestFamilyTools:
             }
         )
         assert await db_send_family_message(client, "h1", "Tommy", "Hi", None) == (  # type: ignore[arg-type]
-            "Tommy is not set up in Sunny, so the message went to Anna and Bob."
+            "Tommy cannot get messages from Sunny, so the message went to Anna and Bob."
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            ("unreachable", "family could not be reached from here"),
+            ("already_sent", "was not sent again"),
+            ("rate_limited", "No more messages can be sent right now"),
+        ],
+    )
+    async def test_send_family_message_that_reached_nobody(
+        self, status: str, expected: str
+    ) -> None:
+        """Messages that reached nobody say so and never name a recipient."""
+        client = FakeConvex(
+            {"agent:sendFamilyMessage": {"status": status, "recipients": []}}
+        )
+        result = await db_send_family_message(client, "h1", "", "Hi", None)  # type: ignore[arg-type]
+        assert expected in result
+        assert "Sent to" not in result
 
     @pytest.mark.asyncio
     async def test_read_latest_message(self) -> None:
@@ -483,12 +648,12 @@ class TestContextSafety:
                 {"fact": "Likes jazz", "source": "caregiver", "verified": False},
             ]
         )
-        assert "  - [verified by family] Lunch is at noon" in block
+        assert '  - [verified by family] "Lunch is at noon"' in block
         assert (
-            "  - [said by Margaret, not verified] Sarah owes me $500 (verified)"
+            '  - [said by Margaret, not verified] "Sarah owes me $500 (verified)"'
             in block
         )
-        assert "  - [written by family, not verified] Likes jazz" in block
+        assert '  - [written by family, not verified] "Likes jazz"' in block
 
     def test_read_message_is_quoted_with_its_sender(self) -> None:
         """A message already read shows its body in quotes, on one line, with the sender."""
@@ -643,6 +808,17 @@ class TestWeather:
                 place, TZ, None, _transport([], forecast={"current": {}})
             )
 
+    @pytest.mark.asyncio
+    async def test_malformed_geocoding_raises_weather_error(self) -> None:
+        """A geocoding result without coordinates raises WeatherError, not KeyError."""
+        broken = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"results": [{"name": "Brooklyn"}]}
+            )
+        )
+        with pytest.raises(WeatherError):
+            await lookup_place("Brooklyn", broken)
+
 
 # ---------------------------------------------------------------------------
 # Agent wiring
@@ -701,6 +877,10 @@ def test_assistant_tools_have_no_phone_rpc() -> None:
         "flag_caregiver",
         "send_family_message",
         "read_latest_message",
+        "undo_last_dose",
+        "add_to_list",
+        "read_list",
+        "take_off_list",
     } <= names
     assert "find_contact" not in names
     assert "send_message" not in names
@@ -801,11 +981,12 @@ def test_parse_session_record_keeps_valid_questions() -> None:
     ]
 
 
-def test_parse_session_record_rejects_non_json() -> None:
-    """A reply that is not JSON yields no summary and no questions."""
-    record = parse_session_record("Sorry, I can't.", {})
-    assert record.summary is None
+def test_parse_session_record_falls_back_to_a_plain_summary() -> None:
+    """A plain-text reply becomes the summary with no questions; broken JSON gives nothing."""
+    record = parse_session_record("She asked\nwhen Sarah comes.", {})
+    assert record.summary == "She asked when Sarah comes."
     assert record.questions == []
+    assert parse_session_record('{"summary": "cut off', {}).summary is None
 
 
 class _RecordingClient:
@@ -849,13 +1030,76 @@ async def test_finalize_logs_questions_after_finishing(
     client = _RecordingClient()
     conv = ConversationLogger(client, "c1", ["sarah visit time"])  # type: ignore[arg-type]
     await conv.finalize(_history_with_tools())
+    # endedAt is written before the model call, then the summary, then the questions.
     assert [path for path, _ in client.calls] == [
+        "agent:finishConversation",
         "agent:finishConversation",
         "agent:logQuestions",
     ]
-    assert client.calls[0][1] == {"conversationId": "c1", "summary": "S."}
-    assert client.calls[1][1]["questions"][0]["askedAt"] == 1_000_000
+    assert client.calls[0][1] == {"conversationId": "c1", "summary": None}
+    assert client.calls[1][1] == {"conversationId": "c1", "summary": "S."}
+    assert client.calls[2][1]["questions"][0]["askedAt"] == 1_000_000
     assert seen_prompts and seen_prompts[0].startswith("[T1] USER")
+
+
+@pytest.mark.asyncio
+async def test_finalize_records_the_end_even_when_extraction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing model still leaves the conversation finished."""
+
+    async def fail_extract(
+        self: ConversationLogger, transcript: str, turn_times: dict[int, float]
+    ) -> memory.SessionRecord:
+        return memory.SessionRecord()
+
+    monkeypatch.setattr(ConversationLogger, "_extract_record", fail_extract)
+    client = _RecordingClient()
+    await ConversationLogger(client, "c1").finalize(_history_with_tools())  # type: ignore[arg-type]
+    assert client.calls == [
+        ("agent:finishConversation", {"conversationId": "c1", "summary": None})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_extraction_retries_once_after_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model call that fails is tried once more; a good second reply is used."""
+    replies: list[object] = [
+        TimeoutError("slow"),
+        MagicMock(content=[MagicMock(text='{"summary": "S.", "questions": []}')]),
+    ]
+
+    class FakeMessages:
+        """purpose: Stand-in for AsyncAnthropic().messages."""
+
+        async def create(self, **_kwargs: Any) -> object:
+            """
+            purpose: Return or raise the next canned reply.
+            @param _kwargs: (Any) Ignored request fields.
+            @return: (object) The reply.
+            """
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    class FakeAnthropic:
+        """purpose: Stand-in for AsyncAnthropic."""
+
+        def __init__(self, **_kwargs: Any) -> None:
+            """
+            purpose: Expose the fake messages API.
+            @param _kwargs: (Any) Ignored client options.
+            """
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(memory, "AsyncAnthropic", FakeAnthropic)
+    conv = ConversationLogger(_RecordingClient(), "c1")  # type: ignore[arg-type]
+    record = await conv._extract_record("[T1] USER: hi", {})
+    assert record.summary == "S."
+    assert replies == []
 
 
 @pytest.mark.asyncio
@@ -872,4 +1116,146 @@ async def test_finalize_skips_log_questions_when_there_are_none(
     monkeypatch.setattr(ConversationLogger, "_extract_record", fake_extract)
     client = _RecordingClient()
     await ConversationLogger(client, "c1").finalize(_history_with_tools())  # type: ignore[arg-type]
-    assert [path for path, _ in client.calls] == ["agent:finishConversation"]
+    assert [path for path, _ in client.calls] == [
+        "agent:finishConversation",
+        "agent:finishConversation",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: opening, garbage filter, inactivity, list tools
+# ---------------------------------------------------------------------------
+
+
+class TestReviewFixes:
+    """Agent wiring changed by the code review."""
+
+    def test_missed_or_upcoming_task_opens_silently(self) -> None:
+        """A tap on a missed or upcoming task does not announce it."""
+        for state in ("missed", "upcoming"):
+            context = {
+                "today": [
+                    {
+                        "instanceId": "i1",
+                        "displayLabel": "Morning pills",
+                        "state": state,
+                    }
+                ]
+            }
+            assert _opening_prompt(context, "i1") == (None, "Morning pills")
+
+    def test_default_prompt_follows_the_spec_template(self) -> None:
+        """Without a caregiver prompt the spec template is used, with no clock time."""
+        entry = {
+            "instanceId": "i1",
+            "displayLabel": "Morning pills",
+            "spokenPrompt": "Time for Morning pills.",
+            "pillDescription": "small white ones",
+            "type": "medication",
+            "state": "escalated",
+        }
+        assert _opening_prompt({"today": [entry]}, "i1")[0] == (
+            "Time for your morning pills, the small white ones. Press Done when you've "
+            "taken them."
+        )
+        walk = {
+            **entry,
+            "displayLabel": "Walk",
+            "type": "routine",
+            "pillDescription": None,
+        }
+        walk["spokenPrompt"] = ""
+        assert _opening_prompt({"today": [walk]}, "i1")[0] == (
+            "Time for your walk. Press Done when it's done."
+        )
+
+    def test_short_real_words_pass_the_garbage_filter(self) -> None:
+        """'Hi', 'no' and 'ok' are answered; noise and filler sounds are not."""
+        for text in ("Hi", "no", "OK.", "Yes"):
+            assert _is_garbage_input(text) is False
+        for text in ("", "?", "a", "Um.", "hmm", "1234"):
+            assert _is_garbage_input(text) is True
+
+    @pytest.mark.asyncio
+    async def test_inactivity_ends_a_silent_session_once(self) -> None:
+        """No speech for the timeout ends the session; activity restarts the clock."""
+        session = MagicMock(user_state="listening", agent_state="listening")
+        ended: list[bool] = []
+        await watch_inactivity(session, lambda: ended.append(True), 0.05, 0.01)
+        assert ended == [True]
+
+    @pytest.mark.asyncio
+    async def test_inactivity_waits_while_someone_is_speaking(self) -> None:
+        """While the senior speaks, the session is not ended."""
+        session = MagicMock(user_state="speaking", agent_state="listening")
+        ended: list[bool] = []
+        task = asyncio.create_task(
+            watch_inactivity(session, lambda: ended.append(True), 0.03, 0.01)
+        )
+        await asyncio.sleep(0.1)
+        assert ended == []
+        session.user_state = "listening"
+        await asyncio.wait_for(task, 1)
+        assert ended == [True]
+
+
+class TestListTools:
+    """list_tools.py phrasing and arguments."""
+
+    @pytest.mark.asyncio
+    async def test_add_reports_added_already_and_full(self) -> None:
+        """Each outcome of an add is said once."""
+        client = FakeConvex(
+            {
+                "agent:addListItems": [
+                    {"text": "milk", "status": "added"},
+                    {"text": "eggs", "status": "added"},
+                    {"text": "bread", "status": "already_on_list"},
+                    {"text": "jam", "status": "list_full"},
+                ]
+            }
+        )
+        result = await db_add_to_list(client, "h1", ["milk", "eggs", "bread", "jam"])  # type: ignore[arg-type]
+        assert result == (
+            "Added milk and eggs to the list. bread is already on the list. The list is "
+            "full, so jam could not be added."
+        )
+        assert client.calls == [
+            (
+                "agent:addListItems",
+                {"householdId": "h1", "items": ["milk", "eggs", "bread", "jam"]},
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_read_short_long_and_empty_lists(self) -> None:
+        """A short list is read whole; a long one as a count and the first six."""
+        client = FakeConvex({"agent:listItems": ["milk", "eggs"]})
+        assert (
+            await db_read_list(client, "h1") == "The list has 2 items: milk and eggs."
+        )  # type: ignore[arg-type]
+        client = FakeConvex({"agent:listItems": [f"item {i}" for i in range(9)]})
+        assert await db_read_list(client, "h1") == (  # type: ignore[arg-type]
+            "The list has 9 items. The first 6: item 0, item 1, item 2, item 3, item 4 and "
+            "item 5."
+        )
+        client = FakeConvex({"agent:listItems": []})
+        assert await db_read_list(client, "h1") == "The list is empty."  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            ({"status": "ticked", "text": "milk"}, "Took milk off the list."),
+            (
+                {"status": "ambiguous", "options": ["whole milk", "oat milk"]},
+                "Several items match: whole milk and oat milk. Ask which one.",
+            ),
+            ({"status": "not_found", "options": []}, "the milk is not on the list."),
+        ],
+    )
+    async def test_take_off(self, response: dict, expected: str) -> None:
+        """Each tick outcome is phrased."""
+        client = FakeConvex({"agent:tickListItem": response})
+        assert await db_take_off_list(client, "h1", "the milk") == expected  # type: ignore[arg-type]
+        assert client.calls[0][1] == {"householdId": "h1", "item": "the milk"}

@@ -26,7 +26,12 @@
 # tool. The transcript given to the extractor marks each user turn [T1], [T2], ... and each tool
 # call as "TOOL: name"; a question's askedAt is its user turn's time. The topics asked in the
 # last week (getContext recentQuestionTopics) are offered so a repeated question reuses its
-# topic. A reply that is not valid JSON writes no summary and no questions.
+# topic.
+# Robustness (2026-11-09): finalize ends the conversation (agent:finishConversation, endedAt)
+# before the model call, so a slow or failing model never loses the record; the call has a
+# 20-second timeout per attempt and one retry; the summary is written with a second
+# finishConversation; a reply that is not JSON becomes a plain summary with no questions; and
+# agent:logQuestions is idempotent per conversation on the backend.
 #
 # Last modified: 2026-11-09
 
@@ -40,12 +45,19 @@ from anthropic import AsyncAnthropic
 from livekit import rtc
 from livekit.agents.llm import ChatContext, ChatMessage, FunctionCall
 
-from config import SUMMARY_MAX_TOKENS, SUMMARY_MODEL
+from config import (
+    SUMMARY_ATTEMPTS,
+    SUMMARY_MAX_TOKENS,
+    SUMMARY_MODEL,
+    SUMMARY_TIMEOUT_S,
+)
 from convex_client import ConvexClient
 
 logger = logging.getLogger("agent.memory")
 
 _OUTCOMES = {"answered", "routed", "unsure"}
+# Longest plain-text summary kept when the extractor's reply is not JSON.
+_MAX_PLAIN_SUMMARY = 500
 
 _RECORD_PROMPT = """You review one voice conversation between Sunny (a voice assistant on a \
 home display) and an older adult with memory difficulties. Reply with JSON only, no other \
@@ -116,8 +128,9 @@ def parse_session_record(text: str, turn_times: dict[int, float]) -> SessionReco
     @param text: (str) The model's reply; a surrounding code fence is tolerated.
     @param turn_times: (dict[int, float]) User turn times in seconds, by turn number.
     @return: (SessionRecord) The summary and agent:logQuestions-shaped question dicts
-             (askedAt in epoch ms when the turn is known, else None). Empty when the reply is
-             not a JSON object.
+             (askedAt in epoch ms when the turn is known, else None). A reply that is not a
+             JSON object becomes a plain summary (one line, at most 500 characters) with no
+             questions, unless it looks like broken JSON, which gives an empty record.
     """
     body = text.strip()
     if body.startswith("```"):
@@ -126,9 +139,12 @@ def parse_session_record(text: str, turn_times: dict[int, float]) -> SessionReco
         data = json.loads(body)
     except ValueError:
         logger.warning("Session record was not valid JSON")
-        return SessionRecord()
+        data = None
     if not isinstance(data, dict):
-        return SessionRecord()
+        plain = " ".join(body.split())[:_MAX_PLAIN_SUMMARY]
+        if not plain or plain[0] in "{[":
+            return SessionRecord()
+        return SessionRecord(summary=plain)
     summary = data.get("summary")
     record = SessionRecord(
         summary=summary.strip()
@@ -355,36 +371,33 @@ class ConversationLogger:
         @param chat_history: (ChatContext) AgentSession.history.
         """
         await self.wait_idle()
+        # End the conversation first, so a slow or failing model never loses the record.
+        await self._mutate("agent:finishConversation", {"summary": None})
 
         transcript, turn_times = build_transcript(chat_history.items)
-        record = SessionRecord()
-        if transcript:
-            record = await self._extract_record(transcript, turn_times)
-        else:
+        if not transcript:
             logger.info("No transcript content to summarize")
-
-        try:
-            await self._client.mutation(
-                "agent:finishConversation",
-                {"conversationId": self._conversation_id, "summary": record.summary},
-            )
-            logger.info(f"Session finalized for conversation {self._conversation_id}")
-        except Exception as e:
-            logger.warning(
-                f"Failed to finalize conversation {self._conversation_id}: {e}"
-            )
-        if not record.questions:
             return
+        record = await self._extract_record(transcript, turn_times)
+        if record.summary:
+            await self._mutate("agent:finishConversation", {"summary": record.summary})
+        if record.questions:
+            await self._mutate("agent:logQuestions", {"questions": record.questions})
+        logger.info(f"Session finalized for conversation {self._conversation_id}")
+
+    async def _mutate(self, path: str, args: dict) -> None:
+        """
+        purpose: Run one end-of-session mutation for this conversation, logging (never
+                 raising) a failure so the next step still runs.
+        @param path: (str) Function path.
+        @param args: (dict) Arguments besides conversationId.
+        """
         try:
             await self._client.mutation(
-                "agent:logQuestions",
-                {
-                    "conversationId": self._conversation_id,
-                    "questions": record.questions,
-                },
+                path, {"conversationId": self._conversation_id, **args}
             )
         except Exception as e:
-            logger.warning(f"Failed to log questions for {self._conversation_id}: {e}")
+            logger.warning(f"{path} failed for {self._conversation_id}: {e}")
 
     async def _extract_record(
         self, transcript: str, turn_times: dict[int, float]
@@ -392,25 +405,31 @@ class ConversationLogger:
         """
         purpose: Ask Claude for the session summary (stored on the conversation and shown to
                  the agent in later sessions) and the senior's questions (for the digest), in
-                 one call. Uses AsyncAnthropic so finalization never blocks the event loop.
+                 one call, with a SUMMARY_TIMEOUT_S timeout per attempt and SUMMARY_ATTEMPTS
+                 attempts. Uses AsyncAnthropic so finalization never blocks the event loop.
         @param transcript: (str) Output of build_transcript.
         @param turn_times: (dict[int, float]) User turn times in seconds, by turn number.
-        @return: (SessionRecord) The parsed record; empty on any failure.
+        @return: (SessionRecord) The parsed record; empty when every attempt failed.
         """
         prompt = _RECORD_PROMPT.format(
             topics=", ".join(self._known_topics) or "(none yet)",
             transcript=transcript,
         )
-        try:
-            response = await AsyncAnthropic().messages.create(
-                model=SUMMARY_MODEL,
-                max_tokens=SUMMARY_MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return parse_session_record(response.content[0].text, turn_times)
-        except Exception as e:
-            logger.warning(f"Failed to extract the session record: {e}")
-            return SessionRecord()
+        client = AsyncAnthropic(timeout=SUMMARY_TIMEOUT_S, max_retries=0)
+        for attempt in range(1, SUMMARY_ATTEMPTS + 1):
+            try:
+                response = await asyncio.wait_for(
+                    client.messages.create(
+                        model=SUMMARY_MODEL,
+                        max_tokens=SUMMARY_MAX_TOKENS,
+                        messages=[{"role": "user", "content": prompt}],
+                    ),
+                    timeout=SUMMARY_TIMEOUT_S,
+                )
+                return parse_session_record(response.content[0].text, turn_times)
+            except Exception as e:
+                logger.warning(f"Session record attempt {attempt} failed: {e}")
+        return SessionRecord()
 
 
 async def shutdown_conversation(

@@ -157,7 +157,7 @@ async def lookup_place(
     @param location: (str) The household's weather location.
     @param transport: (httpx.AsyncBaseTransport | None) Override for tests.
     @return: (Place | None) The best match, or None when nothing matches.
-    @raises: WeatherError when the geocoding service fails.
+    @raises: WeatherError when the geocoding service fails or answers with a malformed result.
     """
     name, _, rest = location.partition(",")
     # Only the first qualifier is used: "Brooklyn, NY, USA" is matched on "NY".
@@ -171,14 +171,17 @@ async def lookup_place(
         "format": "json",
     }
     data = await _get_json(GEOCODE_URL, params, transport)
-    for result in data.get("results") or []:
-        if _matches_qualifier(result, qualifier):
-            return Place(
-                name=str(result.get("name", name.strip())),
-                latitude=float(result["latitude"]),
-                longitude=float(result["longitude"]),
-                country_code=str(result.get("country_code", "")).upper(),
-            )
+    try:
+        for result in data.get("results") or []:
+            if _matches_qualifier(result, qualifier):
+                return Place(
+                    name=str(result.get("name", name.strip())),
+                    latitude=float(result["latitude"]),
+                    longitude=float(result["longitude"]),
+                    country_code=str(result.get("country_code", "")).upper(),
+                )
+    except (AttributeError, KeyError, TypeError, ValueError) as e:
+        raise WeatherError(f"Unexpected geocoding response: {e}") from e
     return None
 
 

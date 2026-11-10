@@ -85,7 +85,8 @@ def slow_summary(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_second_finalize_awaits_first_and_finishes_once() -> None:
-    """purpose: Disconnect-path finalize plus shutdown finalize give one finish call."""
+    """purpose: Disconnect-path finalize plus shutdown finalize run the end-of-session
+    writes once (the end time, then the summary)."""
     client = FakeClient()
     conv = ConversationLogger(client, "c1")  # type: ignore[arg-type]
     history = _history()
@@ -95,7 +96,11 @@ async def test_second_finalize_awaits_first_and_finishes_once() -> None:
     await shutdown_conversation(client, conv, history)  # type: ignore[arg-type]
     await disconnect_task
 
-    assert client.events == ["agent:finishConversation", "aclose"]
+    assert client.events == [
+        "agent:finishConversation",
+        "agent:finishConversation",
+        "aclose",
+    ]
 
 
 @pytest.mark.asyncio
@@ -111,6 +116,7 @@ async def test_pending_log_turns_complete_before_finish_and_close() -> None:
     assert client.events == [
         "agent:logTurn",
         "agent:logTurn",
+        "agent:finishConversation",
         "agent:finishConversation",
         "aclose",
     ]

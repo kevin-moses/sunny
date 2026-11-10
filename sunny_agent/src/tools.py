@@ -22,6 +22,12 @@
 # one_line and quoted keep family-written text to one line (and a message body in quotes) in
 # the context block and tool results.
 #
+# Review fixes (2026-11-09): a result never names a caregiver no text was queued for (_told:
+# unreachable and rate_limited say so plainly; distress adds 911 and 988); doses already
+# logged, a scheduled medication that is due, and taking a dose back (db_undo_last_dose) have
+# their own wording; label facts are "in 24 hours" with days used in the last week; snoozing
+# an anytime task says there is no reminder to snooze.
+#
 # Last modified: 2026-11-09
 
 from datetime import date, datetime, timedelta, timezone
@@ -322,45 +328,76 @@ def _same_local_day(a_ms: float, b_ms: float, tz: str) -> bool:
     return to_local(a_ms, tz).date() == to_local(b_ms, tz).date()
 
 
+def now_epoch_ms() -> float:
+    """
+    purpose: The current instant in epoch milliseconds (one place, so tests can fix it).
+    @return: (float) Epoch ms.
+    """
+    return datetime.now(timezone.utc).timestamp() * 1000
+
+
+def _dose_time(epoch_ms: float, now_ms: float, tz: str) -> str:
+    """
+    purpose: A dose time as spoken, marking one from the day before.
+    @param epoch_ms: (float) The dose, epoch ms.
+    @param now_ms: (float) Now, epoch ms.
+    @param tz: (str) IANA timezone of the household.
+    @return: (str) e.g. "11 AM" or "11 PM yesterday".
+    """
+    clock = local_clock(epoch_ms, tz)
+    return clock if _same_local_day(epoch_ms, now_ms, tz) else f"{clock} yesterday"
+
+
 def describe_as_needed(med: dict, tz: str, now_ms: float | None = None) -> str:
     """
-    purpose: State the facts about one as-needed medication: label limits, doses today and,
-             when now_ms is given, when another would be within the label. Facts only; the
-             decision stays with the senior.
+    purpose: State the facts about one as-needed medication: label limits (the maximum is "in
+             24 hours", the backend's stricter reading of "a day"), doses in the last 24 hours
+             and, when now_ms is given, when another would be within the label and how many
+             of the last 7 days it was used. Facts only; the decision stays with the senior.
     @param med: (dict) AsNeededEntry from agent:medicationStatus / getContext (camelCase).
     @param tz: (str) IANA timezone of the household.
     @param now_ms: (float | None) Epoch ms the facts are read at; None leaves out the
-                   time-dependent sentence (the session-start context goes stale).
-    @return: (str) e.g. "Pain reliever (small white): the label says up to 3 a day, at least
-             6 hours apart. Taken today: 11 AM (1 of 3). Another would be within the label
-             after 5 PM."
+                   time-dependent sentences (the session-start context goes stale).
+    @return: (str) e.g. "Pain reliever (small white): the label says up to 3 in 24 hours, at
+             least 6 hours apart. Taken in the last 24 hours: 11 AM (1 of 3). Another would
+             be within the label after 5 PM. Used on 2 of the last 7 days."
     """
-    label = med.get("displayLabel", "")
+    reference = now_ms if now_ms is not None else now_epoch_ms()
+    label = one_line(med.get("displayLabel"))
     if med.get("pillDescription"):
-        label += f" ({med['pillDescription']})"
+        label += f" ({one_line(med['pillDescription'])})"
     limits = []
     max_per_day = med.get("maxPerDay")
     if max_per_day:
-        limits.append(f"up to {max_per_day} a day")
+        limits.append(f"up to {max_per_day} in 24 hours")
     if med.get("minHoursBetween"):
         limits.append(f"at least {float(med['minHoursBetween']):g} hours apart")
     label_text = (
         f"the label says {', '.join(limits)}" if limits else "no limits are on file"
     )
-    taken = [local_clock(t, tz) for t in med.get("takenToday") or []]
+    doses = med.get("takenLast24h")
+    if doses is None:
+        doses = med.get("takenToday") or []
+    taken = [_dose_time(t, reference, tz) for t in doses]
     taken_text = ", ".join(taken) if taken else "none"
     if max_per_day:
         taken_text += f" ({len(taken)} of {max_per_day})"
-    text = f"{label}: {label_text}. Taken today: {taken_text}."
+    text = f"{label}: {label_text}. Taken in the last 24 hours: {taken_text}."
     if now_ms is None:
         return text
     next_at = med.get("nextWithinLabelAt")
     if next_at is None:
-        return f"{text} Another would be within the label now."
-    if med.get("remainingToday") == 0:
-        return f"{text} That is the most the label allows today."
-    day = "" if _same_local_day(next_at, now_ms, tz) else " tomorrow"
-    return f"{text} Another would be within the label after {local_clock(next_at, tz)}{day}."
+        text += " Another would be within the label now."
+    else:
+        day = "" if _same_local_day(next_at, now_ms, tz) else " tomorrow"
+        when = f"after {local_clock(next_at, tz)}{day}"
+        if med.get("remainingToday") == 0:
+            text += f" That is the most the label allows; the next would be {when}."
+        else:
+            text += f" Another would be within the label {when}."
+    if med.get("daysUsedLast7"):
+        text += f" Used on {med['daysUsedLast7']} of the last 7 days."
+    return text
 
 
 async def db_snooze_task(
@@ -389,6 +426,8 @@ async def db_snooze_task(
     if status == "already_done":
         return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
     if status == "not_due_yet":
+        if r.get("scheduledTime") == ANYTIME:
+            return f"{label} can be done anytime today; there is no reminder to snooze."
         return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
     if status == "ambiguous":
         return f"Several tasks are due: {', '.join(r.get('options') or [])}. Ask which one."
@@ -411,7 +450,7 @@ async def db_medication_status(client: ConvexClient, household_id: str, tz: str)
         await client.query("agent:medicationStatus", {"householdId": household_id})
         or {}
     )
-    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    now_ms = now_epoch_ms()
     scheduled = r.get("scheduled") or []
     as_needed = r.get("asNeeded") or []
     parts = []
@@ -478,22 +517,98 @@ async def db_log_dose(
         )
     if status == "ambiguous":
         return f"Nothing was logged yet: ask which one they took: {options}."
+    if status == "scheduled_due":
+        return (
+            f"Nothing was logged: {options} is a scheduled medication that is due now. If "
+            "that is what they took, use confirm_task."
+        )
     med = r["medication"]
+    label = one_line(med.get("displayLabel"))
+    now_ms = now_epoch_ms()
+    if status == "already_logged":
+        return (
+            f"Nothing new was logged: one {label} is already written down at "
+            f"{local_clock(r['takenAt'], tz)}. Say that plainly; do not say they already "
+            f"told you. {describe_as_needed(med, tz, now_ms)}"
+        )
     text = (
-        f"Logged {med.get('displayLabel', '')} at {local_clock(r['takenAt'], tz)}. "
-        f"{describe_as_needed(med, tz, r['takenAt'])}"
+        f"Logged {label} at {local_clock(r['takenAt'], tz)}. "
+        f"{describe_as_needed(med, tz, now_ms)}"
     )
     breaches = []
     if r.get("overDailyMax"):
-        breaches.append("more than the label's daily limit")
+        breaches.append(f"{r.get('count')} in 24 hours, more than the label allows")
     if r.get("tooSoon"):
         breaches.append("sooner than the label's hours apart")
     if breaches:
+        text += f" This dose is {' and '.join(breaches)}. " + _told(
+            r.get("flagStatus"), r.get("flagged") or []
+        )
+    if r.get("repeatedUseFlagged"):
         text += (
-            f" This dose is {' and '.join(breaches)}. "
-            f"{join_names(r.get('flagged') or [])} has been told."
+            f" {join_names(r['repeatedUseFlagged'])} was also told it has been used on "
+            f"{med.get('daysUsedLast7')} of the last 7 days."
         )
     return text
+
+
+def _told(status: str | None, names: list[str]) -> str:
+    """
+    purpose: Say who a flag reached, never naming anyone it did not reach.
+    @param status: (str | None) flagged, already_flagged, unreachable or rate_limited.
+    @param names: (list[str]) Caregivers a notification was queued for.
+    @return: (str) One sentence for the model to pass on.
+    """
+    if status in ("flagged", "already_flagged") and names:
+        if status == "already_flagged":
+            return f"{join_names(names)} was already told a few minutes ago."
+        return f"{join_names(names)} has been told."
+    if status == "rate_limited":
+        return "No more messages can be sent to family right now; say so plainly."
+    return (
+        "Family could not be reached from here (nobody has a phone set up for Sunny); say "
+        "so plainly."
+    )
+
+
+async def db_undo_last_dose(
+    client: ConvexClient,
+    household_id: str,
+    tz: str,
+    medication: str,
+    conversation_id: str | None,
+) -> str:
+    """
+    purpose: "No, I didn't take it": remove the most recent as-needed dose they reported by
+             voice today, through agent:undoLastDose. A message already sent to family stays
+             sent.
+    @param client: (ConvexClient) Convex client.
+    @param household_id: (str) Household id.
+    @param tz: (str) IANA timezone of the household.
+    @param medication: (str) Words naming the medication, or "" for the last one reported.
+    @param conversation_id: (str | None) The conversation, if one was opened.
+    @return: (str) What was removed, or why nothing was.
+    """
+    r = (
+        await client.mutation(
+            "agent:undoLastDose",
+            {
+                "householdId": household_id,
+                "label": medication or None,
+                "conversationId": conversation_id or None,
+            },
+        )
+        or {}
+    )
+    status = r.get("status")
+    if status == "removed":
+        return (
+            f"Removed the {one_line(r.get('displayLabel'))} written down at "
+            f"{local_clock(r['takenAt'], tz)}."
+        )
+    if status == "ambiguous":
+        return f"Ask which one to take back: {', '.join(r.get('options') or [])}."
+    return "There is no dose they reported today to take back."
 
 
 async def db_remember_fact(
@@ -533,15 +648,15 @@ async def db_flag_caregiver(
     conversation_id: str | None,
 ) -> str:
     """
-    purpose: Ask the on-call caregiver (or every caregiver) to look in, through
-             agent:flagCaregiver.
+    purpose: Ask the on-call caregiver (or every reachable caregiver) to look in, through
+             agent:flagCaregiver. Never names anyone a text was not queued for.
     @param client: (ConvexClient) Convex client.
     @param household_id: (str) Household id.
-    @param reason: (str) medication_limit, symptom, money_request, scam, distress or
-                   help_requested.
+    @param reason: (str) symptom, money_request, scam, distress or help_requested.
     @param detail: (str) One or two sentences for the caregiver.
     @param conversation_id: (str | None) The conversation, if one was opened.
-    @return: (str) Who was told.
+    @return: (str) Who was told, or that family could not be reached (with the emergency
+             lines for distress).
     """
     r = (
         await client.mutation(
@@ -555,10 +670,13 @@ async def db_flag_caregiver(
         )
         or {}
     )
-    names = join_names(r.get("notified") or [])
-    if r.get("status") == "already_flagged":
-        return f"{names} was already told about this a few minutes ago."
-    return f"{names} has been told."
+    text = _told(r.get("status"), r.get("notified") or [])
+    if reason == "distress" and r.get("status") not in ("flagged", "already_flagged"):
+        text += (
+            " If they are in danger or hurt, tell them to call 911; if they talk about "
+            "hurting themselves, 988 too."
+        )
+    return text
 
 
 async def db_send_family_message(
@@ -570,7 +688,7 @@ async def db_send_family_message(
 ) -> str:
     """
     purpose: Send a message the senior dictated to family through agent:sendFamilyMessage
-             (the Sunny app, not a phone text).
+             (texted to caregivers by Sunny). Never names anyone a text was not queued for.
     @param client: (ConvexClient) Convex client.
     @param household_id: (str) Household id.
     @param to: (str) The name they used, or "" for the family.
@@ -591,8 +709,18 @@ async def db_send_family_message(
         or {}
     )
     names = join_names(r.get("recipients") or [])
-    if r.get("status") == "sent_to_family":
-        return f"{to} is not set up in Sunny, so the message went to {names}."
+    status = r.get("status")
+    if status == "sent_to_family":
+        return f"{to} cannot get messages from Sunny, so the message went to {names}."
+    if status == "already_sent":
+        return "That same message was sent a moment ago; it was not sent again."
+    if status == "rate_limited":
+        return "No more messages can be sent right now; say so plainly."
+    if status == "unreachable":
+        return (
+            "The message is saved, but family could not be reached from here (nobody has a "
+            "phone set up for Sunny); say so plainly."
+        )
     return f"Sent to {names}."
 
 

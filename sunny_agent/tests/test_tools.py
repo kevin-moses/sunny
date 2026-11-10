@@ -150,14 +150,14 @@ def test_format_user_context_sections() -> None:
     assert "Local time now: Saturday, March 13, 8:20 AM" in block
     assert "8 AM, Morning pills: done at 8:10 AM" in block
     assert (
-        "Pain reliever: the label says up to 3 a day, at least 6 hours apart. "
-        "Taken today: 10 AM (1 of 3)." in block
+        "Pain reliever: the label says up to 3 in 24 hours, at least 6 hours apart. "
+        "Taken in the last 24 hours: 10 AM" in block
     )
     # The session-start snapshot leaves out the time-dependent "within the label" line.
     assert "within the label" not in block
     assert "If asked about her husband: Say he loved her very much." in block
-    assert "  - [verified by family] Likes tea" in block
-    assert "  - [said by Mom, not verified] Has a cat" in block
+    assert '  - [verified by family] "Likes tea"' in block
+    assert '  - [said by Mom, not verified] "Has a cat"' in block
     assert "Weather location: not set by family." in block
 
 

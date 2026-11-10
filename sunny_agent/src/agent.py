@@ -10,10 +10,11 @@
 # Tools (each backed by an agent:* Convex function except web_search and get_weather):
 # web_search (Tavily), get_weather (Open-Meteo, weather.py, for the household's
 # weatherLocation), list_today, confirm_task (already-done guard), snooze_task ("not yet",
-# 15 minutes), medication_status and log_dose (label facts; a dose past a limit flags the
-# caregiver), create_reminder and cancel_reminder (senior-created reminders only),
-# remember_fact (unverified senior memory), flag_caregiver, send_family_message and
-# read_latest_message. The phone-RPC tools find_contact and send_message were removed
+# 15 minutes), medication_status, log_dose and undo_last_dose (label facts; a dose past a
+# limit flags the caregiver), create_reminder and cancel_reminder (senior-created reminders
+# only), remember_fact (unverified senior memory), flag_caregiver, send_family_message,
+# read_latest_message, and the household list: add_to_list, read_list, take_off_list. The
+# phone-RPC tools find_contact and send_message were removed
 # (2026-11-09): the display has no contacts or SMS.
 #
 # Error handling: STT garbage filter silences short/non-alphabetic transcripts; progressive
@@ -28,6 +29,14 @@
 # greeting, no "welcome back" on reconnect. A spoken cue was rejected because a one-word cue
 # echoed back through the microphone would pass the echo filter (single words are never
 # treated as echo) and be answered as if the senior had said it.
+#
+# Review fixes (2026-11-09): the opening prompt is spoken only for a task that is due or
+# escalated, in the task's own words or the spec template (label, pills, "Press Done when
+# you've taken them"; no clock time); short real words ("Hi", "no") pass the garbage filter,
+# filler sounds do not; watch_inactivity ends a session with no speech for
+# INACTIVITY_TIMEOUT_S; TTS speaks at TTS_SPEED on TTS_MODEL; Tavily runs off the event loop;
+# medication_limit is not a model-facing flag reason; new tools undo_last_dose, add_to_list,
+# read_list and take_off_list (list_tools.py).
 #
 # Session context: resolve_session() reads household_id, trigger, task_instance_id and
 # device_id from participant metadata. Session context is also persisted to the
@@ -80,6 +89,8 @@ from tavily import TavilyClient
 from config import (
     DEFAULT_TIMEZONE,
     ECHO_DETECTION_WINDOW_S,
+    INACTIVITY_CHECK_S,
+    INACTIVITY_TIMEOUT_S,
     LLM_MODEL,
     MAX_ENDPOINTING_DELAY,
     MIN_ENDPOINTING_DELAY,
@@ -87,9 +98,12 @@ from config import (
     MIN_INTERRUPTION_WORDS,
     STT_LANGUAGE,
     STT_MODEL,
+    TTS_MODEL,
+    TTS_SPEED,
     TTS_VOICE,
 )
 from convex_client import ConvexClient, create_convex_client
+from list_tools import db_add_to_list, db_read_list, db_take_off_list
 from memory import (
     ConversationLogger,
     create_conversation,
@@ -110,6 +124,7 @@ from tools import (
     db_remember_fact,
     db_send_family_message,
     db_snooze_task,
+    db_undo_last_dose,
 )
 from weather import Place, WeatherError, lookup_place, weather_report
 
@@ -117,8 +132,8 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env")
 
+# medication_limit is raised by log_dose itself (keyed on the medication), never by the model.
 FlagReason = Literal[
-    "medication_limit",
     "symptom",
     "money_request",
     "scam",
@@ -185,9 +200,13 @@ class Assistant(Agent):
         try:
             if self._tavily is None:
                 self._tavily = TavilyClient()
-            response = self._tavily.search(query, include_answer="basic")
-            logger.info(f"Answer: {response.get('answer')}")
-            return response.get("answer", "No results found for that query.")
+            # The Tavily client is synchronous: run it off the event loop so audio keeps flowing.
+            response = await asyncio.to_thread(
+                self._tavily.search, query, include_answer="basic"
+            )
+            answer = (response or {}).get("answer")
+            logger.info(f"Answer: {answer}")
+            return answer or "No results found for that query."
         except Exception as e:
             logger.error(f"Error looking up information on {query}: {e}")
             return "The web search is not working right now, so this could not be looked up."
@@ -315,9 +334,9 @@ class Assistant(Agent):
     ) -> str:
         """
         purpose: Record that the senior took an as-needed medication ("I took a Tylenol").
-                 Returns the label facts afterwards; family is told automatically if the
-                 dose is past a label limit. Only for as-needed medications, not scheduled
-                 ones (use confirm_task for those).
+                 Call it once per dose. Returns the label facts afterwards; family is told
+                 automatically if the dose is past a label limit. Only for as-needed
+                 medications, never for scheduled ones like "my pills" (use confirm_task).
 
         Args:
             medication: Words naming the medication, e.g. "pain reliever"; empty if only
@@ -337,6 +356,72 @@ class Assistant(Agent):
                 minutes_ago,
                 self._conversation_id,
             ),
+        )
+
+    @function_tool
+    async def undo_last_dose(self, context: RunContext, medication: str = "") -> str:
+        """
+        purpose: Take back an as-needed dose they reported today and did not actually take
+                 ("No, I didn't take it after all"). Anything already sent to family stays
+                 sent.
+
+        Args:
+            medication: Words naming the medication; empty for the last one they reported
+
+        Returns:
+            What was removed, or why nothing was
+        """
+        return await self._household_tool(
+            "take that back",
+            lambda h: db_undo_last_dose(
+                self._convex, h, self._timezone, medication, self._conversation_id
+            ),
+        )
+
+    @function_tool
+    async def add_to_list(self, context: RunContext, items: list[str]) -> str:
+        """
+        purpose: Add things to the household's shared list, which family can see ("Add milk
+                 and eggs to the list"). Call it right away with every item they named; no
+                 confirmation is needed.
+
+        Args:
+            items: Each item separately, short, e.g. ["milk", "eggs"]
+
+        Returns:
+            What was added and what was already on the list
+        """
+        return await self._household_tool(
+            "add that to the list",
+            lambda h: db_add_to_list(self._convex, h, items),
+        )
+
+    @function_tool
+    async def read_list(self, context: RunContext) -> str:
+        """
+        purpose: Read the household list ("What's on my list?").
+
+        Returns:
+            The open items, or the count and the first few of a long list
+        """
+        return await self._household_tool(
+            "read the list", lambda h: db_read_list(self._convex, h)
+        )
+
+    @function_tool
+    async def take_off_list(self, context: RunContext, item: str) -> str:
+        """
+        purpose: Take an item off the list when they got it or no longer need it ("I bought
+                 the milk").
+
+        Args:
+            item: The item, e.g. "milk"
+
+        Returns:
+            What was taken off, or a clarifying note
+        """
+        return await self._household_tool(
+            "update the list", lambda h: db_take_off_list(self._convex, h, item)
         )
 
     @function_tool
@@ -418,10 +503,11 @@ class Assistant(Agent):
 
         Args:
             reason: The kind of concern
-            detail: One or two plain sentences for the caregiver about what happened
+            detail: At most two short plain sentences for the caregiver about what happened.
+                    Never include card, bank or account numbers.
 
         Returns:
-            Who was told
+            Who was told, or that family could not be reached
         """
         return await self._household_tool(
             "reach your family",
@@ -467,14 +553,22 @@ class Assistant(Agent):
         )
 
 
+# Sounds STT writes for hesitation or noise; alone they are not something to answer.
+_FILLER_WORDS = {"uh", "um", "hm", "hmm", "mm", "mhm", "er", "ah", "eh", "oh"}
+
+
 def _is_garbage_input(text: str) -> bool:
     """
-    purpose: Return True if an STT transcript is too short or contains no alphabetic
-             characters, indicating noise (cough, TV, short sound) rather than speech.
+    purpose: Return True if an STT transcript is noise rather than speech: no letters, a
+             single letter, or only filler sounds ("um", "hmm"). Short real words such as
+             "Hi", "no" or "ok" pass, so a bare greeting after a silent Talk open is answered.
     @param text: (str) Stripped transcript string from the STT engine.
     @return: (bool) True if the input should be discarded without LLM processing.
     """
-    return len(text) < 3 or not any(c.isalpha() for c in text)
+    words = re.findall(r"[^\W\d_]+", text.lower())
+    if sum(len(w) for w in words) < 2:
+        return True
+    return all(w in _FILLER_WORDS for w in words)
 
 
 # Echo detection helpers — detect when STT transcribes the agent's own
@@ -552,8 +646,9 @@ def _opening_prompt(
 ) -> tuple[str | None, str]:
     """
     purpose: Decide how a session opens. Only a session started by a task instance that is
-             still open speaks first, with the task's fixed spoken prompt (same words every
-             day). A Talk press, or a prompt for a task already done, opens silently.
+             due or escalated speaks first, with the task's fixed prompt (_task_prompt, same
+             words every day). A Talk press, or a task done, missed or upcoming, opens
+             silently.
     @param context: (dict) agent:getContext result ({} when unavailable).
     @param task_instance_id: (str | None) The instance from the participant metadata.
     @return: (tuple[str | None, str]) The prompt to speak (None to stay silent) and the
@@ -573,10 +668,37 @@ def _opening_prompt(
     if instance is None:
         return None, ""
     label = instance.get("displayLabel", "")
-    if instance.get("state") in ("confirmed", "resolved"):
+    # Only a task open for confirmation right now is prompted; a tap on a missed or upcoming
+    # one must not announce it hours late or early.
+    if instance.get("state") not in ("due", "escalated"):
         return None, label
-    prompt = instance.get("spokenPrompt") or f"It's time for {label or 'your task'}."
-    return prompt, label
+    return _task_prompt(instance), label
+
+
+def _task_prompt(instance: dict) -> str:
+    """
+    purpose: The fixed words for a task's prompt: the caregiver's own spoken prompt, or when
+             there is none (or only the backend's bare "Time for <label>."), the spec template:
+             the label, the pill description when present, and how to confirm. No clock time,
+             so a reprompt is never wrong, and the same words every day.
+    @param instance: (dict) A today entry (displayLabel, spokenPrompt, type, pillDescription).
+    @return: (str) e.g. "Time for your morning pills, the small white ones. Press Done when
+             you've taken them."
+    """
+    label = " ".join(str(instance.get("displayLabel") or "your task").split())
+    spoken = " ".join(str(instance.get("spokenPrompt") or "").split())
+    if spoken and spoken != f"Time for {label}.":
+        return spoken
+    name = label[:1].lower() + label[1:]
+    text = (
+        f"Time for your {name}" if not name.startswith("your ") else f"Time for {name}"
+    )
+    pills = " ".join(str(instance.get("pillDescription") or "").split())
+    if pills:
+        text += f", the {pills}"
+    if instance.get("type") == "medication":
+        return f"{text}. Press Done when you've taken them."
+    return f"{text}. Press Done when it's done."
 
 
 def prewarm(proc: JobProcess):
@@ -661,7 +783,7 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         stt=deepgram.STT(model=STT_MODEL, language=STT_LANGUAGE),
         llm=anthropic.LLM(model=LLM_MODEL),
-        tts=cartesia.TTS(voice=TTS_VOICE),
+        tts=cartesia.TTS(model=TTS_MODEL, voice=TTS_VOICE, speed=TTS_SPEED),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
@@ -897,6 +1019,56 @@ async def entrypoint(ctx: JobContext):
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
+
+    # 18. Inactivity — the worker ends a session nobody speaks in (a silent Talk open that
+    #     never gets a question), without relying on the display to hang up.
+    _inactivity_task = asyncio.create_task(
+        watch_inactivity(
+            session,
+            lambda: ctx.shutdown(reason="inactive"),
+            INACTIVITY_TIMEOUT_S,
+            INACTIVITY_CHECK_S,
+        )
+    )
+    ctx.add_shutdown_callback(lambda: _cancel(_inactivity_task))
+
+
+async def _cancel(task: asyncio.Task) -> None:
+    """
+    purpose: Cancel a background task at shutdown.
+    @param task: (asyncio.Task) The task.
+    """
+    task.cancel()
+
+
+async def watch_inactivity(
+    session: object,
+    end_session: Callable[[], object],
+    timeout_s: float,
+    check_s: float,
+) -> None:
+    """
+    purpose: End the session once neither side has spoken or been working for timeout_s. The
+             session counts as active while the user is speaking or the agent is speaking or
+             thinking; the clock restarts each time it is.
+    @param session: (object) The AgentSession (reads user_state and agent_state).
+    @param end_session: (Callable[[], object]) Called once to end the session.
+    @param timeout_s: (float) Seconds of inactivity allowed.
+    @param check_s: (float) Seconds between checks.
+    """
+    loop = asyncio.get_running_loop()
+    last_active = loop.time()
+    while True:
+        await asyncio.sleep(check_s)
+        busy = getattr(session, "user_state", None) == "speaking" or getattr(
+            session, "agent_state", None
+        ) in ("speaking", "thinking")
+        if busy:
+            last_active = loop.time()
+        elif loop.time() - last_active >= timeout_s:
+            logger.info(f"No speech for {timeout_s:.0f} s; ending the session")
+            end_session()
+            return
 
 
 if __name__ == "__main__":
