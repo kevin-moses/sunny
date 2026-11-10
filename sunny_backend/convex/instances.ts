@@ -10,21 +10,25 @@
 // state, claim, snooze and note change is audited (lib/schedule.changeInstance). A bare "Done"
 // (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
   actorUserId,
+  findDevice,
   loadHousehold,
   requireEditor,
   requireReader,
   requireSenior,
+  requireUserId,
 } from "./lib/access";
-import type { Actor, CaregiverActor } from "./lib/access";
+import type { Actor, CaregiverActor, DeviceActor } from "./lib/access";
+import { audit } from "./lib/audit";
 import { isAnytimeInstance } from "./lib/anytime";
+import { EARLY_CONFIRM_MS, LATE_SYNC_MS, REPLAY_GRACE_MS, notTooEarly } from "./lib/confirmRule";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -34,7 +38,6 @@ import type { TodayEntry } from "./lib/today";
 import { confirmVia } from "./lib/validators";
 import type { ConfirmVia } from "./lib/validators";
 
-const EARLY_CONFIRM_MS = minutes(60);
 const DOSE_CLOCK_SKEW_MS = minutes(5);
 const DEFAULT_SNOOZE_MINUTES = 15;
 const MAX_SNOOZE_MINUTES = 120;
@@ -99,6 +102,35 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 }
 
 /**
+ * purpose: Check a press age sent by a senior device.
+ * @param ageMs: (number) The age in ms.
+ * @return: (void)
+ * @raises invalid unless it is a finite number of at least 0.
+ */
+function requirePressAge(ageMs: number): void {
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    throw appError("invalid", "The press age must be zero or more");
+  }
+}
+
+/**
+ * purpose: Judge a replayed press as of the moment it was pressed.
+ * @param instance: (Doc<"taskInstances">) The instance.
+ * @param pressedAt: (number) Epoch ms the senior pressed (server now minus the press age).
+ * @return: (void)
+ * @raises invalid when the press was more than EARLY_CONFIRM_MS before the window started, or
+ *         more than REPLAY_GRACE_MS after it ended.
+ */
+function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number): void {
+  if (pressedAt < instance.windowStart - EARLY_CONFIRM_MS) {
+    throw appError("invalid", "This task was not due yet when it was pressed");
+  }
+  if (pressedAt > instance.windowEnd + REPLAY_GRACE_MS) {
+    throw appError("invalid", "This press was too long after the task's window");
+  }
+}
+
+/**
  * purpose: Confirm a task instance from any surface. The senior's device or the backend
  *          produces "confirmed"; an editor caregiver produces "resolved" under their name with
  *          confirmedVia "caregiver". A senior device can confirm an upcoming instance
@@ -109,11 +141,26 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
  *          and returns it.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
- * @param args: ({instanceId, via, note}) The instance, the surface and an optional note.
+ * @param args: ({instanceId, via, note, pressedAgoMs}) The instance, the surface, an optional
+ *        note and an optional press age. pressedAgoMs is how long before this call the senior
+ *        pressed Done on a device that held the press (offline) and sent it later. An age, not
+ *        a time, so the device's clock skew cannot move the record. Only a senior device may
+ *        send it, and it must be a finite number of at least 0. confirmedAt is `now` minus the
+ *        age, clamped to between the instance's early-confirm point (windowStart minus
+ *        EARLY_CONFIRM_MS) and `now` (never the future); when that is more than
+ *        LATE_SYNC_MS before `now`, confirmReceivedAt records `now` so readers can tell a
+ *        late-synced confirm from a live one. The audit detail records pressedAgoMs,
+ *        confirmedAt and receivedAt. A live press (age of at most LATE_SYNC_MS) is subject to
+ *        the early check at `now`. A replayed press (an older age) is judged as of the time it
+ *        was pressed, not the time it arrived: it is refused (invalid) if it was pressed more
+ *        than EARLY_CONFIRM_MS before the instance's windowStart (the task was not due yet when
+ *        she pressed, for example because a caregiver moved it while the phone was offline) or
+ *        more than REPLAY_GRACE_MS after its windowEnd (a stale card pressed the morning after
+ *        is not an on-time record of last night's task). Without an age confirmedAt is `now`.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the agent: more than 60 minutes
- *          early; editors: the instance's local date is after today), when via is
+ * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the
+ *          agent: more than 60 minutes early; editors: the instance's local date is after today), when via is
  *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
  *          A blank note is stored as absent, but never erases a note already on the
  *          instance (set earlier with setTaskNote): without a note the existing one is kept.
@@ -121,7 +168,12 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 export async function confirmInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; via: ConfirmVia; note?: string },
+  args: {
+    instanceId: Id<"taskInstances">;
+    via: ConfirmVia;
+    note?: string;
+    pressedAgoMs?: number;
+  },
   now: number,
 ): Promise<Doc<"taskInstances">> {
   const instance = await loadInstance(ctx, args.instanceId);
@@ -132,26 +184,55 @@ export async function confirmInstance(
   if (!asCaregiver && args.via === "caregiver") {
     throw appError("invalid", "Only a caregiver can confirm as a caregiver");
   }
+  if (args.pressedAgoMs !== undefined) {
+    if (actor.kind !== "senior_device") {
+      throw appError("invalid", "Only the senior's device can send a press age");
+    }
+    requirePressAge(args.pressedAgoMs);
+  }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
+  const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
   if (instance.state === "confirmed" || instance.state === "resolved") return instance;
   if (asCaregiver) {
     const household = await loadHousehold(ctx, instance.householdId);
     if (instance.localDate > localDate(now, household.timezone)) {
       throw appError("invalid", "This task is not due yet");
     }
-  } else if (instance.state === "upcoming" && instance.windowStart - now > EARLY_CONFIRM_MS) {
+  } else if (!notTooEarly(instance, now)) {
     throw appError("invalid", "This task is not due yet");
   }
-  return await changeInstance(ctx, actor, instance, {
-    state: asCaregiver ? "resolved" : "confirmed",
-    confirmedAt: now,
-    confirmedBy: actorUserId(actor),
-    confirmedVia: asCaregiver ? "caregiver" : args.via,
-    resolvedFromState: asCaregiver ? instance.state : undefined,
-    resolvedFromSnoozedUntil: asCaregiver ? instance.snoozedUntil : undefined,
-    resolutionNote: note ?? instance.resolutionNote,
-    snoozedUntil: undefined,
-  });
+  if (replayed) requirePressInWindow(instance, now - (args.pressedAgoMs ?? 0));
+  const confirmedAt =
+    args.pressedAgoMs === undefined
+      ? now
+      : Math.min(now, Math.max(now - args.pressedAgoMs, instance.windowStart - EARLY_CONFIRM_MS));
+  const lateSynced = now - confirmedAt > LATE_SYNC_MS;
+  const pressDetail =
+    args.pressedAgoMs === undefined
+      ? undefined
+      : {
+          pressedAgoMs: args.pressedAgoMs,
+          confirmedAt,
+          receivedAt: now,
+          replayed,
+        };
+  return await changeInstance(
+    ctx,
+    actor,
+    instance,
+    {
+      state: asCaregiver ? "resolved" : "confirmed",
+      confirmedAt,
+      confirmReceivedAt: lateSynced ? now : undefined,
+      confirmedBy: actorUserId(actor),
+      confirmedVia: asCaregiver ? "caregiver" : args.via,
+      resolvedFromState: asCaregiver ? instance.state : undefined,
+      resolvedFromSnoozedUntil: asCaregiver ? instance.snoozedUntil : undefined,
+      resolutionNote: note ?? instance.resolutionNote,
+      snoozedUntil: undefined,
+    },
+    pressDetail,
+  );
 }
 
 /**
@@ -272,6 +353,7 @@ export async function undoResolveInstance(
       confirmedAt: undefined,
       confirmedBy: undefined,
       confirmedVia: undefined,
+      confirmReceivedAt: undefined,
       snoozedUntil: instance.resolvedFromSnoozedUntil,
       resolvedFromState: undefined,
       resolvedFromSnoozedUntil: undefined,
@@ -516,7 +598,8 @@ export async function logDoseCore(
  * @param instanceId: (Id<"taskInstances">) Instance.
  * @param via: (ConfirmVia) Surface that confirmed.
  * @param note: (string, optional) Resolution note.
- * @return: (Doc<"taskInstances">) The instance after the call.
+ * @return: (Doc<"taskInstances">) The instance after the call. (A press held offline and sent
+ *          later goes through confirmPressedTask instead.)
  */
 export const confirmTaskInstance = mutation({
   args: { instanceId: v.id("taskInstances"), via: confirmVia, note: v.optional(v.string()) },
@@ -524,6 +607,99 @@ export const confirmTaskInstance = mutation({
     const instance = await loadInstance(ctx, args.instanceId);
     const actor = await requireReader(ctx, instance.householdId);
     return await confirmInstance(ctx, actor, args, Date.now());
+  },
+});
+
+/** Result of confirmPressedTask. */
+export type PressResult =
+  { status: "confirmed"; instance: Doc<"taskInstances"> } | { status: "rejected"; reason: string };
+
+/**
+ * purpose: Confirm a task from a press the senior's device held and sent later (or sent at
+ *          once): confirmInstance with a press age, for senior devices only, where a refusal
+ *          does not throw. Refusing would make the device drop a press the senior really made
+ *          (and was told was checked off), so a refused press (instance gone, not due yet for
+ *          a live press, ...) returns { status: "rejected", reason } and writes an audit row
+ *          (action "press_not_applied", the instance id if known, the reason, the press age and
+ *          time) so the household has a server-side record. Authorization failures still throw:
+ *          a caller that is not a device, or an instance of another household.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Must be a senior device.
+ * @param args: ({instanceId, via, pressedAgoMs}) The instance, the surface and the press age.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<PressResult>) confirmed with the instance, or rejected with the reason.
+ * @raises forbidden when the actor is not a senior device or the instance belongs to another
+ *          household; invalid for an age that is not a finite number of at least 0.
+ */
+export async function confirmPressedInstance(
+  ctx: MutationCtx,
+  actor: Actor,
+  args: { instanceId: Id<"taskInstances">; via: ConfirmVia; pressedAgoMs: number },
+  now: number,
+): Promise<PressResult> {
+  if (actor.kind !== "senior_device") {
+    throw appError("forbidden", "Only the senior's devices can do this");
+  }
+  requirePressAge(args.pressedAgoMs);
+  const instance = await ctx.db.get(args.instanceId);
+  if (instance !== null && instance.householdId !== actor.householdId) {
+    throw appError("forbidden", "Not allowed to confirm this task");
+  }
+  /**
+   * purpose: Record a press that could not be applied and build the rejected result.
+   * @param reason: (string) Why.
+   * @return: (Promise<PressResult>) The rejected result.
+   */
+  const rejected = async (reason: string): Promise<PressResult> => {
+    await audit(ctx, {
+      householdId: actor.householdId,
+      actor,
+      action: "press_not_applied",
+      entity: "task_instance",
+      entityId: instance?._id,
+      detail: {
+        reason,
+        pressedAgoMs: args.pressedAgoMs,
+        pressedAt: now - args.pressedAgoMs,
+        receivedAt: now,
+        via: args.via,
+        instanceId: args.instanceId,
+      },
+    });
+    return { status: "rejected", reason };
+  };
+  if (instance === null) return await rejected("The task no longer exists");
+  try {
+    return { status: "confirmed", instance: await confirmInstance(ctx, actor, args, now) };
+  } catch (error) {
+    if (error instanceof ConvexError && !isAppError(error, "forbidden")) {
+      return await rejected((error.data as { message?: string }).message ?? "Not applied");
+    }
+    throw error;
+  }
+}
+
+/**
+ * purpose: Confirm a task from the senior device's queued press (see confirmPressedInstance).
+ *          Senior devices only.
+ * @param instanceId: (Id<"taskInstances">) Instance.
+ * @param via: (ConfirmVia) Surface that confirmed.
+ * @param pressedAgoMs: (number) How long ago (ms) the senior pressed Done.
+ * @return: (PressResult) confirmed with the instance, or rejected with the reason (also audited).
+ */
+export const confirmPressedTask = mutation({
+  args: { instanceId: v.id("taskInstances"), via: confirmVia, pressedAgoMs: v.number() },
+  handler: async (ctx, args): Promise<PressResult> => {
+    const userId = await requireUserId(ctx);
+    const device = await findDevice(ctx, userId);
+    if (!device) throw appError("forbidden", "Only the senior's devices can do this");
+    const actor: DeviceActor = {
+      kind: "senior_device",
+      userId,
+      householdId: device.householdId,
+      device,
+    };
+    return await confirmPressedInstance(ctx, actor, args, Date.now());
   },
 });
 

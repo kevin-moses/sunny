@@ -112,3 +112,26 @@ export function dayOfMonth(time: number): number {
 export function yearOf(time: number): number {
   return new Date(time).getUTCFullYear();
 }
+
+/**
+ * purpose: The calendar date it is right now in a time zone ("YYYY-MM-DD"). The one place the
+ *          app converts a time zone, used to tell whether a cached day view is still today's.
+ * @param timezone: (string) An IANA zone, for example "America/New_York".
+ * @param now: (number) Epoch ms.
+ * @return: (string | null) The date, or null when the zone or Intl is unavailable.
+ */
+export function currentLocalDate(timezone: string, now: number): string | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date(now));
+    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
+    const date = `${get('year')}-${get('month')}-${get('day')}`;
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+  } catch {
+    return null;
+  }
+}

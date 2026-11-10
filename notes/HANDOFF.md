@@ -29,7 +29,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Households, members, roles, join codes, devices, push tokens | `households.ts` |
 | Device pairing over HTTP (`POST /pair`, Clerk device users, rate limits) | `pairing.ts`, `http.ts` |
 | Tasks and escalation policies | `tasks.ts`, `lib/policies.ts` |
-| Task instances (confirm, snooze, claim, dose log, senior reminders) | `instances.ts` |
+| Task instances (confirm, snooze, claim, dose log, senior reminders); the rule for when a senior device may confirm (60 minutes early) and the day view's `confirmable` flag | `instances.ts`, `lib/confirmRule.ts` |
 | Scheduler tick (expand, open and close windows, escalation) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
 | Calendar events, occurrences, day view (`calendar.dayView`) | `calendar.ts`, `lib/occurrences.ts`, `lib/today.ts`, `lib/eventNotices.ts` |
 | Time zones | `lib/time.ts` |
@@ -72,7 +72,7 @@ Environment (set on the Convex deployment with `npx convex env set`, never in a 
 
 ## sunny_app
 
-Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `useSession.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`. Full explanation of pairing and setup: `sunny_app/README.md`.
+Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone with its Done button in `src/day/useDoneAction.ts` and the offline press queue in `src/day/pendingConfirms.ts`, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `useSession.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`. Full explanation of pairing and setup: `sunny_app/README.md`.
 
 Run: `npm install`, then `npm run ios -- --device` for the first development build (Expo Go does not work; voice needs a physical iPhone), then `npm start`. Checks: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (jest).
 

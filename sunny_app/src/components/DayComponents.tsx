@@ -2,16 +2,18 @@
 //
 // Purpose: The building blocks of the senior phone's day clock: the orientation header
 // ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
-// coming week, plus the offline mark the caregiver home also uses. The home display has its
-// own parts in src/display. Calm, high contrast, no motion.
+// coming week, the Done card (the task's label above one large Done button, and the result
+// line of the last press; a task that is not due yet gets a "Coming up at ..." heading and an
+// outlined "Done early" button), plus the offline mark the caregiver home also uses. The home
+// display has its own parts in src/display. Calm, high contrast, no motion.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-09
 
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
 import { displayTime, eventDetails, eventKey, isDone, isDue, whenText } from '../day/format';
-import type { AgendaItem, DayViewData, EventOccurrence } from '../day/types';
+import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
@@ -234,6 +236,84 @@ export function UpcomingList({ events, today }: { events: EventOccurrence[]; tod
   );
 }
 
+/** Height (points) of the Done button; much larger than the 44pt minimum. */
+const DONE_BUTTON_HEIGHT = 96;
+
+/** Background of the Done button while pressed; darker, so the white label keeps its contrast. */
+const DONE_PRESSED_COLOR = '#14582A';
+
+/** Background of the early Done button while pressed (a light tint of the success green). */
+const DONE_EARLY_PRESSED_COLOR = '#D9EBDD';
+
+/**
+ * purpose: The Done card: the task's label above one large Done button, and the result of the
+ *          last press below. A task that is not due yet (confirmed early) looks different on
+ *          purpose: a heading "Coming up at 9:00 AM" above the label and an outlined button
+ *          reading "Done early", so it is plain that this is not the task due now. With no
+ *          task it shows only the result line, or nothing at all (never a button that does
+ *          nothing).
+ * @param props: ({ task, message, onPress }) The task Done confirms (null when there is none),
+ *        the result line (null for none) and the press handler.
+ * @return: (JSX.Element | null) The card.
+ */
+export function DoneCard({
+  task,
+  message,
+  onPress,
+}: {
+  task: DayTask | null;
+  message: string | null;
+  onPress: () => void;
+}) {
+  if (task === null && message === null) return null;
+  const early = task !== null && task.state === 'upcoming';
+  const comingUp = task === null ? '' : `Coming up at ${displayTime(task.scheduledTime)}`;
+  return (
+    <View style={{ gap: 12, alignSelf: 'stretch' }}>
+      {task !== null && (
+        <>
+          <View style={{ gap: 4 }}>
+            {early && (
+              <Text
+                style={[
+                  styles.rounded,
+                  { fontSize: 24, fontWeight: '600', color: colors.secondaryText },
+                ]}
+              >
+                {comingUp}
+              </Text>
+            )}
+            <Text style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}>
+              {task.displayLabel}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              early
+                ? `Done early: ${task.displayLabel}, ${comingUp.toLowerCase()}`
+                : `Done: ${task.displayLabel}`
+            }
+            onPress={onPress}
+            style={({ pressed }) => [
+              styles.doneButton,
+              early && styles.earlyButton,
+              pressed && { backgroundColor: early ? DONE_EARLY_PRESSED_COLOR : DONE_PRESSED_COLOR },
+            ]}
+          >
+            <Text style={[styles.doneText, early && styles.earlyText]}>
+              {early ? 'Done early' : 'Done'}
+            </Text>
+          </Pressable>
+        </>
+      )}
+      {message !== null && (
+        <Text style={[styles.rounded, { fontSize: 22, fontWeight: '500' }]}>{message}</Text>
+      )}
+    </View>
+  );
+}
+
 /**
  * purpose: A small mark shown when the latest refresh failed and the screen shows cached data.
  * @return: (JSX.Element) The mark.
@@ -249,5 +329,16 @@ export function OfflineMark() {
 
 const styles = StyleSheet.create({
   rounded: { fontFamily: ROUNDED_FONT, color: colors.text },
+  doneButton: {
+    minHeight: DONE_BUTTON_HEIGHT,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+    backgroundColor: colors.success,
+  },
+  earlyButton: { backgroundColor: colors.surface, borderWidth: 4, borderColor: colors.success },
+  earlyText: { color: colors.success, fontSize: 34 },
+  doneText: { fontFamily: ROUNDED_FONT, fontSize: 40, fontWeight: '700', color: colors.surface },
   offline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });
