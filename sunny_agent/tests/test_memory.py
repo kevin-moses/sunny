@@ -4,8 +4,9 @@
 # logTurn writes complete before the summary and before the client is closed, a finalize
 # started by the disconnect path and a second one from shutdown produce exactly one
 # agent:finishConversation, and the client is closed even when finalize fails.
+# The model extraction (summary and questions) is stubbed with a slow fake.
 #
-# Last modified: 2026-10-29
+# Last modified: 2026-11-09
 
 import asyncio
 from typing import Any
@@ -14,7 +15,7 @@ import pytest
 from livekit.agents.llm import ChatContext
 
 import memory
-from memory import ConversationLogger, shutdown_conversation
+from memory import ConversationLogger, SessionRecord, shutdown_conversation
 
 
 class FakeClient:
@@ -68,15 +69,18 @@ def _history() -> ChatContext:
 @pytest.fixture(autouse=True)
 def slow_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    purpose: Replace the Anthropic summary with a slow stub so finalize overlaps shutdown.
+    purpose: Replace the Anthropic extraction with a slow stub (a summary, no questions) so
+             finalize overlaps shutdown.
     @param monkeypatch: (pytest.MonkeyPatch) Fixture.
     """
 
-    async def fake_summary(self: ConversationLogger, transcript: str) -> str:
+    async def fake_extract(
+        self: ConversationLogger, transcript: str, turn_times: dict[int, float]
+    ) -> SessionRecord:
         await asyncio.sleep(0.05)
-        return "A summary."
+        return SessionRecord(summary="A summary.")
 
-    monkeypatch.setattr(ConversationLogger, "_generate_summary", fake_summary)
+    monkeypatch.setattr(ConversationLogger, "_extract_record", fake_extract)
 
 
 @pytest.mark.asyncio

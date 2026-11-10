@@ -4,8 +4,9 @@
 # run without a backend. Covers spoken time formatting, today's schedule descriptions,
 # the context block, and how each agent:confirmDueTask / agent:cancelSeniorReminder outcome
 # is phrased for voice (the selection rules themselves are tested in the Convex backend).
+# Updated 2026-11-09 for the context block's trust labels and unread-message line.
 #
-# Last modified: 2026-10-29
+# Last modified: 2026-11-09
 
 import pytest
 
@@ -148,15 +149,34 @@ def test_format_user_context_sections() -> None:
     block = format_user_context(ctx)
     assert "Local time now: Saturday, March 13, 8:20 AM" in block
     assert "8 AM, Morning pills: done at 8:10 AM" in block
-    assert "up to 3 a day, at least 6 hours apart. Taken today: 10 AM." in block
+    assert (
+        "Pain reliever: the label says up to 3 a day, at least 6 hours apart. "
+        "Taken today: 10 AM (1 of 3)." in block
+    )
+    # The session-start snapshot leaves out the time-dependent "within the label" line.
+    assert "within the label" not in block
     assert "If asked about her husband: Say he loved her very much." in block
-    assert "Likes tea (verified)" in block
-    assert "Has a cat (said by senior, unverified)" in block
+    assert "  - [verified by family] Likes tea" in block
+    assert "  - [said by Mom, not verified] Has a cat" in block
+    assert "Weather location: not set by family." in block
+
+
+def test_format_user_context_caregivers_and_weather() -> None:
+    """purpose: Caregivers are listed with the on-call one marked; the weather location shows."""
+    ctx = _context()
+    ctx["household"]["weatherLocation"] = "Brooklyn, NY"
+    ctx["caregivers"] = [
+        {"name": "Anna", "onCall": True},
+        {"name": "Bob", "onCall": False},
+    ]
+    block = format_user_context(ctx)
+    assert "Weather location: Brooklyn, NY" in block
+    assert "Family caregivers in Sunny: Anna (on call), Bob" in block
 
 
 def test_format_user_context_empty() -> None:
     """purpose: No household context produces a clear fallback line."""
-    assert "No household context" in format_user_context({})
+    assert "No household information" in format_user_context({})
 
 
 @pytest.mark.asyncio
@@ -336,5 +356,9 @@ def test_format_user_context_events_and_conversations() -> None:
     ]
     block = format_user_context(ctx)
     assert "Saturday, March 13, 9 AM: Dentist, with Sarah, at Main St" in block
-    assert "Latest family message, from Sarah: Hi Mom" in block
+    assert (
+        "Latest family message: from Sarah, not read yet. Call read_latest_message to "
+        "read it." in block
+    )
+    assert "Hi Mom" not in block
     assert "2027-03-13: Asked time." in block

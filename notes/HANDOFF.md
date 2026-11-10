@@ -38,7 +38,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
 | Daily digest | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts` |
 | Caregiver requests to the household agent | `agentRequests.ts`, `agentRuntime.ts`, `lib/agentTools.ts`, `lib/agentBriefing.ts`, `lib/agentConfig.ts`, `lib/managedAgents.ts`, `lib/agentRequestState.ts` (the agent's calendar and task tools, run as an agent actor acting for the requesting caregiver; sessions pass the deployed prompt, model and tools as overrides, and a config change starts a new session with the recent chat carried over, so a backend deploy is enough) |
-| Functions the Python voice agent calls (`agent:*`) | `agent.ts` |
+| Functions the Python voice agent calls (`agent:*`): context, today, medication status, confirm, snooze, self-reported doses, reminders, memory, caregiver flags, family messages, conversation and question logs | `agent.ts`, `lib/voiceRouting.ts` (flags and family messages through the outbox), `lib/doseLimits.ts` (as-needed label arithmetic), `lib/memoryLimits.ts` (agentMemory limits) |
 | LiveKit room token for a senior device | `voice.ts` |
 | Components (rate limiter, workflow, two workpools) | `convex.config.ts` |
 | Test helpers | `testing.helpers.ts`, `*.helpers.ts`, `*.test.ts` beside each module |
@@ -84,7 +84,9 @@ Not built: the caregiver app, the e-ink display client, widget and Live Activity
 
 ## sunny_agent
 
-LiveKit Python worker. `src/agent.py` (the `Assistant` and `entrypoint`), `src/prompts.py` (system prompt and household context formatting), `src/tools.py` (task and reminder helpers and spoken-time formatting; web search is `Assistant.web_search` in `agent.py`), `src/memory.py` (household resolution from participant metadata and conversation logging), `src/convex_client.py` (HTTP client for the `agent:*` Convex functions), `src/config.py` (senior-tuned endpointing constants).
+LiveKit Python worker. `src/agent.py` (the `Assistant` and `entrypoint`), `src/prompts.py` (system prompt following the spec's voice guardrails, and household context formatting), `src/tools.py` (helpers behind the household tools and spoken-time formatting; web search is `Assistant.web_search` in `agent.py`), `src/weather.py` (Open-Meteo geocoding and forecast for `households.weatherLocation`, no key), `src/memory.py` (household resolution from participant metadata, conversation logging, and the post-call summary and question extraction), `src/convex_client.py` (HTTP client for the `agent:*` Convex functions), `src/config.py` (senior-tuned endpointing constants).
+
+Tools: web_search, get_weather, list_today, confirm_task, snooze_task, medication_status, log_dose, create_reminder, cancel_reminder, remember_fact, flag_caregiver, send_family_message, read_latest_message. No tool depends on the phone (the senior talks through the home display); the phone-RPC tools find_contact and send_message were removed. A Talk session opens silently and listens; only a session started by a still-open task speaks first, with the task's fixed prompt.
 
 Run (from `sunny_agent/`): `uv sync`, `uv run python src/agent.py download-files` once, then `uv run python src/agent.py dev` (or `console` to talk in the terminal). Tests: `uv run pytest -q` (some tests are LLM-judged and need `ANTHROPIC_API_KEY`). Type and lint: `uv run mypy src/ --ignore-missing-imports`, ruff (via pre-commit).
 
@@ -107,4 +109,6 @@ Style is enforced by pre-commit: `uv tool run pre-commit run --all-files` from t
 | Caregiver requests to the agent | `agentRequests.ts`, `agentRuntime.ts` |
 | Alerts to family | `delivery.ts` (APNs and SMS), `sms.ts` (reply to claim) |
 | Daily digest | `digest.ts` |
-| Life profile, playbook, agent memory, family messages | Tables exist; read by `agent.getContext`; no caregiver write path yet |
+| Life profile, playbook, agent memory, family messages | Read by `agent.getContext`; voice writes: `agent.rememberFact`, `agent.sendFamilyMessage`, `agent.readLatestMessage` (seen) |
+| Route to a person (flags), medication facts, "not yet" | `agent.flagCaregiver`, `agent.logAsNeededDose`, `agent.medicationStatus`, `agent.snoozeDueTask` |
+| Question log for the digest | `agent.logQuestions` (written after each call by `sunny_agent/src/memory.py`), read by `lib/digestFacts.ts` |
