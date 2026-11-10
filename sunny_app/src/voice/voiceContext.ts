@@ -2,11 +2,12 @@
 //
 // Purpose: Context objects and hooks that expose the voice session to the UI. useVoice()
 // is the small surface the rest of the app needs (connect, disconnect, status, error).
-// useConversation() carries the extra state ConversationScreen needs: microphone state,
-// agent state and audio tracks, and the transcript. Both are provided by VoiceProvider
-// (VoiceProvider.tsx re-exports useVoice for the app).
+// useConversation() carries the extra state the conversation surfaces need (the phone's
+// ConversationScreen and the home display's voice card): microphone state, whether the
+// senior is speaking, agent state and audio tracks, and the transcript. Both are provided by
+// VoiceProvider (VoiceProvider.tsx re-exports useVoice for the app).
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-11-09
 
 import type {
   AgentState,
@@ -31,10 +32,12 @@ export interface VoiceApi {
   disconnect: () => Promise<void>;
 }
 
-/** The state and actions ConversationScreen renders. */
+/** The state and actions the conversation surfaces render. */
 export interface ConversationApi {
   isMicrophoneEnabled: boolean;
   toggleMicrophone: () => Promise<void>;
+  /** True while LiveKit hears the senior speaking into the microphone. */
+  userSpeaking: boolean;
   /** True once the agent participant is in the room. */
   agentJoined: boolean;
   agentState: AgentState;

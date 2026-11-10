@@ -5,10 +5,11 @@
 // created-by provenance; past-time and repeat rules; DST stability of a weekly event;
 // update semantics (absent = unchanged, null = cleared, unknown keys rejected); soft
 // delete; audit rows; listEvents range limits; and dayView (header, part-of-day
-// boundaries, Next up with the 30 minute default, tasks, upcoming). Includes one access
-// test per public function: outsiders, viewers and the paired device.
+// boundaries, Next up with the 30 minute default, tasks with their sent senior prompts and snooze,
+// upcoming). Includes one access test per public function: outsiders, viewers and the paired
+// device.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -899,6 +900,113 @@ describe("dayView", () => {
     const view = await viewAt(w, "2027-03-18T13:00:00Z");
     expect(view.tasks.map((t) => t.scheduledTime)).toEqual(["08:00", "20:00"]);
     expect(view.tasks[0]!.displayLabel).toBe("Morning pills");
+  });
+
+  test("counts the senior prompts sent for each instance", async () => {
+    const w = await makeWorld();
+    await w.t.run(async (ctx) => {
+      const taskId = await ctx.db.insert("tasks", {
+        householdId: w.householdId,
+        type: "medication",
+        title: "Morning pills",
+        displayLabel: "Morning pills",
+        spokenPrompt: "Time for your morning pills.",
+        checklistItems: [],
+        times: ["08:00", "20:00"],
+        windowMinutes: 60,
+        createdByKind: "caregiver",
+        active: true,
+        scheduleChangedAt: 0,
+      });
+      const base = {
+        taskId,
+        householdId: w.householdId,
+        localDate: "2027-03-18",
+        createdAt: 0,
+      };
+      await ctx.db.insert("taskInstances", {
+        ...base,
+        scheduledTime: "08:00",
+        windowStart: at("2027-03-18T12:00:00Z"),
+        windowEnd: at("2027-03-18T13:00:00Z"),
+        state: "escalated",
+        firedSteps: [
+          { stepId: "a", action: "prompt_senior", firedAt: 0, notified: true },
+          // Superseded in the same tick: recorded but never sent, so not counted.
+          { stepId: "b", action: "prompt_senior", firedAt: 1, notified: false },
+          { stepId: "c", action: "prompt_senior", firedAt: 1, notified: true },
+          { stepId: "d", action: "alert_on_call", firedAt: 2, notified: true },
+        ],
+      });
+      await ctx.db.insert("taskInstances", {
+        ...base,
+        scheduledTime: "20:00",
+        windowStart: at("2027-03-19T00:00:00Z"),
+        windowEnd: at("2027-03-19T01:00:00Z"),
+        state: "upcoming",
+        firedSteps: [],
+      });
+    });
+    const view = await viewAt(w, "2027-03-18T12:30:00Z");
+    expect(view.tasks.map((t) => [t.scheduledTime, t.seniorPrompts])).toEqual([
+      ["08:00", 2],
+      ["20:00", 0],
+    ]);
+  });
+
+  test("marks an instance snoozed until its snooze ends", async () => {
+    const w = await makeWorld();
+    await w.t.run(async (ctx) => {
+      const taskId = await ctx.db.insert("tasks", {
+        householdId: w.householdId,
+        type: "medication",
+        title: "Morning pills",
+        displayLabel: "Morning pills",
+        spokenPrompt: "Time for your morning pills.",
+        checklistItems: [],
+        times: ["08:00", "09:00", "10:00"],
+        windowMinutes: 180,
+        createdByKind: "caregiver",
+        active: true,
+        scheduleChangedAt: 0,
+      });
+      const base = {
+        taskId,
+        householdId: w.householdId,
+        localDate: "2027-03-18",
+        createdAt: 0,
+        state: "due" as const,
+        firedSteps: [],
+        windowStart: at("2027-03-18T12:00:00Z"),
+        windowEnd: at("2027-03-18T15:00:00Z"),
+      };
+      await ctx.db.insert("taskInstances", {
+        ...base,
+        scheduledTime: "08:00",
+        snoozedUntil: at("2027-03-18T12:45:00Z"),
+      });
+      await ctx.db.insert("taskInstances", { ...base, scheduledTime: "09:00" });
+      await ctx.db.insert("taskInstances", {
+        ...base,
+        scheduledTime: "10:00",
+        snoozedUntil: at("2027-03-18T12:30:00Z"),
+      });
+    });
+    const during = await viewAt(w, "2027-03-18T12:30:00Z");
+    expect(during.tasks.map((t) => [t.scheduledTime, t.snoozed])).toEqual([
+      ["08:00", true],
+      ["09:00", false],
+      // A snooze ending at this instant no longer holds the prompts back, as in the scheduler.
+      ["10:00", false],
+    ]);
+    const after = await viewAt(w, "2027-03-18T12:45:00Z");
+    expect(after.tasks.map((t) => t.snoozed)).toEqual([false, false, false]);
+    // The end of the latest snooze stays readable after it passed (null when never snoozed).
+    expect(after.tasks.map((t) => t.snoozedUntil)).toEqual([
+      at("2027-03-18T12:45:00Z"),
+      null,
+      at("2027-03-18T12:30:00Z"),
+    ]);
   });
 
   test("the minute argument is ignored", async () => {

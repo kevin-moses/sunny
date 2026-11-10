@@ -6,9 +6,11 @@
 // would not. With the iPad in landscape they form a column to the right of the panel, as tall
 // as it (Done on top, Talk on the bottom); in portrait they form a row below it, as wide as it
 // (Done on the left, Talk on the right). A status line between the keys shows the last key's
-// result, "Connecting to Sunny", or "Not connected" when the backend is unreachable. Each key
+// result or voice message, "Press Talk to stop" during a voice session, or "Not connected"
+// when the backend is unreachable. Each key
 // shows the same symbol and word as the keycaps drawn in the prompts, looks raised, visibly
-// sinks while pressed, and dims while its action is busy.
+// sinks while pressed. Done dims while its confirm is in flight; Talk never dims, since it
+// can always start or stop a session.
 //
 // Last modified: 2026-11-09
 
@@ -34,20 +36,21 @@ const STATUS_LINES = 4;
 /**
  * purpose: One raised key: a symbol above its word.
  * @param props: ({ icon, label, hint, busy, onPress }) The key's symbol and word, its
- *        VoiceOver hint, whether its action is in progress, and the press handler.
+ *        VoiceOver hint, whether its action is in progress (default false), and the press
+ *        handler.
  * @return: (JSX.Element) The key.
  */
 function Key({
   icon,
   label,
   hint,
-  busy,
+  busy = false,
   onPress,
 }: {
   icon: SFSymbol;
   label: string;
   hint: string;
-  busy: boolean;
+  busy?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -68,10 +71,10 @@ function Key({
 /**
  * purpose: The Done and Talk keys with the status line between them, as a column beside the
  *          paper panel or a row below it.
- * @param props: ({ placement, length, status, doneBusy, talkBusy, onDone, onTalk }) Where the
+ * @param props: ({ placement, length, status, doneBusy, onDone, onTalk }) Where the
  *        keys sit; the length of the panel side they run along (its height for 'right', its
- *        width for 'below', so the keys line up with the panel's edges); the status line; busy
- *        flags; and press handlers.
+ *        width for 'below', so the keys line up with the panel's edges); the status line; whether
+ *        Done is busy; and press handlers.
  * @return: (JSX.Element) The keys.
  */
 export function KeyPanel({
@@ -79,7 +82,6 @@ export function KeyPanel({
   length,
   status,
   doneBusy,
-  talkBusy,
   onDone,
   onTalk,
 }: {
@@ -87,7 +89,6 @@ export function KeyPanel({
   length: number;
   status: string | null;
   doneBusy: boolean;
-  talkBusy: boolean;
   onDone: () => void;
   onTalk: () => void;
 }) {
@@ -106,7 +107,7 @@ export function KeyPanel({
           {status}
         </DText>
       </View>
-      <Key icon="mic" label="Talk" hint="Talk to Sunny" busy={talkBusy} onPress={onTalk} />
+      <Key icon="mic" label="Talk" hint="Talk to Sunny. Press again to stop." onPress={onTalk} />
     </View>
   );
 }

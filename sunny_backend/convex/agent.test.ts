@@ -343,6 +343,9 @@ describe("getContext", () => {
         confirmReceivedLocalTime: null,
         confirmReceivedDaysLater: null,
         confirmable: true,
+        seniorPrompts: 0,
+        snoozed: false,
+        snoozedUntil: null,
       },
     ]);
     expect(

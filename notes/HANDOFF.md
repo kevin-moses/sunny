@@ -11,7 +11,7 @@ Sunny is a memory-care agent for seniors with MCI or early dementia who live alo
 | Folder | What it is |
 | --- | --- |
 | `sunny_backend/` | Convex backend (TypeScript): schema, access rules, scheduler, agent runtime, integrations, tests, dev scripts |
-| `sunny_app/` | React Native / Expo (SDK 57) iOS app: the senior's phone (Today view, Talk) and the iPad home display stub. Clerk sign-in, Convex subscriptions, LiveKit voice |
+| `sunny_app/` | React Native / Expo (SDK 57) iOS app: the senior's phone (Today view, Talk) and the iPad home display (standing in for the e-ink device: Done and Talk keys, voice on the panel, due cue). Clerk sign-in, Convex subscriptions, LiveKit voice |
 | `sunny_agent/` | LiveKit Python voice agent (Deepgram STT, Claude Haiku, Cartesia TTS, Tavily search) that reads and writes household state through Convex |
 | `notes/` | Specs and design notes |
 
@@ -73,7 +73,7 @@ Environment (set on the Convex deployment with `npx convex env set`, never in a 
 
 ## sunny_app
 
-Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone with its Done button in `src/day/useDoneAction.ts` and the offline press queue in `src/day/pendingConfirms.ts`, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `useSession.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`. Full explanation of pairing and setup: `sunny_app/README.md`.
+Entry: `index.ts` and `App.tsx`. Screens in `src/screens` (`PairingScreen`, `TodayScreen` for the phone with its Done button in `src/day/useDoneAction.ts` and the offline press queue in `src/day/pendingConfirms.ts`, `DisplayScreen` for the home display), the day clock in `src/day` (subscribes to `calendar.dayView` with a per-minute argument), pairing in `src/backend` (`pairing.ts`, `useSession.ts`; typed Convex calls through `convexApi.ts`), voice in `src/voice` (LiveKit room token from `voice.livekitToken`; RPCs the agent calls on the phone: `findContact`, `sendMessage`), push registration in `src/notifications`, the home display in `src/display` (panel parts and rules, keys, its voice card in `useDisplayVoice.ts` and `voiceModel.ts`, the due cue in `useDueCue.ts`, `cue.ts` and `cueAudio.ts` with the chime in `assets/sounds`, made by `scripts/makeChime.js`; every timing in `tuning.ts`, live values in `TuningProvider.tsx`, edited from the developer sheet's "Home display" section). Full explanation of pairing and setup: `sunny_app/README.md`.
 
 Run: `npm install`, then `npm run ios -- --device` for the first development build (Expo Go does not work; voice needs a physical iPhone), then `npm start`. Checks: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test` (jest).
 
@@ -106,7 +106,8 @@ Style is enforced by pre-commit: `uv tool run pre-commit run --all-files` from t
 | Day clock and Next up | `calendar.dayView`, `sunny_app/src/day` |
 | Calendar events, Google sync | `calendar.ts`, `googleCalendar.ts`, `calendarPush.ts` |
 | Done button, widget, voice confirm | `instances.confirmDueTask` (button via the app, voice via `agent.confirmDueTask`) |
-| Voice (Talk) | `voice.ts`, `sunny_agent`, `sunny_app/src/voice` |
+| Voice (Talk) | `voice.ts`, `sunny_agent`, `sunny_app/src/voice`; on the home display `sunny_app/src/display/useDisplayVoice.ts` |
+| Display due cue (chime and spoken prompt, repeated per reprompt) | `sunny_app/src/display/useDueCue.ts`, `cue.ts`, `cueAudio.ts`; reprompt count `seniorPrompts` in `lib/today.ts` |
 | Caregiver requests to the agent | `agentRequests.ts`, `agentRuntime.ts` |
 | Alerts to family | `delivery.ts` (APNs and SMS), `sms.ts` (reply to claim) |
 | Daily digest | `digest.ts` |

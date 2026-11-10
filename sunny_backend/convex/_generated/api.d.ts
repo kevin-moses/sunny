@@ -35,6 +35,7 @@ import type * as lib_apnsPayload from "../lib/apnsPayload.js";
 import type * as lib_audit from "../lib/audit.js";
 import type * as lib_base64 from "../lib/base64.js";
 import type * as lib_calendarSync from "../lib/calendarSync.js";
+import type * as lib_confirmRule from "../lib/confirmRule.js";
 import type * as lib_delivery from "../lib/delivery.js";
 import type * as lib_digestFacts from "../lib/digestFacts.js";
 import type * as lib_digestText from "../lib/digestText.js";
@@ -96,6 +97,7 @@ declare const fullApi: ApiFromModules<{
   "lib/audit": typeof lib_audit;
   "lib/base64": typeof lib_base64;
   "lib/calendarSync": typeof lib_calendarSync;
+  "lib/confirmRule": typeof lib_confirmRule;
   "lib/delivery": typeof lib_delivery;
   "lib/digestFacts": typeof lib_digestFacts;
   "lib/digestText": typeof lib_digestText;

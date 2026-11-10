@@ -3,7 +3,8 @@
 // Purpose: Pure rules that turn the household's day view (calendar.dayView) into what the home
 // display shows: the Now card (the task to act on, overdue or not, and its steps; or a calm
 // "nothing to do" state), the Next up item, the rows of the Today screen, and the date line
-// ("November 8, 2026"). Times use clockTime from day/format ("8:00").
+// ("November 8, 2026"), and the household-local time now (nowTime). Times use clockTime from
+// day/format ("8:00").
 //
 // The Now task is the first due or escalated timed task in the day view's order; the Done key
 // confirms it by its instance id, so it always confirms the task the screen shows. A task is
@@ -11,7 +12,7 @@
 // yesterday. Multi-step instructions have no backend fields yet:
 // until they do, a task's checklist items (two or more) stand in for its steps.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-09
 
 import type { SFSymbol } from 'expo-symbols';
 
@@ -73,7 +74,7 @@ export function fullDate(day: Pick<DayViewData, 'dateLabel' | 'localDate'>): str
  * @param day: (Pick<DayViewData, 'localNow'>) The day view.
  * @return: (string) The time part of localNow.
  */
-function nowTime(day: Pick<DayViewData, 'localNow'>): string {
+export function nowTime(day: Pick<DayViewData, 'localNow'>): string {
   return day.localNow.slice(11, 16);
 }
 
