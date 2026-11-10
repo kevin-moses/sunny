@@ -340,6 +340,7 @@ describe("getContext", () => {
         confirmedByName: null,
         resolutionNote: null,
         seniorPrompts: 0,
+        snoozed: false,
       },
     ]);
     expect(

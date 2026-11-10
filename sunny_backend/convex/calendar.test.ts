@@ -5,7 +5,7 @@
 // created-by provenance; past-time and repeat rules; DST stability of a weekly event;
 // update semantics (absent = unchanged, null = cleared, unknown keys rejected); soft
 // delete; audit rows; listEvents range limits; and dayView (header, part-of-day
-// boundaries, Next up with the 30 minute default, tasks and their sent senior prompts,
+// boundaries, Next up with the 30 minute default, tasks with their sent senior prompts and snooze,
 // upcoming). Includes one access test per public function: outsiders, viewers and the paired
 // device.
 //
@@ -952,6 +952,55 @@ describe("dayView", () => {
       ["08:00", 2],
       ["20:00", 0],
     ]);
+  });
+
+  test("marks an instance snoozed until its snooze ends", async () => {
+    const w = await makeWorld();
+    await w.t.run(async (ctx) => {
+      const taskId = await ctx.db.insert("tasks", {
+        householdId: w.householdId,
+        type: "medication",
+        title: "Morning pills",
+        displayLabel: "Morning pills",
+        spokenPrompt: "Time for your morning pills.",
+        checklistItems: [],
+        times: ["08:00", "09:00", "10:00"],
+        windowMinutes: 180,
+        createdByKind: "caregiver",
+        active: true,
+        scheduleChangedAt: 0,
+      });
+      const base = {
+        taskId,
+        householdId: w.householdId,
+        localDate: "2027-03-18",
+        createdAt: 0,
+        state: "due" as const,
+        firedSteps: [],
+        windowStart: at("2027-03-18T12:00:00Z"),
+        windowEnd: at("2027-03-18T15:00:00Z"),
+      };
+      await ctx.db.insert("taskInstances", {
+        ...base,
+        scheduledTime: "08:00",
+        snoozedUntil: at("2027-03-18T12:45:00Z"),
+      });
+      await ctx.db.insert("taskInstances", { ...base, scheduledTime: "09:00" });
+      await ctx.db.insert("taskInstances", {
+        ...base,
+        scheduledTime: "10:00",
+        snoozedUntil: at("2027-03-18T12:30:00Z"),
+      });
+    });
+    const during = await viewAt(w, "2027-03-18T12:30:00Z");
+    expect(during.tasks.map((t) => [t.scheduledTime, t.snoozed])).toEqual([
+      ["08:00", true],
+      ["09:00", false],
+      // A snooze ending at this instant no longer holds the prompts back, as in the scheduler.
+      ["10:00", false],
+    ]);
+    const after = await viewAt(w, "2027-03-18T12:45:00Z");
+    expect(after.tasks.map((t) => t.snoozed)).toEqual([false, false, false]);
   });
 
   test("the minute argument is ignored", async () => {

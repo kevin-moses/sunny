@@ -18,7 +18,9 @@
 // is the instance's own local date and carriedOver is true for yesterday's still-open
 // instances, and resolutionNote is the note the caregiver left. seniorPrompts counts the
 // senior prompts the escalation policy has sent for the instance (fired prompt_senior steps
-// that were notified), so the home display can repeat its due cue on each reprompt.
+// that were notified), so the home display can repeat its due cue on each reprompt; snoozed
+// is true while a snooze ("not yet") holds the senior prompts back at `now`, the scheduler's
+// own test, so the display stays quiet until the next reprompt.
 //
 // Last modified: 2026-11-09
 
@@ -61,6 +63,8 @@ export interface TodayEntry {
   resolutionNote: string | null;
   /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
   seniorPrompts: number;
+  /** True while the instance is snoozed (now is before its snoozedUntil). */
+  snoozed: boolean;
 }
 
 /**
@@ -134,6 +138,7 @@ export async function todayInstances(
       resolutionNote: instance.resolutionNote ?? null,
       seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
         .length,
+      snoozed: instance.snoozedUntil !== undefined && now < instance.snoozedUntil,
     });
   }
   return entries;
