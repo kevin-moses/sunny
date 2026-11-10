@@ -5,7 +5,8 @@
 // ("agent", "system") are only ever constructed by internal code, never from auth; the
 // household agent's actor carries the caregiver it acts for (onBehalfOf) and its request
 // (requestId). Every public query and mutation calls one of the require* helpers before
-// touching data.
+// touching data. requireCaregiverReader is requireReader without the paired device, for data
+// written about the senior that only caregivers read.
 //
 // Device identities never act as caregivers. Device Clerk users carry the custom JWT claim
 // `sunny_kind: "device"`: the /pair action sets Clerk public_metadata.sunny_kind = "device"
@@ -18,7 +19,7 @@
 // householdMembers row is inserted; it enforces one household per caregiver) and memberNames
 // (display names of a household in one query).
 //
-// Last modified: 2026-11-04
+// Last modified: 2026-11-09
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
@@ -265,6 +266,22 @@ export async function requireReader(
     return { kind: "senior_device", userId, householdId, device };
   }
   throw appError("forbidden", "Not allowed");
+}
+
+/**
+ * purpose: Require a caregiver of the household of any role (viewers included). Unlike
+ *          requireReader, a paired senior device is refused: for data written about the senior
+ *          that is never shown on the senior's own screens (profile.ts lists).
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (CaregiverActor) The caregiver actor.
+ * @raises unauthenticated when signed out; forbidden for a device identity or a non-member.
+ */
+export async function requireCaregiverReader(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<CaregiverActor> {
+  return await requireCaregiver(ctx, householdId, null);
 }
 
 /**

@@ -1,16 +1,20 @@
 // convex/profile.test.ts
-// Purpose: Tests for profile.ts with convex-test and a fake clock. Covers, for every public
-// function: access by role (primary and member write; viewers and the paired device only read,
-// and the device cannot read the sensitive-topic playbook; signed-out callers and caregivers of
-// another household are refused), household isolation (a row id from household A is not found
-// through household B, and B's caregiver cannot act in A), text cleaning and length caps, count
-// caps, duplicate handling (adds return the existing row, renames onto a taken key are refused),
-// one audit row per change and none for a no-op, the memory rule (caregiver facts are verified
-// at once; a senior-stated fact is verified only by an editor; the first verifier is kept; a
-// correction verifies and keeps the source; adding a fact the senior already stated verifies it)
-// and the message list (newest first, senior messages included, seen state, local time, limit).
-// Also checks that what is written is what agent.getContext gives the voice agent, including
-// that every verified fact fits its 50-fact window.
+// Purpose: Tests for profile.ts and lib/access.requireCaregiverReader with convex-test and a fake
+// clock. Covers, for every public function: access by role (primary and member write; viewers
+// only read; the paired device, identified by the real sunny_kind "device" claim, can neither
+// read nor write; signed-out callers and caregivers of another household are refused), household
+// isolation (a row id from household A is not found through household B), text cleaning (one
+// paragraph for every field but message bodies) and length caps on add and update, count caps,
+// duplicate handling (adds return the existing row with whether the stored text is the same and
+// change nothing; renames onto a taken key are refused), case-insensitive name order, one audit
+// row per change and none for a no-op, the memory rule (caregiver facts are verified at once; a
+// senior-stated fact is verified only by an editor; the first verifier is kept; a correction
+// verifies and keeps the source; adding a fact the senior already stated confirms it), the
+// bounded memory list (newest unverified facts and a count of older ones; a verified duplicate is
+// found behind many newer facts) and the message list (newest first, senior messages, mine
+// instead of member ids, seen state, local time, limit). Also checks that what is written is
+// what agent.getContext gives the voice agent, including that with 40 verified facts the
+// senior's newest facts still fill the rest of its 50-fact window.
 //
 // Last modified: 2026-11-09
 
@@ -18,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  DUPLICATE_SCAN,
   MAX_DETAILS,
   MAX_ENTRIES,
   MAX_FACT,
@@ -27,7 +32,9 @@ import {
   MAX_TOPIC,
   MAX_TOPICS,
   MAX_VERIFIED_FACTS,
+  UNVERIFIED_SHOWN,
 } from "./profile";
+import { requireCaregiverReader } from "./lib/access";
 import { createFamilyHousehold, createHousehold, makeBackend } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
@@ -91,7 +98,7 @@ async function setup(): Promise<World> {
     pat: t.withIdentity({ subject: "pat" }),
     max: t.withIdentity({ subject: "max" }),
     val: t.withIdentity({ subject: "val" }),
-    phone: t.withIdentity({ subject: "phone" }),
+    phone: t.withIdentity({ subject: "phone", sunny_kind: "device" }),
     outsider: t.withIdentity({ subject: "outsider" }),
   };
 }
@@ -170,28 +177,42 @@ async function countRows(
   );
 }
 
+describe("requireCaregiverReader", () => {
+  test("accepts every caregiver role and refuses devices, outsiders and signed-out callers", async () => {
+    const w = await setup();
+    const check = (caller: Caller | TestConvex) =>
+      caller.run(async (ctx) => (await requireCaregiverReader(ctx, w.householdId)).role);
+    expect(await check(w.pat)).toBe("primary");
+    expect(await check(w.max)).toBe("member");
+    expect(await check(w.val)).toBe("viewer");
+    await expect(check(w.phone)).rejects.toMatchObject({ data: { code: "forbidden" } });
+    await expect(check(w.outsider)).rejects.toMatchObject({ data: { code: "forbidden" } });
+    await expect(check(w.t)).rejects.toMatchObject({ data: { code: "unauthenticated" } });
+  });
+
+  test("refuses the device claim even on a user who is also a member", async () => {
+    const w = await setup();
+    const claimed = w.t.withIdentity({ subject: "pat", sunny_kind: "device" });
+    await expect(
+      claimed.run(async (ctx) => await requireCaregiverReader(ctx, w.householdId)),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+  });
+});
+
 describe("access", () => {
   test.each([
     ["listEntries", api.profile.listEntries],
+    ["listTopics", api.profile.listTopics],
     ["listMemory", api.profile.listMemory],
     ["listMessages", api.profile.listMessages],
-  ] as const)("%s is readable by every role and the paired device", async (_name, fn) => {
-    const w = await setup();
-    for (const caller of [w.pat, w.max, w.val, w.phone]) {
-      await expect(caller.query(fn, { householdId: w.householdId })).resolves.toEqual([]);
-    }
-  });
-
-  test("listTopics is readable by every caregiver role but not the device", async () => {
+  ] as const)("%s is readable by every caregiver role but not the device", async (_name, fn) => {
     const w = await setup();
     for (const caller of [w.pat, w.max, w.val]) {
-      await expect(
-        caller.query(api.profile.listTopics, { householdId: w.householdId }),
-      ).resolves.toEqual([]);
+      await expect(caller.query(fn, { householdId: w.householdId })).resolves.toBeDefined();
     }
-    await expect(
-      w.phone.query(api.profile.listTopics, { householdId: w.householdId }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    await expect(w.phone.query(fn, { householdId: w.householdId })).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
   });
 
   test.each([
@@ -393,12 +414,12 @@ describe("life profile entries", () => {
       w.pat.mutation(api.profile.addEntry, { householdId: w.householdId, category, name, details });
     await add("place", "Corner  bakery");
     const sarah = await add("person", "  Sarah ", "  Daughter,\nlives in Boston  ");
-    await add("person", "Ben", "   ");
-    expect(sarah.created).toBe(true);
+    await add("person", "ben", "   ");
+    expect(sarah).toEqual({ id: sarah.id, created: true, same: true, confirmed: false });
     const list = await w.val.query(api.profile.listEntries, { householdId: w.householdId });
     expect(list).toEqual([
-      { id: expect.any(String), category: "person", name: "Ben", details: null },
-      { id: sarah.id, category: "person", name: "Sarah", details: "Daughter,\nlives in Boston" },
+      { id: expect.any(String), category: "person", name: "ben", details: null },
+      { id: sarah.id, category: "person", name: "Sarah", details: "Daughter, lives in Boston" },
       { id: expect.any(String), category: "place", name: "Corner bakery", details: null },
     ]);
     const rows = await auditRows(w, "lifeProfileEntry");
@@ -411,23 +432,50 @@ describe("life profile entries", () => {
       detail: { category: "person", name: "Sarah" },
     });
     const context = await agentContext(w);
-    expect(context.lifeProfile).toEqual(
-      list.map(({ category, name, details }) => ({ category, name, details })),
-    );
+    expect(context.lifeProfile.map((e) => e.name).sort()).toEqual(list.map((e) => e.name).sort());
+    expect(context.lifeProfile).toContainEqual({
+      category: "person",
+      name: "Sarah",
+      details: "Daughter, lives in Boston",
+    });
   });
 
-  test("adding the same category and name again returns the existing entry", async () => {
+  test("list sorts names case-insensitively within a category", async () => {
     const w = await setup();
-    const args = { householdId: w.householdId, category: "person" as const, name: "Sarah" };
+    for (const name of ["Zoe", "adam", "Bea"]) {
+      await w.pat.mutation(api.profile.addEntry, {
+        householdId: w.householdId,
+        category: "person",
+        name,
+      });
+    }
+    const list = await w.pat.query(api.profile.listEntries, { householdId: w.householdId });
+    expect(list.map((e) => e.name)).toEqual(["adam", "Bea", "Zoe"]);
+  });
+
+  test("adding the same entry again returns it, saying whether the stored text is the same", async () => {
+    const w = await setup();
+    const args = {
+      householdId: w.householdId,
+      category: "person" as const,
+      name: "Sarah",
+      details: "Daughter",
+    };
     const first = await w.pat.mutation(api.profile.addEntry, args);
-    const again = await w.max.mutation(api.profile.addEntry, {
+    const same = await w.max.mutation(api.profile.addEntry, { ...args, details: " Daughter " });
+    expect(same).toEqual({ id: first.id, created: false, same: true, confirmed: false });
+    const differs = await w.max.mutation(api.profile.addEntry, {
       ...args,
       name: " sarah ",
       details: "Different details",
     });
-    expect(again).toEqual({ id: first.id, created: false });
-    const same = await w.pat.mutation(api.profile.addEntry, { ...args, category: "doctor" });
-    expect(same.created).toBe(true);
+    expect(differs).toEqual({ id: first.id, created: false, same: false, confirmed: false });
+    const noDetails = await w.max.mutation(api.profile.addEntry, { ...args, details: undefined });
+    expect(noDetails.same).toBe(false);
+    const row = await w.t.run(async (ctx) => await ctx.db.get(first.id));
+    expect(row).toMatchObject({ name: "Sarah", details: "Daughter" });
+    const doctor = await w.pat.mutation(api.profile.addEntry, { ...args, category: "doctor" });
+    expect(doctor.created).toBe(true);
     expect(await countRows(w, "lifeProfileEntries")).toBe(2);
     expect(await auditRows(w, "lifeProfileEntry")).toHaveLength(2);
   });
@@ -506,6 +554,29 @@ describe("life profile entries", () => {
     expect(rows[1]).toMatchObject({ actorUserId: "max", detail: { name: "Dr Sarah Lee" } });
   });
 
+  test.each([
+    ["a name that is too long", { name: "n".repeat(MAX_NAME + 1) }],
+    ["details that are too long", { details: "d".repeat(MAX_DETAILS + 1) }],
+  ])("update rejects %s and accepts the cap", async (_label, fields) => {
+    const w = await setup();
+    const { id } = await w.pat.mutation(api.profile.addEntry, {
+      householdId: w.householdId,
+      category: "person",
+      name: "Sarah",
+    });
+    const update = (changes: Record<string, string>) =>
+      w.pat.mutation(api.profile.updateEntry, {
+        householdId: w.householdId,
+        entryId: id,
+        ...changes,
+      });
+    await expect(update(fields)).rejects.toMatchObject({ data: { code: "invalid" } });
+    const atCap = Object.fromEntries(
+      Object.entries(fields).map(([key, text]) => [key, text.slice(1)]),
+    );
+    await expect(update(atCap)).resolves.toBeNull();
+  });
+
   test("update refuses a name another entry of the category already has", async () => {
     const w = await setup();
     const add = (name: string) =>
@@ -554,7 +625,7 @@ describe("life profile entries", () => {
 });
 
 describe("sensitive topics", () => {
-  test("add keeps the guidance's line breaks, lists in creation order and reaches the agent", async () => {
+  test("add makes the guidance one paragraph, lists in creation order and reaches the agent", async () => {
     const w = await setup();
     const add = (topic: string, guidance: string) =>
       w.pat.mutation(api.profile.addTopic, { householdId: w.householdId, topic, guidance });
@@ -562,7 +633,7 @@ describe("sensitive topics", () => {
     await add("money", "Say the bills are paid.");
     const list = await w.val.query(api.profile.listTopics, { householdId: w.householdId });
     expect(list.map(({ topic, guidance }) => ({ topic, guidance }))).toEqual([
-      { topic: "her husband Robert", guidance: "He died in 2019.\nSay he loved her very much." },
+      { topic: "her husband Robert", guidance: "He died in 2019. Say he loved her very much." },
       { topic: "money", guidance: "Say the bills are paid." },
     ]);
     expect((await agentContext(w)).sensitiveTopics).toEqual(
@@ -574,20 +645,49 @@ describe("sensitive topics", () => {
     ]);
   });
 
-  test("adding the same topic again returns the existing one", async () => {
+  test("adding the same topic again returns it, saying whether the stored text is the same", async () => {
     const w = await setup();
-    const first = await w.pat.mutation(api.profile.addTopic, {
-      householdId: w.householdId,
-      topic: "Money",
-      guidance: "A",
+    const add = (topic: string, guidance: string) =>
+      w.pat.mutation(api.profile.addTopic, { householdId: w.householdId, topic, guidance });
+    const first = await add("Money", "A");
+    expect(await add("Money", " A ")).toEqual({
+      id: first.id,
+      created: false,
+      same: true,
+      confirmed: false,
     });
-    const again = await w.pat.mutation(api.profile.addTopic, {
-      householdId: w.householdId,
-      topic: "money ",
-      guidance: "B",
+    expect(await add("money ", "B")).toEqual({
+      id: first.id,
+      created: false,
+      same: false,
+      confirmed: false,
     });
-    expect(again).toEqual({ id: first.id, created: false });
+    const row = await w.t.run(async (ctx) => await ctx.db.get(first.id));
+    expect(row).toMatchObject({ topic: "Money", guidance: "A" });
     expect(await countRows(w, "sensitiveTopics")).toBe(1);
+  });
+
+  test.each([
+    ["a topic that is too long", { topic: "t".repeat(MAX_TOPIC + 1) }],
+    ["guidance that is too long", { guidance: "g".repeat(MAX_GUIDANCE + 1) }],
+  ])("update rejects %s and accepts the cap", async (_label, fields) => {
+    const w = await setup();
+    const { id } = await w.pat.mutation(api.profile.addTopic, {
+      householdId: w.householdId,
+      topic: "money",
+      guidance: "G",
+    });
+    const update = (changes: Record<string, string>) =>
+      w.pat.mutation(api.profile.updateTopic, {
+        householdId: w.householdId,
+        topicId: id,
+        ...changes,
+      });
+    await expect(update(fields)).rejects.toMatchObject({ data: { code: "invalid" } });
+    const atCap = Object.fromEntries(
+      Object.entries(fields).map(([key, text]) => [key, text.slice(1)]),
+    );
+    await expect(update(atCap)).resolves.toBeNull();
   });
 
   test.each([
@@ -664,22 +764,25 @@ describe("sensitive topics", () => {
 describe("agent memory", () => {
   test("a caregiver fact is verified at once and listed with names and local dates", async () => {
     const w = await setup();
-    const { id, created } = await w.max.mutation(api.profile.addFact, {
+    const result = await w.max.mutation(api.profile.addFact, {
       householdId: w.householdId,
       fact: "  Her cat is  called Biscuit ",
     });
-    expect(created).toBe(true);
-    expect(await w.phone.query(api.profile.listMemory, { householdId: w.householdId })).toEqual([
-      {
-        id,
-        fact: "Her cat is called Biscuit",
-        source: "caregiver",
-        verified: true,
-        verifiedByName: "Max",
-        notedOn: "2027-03-10",
-        verifiedOn: "2027-03-10",
-      },
-    ]);
+    expect(result).toEqual({ id: result.id, created: true, same: true, confirmed: false });
+    expect(await w.val.query(api.profile.listMemory, { householdId: w.householdId })).toEqual({
+      facts: [
+        {
+          id: result.id,
+          fact: "Her cat is called Biscuit",
+          source: "caregiver",
+          verified: true,
+          verifiedByName: "Max",
+          notedOn: "2027-03-10",
+          verifiedOn: "2027-03-10",
+        },
+      ],
+      olderUnverified: 0,
+    });
     expect(await auditRows(w, "agentMemory")).toMatchObject([
       { action: "insert", actorUserId: "max", detail: { fact: "Her cat is called Biscuit" } },
     ]);
@@ -692,15 +795,35 @@ describe("agent memory", () => {
     await w.pat.mutation(api.profile.addFact, { householdId: w.householdId, fact: "Verified" });
     vi.setSystemTime(NOW + 2000);
     await insertFact(w, "New senior fact");
-    const list = await w.pat.query(api.profile.listMemory, { householdId: w.householdId });
-    expect(list.map((f) => [f.fact, f.verified, f.source])).toEqual([
+    const { facts } = await w.pat.query(api.profile.listMemory, { householdId: w.householdId });
+    expect(facts.map((f) => [f.fact, f.verified, f.source])).toEqual([
       ["Verified", true, "caregiver"],
       ["New senior fact", false, "senior"],
       ["Old senior fact", false, "senior"],
     ]);
     expect((await agentContext(w)).memory.map((m) => [m.fact, m.verified])).toEqual(
-      list.map((f) => [f.fact, f.verified]),
+      facts.map((f) => [f.fact, f.verified]),
     );
+  });
+
+  test("list shows the newest unverified facts and counts the older ones", async () => {
+    const w = await setup();
+    const extra = 7;
+    await w.t.run(async (ctx) => {
+      for (let i = 0; i < UNVERIFIED_SHOWN + extra; i++) {
+        await ctx.db.insert("agentMemory", {
+          householdId: w.householdId,
+          fact: `Said ${i}`,
+          source: "senior",
+        });
+      }
+    });
+    const { facts, olderUnverified } = await w.pat.query(api.profile.listMemory, {
+      householdId: w.householdId,
+    });
+    expect(facts).toHaveLength(UNVERIFIED_SHOWN);
+    expect(facts[0]!.fact).toBe(`Said ${UNVERIFIED_SHOWN + extra - 1}`);
+    expect(olderUnverified).toBe(extra);
   });
 
   test("verifying a senior-stated fact records the caregiver and keeps the source", async () => {
@@ -763,16 +886,23 @@ describe("agent memory", () => {
         w.pat.mutation(api.profile.correctFact, { householdId: w.householdId, factId, fact }),
       ).rejects.toMatchObject({ data: { code: "invalid" } });
     }
+    await expect(
+      w.pat.mutation(api.profile.correctFact, {
+        householdId: w.householdId,
+        factId,
+        fact: "f".repeat(MAX_FACT),
+      }),
+    ).resolves.toBeNull();
   });
 
-  test("adding a fact the senior already stated verifies it instead of duplicating it", async () => {
+  test("adding a fact the senior already stated confirms it instead of duplicating it", async () => {
     const w = await setup();
     const factId = await insertFact(w, "Sarah has two children");
     const result = await w.pat.mutation(api.profile.addFact, {
       householdId: w.householdId,
       fact: "sarah has two children",
     });
-    expect(result).toEqual({ id: factId, created: false });
+    expect(result).toEqual({ id: factId, created: false, same: true, confirmed: true });
     const row = await w.t.run(async (ctx) => await ctx.db.get(factId));
     expect(row).toMatchObject({ fact: "Sarah has two children", verifiedBy: "pat" });
     expect(await countRows(w, "agentMemory")).toBe(1);
@@ -788,10 +918,29 @@ describe("agent memory", () => {
       householdId: w.householdId,
       fact: "Likes tea",
     });
-    expect(again).toEqual({ id: first.id, created: false });
+    expect(again).toEqual({ id: first.id, created: false, same: true, confirmed: false });
     const row = await w.t.run(async (ctx) => await ctx.db.get(first.id));
     expect(row?.verifiedBy).toBe("pat");
     expect(await auditRows(w, "agentMemory")).toHaveLength(1);
+  });
+
+  test("a verified fact is found as a duplicate behind many newer unverified ones", async () => {
+    const w = await setup();
+    await w.pat.mutation(api.profile.addFact, { householdId: w.householdId, fact: "Likes tea" });
+    await w.t.run(async (ctx) => {
+      for (let i = 0; i < DUPLICATE_SCAN + 5; i++) {
+        await ctx.db.insert("agentMemory", {
+          householdId: w.householdId,
+          fact: `Said ${i}`,
+          source: "senior",
+        });
+      }
+    });
+    const again = await w.pat.mutation(api.profile.addFact, {
+      householdId: w.householdId,
+      fact: "likes tea",
+    });
+    expect(again.created).toBe(false);
   });
 
   test.each([
@@ -804,14 +953,19 @@ describe("agent memory", () => {
     ).rejects.toMatchObject({ data: { code: "invalid" } });
   });
 
-  test("verified facts are capped at the agent's window, and all of them reach the agent", async () => {
+  test("verified facts are capped so the senior's newest facts still reach the agent", async () => {
     const w = await setup();
     for (let i = 0; i < MAX_VERIFIED_FACTS; i++) {
       vi.setSystemTime(NOW + i);
       await w.pat.mutation(api.profile.addFact, { householdId: w.householdId, fact: `Fact ${i}` });
     }
-    vi.setSystemTime(NOW + MAX_VERIFIED_FACTS);
-    const seniorFact = await insertFact(w, "Senior fact");
+    const said: string[] = [];
+    for (let i = 0; i < 15; i++) {
+      vi.setSystemTime(NOW + 1000 + i);
+      said.push(`Senior fact ${i}`);
+      await insertFact(w, `Senior fact ${i}`);
+    }
+    const seniorFact = await insertFact(w, "Unconfirmed");
     await expect(
       w.pat.mutation(api.profile.addFact, { householdId: w.householdId, fact: "One more" }),
     ).rejects.toMatchObject({ data: { code: "limit" } });
@@ -825,13 +979,19 @@ describe("agent memory", () => {
         fact: "Corrected",
       }),
     ).rejects.toMatchObject({ data: { code: "limit" } });
-    const memory = (await agentContext(w)).memory;
-    expect(memory.filter((m) => m.verified)).toHaveLength(MAX_VERIFIED_FACTS);
 
-    const list = await w.pat.query(api.profile.listMemory, { householdId: w.householdId });
+    const memory = (await agentContext(w)).memory;
+    expect(memory).toHaveLength(50);
+    expect(memory.filter((m) => m.verified)).toHaveLength(MAX_VERIFIED_FACTS);
+    const unverified = memory.filter((m) => !m.verified).map((m) => m.fact);
+    expect(unverified).toHaveLength(50 - MAX_VERIFIED_FACTS);
+    expect(unverified).toContain("Unconfirmed");
+    expect(unverified).toContain(said[said.length - 1]);
+
+    const { facts } = await w.pat.query(api.profile.listMemory, { householdId: w.householdId });
     await w.pat.mutation(api.profile.correctFact, {
       householdId: w.householdId,
-      factId: list[0]!.id,
+      factId: facts[0]!.id,
       fact: "A verified fact can still be corrected at the cap",
     });
   });
@@ -882,7 +1042,7 @@ describe("family messages", () => {
     ).rejects.toMatchObject({ data: { code: "invalid" } });
   });
 
-  test("list shows both directions newest first, with names, seen state and local time", async () => {
+  test("list shows both directions newest first, with names, mine, seen state and local time", async () => {
     const w = await setup();
     await w.pat.mutation(api.profile.sendMessage, { householdId: w.householdId, body: "Hello" });
     vi.setSystemTime(NOW + 60_000);
@@ -900,21 +1060,27 @@ describe("family messages", () => {
         seenAt: NOW + 30_000,
       });
     });
-    const list = await w.val.query(api.profile.listMessages, { householdId: w.householdId });
-    expect(list.map((m) => [m.senderName, m.senderKind, m.body, m.seenAt])).toEqual([
-      ["Family", "caregiver", "Old note", NOW + 30_000],
-      ["Mom", "senior", "I am home", null],
-      ["Pat", "caregiver", "Hello", null],
+    const asPat = await w.pat.query(api.profile.listMessages, { householdId: w.householdId });
+    expect(asPat.map((m) => [m.senderName, m.senderKind, m.body, m.seenAt, m.mine])).toEqual([
+      ["Family", "caregiver", "Old note", NOW + 30_000, false],
+      ["Mom", "senior", "I am home", null, false],
+      ["Pat", "caregiver", "Hello", null, true],
     ]);
-    expect(list[2]).toMatchObject({
-      senderUserId: "pat",
+    expect(asPat[2]).toEqual({
+      id: expect.any(String),
+      senderKind: "caregiver",
+      mine: true,
+      senderName: "Pat",
+      body: "Hello",
       hasPhoto: false,
       hasAudio: false,
       sentAt: expect.any(Number),
       sentDate: "2027-03-10",
       sentTime: "10:00",
+      seenAt: null,
     });
-    expect(list[1]!.senderUserId).toBeNull();
+    const asVal = await w.val.query(api.profile.listMessages, { householdId: w.householdId });
+    expect(asVal.map((m) => m.mine)).toEqual([false, false, false]);
   });
 
   test("list honors the limit and rejects one out of range", async () => {

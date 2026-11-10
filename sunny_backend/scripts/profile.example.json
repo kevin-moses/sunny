@@ -1,11 +1,12 @@
 {
   "_about": [
     "Example input for: npx tsx scripts/caregiver.ts profile-load scripts/profile.example.json",
-    "Everyone and everything below is made up. Copy this file outside the repo (or to a git-ignored name), replace the entries with the real ones, and load that copy.",
-    "lifeProfile: category is one of person, place, doctor, habit, interest, preference, other. name is at most 120 characters; details (optional) at most 600. The voice agent reads each entry as '<category> - <name>: <details>'.",
+    "Everyone and everything below is made up. For real data, copy this file to scripts/profile.local.json (every scripts/*.local.json is git-ignored, so it is never committed), replace the entries with the real ones, and run: npx tsx scripts/caregiver.ts profile-load scripts/profile.local.json",
+    "lifeProfile: category is one of person, place, doctor, habit, interest, preference, other. name is at most 120 characters; details (optional) at most 600. Only these three keys are allowed. The voice agent reads each entry as '<category> - <name>: <details>'.",
     "sensitiveTopics: topic is at most 200 characters, guidance at most 1500. The agent reads each one as 'If asked about <topic>: <guidance>', so write the topic as what she might ask about.",
-    "facts: things Sunny should know, at most 300 characters each and at most 50 in all. They are saved as caregiver-verified facts.",
-    "Loading is safe to repeat: an entry with the same category and name, a topic with the same wording or the same fact is skipped. Keys starting with an underscore, like this one, are ignored."
+    "facts: things Sunny should know, at most 300 characters each and at most 40 confirmed facts in all. They are saved as caregiver-verified facts.",
+    "Every text is stored as one paragraph: line breaks become spaces.",
+    "Loading is safe to repeat: an item already stored is not added again. An entry or topic stored with different details or guidance is reported as 'differs' and left alone; add --update to replace it with this file's text. Each item starts its own convex process, so a full load takes a minute or two. Keys starting with an underscore, like this one, are ignored."
   ],
   "lifeProfile": [
     {

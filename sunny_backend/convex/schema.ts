@@ -25,7 +25,7 @@
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09 (agentMemory by_household_verified index)
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -435,7 +435,11 @@ export default defineSchema({
     verifiedBy: v.optional(v.string()),
     verifiedAt: v.optional(v.number()),
     conversationId: v.optional(v.id("conversations")),
-  }).index("by_household", ["householdId"]),
+  })
+    .index("by_household", ["householdId"])
+    // Verified facts (verifiedAt set) and the newest unverified ones (verifiedAt absent), read
+    // without scanning every fact (profile.ts).
+    .index("by_household_verified", ["householdId", "verifiedAt"]),
 
   conversations: defineTable({
     householdId: v.id("households"),
