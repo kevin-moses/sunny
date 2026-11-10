@@ -5,8 +5,15 @@
 // admin identity, so no sign-in is needed). The household id and the last request id are
 // kept in scripts/.dev-state.json (git-ignored). Not part of the deployed backend.
 //
-// Dev only: `--identity` impersonates any user, so the script refuses to run unless
-// CONVEX_DEPLOYMENT in sunny_backend/.env.local starts with "dev:" (only that one line is read).
+// Dev only: `--identity` impersonates any user, so the script refuses to run unless the
+// deployment `npx convex run` would use is a dev deployment. The Convex CLI lets a shell-exported
+// CONVEX_DEPLOY_KEY, CONVEX_DEPLOYMENT_TOKEN, CONVEX_DEPLOYMENT or CONVEX_SELF_HOSTED_URL win
+// over sunny_backend/.env.local (and .env.local over .env), and a deploy key over
+// CONVEX_DEPLOYMENT, so the guard (scripts/devGuard.ts) applies the same precedence to the
+// environment, .env.local and .env, reading only those variables.
+//
+// Errors: a failed function call prints the server's message (the CLI's stderr is captured and
+// the ConvexError message taken from it; scripts/profileLoader.ts cliError).
 //
 //   setup              Create a dev household (once) with the dev caregiver as primary, and
 //                      print join codes for the senior phone and the home display. A caregiver
@@ -29,6 +36,20 @@
 //                      the text to go out (households:myPhoneStatus) and prints either
 //                      "Texted a code" or the send failure reason (exit code 1 unless the text went out).
 //   confirm-phone <code>  Confirm that code (households:confirmMyPhone) and print the result.
+//   profile-load <file.json> [--update]
+//                      Load life profile entries, sensitive topics and caregiver facts from a
+//                      JSON file (example: scripts/profile.example.json) and print what happened
+//                      to each item; --update replaces items stored with other text. The file
+//                      format and the outcomes (added, unchanged, confirmed, differs, updated,
+//                      failed) are described in scripts/profileLoader.ts. Keep real data in
+//                      scripts/profile.local.json (any scripts/*.local.json is git-ignored).
+//                      Exit code 1 when any item failed or differs. Slow: it starts one
+//                      `npx convex run` process per item (and one more per update), roughly a
+//                      second or two each.
+//   profile            Print what is stored: life profile, sensitive topics, what Sunny
+//                      remembers (verified or not) and the recent family messages.
+//   message "<text>"   Send the senior a text message from the dev caregiver
+//                      (profile:sendMessage).
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
 //   npx tsx scripts/caregiver.ts setup
@@ -39,13 +60,21 @@
 //   npx tsx scripts/caregiver.ts google
 //   npx tsx scripts/caregiver.ts phone 555-123-4567
 //   npx tsx scripts/caregiver.ts confirm-phone 123456
+//   npx tsx scripts/caregiver.ts profile-load scripts/profile.local.json
+//   npx tsx scripts/caregiver.ts profile-load scripts/profile.local.json --update
+//   npx tsx scripts/caregiver.ts profile
+//   npx tsx scripts/caregiver.ts message "Coming by at noon. Love, J"
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { EntryView, MemoryView, MessageView, TopicView } from "../convex/profile";
+import { deploymentProblem, readEnvFile, type EnvSource } from "./devGuard";
+import { cliError, loadProfile, parseProfileFile } from "./profileLoader";
+import type { LoadReport } from "./profileLoader";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = join(SCRIPT_DIR, "..");
@@ -61,18 +90,29 @@ const DEV_IDENTITY = {
 };
 
 /**
- * purpose: Refuse to run against anything but a dev deployment. Reads only the
- *          CONVEX_DEPLOYMENT line of sunny_backend/.env.local and never prints other contents.
- * @raises Error when the file or line is missing or the deployment does not start with "dev:".
+ * purpose: The variables of a dotenv file in sunny_backend, or none when it does not exist.
+ * @param name: (string) File name, ".env.local" or ".env".
+ * @return: (EnvSource) Its variables.
+ */
+function envFile(name: string): EnvSource {
+  const path = join(BACKEND_DIR, name);
+  return existsSync(path) ? readEnvFile(readFileSync(path, "utf8")) : {};
+}
+
+/**
+ * purpose: Refuse to run unless `npx convex run` would act on a dev deployment, using the CLI's
+ *          precedence (shell environment, then .env.local, then .env; a deploy key first). Never
+ *          prints variable values.
+ * @return: (void)
+ * @raises Error naming the problem when the target is not a dev deployment.
  */
 function requireDevDeployment(): void {
-  const envFile = join(BACKEND_DIR, ".env.local");
-  const text = existsSync(envFile) ? readFileSync(envFile, "utf8") : "";
-  const match = /^CONVEX_DEPLOYMENT=["']?([^\s"'#]*)/m.exec(text);
-  if (!match || !match[1]!.startsWith("dev:")) {
+  const problem = deploymentProblem([process.env, envFile(".env.local"), envFile(".env")]);
+  if (problem !== null) {
     throw new Error(
-      "This script impersonates a user, so it only runs against a dev deployment: set " +
-        "CONVEX_DEPLOYMENT=dev:... in sunny_backend/.env.local (run `npx convex dev` once).",
+      `This script impersonates a user, so it only runs against a dev deployment: ${problem}. ` +
+        "Unset deploy keys in the shell and set CONVEX_DEPLOYMENT=dev:... in " +
+        "sunny_backend/.env.local (run `npx convex dev` once).",
     );
   }
 }
@@ -98,17 +138,25 @@ const FINISHED_MESSAGES: Record<string, (view: RequestView) => string> = {
 };
 
 /**
- * purpose: Call a backend function as the dev caregiver.
+ * purpose: Call a backend function as the dev caregiver. The CLI's stderr is captured so a
+ *          failure carries the server's message instead of "Command failed: npx convex run ...".
  * @param fn: (string) Function path such as "agentRequests:request".
  * @param args: (Record<string, unknown>) Function arguments.
  * @return: (unknown) The parsed JSON result.
+ * @raises Error with the server's message when the call fails.
  */
 function convexRun(fn: string, args: Record<string, unknown>): unknown {
-  const out = execFileSync(
-    "npx",
-    ["convex", "run", fn, JSON.stringify(args), "--identity", JSON.stringify(DEV_IDENTITY)],
-    { cwd: BACKEND_DIR, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
-  ).trim();
+  let out: string;
+  try {
+    out = execFileSync(
+      "npx",
+      ["convex", "run", fn, JSON.stringify(args), "--identity", JSON.stringify(DEV_IDENTITY)],
+      { cwd: BACKEND_DIR, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+  } catch (e) {
+    const stderr = String((e as { stderr?: unknown }).stderr ?? "");
+    throw cliError(stderr, `npx convex run ${fn} failed`);
+  }
   try {
     return JSON.parse(out);
   } catch {
@@ -333,6 +381,82 @@ function confirmPhone(code: string): void {
   console.log((CONFIRM_MESSAGES[result.status] ?? (() => JSON.stringify(result)))(result));
 }
 
+/** How each loader outcome is printed: a column label and an optional note. */
+const OUTCOME_LINES: Array<[keyof Omit<LoadReport, "failed">, string, string]> = [
+  ["added", "Added", ""],
+  ["unchanged", "Unchanged", " (already stored)"],
+  ["confirmed", "Confirmed", " (Sunny had heard this; now confirmed)"],
+  ["updated", "Updated", " (replaced by the file's text)"],
+  ["differs", "Differs", " (stored with other text, NOT updated; rerun with --update)"],
+];
+
+/**
+ * purpose: Load a profile file into the dev household and print what happened to each item.
+ *          Slow: one `npx convex run` process per item.
+ * @param path: (string) Path of the JSON file.
+ * @param update: (boolean) Replace items stored with other text by the file's text.
+ * @return: (Promise<void>) Resolves when every item was tried; sets exit code 1 when any item
+ *          failed or differs.
+ */
+async function profileLoad(path: string, update: boolean): Promise<void> {
+  const file = parseProfileFile(JSON.parse(readFileSync(path, "utf8")));
+  const report = await loadProfile(file, loadState().householdId, convexRun, { update });
+  for (const [key, label, note] of OUTCOME_LINES) {
+    for (const item of report[key]) console.log(`${label.padEnd(9)} ${item}${note}`);
+  }
+  for (const { item, error } of report.failed)
+    console.log(`${"Failed".padEnd(9)} ${item}: ${error}`);
+  const counts = OUTCOME_LINES.map(([key]) => `${report[key].length} ${key}`);
+  console.log(`\n${[...counts, `${report.failed.length} failed`].join(", ")}.`);
+  if (report.failed.length > 0 || report.differs.length > 0) process.exitCode = 1;
+}
+
+/**
+ * purpose: Print everything the profile functions store for the dev household.
+ * @return: (void)
+ */
+function printProfile(): void {
+  const householdId = loadState().householdId;
+  const entries = convexRun("profile:listEntries", { householdId }) as EntryView[];
+  const topics = convexRun("profile:listTopics", { householdId }) as TopicView[];
+  const memory = convexRun("profile:listMemory", { householdId }) as MemoryView;
+  const messages = convexRun("profile:listMessages", { householdId }) as MessageView[];
+
+  console.log(`Life profile (${entries.length}):`);
+  for (const e of entries) {
+    console.log(`  ${e.category} - ${e.name}${e.details === null ? "" : `: ${e.details}`}`);
+  }
+  console.log(`\nSensitive topics (${topics.length}):`);
+  for (const t of topics) console.log(`  If asked about ${t.topic}: ${t.guidance}`);
+  console.log(`\nWhat Sunny remembers (${memory.facts.length}):`);
+  for (const f of memory.facts) {
+    const state = f.verified
+      ? `verified${f.verifiedByName === null ? "" : ` by ${f.verifiedByName}`}`
+      : "NOT VERIFIED";
+    console.log(`  ${f.fact} (${f.source}, ${f.notedOn}, ${state})`);
+  }
+  if (memory.olderUnverified > 0) {
+    console.log(`  ...and ${memory.olderUnverified} older unverified facts not listed`);
+  }
+  console.log(`\nRecent messages (${messages.length}, newest first):`);
+  for (const m of messages) {
+    const seen = m.senderKind === "caregiver" ? (m.seenAt === null ? ", not seen" : ", seen") : "";
+    console.log(
+      `  ${m.sentDate} ${m.sentTime} ${m.senderName}${seen}: ${m.body ?? "(photo or audio)"}`,
+    );
+  }
+}
+
+/**
+ * purpose: Send the senior a text message as the dev caregiver.
+ * @param body: (string) The message.
+ * @return: (void)
+ */
+function message(body: string): void {
+  convexRun("profile:sendMessage", { householdId: loadState().householdId, body });
+  console.log("Sent.");
+}
+
 /**
  * purpose: Dispatch the command line.
  * @param argv: (string[]) Arguments after the script name.
@@ -371,9 +495,22 @@ async function main(argv: string[]): Promise<void> {
       if (!rest[0]) throw new Error("Usage: confirm-phone <code>");
       confirmPhone(rest[0]);
       break;
+    case "profile-load": {
+      const path = rest.find((a) => a !== "--update");
+      if (!path) throw new Error("Usage: profile-load <file.json> [--update]");
+      await profileLoad(path, rest.includes("--update"));
+      break;
+    }
+    case "profile":
+      printProfile();
+      break;
+    case "message":
+      if (!rest.join(" ").trim()) throw new Error('Usage: message "<text>"');
+      message(rest.join(" "));
+      break;
     default:
       console.log(
-        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | phone <number> | confirm-phone <code>',
+        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | phone <number> | confirm-phone <code> | profile-load <file.json> [--update] (slow: one convex process per item; keep real data in scripts/profile.local.json) | profile | message "<text>"',
       );
   }
 }

@@ -438,7 +438,11 @@ export default defineSchema({
     verifiedBy: v.optional(v.string()),
     verifiedAt: v.optional(v.number()),
     conversationId: v.optional(v.id("conversations")),
-  }).index("by_household", ["householdId"]),
+  })
+    .index("by_household", ["householdId"])
+    // Verified facts (verifiedAt set) and the newest unverified ones (verifiedAt absent), read
+    // without scanning every fact (profile.ts).
+    .index("by_household_verified", ["householdId", "verifiedAt"]),
 
   conversations: defineTable({
     householdId: v.id("households"),
