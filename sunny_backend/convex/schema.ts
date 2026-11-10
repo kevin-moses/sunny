@@ -258,6 +258,12 @@ export default defineSchema({
     reportedVia: confirmVia,
     reportedBy: v.optional(v.string()),
     note: v.optional(v.string()),
+    // When the dose was written down (rows before this field: their _creationTime); the voice
+    // conversation a self-reported dose came from (only she can take it back, in that
+    // conversation); and when it was taken back: an undone row is kept but never counted.
+    loggedAt: v.optional(v.number()),
+    conversationId: v.optional(v.id("conversations")),
+    undoneAt: v.optional(v.number()),
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
 
   // The only place notifications are queued (insert with lib/delivery.ts insertNotification,
@@ -377,7 +383,25 @@ export default defineSchema({
     detail: v.record(v.string(), v.any()),
   })
     .index("by_household", ["householdId"])
+    // The voice agent reads its own recent decisions (the outcome of a repeated message).
     .index("by_household_action", ["householdId", "action"]),
+
+  // One row per voice agent flag that reached family (rows were queued for `recipientUserIds`):
+  // the repeat check (same key within its window) and the hourly cap read it by index. Every
+  // flag decision, sent or not, is also an auditLog row (flag_caregiver). doseId: the dose a
+  // medication_limit flag was about, so taking the dose back can send a correction.
+  agentFlags: defineTable({
+    householdId: v.id("households"),
+    reason: v.string(),
+    key: v.string(),
+    at: v.number(),
+    names: v.array(v.string()),
+    recipientUserIds: v.array(v.string()),
+    doseId: v.optional(v.id("doseLog")),
+    conversationId: v.optional(v.id("conversations")),
+  })
+    .index("by_household_key_at", ["householdId", "key", "at"])
+    .index("by_household_at", ["householdId", "at"]),
 
   // Appointments and visits, scheduled in household-local terms so 2 PM stays 2 PM across
   // DST; occurrences are computed (lib/occurrences.ts). Cancelling is a soft delete

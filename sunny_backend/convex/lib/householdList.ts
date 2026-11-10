@@ -11,8 +11,11 @@
 //   and reports already_on_list; the same text twice in one add counts once.
 // - Ticking marks an item done (doneAt, doneByKind, doneBy); ticking a done item changes
 //   nothing. Unticking (caregivers) reopens it, subject to the open cap and the duplicate rule.
-// - The voice agent finds an item by words: an open item whose text equals them, else the
-//   open items whose text contains them or is contained in them.
+// - The voice agent finds an item by words: an open item whose text equals them, else the open
+//   items whose words include all of the spoken words, or whose words are all among them. Words
+//   are whole words (a plural "s" ignored), so "steak" never means "tea" and "eggs" never
+//   means "eggplant"; no match or several ask.
+// - One voice add carries at most MAX_ITEMS_PER_ADD items; the rest are reported too_many.
 //
 // Last modified: 2026-11-09
 
@@ -43,6 +46,14 @@ const MAX_DONE_SHOWN = 50;
 export interface AddedItem {
   text: string;
   status: "added" | "already_on_list" | "list_full";
+  itemId: Id<"listItems"> | null;
+}
+
+/** What happened to one item of a voice add: as AddedItem, or too_many (past the items one
+ * voice add may carry; not added). */
+export interface SpokenItem {
+  text: string;
+  status: AddedItem["status"] | "too_many";
   itemId: Id<"listItems"> | null;
 }
 
@@ -273,6 +284,27 @@ export async function removeListItemCore(
 }
 
 /**
+ * purpose: The whole words of a text for matching: lower case, letters and digits only, a
+ *          plural "s" dropped from words longer than three letters.
+ * @param text: (string) The text.
+ * @return: (Set<string>) The words.
+ */
+function itemWords(text: string): Set<string> {
+  const words = textKey(text).match(/[\p{L}\p{N}]+/gu) ?? [];
+  return new Set(words.map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)));
+}
+
+/**
+ * purpose: Whether every word of one set is in another.
+ * @param part: (Set<string>) The words that must all be present.
+ * @param whole: (Set<string>) The words to look in.
+ * @return: (boolean) True when part is non-empty and inside whole.
+ */
+function allIn(part: Set<string>, whole: Set<string>): boolean {
+  return part.size > 0 && [...part].every((w) => whole.has(w));
+}
+
+/**
  * purpose: The open item some spoken words mean (see the header).
  * @param open: (Doc<"listItems">[]) The open items.
  * @param words: (string) What the senior said, e.g. "the milk".
@@ -282,10 +314,14 @@ function matchOpenItem(open: Doc<"listItems">[], words: string): ItemMatch {
   const key = textKey(words).replace(/^(the|my|some)\s+/, "");
   if (key === "") return { status: "not_found", options: [] };
   const exact = open.filter((i) => textKey(i.text) === key);
+  const said = itemWords(key);
   const matches =
     exact.length > 0
       ? exact
-      : open.filter((i) => textKey(i.text).includes(key) || key.includes(textKey(i.text)));
+      : open.filter((i) => {
+          const item = itemWords(i.text);
+          return allIn(said, item) || allIn(item, said);
+        });
   if (matches.length === 1) return { status: "found", item: matches[0]! };
   if (matches.length === 0) return { status: "not_found", options: [] };
   return { status: "ambiguous", options: matches.map((i) => i.text) };
@@ -294,13 +330,13 @@ function matchOpenItem(open: Doc<"listItems">[], words: string): ItemMatch {
 /**
  * purpose: Add the items the senior named by voice ("add milk and eggs"): each cut to one line
  *          of MAX_LIST_ITEM_LENGTH (spoken items are never refused for length), at most
- *          MAX_ITEMS_PER_ADD of them.
+ *          MAX_ITEMS_PER_ADD of them; the rest are reported too_many, not dropped silently.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) The voice agent.
  * @param householdId: (Id<"households">) Household.
  * @param items: (string[]) The items as said.
  * @param now: (number) Epoch ms.
- * @return: (Promise<AddedItem[]>) Per item: added, already_on_list or list_full.
+ * @return: (Promise<SpokenItem[]>) Per item: added, already_on_list, list_full or too_many.
  */
 export async function addSpokenItemsCore(
   ctx: MutationCtx,
@@ -308,11 +344,20 @@ export async function addSpokenItemsCore(
   householdId: Id<"households">,
   items: string[],
   now: number,
-): Promise<AddedItem[]> {
-  const texts = items
-    .slice(0, MAX_ITEMS_PER_ADD)
-    .map((t) => oneLine(t).slice(0, MAX_LIST_ITEM_LENGTH).trim());
-  return await addListItemsCore(ctx, actor, householdId, texts, now);
+): Promise<SpokenItem[]> {
+  const texts = items.map((t) => oneLine(t).slice(0, MAX_LIST_ITEM_LENGTH).trim());
+  const added = await addListItemsCore(
+    ctx,
+    actor,
+    householdId,
+    texts.slice(0, MAX_ITEMS_PER_ADD),
+    now,
+  );
+  const tooMany: SpokenItem[] = texts
+    .slice(MAX_ITEMS_PER_ADD)
+    .filter((text) => text !== "")
+    .map((text) => ({ text, status: "too_many", itemId: null }));
+  return [...added, ...tooMany];
 }
 
 /**

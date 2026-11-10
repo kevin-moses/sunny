@@ -16,6 +16,14 @@
 // window, audit); sendFamilyMessage; readLatestMessage (seenAt); logQuestions and the digest
 // facts that read those rows; and households.update's weatherLocation. Each is scoped to the
 // household it is given. The system clock is frozen at NOW (the outbox enqueues delivery).
+// Review round 3: only an identical flag repeats (a fall after dizziness is sent), every
+// decision is audited, distress reaches every caregiver, exactly 12 capped flags an hour with
+// exempt reasons still sent; the dose repeat guard (asks, `another` logs, a silent repeated
+// call, a caregiver's dose), scheduled_due first, newest dose rows kept, a DST day; undo only in
+// the same conversation within 30 minutes, kept as undoneAt and left out of every count, with
+// a correction to the flagged caregivers; a repeated message's earlier outcome; whole-word list
+// ticking and items past the tenth; askedAt within the conversation; and every agent function
+// in the agent-key checks.
 //
 // Last modified: 2026-11-09
 
@@ -245,6 +253,16 @@ function allCalls(): AgentCall[] {
     m("logQuestions", api.agent.logQuestions, (f) => ({
       conversationId: f.conversationId,
       questions: [],
+    })),
+    m("undoLastDose", api.agent.undoLastDose, (f) => ({ householdId: f.householdId })),
+    m("addListItems", api.agent.addListItems, (f) => ({
+      householdId: f.householdId,
+      items: ["milk"],
+    })),
+    q("listItems", api.agent.listItems, (f) => ({ householdId: f.householdId })),
+    m("tickListItem", api.agent.tickListItem, (f) => ({
+      householdId: f.householdId,
+      item: "milk",
     })),
   ];
 }
@@ -1212,7 +1230,8 @@ async function foreignConversation(t: TestConvex): Promise<Id<"conversations">> 
 }
 
 /**
- * purpose: Insert a dose row directly.
+ * purpose: Insert a dose row directly, written down when it was taken (loggedAt = takenAt), as
+ *          the button or a caregiver would have logged it.
  * @param f: (World) Harness and household.
  * @param taskId: (Id<"tasks">) The as-needed task.
  * @param takenAt: (number) Epoch ms.
@@ -1225,8 +1244,65 @@ async function insertDose(f: World, taskId: Id<"tasks">, takenAt: number): Promi
       taskId,
       takenAt,
       reportedVia: "button",
+      loggedAt: takenAt,
     });
   });
+}
+
+/**
+ * purpose: Report a dose by voice through agent:logAsNeededDose in the fixture's conversation.
+ * @param f: (Fixture) Fixture.
+ * @param now: (number) Epoch ms.
+ * @param extra: (object) label, minutesAgo, another, conversationId.
+ * @return: (Promise<object>) The result.
+ */
+async function reportDose(
+  f: Fixture,
+  now: number,
+  extra: Partial<{
+    label: string;
+    minutesAgo: number;
+    another: boolean;
+    conversationId: Id<"conversations"> | null;
+  }> = {},
+) {
+  return await f.t.mutation(api.agent.logAsNeededDose, {
+    agentKey: KEY,
+    householdId: f.householdId,
+    conversationId: f.conversationId,
+    now,
+    ...extra,
+  });
+}
+
+/**
+ * purpose: Take back a dose by voice through agent:undoLastDose.
+ * @param f: (Fixture) Fixture.
+ * @param now: (number) Epoch ms.
+ * @param conversationId: (Id<"conversations"> | null) The conversation (default the fixture's).
+ * @return: (Promise<object>) The result.
+ */
+async function undoDose(
+  f: Fixture,
+  now: number,
+  conversationId: Id<"conversations"> | null = f.conversationId,
+) {
+  return await f.t.mutation(api.agent.undoLastDose, {
+    agentKey: KEY,
+    householdId: f.householdId,
+    conversationId,
+    now,
+  });
+}
+
+/**
+ * purpose: The household's dose rows, oldest first.
+ * @param f: (World) Harness and household.
+ * @return: (Promise<Doc<"doseLog">[]>) Rows.
+ */
+async function doseRows(f: World): Promise<Doc<"doseLog">[]> {
+  const rows = await f.t.run(async (ctx) => await ctx.db.query("doseLog").collect());
+  return rows.filter((r) => r.householdId === f.householdId);
 }
 
 /**
@@ -2262,19 +2338,38 @@ describe("flag keys, caps and detail", () => {
     expect(await outbox(f, "agent_flag")).toHaveLength(2);
   });
 
-  test("at most 12 flags an hour reach family; the rest are audited as rate_limited", async () => {
+  test("exactly 12 capped flags an hour reach family; urgent reasons still go out", async () => {
     const f = await setup();
-    const reasons = ["symptom", "money_request", "scam", "distress", "help_requested"] as const;
-    const results = [];
+    const capped = ["symptom", "money_request", "scam"] as const;
+    const statuses = [];
     for (let i = 0; i < 13; i++) {
-      // A different reason each time within the 10-minute window would repeat; space them out.
-      results.push(await flagAt(f, reasons[i % reasons.length]!, NOW + i * 4 * MINUTE + i));
+      const result = await flagAt(f, capped[i % 3]!, NOW + i * MINUTE, `Event number ${i}.`);
+      statuses.push(result.status);
     }
-    const statuses = results.map((r) => r.status);
-    expect(statuses.filter((s) => s === "flagged").length).toBeLessThanOrEqual(12);
-    expect(statuses).toContain("rate_limited");
+    expect(statuses.slice(0, 12)).toEqual(Array(12).fill("flagged"));
+    expect(statuses[12]).toBe("rate_limited");
+    // Many held decisions never push the sent ones out of the count.
+    for (let i = 0; i < 30; i++) {
+      expect((await flagAt(f, "scam", NOW + 13 * MINUTE, `Held ${i}.`)).status).toBe(
+        "rate_limited",
+      );
+    }
+    expect((await flagAt(f, "symptom", NOW + 14 * MINUTE, "Another.")).status).toBe("rate_limited");
+    // Exempt reasons go out past the cap and are not counted.
+    expect((await flagAt(f, "distress", NOW + 15 * MINUTE, "She is scared.")).status).toBe(
+      "flagged",
+    );
+    expect((await flagAt(f, "help_requested", NOW + 16 * MINUTE, "Call me.")).status).toBe(
+      "flagged",
+    );
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 1 });
+    await insertDose(f, relief, MIDNIGHT + HOUR);
+    expect(await reportDose(f, NOW + 17 * MINUTE)).toMatchObject({ flagStatus: "flagged" });
+    expect(await outbox(f, "agent_flag")).toHaveLength(15);
+    // An hour after the first, capped flags go out again.
+    expect((await flagAt(f, "scam", NOW + HOUR + MINUTE, "New one.")).status).toBe("flagged");
     const audits = await auditRows(f, "flag_caregiver");
-    expect(audits.some((a) => a.detail.status === "rate_limited")).toBe(true);
+    expect(audits.filter((a) => a.detail.status === "rate_limited")).toHaveLength(32);
   });
 
   test("long digit runs never reach a caregiver", async () => {
@@ -2304,7 +2399,8 @@ describe("family message caps", () => {
     expect(await send()).toEqual({
       status: "already_sent",
       messageId: first.messageId,
-      recipients: [],
+      recipients: ["Anna"],
+      earlierStatus: "sent",
     });
     vi.setSystemTime(NOW + 3 * MINUTE);
     expect((await send()).status).toBe("sent");
@@ -2327,7 +2423,12 @@ describe("family message caps", () => {
       householdId: f.householdId,
       body: "One more",
     });
-    expect(blocked).toEqual({ status: "rate_limited", messageId: null, recipients: [] });
+    expect(blocked).toEqual({
+      status: "rate_limited",
+      messageId: null,
+      recipients: [],
+      earlierStatus: null,
+    });
     expect(
       await f.t.run(async (ctx) => await ctx.db.query("familyMessages").collect()),
     ).toHaveLength(10);
@@ -2357,34 +2458,36 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     expect(await outbox(f, "agent_flag")).toEqual([]);
   });
 
-  test("undo removes today's latest voice dose, audits it and leaves a sent flag", async () => {
+  test("undo marks this conversation's dose undone, keeps the row and corrects the flag", async () => {
     const f = await setup();
+    await addFamily(f);
     const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 1 });
     await insertDose(f, relief, MIDNIGHT + HOUR);
-    const logged = await f.t.mutation(api.agent.logAsNeededDose, {
-      agentKey: KEY,
-      householdId: f.householdId,
-      now: NOW,
+    expect(await reportDose(f, NOW)).toMatchObject({ status: "logged", flagStatus: "flagged" });
+    expect(await undoDose(f, NOW + MINUTE)).toEqual({
+      status: "removed",
+      displayLabel: "Pain reliever",
+      takenAt: NOW,
+      corrected: ["Anna"],
     });
-    expect(logged).toMatchObject({ status: "logged", flagStatus: "flagged" });
-    const undone = await f.t.mutation(api.agent.undoLastDose, {
-      agentKey: KEY,
-      householdId: f.householdId,
-      now: NOW + MINUTE,
-    });
-    expect(undone).toEqual({ status: "removed", displayLabel: "Pain reliever", takenAt: NOW });
-    const doses = await f.t.run(async (ctx) => await ctx.db.query("doseLog").collect());
-    expect(doses.map((d) => d.takenAt)).toEqual([MIDNIGHT + HOUR]);
+    const rows = await doseRows(f);
+    expect(rows.map((d) => [d.takenAt, d.undoneAt])).toEqual([
+      [MIDNIGHT + HOUR, undefined],
+      [NOW, NOW + MINUTE],
+    ]);
     expect(await auditRows(f, "undo_dose")).toHaveLength(1);
-    expect(await outbox(f, "agent_flag")).toHaveLength(1);
-    // The button dose of the morning is not the senior's voice report: nothing left to undo.
-    expect(
-      await f.t.mutation(api.agent.undoLastDose, {
-        agentKey: KEY,
-        householdId: f.householdId,
-        now: NOW + 2 * MINUTE,
-      }),
-    ).toMatchObject({ status: "nothing_to_undo" });
+    expect(await auditRows(f, "flag_correction")).toHaveLength(1);
+    const flags = await outbox(f, "agent_flag");
+    expect(flags.map((r) => [r.recipientUserId, r.body])).toEqual([
+      [
+        "user_a",
+        "Margaret reported taking Pain reliever at 10:00 AM. That is 2 in 24 hours, over the " +
+          "label's 1 in 24 hours.",
+      ],
+      ["user_a", "Margaret said that dose was a mistake; it has been removed."],
+    ]);
+    // The morning's button dose is not hers to take back.
+    expect(await undoDose(f, NOW + 2 * MINUTE)).toMatchObject({ status: "nothing_to_undo" });
   });
 
   test("a scheduled medication carrying stale limits is never as-needed", async () => {
@@ -2462,32 +2565,25 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     expect(logged).toMatchObject({ overDailyMax: true, count: 5, flagStatus: "flagged" });
   });
 
-  test("use on 4 of the last 7 days raises one symptom flag a week", async () => {
+  test("use on 4 of the last 7 days sends one repeated-use notice a week, not in the result", async () => {
     const f = await setup();
     const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
     for (const daysAgo of [1, 3, 5]) await insertDose(f, relief, NOW - daysAgo * 24 * HOUR);
-    const first = await f.t.mutation(api.agent.logAsNeededDose, {
-      agentKey: KEY,
-      householdId: f.householdId,
-      now: NOW,
-    });
+    const first = await reportDose(f, NOW);
     expect(first).toMatchObject({
       status: "logged",
       flagStatus: null,
-      repeatedUseFlagged: ["Anna"],
+      flagged: [],
       medication: { daysUsedLast7: 4 },
     });
+    expect(first).not.toHaveProperty("repeatedUseFlagged");
     const [flag] = await outbox(f, "agent_flag");
     expect(flag).toMatchObject({
-      payload: { reason: "symptom" },
+      title: "Margaret has used Pain reliever often",
+      payload: { reason: "repeated_use" },
       body: "Margaret has taken Pain reliever on 4 of the last 7 days.",
     });
-    const later = await f.t.mutation(api.agent.logAsNeededDose, {
-      agentKey: KEY,
-      householdId: f.householdId,
-      now: NOW + 2 * 24 * HOUR,
-    });
-    expect(later).toMatchObject({ status: "logged", repeatedUseFlagged: [] });
+    expect((await reportDose(f, NOW + 2 * 24 * HOUR)).status).toBe("logged");
     expect(await outbox(f, "agent_flag")).toHaveLength(1);
   });
 });
@@ -2589,5 +2685,339 @@ describe("agent and profile.ts agree", () => {
         fact: "cat is called biscuit",
       }),
     ).toEqual({ status: "already_known" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Review round 3: only identical flags repeat, urgent flags are never capped, the dose repeat
+// guard asks instead of guessing, undo is scoped to the conversation and never deletes
+// ---------------------------------------------------------------------------------------------
+
+describe("flags: only an identical event is a repeat", () => {
+  test("a different, more serious event within the window is sent", async () => {
+    const f = await setup();
+    expect((await flagAt(f, "symptom", NOW, "She feels dizzy.")).status).toBe("flagged");
+    const fall = await flagAt(f, "distress", NOW + 4 * MINUTE, "She fell and cannot get up.");
+    expect(fall).toEqual({ status: "flagged", notified: ["Anna"] });
+    expect((await flagAt(f, "distress", NOW + 5 * MINUTE, "I feel low.")).status).toBe("flagged");
+    expect(
+      (await flagAt(f, "distress", NOW + 6 * MINUTE, "She said she will hurt herself.")).status,
+    ).toBe("flagged");
+    expect(await outbox(f, "agent_flag")).toHaveLength(4);
+  });
+
+  test("an identical event is not sent again, but its decision is audited with the detail", async () => {
+    const f = await setup();
+    await flagAt(f, "symptom", NOW, "She feels dizzy.");
+    expect(await flagAt(f, "symptom", NOW + 2 * MINUTE, "she feels  DIZZY.")).toEqual({
+      status: "already_flagged",
+      notified: ["Anna"],
+    });
+    expect(await outbox(f, "agent_flag")).toHaveLength(1);
+    const audits = await auditRows(f, "flag_caregiver");
+    expect(audits.map((a) => [a.detail.status, a.detail.detail, a.detail.names])).toEqual([
+      ["flagged", "She feels dizzy.", ["Anna"]],
+      ["already_flagged", "she feels DIZZY.", ["Anna"]],
+    ]);
+  });
+
+  test("distress reaches every reachable caregiver, not only the one on call", async () => {
+    const f = await setup();
+    await addFamily(f);
+    const result = await flagAt(f, "distress", NOW, "She is scared.");
+    expect(result.notified.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
+    // Other reasons still go to the on-call caregiver.
+    expect((await flagAt(f, "symptom", NOW, "Dizzy.")).notified).toEqual(["Anna"]);
+  });
+});
+
+describe("family messages: a repeat says how the first one went", () => {
+  test("a repeated unreachable message is not reported as sent", async () => {
+    const f = await setup();
+    await unreachable(f, "user_a");
+    /**
+     * purpose: Send "I'm home".
+     * @return: (Promise<object>) The result.
+     */
+    const send = () =>
+      f.t.mutation(api.agent.sendFamilyMessage, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        body: "I'm home",
+      });
+    expect((await send()).status).toBe("unreachable");
+    vi.setSystemTime(NOW + MINUTE);
+    expect(await send()).toMatchObject({
+      status: "already_sent",
+      recipients: [],
+      earlierStatus: "unreachable",
+    });
+  });
+});
+
+describe("doses: the repeat guard asks, another always logs", () => {
+  test("a repeat with a different stated time is not logged twice and raises no flag", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3, asNeededMinHours: 4 });
+    expect((await reportDose(f, NOW)).status).toBe("logged");
+    expect(await reportDose(f, NOW + 10 * MINUTE, { minutesAgo: 60 })).toMatchObject({
+      status: "already_logged",
+      takenAt: NOW,
+      repeatCall: false,
+    });
+    expect(await doseRows(f)).toHaveLength(1);
+    expect(await outbox(f, "agent_flag")).toEqual([]);
+  });
+
+  test("'another one' logs a second dose and flags it as too soon", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3, asNeededMinHours: 4 });
+    await reportDose(f, NOW);
+    expect((await reportDose(f, NOW + MINUTE)).status).toBe("already_logged");
+    const another = await reportDose(f, NOW + MINUTE, { another: true });
+    expect(another).toMatchObject({ status: "logged", tooSoon: true, flagStatus: "flagged" });
+    expect(await doseRows(f)).toHaveLength(2);
+    expect(await outbox(f, "agent_flag")).toHaveLength(1);
+  });
+
+  test("the same call made twice in a turn is a silent repeat", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    await reportDose(f, NOW);
+    expect(await reportDose(f, NOW + 5_000)).toMatchObject({
+      status: "already_logged",
+      repeatCall: true,
+    });
+    // Without the same conversation it is a new report to ask about.
+    expect(await reportDose(f, NOW + 5_000, { conversationId: null })).toMatchObject({
+      status: "already_logged",
+      repeatCall: false,
+    });
+  });
+
+  test("a caregiver's dose close to her report is asked about, not swallowed", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    await insertDose(f, relief, NOW - 10 * MINUTE);
+    expect(await reportDose(f, NOW)).toMatchObject({
+      status: "already_logged",
+      takenAt: NOW - 10 * MINUTE,
+      repeatCall: false,
+    });
+    expect((await reportDose(f, NOW, { another: true })).status).toBe("logged");
+  });
+
+  test("a due scheduled medication comes first even with two as-needed ones on file", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    await insertTask(f, { title: "Antacid", asNeededMaxPerDay: 2 });
+    const morning = await insertTask(f, { title: "Morning pills" });
+    await f.t.run(async (ctx) => await ctx.db.patch(morning, { times: ["09:30"] }));
+    await insertInstance(f, morning);
+    expect(await reportDose(f, NOW)).toEqual({
+      status: "scheduled_due",
+      options: ["Morning pills"],
+    });
+  });
+
+  test("an overflow of the row bound drops the oldest doses, not the newest", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    const first = NOW - 8 * 24 * HOUR;
+    await f.t.run(async (ctx) => {
+      for (let i = 0; i < 305; i++) {
+        await ctx.db.insert("doseLog", {
+          householdId: f.householdId,
+          taskId: relief,
+          takenAt: first + i * MINUTE,
+          reportedVia: "button",
+          loggedAt: first + i * MINUTE,
+        });
+      }
+      await ctx.db.insert("doseLog", {
+        householdId: f.householdId,
+        taskId: relief,
+        takenAt: NOW - HOUR,
+        reportedVia: "button",
+        loggedAt: NOW - HOUR,
+      });
+    });
+    const status = await f.t.query(api.agent.medicationStatus, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(status.asNeeded[0]).toMatchObject({
+      lastTakenAt: NOW - HOUR,
+      takenToday: [NOW - HOUR],
+    });
+  });
+
+  test("the daily maximum holds on the day clocks spring forward", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 2 });
+    // Sunday 2027-03-14 in New York: midnight is 05:00Z (EST), the next midnight 04:00Z (EDT).
+    const dayStart = Date.parse("2027-03-14T05:00:00Z");
+    const now = Date.parse("2027-03-14T14:00:00Z");
+    // A dose at 11:30 PM Saturday is the day before, though within 24 hours.
+    await insertDose(f, relief, dayStart - 30 * MINUTE);
+    await insertDose(f, relief, dayStart + 30 * MINUTE);
+    await insertDose(f, relief, dayStart + 150 * MINUTE);
+    const logged = await reportDose(f, now);
+    expect(logged).toMatchObject({ status: "logged", overDailyMax: true, count: 4 });
+    const status = await f.t.query(api.agent.medicationStatus, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now,
+    });
+    // Local midnight was 00:00 EST, so the 00:30 dose is today's and the 11:30 PM one is not.
+    expect(status.asNeeded[0]).toMatchObject({
+      takenToday: [dayStart + 30 * MINUTE, dayStart + 150 * MINUTE, now],
+      remainingToday: 0,
+      // Two of the four in the trailing 24 hours must leave it: the 3:30 AM dose, a day later.
+      nextWithinLabelAt: dayStart + 150 * MINUTE + 24 * HOUR,
+    });
+  });
+});
+
+describe("undo: only this conversation's recent dose, never deleted", () => {
+  test("a dose from an earlier conversation is never taken back", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    const earlier = await f.t.run(
+      async (ctx) =>
+        await ctx.db.insert("conversations", {
+          householdId: f.householdId,
+          trigger: "talk",
+          startedAt: NOW - 5 * HOUR,
+        }),
+    );
+    await reportDose(f, NOW - 5 * HOUR, { conversationId: earlier });
+    expect(await undoDose(f, NOW)).toMatchObject({ status: "nothing_to_undo" });
+    expect(await undoDose(f, NOW, null)).toMatchObject({ status: "nothing_to_undo" });
+    expect((await doseRows(f)).map((d) => d.undoneAt)).toEqual([undefined]);
+  });
+
+  test("a dose of this conversation older than 30 minutes is not taken back", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    await reportDose(f, NOW);
+    expect(await undoDose(f, NOW + 31 * MINUTE)).toMatchObject({ status: "nothing_to_undo" });
+  });
+
+  test("an undone dose is left out of status, limits, repeated use, context and the digest", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 1 });
+    await reportDose(f, NOW);
+    expect((await undoDose(f, NOW + MINUTE)).status).toBe("removed");
+    const status = await f.t.query(api.agent.medicationStatus, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW + 2 * MINUTE,
+    });
+    expect(status.asNeeded[0]).toMatchObject({
+      takenToday: [],
+      remainingToday: 1,
+      daysUsedLast7: 0,
+    });
+    const context = await f.t.query(api.agent.getContext, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW + 2 * MINUTE,
+    });
+    expect(context.asNeeded[0]!.takenToday).toEqual([]);
+    // A new dose is within the label: the undone one does not count toward the limit.
+    expect(await reportDose(f, NOW + 3 * MINUTE, { another: true })).toMatchObject({
+      status: "logged",
+      overDailyMax: false,
+      flagStatus: null,
+    });
+    const facts = await f.t.run(async (ctx) =>
+      gatherDigestFacts(ctx, (await ctx.db.get(f.householdId))!, "2027-03-10"),
+    );
+    expect(facts.doses).toEqual([{ label: "Pain reliever", times: ["10:03 AM"] }]);
+    expect((await doseRows(f)).filter((d) => d.taskId === relief)).toHaveLength(2);
+  });
+
+  test("taking back a dose that raised no flag sends no correction", async () => {
+    const f = await setup();
+    await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 3 });
+    await reportDose(f, NOW);
+    expect(await undoDose(f, NOW + MINUTE)).toMatchObject({ status: "removed", corrected: [] });
+    expect(await outbox(f, "agent_flag")).toEqual([]);
+  });
+});
+
+describe("list: whole words, and nothing dropped silently", () => {
+  /**
+   * purpose: Tick by spoken words.
+   * @param f: (Fixture) Fixture.
+   * @param item: (string) The words.
+   * @return: (Promise<object>) The result.
+   */
+  const tick = (f: Fixture, item: string) =>
+    f.t.mutation(api.agent.tickListItem, { agentKey: KEY, householdId: f.householdId, item });
+
+  test("a word inside another word never matches", async () => {
+    const f = await setup();
+    await f.t.mutation(api.agent.addListItems, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      items: ["tea", "eggplant", "oat milk"],
+    });
+    expect(await tick(f, "steak")).toMatchObject({ status: "not_found" });
+    expect(await tick(f, "eggs")).toMatchObject({ status: "not_found" });
+    expect(await tick(f, "the milk")).toMatchObject({ status: "ticked", text: "oat milk" });
+    expect(await tick(f, "teas")).toMatchObject({ status: "ticked", text: "tea" });
+  });
+
+  test("several items sharing the word ask which one", async () => {
+    const f = await setup();
+    await f.t.mutation(api.agent.addListItems, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      items: ["whole milk", "oat milk"],
+    });
+    expect(await tick(f, "milk")).toEqual({
+      status: "ambiguous",
+      text: null,
+      options: ["whole milk", "oat milk"],
+    });
+  });
+
+  test("items past the tenth in one add are reported, not dropped silently", async () => {
+    const f = await setup();
+    const items = Array.from({ length: 12 }, (_, i) => `item ${i + 1}`);
+    const result = await f.t.mutation(api.agent.addListItems, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      items,
+    });
+    expect(result.filter((r) => r.status === "added")).toHaveLength(10);
+    expect(result.filter((r) => r.status === "too_many").map((r) => r.text)).toEqual([
+      "item 11",
+      "item 12",
+    ]);
+  });
+});
+
+describe("questions stay within the conversation", () => {
+  test("askedAt after the conversation ended is clamped to its end", async () => {
+    const f = await setup();
+    await f.t.mutation(api.agent.finishConversation, {
+      agentKey: KEY,
+      conversationId: f.conversationId,
+      now: NOW + 5 * MINUTE,
+    });
+    await f.t.mutation(api.agent.logQuestions, {
+      agentKey: KEY,
+      conversationId: f.conversationId,
+      questions: [
+        asked("When is Sarah coming?", "visit", { askedAt: NOW + HOUR }),
+        asked("What day is it?", "date", { askedAt: NOW - HOUR }),
+      ],
+    });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("agentQuestions").collect());
+    expect(rows.map((r) => r.askedAt)).toEqual([NOW + 5 * MINUTE, NOW]);
   });
 });

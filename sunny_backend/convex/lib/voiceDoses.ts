@@ -8,17 +8,27 @@
 // - An as-needed medication is what tasks.isAsNeededTask says (a medication with no scheduled
 //   times and a limit on file); a scheduled medication that happens to carry limits never is.
 // - Which one the senior means: words matching its display label, caregiver title or pill
-//   description. With no words it is the only one on file, unless a scheduled medication is due
-//   right now, which better explains "I took my pills" (status scheduled_due: confirm that one).
-// - A dose of the same medication within 30 minutes of the reported time is the same dose told
-//   again (or a retried call): nothing is logged and already_logged gives that dose's time.
+//   description. With no words, a scheduled medication due right now comes first (it better
+//   explains "I took my pills": status scheduled_due, confirm that one); otherwise it is the only
+//   as-needed one on file.
+// - Repeat guard: when a dose of the same medication was reported in the last 30 minutes
+//   (whatever time it claims), or one claims a time within 30 minutes of this one, nothing is
+//   logged and already_logged gives that dose's time, so the model asks whether this is the same
+//   dose or another. With `another`, the dose is logged anyway and the limits and flags apply.
+//   The same tool call repeated (same conversation, within 2 minutes, the same claimed time) is
+//   already_logged with repeatCall, which the agent passes on as logged without a question.
+//   `another` always logs: it answers that question, typically within the same 2 minutes.
 // - A dose past a limit (lib/doseLimits: the stricter of 24 hours and the calendar day, or too
 //   soon) flags the caregiver with reason medication_limit, keyed on the task, so one
-//   medication's flag never hides another's.
+//   medication's flag never hides another's; the flag remembers the dose (agentFlags.doseId).
 // - Repeated use: when the medication has been taken on at least 4 of the last 7 local days, a
-//   symptom flag says so, at most once a week per medication.
-// - Taking a dose back removes the most recent voice-reported dose of that medication from
-//   today, audited as undo_dose; a flag already sent is not withdrawn.
+//   repeated_use notice goes to the caregiver at most once a week per medication. It is not
+//   part of the result, so it is not spoken to her.
+// - Taking a dose back: only a dose logged by voice in this same conversation within the last
+//   30 minutes. The row is kept, marked undoneAt, and every count leaves it out; undo_dose is
+//   audited, and when the dose had raised a medication_limit flag the same caregivers get a
+//   short correction.
+// - Dose rows are read newest first, so the per-medication bound drops the oldest rows.
 //
 // Last modified: 2026-11-09
 
@@ -32,14 +42,18 @@ import { appError } from "./errors";
 import type { DayOf, DoseLimits, LimitBreaches } from "./doseLimits";
 import { DAY_MS, MINUTE_MS, dayRange, formatTime12, localDate, localTime } from "./time";
 import type { TodayEntry } from "./today";
-import { VOICE_AGENT, flagCaregiverCore } from "./voiceRouting";
+import { VOICE_AGENT, flagCaregiverCore, sendDoseCorrection } from "./voiceRouting";
 import type { FlagResult } from "./voiceRouting";
 
-/** A dose of the same medication this close (ms) to a reported one is the same dose. */
+/** A dose reported this recently (ms), or claiming a time this close, may be the same dose. */
 const DOSE_REPEAT_WINDOW_MS = 30 * MINUTE_MS;
+/** The same tool call repeated: same conversation, this recent (ms), the same claimed time. */
+const REPEAT_CALL_MS = 2 * MINUTE_MS;
+/** A voice dose can be taken back this long (ms) after it was logged. */
+const UNDO_WINDOW_MS = 30 * MINUTE_MS;
 /** Longest a self-reported dose may be back-dated ("I took one an hour ago"), in minutes. */
 const MAX_DOSE_MINUTES_AGO = 12 * 60;
-/** Repeated use: a symptom flag once the medication was used on this many days... */
+/** Repeated use: a notice once the medication was used on this many days... */
 const REPEATED_USE_DAYS = 4;
 /** ...of this many local days (today included)... */
 const REPEATED_USE_WINDOW_DAYS = 7;
@@ -47,7 +61,7 @@ const REPEATED_USE_WINDOW_DAYS = 7;
 const REPEATED_USE_FLAG_REPEAT_MS = 7 * DAY_MS;
 /** Doses read back this far (ms): the 7-day use count plus the 24-hour window, with margin. */
 const DOSE_LOOKBACK_MS = (REPEATED_USE_WINDOW_DAYS + 2) * DAY_MS;
-/** Most dose rows read per medication. */
+/** Most dose rows read per medication (the newest). */
 const MAX_DOSE_ROWS = 300;
 
 /** One as-needed medication with its doses and what the label limits mean right now. */
@@ -72,7 +86,7 @@ export interface AsNeededEntry {
   daysUsedLast7: number;
 }
 
-/** An as-needed medication task with its recent dose rows. */
+/** An as-needed medication task with its recent dose rows (undone rows left out). */
 interface AsNeededMed {
   task: Doc<"tasks">;
   /** Dose rows in the lookback, ascending by takenAt. */
@@ -93,15 +107,26 @@ export type LogDoseResult =
       flagStatus: FlagResult["status"] | null;
       /** Caregivers a limit flag was queued for (or already reached); empty otherwise. */
       flagged: string[];
-      /** Caregivers a repeated-use flag was queued for by this dose; empty otherwise. */
-      repeatedUseFlagged: string[];
     }
-  | { status: "already_logged"; medication: AsNeededEntry; takenAt: number }
+  | {
+      status: "already_logged";
+      medication: AsNeededEntry;
+      /** The dose already written down. */
+      takenAt: number;
+      /** True when this is the same tool call repeated, not a new report to ask about. */
+      repeatCall: boolean;
+    }
   | { status: "no_rule" | "not_found" | "ambiguous" | "scheduled_due"; options: string[] };
 
 /** Result of undoLastDoseCore. */
 export type UndoDoseResult =
-  | { status: "removed"; displayLabel: string; takenAt: number }
+  | {
+      status: "removed";
+      displayLabel: string;
+      takenAt: number;
+      /** Caregivers told the dose was a mistake (it had raised a limit flag); else empty. */
+      corrected: string[];
+    }
   | { status: "nothing_to_undo" | "no_rule" | "not_found" | "ambiguous"; options: string[] };
 
 /**
@@ -128,7 +153,7 @@ function limitsOf(task: Doc<"tasks">): DoseLimits {
 
 /**
  * purpose: The household's active as-needed medications (tasks.isAsNeededTask), each with its
- *          dose rows of the lookback.
+ *          dose rows of the lookback: the newest MAX_DOSE_ROWS, undone rows left out, ascending.
  * @param ctx: (QueryCtx) Context.
  * @param household: (Doc<"households">) The household.
  * @param now: (number) Epoch ms.
@@ -144,9 +169,8 @@ async function asNeededMeds(
     .withIndex("by_household_active", (q) => q.eq("householdId", household._id).eq("active", true))
     .collect();
   return await Promise.all(
-    tasks.filter(isAsNeededTask).map(async (task) => ({
-      task,
-      rows: await ctx.db
+    tasks.filter(isAsNeededTask).map(async (task) => {
+      const newest = await ctx.db
         .query("doseLog")
         .withIndex("by_household_task_taken", (q) =>
           q
@@ -154,8 +178,10 @@ async function asNeededMeds(
             .eq("taskId", task._id)
             .gte("takenAt", now - DOSE_LOOKBACK_MS),
         )
-        .take(MAX_DOSE_ROWS),
-    })),
+        .order("desc")
+        .take(MAX_DOSE_ROWS);
+      return { task, rows: newest.filter((r) => r.undoneAt === undefined).reverse() };
+    }),
   );
 }
 
@@ -223,12 +249,13 @@ function pickAsNeeded(
   dueScheduled: TodayEntry | null,
 ): AsNeededMed | Extract<LogDoseResult, { options: string[] }> {
   const options = meds.map((m) => m.task.displayLabel);
-  if (meds.length === 0) return { status: "no_rule", options };
   if (words === "") {
-    if (meds.length > 1) return { status: "ambiguous", options };
     if (dueScheduled) return { status: "scheduled_due", options: [dueScheduled.displayLabel] };
+    if (meds.length === 0) return { status: "no_rule", options };
+    if (meds.length > 1) return { status: "ambiguous", options };
     return meds[0]!;
   }
+  if (meds.length === 0) return { status: "no_rule", options };
   const matches = matching(meds, words);
   if (matches.length === 0) return { status: "not_found", options };
   if (matches.length > 1) {
@@ -270,15 +297,71 @@ function limitFlagDetail(
 }
 
 /**
+ * purpose: When a dose was written down.
+ * @param row: (Doc<"doseLog">) The dose.
+ * @return: (number) loggedAt, or the creation time of a row from before that field.
+ */
+function loggedAt(row: Doc<"doseLog">): number {
+  return row.loggedAt ?? row._creationTime;
+}
+
+/**
+ * purpose: The dose already written down that this report may repeat (see the file header):
+ *          one reported within DOSE_REPEAT_WINDOW_MS, or one claiming a time that close.
+ * @param rows: (Doc<"doseLog">[]) The medication's dose rows.
+ * @param takenAt: (number) The time this report claims, epoch ms.
+ * @param now: (number) Epoch ms.
+ * @return: (Doc<"doseLog"> | null) The newest such dose, or null.
+ */
+function possibleRepeat(
+  rows: Doc<"doseLog">[],
+  takenAt: number,
+  now: number,
+): Doc<"doseLog"> | null {
+  const near = rows.filter(
+    (r) =>
+      loggedAt(r) >= now - DOSE_REPEAT_WINDOW_MS ||
+      Math.abs(r.takenAt - takenAt) < DOSE_REPEAT_WINDOW_MS,
+  );
+  return near.reduce<Doc<"doseLog"> | null>(
+    (a, b) => (a === null || loggedAt(b) > loggedAt(a) ? b : a),
+    null,
+  );
+}
+
+/**
+ * purpose: Whether a possible repeat is the same tool call made again: logged in the same
+ *          conversation within REPEAT_CALL_MS, claiming the same time (within REPEAT_CALL_MS).
+ * @param row: (Doc<"doseLog">) The dose already written down.
+ * @param takenAt: (number) The time this report claims, epoch ms.
+ * @param conversationId: (Id<"conversations"> | undefined) This report's conversation.
+ * @param now: (number) Epoch ms.
+ * @return: (boolean) True for the same call repeated.
+ */
+function isRepeatCall(
+  row: Doc<"doseLog">,
+  takenAt: number,
+  conversationId: Id<"conversations"> | undefined,
+  now: number,
+): boolean {
+  return (
+    conversationId !== undefined &&
+    row.conversationId === conversationId &&
+    loggedAt(row) >= now - REPEAT_CALL_MS &&
+    Math.abs(row.takenAt - takenAt) <= REPEAT_CALL_MS
+  );
+}
+
+/**
  * purpose: Log a dose the senior says they took (instances.logDoseCore, via voice) and return
- *          the label facts afterwards, flagging the caregiver past a limit and on repeated use
- *          (see the file header). Nothing is logged without a matching rule, or when the same
- *          dose was already logged.
+ *          the label facts afterwards, flagging the caregiver past a limit and sending the
+ *          repeated-use notice (see the file header). Nothing is logged without a matching
+ *          rule, or when the report may repeat a dose already written down (unless `another`).
  * @param ctx: (MutationCtx) Context.
- * @param args: ({household, words, minutesAgo, dueScheduled, conversationId, now}) The
+ * @param args: ({household, words, minutesAgo, another, dueScheduled, conversationId, now}) The
  *        household, lower-cased words naming the medication ("" for none), whole minutes since
- *        the dose (0..MAX_DOSE_MINUTES_AGO), a loader for the scheduled medication due now
- *        (awaited only when it can matter: no words and one as-needed medication), the
+ *        the dose (0..MAX_DOSE_MINUTES_AGO), whether she said it is another dose, a loader for
+ *        the scheduled medication due now (awaited only when no words were given), the
  *        conversation and the clock.
  * @return: (Promise<LogDoseResult>) The outcome.
  * @raises invalid for minutesAgo outside 0..720 or not whole.
@@ -289,6 +372,7 @@ export async function logAsNeededDoseCore(
     household: Doc<"households">;
     words: string;
     minutesAgo: number;
+    another: boolean;
     dueScheduled: () => Promise<TodayEntry | null>;
     conversationId?: Id<"conversations">;
     now: number;
@@ -299,28 +383,35 @@ export async function logAsNeededDoseCore(
     throw appError("invalid", "minutesAgo must be a whole number from 0 to 720");
   }
   const meds = await asNeededMeds(ctx, household, now);
-  const dueScheduled = args.words === "" && meds.length === 1 ? await args.dueScheduled() : null;
+  const dueScheduled = args.words === "" ? await args.dueScheduled() : null;
   const picked = pickAsNeeded(meds, args.words, dueScheduled);
   if ("status" in picked) return picked;
   const dayOf = householdDayOf(household);
-  const takenAt = now - args.minutesAgo * MINUTE_MS;
-  const doses = picked.rows.map((r) => r.takenAt);
-  const same = doses.find((d) => Math.abs(d - takenAt) < DOSE_REPEAT_WINDOW_MS);
-  if (same !== undefined) {
+  const takenAt = now - minutesAgo * MINUTE_MS;
+  const repeat = possibleRepeat(picked.rows, takenAt, now);
+  if (repeat && !args.another) {
     return {
       status: "already_logged",
       medication: asNeededEntry(picked, dayOf, now),
-      takenAt: same,
+      takenAt: repeat.takenAt,
+      repeatCall: isRepeatCall(repeat, takenAt, args.conversationId, now),
     };
   }
+  const doses = picked.rows.map((r) => r.takenAt);
   const doseId = await logDoseCore(
     ctx,
     VOICE_AGENT,
-    { householdId: household._id, taskId: picked.task._id, takenAt, via: "voice" },
+    {
+      householdId: household._id,
+      taskId: picked.task._id,
+      takenAt,
+      via: "voice",
+      conversationId: args.conversationId,
+    },
     now,
   );
   const row = (await ctx.db.get(doseId))!;
-  const after: AsNeededMed = { ...picked, rows: [...picked.rows, row] };
+  const medication = asNeededEntry({ ...picked, rows: [...picked.rows, row] }, dayOf, now);
   const breaches = limitBreaches(limitsOf(picked.task), doses, takenAt, dayOf);
   let flagStatus: FlagResult["status"] | null = null;
   let flagged: string[] = [];
@@ -330,18 +421,18 @@ export async function logAsNeededDoseCore(
       reason: "medication_limit",
       key: `medication_limit:${picked.task._id}`,
       detail: limitFlagDetail(household, picked, takenAt, breaches),
+      doseId,
       conversationId: args.conversationId,
       now,
     });
     flagStatus = flag.status;
     flagged = flag.notified;
   }
-  const medication = asNeededEntry(after, dayOf, now);
-  let repeatedUseFlagged: string[] = [];
   if (medication.daysUsedLast7 >= REPEATED_USE_DAYS) {
-    const flag = await flagCaregiverCore(ctx, {
+    await flagCaregiverCore(ctx, {
       household,
-      reason: "symptom",
+      reason: "repeated_use",
+      subject: picked.task.displayLabel,
       key: `repeated_use:${picked.task._id}`,
       repeatWindowMs: REPEATED_USE_FLAG_REPEAT_MS,
       detail:
@@ -350,22 +441,15 @@ export async function logAsNeededDoseCore(
       conversationId: args.conversationId,
       now,
     });
-    if (flag.status === "flagged") repeatedUseFlagged = flag.notified;
   }
-  return {
-    status: "logged",
-    medication,
-    takenAt,
-    ...breaches,
-    flagStatus,
-    flagged,
-    repeatedUseFlagged,
-  };
+  return { status: "logged", medication, takenAt, ...breaches, flagStatus, flagged };
 }
 
 /**
- * purpose: Take back the most recent voice-reported dose of today ("no, I didn't take it"):
- *          delete it and audit undo_dose. A flag the dose raised is not withdrawn.
+ * purpose: Take back a dose she reported by voice in this conversation in the last 30 minutes
+ *          ("no, I didn't take it"): mark it undone (every count leaves it out), audit
+ *          undo_dose, and send a correction to the caregivers its limit flag reached. A dose
+ *          from an earlier conversation, or one logged any other way, is never changed.
  * @param ctx: (MutationCtx) Context.
  * @param args: ({household, words, conversationId, now}) The household, lower-cased words
  *        naming the medication ("" for whichever was reported last), the conversation and the
@@ -381,28 +465,33 @@ export async function undoLastDoseCore(
     now: number;
   },
 ): Promise<UndoDoseResult> {
-  const { household, now } = args;
+  const { household, now, conversationId } = args;
   const meds = await asNeededMeds(ctx, household, now);
   const options = meds.map((m) => m.task.displayLabel);
   if (meds.length === 0) return { status: "no_rule", options };
   const candidates = args.words === "" ? meds : matching(meds, args.words);
   if (candidates.length === 0) return { status: "not_found", options };
-  const today = householdDayOf(household)(now);
-  const voiceToday = candidates.flatMap((m) =>
+  const undoable = candidates.flatMap((m) =>
     m.rows
-      .filter((r) => r.reportedVia === "voice" && r.takenAt >= today.start && r.takenAt <= now)
+      .filter(
+        (r) =>
+          conversationId !== undefined &&
+          r.conversationId === conversationId &&
+          r.reportedVia === "voice" &&
+          loggedAt(r) >= now - UNDO_WINDOW_MS,
+      )
       .map((row) => ({ med: m, row })),
   );
-  if (voiceToday.length === 0) return { status: "nothing_to_undo", options };
-  const withDoses = new Set(voiceToday.map((d) => d.med.task._id));
+  if (undoable.length === 0) return { status: "nothing_to_undo", options };
+  const withDoses = new Set(undoable.map((d) => d.med.task._id));
   if (args.words !== "" && withDoses.size > 1) {
     return {
       status: "ambiguous",
       options: candidates.filter((m) => withDoses.has(m.task._id)).map((m) => m.task.displayLabel),
     };
   }
-  const latest = voiceToday.reduce((a, b) => (b.row.takenAt > a.row.takenAt ? b : a));
-  await ctx.db.delete(latest.row._id);
+  const latest = undoable.reduce((a, b) => (loggedAt(b.row) > loggedAt(a.row) ? b : a));
+  await ctx.db.patch(latest.row._id, { undoneAt: now });
   await audit(ctx, {
     householdId: household._id,
     actor: VOICE_AGENT,
@@ -412,12 +501,20 @@ export async function undoLastDoseCore(
     detail: {
       taskId: latest.med.task._id,
       takenAt: latest.row.takenAt,
-      conversationId: args.conversationId ?? null,
+      conversationId: conversationId ?? null,
     },
+  });
+  const corrected = await sendDoseCorrection(ctx, {
+    household,
+    taskId: latest.med.task._id,
+    doseId: latest.row._id,
+    conversationId,
+    now,
   });
   return {
     status: "removed",
     displayLabel: latest.med.task.displayLabel,
     takenAt: latest.row.takenAt,
+    corrected,
   };
 }

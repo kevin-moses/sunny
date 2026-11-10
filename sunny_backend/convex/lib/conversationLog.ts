@@ -7,8 +7,8 @@
 // - Finishing sets endedAt, and the summary only when a non-blank one is given (the agent
 //   finishes once before its post-call model call and again with the summary).
 // - Questions (memory.py extracts them after the call): at most 50 per conversation, text cut
-//   to its caps, topics lower-cased so repeats share one, blank ones skipped, askedAt never
-//   before the conversation start; once any question of a conversation is logged, a later call
+//   to its caps, topics lower-cased so repeats share one, blank ones skipped, askedAt within
+//   the conversation (never before its start, never after its end); once any question of a conversation is logged, a later call
 //   inserts nothing (idempotent per conversation).
 //
 // Last modified: 2026-11-09
@@ -157,6 +157,20 @@ export async function finishConversationCore(
 }
 
 /**
+ * purpose: When a question was asked, kept within the conversation.
+ * @param conversation: (Doc<"conversations">) The conversation.
+ * @param askedAt: (number | null | undefined) The extractor's time, if any.
+ * @return: (number) Epoch ms from startedAt to endedAt (when ended); startedAt when unknown.
+ */
+function askedWithin(
+  conversation: Doc<"conversations">,
+  askedAt: number | null | undefined,
+): number {
+  const latest = conversation.endedAt ?? Number.POSITIVE_INFINITY;
+  return Math.min(Math.max(askedAt ?? conversation.startedAt, conversation.startedAt), latest);
+}
+
+/**
  * purpose: Store the questions of a finished conversation (see the header for the rules).
  * @param ctx: (MutationCtx) Context.
  * @param conversationId: (Id<"conversations">) The conversation.
@@ -189,7 +203,7 @@ export async function logQuestionsCore(
     await ctx.db.insert("agentQuestions", {
       householdId: conversation.householdId,
       conversationId: conversation._id,
-      askedAt: Math.max(q.askedAt ?? conversation.startedAt, conversation.startedAt),
+      askedAt: askedWithin(conversation, q.askedAt),
       question,
       topic,
       outcome: q.outcome,

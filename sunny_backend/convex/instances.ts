@@ -515,7 +515,8 @@ export async function cancelSeniorReminderCore(
  * purpose: Record an as-needed dose taken outside a scheduled instance.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) An editor caregiver, the household's device, or the backend.
- * @param args: ({householdId, taskId, takenAt, via, note}) The dose.
+ * @param args: ({householdId, taskId, takenAt, via, note, conversationId}) The dose, and the
+ *        voice conversation it was reported in (the voice agent only).
  * @param now: (number) Epoch ms.
  * @return: (Promise<Id<"doseLog">>) The new log row.
  * @raises forbidden for other actors; invalid when takenAt is not a finite number or is more
@@ -530,6 +531,7 @@ export async function logDoseCore(
     takenAt: number;
     via: ConfirmVia;
     note?: string;
+    conversationId?: Id<"conversations">;
   },
   now: number,
 ): Promise<Id<"doseLog">> {
@@ -551,6 +553,8 @@ export async function logDoseCore(
     reportedVia: args.via,
     reportedBy: actorUserId(actor),
     note: args.note,
+    loggedAt: now,
+    conversationId: args.conversationId,
   });
 }
 

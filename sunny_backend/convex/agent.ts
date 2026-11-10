@@ -48,7 +48,7 @@ import {
 } from "./lib/conversationLog";
 import { appError } from "./lib/errors";
 import { addSpokenItemsCore, openListItems, tickItemByWordsCore } from "./lib/householdList";
-import type { AddedItem, TickItemResult } from "./lib/householdList";
+import type { SpokenItem, TickItemResult } from "./lib/householdList";
 import { constantTimeEqual } from "./lib/secretBox";
 import { searchWords } from "./lib/text";
 import { rememberFactCore } from "./lib/seniorMemory";
@@ -225,16 +225,19 @@ export const snoozeDueTask = agentMutation({
 
 /**
  * purpose: Log an as-needed dose the senior says they took (lib/voiceDoses): label facts
- *          afterwards, the caregiver flagged past a limit or on repeated use; nothing logged
- *          without a matching rule, when a due scheduled medication better explains an unnamed
- *          "I took my pills", or when the same dose (within 30 minutes) is already logged.
+ *          afterwards, the caregiver flagged past a limit and told of repeated use; nothing
+ *          logged without a matching rule, when a due scheduled medication better explains an
+ *          unnamed "I took my pills", or when the report may repeat a dose already written down
+ *          (reported in the last 30 minutes or claiming a time that close) unless `another`.
  * @param householdId: (Id<"households">) Household.
  * @param label: (string | null, optional) Words naming the medication.
  * @param minutesAgo: (number | null, optional) Whole minutes since the dose, 0..720; default 0.
+ * @param another: (boolean | null, optional) She said this is another dose, not the one
+ *        already written down: log it regardless of the repeat guard. Default false.
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
  * @param now: (number, optional) Epoch ms; backend clock.
- * @return: (LogDoseResult) logged, already_logged, or no_rule / not_found / ambiguous /
- *          scheduled_due with the labels to choose from.
+ * @return: (LogDoseResult) logged, already_logged (repeatCall for the same call made again),
+ *          or no_rule / not_found / ambiguous / scheduled_due with the labels to choose from.
  * @raises invalid for a bad minutesAgo; not_found for a conversation of another household.
  */
 export const logAsNeededDose = agentMutation({
@@ -242,6 +245,7 @@ export const logAsNeededDose = agentMutation({
     householdId: v.id("households"),
     label: nullable(v.string()),
     minutesAgo: nullable(v.number()),
+    another: nullable(v.boolean()),
     conversationId: nullable(v.id("conversations")),
     now: v.optional(v.number()),
   },
@@ -252,6 +256,7 @@ export const logAsNeededDose = agentMutation({
       household,
       words: searchWords(args.label),
       minutesAgo: args.minutesAgo ?? 0,
+      another: args.another ?? false,
       dueScheduled: () => dueScheduledMedication(ctx, household._id, now),
       conversationId: await householdConversation(ctx, household._id, args.conversationId),
       now,
@@ -260,13 +265,16 @@ export const logAsNeededDose = agentMutation({
 });
 
 /**
- * purpose: "No, I didn't take it": remove today's latest voice-reported as-needed dose
- *          (lib/voiceDoses), audited; a flag already sent stays sent.
+ * purpose: "No, I didn't take it": take back a dose she reported by voice in this same
+ *          conversation within the last 30 minutes (lib/voiceDoses): the row is marked undone,
+ *          audited, and the caregivers its limit flag reached get a correction. Without a
+ *          conversation, or for any other dose, nothing changes.
  * @param householdId: (Id<"households">) Household.
  * @param label: (string | null, optional) Words naming the medication.
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
  * @param now: (number, optional) Epoch ms; backend clock.
- * @return: (UndoDoseResult) removed, or nothing_to_undo / no_rule / not_found / ambiguous.
+ * @return: (UndoDoseResult) removed (with who got the correction), or nothing_to_undo /
+ *          no_rule / not_found / ambiguous.
  * @raises not_found for a conversation of another household.
  */
 export const undoLastDose = agentMutation({
@@ -363,11 +371,13 @@ export const rememberFact = agentMutation({
 });
 
 /**
- * purpose: Ask the on-call caregiver (or every reachable caregiver) to look in
- *          (lib/voiceRouting.flagCaregiverCore). medication_limit is not accepted here:
- *          log_dose raises it, keyed on the medication.
+ * purpose: Ask the on-call caregiver (or every reachable caregiver; for distress, all of them)
+ *          to look in (lib/voiceRouting.flagCaregiverCore). Only an identical event is a
+ *          repeat. medication_limit and repeated_use are not accepted here: log_dose raises
+ *          them, keyed on the medication.
  * @param householdId: (Id<"households">) Household.
- * @param reason: (string) symptom, money_request, scam, distress or help_requested.
+ * @param reason: (string) symptom, money_request, scam, distress (a fall included) or
+ *        help_requested.
  * @param detail: (string) A short description for the caregiver (two sentences reach them).
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
  * @param now: (number, optional) Epoch ms; backend clock.
@@ -403,8 +413,8 @@ export const flagCaregiver = agentMutation({
  * @param to: (string | null, optional) The name the senior used; blank or null for the family.
  * @param body: (string) The message.
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
- * @return: (FamilyMessageResult) sent, sent_to_family, unreachable, already_sent or
- *          rate_limited, with the recipients' names.
+ * @return: (FamilyMessageResult) sent, sent_to_family, unreachable, already_sent (with the
+ *          earlier message's outcome) or rate_limited, with the recipients' names.
  * @raises invalid for a blank message; not_found for an unknown household or a conversation
  *         of another household.
  */
@@ -453,12 +463,12 @@ export const readLatestMessage = agentMutation({
  * purpose: "Add milk and eggs to the list" (lib/householdList.addSpokenItemsCore).
  * @param householdId: (Id<"households">) Household.
  * @param items: (string[]) The items as said.
- * @return: (AddedItem[]) Per item: added, already_on_list or list_full.
+ * @return: (SpokenItem[]) Per item: added, already_on_list, list_full or too_many.
  * @raises not_found when the household does not exist.
  */
 export const addListItems = agentMutation({
   args: { householdId: v.id("households"), items: v.array(v.string()) },
-  handler: async (ctx, args): Promise<AddedItem[]> => {
+  handler: async (ctx, args): Promise<SpokenItem[]> => {
     await loadHousehold(ctx, args.householdId);
     return await addSpokenItemsCore(ctx, VOICE_AGENT, args.householdId, args.items, Date.now());
   },

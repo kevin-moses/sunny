@@ -2,8 +2,9 @@
 // Purpose: Gather the facts of one household-local day for the daily digest, from logged data
 // only (see notes/SPEC.md "Daily digest"): task instances of that local date in every state
 // (confirmed with time and how, resolved by a caregiver, missed, escalated with who claimed
-// them, and still open because due or upcoming), as-needed doses taken that day, and the
-// senior's questions asked that day (unanswered, routed to family, repeat counts by topic).
+// them, and still open because due or upcoming), as-needed doses taken that day (a dose she
+// took back, undoneAt, is not one), and the senior's questions asked that day (unanswered,
+// routed to family, repeat counts by topic).
 // "That day" is the household's local day, from local midnight to the next local midnight, so a
 // DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
 // Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
@@ -181,7 +182,9 @@ async function doseFacts(
           .take(DAY_READ_CAP);
         return {
           label: task.displayLabel,
-          times: doses.map((d) => formatTime12(localTime(d.takenAt, household.timezone))),
+          times: doses
+            .filter((d) => d.undoneAt === undefined)
+            .map((d) => formatTime12(localTime(d.takenAt, household.timezone))),
         };
       }),
   );

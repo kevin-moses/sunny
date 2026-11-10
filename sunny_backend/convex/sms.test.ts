@@ -9,14 +9,22 @@
 // audit row), claimed ones say who is on it, closed ones say so; other kinds, unsent rows,
 // other recipients, unverified numbers, viewers, a number shared across households, and many
 // other rows after the alert; TwiML escaping of names. A voice agent flag or family message
-// texted after the alert means a "1" claims nothing.
+// texted after the alert (or with no alert) means a "1" claims nothing and gets
+// MESSAGE_REPLY; one that was never texted does not count.
 //
 // Last modified: 2026-11-09
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { CLOSED_REPLY, HELP_REPLY, NOTHING_OPEN_REPLY, VIEWER_REPLY, parseCommand } from "./sms";
+import {
+  CLOSED_REPLY,
+  HELP_REPLY,
+  MESSAGE_REPLY,
+  NOTHING_OPEN_REPLY,
+  VIEWER_REPLY,
+  parseCommand,
+} from "./sms";
 import {
   addInstance,
   createFamilyHousehold,
@@ -458,19 +466,36 @@ describe("claiming by reply", () => {
   });
 
   test.each(["agent_flag", "family_message"] as const)(
-    "a %s texted after the alert means a 1 claims nothing",
+    "a %s texted after the alert means a 1 claims nothing and says so",
     async (kind) => {
       const { t, householdId } = await setup();
       const id = await addInstance(t, householdId, "Morning pills");
       await addAlert(t, householdId, "pat", id);
       vi.advanceTimersByTime(1000);
       await addAlert(t, householdId, "pat", id, kind);
-      expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
-        NOTHING_OPEN_REPLY.replace(/'/g, "&apos;"),
-      );
+      expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(MESSAGE_REPLY);
       expect(await claimedBy(t, id)).toBeUndefined();
     },
   );
+
+  test("a 1 after only a flag text gets the flag reply", async () => {
+    const { t, householdId } = await setup();
+    const id = await addInstance(t, householdId, "Morning pills");
+    await addAlert(t, householdId, "pat", id, "agent_flag");
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(MESSAGE_REPLY);
+  });
+
+  test("a flag that was never texted does not change the reply", async () => {
+    const { t, householdId } = await setup();
+    const id = await addInstance(t, householdId, "Morning pills");
+    await addAlert(t, householdId, "pat", id, "agent_flag", {
+      state: "skipped",
+      channel: undefined,
+    });
+    expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
+      NOTHING_OPEN_REPLY.replace(/'/g, "&apos;"),
+    );
+  });
 
   test("a flag texted before the alert does not stop the claim", async () => {
     const { t, householdId } = await setup();
