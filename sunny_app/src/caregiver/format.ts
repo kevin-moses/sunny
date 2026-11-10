@@ -22,7 +22,7 @@
 // person beat (alreadyDoneMessage), and the note helpers that say how a saved note reads on a row
 // (noteLine) and whether closing the editor must save (shouldSaveNote).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import type { FunctionReturnType } from 'convex/server';
 
@@ -213,8 +213,9 @@ const SURFACE_PHRASE: Record<DeviceSurface, string> = {
  *          Caregiver-resolved (state "resolved"): "Marked done by <name> at <time>" ("by you"
  *          for the signed-in caregiver, "by a caregiver" when their name is unknown).
  *          Device-confirmed: "Done at <time>" plus where it happened ("on the display", "by
- *          voice", ...). The note is not part of it (see the row's note), because a task
- *          can have a note before it is done.
+ *          voice", ...), plus " (sent at <time>)" when the confirm was pressed offline and
+ *          reached the server late. The note is not part of it (see the row's note), because a
+ *          task can have a note before it is done.
  * @param task: (DayTask) The task.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id.
  * @return: (string | null) The text; null when the task is not done, or a device confirmation
@@ -236,7 +237,11 @@ export function doneDetail(task: DayTask, userId: string | null): string | null 
         ? undefined
         : SURFACE_PHRASE[task.confirmedVia];
     if (at === '' && surface === undefined) return null;
-    first = `Done${at}${surface === undefined ? '' : ` ${surface}`}`;
+    const sent =
+      task.confirmReceivedLocalTime === null
+        ? ''
+        : ` (sent at ${displayTime(task.confirmReceivedLocalTime)})`;
+    first = `Done${at}${surface === undefined ? '' : ` ${surface}`}${sent}`;
   }
   return first;
 }

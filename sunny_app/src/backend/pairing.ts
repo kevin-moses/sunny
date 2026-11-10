@@ -25,7 +25,7 @@
 // unpair() unregisters the stored push token first (the device row survives a local
 // unpair, so the server could not reclaim the token later) and never rejects.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-09
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getClerkInstance } from '@clerk/expo';
@@ -34,6 +34,7 @@ import * as Crypto from 'expo-crypto';
 
 import { CONVEX_SITE_URL } from '../config';
 import { logger } from '../logging/logger';
+import { confirmQueue } from '../day/pendingConfirms';
 import { unregisterStoredPushToken } from '../notifications/push';
 import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE } from './api';
 import { api, type HouseholdId } from './convexApi';
@@ -387,7 +388,8 @@ export async function pair(code: string): Promise<void> {
 
 /**
  * purpose: Run the unpair steps: with a session, unregister the push token while still signed
- *          in, then forget the pending attempt and sign out of Clerk. Every step is isolated, so
+ *          in, then forget the pending attempt, drop the queued Done presses (they belong to
+ *          this pairing and must never be sent or shown under another) and sign out of Clerk. Every step is isolated, so
  *          a failure never stops the sign out.
  * @return: (Promise<void>) Always resolves; failures are logged.
  */
@@ -398,6 +400,7 @@ async function runUnpair(): Promise<void> {
   });
   if (hasSession) await attempt('unregister push token', unregisterStoredPushToken);
   await attempt('clear pairing attempt', () => AsyncStorage.removeItem(ATTEMPT_KEY));
+  await attempt('clear pending confirms', () => confirmQueue.clear());
   if (hasSession) await attempt('sign out', () => getClerkInstance().signOut());
 }
 

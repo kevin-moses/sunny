@@ -24,6 +24,7 @@ import { AccessibilityInfo } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { convex } from '../../backend/convex';
+import { logger } from '../../logging/logger';
 import { DoneCard } from '../../components/DayComponents';
 import {
   createConfirmQueue,
@@ -36,6 +37,7 @@ import {
   doneTarget,
   MESSAGE_MS,
   NOT_STORED_MESSAGE,
+  STORE_TIMEOUT_MS,
   PRESS_GAP_MS,
   SETTLE_MS,
   useDoneAction,
@@ -246,7 +248,7 @@ describe('useDoneAction', () => {
     expect(mockMutation.mock.calls[0][1]).toEqual({
       instanceId: 'inst1',
       via: 'phone_app',
-      pressedAt: NOW,
+      pressedAgoMs: 0,
     });
     expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toEqual([]);
   });
@@ -271,10 +273,10 @@ describe('useDoneAction', () => {
       await queue.replay();
     });
     expect(sentIds()).toEqual(['inst1']);
-    expect((mockMutation.mock.calls[0][1] as { pressedAt: number }).pressedAt).toBe(NOW);
+    expect((mockMutation.mock.calls[0][1] as { pressedAgoMs: number }).pressedAgoMs).toBe(0);
   });
 
-  it('offline press survives an app restart and is sent with the original press time', async () => {
+  it('offline press survives an app restart and is sent with the age of the press', async () => {
     const h = renderDone(makeQueue(), task(), true);
     await press(h);
     h.unmount();
@@ -284,7 +286,9 @@ describe('useDoneAction', () => {
       await restarted.replay();
     });
     expect(sentIds()).toEqual(['inst1']);
-    expect((mockMutation.mock.calls[0][1] as { pressedAt: number }).pressedAt).toBe(NOW);
+    expect((mockMutation.mock.calls[0][1] as { pressedAgoMs: number }).pressedAgoMs).toBe(
+      3 * 3_600_000,
+    );
   });
 
   it('a network failure keeps the press and the senior still sees "Checked off"', async () => {
@@ -328,15 +332,33 @@ describe('useDoneAction', () => {
     expect(h.get().message).toBeNull();
   });
 
-  it('shows a calm line when the server permanently refuses a queued press', async () => {
+  it('shows the senior nothing alarming when the server permanently refuses a queued press', async () => {
     mockMutation.mockRejectedValue(new ConvexError({ code: 'not_found', message: 'gone' }));
     const h = renderDone(makeQueue(), task());
     await press(h);
     await advance(SETTLE_MS + 1);
-    expect(h.get().message).toBe('Morning pills could not be saved. It is still on your list.');
-    expect(announce).toHaveBeenCalledWith(
-      'Morning pills could not be saved. It is still on your list.',
+    expect(h.get().message).toBe('Checked off: Morning pills.');
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Dropped a queued Done (rejected)',
+      expect.objectContaining({ instanceId: 'inst1' }),
     );
+  });
+
+  it('asks the senior to press again when storing hangs, and allows the next press', async () => {
+    const queue = makeQueue();
+    const hung: ConfirmQueue = { ...queue, enqueue: () => new Promise(() => {}) };
+    const h = renderDone(hung, task());
+    await press(h);
+    expect(h.get().message).toBeNull();
+    await advance(STORE_TIMEOUT_MS + 1);
+    expect(h.get().message).toBe(NOT_STORED_MESSAGE);
+    expect(h.get().task).not.toBeNull();
+    await advance(PRESS_GAP_MS);
+    await press(h);
+    await advance(STORE_TIMEOUT_MS + 1);
+    expect(h.get().message).toBe(NOT_STORED_MESSAGE);
   });
 
   describe('two tasks due', () => {
@@ -361,6 +383,48 @@ describe('useDoneAction', () => {
       await press(h);
       expect(sentIds()).toEqual(['inst1', 'inst2']);
       expect(h.get().message).toBe('Checked off: Evening pills.');
+    });
+  });
+
+  describe('a due task and an early one', () => {
+    const early = (): DayTask =>
+      task({
+        instanceId: 'early1' as never,
+        displayLabel: 'Evening pills',
+        scheduledTime: '09:00',
+        state: 'upcoming',
+      });
+
+    it('does not offer the early task until the Checked off line has finished', async () => {
+      const h = renderDone(makeQueue(), task());
+      await press(h);
+      h.rerender(early());
+      await advance(SETTLE_MS + 1);
+      expect(h.get().task).toBeNull();
+      expect(h.get().message).toBe('Checked off: Morning pills.');
+      await advance(MESSAGE_MS - SETTLE_MS);
+      expect(h.get().task?.instanceId).toBe('early1');
+      expect(h.get().message).toBeNull();
+    });
+
+    it('still offers a due task after the normal settle period', async () => {
+      const h = renderDone(makeQueue(), task());
+      await press(h);
+      h.rerender(second());
+      await advance(SETTLE_MS + 1);
+      expect(h.get().task?.instanceId).toBe('inst2');
+    });
+
+    it('a press on the early task is refused during the block, then allowed', async () => {
+      const h = renderDone(makeQueue(), task());
+      await press(h);
+      h.rerender(early());
+      await advance(SETTLE_MS + 1);
+      await press(h);
+      expect(sentIds()).toEqual(['inst1']);
+      await advance(MESSAGE_MS);
+      await press(h);
+      expect(sentIds()).toEqual(['inst1', 'early1']);
     });
   });
 
@@ -437,7 +501,7 @@ describe('usePendingConfirms', () => {
   }
 
   it('shows ids stored before the app was closed and replays them at launch', async () => {
-    await makeQueue().enqueue({ instanceId: 'inst1', label: 'Pills', pressedAt: NOW });
+    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
     mockMutation.mockReturnValue(new Promise(() => {}));
     const h = renderPending(makeQueue(), false);
     await advance(0);
@@ -446,7 +510,7 @@ describe('usePendingConfirms', () => {
   });
 
   it('does not send while offline, then replays when the connection returns', async () => {
-    await makeQueue().enqueue({ instanceId: 'inst1', label: 'Pills', pressedAt: NOW });
+    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
     const h = renderPending(makeQueue(), true);
     await advance(0);
     expect(h.get().has('inst1')).toBe(true);
@@ -507,19 +571,21 @@ describe('DoneCard', () => {
     const out = render({ task: task(), message: null });
     expect(out.texts).toContain('Morning pills');
     expect(out.texts).toContain('Done');
-    expect(out.texts.some((t) => t.startsWith('Due at'))).toBe(false);
+    expect(out.texts.some((t) => t.startsWith('Coming up'))).toBe(false);
     expect(out.buttons).toHaveLength(1);
     expect(out.buttons[0].props.accessibilityLabel).toBe('Done: Morning pills');
   });
 
-  it('says when an early task is due, in words, on the card and the button label', () => {
+  it('makes an early task unmistakably different: heading, label and "Done early"', () => {
     const out = render({
       task: task({ state: 'upcoming', scheduledTime: '12:30' }),
       message: null,
     });
-    expect(out.texts).toContain('Morning pills');
-    expect(out.texts).toContain('Due at 12:30 PM');
-    expect(out.buttons[0].props.accessibilityLabel).toBe('Done: Morning pills, due at 12:30 PM');
+    expect(out.texts).toEqual(['Coming up at 12:30 PM', 'Morning pills', 'Done early']);
+    expect(out.buttons).toHaveLength(1);
+    expect(out.buttons[0].props.accessibilityLabel).toBe(
+      'Done early: Morning pills, coming up at 12:30 pm',
+    );
   });
 
   it('calls onPress when the button is pressed', () => {

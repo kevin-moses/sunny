@@ -2,7 +2,8 @@
 //
 // Purpose: React hook over the pending-confirm queue (pendingConfirms.ts): it loads the stored
 // entries when the screen mounts (so a task pressed before the app was closed still shows as
-// checked), starts a replay on launch and whenever the connection returns, and returns the set
+// checked), tells the queue whether the connection is down, starts a replay on launch and
+// whenever the connection returns, and returns the set
 // of instance ids with a queued press for the optimistic display. Used by the phone's Today
 // screen; the home display can use it unchanged.
 //
@@ -27,6 +28,7 @@ export function usePendingConfirms(queue: ConfirmQueue, isOffline: boolean): Rea
   }, [queue]);
 
   useEffect(() => {
+    queue.setOffline(isOffline);
     if (!isOffline) void queue.replay();
   }, [queue, isOffline]);
 

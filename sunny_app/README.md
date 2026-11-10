@@ -16,11 +16,14 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
 - **Done (phone):** under the header the phone shows one large Done button for the task to
   confirm: the first due or escalated task, else the first upcoming task the backend marks
   `confirmable` (up to 60 minutes early; the day view computes it with the confirm mutation's
-  own rule), shown with "Due at ...". A press is stored in a durable queue (AsyncStorage) first,
-  then the screen says "Checked off" and the task shows checked; the queue sends it with
-  `instances.confirmTaskInstance` (`via: "phone_app"`, `pressedAt`) now, on reconnect, or at the
-  next launch, so it works offline. The button is withdrawn for 4 s after a press. A press the
-  server permanently refuses is dropped, logged, and the task shows open again with a calm line.
+  own rule), shown as "Coming up at ..." with a "Done early" button. A press is stored in a
+  durable queue (AsyncStorage) first, then the screen says "Checked off" and the task shows
+  checked; the queue sends it with `instances.confirmTaskInstance` (`via: "phone_app"`,
+  `pressedAgoMs`, the press's age at send time) now, on reconnect, or at the next launch, so it
+  works offline. The server records the press time, and `confirmReceivedAt` when it arrived more
+  than 5 minutes later (caregivers see "sent at ..."). The button is withdrawn for 4 s after a
+  press (an early task for 10 s). A press the server permanently refuses is dropped and logged
+  as an error; the senior sees nothing and the row follows the server. Unpairing clears the queue.
   While the phone is offline the server does not know, so reprompts and caregiver alerts still
   fire. Logic in `src/day/useDoneAction.ts` and `src/day/pendingConfirms.ts`.
 - **Talk:** the phone joins a LiveKit room with a token from the `voice.livekitToken` action.

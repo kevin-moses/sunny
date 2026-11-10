@@ -54,7 +54,11 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const insets = useSafeAreaInsets();
   const pendingIds = usePendingConfirms(confirmQueue, isOffline);
   const tasks = useMemo(() => applyPending(day?.tasks ?? [], pendingIds), [day, pendingIds]);
-  const agenda = useMemo(() => buildAgenda(day === null ? null : { ...day, tasks }), [day, tasks]);
+  const agenda = useMemo(
+    () =>
+      pendingIds.size === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
+    [dayView.agenda, pendingIds, day, tasks],
+  );
   const done = useDoneAction(doneTarget(tasks), isOffline, confirmQueue);
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 

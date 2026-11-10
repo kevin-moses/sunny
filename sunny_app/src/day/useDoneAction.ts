@@ -13,18 +13,23 @@
 // useDoneAction turns a press into a queued confirm (pendingConfirms.ts): the press is stored
 // first, and only then does the screen show "Checked off: <label>" (with a note that it will be
 // sent when the internet is back, when offline); the queue sends it by itself, now or later,
-// with the time of the press. There is no spinner and no timeout here: the senior's part is
-// done once the press is stored. If the press cannot be stored, the line says so and the task
-// stays offered. A permanent rejection later (the queue reports it) shows a calm line and the
-// task shows as open again.
+// with the age of the press. There is no spinner and no timeout on the send: the senior's part
+// is done once the press is stored. Storing is raced against STORE_TIMEOUT_MS so a hung
+// storage call cannot leave the button silently stuck; on a failure or timeout the line says
+// "Sunny could not save that. Please press Done again." and the task stays offered (a late
+// write is harmless: entries dedupe by instance id). A permanent rejection later is only
+// logged by the queue; the senior sees nothing and the row follows the server.
 //
 // Guards: a second press within PRESS_GAP_MS is ignored and presses are ignored while one is
 // being stored. After a press the button is withdrawn for SETTLE_MS (the hook returns task
 // null) and presses are refused, so a senior who doubts the first tap cannot confirm the next
 // task by accident; only the result line shows, and a line is shown only under the button of
-// the task it is about (or when there is no button). Each line lasts MESSAGE_MS and is
-// announced to VoiceOver from an effect, after the screen re-rendered without the button.
-// After unmount nothing is set, scheduled or announced.
+// the task it is about (or when there is no button). A task that is not due yet (an early
+// target) is not offered again until MESSAGE_MS after the press, when the "Checked off" line
+// has finished, so a doubting tap cannot chain into an early medication; a task that is due is
+// offered after SETTLE_MS. Each line lasts MESSAGE_MS and is announced to VoiceOver from an
+// effect, after the screen re-rendered without the button. After unmount nothing is set,
+// scheduled or announced.
 //
 // Last modified: 2026-11-09
 
@@ -43,6 +48,9 @@ export const MESSAGE_MS = 10_000;
 
 /** How long (ms) the button stays withdrawn after a press. */
 export const SETTLE_MS = 4_000;
+
+/** How long (ms) storing a press may take before the senior is asked to press again. */
+export const STORE_TIMEOUT_MS = 4_000;
 
 /** Said when the press could not be stored on the phone. */
 export const NOT_STORED_MESSAGE = 'Sunny could not save that. Please press Done again.';
@@ -76,6 +84,27 @@ export function doneTarget(tasks: DayTask[]): DayTask | null {
 }
 
 /**
+ * purpose: Wait for a storage call, but not longer than STORE_TIMEOUT_MS.
+ * @param write: (Promise<void>) The call.
+ * @return: (Promise<void>) Resolves when it finished.
+ * @raises: The call's error, or an Error on timeout.
+ */
+async function withinStoreTimeout(write: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('Storing the press took too long')),
+      STORE_TIMEOUT_MS,
+    );
+  });
+  try {
+    await Promise.race([write, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * purpose: Wire the Done button to the pending-confirm queue.
  * @param target: (DayTask | null) The task Done confirms (doneTarget), or null.
  * @param isOffline: (boolean) The connection to the backend is down (only changes the wording
@@ -90,15 +119,32 @@ export function useDoneAction(
 ): DoneAction {
   const [line, setLine] = useState<Line | null>(null);
   const [settling, setSettling] = useState(false);
+  const [earlyBlocked, setEarlyBlocked] = useState(false);
   const mounted = useRef(true);
   const lastPress = useRef(0);
   const storing = useRef(false);
   const settlingRef = useRef(false);
+  const earlyBlockedRef = useRef(false);
   const clearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const blockTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(clearTimer.current);
+      clearTimeout(settleTimer.current);
+      clearTimeout(blockTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (line !== null) AccessibilityInfo.announceForAccessibility(line.text);
+  }, [line]);
 
   /**
-   * purpose: Show a result line for MESSAGE_MS (announced by the effect below).
+   * purpose: Show a result line for MESSAGE_MS (announced by the effect above).
    * @param text: (string) The line.
    * @param instanceId: (string) The task the line is about.
    * @return: (void)
@@ -109,37 +155,26 @@ export function useDoneAction(
     clearTimer.current = setTimeout(() => setLine(null), MESSAGE_MS);
   };
 
-  useEffect(() => {
-    mounted.current = true;
-    const stopListening = queue.onRejection(({ entry }) => {
-      if (mounted.current) {
-        show(`${entry.label} could not be saved. It is still on your list.`, entry.instanceId);
-      }
-    });
-    return () => {
-      mounted.current = false;
-      stopListening();
-      clearTimeout(clearTimer.current);
-      clearTimeout(settleTimer.current);
-    };
-  }, [queue]);
-
-  useEffect(() => {
-    if (line !== null) AccessibilityInfo.announceForAccessibility(line.text);
-  }, [line]);
-
   /**
-   * purpose: Withdraw the button for SETTLE_MS.
+   * purpose: After a stored press, withdraw the button for SETTLE_MS and keep early tasks
+   *          from being offered until the result line has finished (MESSAGE_MS).
    * @return: (void)
    */
   const settle = (): void => {
     clearTimeout(settleTimer.current);
+    clearTimeout(blockTimer.current);
     settlingRef.current = true;
     setSettling(true);
+    earlyBlockedRef.current = true;
+    setEarlyBlocked(true);
     settleTimer.current = setTimeout(() => {
       settlingRef.current = false;
       setSettling(false);
     }, SETTLE_MS);
+    blockTimer.current = setTimeout(() => {
+      earlyBlockedRef.current = false;
+      setEarlyBlocked(false);
+    }, MESSAGE_MS);
   };
 
   /**
@@ -151,7 +186,7 @@ export function useDoneAction(
   const store = async (task: DayTask, pressedAt: number): Promise<void> => {
     storing.current = true;
     try {
-      await queue.enqueue(toPending(task, pressedAt));
+      await withinStoreTimeout(queue.enqueue(toPending(task, pressedAt)));
       if (!isOffline) void queue.replay();
       if (!mounted.current) return;
       const sent = isOffline ? ' It will be sent when the internet is back.' : '';
@@ -172,13 +207,15 @@ export function useDoneAction(
   const pressDone = (): void => {
     const now = Date.now();
     if (target === null || storing.current || settlingRef.current) return;
+    if (earlyBlockedRef.current && target.state === 'upcoming') return;
     if (now - lastPress.current < PRESS_GAP_MS) return;
     lastPress.current = now;
     void store(target, now);
   };
 
   // A line belongs to one task: show it under that task's button, or when no button is shown.
-  const task = settling ? null : target;
+  const hidden = settling || (earlyBlocked && target !== null && target.state === 'upcoming');
+  const task = hidden ? null : target;
   const message =
     line !== null && (task === null || line.instanceId === task.instanceId) ? line.text : null;
 

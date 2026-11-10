@@ -2,8 +2,9 @@
 //
 // Purpose: The building blocks of the senior phone's day clock: the orientation header
 // ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
-// coming week, the Done card (the task's label above one large Done button, with its due
-// time when it is not due yet, and the result line of the last press), plus the offline mark the caregiver home also uses. The home
+// coming week, the Done card (the task's label above one large Done button, and the result
+// line of the last press; a task that is not due yet gets a "Coming up at ..." heading and an
+// outlined "Done early" button), plus the offline mark the caregiver home also uses. The home
 // display has its own parts in src/display. Calm, high contrast, no motion.
 //
 // Last modified: 2026-11-09
@@ -241,12 +242,16 @@ const DONE_BUTTON_HEIGHT = 96;
 /** Background of the Done button while pressed; darker, so the white label keeps its contrast. */
 const DONE_PRESSED_COLOR = '#14582A';
 
+/** Background of the early Done button while pressed (a light tint of the success green). */
+const DONE_EARLY_PRESSED_COLOR = '#D9EBDD';
+
 /**
  * purpose: The Done card: the task's label above one large Done button, and the result of the
- *          last press below. A task that is not due yet (confirmed early) gets a line with its
- *          time ("Due at 12:30 PM") between the label and the button, so it is plain what is
- *          being checked off. With no task it shows only the result line, or nothing at all
- *          (never a button that does nothing).
+ *          last press below. A task that is not due yet (confirmed early) looks different on
+ *          purpose: a heading "Coming up at 9:00 AM" above the label and an outlined button
+ *          reading "Done early", so it is plain that this is not the task due now. With no
+ *          task it shows only the result line, or nothing at all (never a button that does
+ *          nothing).
  * @param props: ({ task, message, onPress }) The task Done confirms (null when there is none),
  *        the result line (null for none) and the press handler.
  * @return: (JSX.Element | null) The card.
@@ -262,39 +267,43 @@ export function DoneCard({
 }) {
   if (task === null && message === null) return null;
   const early = task !== null && task.state === 'upcoming';
+  const comingUp = task === null ? '' : `Coming up at ${displayTime(task.scheduledTime)}`;
   return (
     <View style={{ gap: 12, alignSelf: 'stretch' }}>
       {task !== null && (
         <>
           <View style={{ gap: 4 }}>
-            <Text style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}>
-              {task.displayLabel}
-            </Text>
             {early && (
               <Text
                 style={[
                   styles.rounded,
-                  { fontSize: 24, fontWeight: '500', color: colors.secondaryText },
+                  { fontSize: 24, fontWeight: '600', color: colors.secondaryText },
                 ]}
               >
-                {`Due at ${displayTime(task.scheduledTime)}`}
+                {comingUp}
               </Text>
             )}
+            <Text style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}>
+              {task.displayLabel}
+            </Text>
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
               early
-                ? `Done: ${task.displayLabel}, due at ${displayTime(task.scheduledTime)}`
+                ? `Done early: ${task.displayLabel}, ${comingUp.toLowerCase()}`
                 : `Done: ${task.displayLabel}`
             }
             onPress={onPress}
             style={({ pressed }) => [
               styles.doneButton,
-              pressed && { backgroundColor: DONE_PRESSED_COLOR },
+              early && styles.earlyButton,
+              pressed && { backgroundColor: early ? DONE_EARLY_PRESSED_COLOR : DONE_PRESSED_COLOR },
             ]}
           >
-            <Text style={styles.doneText}>Done</Text>
+            <Text style={[styles.doneText, early && styles.earlyText]}>
+              {early ? 'Done early' : 'Done'}
+            </Text>
           </Pressable>
         </>
       )}
@@ -328,6 +337,8 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: colors.success,
   },
+  earlyButton: { backgroundColor: colors.surface, borderWidth: 4, borderColor: colors.success },
+  earlyText: { color: colors.success, fontSize: 34 },
   doneText: { fontFamily: ROUNDED_FONT, fontSize: 40, fontWeight: '700', color: colors.surface },
   offline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });

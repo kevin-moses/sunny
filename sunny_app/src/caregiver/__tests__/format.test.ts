@@ -11,7 +11,7 @@
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -110,6 +110,8 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     confirmedAt: null,
     confirmedLocalTime: null,
     confirmedVia: null,
+    confirmReceivedAt: null,
+    confirmReceivedLocalTime: null,
     claimedBy: null,
     claimedByName: null,
     confirmedBy: null,
@@ -892,6 +894,25 @@ describe('doneDetail', () => {
       });
       expect([confirmedVia, doneDetail(task, USER)]).toEqual([confirmedVia, text]);
     }
+  });
+
+  it('says when a late-synced confirm reached the server', () => {
+    const task = makeTask({
+      state: 'confirmed',
+      confirmedVia: 'phone_app',
+      confirmedLocalTime: '08:05',
+      confirmReceivedLocalTime: '11:00',
+    });
+    expect(doneDetail(task, USER)).toBe('Done at 8:05 AM on the phone (sent at 11:00 AM)');
+  });
+
+  it('adds nothing for a live confirm', () => {
+    const task = makeTask({
+      state: 'confirmed',
+      confirmedVia: 'phone_app',
+      confirmedLocalTime: '08:05',
+    });
+    expect(doneDetail(task, USER)).toBe('Done at 8:05 AM on the phone');
   });
 
   it('omits the time when the server sent none', () => {

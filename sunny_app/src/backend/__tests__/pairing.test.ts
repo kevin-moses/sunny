@@ -9,11 +9,12 @@
 // authenticated account that mine does not know, removal of a device account without a device
 // entry, caregiver home and onboarding, the remembered home).
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-09
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { BackendError } from '../api';
+import { confirmQueue } from '../../day/pendingConfirms';
 import {
   decideSession,
   nonceForCode,
@@ -308,6 +309,13 @@ describe('unpair', () => {
     mockClerk.session = { id: 's' };
     await unpair();
     expect(mockCalls).toEqual(['push', 'signOut']);
+  });
+
+  it('drops the queued Done presses, with or without a session', async () => {
+    const clear = jest.spyOn(confirmQueue, 'clear').mockResolvedValue();
+    await unpair();
+    expect(clear).toHaveBeenCalledTimes(1);
+    clear.mockRestore();
   });
 
   it('shares one run between concurrent calls', async () => {
