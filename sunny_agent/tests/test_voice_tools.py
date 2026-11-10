@@ -20,7 +20,10 @@
 # FakeConvex from test_tools, Open-Meteo is an httpx.MockTransport, and the tools' clock is
 # fixed (tools.now_epoch_ms).
 #
-# Last modified: 2026-11-09
+# Round 4 (2026-11-10): log_dose honors "another" only when she was just asked whether it is
+# the same one or another, and its repeat result carries the exact question to ask.
+#
+# Last modified: 2026-11-10
 
 import asyncio
 from datetime import datetime
@@ -40,6 +43,7 @@ from list_tools import db_add_to_list, db_read_list, db_take_off_list
 from memory import ConversationLogger, build_transcript, parse_session_record
 from prompts import format_user_context, render_system_prompt
 from tools import (
+    SAME_OR_ANOTHER,
     db_flag_caregiver,
     db_log_dose,
     db_medication_status,
@@ -372,9 +376,9 @@ class TestMedication:
         )
         result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
         assert result.startswith(
-            "Nothing new was logged yet: one Pain reliever is already written down at 1:50 PM."
+            'Nothing new was logged yet. Say exactly: "I have one Pain reliever written down '
+            'at 1:50 PM. Is that the same one, or did you take another?"'
         )
-        assert "same one or another one" in result
         assert "another set to true" in result
 
     @pytest.mark.asyncio
@@ -997,6 +1001,59 @@ async def test_household_tool_failure_is_a_plain_sentence() -> None:
     assistant = Assistant(instructions="x", household_id="h1", convex=convex)
     result = await assistant.send_family_message(MagicMock(), "I'm home", "Sarah")
     assert result == "I'm sorry, I had trouble trying to send that message."
+
+
+class _DoseConvex:
+    """
+    purpose: Stand-in Convex client for log_dose: the second report of a dose is
+             already_logged unless another is true. Records the "another" of every call.
+    """
+
+    def __init__(self) -> None:
+        """
+        purpose: Start with no dose logged and no calls.
+        """
+        self.logged = 0
+        self.another: list[bool] = []
+
+    async def mutation(self, path: str, args: dict) -> dict:
+        """
+        purpose: Answer agent:logAsNeededDose.
+        @param path: (str) Function path.
+        @param args: (dict) Arguments.
+        @return: (dict) The backend's result.
+        """
+        assert path == "agent:logAsNeededDose"
+        self.another.append(bool(args["another"]))
+        medication = {"displayLabel": "Pain reliever", "takenLast24h": []}
+        if self.logged and not args["another"]:
+            return {
+                "status": "already_logged",
+                "takenAt": 0,
+                "repeatCall": False,
+                "medication": medication,
+            }
+        self.logged += 1
+        return {"status": "logged", "takenAt": 0, "medication": medication}
+
+
+@pytest.mark.asyncio
+async def test_another_dose_is_logged_only_after_the_question_was_asked() -> None:
+    """The model's "another" is ignored unless she was just asked same-or-another."""
+    convex = _DoseConvex()
+    assistant = Assistant(instructions="x", household_id="h1", convex=convex)  # type: ignore[arg-type]
+
+    await assistant.log_dose(MagicMock(), "pain")
+    # The model decides by itself that a second report is another dose: not honored.
+    asked = await assistant.log_dose(MagicMock(), "pain", 60, True)
+    assert asked.startswith(SAME_OR_ANOTHER)
+    assert convex.logged == 1
+    # She said "another one" (or was asked and said so): honored.
+    assistant._another_is_hers = True
+    logged = await assistant.log_dose(MagicMock(), "pain", 0, True)
+    assert logged.startswith("Logged")
+    assert convex.logged == 2
+    assert convex.another == [False, False, True]
 
 
 # ---------------------------------------------------------------------------

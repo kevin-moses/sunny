@@ -49,6 +49,21 @@
 # transcript of one or two words is echo when it is the tail of the agent's last utterance
 # within the window (a leaked "yes" after "Yes?"); longer ones by word overlap.
 #
+# Speech guard: Assistant.llm_node holds each model reply until it is complete and checks it
+# (speech_guard.py) before any of it is spoken. Words written before a tool call are dropped;
+# a reply that says family was told with no tool result saying so is replaced by a forced
+# flag_caregiver call (or, after a flag that reached nobody, by the plain "couldn't reach
+# your family" line); promises about what family will do are removed after a flag. The cost
+# is that speech starts when the reply is complete rather than at its first sentence. The
+# dose gate reads a value set at the start of each model call; a preemptive model call on an
+# unfinished transcript sets it from that transcript, and the final call sets it again.
+#
+# Repeated doses: log_dose honors the model's "another" only when her own words say it or
+# the agent's last words before her current turn asked whether it is the same one or another
+# (speech_guard.another_is_hers), so the model cannot infer a second dose by itself. When
+# log_dose answers with that question and the model says something else, the question itself
+# is spoken.
+#
 # Memory-care pivot: screen share, vision, guided iPhone workflows, and the iOS EventKit
 # reminder tool were removed (out of scope for the memory-care POC). Sessions are scoped
 # to a household on the new shared-state schema (notes/SCHEMA.md).
@@ -57,13 +72,13 @@
 # (so the client is closed even if setup fails); it finalizes the conversation, drains pending
 # turn writes (memory.shutdown_conversation) and only then closes the client.
 #
-# Last modified: 2026-11-09
+# Last modified: 2026-11-10
 
 import asyncio
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -77,13 +92,14 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     MetricsCollectedEvent,
+    ModelSettings,
     RoomInputOptions,
     RunContext,
     WorkerOptions,
     cli,
     metrics,
 )
-from livekit.agents.llm import ChatContext, ChatMessage, function_tool
+from livekit.agents.llm import ChatChunk, ChatContext, ChatMessage, Tool, function_tool
 from livekit.plugins import anthropic, cartesia, deepgram, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from tavily import TavilyClient
@@ -114,6 +130,12 @@ from memory import (
     shutdown_conversation,
 )
 from prompts import format_user_context, render_system_prompt
+from speech_guard import (
+    FORCE_FLAG,
+    UNREACHED_LINE,
+    another_is_hers,
+    review_reply,
+)
 from tools import (
     ANYTIME,
     db_cancel_senior_reminder,
@@ -188,6 +210,81 @@ class Assistant(Agent):
         self._prompt_label = prompt_label
         # Created on the first search, so a missing TAVILY_API_KEY only disables web_search.
         self._tavily: TavilyClient | None = None
+        # Whether "another dose" comes from her: she said so, or she was just asked "the
+        # same one or another?" (set on every model call). log_dose honors "another" only
+        # then.
+        self._another_is_hers = False
+
+    async def llm_node(
+        self,
+        chat_ctx: ChatContext,
+        tools: list[Tool],
+        model_settings: ModelSettings,
+    ) -> AsyncGenerator[ChatChunk | str, None]:
+        """
+        purpose: Run the model and hold its whole reply back until it has been checked, so
+                 nothing unsafe reaches text-to-speech (speech_guard.py). Words written
+                 before a tool call are dropped; a reply that says family was told when no
+                 tool told them is replaced by a forced flag_caregiver call; promises about
+                 what family will do are removed after a flag.
+        @param chat_ctx: (ChatContext) The conversation the model answers.
+        @param tools: (list[Tool]) The tools the model may call.
+        @param model_settings: (ModelSettings) Settings for this model call.
+        @return: (AsyncGenerator[ChatChunk | str, None]) Tool calls and the text to speak.
+        """
+        self._another_is_hers = another_is_hers(chat_ctx)
+        chunks = [
+            chunk
+            async for chunk in Agent.default.llm_node(
+                self, chat_ctx, tools, model_settings
+            )
+            if isinstance(chunk, ChatChunk)
+        ]
+        if _has_tool_call(chunks):
+            for chunk in _without_text(chunks):
+                yield chunk
+            return
+
+        text = "".join(c.delta.content or "" for c in chunks if c.delta)
+        verdict = review_reply(text, chat_ctx)
+        if verdict is FORCE_FLAG:
+            logger.warning(
+                "Reply said family was told without a tool call; forcing flag_caregiver"
+            )
+            forced: list[ChatChunk] = []
+            try:
+                forced = [
+                    chunk
+                    async for chunk in Agent.default.llm_node(
+                        self,
+                        chat_ctx,
+                        tools,
+                        ModelSettings(
+                            tool_choice={
+                                "type": "function",
+                                "function": {"name": "flag_caregiver"},
+                            }
+                        ),
+                    )
+                    if isinstance(chunk, ChatChunk)
+                ]
+            except Exception:
+                # She must still hear the truth: nobody was told.
+                logger.exception("Forced flag_caregiver call failed")
+            for chunk in _without_text(chunks + forced):
+                yield chunk
+            if not _has_tool_call(forced):
+                yield UNREACHED_LINE
+            return
+
+        if verdict == text:
+            for chunk in chunks:
+                yield chunk
+            return
+        logger.warning("Reply replaced by the speech guard")
+        for chunk in _without_text(chunks):
+            yield chunk
+        yield str(verdict)
 
     @function_tool
     async def web_search(self, context: RunContext, query: str):
@@ -359,6 +456,9 @@ class Assistant(Agent):
         Returns:
             What was logged and the label facts, or why nothing was logged
         """
+        # The model may not decide on its own that a report is a second dose: "another" is
+        # honored only when she said so or was just asked whether it is the same or another.
+        confirmed_another = another and self._another_is_hers
         return await self._household_tool(
             "log that",
             lambda h: db_log_dose(
@@ -368,7 +468,7 @@ class Assistant(Agent):
                 medication,
                 minutes_ago,
                 self._conversation_id,
-                another,
+                confirmed_another,
             ),
         )
 
@@ -569,6 +669,31 @@ class Assistant(Agent):
 
 # Sounds STT writes for hesitation or noise; alone they are not something to answer.
 _FILLER_WORDS = {"uh", "um", "hm", "hmm", "mm", "mhm", "er", "ah", "eh", "oh"}
+
+
+def _has_tool_call(chunks: list[ChatChunk]) -> bool:
+    """
+    purpose: Whether a model reply calls a tool.
+    @param chunks: (list[ChatChunk]) The reply's chunks.
+    @return: (bool) True when any chunk carries a tool call.
+    """
+    return any(c.delta and c.delta.tool_calls for c in chunks)
+
+
+def _without_text(chunks: list[ChatChunk]) -> list[ChatChunk]:
+    """
+    purpose: A model reply with its spoken text removed, keeping tool calls and usage.
+    @param chunks: (list[ChatChunk]) The reply's chunks.
+    @return: (list[ChatChunk]) The chunks that still carry something, without text.
+    """
+    kept: list[ChatChunk] = []
+    for chunk in chunks:
+        if chunk.delta and chunk.delta.content:
+            delta = chunk.delta.model_copy(update={"content": None})
+            chunk = chunk.model_copy(update={"delta": delta})
+        if chunk.usage or (chunk.delta and chunk.delta.tool_calls):
+            kept.append(chunk)
+    return kept
 
 
 def _is_garbage_input(text: str) -> bool:

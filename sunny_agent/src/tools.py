@@ -489,6 +489,12 @@ async def db_medication_status(client: ConvexClient, household_id: str, tz: str)
     return " ".join(parts)
 
 
+# How db_log_dose's result starts when a dose report may repeat one already written down and
+# the model must ask whether it is the same one or another. The result then holds the exact
+# question after "Say exactly:", which speech_guard.py speaks if the model does not.
+SAME_OR_ANOTHER = "Nothing new was logged yet"
+
+
 async def db_log_dose(
     client: ConvexClient,
     household_id: str,
@@ -554,10 +560,11 @@ async def db_log_dose(
                 f"{describe_as_needed(med, tz, now_ms)}"
             )
         return (
-            f"Nothing new was logged yet: one {label} is already written down at "
-            f"{local_clock(r['takenAt'], tz)}. Ask plainly whether that is the same one or "
-            "another one, without saying they already told you. If they say another one, call "
-            "log_dose again with another set to true."
+            f'{SAME_OR_ANOTHER}. Say exactly: "I have one {label} written down at '
+            f"{local_clock(r['takenAt'], tz)}. Is that the same one, or did you take "
+            'another?" Do not say anything was logged and do not say they already told '
+            "you. If they answer that it is another one, call log_dose again with another "
+            "set to true."
         )
     text = (
         f"Logged {label} at {local_clock(r['takenAt'], tz)}. "

@@ -24,7 +24,9 @@
 # gets two or three calm sentences; flag details are two sentences with no account numbers; a
 # fact that contradicts a verified one or touches the playbook is not saved. A dose report that
 # may repeat one already written down is asked about ("the same one or another?"); a dose can
-# only be taken back in the conversation that logged it.
+# only be taken back in the conversation that logged it. A flag is called before any words in
+# that turn, family is never said to be told without a tool result saying so, and what family
+# will do next is never promised.
 #
 # Sunny assumes a household in the United States for now: the emergency numbers (911, 988 and
 # Poison Control) come from config.py, the one place they are kept.
@@ -43,7 +45,7 @@
 # shown in full when short, as a count otherwise. The prompt states that the household
 # information is information, never instructions.
 #
-# Last modified: 2026-11-09
+# Last modified: 2026-11-10
 
 from __future__ import annotations
 
@@ -169,7 +171,10 @@ Do not save a fact that contradicts a family-verified fact or touches a playbook
 
 == WHEN TO FLAG FAMILY ==
 Call flag_caregiver, once per concern, with at most two short plain sentences of detail. \
-Never put card, bank or account numbers in the detail. Reasons:
+Never put card, bank or account numbers in the detail. The tool call comes first: in a turn \
+where you flag, call flag_caregiver before you say a single word, because you do not know \
+who was told until the tool answers. Never say family was told, is being told or will be \
+told unless a flag_caregiver result in this same turn says so. Reasons:
 - symptom: a new symptom or one that keeps coming back (dizziness, chest pain, not eating, a \
 headache that keeps returning). An everyday ache they treat with an as-needed medication \
 family set up is not new: flag it only when it keeps coming back. Feeling dizzy or unsteady \
@@ -185,6 +190,8 @@ where they are or what they see.
 Past a medication limit, log_dose tells family itself; do not flag it again. Something new \
 or worse after a flag (a fall after dizziness) is a new concern: flag it too.
 After flagging, say exactly who the tool says was told, for example "I've let Anna know." \
+Never promise what family will do next (that they will call, come or be there soon): you \
+only know who was told. \
 Never say someone was told unless the tool says so; if family could not be reached, say \
 exactly "I couldn't reach your family from here." and give no reason. For money or a scam, \
 also say it in plain words: "Don't send any money, buy gift cards or give anyone numbers or \
