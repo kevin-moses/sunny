@@ -3,7 +3,8 @@
 // Purpose: Render tests for where the voice card goes on the Now screen (NowBody): in the Next
 // up column beside a waiting task, so the task Done confirms stays in view; across the whole
 // body when nothing is waiting; and the Next up card as before without a voice card. Also the
-// Now card's tab: "Now", "Still to do" when overdue, "Later" when snoozed.
+// Now card's tab: "Now", "Still to do" when overdue, "Later" with AM or PM when snoozed
+// (also at midnight and noon).
 //
 // Last modified: 2026-11-09
 
@@ -87,21 +88,32 @@ describe('tabText', () => {
    * purpose: A one-step task card at 8:00.
    * @param overdue: (boolean) The family has been alerted.
    * @param snoozed: (boolean) The senior said "not yet".
+   * @param scheduledTime: (string) Its local "HH:MM" time; 08:00 by default.
    * @return: (NowCard) The card.
    */
-  const card = (overdue: boolean, snoozed: boolean): NowCard =>
+  const card = (overdue: boolean, snoozed: boolean, scheduledTime = '08:00'): NowCard =>
     ({
       kind: 'task',
-      task: { scheduledTime: '08:00', displayLabel: 'Morning pills', snoozed },
+      task: { scheduledTime, displayLabel: 'Morning pills', snoozed },
       overdue,
       steps: null,
     }) as unknown as NowCard;
 
-  it('reads Now, Still to do or Later with the time', () => {
+  it('reads Now or Still to do with the plain clock time', () => {
     expect(tabText(card(false, false))).toBe('Now  ·  8:00');
     expect(tabText(card(true, false))).toBe('Still to do  ·  8:00');
-    expect(tabText(card(false, true))).toBe('Later  ·  8:00');
-    expect(tabText(card(true, true))).toBe('Later  ·  8:00');
+    expect(tabText(card(false, false, '12:30'))).toBe('Now  ·  12:30');
+  });
+
+  it('reads Later with AM or PM for a snoozed task, overdue or not', () => {
+    expect(tabText(card(false, true))).toBe('Later  ·  8:00 AM');
+    expect(tabText(card(true, true))).toBe('Later  ·  8:00 AM');
+    expect(tabText(card(false, true, '12:30'))).toBe('Later  ·  12:30 PM');
+  });
+
+  it('writes midnight and noon as 12:00 AM and 12:00 PM', () => {
+    expect(tabText(card(false, true, '00:00'))).toBe('Later  ·  12:00 AM');
+    expect(tabText(card(false, true, '12:00'))).toBe('Later  ·  12:00 PM');
   });
 
   it('reads Now alone when nothing is waiting', () => {

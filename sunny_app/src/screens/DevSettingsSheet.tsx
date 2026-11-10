@@ -15,11 +15,12 @@
 //
 // Last modified: 2026-11-09
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
 import { unpair } from '../backend/pairing';
+import { useLatest } from '../display/timers';
 import { TUNING_KEYS, TUNING_SPECS, formatTuning } from '../display/tuning';
 import { useTuningControls } from '../display/TuningProvider';
 import { colors, PALETTE, ROUNDED_FONT } from '../theme/colors';
@@ -118,11 +119,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function DisplayTuningSection() {
   const controls = useTuningControls();
   // Closing the sheet stops a test cue that is still playing.
-  const stopRef = useRef(controls?.stopTestCue);
-  useEffect(() => {
-    stopRef.current = controls?.stopTestCue;
-  });
-  useEffect(() => () => stopRef.current?.(), []);
+  const stopRef = useLatest(controls?.stopTestCue);
+  useEffect(() => () => stopRef.current?.(), [stopRef]);
   if (controls === null) return null;
   const { tuning, setValue, resetToDefaults, showSampleAnswer, requestTestCue, testCueResult } =
     controls;

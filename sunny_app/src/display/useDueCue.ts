@@ -39,6 +39,8 @@ import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 import { SAMPLE_PROMPT, cueChoice, cueSpeech, isCueable, rememberCued } from './cue';
 import { playCue } from './cueAudio';
+import type { CueLine, CueResult } from './cueAudio';
+import { useLatest, useTimeout } from './timers';
 import { useTestCue, useTuning } from './TuningProvider';
 
 /** AsyncStorage key of the cue keys already played on this device. */
@@ -113,8 +115,8 @@ export function useDueCue(tasks: DayTask[] | null, blocked: boolean, onCue: () =
   const handledTestId = useRef(testRequest?.id ?? 0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const playing = useRef<PlayingCue | null>(null);
-  const latestTasks = useRef<DayTask[] | null>(tasks);
-  const reportRef = useRef(testCue.report);
+  const latestTasks = useLatest(tasks);
+  const reportRef = useLatest(testCue.report);
   const [loaded, setLoaded] = useState(false);
   // Bumped when a cue ends or a retry is due, so owed cues are looked at again.
   const [finished, setFinished] = useState(0);
@@ -128,17 +130,7 @@ export function useDueCue(tasks: DayTask[] | null, blocked: boolean, onCue: () =
     if (!blocked) setSettleId(settleId + 1);
   }
   const settling = settleId !== settledId;
-  const settleMs = tuning.cueSettleMs;
-  useEffect(() => {
-    if (settleId === 0) return undefined;
-    const timer = setTimeout(() => setSettledId(settleId), settleMs);
-    return () => clearTimeout(timer);
-  }, [settleId, settleMs]);
-
-  useEffect(() => {
-    latestTasks.current = tasks;
-    reportRef.current = testCue.report;
-  });
+  useTimeout(() => setSettledId(settleId), settleId === 0 ? null : tuning.cueSettleMs, settleId);
 
   useEffect(() => {
     let live = true;
@@ -160,15 +152,11 @@ export function useDueCue(tasks: DayTask[] | null, blocked: boolean, onCue: () =
     /**
      * purpose: Play a cue and clear the playing mark when it ends.
      * @param cue: (PlayingCue) The cue being started.
-     * @param lines: (Parameters<typeof playCue>[0]) Its lines.
-     * @param after: ((result: Awaited<ReturnType<typeof playCue>>) => void) Runs when it ends.
+     * @param lines: (CueLine[]) Its lines.
+     * @param after: ((result: CueResult) => void) Runs when it ends.
      * @return: (void)
      */
-    const start = (
-      cue: PlayingCue,
-      lines: Parameters<typeof playCue>[0],
-      after: (result: Awaited<ReturnType<typeof playCue>>) => void,
-    ): void => {
+    const start = (cue: PlayingCue, lines: CueLine[], after: (result: CueResult) => void): void => {
       playing.current = cue;
       void playCue(lines, cue.controller.signal, tuning).then((result) => {
         if (playing.current === cue) playing.current = null;
@@ -246,7 +234,18 @@ export function useDueCue(tasks: DayTask[] | null, blocked: boolean, onCue: () =
     cued.current = rememberCued(cued.current, [...play, ...absorb], tasks);
     saveCued(cued.current);
     if (play.length > 0) startDue(play, false);
-  }, [loaded, tasks, blocked, settling, finished, onCue, tuning, testRequest]);
+  }, [
+    loaded,
+    tasks,
+    blocked,
+    settling,
+    finished,
+    onCue,
+    tuning,
+    testRequest,
+    latestTasks,
+    reportRef,
+  ]);
 
   // Stop a cue when a voice session starts, when none of its tasks may be cued any more, or
   // (a test cue) when the sheet closed.

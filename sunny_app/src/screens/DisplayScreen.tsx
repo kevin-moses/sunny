@@ -8,8 +8,8 @@
 // than locked because iPadOS 26 no longer reliably honors an orientation lock.
 //
 // The panel is a carousel of two screens, switched every tuned carouselMs (display/tuning.ts)
-// with no motion: Now (the
-// Now card and Next up) and Today (the day's rows, the waiting task boxed). A newly due task
+// with no motion: Now (the Now card and Next up) and Today (the day's rows, the waiting task
+// boxed). A newly due task
 // and any key press bring Now back and restart the timer; during a multi-step task, a voice
 // session or while an answer lingers, the carousel holds on Now so it stays in view. Nothing on
 // the panel itself is pressable. Keeps the screen awake with the status bar hidden. The day

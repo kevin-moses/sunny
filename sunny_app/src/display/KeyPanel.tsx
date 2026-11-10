@@ -36,20 +36,21 @@ const STATUS_LINES = 4;
 /**
  * purpose: One raised key: a symbol above its word.
  * @param props: ({ icon, label, hint, busy, onPress }) The key's symbol and word, its
- *        VoiceOver hint, whether its action is in progress, and the press handler.
+ *        VoiceOver hint, whether its action is in progress (default false), and the press
+ *        handler.
  * @return: (JSX.Element) The key.
  */
 function Key({
   icon,
   label,
   hint,
-  busy,
+  busy = false,
   onPress,
 }: {
   icon: SFSymbol;
   label: string;
   hint: string;
-  busy: boolean;
+  busy?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -106,13 +107,7 @@ export function KeyPanel({
           {status}
         </DText>
       </View>
-      <Key
-        icon="mic"
-        label="Talk"
-        hint="Talk to Sunny. Press again to stop."
-        busy={false}
-        onPress={onTalk}
-      />
+      <Key icon="mic" label="Talk" hint="Talk to Sunny. Press again to stop." onPress={onTalk} />
     </View>
   );
 }

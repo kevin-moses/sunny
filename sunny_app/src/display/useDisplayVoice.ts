@@ -43,6 +43,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { clockTime } from '../day/format';
 import { useConversation, useVoice } from '../voice/voiceContext';
+import { useLatest, useTimeout } from './timers';
 import { useSampleAnswer, useTuning } from './TuningProvider';
 import { useMicrophoneAllowed } from './useMicrophoneAllowed';
 import {
@@ -164,22 +165,14 @@ export function useDisplayVoice(
   }
 
   // The lingering answer leaves the panel answerLingerMs after it appeared.
-  const lingerMs = tuning.answerLingerMs;
-  useEffect(() => {
-    if (lingering === null) return undefined;
-    const timer = setTimeout(() => setLingering(null), lingerMs);
-    return () => clearTimeout(timer);
-  }, [lingering, lingerMs]);
+  useTimeout(
+    () => setLingering(null),
+    lingering === null ? null : tuning.answerLingerMs,
+    lingering,
+  );
 
-  // The session's callbacks change identity with every LiveKit state change and tuning edit;
-  // timers read them through refs so they depend only on their real inputs.
-  const { connect, disconnect } = voice;
-  const actions = useRef({ disconnect, show });
-  // Set once a session has been ended by this hook, so one session is ended (and announced) once.
+  // Set once this hook has ended the current session, so it is ended (and announced) once.
   const ended = useRef(false);
-  useEffect(() => {
-    actions.current = { disconnect, show };
-  });
   useEffect(() => {
     if (active) ended.current = false;
   }, [active]);
@@ -188,35 +181,27 @@ export function useDisplayVoice(
    * @param message: (string) The line to show.
    * @return: (void)
    */
-  const endWith = useCallback((message: string): void => {
+  const endWith = (message: string): void => {
     if (ended.current) return;
     ended.current = true;
-    void actions.current.disconnect();
-    actions.current.show(message);
-  }, []);
+    void voice.disconnect();
+    show(message);
+  };
 
   // Give up on a session that has not reached the agent within startTimeoutMs of the press.
+  // (Timers read their callbacks when they fire, so LiveKit changing the session's callbacks on
+  // every state change never restarts them.)
   const connecting = active && !agentJoined;
-  const startTimeoutMs = tuning.startTimeoutMs;
-  useEffect(() => {
-    if (!connecting) return undefined;
-    const timer = setTimeout(() => endWith(CONNECT_FAILED_MESSAGE), startTimeoutMs);
-    return () => clearTimeout(timer);
-  }, [connecting, startTimeoutMs, endWith]);
+  useTimeout(() => endWith(CONNECT_FAILED_MESSAGE), connecting ? tuning.startTimeoutMs : null);
 
   // Continuous speaking holds the session open for at most speakingCapMs.
-  const speakingCapMs = tuning.speakingCapMs;
-  useEffect(() => {
-    if (!userSpeaking) return undefined;
-    const timer = setTimeout(
-      () => setSpeech((s) => (s.speaking ? { ...s, capped: true } : s)),
-      speakingCapMs,
-    );
-    return () => clearTimeout(timer);
-  }, [userSpeaking, speakingCapMs]);
+  useTimeout(
+    () => setSpeech((s) => (s.speaking ? { ...s, capped: true } : s)),
+    userSpeaking ? tuning.speakingCapMs : null,
+  );
 
   // End a session that stays quiet: the timer restarts whenever anything changes.
-  const timeout = idleTimeoutMs(
+  const idleMs = idleTimeoutMs(
     {
       phase,
       agentJoined,
@@ -227,56 +212,39 @@ export function useDisplayVoice(
   );
   const last = conversation.messages.at(-1);
   const activity = `${phase}|${conversation.messages.length}|${last?.message.length ?? 0}`;
-  useEffect(() => {
-    if (timeout === null) return undefined;
-    const timer = setTimeout(() => endWith(STOPPED_MESSAGE), timeout);
-    return () => clearTimeout(timer);
-  }, [timeout, activity, endWith]);
+  useTimeout(() => endWith(STOPPED_MESSAGE), idleMs, activity);
 
   // The absolute ceiling: sessionMaxMs after the session started, whatever is happening. An
   // answer being spoken may finish first, for at most ceilingGraceMs.
-  const sessionMaxMs = tuning.sessionMaxMs;
-  useEffect(() => {
-    if (!active) return undefined;
-    const timer = setTimeout(() => setCeiling(true), sessionMaxMs);
-    return () => clearTimeout(timer);
-  }, [active, sessionMaxMs]);
+  useTimeout(() => setCeiling(true), active ? tuning.sessionMaxMs : null);
   const answering = phase === 'speaking' && exchange.answer !== null;
   const ceilingNow = active && ceiling && !answering;
+  const endRef = useLatest(endWith);
   useEffect(() => {
-    if (ceilingNow) endWith(CEILING_MESSAGE);
-  }, [ceilingNow, endWith]);
-  const graceMs = tuning.ceilingGraceMs;
-  const inGrace = active && ceiling;
-  useEffect(() => {
-    if (!inGrace) return undefined;
-    const timer = setTimeout(() => endWith(CEILING_MESSAGE), graceMs);
-    return () => clearTimeout(timer);
-  }, [inGrace, graceMs, endWith]);
+    if (ceilingNow) endRef.current(CEILING_MESSAGE);
+  }, [ceilingNow, endRef]);
+  useTimeout(() => endWith(CEILING_MESSAGE), active && ceiling ? tuning.ceilingGraceMs : null);
 
-  // A failed session is reported in plain words (once per failure).
+  // A failed session is reported in plain words (once per failure, not again when `show`
+  // changes identity).
   const { error } = voice;
   const joined = track.joined;
+  const showRef = useLatest(show);
   useEffect(() => {
-    if (error !== null) actions.current.show(failureMessage(joined));
-  }, [error, joined]);
+    if (error !== null) showRef.current(failureMessage(joined));
+  }, [error, joined, showRef]);
 
   /**
    * purpose: The Talk key: end a live (or connecting) session, otherwise start one unless the
    *          display is offline or the microphone is refused.
    * @return: (void)
    */
-  const talk = useCallback((): void => {
-    if (active) {
-      endWith(STOPPED_MESSAGE);
-    } else if (offline) {
-      show(OFFLINE_MESSAGE);
-    } else if (micAllowed === false) {
-      show(MIC_OFF_MESSAGE);
-    } else {
-      void connect();
-    }
-  }, [active, offline, micAllowed, connect, endWith, show]);
+  const talk = (): void => {
+    if (active) endWith(STOPPED_MESSAGE);
+    else if (offline) show(OFFLINE_MESSAGE);
+    else if (micAllowed === false) show(MIC_OFF_MESSAGE);
+    else void voice.connect();
+  };
 
   /**
    * purpose: Take a lingering answer off the panel.

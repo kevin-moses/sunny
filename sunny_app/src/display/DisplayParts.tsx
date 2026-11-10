@@ -9,8 +9,9 @@
 //   shows the task to act on (title, pill description, "Taken them? Press [Done]"), the
 //   overdue form ("Still to do", plus "Not sure? Press [Talk]"), one step of a multi-step
 //   task with its progress boxes, or a calm clear state. A snoozed task (the senior said "not
-//   yet") keeps its card, since Done still confirms it, but its tab reads "Later" instead of
-//   "Now" or "Still to do", matching the due cue, which stays quiet until the snooze ends.
+//   yet") keeps its card, since Done still confirms it, but its tab reads "Later · 8:00 AM"
+//   (the one time on the panel written with AM or PM) instead of "Now" or "Still to do",
+//   matching the due cue, which stays quiet until the snooze ends.
 //   While the senior talks to Sunny, and for a few minutes after, the voice card (VoiceCardView: "Listening", "Thinking", then the
 //   answer as large text) takes the Next up card's place, so a waiting task stays in view on
 //   the left and Done still confirms what the screen shows. With nothing waiting, the voice
@@ -29,11 +30,11 @@ import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';
 
-import { clockTime } from '../day/format';
+import { clockTime, displayTime } from '../day/format';
 import type { DayViewData } from '../day/types';
 import { doneQuestion, fullDate, taskIcon } from './model';
 import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
-import { CANVAS, font, ink } from './theme';
+import { CANVAS, TAB_SEPARATOR, font, ink } from './theme';
 import type { VoiceCard } from './voiceModel';
 
 /** Up to this many steps get progress boxes; longer tasks show only "Step 2 of 7". */
@@ -200,8 +201,8 @@ export function NowBody({
  */
 function VoiceCardView({ card, wide }: { card: VoiceCard; wide: boolean }) {
   const parts =
-    card.kind === 'answer' ? [card.tab, card.text] : [card.tab, card.title, card.detail ?? ''];
-  const label = parts.filter((part) => part !== '').join('. ');
+    card.kind === 'answer' ? [card.tab, card.text] : [card.tab, card.title, card.detail];
+  const label = parts.filter(Boolean).join('. ');
   return (
     <View accessible accessibilityLabel={label} style={styles.voiceColumn}>
       <View style={styles.tab}>
@@ -248,16 +249,28 @@ function tabLead(card: TaskCard): string {
 }
 
 /**
+ * purpose: The time on a one-step task's tab: with AM or PM after "Later" ("8:00 AM",
+ *          "12:30 PM"), as the rest of the app writes a time it is waiting for; otherwise the
+ *          display's plain clock form ("8:00").
+ * @param card: (TaskCard) The task card.
+ * @return: (string) The time.
+ */
+function tabTime(card: TaskCard): string {
+  const time = card.task.scheduledTime;
+  return card.task.snoozed ? displayTime(time) : clockTime(time);
+}
+
+/**
  * purpose: The tab above the Now card: its lead (tabLead), followed by the task's time
- *          (one-step task) or name (multi-step task); "Now" alone when nothing is waiting.
+ *          (one-step task, tabTime) or name (multi-step task); "Now" alone when nothing is
+ *          waiting.
  * @param card: (NowCard) The card.
  * @return: (string) The tab text.
  */
 export function tabText(card: NowCard): string {
   if (card.kind === 'clear') return 'Now';
-  const lead = tabLead(card);
-  const tail = card.steps !== null ? card.task.displayLabel : clockTime(card.task.scheduledTime);
-  return `${lead}  ·  ${tail}`;
+  const tail = card.steps !== null ? card.task.displayLabel : tabTime(card);
+  return `${tabLead(card)}${TAB_SEPARATOR}${tail}`;
 }
 
 /**

@@ -51,7 +51,8 @@ conversation screen. Its voice states live on the paper panel:
   speech (`expo-speech`, slow rate): the caregiver's spoken prompt, or "Time for <label>, at
   <time>. Press Done when you have taken them / finished." Never during a voice session (it
   waits until 2 s after the session, and is dropped if the task was confirmed meanwhile),
-  never while a task is snoozed (the day view's `snoozed`; the Now card's tab reads "Later"):
+  never while a task is snoozed (the day view's `snoozed`; the Now card's tab reads
+  "Later · 8:00 AM", the one time on the panel written with AM or PM):
   its owed cue plays when the snooze ends, within about a minute, unless the task was
   confirmed. Two cues for one task are at least 2 minutes apart, so the snooze end and the
   backend's reprompt that may follow give one cue. Never for anytime tasks, and once per

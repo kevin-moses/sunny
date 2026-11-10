@@ -46,7 +46,7 @@ export interface CueLine {
 }
 
 /** How a cue ended. */
-export type CueStatus = 'played' | 'stopped' | 'failed';
+type CueStatus = 'played' | 'stopped' | 'failed';
 
 /** How a cue ended, and how many of its lines were done (spoken or skipped) before that. */
 export interface CueResult {
@@ -55,7 +55,7 @@ export interface CueResult {
 }
 
 /** The tuning values a cue uses. */
-export type CueTuning = Pick<
+type CueTuning = Pick<
   DisplayTuning,
   'speechRate' | 'afterChimeMs' | 'speechTimeoutMinMs' | 'speechMsPerChar'
 >;
@@ -131,7 +131,7 @@ async function playChime(signal: AbortSignal): Promise<void> {
  * @param tuning: (CueTuning) The tuning values.
  * @return: (number) Milliseconds.
  */
-export function speechLimitMs(text: string, tuning: CueTuning): number {
+function speechLimitMs(text: string, tuning: CueTuning): number {
   return Math.max(
     tuning.speechTimeoutMinMs,
     (text.length * tuning.speechMsPerChar) / tuning.speechRate,

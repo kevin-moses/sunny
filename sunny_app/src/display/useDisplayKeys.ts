@@ -8,9 +8,8 @@
 // after a voice session. Talk hands over to the display's voice layer (useDisplayVoice), which
 // starts or ends a session. A second press of either key within the tuned pressGapMs is
 // ignored so a tremor or a double tap cannot skip a step, and Done is ignored while a confirm
-// is in flight
-// ("Saving" shows until it lands, which offline is when the connection is back). Results go to
-// the status line (useStatusMessage), which shows and announces them.
+// is in flight ("Saving" shows until it lands, which offline is when the connection is back).
+// Results go to the status line (useStatusMessage), which shows and announces them.
 //
 // Last modified: 2026-11-09
 

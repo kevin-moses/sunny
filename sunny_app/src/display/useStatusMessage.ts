@@ -2,13 +2,16 @@
 //
 // Purpose: The short message shown on the home display's status line between the Done and
 // Talk keys (a key's result, a voice failure). Each message stays for the tuned messageMs,
-// or until the next one replaces it, and is announced to VoiceOver when it is shown.
+// or until the next one replaces it, and is announced to VoiceOver when it is shown. The
+// timing is the caregiver app's useUndoToast (show, replace and restart, cleared on unmount,
+// nothing after unmount) holding a message instead of a task.
 //
 // Last modified: 2026-11-09
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from 'react';
 import { AccessibilityInfo } from 'react-native';
 
+import { useUndoToast } from '../caregiver/useUndoToast';
 import { useTuning } from './TuningProvider';
 
 /** What useStatusMessage returns. */
@@ -25,10 +28,8 @@ export interface StatusMessage {
  */
 export function useStatusMessage(): StatusMessage {
   const { messageMs } = useTuning();
-  const [message, setMessage] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  useEffect(() => () => clearTimeout(timer.current), []);
+  const toast = useUndoToast<string>(messageMs);
+  const showToast = toast.show;
 
   /**
    * purpose: Show a message for messageMs and announce it.
@@ -37,13 +38,11 @@ export function useStatusMessage(): StatusMessage {
    */
   const show = useCallback(
     (text: string): void => {
-      clearTimeout(timer.current);
-      setMessage(text);
+      showToast(text);
       AccessibilityInfo.announceForAccessibility(text);
-      timer.current = setTimeout(() => setMessage(null), messageMs);
     },
-    [messageMs],
+    [showToast],
   );
 
-  return { message, show };
+  return { message: toast.id, show };
 }

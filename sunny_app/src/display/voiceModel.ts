@@ -25,6 +25,7 @@ import type { AgentState } from '@livekit/components-react';
 import type { SFSymbol } from 'expo-symbols';
 
 import type { VoiceConnectionState } from '../voice/voiceContext';
+import { TAB_SEPARATOR } from './theme';
 import type { DisplayTuning } from './tuning';
 
 /** The plain-words line when a session never reached the agent. */
@@ -170,7 +171,7 @@ export function voiceCard(
       if (lingering === null) return null;
       return {
         kind: 'answer',
-        tab: lingering.at === null ? 'Sunny said' : `Sunny said  ·  ${lingering.at}`,
+        tab: lingering.at === null ? 'Sunny said' : `Sunny said${TAB_SEPARATOR}${lingering.at}`,
         text: lingering.text,
       };
     case 'starting':
@@ -191,7 +192,7 @@ export function voiceCard(
             title: 'Listening',
             detail: 'Ask your question.',
           }
-        : { kind: 'answer', tab: 'Sunny  ·  Listening', text: exchange.answer };
+        : { kind: 'answer', tab: `Sunny${TAB_SEPARATOR}Listening`, text: exchange.answer };
     case 'thinking':
       return {
         kind: 'prompt',

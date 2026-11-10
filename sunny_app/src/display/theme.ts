@@ -35,6 +35,9 @@ export const ink = {
   keyEdge: '#9C978B',
 } as const;
 
+/** What separates the parts of a tab ("Now  ·  8:00", "Sunny said  ·  10:42"). */
+export const TAB_SEPARATOR = '  ·  ';
+
 /** The size (points) every display screen is designed at; the screen scales it to fit. */
 export const CANVAS = { width: 1194, height: 834 } as const;
 

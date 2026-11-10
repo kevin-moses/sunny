@@ -17,10 +17,11 @@
 //     beside it, as LiveKit's own start would (with the pre-connect audio buffer, so speech
 //     said while connecting is kept). Owning that promise means a start ended before the
 //     microphone came on turns it off again the moment it does.
-//   - Agent failure: useSession is given an agent connect timeout (20 s on the phone; the
-//     tuned startTimeoutMs on the home display, so that setting is honest); when the agent
-//     state becomes 'failed' (no agent in time, or the agent left) the failure reasons are
-//     surfaced as the error and the session is ended, once per failure.
+//   - Agent failure: useSession is given an agent connect timeout (20 s on the phone; on the
+//     home display the longest allowed startTimeoutMs, because the display's own start
+//     timeout, counted from the Talk press, must always be the one that fires); when the
+//     agent state becomes 'failed' (no agent in time, or the agent left) the failure reasons
+//     are surfaced as the error and the session is ended, once per failure.
 //   - isInteractive: true while connecting after a Talk press, connected, or reconnecting.
 //   - Phone RPC (findContact, sendMessage) is registered on the room on the senior phone only
 //     (the home display answers such calls with LiveKit's UNSUPPORTED_METHOD error); app logs
@@ -60,7 +61,7 @@ import type { PairedDevice } from '../backend/pairing';
 import { errorMessage } from '../errors';
 import { attachLogRoom, detachLogRoom, logger } from '../logging/logger';
 import { usePushNotifications, type NotificationTap } from '../notifications/push';
-import { useTuning } from '../display/TuningProvider';
+import { TUNING_SPECS } from '../display/tuning';
 import { stopLocalAudio } from './localAudio';
 import { registerPhoneRpcMethods } from './rpc';
 import {
@@ -81,6 +82,13 @@ export { useConversation, useVoice } from './voiceContext';
 
 /** How long the phone waits for an agent to join after connecting, in milliseconds. */
 const AGENT_CONNECT_TIMEOUT_MS = 20_000;
+
+/**
+ * The home display's agent connect timeout: the longest its tuned start timeout may be. The
+ * display ends a session that has not reached the agent startTimeoutMs after the Talk press,
+ * and LiveKit counts this one only from the room connect, so LiveKit's never fires first.
+ */
+const DISPLAY_AGENT_CONNECT_TIMEOUT_MS = TUNING_SPECS.startTimeoutMs.max;
 
 /** Error shown when the agent failed without LiveKit giving a reason. */
 const AGENT_NOT_CONNECTED_MESSAGE = 'Agent did not connect to the Room';
@@ -153,9 +161,10 @@ function PairedVoiceProvider({
   const [isStarting, setIsStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { startTimeoutMs } = useTuning();
   const session = useSession(tokenSource, {
-    agentConnectTimeoutMilliseconds: phone ? AGENT_CONNECT_TIMEOUT_MS : startTimeoutMs,
+    agentConnectTimeoutMilliseconds: phone
+      ? AGENT_CONNECT_TIMEOUT_MS
+      : DISPLAY_AGENT_CONNECT_TIMEOUT_MS,
   });
   const agent = useAgent(session);
   const { messages, send } = useSessionMessages(session);

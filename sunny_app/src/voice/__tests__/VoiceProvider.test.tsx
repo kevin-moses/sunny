@@ -7,8 +7,9 @@
 // promise the test resolves. Covers: a start cancelled during the token fetch never connects
 // and leaves no live microphone, including a microphone that comes on only after the cancel
 // and one still waiting to publish; unmounting turns the microphone off; a failed agent ends
-// the session exactly once; the agent connect timeout is the tuned start timeout on the home
-// display (also above 20 s) and 20 s on the phone; and the phone RPC methods are registered on
+// the session exactly once; the agent connect timeout on the home display is never shorter than
+// any tuned start timeout (so the display's own timeout always decides) and 20 s on the phone;
+// and the phone RPC methods are registered on
 // the phone only.
 //
 // Last modified: 2026-11-09
@@ -18,7 +19,7 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { PairedDevice } from '../../backend/pairing';
-import { DEFAULT_TUNING } from '../../display/tuning';
+import { DEFAULT_TUNING, TUNING_SPECS } from '../../display/tuning';
 import { TuningContext } from '../../display/TuningProvider';
 import type { TuningControls } from '../../display/TuningProvider';
 import { VoiceProvider, useVoice } from '../VoiceProvider';
@@ -285,9 +286,11 @@ describe('agent failure', () => {
 });
 
 describe('agent connect timeout', () => {
-  it('is the tuned start timeout on the home display, also above 20 s', () => {
+  it('is never shorter than the longest tuned start timeout on the home display', () => {
     const renderer = renderProvider(DISPLAY, 30_000);
-    expect(mockUseSessionOptions.at(-1)).toEqual({ agentConnectTimeoutMilliseconds: 30_000 });
+    expect(mockUseSessionOptions.at(-1)).toEqual({
+      agentConnectTimeoutMilliseconds: TUNING_SPECS.startTimeoutMs.max,
+    });
     act(() => renderer.unmount());
   });
 

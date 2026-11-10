@@ -47,7 +47,7 @@ export function isCueable(task: DayTask): boolean {
 }
 
 /** Which owed cues to play now and which to absorb. */
-export interface CueChoice {
+interface CueChoice {
   /** Tasks to cue now, in day order. */
   play: DayTask[];
   /** Tasks cued too recently: their new cue is remembered as played without sounding. */
@@ -55,7 +55,7 @@ export interface CueChoice {
 }
 
 /** When each task was last cued, to keep cues for one task apart. */
-export interface CueSpacing {
+interface CueSpacing {
   /** Epoch ms of the last cue that played, by instance id. */
   lastCueAt: ReadonlyMap<string, number>;
   /** Epoch ms now. */

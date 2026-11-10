@@ -84,7 +84,7 @@ async function loadTuning(): Promise<DisplayTuning> {
     const raw = await AsyncStorage.getItem(TUNING_STORAGE_KEY);
     return sanitizeTuning(raw === null ? null : JSON.parse(raw));
   } catch {
-    return { ...DEFAULT_TUNING };
+    return sanitizeTuning(null);
   }
 }
 
@@ -139,12 +139,16 @@ export function TuningProvider({
     () => ({
       tuning,
       /**
-       * purpose: Set one tunable, clamped, and save it.
+       * purpose: Set one tunable, clamped, and save it; nothing happens when the clamped value
+       *          is the current one (a stepper pressed at its limit).
        * @param key: (TuningKey) The tunable.
        * @param raw: (number) The candidate value.
        * @return: (void)
        */
-      setValue: (key, raw) => commit({ ...tuning, [key]: clampTuning(key, raw) }),
+      setValue: (key, raw) => {
+        const value = clampTuning(key, raw);
+        if (value !== tuning[key]) commit({ ...tuning, [key]: value });
+      },
       /**
        * purpose: Restore and save the defaults.
        * @return: (void)
