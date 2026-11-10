@@ -25,7 +25,7 @@
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
 //
-// Last modified: 2026-11-09 (agentMemory by_household_verified index)
+// Last modified: 2026-11-09
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -210,6 +210,9 @@ export default defineSchema({
     confirmedAt: v.optional(v.number()),
     confirmedBy: v.optional(v.string()),
     confirmedVia: v.optional(confirmVia),
+    // When the server received a confirm that a senior device had held (it was pressed offline)
+    // and sent later; set only when that is more than LATE_SYNC_MS after confirmedAt.
+    confirmReceivedAt: v.optional(v.number()),
     // The state an editor caregiver's resolve replaced, kept so instances.undoResolve can
     // restore it; cleared by the undo.
     resolvedFromState: v.optional(instanceState),
