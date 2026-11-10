@@ -19,19 +19,15 @@
 import { useCallback, useRef, useState } from 'react';
 
 import { callMutation, toBackendError } from '../backend/api';
-import {
-  api,
-  type FactId,
-  type HouseholdId,
-  type ProfileEntryId,
-  type TopicId,
-} from '../backend/convexApi';
+import { api, type FactId, type HouseholdId } from '../backend/convexApi';
 import {
   addOutcome,
   fieldRowKey,
+  rowKey,
   type AddOutcome,
   type FieldTarget,
   type LifeCategory,
+  type RowRef,
 } from './aboutFormat';
 
 /** A slot's state: an action running, a failure, or a calm notice. */
@@ -39,12 +35,6 @@ export type ProfileActionState =
   | { status: 'working' }
   | { status: 'error'; message: string }
   | { status: 'notice'; message: string };
-
-/** A row that can be removed. */
-export type RemoveTarget =
-  | { kind: 'entry'; id: ProfileEntryId }
-  | { kind: 'topic'; id: TopicId }
-  | { kind: 'fact'; id: FactId };
 
 /** What useProfileActions returns. */
 export interface ProfileActions {
@@ -61,7 +51,7 @@ export interface ProfileActions {
   /** Confirm a fact the senior said. */
   verifyFact: (id: FactId) => Promise<boolean>;
   /** Remove a row. */
-  remove: (target: RemoveTarget) => Promise<boolean>;
+  remove: (target: RowRef) => Promise<boolean>;
   /** Send the senior a text message; resolves true when sent. */
   sendMessage: (body: string) => Promise<boolean>;
 }
@@ -228,18 +218,20 @@ export function useProfileActions(householdId: HouseholdId): ProfileActions {
    */
   const verifyFact = useCallback(
     (id: FactId): Promise<boolean> =>
-      run(`fact:${id}`, () => callMutation(api.profile.verifyFact, { householdId, factId: id })),
+      run(rowKey({ kind: 'fact', id }), () =>
+        callMutation(api.profile.verifyFact, { householdId, factId: id }),
+      ),
     [householdId, run],
   );
 
   /**
    * purpose: Remove an entry, topic or fact (shown on its row).
-   * @param target: (RemoveTarget) The row.
+   * @param target: (RowRef) The row.
    * @return: (Promise<boolean>) True when removed; never rejects.
    */
   const remove = useCallback(
-    (target: RemoveTarget): Promise<boolean> =>
-      run(`${target.kind}:${target.id}`, () => {
+    (target: RowRef): Promise<boolean> =>
+      run(rowKey(target), () => {
         switch (target.kind) {
           case 'entry':
             return callMutation(api.profile.removeEntry, { householdId, entryId: target.id });

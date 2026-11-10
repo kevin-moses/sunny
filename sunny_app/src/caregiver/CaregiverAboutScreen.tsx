@@ -34,6 +34,7 @@ import { colors } from '../theme/colors';
 import { type } from '../theme/typography';
 import {
   AddForm,
+  type AddField,
   CategoryChips,
   EntryRow,
   FactRow,
@@ -41,7 +42,7 @@ import {
   MessageRow,
   TopicRow,
 } from './AboutComponents';
-import { groupEntries, olderUnverifiedLine, type LifeCategory } from './aboutFormat';
+import { groupEntries, olderUnverifiedLine, rowKey, type LifeCategory } from './aboutFormat';
 import { ScreenHeader, SectionTitle } from './CaregiverComponents';
 import { useTabBarInset } from './tabBarInset';
 import { useInlineEditor } from './useInlineEditor';
@@ -56,6 +57,63 @@ interface CaregiverAboutScreenProps {
   canEdit: boolean;
 }
 
+/** The add-entry form's fields (the category chips sit above them). */
+const ENTRY_FIELDS: AddField[] = [
+  {
+    key: 'name',
+    placeholder: 'Name, for example Sarah',
+    maxLength: FIELD_MAX.name,
+    required: true,
+  },
+  {
+    key: 'details',
+    placeholder: 'Details, for example her daughter, lives nearby',
+    maxLength: FIELD_MAX.details,
+    multiline: true,
+    required: false,
+  },
+];
+
+/** The add-topic form's fields. */
+const TOPIC_FIELDS: AddField[] = [
+  { key: 'topic', placeholder: 'If asked about...', maxLength: FIELD_MAX.topic, required: true },
+  {
+    key: 'guidance',
+    placeholder: 'How Sunny should answer',
+    maxLength: FIELD_MAX.guidance,
+    multiline: true,
+    required: true,
+  },
+];
+
+/** The add-fact form's field. */
+const FACT_FIELDS: AddField[] = [
+  {
+    key: 'fact',
+    placeholder: 'Something Sunny should know',
+    maxLength: FIELD_MAX.fact,
+    required: true,
+  },
+];
+
+/**
+ * purpose: The message form's field: the only About field where Return adds a line break.
+ * @param name: (string) The senior's name, or "them".
+ * @return: (AddField[]) The field.
+ */
+function messageFields(name: string): AddField[] {
+  return [
+    {
+      key: 'body',
+      placeholder: `A message for ${name}`,
+      maxLength: FIELD_MAX.message,
+      multiline: true,
+      returnAddsLine: true,
+      required: true,
+    },
+  ];
+}
+
 /** What one section's subscription looks like to the section. */
 interface Loaded<T> {
   data: T | undefined;
@@ -63,8 +121,8 @@ interface Loaded<T> {
 }
 
 /**
- * purpose: Subscribe to one profile list for the household and reduce it to data or an error.
- * @param result: (ReturnType<typeof useQueryWithStatus>) The query result.
+ * purpose: Reduce a query result (from useQueryWithStatus) to its data or error message.
+ * @param result: ({ data, status, error }) The query result.
  * @return: (Loaded<T>) The data (undefined while loading) and the error message, if any.
  */
 function loaded<T>(result: { data: T | undefined; status: string; error?: unknown }): Loaded<T> {
@@ -128,25 +186,11 @@ function AddEntryForm({ actions }: { actions: ProfileActions }) {
   return (
     <AddForm
       header={<CategoryChips value={category} onChange={setCategory} />}
-      fields={[
-        {
-          key: 'name',
-          placeholder: 'Name, for example Sarah',
-          maxLength: FIELD_MAX.name,
-          required: true,
-        },
-        {
-          key: 'details',
-          placeholder: 'Details, for example her daughter, lives nearby',
-          maxLength: FIELD_MAX.details,
-          multiline: true,
-          required: false,
-        },
-      ]}
+      fields={ENTRY_FIELDS}
       buttonLabel="Add"
       state={actions.states['add:entry']}
       onSubmit={(v) =>
-        actions.addEntry({ category, name: v.name ?? '', details: v.details || undefined })
+        actions.addEntry({ category, name: v.name, details: v.details || undefined })
       }
     />
   );
@@ -154,8 +198,8 @@ function AddEntryForm({ actions }: { actions: ProfileActions }) {
 
 /**
  * purpose: Render the About tab.
- * @param props: (CaregiverAboutScreenProps) The household, the senior's name, whether the
- *        caregiver may edit and their user id.
+ * @param props: (CaregiverAboutScreenProps) The household, the senior's name and whether the
+ *        caregiver may edit.
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverAboutScreen({
@@ -210,7 +254,7 @@ export function CaregiverAboutScreen({
                 <EntryRow
                   key={entry.id}
                   entry={entry}
-                  state={actions.states[`entry:${entry.id}`]}
+                  state={actions.states[rowKey({ kind: 'entry', id: entry.id })]}
                   divided={i > 0}
                   {...rowProps}
                 />
@@ -226,26 +270,10 @@ export function CaregiverAboutScreen({
         form={
           canEdit && (
             <AddForm
-              fields={[
-                {
-                  key: 'topic',
-                  placeholder: 'If asked about...',
-                  maxLength: FIELD_MAX.topic,
-                  required: true,
-                },
-                {
-                  key: 'guidance',
-                  placeholder: 'How Sunny should answer',
-                  maxLength: FIELD_MAX.guidance,
-                  multiline: true,
-                  required: true,
-                },
-              ]}
+              fields={TOPIC_FIELDS}
               buttonLabel="Add"
               state={actions.states['add:topic']}
-              onSubmit={(v) =>
-                actions.addTopic({ topic: v.topic ?? '', guidance: v.guidance ?? '' })
-              }
+              onSubmit={(v) => actions.addTopic({ topic: v.topic, guidance: v.guidance })}
             />
           )
         }
@@ -255,7 +283,7 @@ export function CaregiverAboutScreen({
             <TopicRow
               key={topic.id}
               topic={topic}
-              state={actions.states[`topic:${topic.id}`]}
+              state={actions.states[rowKey({ kind: 'topic', id: topic.id })]}
               divided={i > 0}
               {...rowProps}
             />
@@ -269,17 +297,10 @@ export function CaregiverAboutScreen({
         form={
           canEdit && (
             <AddForm
-              fields={[
-                {
-                  key: 'fact',
-                  placeholder: 'Something Sunny should know',
-                  maxLength: FIELD_MAX.fact,
-                  required: true,
-                },
-              ]}
+              fields={FACT_FIELDS}
               buttonLabel="Add"
               state={actions.states['add:fact']}
-              onSubmit={(v) => actions.addFact(v.fact ?? '')}
+              onSubmit={(v) => actions.addFact(v.fact)}
             />
           )
         }
@@ -292,7 +313,7 @@ export function CaregiverAboutScreen({
                 fact={fact}
                 seniorName={seniorName}
                 onVerify={actions.verifyFact}
-                state={actions.states[`fact:${fact.id}`]}
+                state={actions.states[rowKey({ kind: 'fact', id: fact.id })]}
                 divided={i > 0}
                 {...rowProps}
               />
@@ -312,18 +333,10 @@ export function CaregiverAboutScreen({
         form={
           canEdit && (
             <AddForm
-              fields={[
-                {
-                  key: 'body',
-                  placeholder: `A message for ${name}`,
-                  maxLength: FIELD_MAX.message,
-                  multiline: true,
-                  required: true,
-                },
-              ]}
+              fields={messageFields(name)}
               buttonLabel="Send"
               state={actions.states['add:message']}
-              onSubmit={(v) => actions.sendMessage(v.body ?? '')}
+              onSubmit={(v) => actions.sendMessage(v.body)}
             />
           )
         }

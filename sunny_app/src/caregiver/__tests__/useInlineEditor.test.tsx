@@ -7,7 +7,8 @@
 // failed save's draft comes back on reopening, a successful save keeps a newer failed draft,
 // close(key) acts only for the open text, hold closes a row's editor without saving but keeps
 // the draft for reopening, forget drops a row's drafts (and closes its editor) without saving,
-// unmounting saves an open draft, and the actions keep their identity between renders.
+// unmounting saves an open draft, settle saves an open edit or reopens a kept one and reports
+// whether one was pending, and the actions keep their identity between renders.
 //
 // Last modified: 2026-11-09
 
@@ -53,17 +54,29 @@ function type(h: { get: () => InlineEditor }, target: FieldTarget, draft: string
 }
 
 /**
- * purpose: Close the editor inside act and return what close returned.
+ * purpose: Close the editor inside act and say whether that started a save.
  * @param h: ({ get }) The rendered hook.
  * @param key: (string, optional) Close only this text.
- * @return: (boolean) Whether a save was started.
+ * @return: (boolean) Whether close called save.
  */
 function close(h: { get: () => InlineEditor }, key?: string): boolean {
-  let started = false;
+  const before = save.mock.calls.length;
+  act(() => h.get().close(key));
+  return save.mock.calls.length > before;
+}
+
+/**
+ * purpose: Settle a text inside act and return what settle returned.
+ * @param h: ({ get }) The rendered hook.
+ * @param target: (FieldTarget) The text.
+ * @return: (boolean) Whether there was a pending edit.
+ */
+function settle(h: { get: () => InlineEditor }, target: FieldTarget): boolean {
+  let pending = false;
   act(() => {
-    started = h.get().close(key);
+    pending = h.get().settle(target);
   });
-  return started;
+  return pending;
 }
 
 describe('useInlineEditor', () => {
@@ -191,12 +204,63 @@ describe('useInlineEditor', () => {
     expect(save).toHaveBeenCalledWith(NAME, 'Sara');
   });
 
+  it('lists a row as unsaved after a failed save, not while it runs, and not once reopened', async () => {
+    let finish!: (ok: boolean) => void;
+    save.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    const h = renderEditor();
+    type(h, FACT, 'Likes coffee');
+    close(h);
+    expect(h.get().unsaved.has('fact:f1')).toBe(false);
+    await act(async () => finish(false));
+    expect([...h.get().unsaved]).toEqual(['fact:f1']);
+    act(() => h.get().toggle(FACT));
+    expect(h.get().unsaved.size).toBe(0);
+    expect(h.get().open?.initialDraft).toBe('Likes coffee');
+  });
+
+  it('lists a held row as unsaved until it is forgotten', () => {
+    const h = renderEditor();
+    type(h, NAME, 'Sara');
+    act(() => h.get().hold('entry:e1'));
+    expect([...h.get().unsaved]).toEqual(['entry:e1']);
+    act(() => h.get().forget('entry:e1'));
+    expect(h.get().unsaved.size).toBe(0);
+  });
+
+  it('settle saves an open changed edit and reports it pending', () => {
+    const h = renderEditor();
+    type(h, FACT, 'Likes green tea');
+    expect(settle(h, FACT)).toBe(true);
+    expect(save).toHaveBeenCalledWith(FACT, 'Likes green tea');
+    expect(h.get().open).toBeNull();
+  });
+
+  it('settle closes an open unchanged edit and reports nothing pending', () => {
+    const h = renderEditor();
+    act(() => h.get().toggle(FACT));
+    expect(settle(h, FACT)).toBe(false);
+    expect(h.get().open).toBeNull();
+    expect(settle(h, FACT)).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('settle reopens a kept draft instead of letting the stored text stand', async () => {
+    save.mockResolvedValue(false);
+    const h = renderEditor();
+    type(h, FACT, 'Likes coffee');
+    await act(async () => h.get().close());
+    save.mockClear();
+    expect(settle(h, FACT)).toBe(true);
+    expect(h.get().open).toEqual({ key: 'fact:f1', initialDraft: 'Likes coffee' });
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('keeps its actions stable between renders', () => {
     const h = renderEditor();
     const first = h.get();
     act(() => h.get().toggle(NAME));
     const second = h.get();
-    for (const key of ['toggle', 'setDraft', 'close', 'hold', 'forget'] as const) {
+    for (const key of ['toggle', 'setDraft', 'close', 'settle', 'hold', 'forget'] as const) {
       expect(second[key]).toBe(first[key]);
     }
   });

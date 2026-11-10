@@ -324,6 +324,85 @@ describe('CaregiverAboutScreen', () => {
     alert.mockRestore();
   });
 
+  it('a failed Remove keeps the held edit and says the row has an unsaved edit', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    mockCall.mockRejectedValueOnce(new Error('Network request failed'));
+    const r = renderScreen(true);
+    act(() => {
+      byLabel(r, 'Name: Sarah').props.onPress();
+    });
+    act(() => {
+      field(r, 'Name').props.onChangeText('Sarah Lee');
+    });
+    act(() => {
+      byLabel(r, 'Remove Sarah').props.onPress();
+    });
+    const buttons = alert.mock.calls[0]![2] as { text: string; onPress?: () => void }[];
+    await act(async () => {
+      buttons.find((b) => b.text === 'Remove')!.onPress!();
+    });
+    expect(calls().map(([fn]) => fn)).toEqual(['profile:removeEntry']);
+    expect(texts(r.root)).toContain('Unsaved edit. Tap the text to see it.');
+    act(() => {
+      byLabel(r, 'Name: Sarah').props.onPress();
+    });
+    expect(field(r, 'Name').props.defaultValue).toBe('Sarah Lee');
+    alert.mockRestore();
+  });
+
+  it('Confirm after a failed correction reopens the correction instead of confirming', async () => {
+    mockCall.mockRejectedValueOnce(new Error('Network request failed'));
+    const r = renderScreen(true);
+    act(() => {
+      byLabel(r, 'Fact: Went to the markt').props.onPress();
+    });
+    act(() => {
+      field(r, 'Fact').props.onChangeText('Went to the market');
+    });
+    await act(async () => {
+      field(r, 'Fact').props.onBlur();
+    });
+    expect(texts(r.root)).toContain('Unsaved edit. Tap the text to see it.');
+    await act(async () => {
+      await byLabel(r, 'Confirm: Went to the markt').props.onPress();
+    });
+    expect(calls().map(([fn]) => fn)).toEqual(['profile:correctFact']);
+    expect(field(r, 'Fact').props.defaultValue).toBe('Went to the market');
+  });
+
+  it('Return adds a line in the message field and means done everywhere else', () => {
+    const r = renderScreen(true);
+    expect(field(r, 'A message for Mom').props.submitBehavior).toBe('newline');
+    for (const label of [
+      'Details, for example her daughter, lives nearby',
+      'How Sunny should answer',
+    ]) {
+      expect(field(r, label).props.submitBehavior).toBe('blurAndSubmit');
+    }
+    act(() => {
+      byLabel(r, 'How to answer about her husband: Be gentle.').props.onPress();
+    });
+    expect(field(r, 'How to answer about her husband').props.submitBehavior).toBe('blurAndSubmit');
+  });
+
+  it('hides the add form message once the caregiver edits a field', async () => {
+    mockCall.mockResolvedValue({ id: 'e1', created: false, same: false, confirmed: false });
+    const r = renderScreen(true);
+    act(() => {
+      field(r, 'Name, for example Sarah').props.onChangeText('Sarah');
+    });
+    await act(async () => {
+      addButton(r).props.onPress();
+    });
+    const message =
+      'Not saved: Sarah is already listed with other details. Tap them in the list above to change them.';
+    expect(texts(r.root)).toContain(message);
+    act(() => {
+      field(r, 'Name, for example Sarah').props.onChangeText('Sarah B');
+    });
+    expect(texts(r.root)).not.toContain(message);
+  });
+
   it('enables Add once the name has text and adds with the chosen category', async () => {
     const r = renderScreen(true);
     expect(addButton(r).props.accessibilityState.disabled).toBe(true);

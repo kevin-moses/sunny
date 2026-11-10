@@ -4,7 +4,9 @@
 // - the tab's label ("About Mom", or just "About" when the name is too long for the tab bar);
 // - the life profile grouped by category, in the order the backend lists it, with section titles;
 // - the inline editor's targets (one per editable text: an entry's name or details, a topic's
-//   wording or guidance, a fact) with their keys, the row each belongs to, and what closing an
+//   wording or guidance, a fact) with their keys, the row each belongs to (rowKey: the one
+//   "entry:<id>" / "topic:<id>" / "fact:<id>" key that status slots and kept drafts share), and
+//   what closing an
 //   editor must save (draftToSave: nothing when the trimmed text is unchanged or a required field
 //   was left blank, null to clear an optional field, else the trimmed text);
 // - the status line of a memory fact (who confirmed it and when, or that the senior said it and
@@ -94,6 +96,12 @@ export type FieldTarget =
   | { kind: 'guidance'; id: TopicId; current: string }
   | { kind: 'fact'; id: FactId; current: string };
 
+/** One row of the About tab: an entry, a topic or a fact. */
+export type RowRef =
+  | { kind: 'entry'; id: ProfileEntryId }
+  | { kind: 'topic'; id: TopicId }
+  | { kind: 'fact'; id: FactId };
+
 /** What closing an editor must do: nothing, or save a value (null clears an optional field). */
 export type DraftDecision = { save: false } | { save: true; value: string | null };
 
@@ -131,23 +139,36 @@ export function fieldKey(target: FieldTarget): string {
 }
 
 /**
- * purpose: The key of the row an editable text belongs to, which its save status is shown on.
+ * purpose: The key of a row: what its status slot (useProfileActions) and its kept drafts
+ *          (useInlineEditor) are filed under.
+ * @param row: (RowRef) The row.
+ * @return: (string) "entry:<id>", "topic:<id>" or "fact:<id>".
+ */
+export function rowKey(row: RowRef): string {
+  return `${row.kind}:${row.id}`;
+}
+
+/**
+ * purpose: The row an editable text belongs to.
+ * @param target: (FieldTarget) The text.
+ * @return: (RowRef) Its entry, topic or fact.
+ */
+function fieldRow(target: FieldTarget): RowRef {
+  if (target.kind === 'entryName' || target.kind === 'entryDetails') {
+    return { kind: 'entry', id: target.id };
+  }
+  if (target.kind === 'topic' || target.kind === 'guidance')
+    return { kind: 'topic', id: target.id };
+  return { kind: 'fact', id: target.id };
+}
+
+/**
+ * purpose: The key of the row an editable text belongs to.
  * @param target: (FieldTarget) The text.
  * @return: (string) "entry:<id>", "topic:<id>" or "fact:<id>".
  */
 export function fieldRowKey(target: FieldTarget): string {
-  return `${rowKind(target)}:${target.id}`;
-}
-
-/**
- * purpose: The kind of row an editable text belongs to.
- * @param target: (FieldTarget) The text.
- * @return: ('entry' | 'topic' | 'fact') The row kind.
- */
-function rowKind(target: FieldTarget): 'entry' | 'topic' | 'fact' {
-  if (target.kind === 'entryName' || target.kind === 'entryDetails') return 'entry';
-  if (target.kind === 'topic' || target.kind === 'guidance') return 'topic';
-  return 'fact';
+  return rowKey(fieldRow(target));
 }
 
 /**
