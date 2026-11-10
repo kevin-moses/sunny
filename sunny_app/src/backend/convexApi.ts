@@ -7,9 +7,10 @@
 // Argument and return types therefore follow the backend automatically
 // (FunctionReturnType / FunctionArgs), with no codegen step in the app. Run
 // `npx convex dev` (or codegen) in sunny_backend to refresh `_generated/api.d.ts` after the
-// backend's functions change.
+// backend's functions change. Also exports the document id types the app passes back (household,
+// task instance, and the About tab's life profile entry, sensitive topic and memory fact).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { anyApi } from 'convex/server';
 
@@ -21,6 +22,15 @@ export type HouseholdId = Id<'households'>;
 
 /** The id of a task instance document. */
 export type TaskInstanceId = Id<'taskInstances'>;
+
+/** The id of a life profile entry. */
+export type ProfileEntryId = Id<'lifeProfileEntries'>;
+
+/** The id of a sensitive topic. */
+export type TopicId = Id<'sensitiveTopics'>;
+
+/** The id of an agent memory fact. */
+export type FactId = Id<'agentMemory'>;
 
 /** The backend's public functions, for example api.calendar.dayView. */
 export const api = anyApi as unknown as typeof BackendApi;

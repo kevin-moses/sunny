@@ -2,5 +2,7 @@ node_modules/
 .env.local
 .convex/
 scripts/.dev-state.json
+# Real life-profile data for scripts/caregiver.ts profile-load (for example scripts/profile.local.json)
+scripts/*.local.json
 coverage/
 .vitest/

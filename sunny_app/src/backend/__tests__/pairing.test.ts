@@ -9,11 +9,12 @@
 // authenticated account that mine does not know, removal of a device account without a device
 // entry, caregiver home and onboarding, the remembered home).
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-09
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { BackendError } from '../api';
+import { confirmQueue } from '../../day/pendingConfirms';
 import {
   decideSession,
   nonceForCode,
@@ -92,7 +93,12 @@ jest.mock('../../logging/logger', () => ({
 
 jest.mock('../../config', () => ({ CONVEX_SITE_URL: 'https://site.example' }));
 
-jest.mock('../convex', () => ({ convex: {} }));
+jest.mock('../convex', () => ({
+  convex: {
+    connectionState: () => ({ isWebSocketConnected: false, hasEverConnected: false }),
+    subscribeToConnectionState: () => () => undefined,
+  },
+}));
 
 const PAIR_BODY = { ticket: 'tkt', householdId: 'h1', deviceId: 'd1', kind: 'senior_phone' };
 
@@ -154,6 +160,13 @@ describe('pair', () => {
     await pair('ABCD1234');
     expect(mockSignInCreate).toHaveBeenCalledWith({ strategy: 'ticket', ticket: 'tkt' });
     expect(mockSetActive).toHaveBeenCalledWith({ session: 'sess_1' });
+  });
+
+  it('starts a new pairing with an empty queue of Done presses', async () => {
+    await confirmQueue.enqueue({ instanceId: 'inst_old' as never, label: 'Pills', pressedAt: 1 });
+    expect(confirmQueue.getEntries()).toHaveLength(1);
+    await pair('ABCD1234');
+    expect(confirmQueue.getEntries()).toEqual([]);
   });
 
   it('clears the pending attempt once pairing succeeds', async () => {
@@ -308,6 +321,13 @@ describe('unpair', () => {
     mockClerk.session = { id: 's' };
     await unpair();
     expect(mockCalls).toEqual(['push', 'signOut']);
+  });
+
+  it('drops the queued Done presses, with or without a session', async () => {
+    const clear = jest.spyOn(confirmQueue, 'clear').mockResolvedValue();
+    await unpair();
+    expect(clear).toHaveBeenCalledTimes(1);
+    clear.mockRestore();
   });
 
   it('shares one run between concurrent calls', async () => {
