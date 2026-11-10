@@ -25,7 +25,7 @@
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
 // Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
-// looks up).
+// looks up) and listItems (the household's one shared list).
 //
 // Last modified: 2026-11-09
 
@@ -46,6 +46,7 @@ import {
   instanceState,
   joinGrant,
   lifeCategory,
+  listActorKind,
   memberRole,
   memorySource,
   messageSender,
@@ -458,6 +459,26 @@ export default defineSchema({
     role: v.union(v.literal("user"), v.literal("assistant")),
     content: v.string(),
   }).index("by_conversation", ["conversationId"]),
+
+  // The household's one shared list ("Add milk to the list"): open items have no doneAt.
+  // Written through lib/householdList.ts only (voice agent, caregivers, the senior's devices).
+  listItems: defineTable({
+    householdId: v.id("households"),
+    // One trimmed line, at most lib/householdList MAX_LIST_ITEM_LENGTH characters.
+    text: v.string(),
+    addedByKind: listActorKind,
+    // The caregiver's or the device's user id; absent when the voice agent added it.
+    addedBy: v.optional(v.string()),
+    addedAt: v.number(),
+    // Set when ticked ("I bought the milk"); cleared by a caregiver's untick.
+    doneAt: v.optional(v.number()),
+    doneByKind: v.optional(listActorKind),
+    doneBy: v.optional(v.string()),
+  })
+    // Open items (doneAt absent) in the order added, and recently ticked ones.
+    .index("by_household_done", ["householdId", "doneAt"])
+    // Items added in a time range (the digest's "Added to the list" line).
+    .index("by_household_added", ["householdId", "addedAt"]),
 
   // One row per question the senior asked; the digest counts repeats by topic and day.
   agentQuestions: defineTable({

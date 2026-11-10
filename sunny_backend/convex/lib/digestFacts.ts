@@ -11,6 +11,7 @@
 // Lists are capped so a busy day stays within one query.
 // Privacy: unanswered and routed questions are given in the senior's words only when the
 // household shares transcripts (households.shareTranscripts); otherwise by their topic.
+// List: the household list items the senior added that day (listAdded).
 //
 // Last modified: 2026-11-09
 
@@ -67,6 +68,8 @@ export interface DigestFacts {
   unanswered: string[];
   routed: string[];
   repeats: RepeatFact[];
+  /** Household list items the senior added that day (absent in facts built before the list). */
+  listAdded?: string[];
 }
 
 /**
@@ -259,11 +262,22 @@ export async function gatherDigestFacts(
     taskFacts(ctx, household, localDate, names),
     doseFacts(ctx, household, range),
   ]);
+  const listAdded = (
+    await ctx.db
+      .query("listItems")
+      .withIndex("by_household_added", (q) =>
+        q.eq("householdId", household._id).gte("addedAt", range.start).lt("addedAt", range.end),
+      )
+      .take(DAY_READ_CAP)
+  )
+    .filter((item) => item.addedByKind === "senior")
+    .map((item) => item.text);
   return {
     seniorName: household.seniorPreferredName,
     localDate,
     tasks,
     doses,
     ...questionFacts(questions, household.shareTranscripts),
+    listAdded,
   };
 }

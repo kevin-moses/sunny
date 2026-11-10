@@ -7,10 +7,12 @@
 // template alone (fixedLines) and always come first; the model writes only the remaining lines
 // within the leftover budget (modelBudget), and its reply is rejected when it has markup, URLs,
 // "@", or a number that is not in the facts. A day with nothing at all (no task of any state, no
-// dose, no question) reads "<name>: no activity was logged." The one network call,
-// composeWithClaude, sits at the end so tests can replace it.
+// dose, no question, no list item) reads "<name>: no activity was logged." The one network call,
+// composeWithClaude, sits at the end so tests can replace it. Household list items the senior
+// added that day get one line ("Added to the list: milk; eggs."), written last so it is the
+// line dropped when the day already fills five lines.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import type { DigestFacts, TaskFact } from "./digestFacts";
 import { client } from "./managedAgents";
@@ -82,6 +84,7 @@ function sanitize(facts: DigestFacts): DigestFacts {
     unanswered: facts.unanswered.map(clean),
     routed: facts.routed.map(clean),
     repeats: facts.repeats.map((r) => ({ ...r, topic: clean(r.topic) })),
+    listAdded: (facts.listAdded ?? []).map(clean),
   };
 }
 
@@ -92,7 +95,12 @@ function sanitize(facts: DigestFacts): DigestFacts {
  * @return: (boolean) True when there is truly nothing to report.
  */
 export function isQuietDay(facts: DigestFacts): boolean {
-  return facts.tasks.length === 0 && facts.doses.length === 0 && facts.questionCount === 0;
+  return (
+    facts.tasks.length === 0 &&
+    facts.doses.length === 0 &&
+    facts.questionCount === 0 &&
+    (facts.listAdded ?? []).length === 0
+  );
 }
 
 /**
@@ -158,10 +166,11 @@ function fixedLinesOf(facts: DigestFacts): string[] {
 }
 
 /**
- * purpose: The lines about what was done, the as-needed doses and the questions: the part the
+ * purpose: The lines about what was done, the as-needed doses, the questions and the list
+ *          items the senior added: the part the
  *          model may write, and what the template writes for it.
  * @param facts: (DigestFacts) Sanitized facts.
- * @return: (string[]) Zero to three lines, each within LINE_MAX.
+ * @return: (string[]) Zero to four lines, each within LINE_MAX.
  */
 function restLinesOf(facts: DigestFacts): string[] {
   const lines: string[] = [];
@@ -187,6 +196,9 @@ function restLinesOf(facts: DigestFacts): string[] {
     }
     lines.push(line);
   }
+  // Last, so it is the line dropped when a busy day fills the digest.
+  const listAdded = facts.listAdded ?? [];
+  if (listAdded.length > 0) lines.push(listLine("Added to the list: ", listAdded));
   return lines;
 }
 
@@ -240,8 +252,9 @@ export function templateDigest(facts: DigestFacts): string {
 
 /**
  * purpose: The facts the model may write about, as text for its user message inside <facts>
- *          tags: confirmed and resolved tasks, as-needed doses and questions. Missed, still
- *          open and alerted tasks are left out (the template reports them).
+ *          tags: confirmed and resolved tasks, as-needed doses, questions and list items the
+ *          senior added. Missed, still open and alerted tasks are left out (the template
+ *          reports them).
  * @param facts: (DigestFacts) The day's facts.
  * @return: (string) The message.
  */
@@ -261,6 +274,7 @@ export function factsForPrompt(facts: DigestFacts): string {
   for (const q of safe.unanswered) rows.push(`Unanswered question: ${q}`);
   for (const q of safe.routed) rows.push(`Question passed to family: ${q}`);
   for (const r of safe.repeats) rows.push(`Repeated topic: ${r.topic}, ${r.count} times`);
+  for (const item of safe.listAdded ?? []) rows.push(`Added to the household list: ${item}`);
   return `<facts>\n${rows.join("\n")}\n</facts>`;
 }
 

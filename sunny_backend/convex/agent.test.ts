@@ -329,6 +329,7 @@ describe("getContext", () => {
       memory: [],
       recentConversations: [],
       recentQuestionTopics: [],
+      list: { openCount: 0, items: [] },
     });
   });
 

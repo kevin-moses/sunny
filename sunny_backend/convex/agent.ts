@@ -22,7 +22,9 @@
 // (unverified senior memory, never overwriting), flagCaregiver and sendFamilyMessage
 // (lib/voiceRouting: reachable caregivers only, repeats and hourly caps), readLatestMessage
 // (marks it seen), startConversation, logTurn, finishConversation, logQuestions (the questions
-// extracted from a finished conversation, for the digest; idempotent per conversation).
+// extracted from a finished conversation, for the digest; idempotent per conversation), and
+// the household list: addListItems, listItems, tickListItem (lib/householdList; the context
+// carries the open count and, for a short list, the items).
 //
 // Memory (limits in lib/memoryLimits.ts): getContext gives the newest verified facts (up to 40)
 // and the newest unverified facts in the remaining slots of 50 (always at least 10), reading
@@ -47,6 +49,16 @@ import type { CancelReminderResult, ConfirmDueResult } from "./instances";
 import { loadHousehold } from "./lib/access";
 import { audit } from "./lib/audit";
 import { isDueEntry, pickDueEntry } from "./lib/dueTask";
+import {
+  LIST_CONTEXT_MAX,
+  MAX_ITEMS_PER_ADD,
+  MAX_LIST_ITEM_LENGTH,
+  addListItemsCore,
+  matchOpenItem,
+  openListItems,
+  tickListItemCore,
+} from "./lib/householdList";
+import type { AddedItem } from "./lib/householdList";
 import {
   MAX_FACT_LENGTH,
   MAX_UNVERIFIED_SENIOR_FACTS,
@@ -135,6 +147,15 @@ export interface AgentContext {
   recentConversations: Array<{ startedAt: number; summary: string }>;
   /** Distinct question topics of the last 7 days, newest first. */
   recentQuestionTopics: string[];
+  /** The household list: how many items are open, and their text when there are at most 8. */
+  list: { openCount: number; items: string[] };
+}
+
+/** Result of tickListItem. */
+export interface TickItemResult {
+  status: "ticked" | "not_found" | "ambiguous";
+  text: string | null;
+  options: string[];
 }
 
 /** Result of medicationStatus. */
@@ -419,6 +440,24 @@ async function recentQuestionTopics(
 }
 
 /**
+ * purpose: The household list for the context: the open count, and the items when the list
+ *          is short (LIST_CONTEXT_MAX); a longer list is read with the listItems tool.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<AgentContext["list"]>) The summary.
+ */
+async function listSummary(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<AgentContext["list"]> {
+  const open = await openListItems(ctx, householdId);
+  return {
+    openCount: open.length,
+    items: open.length <= LIST_CONTEXT_MAX ? open.map((i) => i.text) : [],
+  };
+}
+
+/**
  * purpose: Everything the agent knows about a household at the start of a conversation.
  * @param householdId: (Id<"households">) Household, from the participant metadata.
  * @param now: (number, optional) Epoch ms; backend clock.
@@ -457,6 +496,7 @@ export const getContext = agentQuery({
       memory: await memoryFacts(ctx, household._id),
       recentConversations: await recentSummaries(ctx, household._id),
       recentQuestionTopics: await recentQuestionTopics(ctx, household._id, now),
+      list: await listSummary(ctx, household._id),
     };
   },
 });
@@ -869,6 +909,60 @@ export const readLatestMessage = agentMutation({
       await ctx.db.patch(latest.row._id, { seenAt: clock(args.now) });
     }
     return latest.view;
+  },
+});
+
+/**
+ * purpose: "Add milk and eggs to the list": add each item to the household list
+ *          (lib/householdList.addListItemsCore) as the senior. Each item is collapsed to one
+ *          line and cut to 80 characters; at most 10 items per call are used.
+ * @param householdId: (Id<"households">) Household.
+ * @param items: (string[]) The items as said.
+ * @return: (AddedItem[]) Per item: added, already_on_list or list_full.
+ * @raises not_found when the household does not exist.
+ */
+export const addListItems = agentMutation({
+  args: { householdId: v.id("households"), items: v.array(v.string()) },
+  handler: async (ctx, args): Promise<AddedItem[]> => {
+    await loadHousehold(ctx, args.householdId);
+    const texts = args.items
+      .slice(0, MAX_ITEMS_PER_ADD)
+      .map((t) => singleLine(t).slice(0, MAX_LIST_ITEM_LENGTH));
+    return await addListItemsCore(ctx, VOICE_AGENT, args.householdId, texts, Date.now());
+  },
+});
+
+/**
+ * purpose: "What's on my list?": the open items in the order added.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (string[]) The items' text (at most 50).
+ * @raises not_found when the household does not exist.
+ */
+export const listItems = agentQuery({
+  args: { householdId: v.id("households") },
+  handler: async (ctx, args): Promise<string[]> => {
+    await loadHousehold(ctx, args.householdId);
+    return (await openListItems(ctx, args.householdId)).map((i) => i.text);
+  },
+});
+
+/**
+ * purpose: "I bought the milk" or "take the milk off": tick the open item the words mean
+ *          (lib/householdList.matchOpenItem) as the senior.
+ * @param householdId: (Id<"households">) Household.
+ * @param item: (string) The words naming the item.
+ * @return: (TickItemResult) ticked with the item's text, or not_found / ambiguous.
+ * @raises not_found when the household does not exist.
+ */
+export const tickListItem = agentMutation({
+  args: { householdId: v.id("households"), item: v.string() },
+  handler: async (ctx, args): Promise<TickItemResult> => {
+    await loadHousehold(ctx, args.householdId);
+    const match = matchOpenItem(await openListItems(ctx, args.householdId), args.item);
+    if (match.status !== "found")
+      return { status: match.status, text: null, options: match.options };
+    await tickListItemCore(ctx, VOICE_AGENT, match.item, Date.now());
+    return { status: "ticked", text: match.item.text, options: [] };
   },
 });
 

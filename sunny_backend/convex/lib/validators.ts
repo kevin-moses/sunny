@@ -180,6 +180,11 @@ export const questionOutcome = v.union(
 /** Type of questionOutcome. */
 export type QuestionOutcome = Infer<typeof questionOutcome>;
 
+/** Who added or ticked a household list item: the senior (by voice or a device) or a caregiver. */
+export const listActorKind = v.union(v.literal("senior"), v.literal("caregiver"));
+/** Type of listActorKind. */
+export type ListActorKind = Infer<typeof listActorKind>;
+
 /** Where a caregiver's request to the household agent stands. */
 export const agentRequestStatus = v.union(
   v.literal("queued"),
