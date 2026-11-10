@@ -15,11 +15,13 @@
 // texted (state sent, channel sms) to the member in the last 24 hours, across the households
 // the number belongs to. If its task is open it is claimed through the same claimInstance the
 // app uses, with an extra audit row "claim_via sms"; otherwise the reply says who is on it or
-// that it is closed. Older alerts are never used instead. Viewers cannot claim.
+// that it is closed. Older alerts are never used instead. Viewers cannot claim. When the member
+// was texted a voice agent flag or a family message after that alert, the "1" answers that
+// text: nothing is claimed (NOTHING_OPEN_REPLY).
 //
 // Env: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, TWILIO_WEBHOOK_URL.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -122,8 +124,41 @@ async function newestSentAlert(
       r.taskInstanceId !== undefined,
   );
   if (!row || row.taskInstanceId === undefined) return null;
+  if (await textedSince(ctx, member, row._creationTime)) return null;
   const instance = await ctx.db.get(row.taskInstanceId);
   return instance ? { member, instance, alertAt: row._creationTime } : null;
+}
+
+/**
+ * Texts a caregiver may answer with "1" that are not task alerts: the voice agent's flags and
+ * the senior's family messages. A "1" after one of them claims nothing. (Event notices and
+ * digests keep the older behavior: they do not hide the alert before them.)
+ */
+const NOT_ALERT_KINDS = ["agent_flag", "family_message"] as const;
+
+/**
+ * purpose: Whether the member was texted a voice agent flag or a family message after an
+ *          instant, so a "1" answers that text, not the older alert.
+ * @param ctx: (MutationCtx) Context.
+ * @param member: (Doc<"householdMembers">) The member.
+ * @param after: (number) The alert's creation time.
+ * @return: (Promise<boolean>) True when a newer non-alert text was sent by SMS.
+ */
+async function textedSince(
+  ctx: MutationCtx,
+  member: Doc<"householdMembers">,
+  after: number,
+): Promise<boolean> {
+  for (const kind of NOT_ALERT_KINDS) {
+    const rows = await ctx.db
+      .query("notificationOutbox")
+      .withIndex("by_recipient_kind", (q) =>
+        q.eq("recipientUserId", member.userId).eq("kind", kind).gt("_creationTime", after),
+      )
+      .take(ALERTS_PER_MEMBER);
+    if (rows.some((r) => r.state === "sent" && r.channel === "sms")) return true;
+  }
+  return false;
 }
 
 /**

@@ -11,7 +11,10 @@
 // - MAX_UNVERIFIED_SENIOR_FACTS: unverified facts the senior stated that are kept per
 //   household; rememberFact deletes the oldest beyond it.
 // - MEMORY_SCAN_LIMIT: rows read (newest first) when checking for a duplicate, trimming or
-//   building the context, so no call reads an unbounded number of rows.
+//   building the context, so no call reads an unbounded number of rows. It covers every capped
+//   kind (verified and senior-stated unverified) with margin; caregiver-written unverified
+//   facts are not capped here, so in a household with very many of them the oldest rows fall
+//   outside the scan (a duplicate of such an old row could be stored again).
 //
 // Last modified: 2026-11-09
 
@@ -25,7 +28,7 @@ export const MEMORY_UNVERIFIED_RESERVE = 10;
 export const MAX_VERIFIED_FACTS = 40;
 /** Unverified senior-stated facts kept per household; older ones are trimmed on insert. */
 export const MAX_UNVERIFIED_SENIOR_FACTS = 200;
-/** Rows read per call; above every cap combined. */
+/** Rows read per call; above the capped kinds combined (see the header). */
 export const MEMORY_SCAN_LIMIT = MAX_VERIFIED_FACTS + MAX_UNVERIFIED_SENIOR_FACTS + 60;
 
 /**

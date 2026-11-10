@@ -9,8 +9,10 @@
 // Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
 // no alerts and the digest never reports them as not done. Nothing from other days is read.
 // Lists are capped so a busy day stays within one query.
+// Privacy: unanswered and routed questions are given in the senior's words only when the
+// household shares transcripts (households.shareTranscripts); otherwise by their topic.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
@@ -188,12 +190,16 @@ async function doseFacts(
 
 /**
  * purpose: The question facts of the day: how many were asked, which went unanswered
- *          ("unsure") or were routed to family, and topics asked more than once.
+ *          ("unsure") or were routed to family, and topics asked more than once. The senior's
+ *          own words are used only when the household shares transcripts; otherwise unanswered
+ *          and routed questions are given by topic.
  * @param questions: (Doc<"agentQuestions">[]) The day's questions.
+ * @param shareTranscripts: (boolean) households.shareTranscripts.
  * @return: (Pick<DigestFacts, "questionCount" | "unanswered" | "routed" | "repeats">) Facts.
  */
 function questionFacts(
   questions: Doc<"agentQuestions">[],
+  shareTranscripts: boolean,
 ): Pick<DigestFacts, "questionCount" | "unanswered" | "routed" | "repeats"> {
   const counts = new Map<string, number>();
   for (const q of questions) {
@@ -205,15 +211,20 @@ function questionFacts(
     .map(([topic, count]) => ({ topic, count }))
     .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic));
   /**
-   * purpose: The distinct questions with one outcome, trailing punctuation removed.
+   * purpose: The distinct questions with one outcome, trailing punctuation removed: the
+   *          question text when transcripts are shared, else the topic.
    * @param outcome: (string) The outcome to select.
-   * @return: (string[]) Question texts.
+   * @return: (string[]) Question texts or topics.
    */
   const topicsWith = (outcome: string): string[] => [
     ...new Set(
       questions
         .filter((q) => q.outcome === outcome)
-        .map((q) => q.question.trim().replace(/[.?!\s]+$/, "")),
+        .map((q) =>
+          shareTranscripts
+            ? q.question.trim().replace(/[.?!\s]+$/, "")
+            : q.topic.trim().toLowerCase(),
+        ),
     ),
   ];
   return {
@@ -253,6 +264,6 @@ export async function gatherDigestFacts(
     localDate,
     tasks,
     doses,
-    ...questionFacts(questions),
+    ...questionFacts(questions, household.shareTranscripts),
   };
 }

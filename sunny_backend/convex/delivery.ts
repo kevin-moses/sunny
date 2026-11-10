@@ -7,12 +7,13 @@
 //   failures end the row as failed.
 // - A configuration problem returned by a sender leaves the row pending with the detail
 //   recorded, so the sweeper retries after the configuration is fixed (bounded by MAX_ATTEMPTS).
-// - An SMS that timed out is retried only for a caregiver_alert; for other kinds the text may
-//   already have been delivered, so the row is failed rather than risk a duplicate.
+// - An SMS that timed out is retried only for a caregiver_alert or an agent_flag (the voice
+//   agent asking a caregiver to look in); for other kinds the text may already have been
+//   delivered, so the row is failed rather than risk a duplicate.
 // - begin stamps attemptStartedAt (a lease the sweeper respects). Retries exhausted ends the row
 //   as failed (onDeliveryComplete). A settled row is never delivered again.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";

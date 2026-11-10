@@ -17,11 +17,12 @@
 // Functions: getContext (port of get_agent_context, plus the weather location, the
 // caregivers' names and recent question topics), today, medicationStatus (today's scheduled
 // medications and the as-needed label facts, fresh), confirmDueTask, snoozeDueTask ("not
-// yet"), logAsNeededDose (a self-reported dose, flagging the caregiver past a label limit),
-// createSeniorReminder, cancelSeniorReminder, rememberFact (unverified senior memory, never
-// overwriting), flagCaregiver, sendFamilyMessage, readLatestMessage (marks it seen),
-// startConversation, logTurn, finishConversation, logQuestions (the questions extracted from a
-// finished conversation, for the digest).
+// yet", the same task picker as "Done": lib/dueTask), logAsNeededDose and undoLastDose (as-
+// needed doses: lib/voiceDoses), createSeniorReminder, cancelSeniorReminder, rememberFact
+// (unverified senior memory, never overwriting), flagCaregiver and sendFamilyMessage
+// (lib/voiceRouting: reachable caregivers only, repeats and hourly caps), readLatestMessage
+// (marks it seen), startConversation, logTurn, finishConversation, logQuestions (the questions
+// extracted from a finished conversation, for the digest; idempotent per conversation).
 //
 // Memory (limits in lib/memoryLimits.ts): getContext gives the newest verified facts (up to 40)
 // and the newest unverified facts in the remaining slots of 50 (always at least 10), reading
@@ -40,15 +41,12 @@ import {
   cancelSeniorReminderCore,
   confirmDueTaskCore,
   createSeniorReminderCore,
-  logDoseCore,
   snoozeInstance,
 } from "./instances";
 import type { CancelReminderResult, ConfirmDueResult } from "./instances";
 import { loadHousehold } from "./lib/access";
 import { audit } from "./lib/audit";
-import { isAnytimeInstance } from "./lib/anytime";
-import { doseStatus, limitBreaches } from "./lib/doseLimits";
-import type { LocalDay } from "./lib/doseLimits";
+import { isDueEntry, pickDueEntry } from "./lib/dueTask";
 import {
   MAX_FACT_LENGTH,
   MAX_UNVERIFIED_SENIOR_FACTS,
@@ -60,25 +58,24 @@ import {
 } from "./lib/memoryLimits";
 import { appError } from "./lib/errors";
 import { householdOccurrences } from "./lib/occurrences";
-import {
-  addDays,
-  formatTime12,
-  localDate,
-  localDateTime,
-  localMidnight,
-  localTime,
-  zonedInstant,
-} from "./lib/time";
+import { addDays, localDate, localDateTime } from "./lib/time";
 import { constantTimeEqual } from "./lib/secretBox";
 import { todayInstances } from "./lib/today";
 import type { TodayEntry } from "./lib/today";
 import type { ConfirmVia } from "./lib/validators";
 import { lifeCategory, questionOutcome } from "./lib/validators";
 import {
+  MAX_DOSE_MINUTES_AGO,
+  asNeededEntries,
+  logAsNeededDoseCore,
+  undoLastDoseCore,
+} from "./lib/voiceDoses";
+import type { AsNeededEntry, LogDoseResult, UndoDoseResult } from "./lib/voiceDoses";
+import {
   VOICE_AGENT,
   flagCaregiverCore,
-  flagReason,
   householdCaregivers,
+  modelFlagReason,
   sendFamilyMessageCore,
 } from "./lib/voiceRouting";
 import type { FamilyMessageResult, FlagResult } from "./lib/voiceRouting";
@@ -87,10 +84,6 @@ const EVENT_WINDOW_DAYS = 7;
 const RECENT_CONVERSATIONS = 5;
 const VOICE: ConfirmVia = "voice";
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Doses read back this far for the hours-apart rule, which reaches across midnight. */
-const DOSE_LOOKBACK_MS = 2 * DAY_MS;
-/** Longest a self-reported dose may be back-dated ("I took one an hour ago"). */
-const MAX_DOSE_MINUTES_AGO = 12 * 60;
 /** Question topics from this far back are offered to the extractor, so repeats share one. */
 const TOPIC_LOOKBACK_MS = 7 * DAY_MS;
 const MAX_RECENT_TOPICS = 30;
@@ -104,23 +97,6 @@ export const MAX_TURN_CONTENT_LENGTH = 20_000;
 
 /** Category order the SQL enum sorted the life profile by. */
 const LIFE_CATEGORY_ORDER = lifeCategory.members.map((m) => m.value as string);
-
-/** One as-needed medication with today's doses and what the label limits mean right now. */
-export interface AsNeededEntry {
-  taskId: Id<"tasks">;
-  displayLabel: string;
-  pillDescription: string | null;
-  maxPerDay: number | null;
-  minHoursBetween: number | null;
-  /** Doses since local midnight, ascending. */
-  takenToday: number[];
-  /** The latest dose (may be before local midnight); null when none in the last two days. */
-  lastTakenAt: number | null;
-  /** Doses left today under maxPerDay; null without a daily maximum. */
-  remainingToday: number | null;
-  /** Earliest instant another dose is within the label; null when it already is. */
-  nextWithinLabelAt: number | null;
-}
 
 /** The household's family message as the agent reads it. */
 export interface MessageView {
@@ -178,19 +154,6 @@ export interface SnoozeResult {
   options: string[];
 }
 
-/** Result of logAsNeededDose. */
-export type LogDoseResult =
-  | {
-      status: "logged";
-      medication: AsNeededEntry;
-      takenAt: number;
-      overDailyMax: boolean;
-      tooSoon: boolean;
-      /** Caregivers told about a dose past a limit; empty when within the label. */
-      flagged: string[];
-    }
-  | { status: "no_rule" | "not_found" | "ambiguous"; options: string[] };
-
 /**
  * purpose: Reject a call whose agent key is not the deployment's SUNNY_AGENT_KEY.
  * @param agentKey: (string) Key supplied by the caller.
@@ -244,19 +207,6 @@ function clock(now: number | undefined): number {
 }
 
 /**
- * purpose: The household-local day containing an instant.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (LocalDay) Local midnight to the next local midnight.
- */
-function localDay(household: Doc<"households">, now: number): LocalDay {
-  return {
-    start: localMidnight(now, household.timezone),
-    end: zonedInstant(addDays(localDate(now, household.timezone), 1), "00:00", household.timezone),
-  };
-}
-
-/**
  * purpose: Check that a conversation the agent names belongs to the household.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
@@ -275,83 +225,6 @@ async function householdConversation(
     throw appError("not_found", "Conversation not found");
   }
   return conversationId;
-}
-
-/** An as-needed medication task with its recent doses. */
-interface AsNeededMed {
-  task: Doc<"tasks">;
-  /** Dose instants in the last two days, ascending. */
-  doses: number[];
-}
-
-/**
- * purpose: Active medication tasks with as-needed limits, each with its doses of the last two
- *          days (enough for the hours-apart rule across midnight).
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<AsNeededMed[]>) In task creation order.
- */
-async function asNeededMeds(
-  ctx: QueryCtx,
-  household: Doc<"households">,
-  now: number,
-): Promise<AsNeededMed[]> {
-  const tasks = await ctx.db
-    .query("tasks")
-    .withIndex("by_household_active", (q) => q.eq("householdId", household._id).eq("active", true))
-    .collect();
-  const since = Math.min(localMidnight(now, household.timezone), now - DOSE_LOOKBACK_MS);
-  const meds: AsNeededMed[] = [];
-  for (const task of tasks) {
-    if (task.type !== "medication") continue;
-    if (task.asNeededMaxPerDay === undefined && task.asNeededMinHours === undefined) continue;
-    const doses = await ctx.db
-      .query("doseLog")
-      .withIndex("by_household_task_taken", (q) =>
-        q.eq("householdId", household._id).eq("taskId", task._id).gte("takenAt", since),
-      )
-      .collect();
-    meds.push({ task, doses: doses.map((d) => d.takenAt) });
-  }
-  return meds;
-}
-
-/**
- * purpose: The agent's view of one as-needed medication at an instant.
- * @param med: (AsNeededMed) The task and its recent doses.
- * @param day: (LocalDay) The local day containing now.
- * @param now: (number) Epoch ms.
- * @return: (AsNeededEntry) The entry.
- */
-function asNeededEntry(med: AsNeededMed, day: LocalDay, now: number): AsNeededEntry {
-  const limits = {
-    maxPerDay: med.task.asNeededMaxPerDay ?? null,
-    minHoursBetween: med.task.asNeededMinHours ?? null,
-  };
-  return {
-    taskId: med.task._id,
-    displayLabel: med.task.displayLabel,
-    pillDescription: med.task.pillDescription ?? null,
-    ...limits,
-    ...doseStatus(limits, med.doses, day, now),
-  };
-}
-
-/**
- * purpose: Active as-needed medications with today's doses and the label facts right now.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<AsNeededEntry[]>) Entries in task creation order.
- */
-async function asNeededEntries(
-  ctx: QueryCtx,
-  household: Doc<"households">,
-  now: number,
-): Promise<AsNeededEntry[]> {
-  const day = localDay(household, now);
-  return (await asNeededMeds(ctx, household, now)).map((m) => asNeededEntry(m, day, now));
 }
 
 /**
@@ -673,10 +546,10 @@ function snoozeResult(
 
 /**
  * purpose: "Not yet": snooze the senior prompts of the task that is due by 15 minutes (the
- *          default of instances.snoozeInstance; caregiver alerts are not delayed). Without a
- *          label it is the earliest due timed task, as for "Done"; with one, the due task whose
- *          display label contains it. A matching task already done reports when; one still
- *          upcoming reports not_due_yet.
+ *          default of instances.snoozeInstance; caregiver alerts are not delayed). The task is
+ *          picked exactly as "Done" picks it (lib/dueTask.pickDueEntry). A matching task
+ *          already done reports when; one still upcoming reports not_due_yet; a missed one
+ *          reports nothing_due.
  * @param householdId: (Id<"households">) Household.
  * @param label: (string | null, optional) Words from the task's display label.
  * @param now: (number, optional) Epoch ms; backend clock.
@@ -691,111 +564,59 @@ export const snoozeDueTask = agentMutation({
   handler: async (ctx, args): Promise<SnoozeResult> => {
     const now = clock(args.now);
     await loadHousehold(ctx, args.householdId);
-    const entries = await todayInstances(ctx, args.householdId, now);
-    /**
-     * purpose: Whether an entry is open for confirmation right now.
-     * @param e: (TodayEntry) The entry.
-     * @return: (boolean) True when due or escalated.
-     */
-    const isDue = (e: TodayEntry): boolean => e.state === "due" || e.state === "escalated";
-    const label = (args.label ?? "").trim().toLowerCase();
-    let due: TodayEntry[];
-    if (label === "") {
-      due = entries.filter((e) => isDue(e) && !isAnytimeInstance(e)).slice(0, 1);
-      if (due.length === 0) return snoozeResult("nothing_due", null);
-    } else {
-      const matches = entries.filter((e) => e.displayLabel.toLowerCase().includes(label));
-      if (matches.length === 0) return snoozeResult("not_found", null);
-      due = matches.filter(isDue);
-      if (due.length === 0) {
-        const done = matches.filter((e) => e.state === "confirmed" || e.state === "resolved");
-        if (done.length > 0) return snoozeResult("already_done", done.at(-1)!);
-        const upcoming = matches.find((e) => e.state === "upcoming");
-        return upcoming ? snoozeResult("not_due_yet", upcoming) : snoozeResult("nothing_due", null);
-      }
-      if (due.length > 1) {
-        return snoozeResult("ambiguous", null, { options: due.map((e) => e.displayLabel) });
-      }
+    const label = (args.label ?? "").trim().toLowerCase() || null;
+    const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now), label);
+    if (!("entry" in picked)) {
+      const options = (picked.options ?? []).map((e) => e.displayLabel);
+      return snoozeResult(
+        picked.status,
+        picked.status === "already_done" ? (picked as TodayEntry) : null,
+        {
+          options,
+        },
+      );
     }
-    const entry = due[0]!;
+    const { entry } = picked;
+    if (!isDueEntry(entry)) {
+      return entry.state === "upcoming"
+        ? snoozeResult("not_due_yet", entry)
+        : snoozeResult("nothing_due", null);
+    }
     const row = await snoozeInstance(ctx, VOICE_AGENT, { instanceId: entry.instanceId }, now);
     return snoozeResult("snoozed", entry, { snoozedUntil: row.snoozedUntil ?? null });
   },
 });
 
 /**
- * purpose: Pick the as-needed medication the senior means: by words in its display label,
- *          caregiver title or pill description, or the only one when no words are given.
- * @param meds: (AsNeededMed[]) The household's as-needed medications.
- * @param label: (string) Lower-cased words, or "" for none.
- * @return: (AsNeededMed | LogDoseResult) The medication, or the no_rule, not_found or
- *          ambiguous result.
+ * purpose: The first scheduled (not as-needed) medication of today that is due right now.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<TodayEntry | null>) The entry, or null when none is due.
  */
-function pickAsNeeded(meds: AsNeededMed[], label: string): AsNeededMed | LogDoseResult {
-  const options = meds.map((m) => m.task.displayLabel);
-  if (meds.length === 0) return { status: "no_rule", options };
-  const matches =
-    label === ""
-      ? meds
-      : meds.filter((m) =>
-          [m.task.displayLabel, m.task.title, m.task.pillDescription ?? ""].some((text) =>
-            text.toLowerCase().includes(label),
-          ),
-        );
-  if (matches.length === 0) return { status: "not_found", options };
-  if (matches.length > 1)
-    return { status: "ambiguous", options: matches.map((m) => m.task.displayLabel) };
-  return matches[0]!;
+async function dueScheduledMedication(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  now: number,
+): Promise<TodayEntry | null> {
+  const entries = await todayInstances(ctx, householdId, now);
+  return entries.find((e) => e.type === "medication" && isDueEntry(e)) ?? null;
 }
 
 /**
- * purpose: The sentence a caregiver gets when a self-reported dose goes past a label limit.
- * @param household: (Doc<"households">) The household.
- * @param entry: (AsNeededEntry) The medication after the dose.
- * @param takenAt: (number) The dose, epoch ms.
- * @param breaches: ({overDailyMax, tooSoon}) Which limits it went past.
- * @return: (string) For example "Margaret reported taking Pain reliever at 3:10 PM. That is 4
- *          today; the label says up to 3 a day."
- */
-function limitFlagDetail(
-  household: Doc<"households">,
-  entry: AsNeededEntry,
-  takenAt: number,
-  breaches: { overDailyMax: boolean; tooSoon: boolean },
-): string {
-  /**
-   * purpose: A household-local 12-hour time.
-   * @param t: (number) Epoch ms.
-   * @return: (string) For example "3:10 PM".
-   */
-  const at = (t: number): string => formatTime12(localTime(t, household.timezone));
-  const parts = [
-    `${household.seniorPreferredName} reported taking ${entry.displayLabel} at ${at(takenAt)}.`,
-  ];
-  if (breaches.overDailyMax) {
-    parts.push(
-      `That is ${entry.takenToday.length} today; the label says up to ${entry.maxPerDay} a day.`,
-    );
-  }
-  if (breaches.tooSoon) {
-    parts.push(`The label says at least ${entry.minHoursBetween} hours apart.`);
-  }
-  return parts.join(" ");
-}
-
-/**
- * purpose: Log an as-needed dose the senior says they took (through instances.logDoseCore,
- *          reported via voice) and return the label facts afterwards. A dose past the daily
- *          maximum or closer than the minimum hours to another flags the caregiver
- *          (reason medication_limit). Never logs anything when no as-needed rule matches.
+ * purpose: Log an as-needed dose the senior says they took (lib/voiceDoses.logAsNeededDoseCore)
+ *          and return the label facts afterwards; past a limit, or on repeated use, the
+ *          caregiver is flagged. Nothing is logged without a matching as-needed rule, when a
+ *          scheduled medication that is due better explains an unnamed "I took my pills", or
+ *          when the same dose (within 30 minutes) is already logged.
  * @param householdId: (Id<"households">) Household.
  * @param label: (string | null, optional) Words naming the medication; may be omitted when
  *        the household has only one as-needed medication.
  * @param minutesAgo: (number | null, optional) Whole minutes since the dose, 0..720; default 0.
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
  * @param now: (number, optional) Epoch ms; backend clock.
- * @return: (LogDoseResult) logged with the facts and any flag, or no_rule / not_found /
- *          ambiguous with the medication labels on file.
+ * @return: (LogDoseResult) logged, already_logged, or no_rule / not_found / ambiguous /
+ *          scheduled_due with the labels to choose from.
  * @raises invalid for minutesAgo outside 0..720 or not whole; not_found for a conversation of
  *         another household.
  */
@@ -815,37 +636,44 @@ export const logAsNeededDose = agentMutation({
     if (!Number.isInteger(minutesAgo) || minutesAgo < 0 || minutesAgo > MAX_DOSE_MINUTES_AGO) {
       throw appError("invalid", "minutesAgo must be a whole number from 0 to 720");
     }
-    const picked = pickAsNeeded(
-      await asNeededMeds(ctx, household, now),
-      (args.label ?? "").trim().toLowerCase(),
-    );
-    if ("status" in picked) return picked;
-    const takenAt = now - minutesAgo * 60_000;
-    await logDoseCore(
-      ctx,
-      VOICE_AGENT,
-      { householdId: household._id, taskId: picked.task._id, takenAt, via: VOICE },
+    return await logAsNeededDoseCore(ctx, {
+      household,
+      words: (args.label ?? "").trim().toLowerCase(),
+      minutesAgo,
+      dueScheduled: await dueScheduledMedication(ctx, household._id, now),
+      conversationId,
       now,
-    );
-    const day = localDay(household, now);
-    const limits = {
-      maxPerDay: picked.task.asNeededMaxPerDay ?? null,
-      minHoursBetween: picked.task.asNeededMinHours ?? null,
-    };
-    const breaches = limitBreaches(limits, picked.doses, takenAt, day);
-    const medication = asNeededEntry({ ...picked, doses: [...picked.doses, takenAt] }, day, now);
-    let flagged: string[] = [];
-    if (breaches.overDailyMax || breaches.tooSoon) {
-      const flag = await flagCaregiverCore(ctx, {
-        household,
-        reason: "medication_limit",
-        detail: limitFlagDetail(household, medication, takenAt, breaches),
-        conversationId,
-        now,
-      });
-      flagged = flag.notified;
-    }
-    return { status: "logged", medication, takenAt, ...breaches, flagged };
+    });
+  },
+});
+
+/**
+ * purpose: "No, I didn't take it": remove the most recent voice-reported as-needed dose of
+ *          today (lib/voiceDoses.undoLastDoseCore), audited; a flag already sent stays sent.
+ * @param householdId: (Id<"households">) Household.
+ * @param label: (string | null, optional) Words naming the medication; omitted means
+ *        whichever was reported last today.
+ * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (UndoDoseResult) removed with the dose, or nothing_to_undo / no_rule / not_found /
+ *          ambiguous.
+ * @raises not_found for a conversation of another household.
+ */
+export const undoLastDose = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    label: v.optional(v.union(v.string(), v.null())),
+    conversationId: v.optional(v.union(v.id("conversations"), v.null())),
+    now: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<UndoDoseResult> => {
+    const household = await loadHousehold(ctx, args.householdId);
+    return await undoLastDoseCore(ctx, {
+      household,
+      words: (args.label ?? "").trim().toLowerCase(),
+      conversationId: await householdConversation(ctx, household._id, args.conversationId),
+      now: clock(args.now),
+    });
   },
 });
 
@@ -937,6 +765,14 @@ export const rememberFact = agentMutation({
     const olderSenior = recent.filter((r) => r.source === "senior" && r.verifiedAt === undefined);
     for (const row of olderSenior.slice(MAX_UNVERIFIED_SENIOR_FACTS - 1)) {
       await ctx.db.delete(row._id);
+      await audit(ctx, {
+        householdId: household._id,
+        actor: VOICE_AGENT,
+        action: "trim",
+        entity: "agentMemory",
+        entityId: row._id,
+        detail: { fact: row.fact, reason: "unverified senior facts over the cap" },
+      });
     }
     await audit(ctx, {
       householdId: household._id,
@@ -951,21 +787,22 @@ export const rememberFact = agentMutation({
 });
 
 /**
- * purpose: Ask the on-call caregiver (or every caregiver) to look in, through the
+ * purpose: Ask the on-call caregiver (or every reachable caregiver) to look in, through the
  *          notification outbox, with an audit row (lib/voiceRouting.flagCaregiverCore).
+ *          medication_limit is not accepted here: log_dose raises it, keyed on the medication.
  * @param householdId: (Id<"households">) Household.
- * @param reason: (FlagReason) medication_limit, symptom, money_request, scam, distress or
- *        help_requested.
- * @param detail: (string) A short description for the caregiver.
+ * @param reason: (string) symptom, money_request, scam, distress or help_requested.
+ * @param detail: (string) A short description for the caregiver (two sentences reach them).
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
  * @param now: (number, optional) Epoch ms; backend clock.
- * @return: (FlagResult) flagged or already_flagged, with the caregivers' names.
+ * @return: (FlagResult) flagged, already_flagged, unreachable or rate_limited, with the
+ *          caregivers named as told.
  * @raises not_found for an unknown household or a conversation of another household.
  */
 export const flagCaregiver = agentMutation({
   args: {
     householdId: v.id("households"),
-    reason: flagReason,
+    reason: modelFlagReason,
     detail: v.string(),
     conversationId: v.optional(v.union(v.id("conversations"), v.null())),
     now: v.optional(v.number()),
@@ -984,13 +821,14 @@ export const flagCaregiver = agentMutation({
 
 /**
  * purpose: Send a message the senior dictated to family ("Tell Sarah I'm home"): a
- *          familyMessages row from the senior plus a notification to the named caregiver, or
- *          to everyone (lib/voiceRouting.sendFamilyMessageCore).
+ *          familyMessages row from the senior plus a notification to the named reachable
+ *          caregiver, or to every reachable one (lib/voiceRouting.sendFamilyMessageCore).
  * @param householdId: (Id<"households">) Household.
  * @param to: (string | null, optional) The name the senior used; blank or null for the family.
  * @param body: (string) The message.
  * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
- * @return: (FamilyMessageResult) sent or sent_to_family, with the recipients' names.
+ * @return: (FamilyMessageResult) sent, sent_to_family, unreachable, already_sent or
+ *          rate_limited, with the recipients' names.
  * @raises invalid for a blank message; not_found for an unknown household or a conversation
  *         of another household.
  */
@@ -1008,6 +846,7 @@ export const sendFamilyMessage = agentMutation({
       to: args.to ?? "",
       body: args.body,
       conversationId: await householdConversation(ctx, household._id, args.conversationId),
+      now: Date.now(),
     });
   },
 });
@@ -1147,10 +986,12 @@ export const finishConversation = agentMutation({
  *          conversation (memory.py does the extraction after the call, so logging adds no
  *          spoken latency). The household comes from the conversation. Text is trimmed and
  *          cut to the caps rather than rejected; the topic is lower-cased so repeats share it;
- *          a blank question or topic is skipped; askedAt defaults to the conversation start.
+ *          a blank question or topic is skipped; askedAt defaults to (and is never before) the
+ *          conversation start. Idempotent per conversation: once any question of the
+ *          conversation is logged, a later call inserts nothing.
  * @param conversationId: (Id<"conversations">) The conversation.
  * @param questions: (Array<{question, topic, outcome, toolsUsed, askedAt?}>) At most 50.
- * @return: (number) Rows inserted.
+ * @return: (number) Rows inserted (0 when the conversation's questions were already logged).
  * @raises not_found when the conversation does not exist; invalid for more than 50 questions.
  */
 export const logQuestions = agentMutation({
@@ -1171,6 +1012,14 @@ export const logQuestions = agentMutation({
     if (args.questions.length > MAX_QUESTIONS_PER_CONVERSATION) {
       throw appError("invalid", "Too many questions for one conversation");
     }
+    const logged = await ctx.db
+      .query("agentQuestions")
+      .withIndex("by_household_asked", (q) =>
+        q.eq("householdId", conversation.householdId).gte("askedAt", conversation.startedAt),
+      )
+      .filter((q) => q.eq(q.field("conversationId"), conversation._id))
+      .first();
+    if (logged) return 0;
     let inserted = 0;
     for (const q of args.questions) {
       const question = q.question.trim().slice(0, MAX_QUESTION_LENGTH);
@@ -1179,7 +1028,7 @@ export const logQuestions = agentMutation({
       await ctx.db.insert("agentQuestions", {
         householdId: conversation.householdId,
         conversationId: conversation._id,
-        askedAt: q.askedAt ?? conversation.startedAt,
+        askedAt: Math.max(q.askedAt ?? conversation.startedAt, conversation.startedAt),
         question,
         topic,
         outcome: q.outcome,
