@@ -24,8 +24,10 @@
 // SMS: caregiver phone numbers live on householdMembers (phone, phoneVerifiedAt, pendingPhone);
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
+// Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
+// looks up).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -71,6 +73,9 @@ export default defineSchema({
     backgroundPaused: v.boolean(),
     // Local date of the latest digest row, so ticks after the day's digest skip the lookup.
     lastDigestDate: v.optional(v.string()),
+    // Place name the voice agent looks the weather up for, e.g. "Brooklyn, NY"; absent means
+    // the agent has no weather location.
+    weatherLocation: v.optional(v.string()),
   }),
 
   householdMembers: defineTable({

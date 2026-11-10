@@ -9,47 +9,52 @@
 // including the household checks on device and task instance. The agent clock is driven by
 // the `now` argument. Also the logTurn length cap, today for an unknown household, and the
 // accepted trust model (a valid key may log to or finish any conversation).
+// Voice tools (2026-11-09): the context's weather location, caregivers and recent question
+// topics; medicationStatus; snoozeDueTask ("not yet"); logAsNeededDose (label limits, the
+// caregiver flag past a limit, never a dose without a rule); rememberFact (unverified, never
+// overwriting a verified fact); flagCaregiver (on-call first, all caregivers otherwise, repeat
+// window, audit); sendFamilyMessage; readLatestMessage (seenAt); logQuestions and the digest
+// facts that read those rows; and households.update's weatherLocation. Each is scoped to the
+// household it is given. The system clock is frozen at NOW (the outbox enqueues delivery).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
-import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_TURN_CONTENT_LENGTH } from "./agent";
-import schema from "./schema";
-
-/** Every non-test module in the backend, for the convex-test harness. */
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+import { gatherDigestFacts } from "./lib/digestFacts";
+import {
+  MAX_FACT_LENGTH,
+  MAX_UNVERIFIED_SENIOR_FACTS,
+  MEMORY_CONTEXT_LIMIT,
+  MEMORY_UNVERIFIED_RESERVE,
+} from "./lib/memoryLimits";
+import { FLAG_REPEAT_WINDOW_MS } from "./lib/voiceRouting";
+import { addMember, makeBackend } from "./testing.helpers";
+import type { TestConvex } from "./testing.helpers";
 
 const KEY = "agent-secret-key";
 /** Wednesday 2027-03-10 10:00 in New York (EST); local midnight is 05:00Z. */
 const NOW = Date.parse("2027-03-10T15:00:00Z");
 const MIDNIGHT = Date.parse("2027-03-10T05:00:00Z");
 const HOUR = 3_600_000;
+const MINUTE = 60_000;
 
 let savedKey: string | undefined;
 
 beforeEach(() => {
   savedKey = process.env.SUNNY_AGENT_KEY;
   process.env.SUNNY_AGENT_KEY = KEY;
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   if (savedKey === undefined) delete process.env.SUNNY_AGENT_KEY;
   else process.env.SUNNY_AGENT_KEY = savedKey;
 });
-
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
-function makeBackend() {
-  return convexTest(schema, modules);
-}
-
-/** The convex-test harness type. */
-type TestConvex = ReturnType<typeof makeBackend>;
 
 /** A household created through the public API (so the default policies exist). */
 interface Fixture {
@@ -176,7 +181,7 @@ interface AgentCall {
 }
 
 /**
- * purpose: The nine agent entry points with valid arguments for a fixture.
+ * purpose: Every agent entry point with valid arguments for a fixture.
  * @return: (AgentCall[]) The calls.
  */
 function allCalls(): AgentCall[] {
@@ -217,6 +222,27 @@ function allCalls(): AgentCall[] {
     })),
     m("finishConversation", api.agent.finishConversation, (f) => ({
       conversationId: f.conversationId,
+    })),
+    q("medicationStatus", api.agent.medicationStatus, (f) => ({ householdId: f.householdId })),
+    m("snoozeDueTask", api.agent.snoozeDueTask, (f) => ({ householdId: f.householdId })),
+    m("logAsNeededDose", api.agent.logAsNeededDose, (f) => ({ householdId: f.householdId })),
+    m("rememberFact", api.agent.rememberFact, (f) => ({
+      householdId: f.householdId,
+      fact: "Glasses are in the hall drawer",
+    })),
+    m("flagCaregiver", api.agent.flagCaregiver, (f) => ({
+      householdId: f.householdId,
+      reason: "scam",
+      detail: "A caller asked for gift cards",
+    })),
+    m("sendFamilyMessage", api.agent.sendFamilyMessage, (f) => ({
+      householdId: f.householdId,
+      body: "I'm home",
+    })),
+    m("readLatestMessage", api.agent.readLatestMessage, (f) => ({ householdId: f.householdId })),
+    m("logQuestions", api.agent.logQuestions, (f) => ({
+      conversationId: f.conversationId,
+      questions: [],
     })),
   ];
 }
@@ -289,7 +315,9 @@ describe("getContext", () => {
         seniorPreferredName: "Margaret",
         timezone: "America/New_York",
         localNow: "2027-03-10T10:00:00",
+        weatherLocation: null,
       },
+      caregivers: [{ name: "Anna", onCall: true }],
       today: [],
       asNeeded: [],
       events: [],
@@ -298,6 +326,7 @@ describe("getContext", () => {
       sensitiveTopics: [],
       memory: [],
       recentConversations: [],
+      recentQuestionTopics: [],
     });
   });
 
@@ -386,6 +415,9 @@ describe("getContext", () => {
         maxPerDay: 3,
         minHoursBetween: 4,
         takenToday: [MIDNIGHT, MIDNIGHT + 3 * HOUR],
+        lastTakenAt: MIDNIGHT + 3 * HOUR,
+        remainingToday: 1,
+        nextWithinLabelAt: null,
       },
       {
         taskId: onlyMax,
@@ -394,6 +426,9 @@ describe("getContext", () => {
         maxPerDay: 2,
         minHoursBetween: null,
         takenToday: [MIDNIGHT + HOUR],
+        lastTakenAt: MIDNIGHT + HOUR,
+        remainingToday: 1,
+        nextWithinLabelAt: null,
       },
     ]);
   });
@@ -610,6 +645,40 @@ describe("getContext", () => {
     expect(memory.map((m) => m.fact)).not.toContain("fact 0");
     expect(memory.map((m) => m.fact)).not.toContain("fact 6");
     expect(memory.map((m) => m.fact)).toContain("fact 7");
+  });
+
+  test("memory keeps at least 10 unverified slots however many facts are verified", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => {
+      for (let i = 0; i < 15; i++) {
+        await ctx.db.insert("agentMemory", {
+          householdId: f.householdId,
+          fact: `said ${i}`,
+          source: "senior",
+        });
+      }
+      for (let i = 0; i < 45; i++) {
+        await ctx.db.insert("agentMemory", {
+          householdId: f.householdId,
+          fact: `verified ${i}`,
+          source: "caregiver",
+          verifiedBy: "user_a",
+          verifiedAt: NOW,
+        });
+      }
+    });
+    const { memory } = await f.t.query(api.agent.getContext, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(memory).toHaveLength(MEMORY_CONTEXT_LIMIT);
+    const verified = memory.filter((m) => m.verified);
+    expect(verified).toHaveLength(MEMORY_CONTEXT_LIMIT - MEMORY_UNVERIFIED_RESERVE);
+    expect(verified[0]!.fact).toBe("verified 44");
+    expect(memory.filter((m) => !m.verified).map((m) => m.fact)).toEqual(
+      Array.from({ length: MEMORY_UNVERIFIED_RESERVE }, (_, i) => `said ${14 - i}`),
+    );
   });
 
   test("recentConversations are the five newest with a summary", async () => {
@@ -1065,5 +1134,898 @@ describe("logTurn length cap and accepted trust model", () => {
       endedAt: NOW,
       summary: "A chat.",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Voice tools (2026-11-09)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * purpose: Insert an instance of a task on today's local date in any state.
+ * @param f: (World) Harness and household.
+ * @param taskId: (Id<"tasks">) Task.
+ * @param fields: (object) state (default due), scheduledTime (default "09:30"), confirmedAt.
+ * @return: (Promise<Id<"taskInstances">>) The instance.
+ */
+async function insertInstance(
+  f: World,
+  taskId: Id<"tasks">,
+  fields: Partial<Pick<Doc<"taskInstances">, "state" | "scheduledTime" | "confirmedAt">> = {},
+): Promise<Id<"taskInstances">> {
+  return await f.t.run(
+    async (ctx) =>
+      await ctx.db.insert("taskInstances", {
+        taskId,
+        householdId: f.householdId,
+        localDate: "2027-03-10",
+        scheduledTime: fields.scheduledTime ?? "09:30",
+        windowStart: NOW - HOUR / 2,
+        windowEnd: NOW + HOUR / 2,
+        state: fields.state ?? "due",
+        confirmedAt: fields.confirmedAt,
+        createdAt: NOW - HOUR,
+        firedSteps: [],
+      }),
+  );
+}
+
+/**
+ * purpose: A second household (Walter, caregiver Bea as user_z), for scoping tests.
+ * @param t: (TestConvex) Harness.
+ * @return: (Promise<Id<"households">>) The household.
+ */
+async function otherHousehold(t: TestConvex): Promise<Id<"households">> {
+  return await t.withIdentity({ subject: "user_z" }).mutation(api.households.create, {
+    seniorPreferredName: "Walter",
+    timezone: "America/New_York",
+    caregiverDisplayName: "Bea",
+  });
+}
+
+/**
+ * purpose: A conversation row in another household.
+ * @param t: (TestConvex) Harness.
+ * @return: (Promise<Id<"conversations">>) The conversation.
+ */
+async function foreignConversation(t: TestConvex): Promise<Id<"conversations">> {
+  const other = await otherHousehold(t);
+  return await t.run(
+    async (ctx) =>
+      await ctx.db.insert("conversations", { householdId: other, trigger: "talk", startedAt: NOW }),
+  );
+}
+
+/**
+ * purpose: Insert a dose row directly.
+ * @param f: (World) Harness and household.
+ * @param taskId: (Id<"tasks">) The as-needed task.
+ * @param takenAt: (number) Epoch ms.
+ * @return: (Promise<void>) Resolves when inserted.
+ */
+async function insertDose(f: World, taskId: Id<"tasks">, takenAt: number): Promise<void> {
+  await f.t.run(async (ctx) => {
+    await ctx.db.insert("doseLog", {
+      householdId: f.householdId,
+      taskId,
+      takenAt,
+      reportedVia: "button",
+    });
+  });
+}
+
+/**
+ * purpose: The household's outbox rows of one kind, oldest first.
+ * @param f: (World) Harness and household.
+ * @param kind: (Doc<"notificationOutbox">["kind"]) The kind.
+ * @return: (Promise<Doc<"notificationOutbox">[]>) Rows.
+ */
+async function outbox(
+  f: World,
+  kind: Doc<"notificationOutbox">["kind"],
+): Promise<Doc<"notificationOutbox">[]> {
+  const rows = await f.t.run(async (ctx) => await ctx.db.query("notificationOutbox").collect());
+  return rows.filter((r) => r.kind === kind && r.householdId === f.householdId);
+}
+
+/**
+ * purpose: The household's audit rows with one action.
+ * @param f: (World) Harness and household.
+ * @param action: (string) The action.
+ * @return: (Promise<Doc<"auditLog">[]>) Rows.
+ */
+async function auditRows(f: World, action: string): Promise<Doc<"auditLog">[]> {
+  const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+  return rows.filter((r) => r.action === action && r.householdId === f.householdId);
+}
+
+/**
+ * purpose: Add Bob (member, user_b) and Sarah Lee (member, user_c) to the household.
+ * @param f: (World) Harness and household.
+ * @return: (Promise<void>) Resolves when added.
+ */
+async function addFamily(f: World): Promise<void> {
+  await addMember(f.t, f.householdId, "user_b", "member", "Bob");
+  await addMember(f.t, f.householdId, "user_c", "member", "Sarah Lee");
+}
+
+/**
+ * purpose: A question row argument for logQuestions.
+ * @param question: (string) The question.
+ * @param topic: (string) Its topic.
+ * @param extra: (object) outcome (default answered), toolsUsed (default none), askedAt.
+ * @return: (object) The argument.
+ */
+function asked(
+  question: string,
+  topic: string,
+  extra: Partial<{
+    outcome: "answered" | "routed" | "unsure";
+    toolsUsed: string[];
+    askedAt: number;
+  }> = {},
+) {
+  return { question, topic, outcome: "answered" as const, toolsUsed: [], ...extra };
+}
+
+describe("context additions", () => {
+  test("weatherLocation is set, trimmed and cleared through households.update", async () => {
+    const f = await setup();
+    const anna = f.t.withIdentity({ subject: "user_a" });
+    /**
+     * purpose: The weather location getContext reports.
+     * @return: (Promise<string | null>) The location.
+     */
+    const read = async (): Promise<string | null> =>
+      (
+        await f.t.query(api.agent.getContext, {
+          agentKey: KEY,
+          householdId: f.householdId,
+          now: NOW,
+        })
+      ).household.weatherLocation;
+
+    await anna.mutation(api.households.update, {
+      householdId: f.householdId,
+      weatherLocation: "  Brooklyn, NY ",
+    });
+    expect(await read()).toBe("Brooklyn, NY");
+    await anna.mutation(api.households.update, { householdId: f.householdId, weatherLocation: "" });
+    expect(await read()).toBeNull();
+    await expect(
+      anna.mutation(api.households.update, {
+        householdId: f.householdId,
+        weatherLocation: "x".repeat(101),
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+
+  test("caregivers name the on-call one; recent topics are distinct, newest first", async () => {
+    const f = await setup();
+    await addFamily(f);
+    await f.t.mutation(api.agent.logQuestions, {
+      agentKey: KEY,
+      conversationId: f.conversationId,
+      questions: [
+        asked("When is Sarah coming?", "Sarah visit", { askedAt: NOW - 2 * HOUR }),
+        asked("Is it raining?", "weather", { askedAt: NOW - HOUR }),
+        asked("When does Sarah come?", "sarah visit", { askedAt: NOW - 30 * MINUTE }),
+        asked("Old one", "old", { askedAt: NOW - 8 * 24 * HOUR }),
+      ],
+    });
+    const context = await f.t.query(api.agent.getContext, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(context.caregivers).toEqual(
+      expect.arrayContaining([
+        { name: "Anna", onCall: true },
+        { name: "Bob", onCall: false },
+        { name: "Sarah Lee", onCall: false },
+      ]),
+    );
+    expect(context.recentQuestionTopics).toEqual(["sarah visit", "weather"]);
+  });
+});
+
+describe("medicationStatus", () => {
+  test("returns today's scheduled medications and the as-needed facts, fresh", async () => {
+    const f = await setup();
+    const morning = await insertTask(f, { title: "Morning pills" });
+    await insertInstance(f, morning, {
+      state: "confirmed",
+      scheduledTime: "08:00",
+      confirmedAt: NOW - 110 * MINUTE,
+    });
+    const walk = await f.t.run(
+      async (ctx) =>
+        await ctx.db.insert("tasks", {
+          householdId: f.householdId,
+          type: "routine",
+          title: "Walk",
+          displayLabel: "Walk",
+          spokenPrompt: "Walk.",
+          checklistItems: [],
+          times: ["14:00"],
+          windowMinutes: 60,
+          createdByKind: "caregiver",
+          active: true,
+          scheduleChangedAt: 0,
+        }),
+    );
+    await insertInstance(f, walk, { state: "upcoming", scheduledTime: "14:00" });
+    const relief = await insertTask(f, {
+      title: "Pain reliever",
+      asNeededMaxPerDay: 3,
+      asNeededMinHours: 6,
+    });
+    // 11:00 PM yesterday and 9:00 AM today.
+    await insertDose(f, relief, MIDNIGHT - HOUR);
+    await insertDose(f, relief, NOW - HOUR);
+
+    const status = await f.t.query(api.agent.medicationStatus, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(status.scheduled.map((e) => e.displayLabel)).toEqual(["Morning pills"]);
+    expect(status.scheduled[0]).toMatchObject({ state: "confirmed", confirmedLocalTime: "08:10" });
+    expect(status.asNeeded).toEqual([
+      expect.objectContaining({
+        displayLabel: "Pain reliever",
+        takenToday: [NOW - HOUR],
+        lastTakenAt: NOW - HOUR,
+        remainingToday: 2,
+        nextWithinLabelAt: NOW + 5 * HOUR,
+      }),
+    ]);
+  });
+});
+
+describe("snoozeDueTask", () => {
+  test("'not yet' snoozes the due task 15 minutes and audits it", async () => {
+    const f = await setup();
+    const pills = await insertTask(f, { title: "Morning pills" });
+    const instanceId = await insertInstance(f, pills);
+
+    const result = await f.t.mutation(api.agent.snoozeDueTask, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(result).toEqual({
+      status: "snoozed",
+      displayLabel: "Morning pills",
+      scheduledTime: "09:30",
+      snoozedUntil: NOW + 15 * MINUTE,
+      confirmedAt: null,
+      options: [],
+    });
+    const row = await f.t.run(async (ctx) => await ctx.db.get(instanceId));
+    expect(row!.snoozedUntil).toBe(NOW + 15 * MINUTE);
+    const audits = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(audits.some((a) => a.entityId === instanceId && a.actorKind === "agent")).toBe(true);
+  });
+
+  test("nothing due, unknown label, already done, not due yet and ambiguous", async () => {
+    const f = await setup();
+    /**
+     * purpose: Snooze with an optional label.
+     * @param label: (string, optional) Label words.
+     * @return: (Promise<object>) The result.
+     */
+    const call = (label?: string) =>
+      f.t.mutation(api.agent.snoozeDueTask, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        label: label ?? null,
+        now: NOW,
+      });
+    expect((await call()).status).toBe("nothing_due");
+    const pills = await insertTask(f, { title: "Morning pills" });
+    await insertInstance(f, pills, { state: "confirmed", confirmedAt: NOW - 50 * MINUTE });
+    expect(await call("morning")).toMatchObject({
+      status: "already_done",
+      confirmedAt: NOW - 50 * MINUTE,
+    });
+    expect((await call("garden")).status).toBe("not_found");
+    const lunch = await insertTask(f, { title: "Lunch pills" });
+    await insertInstance(f, lunch, { state: "upcoming", scheduledTime: "12:00" });
+    expect(await call("lunch")).toMatchObject({ status: "not_due_yet", scheduledTime: "12:00" });
+    const left = await insertTask(f, { title: "Eye drops left" });
+    const right = await insertTask(f, { title: "Eye drops right" });
+    await insertInstance(f, left);
+    await insertInstance(f, right);
+    expect(await call("eye drops")).toMatchObject({
+      status: "ambiguous",
+      options: ["Eye drops left", "Eye drops right"],
+    });
+  });
+
+  test("another household's due task is never snoozed", async () => {
+    const f = await setup();
+    const other = { t: f.t, householdId: await otherHousehold(f.t) };
+    const instanceId = await insertInstance(other, await insertTask(other, { title: "Pills" }));
+    const result = await f.t.mutation(api.agent.snoozeDueTask, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(result.status).toBe("nothing_due");
+    const row = await f.t.run(async (ctx) => await ctx.db.get(instanceId));
+    expect(row!.snoozedUntil).toBeUndefined();
+  });
+});
+
+describe("logAsNeededDose", () => {
+  test("logs a voice dose and returns the label facts without flagging", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, {
+      title: "Pain reliever",
+      asNeededMaxPerDay: 3,
+      asNeededMinHours: 6,
+    });
+    await insertDose(f, relief, MIDNIGHT + HOUR);
+
+    const result = await f.t.mutation(api.agent.logAsNeededDose, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      label: "pain",
+      minutesAgo: 10,
+      conversationId: f.conversationId,
+      now: NOW,
+    });
+    expect(result).toMatchObject({
+      status: "logged",
+      takenAt: NOW - 10 * MINUTE,
+      overDailyMax: false,
+      tooSoon: false,
+      flagged: [],
+      medication: {
+        takenToday: [MIDNIGHT + HOUR, NOW - 10 * MINUTE],
+        remainingToday: 1,
+        nextWithinLabelAt: NOW - 10 * MINUTE + 6 * HOUR,
+      },
+    });
+    const doses = await f.t.run(async (ctx) => await ctx.db.query("doseLog").collect());
+    expect(doses.at(-1)).toMatchObject({ takenAt: NOW - 10 * MINUTE, reportedVia: "voice" });
+    expect(await outbox(f, "agent_flag")).toEqual([]);
+  });
+
+  test("a dose past the daily maximum flags the on-call caregiver", async () => {
+    const f = await setup();
+    await addFamily(f);
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 2 });
+    await insertDose(f, relief, MIDNIGHT + HOUR);
+    await insertDose(f, relief, MIDNIGHT + 2 * HOUR);
+
+    const result = await f.t.mutation(api.agent.logAsNeededDose, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(result).toMatchObject({
+      status: "logged",
+      overDailyMax: true,
+      tooSoon: false,
+      flagged: ["Anna"],
+    });
+    const flags = await outbox(f, "agent_flag");
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toMatchObject({
+      recipientUserId: "user_a",
+      state: "pending",
+      title: "Margaret went past a medication limit",
+      body:
+        "Margaret reported taking Pain reliever at 10:00 AM. That is 3 today; the label says up " +
+        "to 2 a day.",
+      payload: { reason: "medication_limit" },
+    });
+    expect(await auditRows(f, "flag_caregiver")).toHaveLength(1);
+  });
+
+  test("a dose too soon after the last one, even across midnight, flags too", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, { title: "Pain reliever", asNeededMinHours: 12 });
+    await insertDose(f, relief, MIDNIGHT - HOUR);
+    const result = await f.t.mutation(api.agent.logAsNeededDose, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(result).toMatchObject({ overDailyMax: false, tooSoon: true, flagged: ["Anna"] });
+  });
+
+  test("never logs without a matching as-needed rule", async () => {
+    const f = await setup();
+    /**
+     * purpose: Log a dose by label.
+     * @param label: (string | null) Label words.
+     * @return: (Promise<object>) The result.
+     */
+    const call = (label: string | null) =>
+      f.t.mutation(api.agent.logAsNeededDose, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        label,
+        now: NOW,
+      });
+    await insertTask(f, { title: "Morning pills" });
+    expect(await call("tylenol")).toEqual({ status: "no_rule", options: [] });
+    await insertTask(f, { title: "Tylenol", asNeededMaxPerDay: 3 });
+    await insertTask(f, { title: "Antacid", asNeededMaxPerDay: 2 });
+    expect(await call("aspirin")).toEqual({ status: "not_found", options: ["Tylenol", "Antacid"] });
+    expect(await call(null)).toEqual({ status: "ambiguous", options: ["Tylenol", "Antacid"] });
+    expect(await f.t.run(async (ctx) => await ctx.db.query("doseLog").collect())).toEqual([]);
+  });
+
+  test("matches the caregiver title and pill description; rejects a bad minutesAgo", async () => {
+    const f = await setup();
+    const relief = await insertTask(f, {
+      title: "Relief",
+      asNeededMaxPerDay: 3,
+      pillDescription: "small white Tylenol",
+    });
+    await f.t.run(async (ctx) => await ctx.db.patch(relief, { displayLabel: "Headache pill" }));
+    const logged = await f.t.mutation(api.agent.logAsNeededDose, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      label: "tylenol",
+      now: NOW,
+    });
+    expect(logged).toMatchObject({
+      status: "logged",
+      medication: { displayLabel: "Headache pill" },
+    });
+    for (const minutesAgo of [-1, 1.5, 721]) {
+      await expect(
+        f.t.mutation(api.agent.logAsNeededDose, {
+          agentKey: KEY,
+          householdId: f.householdId,
+          minutesAgo,
+          now: NOW,
+        }),
+      ).rejects.toMatchObject({ data: { code: "invalid" } });
+    }
+  });
+
+  test("a conversation of another household is rejected", async () => {
+    const f = await setup();
+    const foreign = await foreignConversation(f.t);
+    await insertTask(f, { title: "Tylenol", asNeededMaxPerDay: 3 });
+    await expect(
+      f.t.mutation(api.agent.logAsNeededDose, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        conversationId: foreign,
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ data: { code: "not_found" } });
+  });
+});
+
+describe("rememberFact", () => {
+  test("stores an unverified senior fact linked to the conversation", async () => {
+    const f = await setup();
+    const result = await f.t.mutation(api.agent.rememberFact, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      fact: "  My glasses are in the hall drawer ",
+      conversationId: f.conversationId,
+    });
+    expect(result).toEqual({ status: "saved" });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("agentMemory").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      householdId: f.householdId,
+      fact: "My glasses are in the hall drawer",
+      source: "senior",
+      conversationId: f.conversationId,
+    });
+    expect(rows[0]!.verifiedAt).toBeUndefined();
+    expect(rows[0]!.verifiedBy).toBeUndefined();
+    expect(await auditRows(f, "remember")).toHaveLength(1);
+  });
+
+  test("never overwrites or edits a verified fact, even a conflicting one", async () => {
+    const f = await setup();
+    const verified = await f.t.run(
+      async (ctx) =>
+        await ctx.db.insert("agentMemory", {
+          householdId: f.householdId,
+          fact: "Sarah visits on Saturdays",
+          source: "caregiver",
+          verifiedBy: "user_a",
+          verifiedAt: NOW - HOUR,
+        }),
+    );
+    const before = await f.t.run(async (ctx) => await ctx.db.get(verified));
+    /**
+     * purpose: Remember a fact.
+     * @param fact: (string) The fact.
+     * @return: (Promise<object>) The result.
+     */
+    const remember = (fact: string) =>
+      f.t.mutation(api.agent.rememberFact, { agentKey: KEY, householdId: f.householdId, fact });
+    expect(await remember("Sarah visits on Sundays")).toEqual({ status: "saved" });
+    expect(await remember("sarah visits on saturdays")).toEqual({ status: "already_known" });
+    expect(await f.t.run(async (ctx) => await ctx.db.get(verified))).toEqual(before);
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("agentMemory").collect());
+    expect(rows.map((r) => [r.fact, r.source, r.verifiedAt !== undefined])).toEqual([
+      ["Sarah visits on Saturdays", "caregiver", true],
+      ["Sarah visits on Sundays", "senior", false],
+    ]);
+  });
+
+  test("a blank fact is invalid; another household's conversation is not_found", async () => {
+    const f = await setup();
+    /**
+     * purpose: Remember a fact in an optional conversation.
+     * @param fact: (string) The fact.
+     * @param conversationId: (Id<"conversations">, optional) The conversation.
+     * @return: (Promise<object>) The result.
+     */
+    const call = (fact: string, conversationId?: Id<"conversations">) =>
+      f.t.mutation(api.agent.rememberFact, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        fact,
+        conversationId,
+      });
+    await expect(call(" \n ")).rejects.toMatchObject({ data: { code: "invalid" } });
+    await expect(
+      call("Keys are on the hook", await foreignConversation(f.t)),
+    ).rejects.toMatchObject({ data: { code: "not_found" } });
+    expect(await f.t.run(async (ctx) => await ctx.db.query("agentMemory").collect())).toEqual([]);
+  });
+
+  test("stores one line capped at 300 and skips a duplicate differing in case or spacing", async () => {
+    const f = await setup();
+    /**
+     * purpose: Remember a fact.
+     * @param fact: (string) The fact.
+     * @return: (Promise<object>) The result.
+     */
+    const remember = (fact: string) =>
+      f.t.mutation(api.agent.rememberFact, { agentKey: KEY, householdId: f.householdId, fact });
+    expect(await remember("  Keys are\n\n on the   hook ")).toEqual({ status: "saved" });
+    expect(await remember("KEYS are on the hook")).toEqual({ status: "already_known" });
+    expect(await remember("y".repeat(400))).toEqual({ status: "saved" });
+    const facts = (await f.t.run(async (ctx) => await ctx.db.query("agentMemory").collect())).map(
+      (r) => r.fact,
+    );
+    expect(facts).toEqual(["Keys are on the hook", "y".repeat(MAX_FACT_LENGTH)]);
+  });
+
+  test("keeps the newest 200 unverified senior facts and never trims verified or family rows", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("agentMemory", {
+        householdId: f.householdId,
+        fact: "verified old",
+        source: "caregiver",
+        verifiedBy: "user_a",
+        verifiedAt: NOW,
+      });
+      await ctx.db.insert("agentMemory", {
+        householdId: f.householdId,
+        fact: "family unverified old",
+        source: "caregiver",
+      });
+      for (let i = 0; i < MAX_UNVERIFIED_SENIOR_FACTS; i++) {
+        await ctx.db.insert("agentMemory", {
+          householdId: f.householdId,
+          fact: `senior ${i}`,
+          source: "senior",
+        });
+      }
+    });
+    await f.t.mutation(api.agent.rememberFact, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      fact: "senior newest",
+    });
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("agentMemory").collect());
+    const senior = rows.filter((r) => r.source === "senior");
+    expect(senior).toHaveLength(MAX_UNVERIFIED_SENIOR_FACTS);
+    expect(senior.map((r) => r.fact)).not.toContain("senior 0");
+    expect(senior.map((r) => r.fact)).toContain("senior 1");
+    expect(senior.map((r) => r.fact)).toContain("senior newest");
+    expect(rows.map((r) => r.fact)).toEqual(
+      expect.arrayContaining(["verified old", "family unverified old"]),
+    );
+  });
+});
+
+describe("flagCaregiver", () => {
+  test("reaches the on-call caregiver only and audits the flag", async () => {
+    const f = await setup();
+    await addFamily(f);
+    const result = await f.t.mutation(api.agent.flagCaregiver, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      reason: "scam",
+      detail: "A caller said her grandson is in jail and asked for gift cards.",
+      conversationId: f.conversationId,
+      now: NOW,
+    });
+    expect(result).toEqual({ status: "flagged", notified: ["Anna"] });
+    const rows = await outbox(f, "agent_flag");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      recipientUserId: "user_a",
+      title: "Margaret may be facing a scam",
+      body: "A caller said her grandson is in jail and asked for gift cards.",
+      payload: { reason: "scam", flaggedAt: NOW, conversationId: f.conversationId },
+    });
+    const audits = await auditRows(f, "flag_caregiver");
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({
+      actorKind: "agent",
+      detail: { reason: "scam", recipients: ["user_a"], conversationId: f.conversationId },
+    });
+  });
+
+  test("falls back to every caregiver when no one is on call", async () => {
+    const f = await setup();
+    await addFamily(f);
+    await f.t.run(async (ctx) => await ctx.db.patch(f.householdId, { onCallUserId: undefined }));
+    const result = await f.t.mutation(api.agent.flagCaregiver, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      reason: "distress",
+      detail: "She said she is scared and does not know where she is.",
+      now: NOW,
+    });
+    expect(result.notified.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
+    expect((await outbox(f, "agent_flag")).map((r) => r.recipientUserId).sort()).toEqual([
+      "user_a",
+      "user_b",
+      "user_c",
+    ]);
+  });
+
+  test("the same reason within 10 minutes is not sent again; later it is", async () => {
+    const f = await setup();
+    /**
+     * purpose: Flag at an instant.
+     * @param now: (number) Epoch ms.
+     * @param reason: ("symptom" | "money_request") The reason.
+     * @return: (Promise<object>) The result.
+     */
+    const flag = (now: number, reason: "symptom" | "money_request" = "symptom") =>
+      f.t.mutation(api.agent.flagCaregiver, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        reason,
+        detail: "Headache again",
+        now,
+      });
+    expect((await flag(NOW)).status).toBe("flagged");
+    expect(await flag(NOW + 5 * MINUTE)).toEqual({ status: "already_flagged", notified: ["Anna"] });
+    expect((await flag(NOW + 5 * MINUTE, "money_request")).status).toBe("flagged");
+    expect((await flag(NOW + FLAG_REPEAT_WINDOW_MS + MINUTE)).status).toBe("flagged");
+    expect(await outbox(f, "agent_flag")).toHaveLength(3);
+  });
+
+  test("an unknown reason is rejected and other households are untouched", async () => {
+    const f = await setup();
+    const other = await otherHousehold(f.t);
+    await expect(
+      f.t.mutation(api.agent.flagCaregiver, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        reason: "bored" as any,
+        detail: "x",
+        now: NOW,
+      }),
+    ).rejects.toThrow();
+    await f.t.mutation(api.agent.flagCaregiver, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      reason: "symptom",
+      detail: "Dizzy",
+      now: NOW,
+    });
+    expect(await outbox({ t: f.t, householdId: other }, "agent_flag")).toEqual([]);
+  });
+});
+
+describe("sendFamilyMessage", () => {
+  test("goes to the named caregiver and stores a senior message", async () => {
+    const f = await setup();
+    await addFamily(f);
+    const result = await f.t.mutation(api.agent.sendFamilyMessage, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      to: " sarah\n",
+      body: " I'm home ",
+      conversationId: f.conversationId,
+    });
+    expect(result).toMatchObject({ status: "sent", recipients: ["Sarah Lee"] });
+    const message = await f.t.run(async (ctx) => await ctx.db.get(result.messageId));
+    expect(message).toMatchObject({
+      householdId: f.householdId,
+      senderKind: "senior",
+      body: "For sarah: I'm home",
+    });
+    expect(message!.senderUserId).toBeUndefined();
+    const rows = await outbox(f, "family_message");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      recipientUserId: "user_c",
+      title: "Message from Margaret",
+      body: "For sarah: I'm home",
+      payload: { messageId: result.messageId },
+    });
+    expect((await auditRows(f, "send"))[0]).toMatchObject({
+      entity: "familyMessage",
+      detail: { to: "sarah", recipients: ["user_c"] },
+    });
+  });
+
+  test("an unknown name or no name reaches every caregiver", async () => {
+    const f = await setup();
+    await addFamily(f);
+    const unknown = await f.t.mutation(api.agent.sendFamilyMessage, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      to: "Tommy",
+      body: "Happy birthday",
+    });
+    expect(unknown.status).toBe("sent_to_family");
+    expect(unknown.recipients.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
+    expect((await outbox(f, "family_message")).map((r) => r.body)).toEqual([
+      "For Tommy: Happy birthday",
+      "For Tommy: Happy birthday",
+      "For Tommy: Happy birthday",
+    ]);
+    const nobody = await f.t.mutation(api.agent.sendFamilyMessage, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      to: null,
+      body: "I'm going for a walk",
+    });
+    expect(nobody.status).toBe("sent");
+    expect(nobody.recipients).toHaveLength(3);
+    const stored = await f.t.run(async (ctx) => await ctx.db.get(nobody.messageId));
+    expect(stored!.body).toBe("I'm going for a walk");
+  });
+
+  test("a blank message is invalid and nothing is stored", async () => {
+    const f = await setup();
+    await expect(
+      f.t.mutation(api.agent.sendFamilyMessage, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        to: "Anna",
+        body: "   ",
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    expect(await f.t.run(async (ctx) => await ctx.db.query("familyMessages").collect())).toEqual(
+      [],
+    );
+  });
+});
+
+describe("readLatestMessage", () => {
+  test("returns the newest caregiver message and marks it seen once", async () => {
+    const f = await setup();
+    /**
+     * purpose: Read the latest message at an instant.
+     * @param now: (number) Epoch ms.
+     * @return: (Promise<object | null>) The message.
+     */
+    const read = (now: number) =>
+      f.t.mutation(api.agent.readLatestMessage, { agentKey: KEY, householdId: f.householdId, now });
+    expect(await read(NOW)).toBeNull();
+    const id = await f.t.run(
+      async (ctx) =>
+        await ctx.db.insert("familyMessages", {
+          householdId: f.householdId,
+          senderKind: "caregiver",
+          senderUserId: "user_a",
+          body: "Coming at 2 with soup",
+        }),
+    );
+    await f.t.run(
+      async (ctx) =>
+        await ctx.db.insert("familyMessages", {
+          householdId: f.householdId,
+          senderKind: "senior",
+          body: "ok",
+        }),
+    );
+    // Loading the context (the message is in it) is not reading it aloud.
+    const context = await f.t.query(api.agent.getContext, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      now: NOW,
+    });
+    expect(context.latestMessage).toMatchObject({ seen: false });
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))!.seenAt).toBeUndefined();
+    expect(await read(NOW)).toMatchObject({
+      from: "Anna",
+      body: "Coming at 2 with soup",
+      seen: false,
+    });
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))!.seenAt).toBe(NOW);
+    expect(await read(NOW + HOUR)).toMatchObject({ seen: true });
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))!.seenAt).toBe(NOW);
+  });
+
+  test("another household's message is not read or marked", async () => {
+    const f = await setup();
+    const other = await otherHousehold(f.t);
+    const id = await f.t.run(
+      async (ctx) =>
+        await ctx.db.insert("familyMessages", {
+          householdId: other,
+          senderKind: "caregiver",
+          body: "Hi Dad",
+        }),
+    );
+    expect(
+      await f.t.mutation(api.agent.readLatestMessage, {
+        agentKey: KEY,
+        householdId: f.householdId,
+        now: NOW,
+      }),
+    ).toBeNull();
+    expect((await f.t.run(async (ctx) => await ctx.db.get(id)))!.seenAt).toBeUndefined();
+  });
+});
+
+describe("logQuestions", () => {
+  test("stores normalized rows the digest counts as repeats and unanswered", async () => {
+    const f = await setup();
+    const inserted = await f.t.mutation(api.agent.logQuestions, {
+      agentKey: KEY,
+      conversationId: f.conversationId,
+      questions: [
+        asked("When is Sarah coming?", " Sarah Visit ", { askedAt: NOW }),
+        asked("When is Sarah coming today?", "sarah visit", { toolsUsed: ["list_today"] }),
+        asked("What's my pension number?", "pension", { outcome: "unsure" }),
+        asked("  ", "blank"),
+      ],
+    });
+    expect(inserted).toBe(3);
+    const rows = await f.t.run(async (ctx) => await ctx.db.query("agentQuestions").collect());
+    expect(rows.map((r) => [r.topic, r.askedAt, r.conversationId, r.householdId])).toEqual([
+      ["sarah visit", NOW, f.conversationId, f.householdId],
+      ["sarah visit", NOW, f.conversationId, f.householdId],
+      ["pension", NOW, f.conversationId, f.householdId],
+    ]);
+    expect(rows[1]!.toolsUsed).toEqual(["list_today"]);
+    const facts = await f.t.run(async (ctx) =>
+      gatherDigestFacts(ctx, (await ctx.db.get(f.householdId))!, "2027-03-10"),
+    );
+    expect(facts).toMatchObject({
+      questionCount: 3,
+      repeats: [{ topic: "sarah visit", count: 2 }],
+      unanswered: ["What's my pension number"],
+    });
+  });
+
+  test("more than 50 questions is invalid; an unknown conversation is not_found", async () => {
+    const f = await setup();
+    const q = asked("q", "t");
+    await expect(
+      f.t.mutation(api.agent.logQuestions, {
+        agentKey: KEY,
+        conversationId: f.conversationId,
+        questions: Array.from({ length: 51 }, () => q),
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    await f.t.run(async (ctx) => await ctx.db.delete(f.conversationId));
+    await expect(
+      f.t.mutation(api.agent.logQuestions, {
+        agentKey: KEY,
+        conversationId: f.conversationId,
+        questions: [q],
+      }),
+    ).rejects.toMatchObject({ data: { code: "not_found" } });
   });
 });

@@ -25,7 +25,10 @@
 // householdMembers row (insertMembership, the only place a membership is inserted). A caregiver
 // removed by removeMember can then join or create another household.
 //
-// Last modified: 2026-11-04
+// update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
+// clears it).
+//
+// Last modified: 2026-11-09
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -52,7 +55,7 @@ import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
 import { resyncHouseholdTimezone } from "./lib/schedule";
 import { isValidDeviceToken } from "./lib/apnsPayload";
-import { requireNonBlank } from "./lib/text";
+import { cleanOptional, requireNonBlank } from "./lib/text";
 import { canonicalTimezone, isLocalTime } from "./lib/time";
 import { joinGrant, memberRole } from "./lib/validators";
 import type { DeviceKind, JoinGrant, MemberRole } from "./lib/validators";
@@ -62,6 +65,7 @@ const CODE_LENGTH = 8;
 const CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const CODE_ATTEMPTS = 10;
 const DEFAULT_CAREGIVER_NAME = "Caregiver";
+const MAX_WEATHER_LOCATION_LENGTH = 100;
 /** How long after pairing a retry with the same nonce is answered with a fresh ticket. */
 export const PAIRING_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
@@ -261,6 +265,8 @@ export const get = query({
  * @param eventNoticeTime: (string, optional) Local "HH:MM".
  * @param shareTranscripts: (boolean, optional) Whether caregivers see full transcripts.
  * @param backgroundPaused: (boolean, optional) Caregiver "stop" switch.
+ * @param weatherLocation: (string, optional) Place for the voice agent's weather, e.g.
+ *        "Brooklyn, NY"; trimmed, at most 100 characters; blank clears it.
  * @return: (null)
  */
 export const update = mutation({
@@ -274,6 +280,7 @@ export const update = mutation({
     eventNoticeTime: v.optional(v.string()),
     shareTranscripts: v.optional(v.boolean()),
     backgroundPaused: v.optional(v.boolean()),
+    weatherLocation: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<null> => {
     const actor = await requireEditor(ctx, args.householdId);
@@ -310,6 +317,13 @@ export const update = mutation({
     }
     if (fields.shareTranscripts !== undefined) patch.shareTranscripts = fields.shareTranscripts;
     if (fields.backgroundPaused !== undefined) patch.backgroundPaused = fields.backgroundPaused;
+    if (fields.weatherLocation !== undefined) {
+      patch.weatherLocation = cleanOptional(
+        fields.weatherLocation,
+        MAX_WEATHER_LOCATION_LENGTH,
+        "Weather location",
+      );
+    }
 
     await ctx.db.patch(householdId, patch);
     // These three shape every Google event (zone, reminder minutes, description); resuming from

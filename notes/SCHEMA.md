@@ -17,7 +17,7 @@ How Sunny's Convex tables implement `notes/SPEC.md`. The source of truth is `sun
 
 | Table | Purpose and key fields | Indexes | Written by |
 | --- | --- | --- | --- |
-| `households` | The senior's profile and household settings: `seniorPreferredName`, `seniorFullName`, `timezone`, `onCallUserId`, `digestTime`, `eventNoticeTime`, `shareTranscripts`, `backgroundPaused` (caregiver "stop"), `lastDigestDate` (skips the digest lookup after the day's digest) | none | `households.create` (seeds the two default policies), `households.update`, `digest.ts` (`lastDigestDate`) |
+| `households` | The senior's profile and household settings: `seniorPreferredName`, `seniorFullName`, `timezone`, `onCallUserId`, `digestTime`, `eventNoticeTime`, `shareTranscripts`, `backgroundPaused` (caregiver "stop"), `lastDigestDate` (skips the digest lookup after the day's digest), `weatherLocation` (free text such as "Brooklyn, NY" the voice agent's weather tool looks up; absent means none) | none | `households.create` (seeds the two default policies), `households.update`, `digest.ts` (`lastDigestDate`) |
 | `householdMembers` | A caregiver in a household: `role` (`primary`, `member` edits, `viewer` read only), `displayName`, `phone` (E.164), `phoneVerifiedAt`, `pendingPhone` | `by_household_user`, `by_user`, `by_phone` (inbound SMS lookup; callers also check `phoneVerifiedAt`) | `households.*` (create, redeemJoinCode, updateMemberRole, removeMember), `phone.ts` (phone fields) |
 | `devices` | A paired senior device: `userId` (its Clerk user), `kind` (`senior_phone`, `home_display`), `name`, `lastSeenAt`, `pairedAt`, `pairingNonce` | `by_user`, `by_household` | `households.pairDevice` (internal, called by `pairing.ts` `/pair`), `removeDevice` |
 | `pushTokens` | Raw APNs tokens per user | `by_user`, `by_token` | `households.registerPushToken` / `unregisterPushToken` |
@@ -38,7 +38,7 @@ Rules:
 | `escalationPolicies` | A named ladder of ordered `steps` (each: stable `id`, `offsetMinutes`, `action` of `prompt_senior`, `alert_on_call` or `alert_all_caregivers`, `skipIfClaimed`). `systemKey` (`medication`, `prompt_only`) marks the seeded defaults | `by_household`, `by_household_system_key` | `households.create` (seed), `tasks.createPolicy` / `updatePolicy` / `removePolicy` |
 | `tasks` | A scheduled item: `type`, `title` (caregiver wording), `displayLabel`, `spokenPrompt`, `pillDescription`, `checklistItems`, `times`, `daysOfWeek`, `onceOn`, `startsOn`/`endsOn`, `windowMinutes`, `escalationPolicyId`, as-needed limits, `createdByKind`, `active`, `scheduleChangedAt` | `by_household`, `by_household_active`, `by_household_policy` | `tasks.create` / `update` / `remove`, `instances.createSeniorReminder` / `cancelSeniorReminder` |
 | `taskInstances` | One row per task per scheduled time per local date, with `windowStart`/`windowEnd`, `state`, confirmation fields (`confirmedAt`, `confirmedBy`, `confirmedVia`), `resolutionNote` (why a caregiver resolved it), `snoozedUntil`, `claimedBy` and `claimedAt` ("I'm on it"), `createdAt`, and `firedSteps` (escalation steps already handled, by step id, with a snapshot of the action and whether anyone was notified) | `by_task_date_time` (uniqueness), `by_household_date`, `by_task_state`, `by_household_state` (the tick reads one household's instances by state) | `scheduler.ts` (expand, open, escalate, close), `instances.ts` (confirm, snooze, claim, resolve), `tasks.ts` (resync on schedule change) |
-| `doseLog` | As-needed medication taken outside a scheduled instance | `by_household_task_taken` | `instances.logDose` |
+| `doseLog` | As-needed medication taken outside a scheduled instance | `by_household_task_taken` | `instances.logDose`, `agent.logAsNeededDose` (voice, through the same `logDoseCore`) |
 
 State machine (`instanceState`):
 
@@ -81,12 +81,13 @@ Rules:
 
 | Table | Purpose and key fields | Indexes | Written by |
 | --- | --- | --- | --- |
-| `notificationOutbox` | The only place notifications are queued. One recipient per row: `recipientDeviceId` (APNs) or `recipientUserId` (SMS). `kind` (`senior_prompt`, `caregiver_alert`, `event_notice`, `digest`), `title`, `body`, `payload`, `state` (`pending`, `sent`, `skipped`, `failed`), `channel` (set only when sent), `settledAt`, `attempts`, `attemptStartedAt` (lease), `detail` (skip reason or internal error, never returned to clients) | `by_recipient_kind` (reply-to-claim), `by_recipient_device`, `by_task_instance` (cascade on instance delete), `by_household`, `by_state` | Inserted only through `insertNotification` in `lib/delivery.ts` (scheduler, event notices, digest); settled by `delivery.ts` |
+| `notificationOutbox` | The only place notifications are queued. One recipient per row: `recipientDeviceId` (APNs) or `recipientUserId` (SMS). `kind` (`senior_prompt`, `caregiver_alert`, `event_notice`, `digest`, `agent_flag` (the voice agent asking a caregiver to look in; `payload.reason`, `payload.flaggedAt`), `family_message` (a message the senior dictated to family)), `title`, `body`, `payload`, `state` (`pending`, `sent`, `skipped`, `failed`), `channel` (set only when sent), `settledAt`, `attempts`, `attemptStartedAt` (lease), `detail` (skip reason or internal error, never returned to clients) | `by_recipient_kind` (reply-to-claim), `by_recipient_device`, `by_task_instance` (cascade on instance delete), `by_household`, `by_state` | Inserted only through `insertNotification` in `lib/delivery.ts` (scheduler, event notices, digest, `lib/voiceRouting.ts` for agent flags and family messages); settled by `delivery.ts` |
 | `smsInbound` | Inbound texts already handled, by Twilio `MessageSid`, with the stored reply, so a webhook retry claims nothing twice | `by_sid`, `by_expires` | `sms.ts`; swept hourly |
 
 Rules:
 - A row leaves `pending` once. Recipient, membership and content are re-checked at send time, so a stale or unreachable row is `skipped` with the reason in `detail`.
 - `attempts` is capped (`MAX_ATTEMPTS`) so the sweeper never loops on one row; `attemptStartedAt` is a 5-minute lease the sweeper respects.
+- `agent_flag` and `family_message` rows go to caregivers by SMS and never carry the "Reply 1" claim hint (they are not tied to a task). An `agent_flag` goes to the on-call caregiver, or to every caregiver when none is on call; the same reason within 10 minutes is not sent again. A timed-out text is retried only for `caregiver_alert` and `agent_flag`.
 - Only tokens APNs reports unregistered are deleted from `pushTokens`.
 
 ## Digests
@@ -112,11 +113,11 @@ Rules: at most 5 requests queued or running per household; one in-progress reque
 | --- | --- | --- | --- |
 | `conversations` | One voice session: `trigger` (`talk`, `scheduled_prompt`, `notification_tap`), `deviceId`, `taskInstanceId`, `startedAt`, `endedAt`, `summary` | `by_household_started` | `agent.startConversation` / `finishConversation` |
 | `conversationTurns` | What was said: `role`, `content` | `by_conversation` | `agent.logTurn` |
-| `agentQuestions` | One row per question the senior asked: `topic`, `outcome`, `toolsUsed`; the digest counts repeats | `by_household_asked` | No writer yet (post-call extraction is not built) |
-| `agentMemory` | Facts the agent knows: `fact`, `source`, `verifiedBy`/`verifiedAt`, `conversationId`. Senior-stated facts start unverified and never overwrite verified ones | `by_household` | No writer yet (caregiver app and post-call extraction); read by `agent.getContext` |
+| `agentQuestions` | One row per question the senior asked: `topic`, `outcome`, `toolsUsed`; the digest counts repeats | `by_household_asked` | `agent.logQuestions`, called by the voice agent after each conversation with the questions one model call extracts from the transcript (`sunny_agent/src/memory.py`); topics are lower-cased and the last week's topics are offered so a repeat reuses its topic |
+| `agentMemory` | Facts the agent knows: `fact`, `source`, `verifiedBy`/`verifiedAt`, `conversationId`. Senior-stated facts start unverified and never overwrite verified ones | `by_household` | `agent.rememberFact` (source senior, unverified, one trimmed line of at most 300 characters, a duplicate text is skipped, the oldest unverified senior facts beyond 200 are deleted); caregiver app; read by `agent.getContext` (newest verified facts up to 40, then the newest unverified in the rest of 50, at least 10). Limits: `lib/memoryLimits.ts` |
 | `lifeProfileEntries` | Caregiver-owned people, places, doctors, habits, interests, preferences | `by_household` | No writer yet (caregiver app); read by `agent.getContext` |
 | `sensitiveTopics` | Caregiver-written guidance for hard questions | `by_household` | No writer yet; read by `agent.getContext` |
-| `familyMessages` | Messages from family to the senior (text, photo or voice clip in `_storage`) | `by_household` | No writer yet; read by `agent.getContext` |
+| `familyMessages` | Messages between family and the senior (text, photo or voice clip in `_storage`) | `by_household` | `agent.sendFamilyMessage` (`senderKind` senior; no recipient field, so a named recipient is written into the body: "For Sarah: I'm home"); `agent.readLatestMessage` sets `seenAt` when the newest caregiver message is read aloud (loading the context never does); read by `agent.getContext` |
 
 Privacy: conversation summaries, question text and turns carry what the senior said, so caregivers can read them only when `households.shareTranscripts` is true. The digest reports topics and counts. `agent:*` functions require `SUNNY_AGENT_KEY`; the household always comes from the LiveKit participant metadata the token action wrote, never from the model.
 
@@ -134,4 +135,4 @@ Rules: the code is made inside the send action and never stored or scheduled in 
 
 ## Not built yet
 
-Storage rules for photos and voice clips, a household delete, the caregiver-facing read paths for life profile, playbook and memory, and `agentQuestions` extraction.
+Storage rules for photos and voice clips, a household delete, and the caregiver-facing read paths for life profile, playbook and memory.

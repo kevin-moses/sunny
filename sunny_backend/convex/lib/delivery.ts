@@ -6,8 +6,9 @@
 // member who can claim ends with the reply hint). Membership, device and content are re-checked
 // at send time; a row with no reachable address or stale content is skipped, with the reason in
 // `detail`. A row a run started less than 5 minutes ago is leased: the sweeper leaves it alone.
+// A timed-out text is retried only for caregiver_alert and agent_flag rows.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
@@ -190,12 +191,13 @@ async function memberRoute(
   if (!member) return { kind: "skip", reason: "recipient_left" };
   const to = verifiedPhone(member);
   if (to === undefined) return { kind: "skip", reason: "no_verified_phone" };
-  // A timed-out text may still have been delivered; only an alert is worth a possible repeat.
+  // A timed-out text may still have been delivered; only an alert (a task alert or the voice
+  // agent's flag) is worth a possible repeat.
   return {
     kind: "sms",
     to,
     body: smsText(row, member.role !== "viewer"),
-    retryOnTimeout: row.kind === "caregiver_alert",
+    retryOnTimeout: row.kind === "caregiver_alert" || row.kind === "agent_flag",
   };
 }
 
