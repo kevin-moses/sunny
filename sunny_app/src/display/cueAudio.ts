@@ -12,8 +12,9 @@
 //
 // playCue never rejects; it reports how the cue ended (CueResult): played, stopped (its
 // AbortSignal fired) or failed (the audio mode, the chime or the speech failed, or a line did
-// not finish within its time limit, after which the speech is stopped). A line can be skipped
-// at the moment it is due (its task was confirmed during the cue).
+// not finish within its time limit, after which the speech is stopped), with how many lines
+// were done before that, so a retry can start from the line that failed. A line can be
+// skipped at the moment it is due (its task was confirmed during the cue).
 //
 // Last modified: 2026-11-09
 
@@ -45,7 +46,13 @@ export interface CueLine {
 }
 
 /** How a cue ended. */
-export type CueResult = 'played' | 'stopped' | 'failed';
+export type CueStatus = 'played' | 'stopped' | 'failed';
+
+/** How a cue ended, and how many of its lines were done (spoken or skipped) before that. */
+export interface CueResult {
+  status: CueStatus;
+  done: number;
+}
 
 /** The tuning values a cue uses. */
 export type CueTuning = Pick<
@@ -190,13 +197,21 @@ function speak(text: string, signal: AbortSignal, tuning: CueTuning): Promise<Sp
  * @param lines: (CueLine[]) What to say after the chime.
  * @param signal: (AbortSignal) Stops the cue (chime and speech) at once.
  * @param tuning: (CueTuning) The rate, the pause after the chime and the speech time limits.
- * @return: (Promise<CueResult>) How the cue ended; never rejects.
+ * @return: (Promise<CueResult>) How the cue ended and how many lines were done; never
+ *          rejects.
  */
 export async function playCue(
   lines: CueLine[],
   signal: AbortSignal,
   tuning: CueTuning,
 ): Promise<CueResult> {
+  let done = 0;
+  /**
+   * purpose: The result so far with a status.
+   * @param status: (CueStatus) How the cue ended.
+   * @return: (CueResult) The result.
+   */
+  const end = (status: CueStatus): CueResult => ({ status, done });
   try {
     await setAudioModeAsync({
       playsInSilentMode: true,
@@ -204,19 +219,21 @@ export async function playCue(
       allowsRecording: false,
       shouldPlayInBackground: false,
     });
-    if (signal.aborted) return 'stopped';
+    if (signal.aborted) return end('stopped');
     await playChime(signal);
     await wait(tuning.afterChimeMs, signal);
     for (const line of lines) {
-      if (signal.aborted) return 'stopped';
-      if (line.skip?.() === true) continue;
-      const result = await speak(line.text, signal, tuning);
-      if (result === 'stopped') return 'stopped';
-      if (result === 'failed') return 'failed';
+      if (signal.aborted) return end('stopped');
+      if (line.skip?.() !== true) {
+        const result = await speak(line.text, signal, tuning);
+        if (result === 'stopped') return end('stopped');
+        if (result === 'failed') return end('failed');
+      }
+      done += 1;
     }
-    return signal.aborted ? 'stopped' : 'played';
+    return end(signal.aborted ? 'stopped' : 'played');
   } catch (error) {
     logger.warning('Cue', `Cue failed: ${errorMessage(error)}`);
-    return signal.aborted ? 'stopped' : 'failed';
+    return end(signal.aborted ? 'stopped' : 'failed');
   }
 }

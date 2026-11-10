@@ -20,7 +20,7 @@
 // senior prompts the escalation policy has sent for the instance (fired prompt_senior steps
 // that were notified), so the home display can repeat its due cue on each reprompt; snoozed
 // is true while a snooze ("not yet") holds the senior prompts back at `now`, the scheduler's
-// own test, so the display stays quiet until the next reprompt.
+// own test, so the display holds its cue until the snooze ends.
 //
 // Last modified: 2026-11-09
 

@@ -2,7 +2,8 @@
 //
 // Purpose: Render tests for where the voice card goes on the Now screen (NowBody): in the Next
 // up column beside a waiting task, so the task Done confirms stays in view; across the whole
-// body when nothing is waiting; and the Next up card as before without a voice card.
+// body when nothing is waiting; and the Next up card as before without a voice card. Also the
+// Now card's tab: "Now", "Still to do" when overdue, "Later" when snoozed.
 //
 // Last modified: 2026-11-09
 
@@ -10,7 +11,7 @@ import { describe, expect, it } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { NowBody } from '../DisplayParts';
+import { NowBody, tabText } from '../DisplayParts';
 import type { NextItem, NowCard } from '../model';
 import type { VoiceCard } from '../voiceModel';
 
@@ -78,5 +79,32 @@ describe('NowBody', () => {
 
   it('shows Next up without a voice card', () => {
     expect(textOf(TASK, null)).toContain('Next up');
+  });
+});
+
+describe('tabText', () => {
+  /**
+   * purpose: A one-step task card at 8:00.
+   * @param overdue: (boolean) The family has been alerted.
+   * @param snoozed: (boolean) The senior said "not yet".
+   * @return: (NowCard) The card.
+   */
+  const card = (overdue: boolean, snoozed: boolean): NowCard =>
+    ({
+      kind: 'task',
+      task: { scheduledTime: '08:00', displayLabel: 'Morning pills', snoozed },
+      overdue,
+      steps: null,
+    }) as unknown as NowCard;
+
+  it('reads Now, Still to do or Later with the time', () => {
+    expect(tabText(card(false, false))).toBe('Now  ·  8:00');
+    expect(tabText(card(true, false))).toBe('Still to do  ·  8:00');
+    expect(tabText(card(false, true))).toBe('Later  ·  8:00');
+    expect(tabText(card(true, true))).toBe('Later  ·  8:00');
+  });
+
+  it('reads Now alone when nothing is waiting', () => {
+    expect(tabText(CLEAR)).toBe('Now');
   });
 });

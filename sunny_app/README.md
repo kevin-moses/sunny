@@ -34,8 +34,13 @@ conversation screen. Its voice states live on the paper panel:
   beside a waiting task, or the whole body when nothing is waiting. Pressing Talk during a
   session, also while it is still connecting, ends it. A session that has not reached the
   agent in 15 s gives up ("Could not connect. Try again."); once the agent is there, the
-  session ends by itself after 20 s without a question or 10 s after an answer. Only an answer
-  to a question counts: a line the agent says first is shown but never lingers. The last answer
+  session ends by itself after 20 s without a question or 10 s after an answer; continuous
+  "speaking" (a TV can sound like the senior) holds it open for at most 30 s. Whatever happens,
+  a session ends 3 minutes after the press ("Sunny stopped listening for now."), letting an
+  answer being spoken finish for at most 30 s more, so the microphone is never open longer
+  than 3.5 minutes per press. Ending or cancelling a session stops and unpublishes the
+  microphone track, also one that comes on after the cancel. Only an answer to a question
+  counts: a line the agent says first is shown but never lingers. The last answer
   stays on the panel for 3 minutes, unless a task comes due. Failures show on the status line
   in plain words; Talk while offline says so instead of connecting. The display asks for
   microphone permission when it opens, so the senior never meets the iOS dialog. The phone's
@@ -46,16 +51,20 @@ conversation screen. Its voice states live on the paper panel:
   speech (`expo-speech`, slow rate): the caregiver's spoken prompt, or "Time for <label>, at
   <time>. Press Done when you have taken them / finished." Never during a voice session (it
   waits until 2 s after the session, and is dropped if the task was confirmed meanwhile),
-  never for a snoozed task (the day view's `snoozed`; the next cue comes with the backend's
-  reprompt after the snooze, and the Now card's tab reads "Later"), never for anytime tasks,
-  and once per prompt across restarts (played cues are kept in AsyncStorage). A cue that fails
-  to sound, or whose speech gets stuck, is tried once more. Audio uses the playback category,
-  so it plays with the device muted.
+  never while a task is snoozed (the day view's `snoozed`; the Now card's tab reads "Later"):
+  its owed cue plays when the snooze ends, within about a minute, unless the task was
+  confirmed. Two cues for one task are at least 2 minutes apart, so the snooze end and the
+  backend's reprompt that may follow give one cue. Never for anytime tasks, and once per
+  prompt across restarts (played cues are kept in AsyncStorage). A cue that fails to sound, or
+  whose speech gets stuck, is tried once more from the line that failed. Audio uses the
+  playback category, so it plays with the device muted.
 - **Tuning:** every timing and the speech rate live in `src/display/tuning.ts` (default,
   unit, allowed range and step for each). On a debug build, hold the DEV pill on the display
   for 2 seconds to open the developer sheet: its "Home display" section edits each value
   within its range, saves it on the device and applies it at once, resets to the defaults,
-  and has "Play due cue now" and "Show sample answer" for quick checks.
+  and has "Play due cue now" (played by the display's cue owner: refused, with the reason,
+  during a voice session or while a cue plays; stopped when the sheet closes) and "Show sample
+  answer" for quick checks. Release builds have no sheet and ignore saved values.
 
 `expo-audio`, `expo-speech` and `expo-asset` are native modules: after pulling them, rebuild
 the development client with `npm run ios -- --device`.

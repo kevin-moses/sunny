@@ -1,7 +1,8 @@
 // sunny_app/src/display/__tests__/cue.test.ts
 //
 // Purpose: Unit tests for the due cue rules (cue.ts): which tasks are owed a cue (due timed
-// tasks, once per sent prompt, never anytime or finished ones; snoozed ones passed over),
+// tasks, once per sent prompt, never anytime or finished ones; snoozed ones kept owed; a
+// task cued within the minimum gap absorbed),
 // how the remembered keys are
 // kept to today's instances, the spoken time, and the words spoken (the caregiver's prompt,
 // or the fixed template when the prompt is the backend's default).
@@ -40,6 +41,9 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
+/** Spacing with no earlier cues. */
+const NO_SPACING = { lastCueAt: new Map<string, number>(), now: 0, minGapMs: 120_000 };
+
 /**
  * purpose: The tasks a cue plays for now.
  * @param tasks: (DayTask[]) The day view's tasks.
@@ -47,7 +51,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
  * @return: (DayTask[]) The tasks to play.
  */
 function tasksToCue(tasks: DayTask[], cued: ReadonlySet<string>): DayTask[] {
-  return cueChoice(tasks, cued).play;
+  return cueChoice(tasks, cued, NO_SPACING).play;
 }
 
 describe('cueChoice', () => {
@@ -87,15 +91,28 @@ describe('cueChoice', () => {
     expect(tasksToCue([a, b], new Set()).map((t) => t.instanceId)).toEqual(['a', 'b']);
   });
 
-  it('passes over the owed cue of a snoozed task instead of playing it', () => {
+  it('keeps a snoozed task owed: neither played nor remembered', () => {
     const snoozed = makeTask({ instanceId: 's', snoozed: true });
     const due = makeTask({ instanceId: 'd' });
-    expect(cueChoice([snoozed, due], new Set())).toEqual({ play: [due], skip: [snoozed] });
+    expect(cueChoice([snoozed, due], new Set(), NO_SPACING)).toEqual({
+      play: [due],
+      absorb: [],
+    });
   });
 
-  it('does not pass over a snoozed task again once its key is remembered', () => {
-    const snoozed = makeTask({ snoozed: true });
-    expect(cueChoice([snoozed], new Set(['t1:0']))).toEqual({ play: [], skip: [] });
+  it('plays the owed cue once the snooze ends', () => {
+    expect(cueChoice([makeTask()], new Set(), NO_SPACING).play).toHaveLength(1);
+  });
+
+  it('absorbs a new prompt for a task cued within the minimum gap, and plays it after', () => {
+    const task = makeTask({ seniorPrompts: 2 });
+    const lastCueAt = new Map([['t1', 1_000]]);
+    expect(
+      cueChoice([task], new Set(['t1:1']), { lastCueAt, now: 61_000, minGapMs: 120_000 }),
+    ).toEqual({ play: [], absorb: [task] });
+    expect(
+      cueChoice([task], new Set(['t1:1']), { lastCueAt, now: 121_000, minGapMs: 120_000 }),
+    ).toEqual({ play: [task], absorb: [] });
   });
 });
 

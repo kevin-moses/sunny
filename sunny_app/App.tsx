@@ -17,9 +17,9 @@
 // registration (VoiceProvider is idle without a paired device). Nothing about the pairing or the
 // role is stored locally, so an offline cold start shows "Connecting..." until Clerk and Convex
 // answer. Stale notification taps are discarded while signed out. Shows a "Trying to reconnect"
-// warning and voice errors as banners; __DEV__ builds add a DEV pill for developer settings
-// (on the home display it opens only on a long press, so the senior cannot open it by
-// accident; the sheet then also shows the display's tunables).
+// warning and voice errors as banners; __DEV__ builds add the DEV pill for developer settings
+// (src/screens/DevTools.tsx; on the home display it opens only on a long press, so the senior
+// cannot open it by accident, and the sheet then also shows the display's tunables).
 // Provider order: SafeAreaProvider > ThemeProvider > TuningProvider > ClerkProvider >
 // ConvexProviderWithClerk > VoiceProvider.
 //
@@ -30,7 +30,7 @@ import { tokenCache } from '@clerk/expo/token-cache';
 import { ConvexProviderWithClerk } from 'convex/react-clerk';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { convex } from './src/backend/convex';
@@ -44,14 +44,14 @@ import { discardStaleLaunchTap } from './src/notifications/push';
 import { CaregiverOnboardingScreen } from './src/screens/CaregiverOnboardingScreen';
 import { CaregiverSignInScreen } from './src/screens/CaregiverSignInScreen';
 import { ConfigErrorScreen } from './src/screens/ConfigErrorScreen';
-import { DevSettingsSheet } from './src/screens/DevSettingsSheet';
 import { TuningProvider } from './src/display/TuningProvider';
+import { DevTools } from './src/screens/DevTools';
 import { DisplayScreen } from './src/screens/DisplayScreen';
 import { PairingScreen } from './src/screens/PairingScreen';
 import { TodayScreen } from './src/screens/TodayScreen';
 import { WelcomeScreen } from './src/screens/WelcomeScreen';
 import { BACKGROUND, colors } from './src/theme/colors';
-import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
+import { ThemeProvider } from './src/theme/ThemeProvider';
 import { ConversationScreen } from './src/voice/ConversationScreen';
 import { useVoice, VoiceProvider } from './src/voice/VoiceProvider';
 
@@ -99,46 +99,6 @@ function Banners({ voiceBanners }: { voiceBanners: boolean }) {
         <Banner tone="serious" title="Error" message={voice.error} onDismiss={voice.clearError} />
       )}
     </View>
-  );
-}
-
-/** How long (ms) the DEV pill must be held on the home display to open the sheet. */
-const DISPLAY_DEV_HOLD_MS = 2_000;
-
-/**
- * purpose: Debug-only developer tools: a floating pill (top right) that opens the developer
- *          settings sheet in a modal. On the home display it opens only after a
- *          DISPLAY_DEV_HOLD_MS press, and the sheet adds the display's tunables.
- * @param props: ({ display: boolean }) Whether this is the paired home display.
- * @return: (JSX.Element) The pill and the modal.
- */
-function DevTools({ display }: { display: boolean }) {
-  const theme = useTheme();
-  const insets = useSafeAreaInsets();
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Open developer settings"
-        accessibilityHint={display ? 'Press and hold' : undefined}
-        onPress={display ? undefined : () => setOpen(true)}
-        onLongPress={display ? () => setOpen(true) : undefined}
-        delayLongPress={DISPLAY_DEV_HOLD_MS}
-        style={[styles.pill, { top: insets.top + 8, borderColor: `${theme.accentColor}66` }]}
-      >
-        <View style={[styles.dot, { backgroundColor: theme.accentColor }]} />
-        <Text style={styles.pillText}>DEV</Text>
-      </Pressable>
-      <Modal
-        visible={open}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setOpen(false)}
-      >
-        <DevSettingsSheet display={display} onClose={() => setOpen(false)} />
-      </Modal>
-    </>
   );
 }
 
@@ -283,18 +243,4 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: 20, color: colors.secondaryText },
   loadingNotice: { marginTop: 8, fontSize: 16, color: colors.secondaryText },
   banners: { position: 'absolute', left: 0, right: 0, gap: 8 },
-  pill: {
-    position: 'absolute',
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    backgroundColor: colors.overlayStrong,
-  },
-  dot: { width: 8, height: 8, borderRadius: 4 },
-  pillText: { fontFamily: 'Menlo', fontSize: 11, fontWeight: '700', color: colors.text },
 });

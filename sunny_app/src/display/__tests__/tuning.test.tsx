@@ -3,7 +3,9 @@
 // Purpose: Tests for the display's tunables: clamping and rounding (tuning.ts), turning
 // stored data back into valid values, the display text, and TuningProvider rendered for real
 // with AsyncStorage mocked: defaults before anything is saved, saved values loaded at start,
-// changes clamped, saved and applied at once, reset restoring and saving the defaults,
+// a change made before they load kept, saved values ignored (and nothing saved) where the
+// developer sheet does not exist, changes clamped, saved and applied at once, reset restoring
+// and saving the defaults,
 // useTuning's defaults outside a provider, and the sample answer request.
 //
 // Last modified: 2026-11-09
@@ -30,17 +32,23 @@ import type { TuningControls } from '../TuningProvider';
 import type { DisplayTuning } from '../tuning';
 
 const mockStore = new Map<string, string>();
+// When set, reads wait for it, so a test can change a value before the load lands.
+let mockReadGate: Promise<void> | null = null;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
   default: {
-    getItem: async (key: string) => mockStore.get(key) ?? null,
+    getItem: async (key: string) => {
+      if (mockReadGate !== null) await mockReadGate;
+      return mockStore.get(key) ?? null;
+    },
     setItem: async (key: string, value: string) => void mockStore.set(key, value),
   },
 }));
 
 beforeEach(() => {
   mockStore.clear();
+  mockReadGate = null;
 });
 
 describe('clampTuning', () => {
@@ -91,9 +99,10 @@ describe('formatTuning', () => {
 
 /**
  * purpose: Render the real provider and expose its controls.
+ * @param persisted: (boolean) Whether saved values are used (the developer sheet exists).
  * @return: (Promise<() => TuningControls>) A getter for the latest controls.
  */
-async function renderProvider(): Promise<() => TuningControls> {
+async function renderProvider(persisted = true): Promise<() => TuningControls> {
   let current!: TuningControls;
   const Probe = (): null => {
     current = useTuningControls()!;
@@ -101,7 +110,7 @@ async function renderProvider(): Promise<() => TuningControls> {
   };
   await act(async () => {
     create(
-      <TuningProvider>
+      <TuningProvider persisted={persisted}>
         <Probe />
       </TuningProvider>,
     );
@@ -129,6 +138,27 @@ describe('TuningProvider', () => {
     const get = await renderProvider();
     expect(get().tuning.followUpMs).toBe(15_000);
     expect(get().tuning.stuckMs).toBe(TUNING_SPECS.stuckMs.min);
+  });
+
+  it('keeps a change made before the saved values finish loading', async () => {
+    mockStore.set(TUNING_STORAGE_KEY, JSON.stringify({ followUpMs: 15_000 }));
+    let open!: () => void;
+    mockReadGate = new Promise((resolve) => {
+      open = resolve;
+    });
+    const get = await renderProvider();
+    await act(async () => get().setValue('followUpMs', 4_000));
+    await act(async () => open());
+    expect(get().tuning.followUpMs).toBe(4_000);
+  });
+
+  it('ignores saved values and saves nothing where the developer sheet does not exist', async () => {
+    mockStore.set(TUNING_STORAGE_KEY, JSON.stringify({ followUpMs: 15_000 }));
+    const get = await renderProvider(false);
+    expect(get().tuning).toEqual(DEFAULT_TUNING);
+    await act(async () => get().setValue('stuckMs', 30_000));
+    expect(get().tuning.stuckMs).toBe(30_000);
+    expect(saved()).toEqual({ followUpMs: 15_000 });
   });
 
   it('clamps, saves and applies a change at once', async () => {

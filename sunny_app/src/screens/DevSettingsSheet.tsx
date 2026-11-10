@@ -7,19 +7,19 @@
 // On the home display it adds a "Home display" section: every tunable of the display's voice
 // and cue behavior (display/tuning.ts) with its current value, default and allowed range, a
 // stepper that keeps it inside that range, its own reset, and two test actions: "Play due cue
-// now" (the chime and a sample prompt at the current rate) and "Show sample answer" (puts a
-// sample answer on the panel for the current linger time). Changes are saved on the device
-// and apply at once (TuningProvider).
+// now" (asks the display's cue owner, useDueCue, to play the chime and a sample prompt at the
+// current rate; it refuses during a voice session or while a cue plays and says why, and
+// closing the sheet stops it) and "Show sample answer" (puts a sample answer on the panel for
+// the current linger time). Changes are saved on the device and apply at once
+// (TuningProvider).
 //
 // Last modified: 2026-11-09
 
-import { useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
 import { unpair } from '../backend/pairing';
-import { playCue } from '../display/cueAudio';
-import type { CueResult } from '../display/cueAudio';
 import { TUNING_KEYS, TUNING_SPECS, formatTuning } from '../display/tuning';
 import { useTuningControls } from '../display/TuningProvider';
 import { colors, PALETTE, ROUNDED_FONT } from '../theme/colors';
@@ -29,9 +29,6 @@ import {
   CORNER_RADIUS_RANGE,
   useTheme,
 } from '../theme/ThemeProvider';
-
-/** The sample prompt spoken by "Play due cue now" (the template for an 8:00 medication). */
-const SAMPLE_PROMPT = "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.";
 
 /** The sample answer shown by "Show sample answer". */
 const SAMPLE_ANSWER =
@@ -120,23 +117,25 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  */
 function DisplayTuningSection() {
   const controls = useTuningControls();
-  const [lastCue, setLastCue] = useState<CueResult | 'playing' | null>(null);
+  // Closing the sheet stops a test cue that is still playing.
+  const stopRef = useRef(controls?.stopTestCue);
+  useEffect(() => {
+    stopRef.current = controls?.stopTestCue;
+  });
+  useEffect(() => () => stopRef.current?.(), []);
   if (controls === null) return null;
-  const { tuning, setValue, resetToDefaults, showSampleAnswer } = controls;
-
-  /**
-   * purpose: Play the due cue with the sample prompt and the current tuning.
-   * @return: (Promise<void>) Resolves when the cue ended.
-   */
-  const playSample = async (): Promise<void> => {
-    setLastCue('playing');
-    setLastCue(await playCue([{ text: SAMPLE_PROMPT }], new AbortController().signal, tuning));
-  };
+  const { tuning, setValue, resetToDefaults, showSampleAnswer, requestTestCue, testCueResult } =
+    controls;
 
   return (
     <Section title="Home display">
       {TUNING_KEYS.map((key) => {
         const spec = TUNING_SPECS[key];
+        /**
+         * purpose: Show a value of this tunable.
+         * @param v: (number) The value.
+         * @return: (string) The text.
+         */
         const format = (v: number): string => formatTuning(key, v);
         return (
           <Stepper
@@ -151,10 +150,10 @@ function DisplayTuningSection() {
           />
         );
       })}
-      <Pressable accessibilityRole="button" onPress={() => void playSample()}>
+      <Pressable accessibilityRole="button" onPress={requestTestCue}>
         <Text style={styles.action}>Play due cue now</Text>
       </Pressable>
-      {lastCue !== null && <Text style={styles.hint}>Last cue: {lastCue}</Text>}
+      {testCueResult !== null && <Text style={styles.hint}>Last cue: {testCueResult}</Text>}
       <Pressable accessibilityRole="button" onPress={() => showSampleAnswer(SAMPLE_ANSWER)}>
         <Text style={styles.action}>Show sample answer</Text>
       </Pressable>

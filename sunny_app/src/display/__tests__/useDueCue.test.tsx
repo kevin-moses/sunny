@@ -3,14 +3,17 @@
 // Purpose: Tests for the display's due cue, rendering the real useDueCue (and the real
 // cueAudio) with react-test-renderer and fake timers. Only the device boundary is mocked:
 // expo-audio (the chime player and audio mode), expo-speech, AsyncStorage and the logger.
-// The tuning values are the defaults (no TuningProvider). Covers: a cue when a task comes due
-// (chime, then the prompt at the tuned rate), no repeat on re-render, a repeat on each backend
-// reprompt, once per task across app launches, nothing while a voice session is live and the
-// queued cue cueSettleMs after it, no cue for a task confirmed or snoozed meanwhile, a snoozed
-// task cued again only on its next reprompt, stopping a cue when a session starts or the task
-// is confirmed, one chime for tasks due together (skipping the line of one confirmed during
-// the cue), a task coming due while another cue plays, one retry of a cue that failed to play
-// or whose speech never finished, and nothing for anytime tasks.
+// The tuning values are the defaults, given through TuningContext with the developer sheet's
+// test cue request. Covers: a cue when a task comes due (chime, then the prompt at the tuned
+// rate), no repeat on re-render, a repeat on each backend reprompt, once per task across app
+// launches, nothing while a voice session is live and the queued cue cueSettleMs after it, no
+// cue for a task confirmed meanwhile, a snoozed task's owed cue played once when the snooze
+// ends (not again when the backend's withheld reprompt follows) and not at all when it was
+// confirmed, stopping a cue when a session starts or the task is confirmed, one chime for
+// tasks due together (skipping the line of one confirmed during the cue), a task coming due
+// while another cue plays, one retry from the failed line of a cue that failed to play or
+// whose speech never finished, the test cue (refused during a session or while a cue plays,
+// stopped when the sheet closes), and nothing for anytime tasks.
 //
 // Last modified: 2026-11-09
 
@@ -19,14 +22,18 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { DayTask } from '../../day/types';
+import { SAMPLE_PROMPT } from '../cue';
 import { DEFAULT_TUNING } from '../tuning';
-import { CUED_STORAGE_KEY, useDueCue } from '../useDueCue';
+import { TuningContext } from '../TuningProvider';
+import type { TestCueRequest, TuningControls } from '../TuningProvider';
+import { CUED_STORAGE_KEY, TEST_CUE_BLOCKED, TEST_CUE_BUSY, useDueCue } from '../useDueCue';
 
 /** Options the hook passes to Speech.speak. */
 interface SpeakOptions {
   rate?: number;
   onDone?: () => void;
   onStopped?: () => void;
+  onError?: (error: Error) => void;
 }
 
 const mockStore = new Map<string, string>();
@@ -90,13 +97,44 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/** The hook's inputs. */
+/** The hook's inputs, and the developer sheet's test cue request. */
 interface Props {
   tasks: DayTask[] | null;
   blocked: boolean;
+  testCue?: TestCueRequest | null;
 }
 
 const onCue = jest.fn();
+const reportTestCue = jest.fn((_result: string) => undefined);
+const renderers: ReactTestRenderer[] = [];
+
+/**
+ * purpose: The tree for some inputs: the hook under the tuning context.
+ * @param props: (Props) The inputs.
+ * @return: (JSX.Element) The tree.
+ */
+function tree({ tasks, blocked, testCue }: Props) {
+  const controls = {
+    tuning: DEFAULT_TUNING,
+    testCue: testCue ?? null,
+    reportTestCue,
+  } as unknown as TuningControls;
+  return (
+    <TuningContext.Provider value={controls}>
+      <Probe tasks={tasks} blocked={blocked} />
+    </TuningContext.Provider>
+  );
+}
+
+/**
+ * purpose: A component that only runs the hook.
+ * @param props: (Props) The day's tasks and whether a voice session is live.
+ * @return: (null) Nothing.
+ */
+function Probe({ tasks, blocked }: Props): null {
+  useDueCue(tasks, blocked, onCue);
+  return null;
+}
 
 /**
  * purpose: Render the real hook with the given inputs and let the stored keys load.
@@ -105,18 +143,15 @@ const onCue = jest.fn();
  *          inputs and lets pending work run.
  */
 async function renderCue(props: Props): Promise<(next: Props) => Promise<void>> {
-  const Probe = ({ tasks, blocked }: Props): null => {
-    useDueCue(tasks, blocked, onCue);
-    return null;
-  };
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<Probe {...props} />);
+    renderer = create(tree(props));
   });
+  renderers.push(renderer);
   await settle(0);
   return async (next: Props) => {
     await act(async () => {
-      renderer.update(<Probe {...next} />);
+      renderer.update(tree(next));
     });
     await settle(0);
   };
@@ -161,8 +196,20 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  act(() => renderers.splice(0).forEach((r) => r.unmount()));
   jest.useRealTimers();
 });
+
+/**
+ * purpose: Make the line being spoken fail, as the speech engine would on an error.
+ * @return: (Promise<void>) Resolves after the hook reacted.
+ */
+async function failSpeech(): Promise<void> {
+  await act(async () => {
+    mockSpeech.at(-1)?.options.onError?.(new Error('speech failed'));
+  });
+  await settle(0);
+}
 
 describe('useDueCue', () => {
   it('chimes, then speaks the prompt slowly when a task comes due', async () => {
@@ -193,6 +240,8 @@ describe('useDueCue', () => {
     const update = await renderCue({ tasks: [makeTask({ seniorPrompts: 1 })], blocked: false });
     await settle(1500);
     await finishSpeech();
+    // Reprompts come minutes apart, beyond the minimum gap between cues.
+    await settle(DEFAULT_TUNING.cueMinGapMs);
     await update({ tasks: [makeTask({ seniorPrompts: 2 })], blocked: false });
     await settle(1500);
     expect(mockPlayer.play).toHaveBeenCalledTimes(2);
@@ -220,25 +269,50 @@ describe('useDueCue', () => {
     expect(mockPlayer.play).toHaveBeenCalledTimes(1);
   });
 
-  it('does not cue a snoozed task, and cues it on the reprompt after the snooze', async () => {
-    const update = await renderCue({ tasks: [makeTask({ snoozed: true })], blocked: false });
+  it('holds the cue of a snoozed task and plays it once when the snooze ends', async () => {
+    const update = await renderCue({
+      tasks: [makeTask({ seniorPrompts: 1, snoozed: true })],
+      blocked: false,
+    });
     await settle(5000);
     expect(mockPlayer.play).not.toHaveBeenCalled();
-    // The snooze ends: the owed cue was passed over, so nothing plays yet.
-    await update({ tasks: [makeTask()], blocked: false });
-    await settle(5000);
-    expect(mockPlayer.play).not.toHaveBeenCalled();
-    // The backend sends the reprompt.
+    // The snooze ends with no new prompt from the backend: the owed cue plays.
     await update({ tasks: [makeTask({ seniorPrompts: 1 })], blocked: false });
+    expect(mockPlayer.play).toHaveBeenCalledTimes(1);
+    await settle(1500);
+    await finishSpeech();
+    // The backend's withheld reprompt fires a moment later: absorbed, no second cue.
+    await settle(60_000);
+    await update({ tasks: [makeTask({ seniorPrompts: 2 })], blocked: false });
+    await settle(5000);
     expect(mockPlayer.play).toHaveBeenCalledTimes(1);
   });
 
-  it('drops a cue owed during a session when the senior snoozed the task', async () => {
+  it('plays a reprompt that comes well after the snooze-end cue', async () => {
+    const update = await renderCue({ tasks: [makeTask({ snoozed: true })], blocked: false });
+    await update({ tasks: [makeTask()], blocked: false });
+    await settle(1500);
+    await finishSpeech();
+    await settle(DEFAULT_TUNING.cueMinGapMs);
+    await update({ tasks: [makeTask({ seniorPrompts: 1 })], blocked: false });
+    expect(mockPlayer.play).toHaveBeenCalledTimes(2);
+  });
+
+  it('plays no cue for a snoozed task confirmed before its snooze ended', async () => {
+    const update = await renderCue({ tasks: [makeTask({ snoozed: true })], blocked: false });
+    await update({ tasks: [makeTask({ state: 'confirmed' })], blocked: false });
+    await settle(10_000);
+    expect(mockPlayer.play).not.toHaveBeenCalled();
+  });
+
+  it('plays a cue owed during a session that the senior snoozed, once the snooze ends', async () => {
     const update = await renderCue({ tasks: [makeTask()], blocked: true });
     await update({ tasks: [makeTask({ snoozed: true })], blocked: true });
     await update({ tasks: [makeTask({ snoozed: true })], blocked: false });
     await settle(10_000);
     expect(mockPlayer.play).not.toHaveBeenCalled();
+    await update({ tasks: [makeTask()], blocked: false });
+    expect(mockPlayer.play).toHaveBeenCalledTimes(1);
   });
 
   it('drops a queued cue when the task was confirmed during the session', async () => {
@@ -315,6 +389,20 @@ describe('useDueCue', () => {
     expect(spoken()).toHaveLength(2);
   });
 
+  it('retries a two-task cue from the line that failed, not from the start', async () => {
+    const a = makeTask({ instanceId: 'a', spokenPrompt: 'First.' });
+    const b = makeTask({ instanceId: 'b', spokenPrompt: 'Second.' });
+    await renderCue({ tasks: [a, b], blocked: false });
+    await settle(1500);
+    await finishSpeech();
+    expect(spoken()).toEqual(['First.', 'Second.']);
+    await failSpeech();
+    await settle(DEFAULT_TUNING.cueRetryMs + 1500);
+    expect(mockPlayer.play).toHaveBeenCalledTimes(2);
+    await settle(1500);
+    expect(spoken()).toEqual(['First.', 'Second.', 'Second.']);
+  });
+
   it('plays one chime for tasks due together and speaks them in day order', async () => {
     const tasks = [
       makeTask({ instanceId: 'a', spokenPrompt: 'First.' }),
@@ -325,6 +413,42 @@ describe('useDueCue', () => {
     await finishSpeech();
     expect(mockPlayer.play).toHaveBeenCalledTimes(1);
     expect(spoken()).toEqual(['First.', 'Second.']);
+  });
+
+  it('plays the test cue when nothing else is going on, and reports it', async () => {
+    const update = await renderCue({ tasks: [], blocked: false });
+    await update({ tasks: [], blocked: false, testCue: { id: 1, active: true } });
+    await settle(1500);
+    expect(spoken()).toEqual([SAMPLE_PROMPT]);
+    await finishSpeech();
+    expect(reportTestCue).toHaveBeenCalledWith('played');
+    expect(onCue).not.toHaveBeenCalled();
+  });
+
+  it('refuses the test cue during a voice session and says why', async () => {
+    const update = await renderCue({ tasks: [], blocked: true });
+    await update({ tasks: [], blocked: true, testCue: { id: 1, active: true } });
+    await settle(5000);
+    expect(mockSetAudioMode).not.toHaveBeenCalled();
+    expect(reportTestCue).toHaveBeenCalledWith(TEST_CUE_BLOCKED);
+  });
+
+  it('never lets the test cue overlap a real cue', async () => {
+    const update = await renderCue({ tasks: [makeTask()], blocked: false });
+    await update({ tasks: [makeTask()], blocked: false, testCue: { id: 1, active: true } });
+    await settle(1500);
+    expect(reportTestCue).toHaveBeenCalledWith(TEST_CUE_BUSY);
+    expect(mockPlayer.play).toHaveBeenCalledTimes(1);
+    expect(spoken()).toEqual(['Time for your pills.']);
+  });
+
+  it('stops the test cue when the sheet closes', async () => {
+    const update = await renderCue({ tasks: [], blocked: false });
+    await update({ tasks: [], blocked: false, testCue: { id: 1, active: true } });
+    await settle(1500);
+    await update({ tasks: [], blocked: false, testCue: { id: 1, active: false } });
+    expect(mockSpeechStop).toHaveBeenCalled();
+    expect(reportTestCue).toHaveBeenCalledWith('stopped');
   });
 
   it('never cues an anytime task', async () => {

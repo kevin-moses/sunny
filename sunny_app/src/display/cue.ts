@@ -7,9 +7,12 @@
 // identified by the instance and that count (cueKey). Keys already cued are remembered on the
 // device, so a restart does not cue a task again. Anytime (untimed) tasks are never due, so
 // they never cue; a confirmed task is no longer due, so a cue still owed for it is dropped.
-// A snoozed task ("not yet") is not cued: the cue it was owed is passed over for good
-// (cueChoice's skip), and the next cue comes when the backend sends the reprompt that
-// follows the snooze (seniorPrompts goes up), so the display follows the backend.
+// A snoozed task ("not yet") is not cued while snoozed, but its owed cue stays owed (it is not
+// remembered) and plays when the snooze ends, unless the task was confirmed meanwhile; this
+// holds even when the backend has no prompt step left to send. Two cues for the same task are
+// never closer than the tuned cueMinGapMs: a new prompt count that arrives sooner (the
+// backend's withheld reprompt firing just after the snooze end already released the owed
+// cue) is absorbed, remembered as played without sounding, so the snooze end gives one cue.
 //
 // The words are the same every time: the caregiver's spoken prompt when they wrote one,
 // otherwise a fixed template from the display label and time ("Time for Morning pills, at
@@ -20,6 +23,10 @@
 
 import { clockTime, isDue } from '../day/format';
 import type { DayTask } from '../day/types';
+
+/** The prompt the developer sheet's test cue speaks: the template for an 8:00 medication. */
+export const SAMPLE_PROMPT =
+  "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.";
 
 /**
  * purpose: The identity of one cue: the instance and how many prompts the backend has sent.
@@ -39,24 +46,49 @@ export function isCueable(task: DayTask): boolean {
   return isDue(task) && !task.snoozed;
 }
 
-/** Which owed cues to play now and which to pass over. */
+/** Which owed cues to play now and which to absorb. */
 export interface CueChoice {
   /** Tasks to cue now, in day order. */
   play: DayTask[];
-  /** Snoozed tasks whose owed cue is passed over (remembered as played, never sounded). */
-  skip: DayTask[];
+  /** Tasks cued too recently: their new cue is remembered as played without sounding. */
+  absorb: DayTask[];
+}
+
+/** When each task was last cued, to keep cues for one task apart. */
+export interface CueSpacing {
+  /** Epoch ms of the last cue that played, by instance id. */
+  lastCueAt: ReadonlyMap<string, number>;
+  /** Epoch ms now. */
+  now: number;
+  /** Shortest time between two cues for the same task (ms). */
+  minGapMs: number;
 }
 
 /**
- * purpose: The cues owed now: due timed tasks whose current cue has not been played, split
- *          into those to play and the snoozed ones to pass over.
+ * purpose: The cues owed now: due timed tasks whose current cue has not been played. Snoozed
+ *          ones stay owed (neither played nor absorbed); a task cued less than minGapMs ago
+ *          is absorbed; the rest play.
  * @param tasks: (DayTask[]) The day view's tasks, in its order.
- * @param cued: (ReadonlySet<string>) Cue keys already played (or passed over) on this device.
- * @return: (CueChoice) The tasks to play and to skip.
+ * @param cued: (ReadonlySet<string>) Cue keys already played (or absorbed) on this device.
+ * @param spacing: (CueSpacing) When each task was last cued, now, and the minimum gap.
+ * @return: (CueChoice) The tasks to play and to absorb.
  */
-export function cueChoice(tasks: DayTask[], cued: ReadonlySet<string>): CueChoice {
-  const owed = tasks.filter((task) => isDue(task) && !cued.has(cueKey(task)));
-  return { play: owed.filter((t) => !t.snoozed), skip: owed.filter((t) => t.snoozed) };
+export function cueChoice(
+  tasks: DayTask[],
+  cued: ReadonlySet<string>,
+  spacing: CueSpacing,
+): CueChoice {
+  const owed = tasks.filter((task) => isCueable(task) && !cued.has(cueKey(task)));
+  /**
+   * purpose: Whether a task was cued within the minimum gap.
+   * @param task: (DayTask) The task.
+   * @return: (boolean) True when its last cue was less than minGapMs ago.
+   */
+  const recent = (task: DayTask): boolean => {
+    const last = spacing.lastCueAt.get(task.instanceId);
+    return last !== undefined && spacing.now - last < spacing.minGapMs;
+  };
+  return { play: owed.filter((t) => !recent(t)), absorb: owed.filter(recent) };
 }
 
 /**
@@ -109,5 +141,6 @@ export function hasWrittenPrompt(task: Pick<DayTask, 'spokenPrompt' | 'displayLa
 export function cueSpeech(task: DayTask): string {
   if (hasWrittenPrompt(task)) return task.spokenPrompt.trim();
   const finish = task.type === 'medication' ? 'taken them' : 'finished';
-  return `Time for ${task.displayLabel}, at ${spokenTime(task.scheduledTime)}. Press Done when you have ${finish}.`;
+  const when = spokenTime(task.scheduledTime);
+  return `Time for ${task.displayLabel}, at ${when}. Press Done when you have ${finish}.`;
 }

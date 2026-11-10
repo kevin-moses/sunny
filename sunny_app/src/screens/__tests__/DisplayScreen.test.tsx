@@ -8,7 +8,7 @@
 //
 // Last modified: 2026-11-09
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -21,6 +21,7 @@ import { DisplayScreen } from '../DisplayScreen';
 const mockDueCue = jest.fn((_tasks: unknown, _blocked: boolean, _onCue: () => void) => undefined);
 const mockDismiss = jest.fn();
 let mockVoice: DisplayVoice;
+const renderers: ReactTestRenderer[] = [];
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -98,6 +99,7 @@ function renderScreen(first: DayViewState): (next: DayViewState) => void {
   act(() => {
     renderer = create(<DisplayScreen dayView={first} />);
   });
+  renderers.push(renderer);
   return (next) =>
     act(() => {
       renderer.update(<DisplayScreen dayView={next} />);
@@ -113,6 +115,11 @@ beforeEach(() => {
     talk: jest.fn(),
     dismissAnswer: mockDismiss,
   };
+});
+
+afterEach(() => {
+  // Unmounting clears the screen's carousel timer, so no handle outlives the test.
+  act(() => renderers.splice(0).forEach((r) => r.unmount()));
 });
 
 describe('DisplayScreen wiring', () => {

@@ -8,8 +8,10 @@
 // during a session; refused when offline or the microphone is off), the start timeout, the
 // voice card through listening, thinking and speaking (ignoring the previous session's
 // lines), an agent that speaks first (an opening, not an answer: no follow-up window, no
-// lingering), the idle end before a question, after an answer and never while the senior
-// speaks or before the agent joins, injected tuning values, the answer lingering after the
+// lingering), the idle end before a question and after an answer (none before the agent
+// joins), the cap on continuous speaking, the absolute session ceiling (letting an answer
+// being spoken finish, within the grace), the start timeout counted from the press however
+// the session state churns (also above 20 s), injected tuning values, the answer lingering after the
 // session (also when the transcript is cleared) and leaving when dismissed, the sample answer
 // from the developer sheet, the failure lines and the standing status line.
 //
@@ -32,6 +34,7 @@ import type { DisplayTuning } from '../tuning';
 import { TuningContext } from '../TuningProvider';
 import type { SampleAnswer, TuningControls } from '../TuningProvider';
 import {
+  CEILING_MESSAGE,
   MIC_OFF_MESSAGE,
   OFFLINE_MESSAGE,
   STOPPED_MESSAGE,
@@ -70,6 +73,8 @@ interface Session {
   offline?: boolean;
   tuning?: Partial<DisplayTuning>;
   sample?: SampleAnswer | null;
+  /** A disconnect function with its own identity (LiveKit changes it on state changes). */
+  disconnectFn?: () => Promise<void>;
 }
 
 const OFF: Session = { connection: 'disconnected', agent: 'disconnected', messages: [] };
@@ -120,7 +125,7 @@ async function renderVoice(first: Session): Promise<{
       error: s.error ?? null,
       clearError: () => undefined,
       connect,
-      disconnect,
+      disconnect: s.disconnectFn ?? disconnect,
     };
     const live = s.connection === 'connected' || s.connection === 'reconnecting';
     const conversation = {
@@ -233,8 +238,37 @@ describe('start timeout', () => {
 
   it('does not run once the agent has joined', async () => {
     await renderVoice({ ...LISTENING, userSpeaking: true });
-    await advance(10 * T.startTimeoutMs);
+    await advance(T.startTimeoutMs + 1000);
     expect(disconnect).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalledWith(CONNECT_FAILED_MESSAGE);
+  });
+
+  it('counts from the press however the session state and callbacks churn', async () => {
+    const h = await renderVoice({ ...OFF, connection: 'connecting' });
+    const states: Session[] = [
+      { ...OFF, connection: 'connecting', agent: 'connecting' },
+      { ...OFF, connection: 'connecting', agent: 'pre-connect-buffering' },
+      { ...OFF, connection: 'connected', agent: 'pre-connect-buffering', agentJoined: false },
+      { ...OFF, connection: 'connected', agent: 'initializing', agentJoined: false },
+    ];
+    for (const state of states) {
+      await advance(3_000);
+      // A new disconnect identity on every change, as LiveKit's session gives.
+      await h.set({ ...state, disconnectFn: () => disconnect() });
+    }
+    await advance(T.startTimeoutMs - 12_000 - 1);
+    expect(disconnect).not.toHaveBeenCalled();
+    await advance(1);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith(CONNECT_FAILED_MESSAGE);
+  });
+
+  it('honors a tuned value above 20 s', async () => {
+    await renderVoice({ ...OFF, connection: 'connecting', tuning: { startTimeoutMs: 30_000 } });
+    await advance(29_999);
+    expect(disconnect).not.toHaveBeenCalled();
+    await advance(1);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
   it('follows the tuned value', async () => {
@@ -351,10 +385,72 @@ describe('idle end', () => {
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('never ends while the senior is speaking', async () => {
+  it('holds the session open while the senior speaks, but only for speakingCapMs', async () => {
     await renderVoice({ ...LISTENING, userSpeaking: true });
-    await advance(10 * T.firstQuestionMs);
+    await advance(T.speakingCapMs);
     expect(disconnect).not.toHaveBeenCalled();
+    await advance(T.firstQuestionMs - 1);
+    expect(disconnect).not.toHaveBeenCalled();
+    await advance(1);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('session ceiling', () => {
+  /**
+   * purpose: Keep a session busy: new transcript lines every few seconds and the senior
+   *          "speaking" throughout (a TV in the room), so no idle timer can fire.
+   * @param h: ({ set }) The rendered hook.
+   * @param ms: (number) How long to keep it busy.
+   * @return: (Promise<void>) Resolves after that time.
+   */
+  async function keepBusy(h: { set: (next: Session) => Promise<void> }, ms: number): Promise<void> {
+    const lines: ConversationMessage[] = [];
+    for (let t = 0; t < ms; t += 5_000) {
+      lines.push(line(`tv${t}`, 'userTranscript', `words ${t}`));
+      await h.set({ ...LISTENING, userSpeaking: true, messages: [...lines] });
+      await advance(5_000);
+    }
+  }
+
+  it('ends any session sessionMaxMs after it started, however busy', async () => {
+    const h = await renderVoice({ ...LISTENING, userSpeaking: true });
+    await keepBusy(h, T.sessionMaxMs - 5_000);
+    expect(disconnect).not.toHaveBeenCalled();
+    await advance(5_000);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith(CEILING_MESSAGE);
+  });
+
+  // A long stuck limit, so only the ceiling can end these sessions.
+  const SLOW = { stuckMs: 180_000, sessionMaxMs: 120_000 };
+
+  it('lets an answer being spoken finish before ending', async () => {
+    const answering = { ...LISTENING, agent: 'speaking' as const, messages: QA, tuning: SLOW };
+    const h = await renderVoice(answering);
+    await advance(SLOW.sessionMaxMs);
+    expect(disconnect).not.toHaveBeenCalled();
+    await h.set({ ...answering, agent: 'listening' });
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(show).toHaveBeenCalledWith(CEILING_MESSAGE);
+  });
+
+  it('ends after ceilingGraceMs even if the answer keeps going', async () => {
+    const answering = { ...LISTENING, agent: 'speaking' as const, messages: QA, tuning: SLOW };
+    const h = await renderVoice(answering);
+    await advance(SLOW.sessionMaxMs);
+    await advance(T.ceilingGraceMs - 1);
+    expect(disconnect).not.toHaveBeenCalled();
+    await advance(1);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    await h.set(OFF);
+  });
+
+  it('does not wait for an opening line the agent says before any question', async () => {
+    const greeting = [line('g', 'agentTranscript', 'Hello.')];
+    await renderVoice({ ...LISTENING, agent: 'speaking', messages: greeting, tuning: SLOW });
+    await advance(SLOW.sessionMaxMs);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 });
 

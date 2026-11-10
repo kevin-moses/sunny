@@ -20,6 +20,12 @@ export interface DisplayTuning {
   followUpMs: number;
   /** How long the agent may think or speak with nothing changing before the session ends (ms). */
   stuckMs: number;
+  /** The longest a session may last, whatever is happening, timed from its start (ms). */
+  sessionMaxMs: number;
+  /** Extra time an answer being spoken may take to finish once sessionMaxMs is reached (ms). */
+  ceilingGraceMs: number;
+  /** Longest stretch of continuous "speaking" that still holds the session open (ms). */
+  speakingCapMs: number;
   /** How long an answer stays on the panel after the session ends (ms). */
   answerLingerMs: number;
   /** Speech rate of the due cue, as a multiple of the system's normal rate. */
@@ -34,6 +40,8 @@ export interface DisplayTuning {
   cueSettleMs: number;
   /** Wait before the one retry of a cue that failed to play (ms). */
   cueRetryMs: number;
+  /** Shortest time between two cues for the same task; a reprompt sooner is absorbed (ms). */
+  cueMinGapMs: number;
   /** Key presses closer together than this count as one (ms). */
   pressGapMs: number;
   /** How long a message stays on the status line (ms). */
@@ -92,6 +100,30 @@ export const TUNING_SPECS: Readonly<Record<TuningKey, TuningSpec>> = {
     max: 180_000,
     step: 5_000,
   },
+  sessionMaxMs: {
+    label: 'A session never lasts longer than',
+    unit: 'ms',
+    default: 180_000,
+    min: 60_000,
+    max: 600_000,
+    step: 10_000,
+  },
+  ceilingGraceMs: {
+    label: 'Let an answer finish, at most',
+    unit: 'ms',
+    default: 30_000,
+    min: 0,
+    max: 60_000,
+    step: 5_000,
+  },
+  speakingCapMs: {
+    label: 'Continuous speech holds the session for',
+    unit: 'ms',
+    default: 30_000,
+    min: 10_000,
+    max: 120_000,
+    step: 5_000,
+  },
   answerLingerMs: {
     label: 'Answer stays on screen',
     unit: 'ms',
@@ -147,6 +179,14 @@ export const TUNING_SPECS: Readonly<Record<TuningKey, TuningSpec>> = {
     min: 1_000,
     max: 60_000,
     step: 1_000,
+  },
+  cueMinGapMs: {
+    label: 'Shortest gap between cues for a task',
+    unit: 'ms',
+    default: 120_000,
+    min: 30_000,
+    max: 600_000,
+    step: 10_000,
   },
   pressGapMs: {
     label: 'Ignore a second press within',

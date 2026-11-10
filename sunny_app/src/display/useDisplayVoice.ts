@@ -18,7 +18,13 @@
 //   cue held back) indefinitely.
 // - Once the agent has joined, the session ends by itself when nothing happens for a while
 //   (voiceModel.idleTimeoutMs: firstQuestionMs before a question, followUpMs after an answer,
-//   stuckMs while thinking or speaking); the microphone is never left open.
+//   stuckMs while thinking or speaking). Continuous "speaking" (a TV in the room can sound like
+//   the senior) holds the session open for at most speakingCapMs.
+// - Whatever happens, a session never lasts longer than sessionMaxMs from its start (counted
+//   from the Talk press, independent of activity): it then ends with a calm line. If the agent
+//   is in the middle of speaking an answer to a question at that moment, the answer may finish
+//   first, for at most ceilingGraceMs more. So the microphone is open for at most
+//   sessionMaxMs + ceilingGraceMs per Talk press.
 // - After the session, its last answer to a question stays on the card for answerLingerMs,
 //   tabbed with the time it was given; an opening line the agent said before any question
 //   never lingers. dismissAnswer clears it early (a newly due task takes priority). The
@@ -33,7 +39,7 @@
 //
 // Last modified: 2026-11-09
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { clockTime } from '../day/format';
 import { useConversation, useVoice } from '../voice/voiceContext';
@@ -57,6 +63,9 @@ export const MIC_OFF_MESSAGE = 'The microphone is off. Ask your family to turn i
 
 /** Status line when Talk is pressed while the display has no connection. */
 export const OFFLINE_MESSAGE = 'Not connected. Try again later.';
+
+/** Status line when a session reaches its longest allowed length. */
+export const CEILING_MESSAGE = 'Sunny stopped listening for now. Press Talk to ask again.';
 
 /** What the display tracks about the current or last session. */
 interface SessionTrack {
@@ -114,6 +123,12 @@ export function useDisplayVoice(
   }));
   const [lingering, setLingering] = useState<LingeringAnswer | null>(null);
   const [seenSample, setSeenSample] = useState(sample?.id ?? 0);
+  // The session reached sessionMaxMs.
+  const [ceiling, setCeiling] = useState(false);
+  // The senior's current stretch of speaking, and whether it has passed speakingCapMs.
+  const { userSpeaking } = conversation;
+  const [speech, setSpeech] = useState({ speaking: userSpeaking, capped: false });
+  if (speech.speaking !== userSpeaking) setSpeech({ speaking: userSpeaking, capped: false });
   const exchange = useMemo(
     () => latestExchange(conversation.messages, track.ignored),
     [conversation.messages, track.ignored],
@@ -132,6 +147,7 @@ export function useDisplayVoice(
       joined: agentJoined,
     });
     setLingering(null);
+    setCeiling(false);
   } else if (!active && track.active) {
     setTrack({ ...track, active: false });
     if (track.answer !== null) setLingering({ text: track.answer, at });
@@ -155,25 +171,56 @@ export function useDisplayVoice(
     return () => clearTimeout(timer);
   }, [lingering, lingerMs]);
 
-  // Give up on a session that has not reached the agent within startTimeoutMs.
-  const { disconnect } = voice;
+  // The session's callbacks change identity with every LiveKit state change and tuning edit;
+  // timers read them through refs so they depend only on their real inputs.
+  const { connect, disconnect } = voice;
+  const actions = useRef({ disconnect, show });
+  // Set once a session has been ended by this hook, so one session is ended (and announced) once.
+  const ended = useRef(false);
+  useEffect(() => {
+    actions.current = { disconnect, show };
+  });
+  useEffect(() => {
+    if (active) ended.current = false;
+  }, [active]);
+  /**
+   * purpose: End the session once, with a status line.
+   * @param message: (string) The line to show.
+   * @return: (void)
+   */
+  const endWith = useCallback((message: string): void => {
+    if (ended.current) return;
+    ended.current = true;
+    void actions.current.disconnect();
+    actions.current.show(message);
+  }, []);
+
+  // Give up on a session that has not reached the agent within startTimeoutMs of the press.
   const connecting = active && !agentJoined;
   const startTimeoutMs = tuning.startTimeoutMs;
   useEffect(() => {
     if (!connecting) return undefined;
-    const timer = setTimeout(() => {
-      void disconnect();
-      show(CONNECT_FAILED_MESSAGE);
-    }, startTimeoutMs);
+    const timer = setTimeout(() => endWith(CONNECT_FAILED_MESSAGE), startTimeoutMs);
     return () => clearTimeout(timer);
-  }, [connecting, startTimeoutMs, disconnect, show]);
+  }, [connecting, startTimeoutMs, endWith]);
+
+  // Continuous speaking holds the session open for at most speakingCapMs.
+  const speakingCapMs = tuning.speakingCapMs;
+  useEffect(() => {
+    if (!userSpeaking) return undefined;
+    const timer = setTimeout(
+      () => setSpeech((s) => (s.speaking ? { ...s, capped: true } : s)),
+      speakingCapMs,
+    );
+    return () => clearTimeout(timer);
+  }, [userSpeaking, speakingCapMs]);
 
   // End a session that stays quiet: the timer restarts whenever anything changes.
   const timeout = idleTimeoutMs(
     {
       phase,
       agentJoined,
-      userSpeaking: conversation.userSpeaking,
+      userSpeaking: userSpeaking && !speech.capped,
       answered: track.answer !== null,
     },
     tuning,
@@ -182,21 +229,38 @@ export function useDisplayVoice(
   const activity = `${phase}|${conversation.messages.length}|${last?.message.length ?? 0}`;
   useEffect(() => {
     if (timeout === null) return undefined;
-    const timer = setTimeout(() => {
-      void disconnect();
-      show(STOPPED_MESSAGE);
-    }, timeout);
+    const timer = setTimeout(() => endWith(STOPPED_MESSAGE), timeout);
     return () => clearTimeout(timer);
-  }, [timeout, activity, disconnect, show]);
+  }, [timeout, activity, endWith]);
 
-  // A failed session is reported in plain words.
+  // The absolute ceiling: sessionMaxMs after the session started, whatever is happening. An
+  // answer being spoken may finish first, for at most ceilingGraceMs.
+  const sessionMaxMs = tuning.sessionMaxMs;
+  useEffect(() => {
+    if (!active) return undefined;
+    const timer = setTimeout(() => setCeiling(true), sessionMaxMs);
+    return () => clearTimeout(timer);
+  }, [active, sessionMaxMs]);
+  const answering = phase === 'speaking' && exchange.answer !== null;
+  const ceilingNow = active && ceiling && !answering;
+  useEffect(() => {
+    if (ceilingNow) endWith(CEILING_MESSAGE);
+  }, [ceilingNow, endWith]);
+  const graceMs = tuning.ceilingGraceMs;
+  const inGrace = active && ceiling;
+  useEffect(() => {
+    if (!inGrace) return undefined;
+    const timer = setTimeout(() => endWith(CEILING_MESSAGE), graceMs);
+    return () => clearTimeout(timer);
+  }, [inGrace, graceMs, endWith]);
+
+  // A failed session is reported in plain words (once per failure).
   const { error } = voice;
   const joined = track.joined;
   useEffect(() => {
-    if (error !== null) show(failureMessage(joined));
-  }, [error, joined, show]);
+    if (error !== null) actions.current.show(failureMessage(joined));
+  }, [error, joined]);
 
-  const { connect } = voice;
   /**
    * purpose: The Talk key: end a live (or connecting) session, otherwise start one unless the
    *          display is offline or the microphone is refused.
@@ -204,8 +268,7 @@ export function useDisplayVoice(
    */
   const talk = useCallback((): void => {
     if (active) {
-      void disconnect();
-      show(STOPPED_MESSAGE);
+      endWith(STOPPED_MESSAGE);
     } else if (offline) {
       show(OFFLINE_MESSAGE);
     } else if (micAllowed === false) {
@@ -213,7 +276,7 @@ export function useDisplayVoice(
     } else {
       void connect();
     }
-  }, [active, offline, micAllowed, connect, disconnect, show]);
+  }, [active, offline, micAllowed, connect, endWith, show]);
 
   /**
    * purpose: Take a lingering answer off the panel.

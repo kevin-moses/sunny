@@ -55,7 +55,7 @@ export interface LingeringAnswer {
   at: string | null;
 }
 
-/** What the voice card shows: a tab, then a symbol and title with an optional detail line, or an answer. */
+/** What the voice card shows: a tab, then a symbol and title with a detail line, or an answer. */
 export type VoiceCard =
   | { kind: 'prompt'; tab: string; icon: SFSymbol; title: string; detail: string | null }
   | { kind: 'answer'; tab: string; text: string };

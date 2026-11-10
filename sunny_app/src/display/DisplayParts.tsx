@@ -10,8 +10,8 @@
 //   overdue form ("Still to do", plus "Not sure? Press [Talk]"), one step of a multi-step
 //   task with its progress boxes, or a calm clear state. A snoozed task (the senior said "not
 //   yet") keeps its card, since Done still confirms it, but its tab reads "Later" instead of
-//   "Now" or "Still to do", matching the due cue, which stays quiet until the reprompt. While the senior talks to Sunny, and
-//   for a few minutes after, the voice card (VoiceCardView: "Listening", "Thinking", then the
+//   "Now" or "Still to do", matching the due cue, which stays quiet until the snooze ends.
+//   While the senior talks to Sunny, and for a few minutes after, the voice card (VoiceCardView: "Listening", "Thinking", then the
 //   answer as large text) takes the Next up card's place, so a waiting task stays in view on
 //   the left and Done still confirms what the screen shows. With nothing waiting, the voice
 //   card takes the whole body instead, because an answer of a few sentences only fits the
@@ -236,14 +236,26 @@ function VoiceCardView({ card, wide }: { card: VoiceCard; wide: boolean }) {
 }
 
 /**
- * purpose: The tab above the Now card: "Now", "Still to do" for an overdue task or "Later" for
- *          a snoozed one, followed by the task's time (one-step task) or name (multi-step).
+ * purpose: The first word of a task's tab: "Later" for a snoozed task, "Still to do" for an
+ *          overdue one, otherwise "Now".
+ * @param card: (TaskCard) The task card.
+ * @return: (string) The word.
+ */
+function tabLead(card: TaskCard): string {
+  if (card.task.snoozed) return 'Later';
+  if (card.overdue) return 'Still to do';
+  return 'Now';
+}
+
+/**
+ * purpose: The tab above the Now card: its lead (tabLead), followed by the task's time
+ *          (one-step task) or name (multi-step task); "Now" alone when nothing is waiting.
  * @param card: (NowCard) The card.
  * @return: (string) The tab text.
  */
-function tabText(card: NowCard): string {
+export function tabText(card: NowCard): string {
   if (card.kind === 'clear') return 'Now';
-  const lead = card.task.snoozed ? 'Later' : card.overdue ? 'Still to do' : 'Now';
+  const lead = tabLead(card);
   const tail = card.steps !== null ? card.task.displayLabel : clockTime(card.task.scheduledTime);
   return `${lead}  ·  ${tail}`;
 }
