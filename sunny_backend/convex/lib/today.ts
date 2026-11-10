@@ -16,10 +16,11 @@
 // caregiver who marked it done (state "resolved"), null for a device confirmation or when the
 // member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
 // is the instance's own local date and carriedOver is true for yesterday's still-open
-// instances, and resolutionNote is the note the caregiver left. confirmReceivedAt is set when a confirm pressed offline reached the server late.
-// confirmable says whether a
-// senior device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own
-// rule), so a surface can offer Done early without copying the 60 minute constant.
+// instances, and resolutionNote is the note the caregiver left. confirmReceivedAt is set when a
+// confirm pressed offline reached the server late (confirmReceivedLocalTime and
+// confirmReceivedDaysLater say when, in household time). confirmable says whether a senior
+// device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own rule), so
+// a surface can offer Done early without copying the 60 minute constant.
 //
 // Last modified: 2026-11-09
 
@@ -28,7 +29,7 @@ import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { seniorCanConfirm } from "./confirmRule";
-import { addDays, localDate, localTime } from "./time";
+import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
 /** One of today's instances joined with its task. */
@@ -55,6 +56,8 @@ export interface TodayEntry {
   confirmReceivedAt: number | null;
   /** Household-local "HH:MM" of confirmReceivedAt; null when it is null. */
   confirmReceivedLocalTime: string | null;
+  /** Local days from confirmedAt to confirmReceivedAt (0 same day); null when absent. */
+  confirmReceivedDaysLater: number | null;
   claimedBy: string | null;
   claimedByName: string | null;
   /**
@@ -67,6 +70,24 @@ export interface TodayEntry {
   resolutionNote: string | null;
   /** A senior device may confirm it now (open and not more than 60 minutes early). */
   confirmable: boolean;
+}
+
+/**
+ * purpose: How many local days after the confirmation a late-synced confirm reached the server.
+ * @param instance: (object) The instance's confirmedAt and confirmReceivedAt.
+ * @param timezone: (string) The household's IANA zone.
+ * @return: (number | null) 0 for the same local day, 1 for the next, and so on; null when the
+ *          instance has no confirmReceivedAt (or no confirmedAt).
+ */
+export function receivedDaysLater(
+  instance: { confirmedAt?: number; confirmReceivedAt?: number },
+  timezone: string,
+): number | null {
+  if (instance.confirmedAt === undefined || instance.confirmReceivedAt === undefined) return null;
+  return daysBetween(
+    localDate(instance.confirmedAt, timezone),
+    localDate(instance.confirmReceivedAt, timezone),
+  );
 }
 
 /**
@@ -138,6 +159,7 @@ export async function todayInstances(
         instance.confirmReceivedAt === undefined
           ? null
           : localTime(instance.confirmReceivedAt, household.timezone),
+      confirmReceivedDaysLater: receivedDaysLater(instance, household.timezone),
       claimedBy,
       claimedByName: nameOf(claimedBy),
       confirmedBy,

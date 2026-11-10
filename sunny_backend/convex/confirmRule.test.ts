@@ -1,15 +1,18 @@
 // confirmRule.test.ts
 // Purpose: Tests that the day view's per-task `confirmable` flag and the confirm mutation agree
 // (they share lib/confirmRule.ts): an upcoming task 61, 60 and 59 minutes before its window,
-// due, escalated, missed (late), snoozed, already confirmed, and anytime. Also the optional
-// pressedAgoMs argument of confirmTaskInstance, for a confirm pressed offline and replayed
-// later (an age, so device clock skew cannot move the record): confirmedAt is now minus the
-// age (also after the window closed or the task escalated), clamped to now and to the
-// early-confirm point, audited, marked late with confirmReceivedAt (more than five minutes,
-// exposed on the day view with its local time), NaN, Infinity and negative ages refused,
-// refused from caregivers and the agent, allowed from a display device, only the named
-// instance confirmed (a carried-over one from yesterday), not re-audited on a repeat, and not
-// letting a too-early server time through. The clock is faked.
+// due, escalated, missed (late), snoozed, already confirmed, and anytime. Also
+// confirmPressedTask (a confirm pressed offline and replayed later, sent with an age so device
+// clock skew cannot move the record): confirmedAt is now minus the age (also after the window
+// closed or the task escalated), clamped to now and to the early-confirm point, audited, marked
+// late with confirmReceivedAt (more than five minutes; the day view exposes its local time and
+// days later, so a press at 11:30 PM received after midnight reads as the next day); a replay
+// skips the early check (audited) while a live press is refused as a result with an audit row;
+// a press for a deleted task returns rejected with an audit row instead of throwing; another
+// household's instance, caregivers and non-finite or negative ages throw; allowed from a
+// display device; only the named instance confirmed; no second audit row on a repeat.
+// confirmReceivedAt is never set by caregiver mark-done or voice and is cleared by undo.
+// The clock is faked.
 //
 // Last modified: 2026-11-09
 
@@ -19,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { confirmInstance } from "./instances";
+import { receivedDaysLater } from "./lib/today";
 import schema from "./schema";
 
 /** Every non-test module in the backend, for the convex-test harness. */
@@ -190,14 +194,14 @@ describe("confirmable flag and the confirm mutation agree", () => {
   });
 });
 
-describe("pressedAgoMs", () => {
+describe("confirmPressedTask (pressedAgoMs)", () => {
   /**
-   * purpose: Confirm the instance as the given identity at `iso` with a press age.
+   * purpose: Confirm the instance through confirmPressedTask as the given identity at `iso`.
    * @param f: (Fixture) Fixture.
    * @param iso: (string) Server time of the call.
    * @param pressedAgoMs: (number) The press age sent.
    * @param options: ({ subject, via, instanceId }) Caller, surface and instance overrides.
-   * @return: (Promise<object>) The instance after.
+   * @return: (Promise<object>) The mutation's result.
    */
   async function confirmAgo(
     f: Fixture,
@@ -212,7 +216,7 @@ describe("pressedAgoMs", () => {
     at(iso);
     return await f.t
       .withIdentity({ subject: options.subject ?? "phone" })
-      .mutation(api.instances.confirmTaskInstance, {
+      .mutation(api.instances.confirmPressedTask, {
         instanceId: options.instanceId ?? f.instanceId,
         via: options.via ?? "phone_app",
         pressedAgoMs,
@@ -220,13 +224,25 @@ describe("pressedAgoMs", () => {
   }
 
   /**
-   * purpose: The audit rows that carry a press age.
+   * purpose: Confirm and return the instance, failing the test if the press was rejected.
+   * @param args: The same arguments as confirmAgo.
+   * @return: (Promise<Doc>) The instance after.
+   */
+  async function confirmed(...args: Parameters<typeof confirmAgo>) {
+    const result = await confirmAgo(...args);
+    if (result.status !== "confirmed") throw new Error(`rejected: ${result.reason}`);
+    return result.instance;
+  }
+
+  /**
+   * purpose: The audit rows of one action.
    * @param f: (Fixture) Fixture.
+   * @param action: (string) The action name.
    * @return: (Promise<object[]>) The rows.
    */
-  async function pressRows(f: Fixture) {
+  async function auditRows(f: Fixture, action: string) {
     const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
-    return rows.filter((r) => r.detail["pressedAgoMs"] !== undefined);
+    return rows.filter((r) => r.action === action);
   }
 
   test("a late replay is recorded at now minus the age, audited, and marked as received late", async () => {
@@ -234,18 +250,19 @@ describe("pressedAgoMs", () => {
     await force(f, { state: "due" });
     const now = Date.parse("2027-03-14T15:00:00Z");
     const pressed = Date.parse("2027-03-14T12:05:00Z");
-    const row = await confirmAgo(f, "2027-03-14T15:00:00Z", now - pressed);
+    const row = await confirmed(f, "2027-03-14T15:00:00Z", now - pressed);
     expect(row).toMatchObject({
       state: "confirmed",
       confirmedAt: pressed,
       confirmedVia: "phone_app",
       confirmReceivedAt: now,
     });
-    const [audit] = await pressRows(f);
+    const [audit] = await auditRows(f, "state_change");
     expect(audit!.detail).toMatchObject({
       pressedAgoMs: now - pressed,
       confirmedAt: pressed,
       receivedAt: now,
+      replayed: true,
     });
   });
 
@@ -253,7 +270,7 @@ describe("pressedAgoMs", () => {
     const f = await setup();
     await force(f, { state: "due" });
     const now = Date.parse("2027-03-14T12:30:00Z");
-    const row = await confirmAgo(f, "2027-03-14T12:30:00Z", 800);
+    const row = await confirmed(f, "2027-03-14T12:30:00Z", 800);
     expect(row.confirmedAt).toBe(now - 800);
     expect(row.confirmReceivedAt).toBeUndefined();
   });
@@ -261,18 +278,18 @@ describe("pressedAgoMs", () => {
   test("the late-synced mark needs more than five minutes", async () => {
     const f = await setup();
     await force(f, { state: "due" });
-    const row = await confirmAgo(f, "2027-03-14T12:30:00Z", 5 * 60_000);
+    const row = await confirmed(f, "2027-03-14T12:30:00Z", 5 * 60_000);
     expect(row.confirmReceivedAt).toBeUndefined();
     const g = await setup();
     await force(g, { state: "due" });
-    const late = await confirmAgo(g, "2027-03-14T12:30:00Z", 5 * 60_000 + 1);
+    const late = await confirmed(g, "2027-03-14T12:30:00Z", 5 * 60_000 + 1);
     expect(late.confirmReceivedAt).toBe(Date.parse("2027-03-14T12:30:00Z"));
   });
 
-  test("the day view carries confirmReceivedAt and its local time", async () => {
+  test("the day view carries the received time, its local time and the days later", async () => {
     const f = await setup();
     await force(f, { state: "due" });
-    await confirmAgo(f, "2027-03-14T15:00:00Z", 3 * HOUR);
+    await confirmed(f, "2027-03-14T15:00:00Z", 3 * HOUR);
     const day = await f.t
       .withIdentity({ subject: "pat" })
       .query(api.calendar.dayView, { householdId: f.householdId });
@@ -281,14 +298,29 @@ describe("pressedAgoMs", () => {
       confirmedLocalTime: "08:00",
       confirmReceivedAt: Date.parse("2027-03-14T15:00:00Z"),
       confirmReceivedLocalTime: "11:00",
+      confirmReceivedDaysLater: 0,
     });
   });
 
-  test("a replay after the window closed and the task was marked missed keeps the press time", async () => {
+  test("a press at 11:30 PM that reaches the server after midnight is one day later", async () => {
+    const f = await setup();
+    await force(f, { state: "due" });
+    const pressed = Date.parse("2027-03-15T03:30:00Z");
+    const received = Date.parse("2027-03-15T06:10:00Z");
+    await confirmed(f, "2027-03-15T06:10:00Z", received - pressed);
+    const row = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(receivedDaysLater(row!, "America/New_York")).toBe(1);
+    expect(
+      receivedDaysLater({ confirmedAt: pressed, confirmReceivedAt: pressed }, "America/New_York"),
+    ).toBe(0);
+    expect(receivedDaysLater({ confirmedAt: pressed }, "America/New_York")).toBeNull();
+  });
+
+  test("a replay after the task was marked missed keeps the press time", async () => {
     const f = await setup();
     await force(f, { state: "missed" });
     const pressed = Date.parse("2027-03-14T12:10:00Z");
-    const row = await confirmAgo(
+    const row = await confirmed(
       f,
       "2027-03-14T16:00:00Z",
       Date.parse("2027-03-14T16:00:00Z") - pressed,
@@ -300,7 +332,7 @@ describe("pressedAgoMs", () => {
     const f = await setup();
     await force(f, { state: "escalated" });
     const pressed = Date.parse("2027-03-14T12:10:00Z");
-    const row = await confirmAgo(
+    const row = await confirmed(
       f,
       "2027-03-14T13:00:00Z",
       Date.parse("2027-03-14T13:00:00Z") - pressed,
@@ -311,15 +343,73 @@ describe("pressedAgoMs", () => {
   test("an age that would put the press before the early-confirm point is clamped up to it", async () => {
     const f = await setup();
     await force(f, { state: "due" });
-    const row = await confirmAgo(f, "2027-03-14T12:30:00Z", 50 * HOUR);
+    const row = await confirmed(f, "2027-03-14T12:30:00Z", 50 * HOUR);
     expect(row.confirmedAt).toBe(WINDOW_START - HOUR);
   });
 
-  test("the early check still uses the server clock", async () => {
+  test("a live press on a task that is too early is refused with a result, not an error, and audited", async () => {
     const f = await setup();
-    await expect(confirmAgo(f, "2027-03-14T10:00:00Z", 1000)).rejects.toMatchObject({
-      data: { code: "invalid", message: "This task is not due yet" },
+    const result = await confirmAgo(f, "2027-03-14T10:00:00Z", 1000);
+    expect(result).toEqual({ status: "rejected", reason: "This task is not due yet" });
+    const [row] = await auditRows(f, "press_not_applied");
+    expect(row!.detail).toMatchObject({
+      reason: "This task is not due yet",
+      pressedAgoMs: 1000,
+      receivedAt: Date.parse("2027-03-14T10:00:00Z"),
     });
+    expect(row!.entityId).toBe(f.instanceId);
+    const after = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(after!.state).toBe("upcoming");
+  });
+
+  test("a replayed press skips the early check and says so in the audit", async () => {
+    const f = await setup();
+    const now = Date.parse("2027-03-14T10:00:00Z");
+    const row = await confirmed(f, "2027-03-14T10:00:00Z", 30 * 60_000);
+    expect(row).toMatchObject({ state: "confirmed", confirmedAt: now, confirmReceivedAt: now });
+    const [audit] = await auditRows(f, "state_change");
+    expect(audit!.detail).toMatchObject({ replayed: true, earlyCheckBypassed: true });
+  });
+
+  test("a replayed press for a task that no longer exists returns rejected and writes an audit row", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => await ctx.db.delete(f.instanceId));
+    const result = await confirmAgo(f, "2027-03-14T12:30:00Z", 20 * 60_000);
+    expect(result).toEqual({ status: "rejected", reason: "The task no longer exists" });
+    const [row] = await auditRows(f, "press_not_applied");
+    expect(row).toMatchObject({ actorKind: "senior_device", entity: "task_instance" });
+    expect(row!.detail).toMatchObject({
+      instanceId: f.instanceId,
+      pressedAgoMs: 20 * 60_000,
+      pressedAt: Date.parse("2027-03-14T12:10:00Z"),
+    });
+  });
+
+  test("an instance of another household throws instead of being recorded", async () => {
+    const f = await setup();
+    const xen = f.t.withIdentity({ subject: "xen" });
+    const other = await xen.mutation(api.households.create, {
+      seniorPreferredName: "Dad",
+      timezone: "America/Chicago",
+      caregiverDisplayName: "Xen",
+    });
+    const policies = await xen.query(api.tasks.listPolicies, { householdId: other });
+    await xen.mutation(api.tasks.create, {
+      householdId: other,
+      type: "medication",
+      title: "Dad pills",
+      displayLabel: "Dad pills",
+      times: ["08:00"],
+      escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
+    });
+    const theirs = await f.t.run(
+      async (ctx) =>
+        (await ctx.db.query("taskInstances").collect()).find((i) => i.householdId === other)!._id,
+    );
+    await expect(
+      confirmAgo(f, "2027-03-14T12:30:00Z", 1000, { instanceId: theirs }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    expect(await auditRows(f, "press_not_applied")).toHaveLength(0);
   });
 
   test.each([Number.NaN, Number.POSITIVE_INFINITY, -1])("refuses an age of %s", async (bad) => {
@@ -330,15 +420,15 @@ describe("pressedAgoMs", () => {
     });
   });
 
-  test("a caregiver may not send a press age", async () => {
+  test("a caregiver may not use confirmPressedTask", async () => {
     const f = await setup();
     await force(f, { state: "due" });
     await expect(
       confirmAgo(f, "2027-03-14T12:30:00Z", 1000, { subject: "max", via: "caregiver" }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
   });
 
-  test("the agent may not send a press age", async () => {
+  test("the agent may not send a press age to the confirm core", async () => {
     const f = await setup();
     await force(f, { state: "due" });
     at("2027-03-14T12:30:00Z");
@@ -358,7 +448,7 @@ describe("pressedAgoMs", () => {
   test("a display device confirming via button may send a press age", async () => {
     const f = await setup();
     await force(f, { state: "due" });
-    const row = await confirmAgo(f, "2027-03-14T12:30:00Z", 2000, {
+    const row = await confirmed(f, "2027-03-14T12:30:00Z", 2000, {
       subject: "display",
       via: "button",
     });
@@ -379,18 +469,62 @@ describe("pressedAgoMs", () => {
         state: "due",
       });
     });
-    const row = await confirmAgo(f, "2027-03-14T12:30:00Z", 1000, { instanceId: yesterday });
+    const row = await confirmed(f, "2027-03-14T12:30:00Z", 1000, { instanceId: yesterday });
     expect(row).toMatchObject({ state: "confirmed", localDate: "2027-03-13" });
     const today = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
     expect(today!.state).toBe("due");
   });
 
-  test("a repeated confirm changes nothing and writes no second audit row", async () => {
+  test("a repeated press changes nothing and writes no second audit row", async () => {
     const f = await setup();
     await force(f, { state: "due" });
-    await confirmAgo(f, "2027-03-14T12:30:00Z", 10 * 60_000);
-    const again = await confirmAgo(f, "2027-03-14T12:31:00Z", 6 * 60_000);
+    await confirmed(f, "2027-03-14T12:30:00Z", 10 * 60_000);
+    const again = await confirmed(f, "2027-03-14T12:31:00Z", 6 * 60_000);
     expect(again.confirmedAt).toBe(Date.parse("2027-03-14T12:20:00Z"));
-    expect(await pressRows(f)).toHaveLength(1);
+    expect(await auditRows(f, "state_change")).toHaveLength(1);
+  });
+});
+
+describe("confirmReceivedAt is only for late-synced device presses", () => {
+  test("a caregiver mark-done never sets it", async () => {
+    const f = await setup();
+    await force(f, { state: "due" });
+    at("2027-03-14T14:00:00Z");
+    const row = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: f.instanceId, via: "caregiver" });
+    expect(row).toMatchObject({ state: "resolved" });
+    expect(row.confirmReceivedAt).toBeUndefined();
+  });
+
+  test("a voice confirm never sets it", async () => {
+    const f = await setup();
+    await force(f, { state: "due" });
+    const row = await f.t.run(
+      async (ctx) =>
+        await confirmInstance(
+          ctx,
+          { kind: "agent" },
+          { instanceId: f.instanceId, via: "voice" },
+          Date.parse("2027-03-14T14:00:00Z"),
+        ),
+    );
+    expect(row).toMatchObject({ state: "confirmed", confirmedVia: "voice" });
+    expect(row.confirmReceivedAt).toBeUndefined();
+  });
+
+  test("undoing a caregiver's mark-done clears it", async () => {
+    const f = await setup();
+    await force(f, { state: "due" });
+    at("2027-03-14T14:00:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    await asMax.mutation(api.instances.confirmTaskInstance, {
+      instanceId: f.instanceId,
+      via: "caregiver",
+    });
+    await force(f, { confirmReceivedAt: Date.parse("2027-03-14T14:00:00Z") });
+    const undone = await asMax.mutation(api.instances.undoResolve, { instanceId: f.instanceId });
+    expect(undone.state).toBe("due");
+    expect(undone.confirmReceivedAt).toBeUndefined();
   });
 });

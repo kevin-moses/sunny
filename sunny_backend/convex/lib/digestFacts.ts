@@ -19,6 +19,7 @@ import { isAsNeededTask } from "../tasks";
 import { memberNames } from "./access";
 import { isAnytimeInstance } from "./anytime";
 import { addDays, formatTime12, localTime, zonedInstant } from "./time";
+import { receivedDaysLater } from "./today";
 import type { ConfirmVia } from "./validators";
 
 /** The most task instances, questions and doses read for one day. */
@@ -38,6 +39,8 @@ export interface TaskFact {
   via?: ConfirmVia;
   /** 12-hour time the server received a confirm that was pressed offline and sent late. */
   sentAt?: string;
+  /** Local days from the confirmation to sentAt (0 same day); set with sentAt. */
+  sentDaysLater?: number;
   /** Caregiver who resolved it on the senior's behalf. */
   resolvedBy?: string;
   claimedBy?: string;
@@ -144,6 +147,7 @@ async function taskFacts(
     if (instance.confirmedVia !== undefined) fact.via = instance.confirmedVia;
     if (instance.confirmReceivedAt !== undefined) {
       fact.sentAt = formatTime12(localTime(instance.confirmReceivedAt, household.timezone));
+      fact.sentDaysLater = receivedDaysLater(instance, household.timezone) ?? 0;
     }
     if (state === "resolved") fact.resolvedBy = nameOf(names, instance.confirmedBy);
     const claimedBy = nameOf(names, instance.claimedBy);

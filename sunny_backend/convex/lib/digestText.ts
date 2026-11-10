@@ -121,6 +121,19 @@ function listLine(prefix: string, items: string[]): string {
 }
 
 /**
+ * purpose: When a late-synced confirm reached the server: "sent at 11:00 AM", "sent the next day
+ *          at 2:10 AM" or "sent 3 days later at 2:10 AM".
+ * @param time: (string) 12-hour time it was received.
+ * @param daysLater: (number) Local days after the confirmation.
+ * @return: (string) The phrase.
+ */
+function sentPhrase(time: string, daysLater: number): string {
+  if (daysLater <= 0) return `sent at ${time}`;
+  if (daysLater === 1) return `sent the next day at ${time}`;
+  return `sent ${daysLater} days later at ${time}`;
+}
+
+/**
  * purpose: How a done task reads: "Morning pills at 8:05 AM (voice)" or "(marked done by Anna)".
  * @param task: (TaskFact) A confirmed or resolved task.
  * @return: (string) The phrase.
@@ -132,7 +145,7 @@ function donePhrase(task: TaskFact): string {
   }
   const notes: string[] = [];
   if (task.via !== undefined) notes.push(VIA_WORDS[task.via] ?? task.via);
-  if (task.sentAt !== undefined) notes.push(`sent at ${task.sentAt}`);
+  if (task.sentAt !== undefined) notes.push(sentPhrase(task.sentAt, task.sentDaysLater ?? 0));
   return `${task.label} at ${at}${notes.length === 0 ? "" : ` (${notes.join(", ")})`}`;
 }
 
@@ -256,7 +269,7 @@ export function factsForPrompt(facts: DigestFacts): string {
     const parts = [`${t.label}, scheduled ${t.scheduledAt}: ${t.outcome}`];
     if (t.doneAt !== undefined) parts.push(`at ${t.doneAt}`);
     if (t.via !== undefined) parts.push(`via ${VIA_WORDS[t.via] ?? t.via}`);
-    if (t.sentAt !== undefined) parts.push(`sent to the server at ${t.sentAt}`);
+    if (t.sentAt !== undefined) parts.push(sentPhrase(t.sentAt, t.sentDaysLater ?? 0));
     if (t.resolvedBy !== undefined) parts.push(`by ${t.resolvedBy}`);
     rows.push(`Task: ${parts.join(", ")}`);
   }

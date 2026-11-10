@@ -341,6 +341,7 @@ describe("getContext", () => {
         resolutionNote: null,
         confirmReceivedAt: null,
         confirmReceivedLocalTime: null,
+        confirmReceivedDaysLater: null,
         confirmable: true,
       },
     ]);
