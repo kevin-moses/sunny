@@ -24,6 +24,8 @@
 // SMS: caregiver phone numbers live on householdMembers (phone, phoneVerifiedAt, pendingPhone);
 // phoneVerifications holds the texted verification codes (phone.ts).
 // Not yet ported (later phases): storage for photos and voice clips.
+// Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
+// looks up) and listItems (the household's one shared list).
 //
 // Last modified: 2026-11-09
 
@@ -44,6 +46,7 @@ import {
   instanceState,
   joinGrant,
   lifeCategory,
+  listActorKind,
   memberRole,
   memorySource,
   messageSender,
@@ -71,6 +74,9 @@ export default defineSchema({
     backgroundPaused: v.boolean(),
     // Local date of the latest digest row, so ticks after the day's digest skip the lookup.
     lastDigestDate: v.optional(v.string()),
+    // Place name the voice agent looks the weather up for, e.g. "Brooklyn, NY"; absent means
+    // the agent has no weather location.
+    weatherLocation: v.optional(v.string()),
   }),
 
   householdMembers: defineTable({
@@ -252,6 +258,12 @@ export default defineSchema({
     reportedVia: confirmVia,
     reportedBy: v.optional(v.string()),
     note: v.optional(v.string()),
+    // When the dose was written down (rows before this field: their _creationTime); the voice
+    // conversation a self-reported dose came from (only she can take it back, in that
+    // conversation); and when it was taken back: an undone row is kept but never counted.
+    loggedAt: v.optional(v.number()),
+    conversationId: v.optional(v.id("conversations")),
+    undoneAt: v.optional(v.number()),
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
 
   // The only place notifications are queued (insert with lib/delivery.ts insertNotification,
@@ -369,7 +381,27 @@ export default defineSchema({
     entity: v.string(),
     entityId: v.optional(v.string()),
     detail: v.record(v.string(), v.any()),
-  }).index("by_household", ["householdId"]),
+  })
+    .index("by_household", ["householdId"])
+    // The voice agent reads its own recent decisions (the outcome of a repeated message).
+    .index("by_household_action", ["householdId", "action"]),
+
+  // One row per voice agent flag that reached family (rows were queued for `recipientUserIds`):
+  // the repeat check (same key within its window) and the hourly cap read it by index. Every
+  // flag decision, sent or not, is also an auditLog row (flag_caregiver). doseId: the dose a
+  // medication_limit flag was about, so taking the dose back can send a correction.
+  agentFlags: defineTable({
+    householdId: v.id("households"),
+    reason: v.string(),
+    key: v.string(),
+    at: v.number(),
+    names: v.array(v.string()),
+    recipientUserIds: v.array(v.string()),
+    doseId: v.optional(v.id("doseLog")),
+    conversationId: v.optional(v.id("conversations")),
+  })
+    .index("by_household_key_at", ["householdId", "key", "at"])
+    .index("by_household_at", ["householdId", "at"]),
 
   // Appointments and visits, scheduled in household-local terms so 2 PM stays 2 PM across
   // DST; occurrences are computed (lib/occurrences.ts). Cancelling is a soft delete
@@ -460,6 +492,26 @@ export default defineSchema({
     role: v.union(v.literal("user"), v.literal("assistant")),
     content: v.string(),
   }).index("by_conversation", ["conversationId"]),
+
+  // The household's one shared list ("Add milk to the list"): open items have no doneAt.
+  // Written through lib/householdList.ts only (voice agent, caregivers, the senior's devices).
+  listItems: defineTable({
+    householdId: v.id("households"),
+    // One trimmed line, at most lib/householdList MAX_LIST_ITEM_LENGTH characters.
+    text: v.string(),
+    addedByKind: listActorKind,
+    // The caregiver's or the device's user id; absent when the voice agent added it.
+    addedBy: v.optional(v.string()),
+    addedAt: v.number(),
+    // Set when ticked ("I bought the milk"); cleared by a caregiver's untick.
+    doneAt: v.optional(v.number()),
+    doneByKind: v.optional(listActorKind),
+    doneBy: v.optional(v.string()),
+  })
+    // Open items (doneAt absent) in the order added, and recently ticked ones.
+    .index("by_household_done", ["householdId", "doneAt"])
+    // Items added in a time range (the digest's "Added to the list" line).
+    .index("by_household_added", ["householdId", "addedAt"]),
 
   // One row per question the senior asked; the digest counts repeats by topic and day.
   agentQuestions: defineTable({

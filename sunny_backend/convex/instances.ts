@@ -9,6 +9,7 @@
 // the public functions resolve the actor from auth and use the server clock. Every instance
 // state, claim, snooze and note change is audited (lib/schedule.changeInstance). A bare "Done"
 // (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
+// Which task "Done" means is lib/dueTask.pickDueEntry, shared with the voice agent's "not yet".
 //
 // Last modified: 2026-11-09
 
@@ -27,8 +28,8 @@ import {
 } from "./lib/access";
 import type { Actor, CaregiverActor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
-import { isAnytimeInstance } from "./lib/anytime";
 import { EARLY_CONFIRM_MS, LATE_SYNC_MS, REPLAY_GRACE_MS, notTooEarly } from "./lib/confirmRule";
+import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
@@ -363,44 +364,6 @@ export async function undoResolveInstance(
 }
 
 /**
- * purpose: Pick the entry "Done" means. No label: the earliest due or escalated timed entry
- *          (anytime entries are only matched by label). With a label: entries whose display
- *          label contains it (case-insensitive), preferring those due now, then any still open,
- *          else already done.
- * @param today: (TodayEntry[]) Today's entries in schedule order.
- * @param label: (string | null) Lower-cased, trimmed label, or null for none.
- * @return: (ConfirmDueResult | {entry: TodayEntry}) A final result, or the entry to confirm.
- */
-function pickDueEntry(
-  today: TodayEntry[],
-  label: string | null,
-): ConfirmDueResult | { entry: TodayEntry } {
-  /**
-   * purpose: Whether an entry is open for confirmation right now.
-   * @param e: (TodayEntry) The entry.
-   * @return: (boolean) True when due or escalated.
-   */
-  const isDue = (e: TodayEntry): boolean => e.state === "due" || e.state === "escalated";
-  if (label === null) {
-    // An anytime entry is open all day, so a bare "Done" never means it; it needs its label.
-    const entry = today.find((e) => isDue(e) && !isAnytimeInstance(e));
-    return entry ? { entry } : { status: "nothing_due" };
-  }
-  const matches = today.filter((e) => e.displayLabel.toLowerCase().includes(label));
-  if (matches.length === 0) return { status: "not_found" };
-  let open = matches.filter(isDue);
-  if (open.length === 0) {
-    open = matches.filter((e) => e.state !== "confirmed" && e.state !== "resolved");
-  }
-  if (open.length === 0) {
-    const latest = matches.reduce((a, b) => ((b.confirmedAt ?? 0) > (a.confirmedAt ?? 0) ? b : a));
-    return { ...latest, status: "already_done" };
-  }
-  if (open.length > 1) return { status: "ambiguous", options: open };
-  return { entry: open[0]! };
-}
-
-/**
  * purpose: Confirm "the task" the senior means: the one rule for the Done button, the widget
  *          and voice. already_done carries the original confirmedAt, guarding against double
  *          doses; not_due_yet means the matched task is more than an hour away.
@@ -420,8 +383,7 @@ export async function confirmDueTaskCore(
   if (!actsForSenior(actor, args.householdId)) {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
-  const label = (args.label ?? "").trim().toLowerCase() || null;
-  const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now), label);
+  const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now), args.label);
   if (!("entry" in picked)) return picked;
   const { entry } = picked;
   let row: Doc<"taskInstances">;
@@ -553,7 +515,8 @@ export async function cancelSeniorReminderCore(
  * purpose: Record an as-needed dose taken outside a scheduled instance.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) An editor caregiver, the household's device, or the backend.
- * @param args: ({householdId, taskId, takenAt, via, note}) The dose.
+ * @param args: ({householdId, taskId, takenAt, via, note, conversationId}) The dose, and the
+ *        voice conversation it was reported in (the voice agent only).
  * @param now: (number) Epoch ms.
  * @return: (Promise<Id<"doseLog">>) The new log row.
  * @raises forbidden for other actors; invalid when takenAt is not a finite number or is more
@@ -568,6 +531,7 @@ export async function logDoseCore(
     takenAt: number;
     via: ConfirmVia;
     note?: string;
+    conversationId?: Id<"conversations">;
   },
   now: number,
 ): Promise<Id<"doseLog">> {
@@ -589,6 +553,8 @@ export async function logDoseCore(
     reportedVia: args.via,
     reportedBy: actorUserId(actor),
     note: args.note,
+    loggedAt: now,
+    conversationId: args.conversationId,
   });
 }
 

@@ -7,12 +7,15 @@
 // times (fall-back) resolve to the later, standard-time instant, matching Postgres.
 //
 // Zone names are validated and canonicalized through canonicalTimezone. WEEKDAY_NAMES and
-// WEEKDAY_CODES (mon..sun, with weekdayCodes) name ISO weekdays.
+// WEEKDAY_CODES (mon..sun, with weekdayCodes) name ISO weekdays. MINUTE_MS, HOUR_MS, DAY_MS
+// and minutes() are for window arithmetic; dayRange is a local day's instant range.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-09
 
-const MINUTE_MS = 60_000;
-const DAY_MS = 86_400_000;
+/** Durations in ms, for window arithmetic (DAY_MS is 24 hours, not a local day). */
+export const MINUTE_MS = 60_000;
+export const HOUR_MS = 60 * MINUTE_MS;
+export const DAY_MS = 24 * HOUR_MS;
 const PROBE_MS = 26 * 3_600_000;
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -232,6 +235,19 @@ export function localDateTime(instant: number, timezone: string): string {
  */
 export function localMidnight(instant: number, timezone: string): number {
   return zonedInstant(localDate(instant, timezone), "00:00", timezone);
+}
+
+/**
+ * purpose: The instant range [start, end) of a household-local day.
+ * @param date: (string) "YYYY-MM-DD".
+ * @param timezone: (string) IANA zone.
+ * @return: ({ start: number; end: number }) Local midnight to the next local midnight.
+ */
+export function dayRange(date: string, timezone: string): { start: number; end: number } {
+  return {
+    start: zonedInstant(date, "00:00", timezone),
+    end: zonedInstant(addDays(date, 1), "00:00", timezone),
+  };
 }
 
 /**

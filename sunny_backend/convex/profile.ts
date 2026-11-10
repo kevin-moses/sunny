@@ -16,8 +16,11 @@
 // voice prompt flattens them anyway, and the app's Return key means "done" in those fields);
 // message bodies keep their line breaks. Counts are capped too, because getContext loads every
 // life profile entry and every topic into each conversation, and loads at most 50 memory facts
-// (verified first, then newest; MEMORY_LIMIT in agent.ts). MAX_VERIFIED_FACTS is 40, so at least
-// 10 places of that window are left for things the senior said.
+// (verified first, then newest). MAX_VERIFIED_FACTS is 40, so at least 10 places of that window
+// are left for things the senior said. The memory limits are in lib/memoryLimits.ts; entry and
+// fact ordering, the memory reads and the fact duplicate check are lib/profileReads.ts, shared
+// with the voice agent's getContext and rememberFact, so this module lists things in the order
+// the agent sees them.
 //
 // Duplicates: adding an entry whose category and name, a topic whose wording, or a fact whose
 // text already exists (compared case-insensitively, whitespace collapsed) inserts nothing and
@@ -61,9 +64,18 @@ import { loadHousehold, memberNames, requireCaregiverReader, requireEditor } fro
 import type { CaregiverActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { appError } from "./lib/errors";
-import { cleanOptional, requireMaxLength, requireNonBlank } from "./lib/text";
+import { MAX_FACT, MAX_VERIFIED_FACTS } from "./lib/memoryLimits";
+import {
+  entriesInOrder,
+  factCandidates,
+  factsInAgentOrder,
+  findFactDuplicate,
+  newestUnverified,
+  verifiedFacts,
+} from "./lib/profileReads";
+import { cleanOptional, oneLine, requireMaxLength, requireNonBlank, textKey } from "./lib/text";
 import { localDate, localTime } from "./lib/time";
-import { LIFE_CATEGORIES, lifeCategory } from "./lib/validators";
+import { lifeCategory } from "./lib/validators";
 
 /** Longest name of a life profile entry. */
 export const MAX_NAME = 120;
@@ -73,24 +85,18 @@ export const MAX_DETAILS = 600;
 export const MAX_TOPIC = 200;
 /** Longest guidance for a sensitive topic. */
 export const MAX_GUIDANCE = 1500;
-/** Longest memory fact. */
-export const MAX_FACT = 300;
 /** Longest family message body. */
 export const MAX_MESSAGE = 1000;
 /** Most life profile entries a household may have (all are in every conversation). */
 export const MAX_ENTRIES = 150;
 /** Most sensitive topics a household may have (all are in every conversation). */
 export const MAX_TOPICS = 30;
-/** Most verified facts: 40 of the agent's 50-fact window, leaving 10 for the senior's own. */
-export const MAX_VERIFIED_FACTS = 40;
 /** Unverified facts listMemory returns (newest first); older ones are only counted. */
 export const UNVERIFIED_SHOWN = 50;
 /** listMemory counts older unverified facts up to this many. */
 export const OLDER_COUNT_LIMIT = 500;
-/** Newest unverified facts the duplicate check of a fact looks at. */
-export const DUPLICATE_SCAN = 500;
-/** Most verified facts any read loads (more than the cap, for rows written before it). */
-const VERIFIED_READ_LIMIT = 200;
+/** The memory limits, shared with the voice agent (lib/memoryLimits.ts). */
+export { DUPLICATE_SCAN, MAX_FACT, MAX_VERIFIED_FACTS } from "./lib/memoryLimits";
 /** Messages listMessages returns by default, and at most. */
 const DEFAULT_MESSAGE_LIMIT = 30;
 const MAX_MESSAGE_LIMIT = 100;
@@ -180,7 +186,7 @@ export interface AddResult<T extends ProfileTable> {
  * @raises invalid when blank or too long.
  */
 function singleLine(value: string, max: number, label: string): string {
-  return requireMaxLength(requireNonBlank(value, label).replace(/\s+/g, " "), max, label);
+  return requireMaxLength(oneLine(requireNonBlank(value, label)), max, label);
 }
 
 /**
@@ -196,16 +202,11 @@ function optionalLine(
   max: number,
   label: string,
 ): string | undefined {
-  return cleanOptional(value?.replace(/\s+/g, " "), max, label);
-}
-
-/**
- * purpose: The comparison key of a name, topic or fact: trimmed, whitespace collapsed, lower case.
- * @param value: (string) Text.
- * @return: (string) The key.
- */
-function textKey(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+  return cleanOptional(
+    value === null || value === undefined ? undefined : oneLine(value),
+    max,
+    label,
+  );
 }
 
 /**
@@ -347,12 +348,7 @@ export const listEntries = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<EntryView[]> => {
     await requireCaregiverReader(ctx, args.householdId);
-    const rows = await householdRows(ctx, "lifeProfileEntries", args.householdId);
-    rows.sort(
-      (a, b) =>
-        LIFE_CATEGORIES.indexOf(a.category) - LIFE_CATEGORIES.indexOf(b.category) ||
-        a.name.localeCompare(b.name, "en", { sensitivity: "base" }),
-    );
+    const rows = await entriesInOrder(ctx, args.householdId);
     return rows.map((r) => ({
       id: r._id,
       category: r.category,
@@ -611,67 +607,6 @@ export const removeTopic = mutation({
 // ---------------------------------------------------------------------------------------------
 
 /**
- * purpose: The household's verified facts, newest verification first, through the
- *          by_household_verified index.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<"agentMemory">[]>) At most VERIFIED_READ_LIMIT rows.
- */
-async function verifiedFacts(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<Doc<"agentMemory">[]> {
-  return await ctx.db
-    .query("agentMemory")
-    .withIndex("by_household_verified", (q) => q.eq("householdId", householdId).gt("verifiedAt", 0))
-    .order("desc")
-    .take(VERIFIED_READ_LIMIT);
-}
-
-/**
- * purpose: The household's newest unverified facts, through the by_household_verified index.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param limit: (number) How many at most.
- * @return: (Promise<Doc<"agentMemory">[]>) The rows, newest first.
- */
-async function newestUnverified(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-  limit: number,
-): Promise<Doc<"agentMemory">[]> {
-  return await ctx.db
-    .query("agentMemory")
-    .withIndex("by_household_verified", (q) =>
-      q.eq("householdId", householdId).eq("verifiedAt", undefined),
-    )
-    .order("desc")
-    .take(limit);
-}
-
-/**
- * purpose: Find a fact with the same text key among the verified facts and the newest
- *          DUPLICATE_SCAN unverified ones.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param verified: (Doc<"agentMemory">[]) The household's verified facts (verifiedFacts).
- * @param fact: (string) The cleaned fact text.
- * @param exceptId: (Id<"agentMemory"> | null) A fact to ignore (the one being corrected).
- * @return: (Promise<Doc<"agentMemory"> | null>) The duplicate, or null.
- */
-async function findFactDuplicate(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-  verified: Doc<"agentMemory">[],
-  fact: string,
-  exceptId: Id<"agentMemory"> | null,
-): Promise<Doc<"agentMemory"> | null> {
-  const key = textKey(fact);
-  const candidates = [...verified, ...(await newestUnverified(ctx, householdId, DUPLICATE_SCAN))];
-  return candidates.find((r) => r._id !== exceptId && textKey(r.fact) === key) ?? null;
-}
-
-/**
  * purpose: Refuse to verify one more fact when the household already has MAX_VERIFIED_FACTS
  *          verified facts (more would crowd the senior's own facts out of the agent's window).
  * @param verified: (Doc<"agentMemory">[]) The household's verified facts (verifiedFacts).
@@ -725,7 +660,6 @@ export const listMemory = query({
       verifiedFacts(ctx, args.householdId),
       newestUnverified(ctx, args.householdId, UNVERIFIED_SHOWN + OLDER_COUNT_LIMIT),
     ]);
-    verified.sort((a, b) => b._creationTime - a._creationTime);
     const view = (r: Doc<"agentMemory">): FactView => ({
       id: r._id,
       fact: r.fact,
@@ -736,7 +670,7 @@ export const listMemory = query({
       verifiedOn: r.verifiedAt === undefined ? null : localDate(r.verifiedAt, timezone),
     });
     return {
-      facts: [...verified, ...unverified.slice(0, UNVERIFIED_SHOWN)].map(view),
+      facts: factsInAgentOrder(verified, unverified.slice(0, UNVERIFIED_SHOWN)).map(view),
       olderUnverified: Math.max(0, unverified.length - UNVERIFIED_SHOWN),
     };
   },
@@ -757,8 +691,8 @@ export const addFact = mutation({
   handler: async (ctx, args): Promise<AddResult<"agentMemory">> => {
     const actor = await requireEditor(ctx, args.householdId);
     const fact = singleLine(args.fact, MAX_FACT, "Fact");
-    const verified = await verifiedFacts(ctx, args.householdId);
-    const existing = await findFactDuplicate(ctx, args.householdId, verified, fact, null);
+    const { verified, candidates } = await factCandidates(ctx, args.householdId);
+    const existing = findFactDuplicate(candidates, fact, null);
     if (existing && existing.verifiedAt !== undefined) {
       return { id: existing._id, created: false, same: true, confirmed: false };
     }
@@ -818,8 +752,8 @@ export const correctFact = mutation({
     const fact = singleLine(args.fact, MAX_FACT, "Fact");
     const verified = row.verifiedAt !== undefined;
     if (fact === row.fact && verified) return null;
-    const verifiedRows = await verifiedFacts(ctx, args.householdId);
-    if (await findFactDuplicate(ctx, args.householdId, verifiedRows, fact, row._id)) {
+    const { verified: verifiedRows, candidates } = await factCandidates(ctx, args.householdId);
+    if (findFactDuplicate(candidates, fact, row._id)) {
       throw appError("invalid", "Sunny already knows that fact");
     }
     if (!verified) requireVerifiedRoom(verifiedRows);

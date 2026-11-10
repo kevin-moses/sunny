@@ -50,6 +50,11 @@
 //                      remembers (verified or not) and the recent family messages.
 //   message "<text>"   Send the senior a text message from the dev caregiver
 //                      (profile:sendMessage).
+//   list               Print the household list (lists:get): open items, then recently ticked.
+//   list-add "<text>"  Add an item to the household list (lists:add).
+//   weather-location "<place>"
+//                      Set the place the voice agent's weather tool looks up (households:update
+//                      weatherLocation), for example "Brooklyn, NY"; "" clears it.
 //
 // Usage (from sunny_backend/, with `npx convex dev` configured for the dev deployment):
 //   npx tsx scripts/caregiver.ts setup
@@ -381,6 +386,49 @@ function confirmPhone(code: string): void {
   console.log((CONFIRM_MESSAGES[result.status] ?? (() => JSON.stringify(result)))(result));
 }
 
+// --- Household list and weather location (voice agent branch) ---------------------------
+
+/**
+ * purpose: Run the list and weather-location commands; any other command is left to main.
+ * @param command: (string | undefined) The command.
+ * @param rest: (string[]) Its arguments.
+ * @return: (boolean) True when the command was one of these and has run.
+ */
+function voiceAgentCommand(command: string | undefined, rest: string[]): boolean {
+  /**
+   * purpose: The dev household id from the state file.
+   * @return: (string) The household id.
+   */
+  const householdId = (): string => loadState().householdId;
+  if (command === "list") {
+    const list = convexRun("lists:get", { householdId: householdId() }) as {
+      open: { text: string }[];
+      done: { text: string }[];
+    };
+    console.log(list.open.length > 0 ? list.open.map((i) => `- ${i.text}`).join("\n") : "(empty)");
+    if (list.done.length > 0) console.log(`Ticked: ${list.done.map((i) => i.text).join(", ")}`);
+    return true;
+  }
+  if (command === "list-add") {
+    const text = rest.join(" ");
+    if (!text) throw new Error('Usage: list-add "<text>"');
+    const result = convexRun("lists:add", { householdId: householdId(), text }) as {
+      status: string;
+    };
+    console.log(result.status === "added" ? `Added: ${text}` : `Already on the list: ${text}`);
+    return true;
+  }
+  if (command === "weather-location") {
+    const weatherLocation = rest.join(" ");
+    convexRun("households:update", { householdId: householdId(), weatherLocation });
+    console.log(
+      weatherLocation ? `Weather location: ${weatherLocation}` : "Weather location cleared",
+    );
+    return true;
+  }
+  return false;
+}
+
 /** How each loader outcome is printed: a column label and an optional note. */
 const OUTCOME_LINES: Array<[keyof Omit<LoadReport, "failed">, string, string]> = [
   ["added", "Added", ""],
@@ -465,6 +513,7 @@ function message(body: string): void {
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   if (command !== undefined) requireDevDeployment();
+  if (voiceAgentCommand(command, rest)) return;
   switch (command) {
     case "setup":
       setup();

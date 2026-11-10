@@ -1,97 +1,82 @@
 // convex/agent.ts
 // Purpose: The API the Python voice agent calls over Convex's HTTP API (POST /api/query and
-// /api/mutation), replacing the service-role supabase-py calls. Every function takes
-// `agentKey` first and compares it in constant time with the SUNNY_AGENT_KEY deployment env
-// var (a missing env var or a mismatch is forbidden); agentQuery and agentMutation wrap that
-// check once. The actor is { kind: "agent" }, so the instance cores treat it as the backend.
+// /api/mutation). Every function takes `agentKey` first and compares it in constant time with
+// the SUNNY_AGENT_KEY deployment env var (a missing env var or a mismatch is forbidden);
+// agentQuery and agentMutation wrap that check once. The actor is the voice agent
+// ({ kind: "agent" }, no caregiver behind it), so the instance cores treat it as the backend.
+// This module is only the agent:* surface (argument validation, the household and
+// conversation checks, the clock); each concern lives in a lib module:
+// - context: lib/agentContext.ts (getContext, and the message readLatestMessage reads aloud);
+// - tasks: instances.ts confirmDueTaskCore (voice confirm, never with a press age) and the
+//   reminder cores; lib/voiceTasks.ts ("not yet", medication facts);
+// - as-needed doses: lib/voiceDoses.ts and lib/doseLimits.ts;
+// - flags and family messages: lib/voiceRouting.ts (reachable caregivers only, caps);
+// - memory: lib/seniorMemory.ts (rememberFact), with the reads and limits profile.ts uses;
+// - the household list: lib/householdList.ts;
+// - the conversation record and question log: lib/conversationLog.ts.
 //
 // Trust model: these functions trust the householdId the agent passes. It comes from the
 // LiveKit participant metadata written by voice.livekitToken, never from the model, so the
-// agent key is the only gate. Anyone holding the key can act for any household.
+// agent key is the only gate. Anyone holding the key can act for any household. A
+// conversationId passed together with a householdId must belong to that household.
 //
 // Clock: an optional `now` (epoch ms) is honored here only (backend callers), else Date.now().
-// Instants in results are epoch ms; absent optional values are null. logTurn truncates content
-// to MAX_TURN_CONTENT_LENGTH (20,000) characters rather than rejecting it.
+// Instants in results are epoch ms; absent optional values are null.
 //
-// Functions: getContext (port of get_agent_context), today, confirmDueTask,
-// createSeniorReminder, cancelSeniorReminder, startConversation, logTurn, finishConversation.
-//
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { customMutation, customQuery } from "convex-helpers/server/customFunctions";
 import { v } from "convex/values";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Validator } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
 import {
   cancelSeniorReminderCore,
   confirmDueTaskCore,
   createSeniorReminderCore,
 } from "./instances";
 import type { CancelReminderResult, ConfirmDueResult } from "./instances";
-import type { Actor } from "./lib/access";
 import { loadHousehold } from "./lib/access";
+import { buildAgentContext, latestCaregiverMessage } from "./lib/agentContext";
+import type { AgentContext, MessageView } from "./lib/agentContext";
+import {
+  finishConversationCore,
+  householdConversation,
+  logQuestionsCore,
+  logTurnCore,
+  startConversationCore,
+} from "./lib/conversationLog";
 import { appError } from "./lib/errors";
-import { householdOccurrences } from "./lib/occurrences";
-import { addDays, localDate, localDateTime, localMidnight } from "./lib/time";
+import { addSpokenItemsCore, openListItems, tickItemByWordsCore } from "./lib/householdList";
+import type { SpokenItem, TickItemResult } from "./lib/householdList";
 import { constantTimeEqual } from "./lib/secretBox";
+import { searchWords } from "./lib/text";
+import { rememberFactCore } from "./lib/seniorMemory";
 import { todayInstances } from "./lib/today";
 import type { TodayEntry } from "./lib/today";
-import type { ConfirmVia } from "./lib/validators";
-import { lifeCategory } from "./lib/validators";
+import { questionOutcome } from "./lib/validators";
+import { logAsNeededDoseCore, undoLastDoseCore } from "./lib/voiceDoses";
+import type { LogDoseResult, UndoDoseResult } from "./lib/voiceDoses";
+import {
+  VOICE_AGENT,
+  flagCaregiverCore,
+  modelFlagReason,
+  sendFamilyMessageCore,
+} from "./lib/voiceRouting";
+import type { FamilyMessageResult, FlagResult } from "./lib/voiceRouting";
+import { dueScheduledMedication, medicationStatusCore, snoozeDueTaskCore } from "./lib/voiceTasks";
+import type { MedicationStatus, SnoozeResult } from "./lib/voiceTasks";
 
-const AGENT: Actor = { kind: "agent" };
-const EVENT_WINDOW_DAYS = 7;
-const MEMORY_LIMIT = 50;
-const RECENT_CONVERSATIONS = 5;
-const VOICE: ConfirmVia = "voice";
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** Longest transcript turn stored; longer content is truncated, not rejected. */
-export const MAX_TURN_CONTENT_LENGTH = 20_000;
+export { MAX_TURN_CONTENT_LENGTH } from "./lib/conversationLog";
 
-/** Category order the SQL enum sorted the life profile by. */
-const LIFE_CATEGORY_ORDER = lifeCategory.members.map((m) => m.value as string);
-
-/** One as-needed medication with the doses taken since local midnight. */
-export interface AsNeededEntry {
-  taskId: Id<"tasks">;
-  displayLabel: string;
-  pillDescription: string | null;
-  maxPerDay: number | null;
-  minHoursBetween: number | null;
-  takenToday: number[];
-}
-
-/** Everything the agent knows about a household at the start of a conversation. */
-export interface AgentContext {
-  household: {
-    id: Id<"households">;
-    seniorPreferredName: string;
-    timezone: string;
-    localNow: string;
-  };
-  today: TodayEntry[];
-  asNeeded: AsNeededEntry[];
-  events: Array<{
-    title: string;
-    label: string;
-    startsAt: number;
-    endsAt: number | null;
-    place: string | null;
-    visitorName: string | null;
-    notes: string | null;
-  }>;
-  latestMessage: {
-    from: string;
-    body: string | null;
-    hasPhoto: boolean;
-    sentAt: number;
-    seen: boolean;
-  } | null;
-  lifeProfile: Array<{ category: string; name: string; details: string | null }>;
-  sensitiveTopics: Array<{ topic: string; guidance: string }>;
-  memory: Array<{ fact: string; source: string; verified: boolean; notedAt: number }>;
-  recentConversations: Array<{ startedAt: number; summary: string }>;
+/**
+ * purpose: An optional argument the Python client may send as null.
+ * @param validator: (Validator) The value's validator.
+ * @return: (Validator) Optional value-or-null.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function nullable<T extends Validator<any, "required", any>>(validator: T) {
+  return v.optional(v.union(validator, v.null()));
 }
 
 /**
@@ -147,187 +132,8 @@ function clock(now: number | undefined): number {
 }
 
 /**
- * purpose: Active as-needed medications with the doses taken since local midnight.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<AsNeededEntry[]>) Entries in task creation order.
- */
-async function asNeededEntries(
-  ctx: QueryCtx,
-  household: Doc<"households">,
-  now: number,
-): Promise<AsNeededEntry[]> {
-  const midnight = localMidnight(now, household.timezone);
-  const tasks = await ctx.db
-    .query("tasks")
-    .withIndex("by_household_active", (q) => q.eq("householdId", household._id).eq("active", true))
-    .collect();
-  const entries: AsNeededEntry[] = [];
-  for (const task of tasks) {
-    if (task.type !== "medication") continue;
-    if (task.asNeededMaxPerDay === undefined && task.asNeededMinHours === undefined) continue;
-    const doses = await ctx.db
-      .query("doseLog")
-      .withIndex("by_household_task_taken", (q) =>
-        q.eq("householdId", household._id).eq("taskId", task._id).gte("takenAt", midnight),
-      )
-      .collect();
-    entries.push({
-      taskId: task._id,
-      displayLabel: task.displayLabel,
-      pillDescription: task.pillDescription ?? null,
-      maxPerDay: task.asNeededMaxPerDay ?? null,
-      minHoursBetween: task.asNeededMinHours ?? null,
-      takenToday: doses.map((d) => d.takenAt),
-    });
-  }
-  return entries;
-}
-
-/**
- * purpose: Occurrences in the next 7 days that have not ended yet.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<AgentContext["events"]>) Events ordered by start.
- */
-async function upcomingEvents(
-  ctx: QueryCtx,
-  household: Doc<"households">,
-  now: number,
-): Promise<AgentContext["events"]> {
-  const today = localDate(now, household.timezone);
-  const occurrences = await householdOccurrences(
-    ctx,
-    household._id,
-    household.timezone,
-    today,
-    addDays(today, EVENT_WINDOW_DAYS),
-  );
-  return occurrences
-    .filter((o) => (o.endsAt ?? o.startsAt) >= now && o.startsAt < now + EVENT_WINDOW_DAYS * DAY_MS)
-    .map((o) => ({
-      title: o.event.title,
-      label: o.event.label ?? o.event.title,
-      startsAt: o.startsAt,
-      endsAt: o.endsAt,
-      place: o.event.place ?? null,
-      visitorName: o.event.visitorName ?? null,
-      notes: o.event.notes ?? null,
-    }));
-}
-
-/**
- * purpose: The newest message a caregiver sent, with the sender's display name.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["latestMessage"]>) The message, or null when none.
- */
-async function latestCaregiverMessage(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<AgentContext["latestMessage"]> {
-  const message = await ctx.db
-    .query("familyMessages")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
-    .order("desc")
-    .filter((q) => q.eq(q.field("senderKind"), "caregiver"))
-    .first();
-  if (!message) return null;
-  const senderUserId = message.senderUserId;
-  const member =
-    senderUserId === undefined
-      ? null
-      : await ctx.db
-          .query("householdMembers")
-          .withIndex("by_household_user", (q) =>
-            q.eq("householdId", householdId).eq("userId", senderUserId),
-          )
-          .unique();
-  return {
-    from: member?.displayName ?? "family",
-    body: message.body ?? null,
-    hasPhoto: message.photoStorageId !== undefined,
-    sentAt: message._creationTime,
-    seen: message.seenAt !== undefined,
-  };
-}
-
-/**
- * purpose: Life profile entries ordered by category (declaration order) then name.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["lifeProfile"]>) The entries.
- */
-async function lifeProfile(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<AgentContext["lifeProfile"]> {
-  const rows = await ctx.db
-    .query("lifeProfileEntries")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
-    .collect();
-  rows.sort(
-    (a, b) =>
-      LIFE_CATEGORY_ORDER.indexOf(a.category) - LIFE_CATEGORY_ORDER.indexOf(b.category) ||
-      (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-  );
-  return rows.map((r) => ({ category: r.category, name: r.name, details: r.details ?? null }));
-}
-
-/**
- * purpose: What the agent remembers: verified facts first, then newest first, at most 50.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["memory"]>) The facts.
- */
-async function memoryFacts(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<AgentContext["memory"]> {
-  const rows = await ctx.db
-    .query("agentMemory")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
-    .collect();
-  rows.sort(
-    (a, b) =>
-      Number(b.verifiedAt !== undefined) - Number(a.verifiedAt !== undefined) ||
-      b._creationTime - a._creationTime,
-  );
-  return rows.slice(0, MEMORY_LIMIT).map((r) => ({
-    fact: r.fact,
-    source: r.source,
-    verified: r.verifiedAt !== undefined,
-    notedAt: r._creationTime,
-  }));
-}
-
-/**
- * purpose: The newest conversations that have a summary.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["recentConversations"]>) Up to 5, newest first.
- */
-async function recentSummaries(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<AgentContext["recentConversations"]> {
-  const out: AgentContext["recentConversations"] = [];
-  const rows = ctx.db
-    .query("conversations")
-    .withIndex("by_household_started", (q) => q.eq("householdId", householdId))
-    .order("desc");
-  for await (const row of rows) {
-    if (row.summary === undefined) continue;
-    out.push({ startedAt: row.startedAt, summary: row.summary });
-    if (out.length >= RECENT_CONVERSATIONS) break;
-  }
-  return out;
-}
-
-/**
- * purpose: Everything the agent knows about a household at the start of a conversation.
+ * purpose: Everything the agent knows about a household at the start of a conversation
+ *          (lib/agentContext.buildAgentContext).
  * @param householdId: (Id<"households">) Household, from the participant metadata.
  * @param now: (number, optional) Epoch ms; backend clock.
  * @return: (AgentContext) The context.
@@ -336,29 +142,8 @@ async function recentSummaries(
 export const getContext = agentQuery({
   args: { householdId: v.id("households"), now: v.optional(v.number()) },
   handler: async (ctx, args): Promise<AgentContext> => {
-    const now = clock(args.now);
     const household = await loadHousehold(ctx, args.householdId);
-    return {
-      household: {
-        id: household._id,
-        seniorPreferredName: household.seniorPreferredName,
-        timezone: household.timezone,
-        localNow: localDateTime(now, household.timezone),
-      },
-      today: await todayInstances(ctx, household._id, now),
-      asNeeded: await asNeededEntries(ctx, household, now),
-      events: await upcomingEvents(ctx, household, now),
-      latestMessage: await latestCaregiverMessage(ctx, household._id),
-      lifeProfile: await lifeProfile(ctx, household._id),
-      sensitiveTopics: (
-        await ctx.db
-          .query("sensitiveTopics")
-          .withIndex("by_household", (q) => q.eq("householdId", household._id))
-          .collect()
-      ).map((s) => ({ topic: s.topic, guidance: s.guidance })),
-      memory: await memoryFacts(ctx, household._id),
-      recentConversations: await recentSummaries(ctx, household._id),
-    };
+    return await buildAgentContext(ctx, household, clock(args.now));
   },
 });
 
@@ -378,7 +163,25 @@ export const today = agentQuery({
 });
 
 /**
- * purpose: Confirm the task the senior means, by voice ("I took my pills").
+ * purpose: The facts for a medication question, read fresh: today's scheduled medications and
+ *          each as-needed medication's label facts (lib/voiceTasks.medicationStatusCore).
+ * @param householdId: (Id<"households">) Household.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (MedicationStatus) Scheduled and as-needed facts.
+ * @raises not_found when the household does not exist.
+ */
+export const medicationStatus = agentQuery({
+  args: { householdId: v.id("households"), now: v.optional(v.number()) },
+  handler: async (ctx, args): Promise<MedicationStatus> => {
+    const household = await loadHousehold(ctx, args.householdId);
+    return await medicationStatusCore(ctx, household, clock(args.now));
+  },
+});
+
+/**
+ * purpose: Confirm the task the senior means, by voice ("I took my pills"), through the same
+ *          core as the Done button (instances.confirmDueTaskCore). A voice confirm is live, so
+ *          it never carries a press age.
  * @param householdId: (Id<"households">) Household.
  * @param label: (string | null, optional) Words from the task's display label.
  * @param now: (number, optional) Epoch ms; backend clock.
@@ -387,21 +190,113 @@ export const today = agentQuery({
 export const confirmDueTask = agentMutation({
   args: {
     householdId: v.id("households"),
-    label: v.optional(v.union(v.string(), v.null())),
+    label: nullable(v.string()),
     now: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<ConfirmDueResult> => {
     return await confirmDueTaskCore(
       ctx,
-      AGENT,
-      { householdId: args.householdId, via: VOICE, label: args.label ?? undefined },
+      VOICE_AGENT,
+      { householdId: args.householdId, via: "voice", label: args.label ?? undefined },
       clock(args.now),
     );
   },
 });
 
 /**
- * purpose: Create a reminder the senior asked for.
+ * purpose: "Not yet": snooze the due task's prompts 15 minutes (lib/voiceTasks).
+ * @param householdId: (Id<"households">) Household.
+ * @param label: (string | null, optional) Words from the task's display label.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (SnoozeResult) The outcome and the task it was about.
+ * @raises not_found when the household does not exist.
+ */
+export const snoozeDueTask = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    label: nullable(v.string()),
+    now: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<SnoozeResult> => {
+    await loadHousehold(ctx, args.householdId);
+    return await snoozeDueTaskCore(ctx, args.householdId, args.label, clock(args.now));
+  },
+});
+
+/**
+ * purpose: Log an as-needed dose the senior says they took (lib/voiceDoses): label facts
+ *          afterwards, the caregiver flagged past a limit and told of repeated use; nothing
+ *          logged without a matching rule, when a due scheduled medication better explains an
+ *          unnamed "I took my pills", or when the report may repeat a dose already written down
+ *          (reported in the last 30 minutes or claiming a time that close) unless `another`.
+ * @param householdId: (Id<"households">) Household.
+ * @param label: (string | null, optional) Words naming the medication.
+ * @param minutesAgo: (number | null, optional) Whole minutes since the dose, 0..720; default 0.
+ * @param another: (boolean | null, optional) She said this is another dose, not the one
+ *        already written down: log it regardless of the repeat guard. Default false.
+ * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (LogDoseResult) logged, already_logged (repeatCall for the same call made again),
+ *          or no_rule / not_found / ambiguous / scheduled_due with the labels to choose from.
+ * @raises invalid for a bad minutesAgo; not_found for a conversation of another household.
+ */
+export const logAsNeededDose = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    label: nullable(v.string()),
+    minutesAgo: nullable(v.number()),
+    another: nullable(v.boolean()),
+    conversationId: nullable(v.id("conversations")),
+    now: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<LogDoseResult> => {
+    const now = clock(args.now);
+    const household = await loadHousehold(ctx, args.householdId);
+    return await logAsNeededDoseCore(ctx, {
+      household,
+      words: searchWords(args.label),
+      minutesAgo: args.minutesAgo ?? 0,
+      another: args.another ?? false,
+      dueScheduled: () => dueScheduledMedication(ctx, household._id, now),
+      conversationId: await householdConversation(ctx, household._id, args.conversationId),
+      now,
+    });
+  },
+});
+
+/**
+ * purpose: "No, I didn't take it": take back a dose she reported by voice in this same
+ *          conversation within the last 30 minutes (lib/voiceDoses): the row is marked undone,
+ *          audited, and the caregivers its limit flag reached get a correction. Without a
+ *          conversation, or for any other dose, nothing changes.
+ * @param householdId: (Id<"households">) Household.
+ * @param label: (string | null, optional) Words naming the medication.
+ * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (UndoDoseResult) removed (with who got the correction), or nothing_to_undo /
+ *          no_rule / not_found / ambiguous.
+ * @raises not_found for a conversation of another household.
+ */
+export const undoLastDose = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    label: nullable(v.string()),
+    conversationId: nullable(v.id("conversations")),
+    now: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<UndoDoseResult> => {
+    const household = await loadHousehold(ctx, args.householdId);
+    return await undoLastDoseCore(ctx, {
+      household,
+      words: searchWords(args.label),
+      conversationId: await householdConversation(ctx, household._id, args.conversationId),
+      now: clock(args.now),
+    });
+  },
+});
+
+/**
+ * purpose: Create a reminder the senior asked for (instances.createSeniorReminderCore).
  * @param householdId: (Id<"households">) Household.
  * @param title: (string) What to be reminded of.
  * @param time: (string) Local "HH:MM".
@@ -415,14 +310,14 @@ export const createSeniorReminder = agentMutation({
     householdId: v.id("households"),
     title: v.string(),
     time: v.string(),
-    onDate: v.optional(v.union(v.string(), v.null())),
-    days: v.optional(v.union(v.array(v.number()), v.null())),
+    onDate: nullable(v.string()),
+    days: nullable(v.array(v.number())),
     now: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<{ taskId: Id<"tasks"> }> => {
     const task = await createSeniorReminderCore(
       ctx,
-      AGENT,
+      VOICE_AGENT,
       {
         householdId: args.householdId,
         title: args.title,
@@ -445,12 +340,172 @@ export const createSeniorReminder = agentMutation({
 export const cancelSeniorReminder = agentMutation({
   args: { householdId: v.id("households"), query: v.string() },
   handler: async (ctx, args): Promise<CancelReminderResult> => {
-    return await cancelSeniorReminderCore(ctx, AGENT, args, Date.now());
+    return await cancelSeniorReminderCore(ctx, VOICE_AGENT, args, Date.now());
   },
 });
 
 /**
- * purpose: Open a conversation row when a voice session starts.
+ * purpose: Remember something the senior said, unverified (lib/seniorMemory): never edits or
+ *          verifies an existing fact, skips a duplicate, trims the oldest unverified senior
+ *          facts beyond 200.
+ * @param householdId: (Id<"households">) Household.
+ * @param fact: (string) The fact; blank is rejected.
+ * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
+ * @return: ({status}) saved, or already_known (both success).
+ * @raises invalid for a blank fact; not_found for a conversation of another household.
+ */
+export const rememberFact = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    fact: v.string(),
+    conversationId: nullable(v.id("conversations")),
+  },
+  handler: async (ctx, args): Promise<{ status: "saved" | "already_known" }> => {
+    const household = await loadHousehold(ctx, args.householdId);
+    return await rememberFactCore(ctx, {
+      householdId: household._id,
+      fact: args.fact,
+      conversationId: await householdConversation(ctx, household._id, args.conversationId),
+    });
+  },
+});
+
+/**
+ * purpose: Ask the on-call caregiver (or every reachable caregiver; for distress, all of them)
+ *          to look in (lib/voiceRouting.flagCaregiverCore). Only an identical event is a
+ *          repeat. medication_limit and repeated_use are not accepted here: log_dose raises
+ *          them, keyed on the medication.
+ * @param householdId: (Id<"households">) Household.
+ * @param reason: (string) symptom, money_request, scam, distress (a fall included) or
+ *        help_requested.
+ * @param detail: (string) A short description for the caregiver (two sentences reach them).
+ * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (FlagResult) flagged, already_flagged, unreachable or rate_limited, with the
+ *          caregivers named as told.
+ * @raises not_found for an unknown household or a conversation of another household.
+ */
+export const flagCaregiver = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    reason: modelFlagReason,
+    detail: v.string(),
+    conversationId: nullable(v.id("conversations")),
+    now: v.optional(v.number()),
+  },
+  handler: async (ctx, args): Promise<FlagResult> => {
+    const household = await loadHousehold(ctx, args.householdId);
+    return await flagCaregiverCore(ctx, {
+      household,
+      reason: args.reason,
+      detail: args.detail,
+      conversationId: await householdConversation(ctx, household._id, args.conversationId),
+      now: clock(args.now),
+    });
+  },
+});
+
+/**
+ * purpose: Send a message the senior dictated to family (lib/voiceRouting): a familyMessages
+ *          row from the senior, the same rows profile.listMessages shows, plus a text to the
+ *          named reachable caregiver or every reachable one.
+ * @param householdId: (Id<"households">) Household.
+ * @param to: (string | null, optional) The name the senior used; blank or null for the family.
+ * @param body: (string) The message.
+ * @param conversationId: (Id<"conversations"> | null, optional) The conversation.
+ * @return: (FamilyMessageResult) sent, sent_to_family, unreachable, already_sent (with the
+ *          earlier message's outcome) or rate_limited, with the recipients' names.
+ * @raises invalid for a blank message; not_found for an unknown household or a conversation
+ *         of another household.
+ */
+export const sendFamilyMessage = agentMutation({
+  args: {
+    householdId: v.id("households"),
+    to: nullable(v.string()),
+    body: v.string(),
+    conversationId: nullable(v.id("conversations")),
+  },
+  handler: async (ctx, args): Promise<FamilyMessageResult> => {
+    const household = await loadHousehold(ctx, args.householdId);
+    return await sendFamilyMessageCore(ctx, {
+      household,
+      to: args.to ?? "",
+      body: args.body,
+      conversationId: await householdConversation(ctx, household._id, args.conversationId),
+      now: Date.now(),
+    });
+  },
+});
+
+/**
+ * purpose: The newest caregiver message for reading aloud ("What did Sarah send?"); marks it
+ *          seen (seenAt, which profile.listMessages shows) the first time. Loading the
+ *          context never marks it. The returned `seen` is whether it had been seen before.
+ * @param householdId: (Id<"households">) Household.
+ * @param now: (number, optional) Epoch ms; backend clock.
+ * @return: (MessageView | null) The message, or null when family has sent none.
+ * @raises not_found when the household does not exist.
+ */
+export const readLatestMessage = agentMutation({
+  args: { householdId: v.id("households"), now: v.optional(v.number()) },
+  handler: async (ctx, args): Promise<MessageView | null> => {
+    await loadHousehold(ctx, args.householdId);
+    const latest = await latestCaregiverMessage(ctx, args.householdId);
+    if (!latest) return null;
+    if (latest.row.seenAt === undefined) {
+      await ctx.db.patch(latest.row._id, { seenAt: clock(args.now) });
+    }
+    return latest.view;
+  },
+});
+
+/**
+ * purpose: "Add milk and eggs to the list" (lib/householdList.addSpokenItemsCore).
+ * @param householdId: (Id<"households">) Household.
+ * @param items: (string[]) The items as said.
+ * @return: (SpokenItem[]) Per item: added, already_on_list, list_full or too_many.
+ * @raises not_found when the household does not exist.
+ */
+export const addListItems = agentMutation({
+  args: { householdId: v.id("households"), items: v.array(v.string()) },
+  handler: async (ctx, args): Promise<SpokenItem[]> => {
+    await loadHousehold(ctx, args.householdId);
+    return await addSpokenItemsCore(ctx, VOICE_AGENT, args.householdId, args.items, Date.now());
+  },
+});
+
+/**
+ * purpose: "What's on my list?": the open items in the order added.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (string[]) The items' text (at most 50).
+ * @raises not_found when the household does not exist.
+ */
+export const listItems = agentQuery({
+  args: { householdId: v.id("households") },
+  handler: async (ctx, args): Promise<string[]> => {
+    await loadHousehold(ctx, args.householdId);
+    return (await openListItems(ctx, args.householdId)).map((i) => i.text);
+  },
+});
+
+/**
+ * purpose: "I bought the milk": tick the open item the words mean
+ *          (lib/householdList.tickItemByWordsCore).
+ * @param householdId: (Id<"households">) Household.
+ * @param item: (string) The words naming the item.
+ * @return: (TickItemResult) ticked with the item's text, or not_found / ambiguous.
+ * @raises not_found when the household does not exist.
+ */
+export const tickListItem = agentMutation({
+  args: { householdId: v.id("households"), item: v.string() },
+  handler: async (ctx, args): Promise<TickItemResult> => {
+    await loadHousehold(ctx, args.householdId);
+    return await tickItemByWordsCore(ctx, VOICE_AGENT, args.householdId, args.item, Date.now());
+  },
+});
+
+/**
+ * purpose: Open a conversation row when a voice session starts (lib/conversationLog).
  * @param householdId: (Id<"households">) Household.
  * @param deviceId: (Id<"devices"> | null, optional) The device; must belong to the household.
  * @param trigger: (string) What started the session.
@@ -463,40 +518,29 @@ export const cancelSeniorReminder = agentMutation({
 export const startConversation = agentMutation({
   args: {
     householdId: v.id("households"),
-    deviceId: v.optional(v.union(v.id("devices"), v.null())),
+    deviceId: nullable(v.id("devices")),
     trigger: v.string(),
-    taskInstanceId: v.optional(v.union(v.id("taskInstances"), v.null())),
+    taskInstanceId: nullable(v.id("taskInstances")),
     now: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<Id<"conversations">> => {
     await loadHousehold(ctx, args.householdId);
-    if (args.deviceId) {
-      const device = await ctx.db.get(args.deviceId);
-      if (!device || device.householdId !== args.householdId) {
-        throw appError("not_found", "Device not found");
-      }
-    }
-    if (args.taskInstanceId) {
-      const instance = await ctx.db.get(args.taskInstanceId);
-      if (!instance || instance.householdId !== args.householdId) {
-        throw appError("not_found", "Task instance not found");
-      }
-    }
-    return await ctx.db.insert("conversations", {
+    return await startConversationCore(ctx, {
       householdId: args.householdId,
       deviceId: args.deviceId ?? undefined,
       trigger: args.trigger,
       taskInstanceId: args.taskInstanceId ?? undefined,
-      startedAt: clock(args.now),
+      now: clock(args.now),
     });
   },
 });
 
 /**
- * purpose: Append one transcript turn to a conversation.
+ * purpose: Append one transcript turn to a conversation; content longer than
+ *          MAX_TURN_CONTENT_LENGTH (20,000) is cut, not rejected.
  * @param conversationId: (Id<"conversations">) The conversation.
  * @param role: ("user" | "assistant") Who spoke.
- * @param content: (string) What was said; truncated to MAX_TURN_CONTENT_LENGTH characters.
+ * @param content: (string) What was said.
  * @return: (null)
  * @raises not_found when the conversation does not exist.
  */
@@ -507,14 +551,7 @@ export const logTurn = agentMutation({
     content: v.string(),
   },
   handler: async (ctx, args): Promise<null> => {
-    if (!(await ctx.db.get(args.conversationId))) {
-      throw appError("not_found", "Conversation not found");
-    }
-    await ctx.db.insert("conversationTurns", {
-      conversationId: args.conversationId,
-      role: args.role,
-      content: args.content.slice(0, MAX_TURN_CONTENT_LENGTH),
-    });
+    await logTurnCore(ctx, args);
     return null;
   },
 });
@@ -530,18 +567,41 @@ export const logTurn = agentMutation({
 export const finishConversation = agentMutation({
   args: {
     conversationId: v.id("conversations"),
-    summary: v.optional(v.union(v.string(), v.null())),
+    summary: nullable(v.string()),
     now: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<null> => {
-    if (!(await ctx.db.get(args.conversationId))) {
-      throw appError("not_found", "Conversation not found");
-    }
-    const summary = args.summary?.trim();
-    await ctx.db.patch(args.conversationId, {
-      endedAt: clock(args.now),
-      ...(summary ? { summary } : {}),
+    await finishConversationCore(ctx, {
+      conversationId: args.conversationId,
+      summary: args.summary,
+      now: clock(args.now),
     });
     return null;
+  },
+});
+
+/**
+ * purpose: Store the questions extracted from a finished conversation, for the digest
+ *          (lib/conversationLog.logQuestionsCore; idempotent per conversation).
+ * @param conversationId: (Id<"conversations">) The conversation.
+ * @param questions: (Array<{question, topic, outcome, toolsUsed, askedAt?}>) At most 50.
+ * @return: (number) Rows inserted (0 when the conversation's questions were already logged).
+ * @raises not_found when the conversation does not exist; invalid for more than 50 questions.
+ */
+export const logQuestions = agentMutation({
+  args: {
+    conversationId: v.id("conversations"),
+    questions: v.array(
+      v.object({
+        question: v.string(),
+        topic: v.string(),
+        outcome: questionOutcome,
+        toolsUsed: v.array(v.string()),
+        askedAt: nullable(v.number()),
+      }),
+    ),
+  },
+  handler: async (ctx, args): Promise<number> => {
+    return await logQuestionsCore(ctx, args.conversationId, args.questions);
   },
 });

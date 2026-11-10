@@ -11,7 +11,7 @@
 // quiet day and a day with only fixed lines without a model call; recipients limited to
 // verified phones; no duplicate on a repeated run); reply validation, sanitizing of untrusted
 // text and the template as pure functions; the completion handler; and one end-to-end run
-// through the workpool.
+// through the workpool. Questions are given by topic unless transcripts are shared.
 //
 // Also: a late-synced confirm reads "(phone app, sent at 11:00 AM)".
 //
@@ -409,11 +409,25 @@ describe("facts", () => {
       "Caregiver alerts sent for: Evening pills (claimed by Pat).",
       "Confirmed: Morning pills at 8:05 AM (voice); Lunch pills at 12:10 PM (marked done by Pat).",
       "As-needed doses: Tylenol at 2:00 PM.",
-      "5 questions asked. Unanswered: Where is my bank card. Passed to family: Can I stop my pills.",
+      // Transcripts are not shared, so questions are reported by topic.
+      "5 questions asked. Unanswered: bank card. Passed to family: doctor. Repeated: sarah visit (3 times).",
     ]);
     expect(input?.quiet).toBe(false);
     expect(input?.factsMessage).toContain("Repeated topic: sarah visit, 3 times");
     expect(input?.factsMessage).not.toMatch(/Walk|Evening pills/);
+    expect(input?.factsMessage).not.toMatch(/Where is my bank card|Can I stop my pills/);
+  });
+
+  test("questions are in the senior's words only when transcripts are shared", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => await ctx.db.patch(f.householdId, { shareTranscripts: true }));
+    const at = Date.parse("2026-11-02T20:00:00Z");
+    await addQuestion(f, at, "bank card", "unsure", "Where is my bank card?");
+    await addQuestion(f, at + 1, "doctor", "routed", "Can I stop my pills?");
+    const input = await load(f, await pendingDigest(f));
+    expect(input?.template).toContain(
+      "Unanswered: Where is my bank card. Passed to family: Can I stop my pills.",
+    );
   });
 
   test("a deleted task's instance is left out", async () => {

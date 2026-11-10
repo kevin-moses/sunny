@@ -15,11 +15,13 @@
 // texted (state sent, channel sms) to the member in the last 24 hours, across the households
 // the number belongs to. If its task is open it is claimed through the same claimInstance the
 // app uses, with an extra audit row "claim_via sms"; otherwise the reply says who is on it or
-// that it is closed. Older alerts are never used instead. Viewers cannot claim.
+// that it is closed. Older alerts are never used instead. Viewers cannot claim. When the newest
+// text was a voice agent flag or a family message (newer than any alert), the "1" answers that
+// text: nothing is claimed and the reply says so (MESSAGE_REPLY).
 //
 // Env: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, TWILIO_WEBHOOK_URL.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -29,6 +31,8 @@ import type { MutationCtx } from "./_generated/server";
 import { findMember, verifiedPhone } from "./lib/access";
 import type { CaregiverActor } from "./lib/access";
 import { audit } from "./lib/audit";
+import { SMS_KIND_POLICY } from "./lib/delivery";
+import type { NotificationKind } from "./lib/validators";
 import { claimInstance } from "./instances";
 import { isE164, twiml, validateTwilioSignature, webhookUrl } from "./lib/twilio";
 
@@ -40,6 +44,8 @@ const SWEEP_BATCH = 200;
 /** Reply to "1" when nothing is open for the member. */
 export const NOTHING_OPEN_REPLY =
   "Nothing needs claiming right now. When Sunny alerts you about a task, reply 1 to say you're on it.";
+/** Reply to "1" when the newest text was a flag or a family message, not a task alert. */
+export const MESSAGE_REPLY = "Thanks. Nothing needs claiming for that message.";
 /** Reply to a message that is not a command. */
 export const HELP_REPLY =
   "Reply 1 when you're on it for a task Sunny alerted you about. Reply STOP to opt out.";
@@ -127,6 +133,48 @@ async function newestSentAlert(
 }
 
 /**
+ * Texts a caregiver may answer with "1" that are not task alerts (lib/delivery SMS_KIND_POLICY
+ * hidesOlderAlert: the voice agent's flags and the senior's family messages). A "1" after one of
+ * them claims nothing.
+ */
+const NOT_ALERT_KINDS = (Object.keys(SMS_KIND_POLICY) as NotificationKind[]).filter(
+  (kind) => SMS_KIND_POLICY[kind].hidesOlderAlert,
+);
+
+/**
+ * purpose: When the member was last texted a voice agent flag or a family message by SMS in the
+ *          last 24 hours, so a "1" after it answers that text, not an older alert.
+ * @param ctx: (MutationCtx) Context.
+ * @param member: (Doc<"householdMembers">) The member.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<number | null>) The newest such text's creation time, or null.
+ */
+async function newestMessageTextAt(
+  ctx: MutationCtx,
+  member: Doc<"householdMembers">,
+  now: number,
+): Promise<number | null> {
+  let newest: number | null = null;
+  for (const kind of NOT_ALERT_KINDS) {
+    const rows = await ctx.db
+      .query("notificationOutbox")
+      .withIndex("by_recipient_kind", (q) =>
+        q
+          .eq("recipientUserId", member.userId)
+          .eq("kind", kind)
+          .gte("_creationTime", now - ALERT_LOOKBACK_MS),
+      )
+      .order("desc")
+      .take(ALERTS_PER_MEMBER);
+    const sent = rows.find(
+      (r) => r.householdId === member.householdId && r.state === "sent" && r.channel === "sms",
+    );
+    if (sent && (newest === null || sent._creationTime > newest)) newest = sent._creationTime;
+  }
+  return newest;
+}
+
+/**
  * purpose: The sentence naming a task and the senior, for replies.
  * @param ctx: (MutationCtx) Context.
  * @param instance: (Doc<"taskInstances">) The instance.
@@ -141,7 +189,8 @@ async function describeTask(ctx: MutationCtx, instance: Doc<"taskInstances">): P
 /**
  * purpose: Answer "1" for the members behind a phone number: act on the single newest alert
  *          texted to any of them. Open and unclaimed: claim it. Otherwise say who is on it, or
- *          that it is closed. Never falls back to an older alert.
+ *          that it is closed. Never falls back to an older alert. When a flag or family
+ *          message was texted after that alert (or with no alert), nothing is claimed.
  * @param ctx: (MutationCtx) Context.
  * @param editors: (Doc<"householdMembers">[]) Verified members with this number who may claim.
  * @param now: (number) Epoch ms.
@@ -153,12 +202,16 @@ async function claimForMembers(
   now: number,
 ): Promise<string> {
   const alerts: SentAlert[] = [];
+  let messageAt: number | null = null;
   for (const member of editors) {
     const alert = await newestSentAlert(ctx, member, now);
     if (alert) alerts.push(alert);
+    const at = await newestMessageTextAt(ctx, member, now);
+    if (at !== null && (messageAt === null || at > messageAt)) messageAt = at;
   }
   alerts.sort((a, b) => b.alertAt - a.alertAt);
   const newest = alerts[0];
+  if (messageAt !== null && (!newest || messageAt > newest.alertAt)) return MESSAGE_REPLY;
   if (!newest) return NOTHING_OPEN_REPLY;
   const { member, instance } = newest;
   const task = await describeTask(ctx, instance);

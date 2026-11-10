@@ -6,14 +6,18 @@
 // member who can claim ends with the reply hint). Membership, device and content are re-checked
 // at send time; a row with no reachable address or stale content is skipped, with the reason in
 // `detail`. A row a run started less than 5 minutes ago is leased: the sweeper leaves it alone.
+// SMS_KIND_POLICY says, per kind, whether a timed-out text is retried (caregiver_alert and
+// agent_flag) and whether a newer text of that kind means a "1" reply answers it rather than an
+// older task alert (agent_flag and family_message; sms.ts).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-09
 
 import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { verifiedPhone } from "./access";
+import type { NotificationKind } from "./validators";
 
 /** Deliveries that may run at the same time across all households. */
 const MAX_PARALLEL_DELIVERIES = 10;
@@ -39,6 +43,23 @@ export const SWEEP_BATCH = 100;
 
 /** Delivery runs after which a row is given up on, so the sweeper never loops on one. */
 export const MAX_ATTEMPTS = 12;
+
+/**
+ * How the SMS path treats each kind of text. retryOnTimeout: a text that timed out may still
+ * have been delivered, so it is retried only when a possible repeat is worth it (an alert).
+ * hidesOlderAlert: a caregiver's "1" after such a text answers it, so it claims nothing.
+ */
+export const SMS_KIND_POLICY: Record<
+  NotificationKind,
+  { retryOnTimeout: boolean; hidesOlderAlert: boolean }
+> = {
+  senior_prompt: { retryOnTimeout: false, hidesOlderAlert: false },
+  caregiver_alert: { retryOnTimeout: true, hidesOlderAlert: false },
+  event_notice: { retryOnTimeout: false, hidesOlderAlert: false },
+  digest: { retryOnTimeout: false, hidesOlderAlert: false },
+  agent_flag: { retryOnTimeout: true, hidesOlderAlert: true },
+  family_message: { retryOnTimeout: false, hidesOlderAlert: true },
+};
 
 /** The longest SMS body sent (Twilio accepts 1600 characters). */
 const SMS_MAX_CHARS = 1_500;
@@ -190,12 +211,11 @@ async function memberRoute(
   if (!member) return { kind: "skip", reason: "recipient_left" };
   const to = verifiedPhone(member);
   if (to === undefined) return { kind: "skip", reason: "no_verified_phone" };
-  // A timed-out text may still have been delivered; only an alert is worth a possible repeat.
   return {
     kind: "sms",
     to,
     body: smsText(row, member.role !== "viewer"),
-    retryOnTimeout: row.kind === "caregiver_alert",
+    retryOnTimeout: SMS_KIND_POLICY[row.kind].retryOnTimeout,
   };
 }
 
