@@ -14,10 +14,14 @@
 #
 # Wording rules: results are facts, never advice (a medication result says what was taken and
 # what the label says, "in 24 hours", with days used in the last week); a result never names a
-# caregiver no text was queued for (_told: unreachable and rate_limited say so plainly, and
-# distress adds 911 and 988); a dose already written down is stated neutrally; an anytime task
-# (scheduledTime ANYTIME) is "<label>, anytime today", never "due now" or "not due until".
-# one_line and quoted keep family-written text to one line (a message body also in quotes).
+# caregiver no text was queued for (_told: "already told" only for the same event, and when
+# nobody could be reached, "family could not be reached from here" with no reason); a distress
+# flag always adds the emergency lines (config.py, US numbers); a report that may repeat a dose
+# already written down asks whether it is the same one or another (log_dose another=true logs
+# it); a dose can only be taken back in the conversation that logged it, and otherwise she is
+# told earlier records cannot be changed here; an anytime task (scheduledTime ANYTIME) is
+# "<label>, anytime today", never "due now" or "not due until". one_line and quoted keep
+# family-written text to one line (a message body also in quotes).
 #
 # Last modified: 2026-11-09
 
@@ -25,9 +29,17 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from config import CRISIS_LINE, EMERGENCY_NUMBER
 from convex_client import ConvexClient
 
 _DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+# What she is told when no caregiver could be texted: the fact, never the reason.
+UNREACHABLE = "Family could not be reached from here; say exactly that, plainly."
+# Added to every distress flag result, whatever happened to the flag.
+EMERGENCY_LINES = (
+    f" If they are hurt, fell, or are in danger, tell them to call {EMERGENCY_NUMBER}; if they "
+    f"talk about hurting themselves, give {EMERGENCY_NUMBER} and {CRISIS_LINE}, the crisis line."
+)
 _DONE_STATES = {"confirmed", "resolved"}
 # scheduledTime of an anytime task (no time of day). Mirrors ANYTIME in
 # sunny_backend/convex/lib/anytime.ts; keep the two in sync.
@@ -484,17 +496,20 @@ async def db_log_dose(
     medication: str,
     minutes_ago: int,
     conversation_id: str | None,
+    another: bool = False,
 ) -> str:
     """
     purpose: Log an as-needed dose the senior says they took through agent:logAsNeededDose,
              which also flags the caregiver when the dose goes past a label limit. Nothing is
-             logged when no as-needed rule matches.
+             logged when no as-needed rule matches, or when the report may repeat a dose
+             already written down (then the model asks whether it is the same one or another).
     @param client: (ConvexClient) Convex client.
     @param household_id: (str) Household id.
     @param tz: (str) IANA timezone of the household.
     @param medication: (str) Words naming the medication, or "" when only one is on file.
     @param minutes_ago: (int) Whole minutes since they took it (0 = just now).
     @param conversation_id: (str | None) The conversation, if one was opened.
+    @param another: (bool) They said it is another dose, not the one already written down.
     @return: (str) Voice-friendly facts after the dose, or why nothing was logged.
     """
     r = (
@@ -504,6 +519,7 @@ async def db_log_dose(
                 "householdId": household_id,
                 "label": medication or None,
                 "minutesAgo": max(0, int(minutes_ago)),
+                "another": another,
                 "conversationId": conversation_id or None,
             },
         )
@@ -514,7 +530,8 @@ async def db_log_dose(
     if status == "no_rule":
         return (
             "Nothing was logged: family has not set up an as-needed medication with label "
-            "limits. Say what was taken today if asked, and offer to let family know."
+            "limits. Say what was taken today if asked, and offer to let family know or "
+            "suggest asking the pharmacy."
         )
     if status == "not_found":
         return (
@@ -531,10 +548,16 @@ async def db_log_dose(
     label = one_line(med.get("displayLabel"))
     now_ms = now_epoch_ms()
     if status == "already_logged":
+        if r.get("repeatCall"):
+            return (
+                f"Logged {label} at {local_clock(r['takenAt'], tz)}. "
+                f"{describe_as_needed(med, tz, now_ms)}"
+            )
         return (
-            f"Nothing new was logged: one {label} is already written down at "
-            f"{local_clock(r['takenAt'], tz)}. Say that plainly; do not say they already "
-            f"told you. {describe_as_needed(med, tz, now_ms)}"
+            f"Nothing new was logged yet: one {label} is already written down at "
+            f"{local_clock(r['takenAt'], tz)}. Ask plainly whether that is the same one or "
+            "another one, without saying they already told you. If they say another one, call "
+            "log_dose again with another set to true."
         )
     text = (
         f"Logged {label} at {local_clock(r['takenAt'], tz)}. "
@@ -544,15 +567,13 @@ async def db_log_dose(
     if r.get("overDailyMax"):
         breaches.append(f"{r.get('count')} in 24 hours, more than the label allows")
     if r.get("tooSoon"):
-        breaches.append("sooner than the label's hours apart")
+        hours = (
+            f"{float(med['minHoursBetween']):g} " if med.get("minHoursBetween") else ""
+        )
+        breaches.append(f"sooner than the label's {hours}hours apart")
     if breaches:
         text += f" This dose is {' and '.join(breaches)}. " + _told(
             r.get("flagStatus"), r.get("flagged") or []
-        )
-    if r.get("repeatedUseFlagged"):
-        text += (
-            f" {join_names(r['repeatedUseFlagged'])} was also told it has been used on "
-            f"{med.get('daysUsedLast7')} of the last 7 days."
         )
     return text
 
@@ -565,15 +586,12 @@ def _told(status: str | None, names: list[str]) -> str:
     @return: (str) One sentence for the model to pass on.
     """
     if status == "already_flagged" and names:
-        return f"{join_names(names)} was already told a few minutes ago."
+        return f"{join_names(names)} was already told about this a few minutes ago."
     if status == "flagged" and names:
         return f"{join_names(names)} has been told."
     if status == "rate_limited":
         return "No more messages can be sent to family right now; say so plainly."
-    return (
-        "Family could not be reached from here (nobody has a phone set up for Sunny); say "
-        "so plainly."
-    )
+    return UNREACHABLE
 
 
 async def db_undo_last_dose(
@@ -584,9 +602,9 @@ async def db_undo_last_dose(
     conversation_id: str | None,
 ) -> str:
     """
-    purpose: "No, I didn't take it": remove the most recent as-needed dose they reported by
-             voice today, through agent:undoLastDose. A message already sent to family stays
-             sent.
+    purpose: "No, I didn't take it": take back a dose they reported in this conversation in
+             the last 30 minutes, through agent:undoLastDose; family is told if that dose had
+             been reported to them. Any other dose cannot be changed here.
     @param client: (ConvexClient) Convex client.
     @param household_id: (str) Household id.
     @param tz: (str) IANA timezone of the household.
@@ -607,13 +625,20 @@ async def db_undo_last_dose(
     )
     status = r.get("status")
     if status == "removed":
-        return (
+        text = (
             f"Removed the {one_line(r.get('displayLabel'))} written down at "
             f"{local_clock(r['takenAt'], tz)}."
         )
+        if r.get("corrected"):
+            text += f" {join_names(r['corrected'])} has been told it was a mistake."
+        return text
     if status == "ambiguous":
         return f"Ask which one to take back: {', '.join(r.get('options') or [])}."
-    return "There is no dose they reported today to take back."
+    return (
+        "Nothing was changed: only a dose written down in this conversation can be taken "
+        "back. Say plainly that you cannot change earlier records, and offer to let family "
+        "know."
+    )
 
 
 async def db_remember_fact(
@@ -660,8 +685,8 @@ async def db_flag_caregiver(
     @param reason: (str) symptom, money_request, scam, distress or help_requested.
     @param detail: (str) One or two sentences for the caregiver.
     @param conversation_id: (str | None) The conversation, if one was opened.
-    @return: (str) Who was told, or that family could not be reached (with the emergency
-             lines for distress).
+    @return: (str) Who was told, or that family could not be reached; a distress flag always
+             adds the emergency lines.
     """
     r = (
         await client.mutation(
@@ -676,11 +701,8 @@ async def db_flag_caregiver(
         or {}
     )
     text = _told(r.get("status"), r.get("notified") or [])
-    if reason == "distress" and r.get("status") not in ("flagged", "already_flagged"):
-        text += (
-            " If they are in danger or hurt, tell them to call 911; if they talk about "
-            "hurting themselves, 988 too."
-        )
+    if reason == "distress":
+        text += EMERGENCY_LINES
     return text
 
 
@@ -715,16 +737,21 @@ async def db_send_family_message(
     )
     names = join_names(r.get("recipients") or [])
     status = r.get("status")
+    if status == "already_sent":
+        if r.get("earlierStatus") == "unreachable":
+            return (
+                "That same message was saved a moment ago, but family could not be reached "
+                "from here; it was not sent again. Say exactly that, plainly."
+            )
+        return f"That same message went to {names} a moment ago; it was not sent again."
     if status == "sent_to_family":
         return f"{to} cannot get messages from Sunny, so the message went to {names}."
-    if status == "already_sent":
-        return "That same message was sent a moment ago; it was not sent again."
     if status == "rate_limited":
         return "No more messages can be sent right now; say so plainly."
     if status == "unreachable":
         return (
-            "The message is saved, but family could not be reached from here (nobody has a "
-            "phone set up for Sunny); say so plainly."
+            "The message is saved, but family could not be reached from here; say exactly "
+            "that, plainly."
         )
     return f"Sent to {names}."
 

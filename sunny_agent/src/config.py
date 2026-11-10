@@ -11,6 +11,9 @@
 # Cartesia plugin applies a float speed only on sonic-3, 0.6 to 2.0, 1.0 normal),
 # INACTIVITY_TIMEOUT_S (the worker ends a session nobody speaks in, without relying on the
 # display), and the post-call extraction's timeout and retries.
+# Emergency numbers (2026-11-09): Sunny assumes a household in the United States for now, so the
+# numbers the agent gives (EMERGENCY_NUMBER 911, CRISIS_LINE 988, POISON_CONTROL) live here, in
+# one place, for prompts.py and tools.py.
 #
 # Last modified: 2026-11-09
 
@@ -37,6 +40,11 @@ SUMMARY_ATTEMPTS = 2  # one retry
 # A session with no speech from either side for this long is ended by the worker.
 INACTIVITY_TIMEOUT_S: float = 60.0
 INACTIVITY_CHECK_S: float = 5.0
+
+# Emergency numbers, United States only for now (see the header).
+EMERGENCY_NUMBER = "911"
+CRISIS_LINE = "988"
+POISON_CONTROL = "1-800-222-1222"
 
 # Echo detection window — how long to keep agent speech text for echo comparison.
 # Must exceed max TTS audio duration (~10-15s).

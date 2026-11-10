@@ -13,7 +13,7 @@
 # ("not yet", 15 minutes), medication_status, log_dose and undo_last_dose (label facts; a
 # dose past a limit flags the caregiver), create_reminder and cancel_reminder
 # (senior-created reminders only), remember_fact (unverified senior memory), flag_caregiver
-# (medication_limit is raised by log_dose, never by the model), send_family_message,
+# (a fall is distress; medication_limit and repeated_use come from log_dose), send_family_message,
 # read_latest_message, and the household list: add_to_list, read_list, take_off_list
 # (list_tools.py). There are no phone-RPC tools: the display has no contacts or SMS.
 #
@@ -21,8 +21,10 @@
 # as "um") but lets short words like "Hi" through; progressive error recovery speaks
 # escalating messages on LLM/STT/TTS failures; the participant disconnect handler finalizes
 # the conversation; watch_inactivity ends a session with no speech for INACTIVITY_TIMEOUT_S,
-# without relying on the display. A failing tool returns a short plain sentence for the
-# model, never a raw error. TTS speaks at TTS_SPEED on TTS_MODEL (config.py).
+# without relying on the display. Activity is stamped on every user and agent state change
+# (ActivityClock), so speech between two polls still counts; the poll only checks the
+# deadline. A failing tool returns a short plain sentence for the model, never a raw error.
+# TTS speaks at TTS_SPEED on TTS_MODEL (config.py).
 #
 # Opening: a Talk press means the senior has a question, so a "talk" session opens silently
 # and listens (the display shows that it is listening). A spoken cue was rejected because a
@@ -32,8 +34,9 @@
 # sentence the display's due cue speaks (_task_prompt). Nothing else is spoken unprompted.
 # What the display shows (it treats an agent line after a user line as the answer, and an
 # agent line before any user line as an opening that never lingers): the task prompt is an
-# opening, shown while spoken; a bare "Hi" gets "Yes?" (prompts.py), which the display shows
-# as the answer to "Hi" until the senior asks her question, a harmless one-word line.
+# opening, shown while spoken; a bare "Hi" gets "I'm listening." (prompts.py), which the
+# display shows as the answer to "Hi" until the senior asks her question. It is two words and
+# holds no "yes" or "ok", so an echo of it can never read as confirming a task.
 #
 # Session context: resolve_session() reads household_id, trigger, task_instance_id and
 # device_id from participant metadata. Session context is also persisted to the
@@ -42,7 +45,9 @@
 # Echo detection: _is_echo() and _normalize_for_echo() detect when STT transcribes the
 # agent's own TTS output back as user speech (AEC calibration issue on first call).
 # _on_item_added buffers normalized assistant text; _on_user_input_transcribed checks
-# user transcripts against the buffer and suppresses matches via session.interrupt().
+# user transcripts against the buffer and suppresses matches via session.interrupt(). A
+# transcript of one or two words is echo when it is the tail of the agent's last utterance
+# within the window (a leaked "yes" after "Yes?"); longer ones by word overlap.
 #
 # Memory-care pivot: screen share, vision, guided iPhone workflows, and the iOS EventKit
 # reminder tool were removed (out of scope for the memory-care POC). Sessions are scoped
@@ -131,7 +136,8 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env")
 
-# medication_limit is raised by log_dose itself (keyed on the medication), never by the model.
+# medication_limit and repeated_use are raised by log_dose itself (keyed on the medication),
+# never by the model; a fall is distress.
 FlagReason = Literal[
     "symptom",
     "money_request",
@@ -329,18 +335,26 @@ class Assistant(Agent):
 
     @function_tool
     async def log_dose(
-        self, context: RunContext, medication: str = "", minutes_ago: int = 0
+        self,
+        context: RunContext,
+        medication: str = "",
+        minutes_ago: int = 0,
+        another: bool = False,
     ) -> str:
         """
         purpose: Record that the senior took an as-needed medication ("I took a Tylenol").
                  Call it once per dose. Returns the label facts afterwards; family is told
-                 automatically if the dose is past a label limit. Only for as-needed
-                 medications, never for scheduled ones like "my pills" (use confirm_task).
+                 automatically if the dose is past a label limit. If one is already written
+                 down close to it, nothing is logged and the result says to ask whether it is
+                 the same one or another. Only for as-needed medications, never for
+                 scheduled ones like "my pills" (use confirm_task).
 
         Args:
             medication: Words naming the medication, e.g. "pain reliever"; empty if only
                         one as-needed medication is on file
             minutes_ago: How many minutes ago they took it; 0 for just now
+            another: True only when they said this is another dose, not the one already
+                     written down ("No, I took another one")
 
         Returns:
             What was logged and the label facts, or why nothing was logged
@@ -354,15 +368,16 @@ class Assistant(Agent):
                 medication,
                 minutes_ago,
                 self._conversation_id,
+                another,
             ),
         )
 
     @function_tool
     async def undo_last_dose(self, context: RunContext, medication: str = "") -> str:
         """
-        purpose: Take back an as-needed dose they reported today and did not actually take
-                 ("No, I didn't take it after all"). Anything already sent to family stays
-                 sent.
+        purpose: Take back an as-needed dose they reported earlier in this conversation and
+                 did not actually take ("No, I didn't take it after all"). Doses from earlier
+                 conversations cannot be changed here. Family is told if they had been told.
 
         Args:
             medication: Words naming the medication; empty for the last one they reported
@@ -495,13 +510,13 @@ class Assistant(Agent):
         self, context: RunContext, reason: FlagReason, detail: str
     ) -> str:
         """
-        purpose: Let the on-call family caregiver know something needs their attention:
-                 a new or repeated symptom, someone asking for money, anything that sounds
-                 like a scam, signs of distress, or the senior asking for family. Call once
-                 per concern.
+        purpose: Let family know something needs their attention: a new or repeated
+                 symptom, someone asking for money, anything that sounds like a scam, signs
+                 of distress (a fall is distress: it is urgent), or the senior asking for
+                 family. Call once per concern; a new or worse event is a new concern.
 
         Args:
-            reason: The kind of concern
+            reason: The kind of concern; use distress for a fall
             detail: At most two short plain sentences for the caregiver about what happened.
                     Never include card, bank or account numbers.
 
@@ -594,11 +609,12 @@ def _is_echo(
     window: float,
 ) -> bool:
     """
-    purpose: Check whether a user transcript is an echo of recent agent speech.
-             Uses word-overlap ratio rather than exact substring because STT
-             garbles the echo (e.g. "I want to get showing" for "I want to make
-             sure"). A transcript is considered echo if >= 60% of its words appear
-             in any agent text spoken within the detection window.
+    purpose: Check whether a user transcript is an echo of recent agent speech. One or
+             two words are echo when they are the tail of the agent's newest utterance in the
+             window (a leaked "yes" after "Yes?"); otherwise a single word never is. Longer
+             transcripts use the word-overlap ratio rather than exact substring because STT
+             garbles the echo (e.g. "I want to get showing" for "I want to make sure"): echo
+             if >= 60% of its words appear in any agent text spoken within the window.
     @param text: (str) Raw user transcript from STT.
     @param recent_agent_texts: (list[tuple[float, str]]) Buffer of
            (timestamp, normalized_agent_text) pairs.
@@ -608,8 +624,15 @@ def _is_echo(
     """
     normalized = _normalize_for_echo(text)
     words = normalized.split()
+    if not words:
+        return False
+    recent = [(ts, t) for ts, t in recent_agent_texts if now - ts <= window]
+    if len(words) <= 2 and recent:
+        last_words = max(recent)[1].split()
+        if last_words[-len(words) :] == words:
+            return True
     if len(words) < 2:
-        return False  # single words like "yeah" or "ok" are never echo
+        return False  # her own single word ("yeah", "ok") is never echo otherwise
     word_set = set(words)
     for ts, agent_text in recent_agent_texts:
         if now - ts > window:
@@ -812,9 +835,19 @@ async def entrypoint(ctx: JobContext):
 
     history_source = _session_history
 
-    # 7. State variables for error recovery and the task prompt
+    # 7. State variables for error recovery, the task prompt and inactivity
     consecutive_errors = 0
     _opened = False
+    activity = ActivityClock(asyncio.get_running_loop().time)
+
+    @session.on("user_state_changed")
+    def _on_user_state_changed(ev):
+        """
+        purpose: Stamp activity whenever the senior starts or stops speaking.
+        @param ev: Event with .new_state (str).
+        """
+        activity.touch()
+
     _recent_agent_texts: list[tuple[float, str]] = []  # echo detection buffer
 
     # 8. Real-time message logging — fires on every completed conversation turn.
@@ -907,12 +940,14 @@ async def entrypoint(ctx: JobContext):
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev):
         """
-        purpose: Speak the task's fixed spoken prompt the first time the agent reaches idle
-                 state, when the session was started by a still-open task and nobody has
-                 spoken yet. Does nothing for a Talk press.
+        purpose: Stamp activity on every agent state change, and speak the task's fixed
+                 spoken prompt the first time the agent reaches idle state, when the session
+                 was started by a still-open task and nobody has spoken yet. Does nothing more
+                 for a Talk press.
         @param ev: Event with .new_state (str) indicating the agent's new pipeline state.
         """
         nonlocal _opened
+        activity.touch()
         if ev.new_state != "idle" or _opened:
             return
         _opened = True
@@ -1038,6 +1073,7 @@ async def entrypoint(ctx: JobContext):
             lambda: ctx.shutdown(reason="inactive"),
             INACTIVITY_TIMEOUT_S,
             INACTIVITY_CHECK_S,
+            activity,
         )
     )
     ctx.add_shutdown_callback(lambda: _cancel(_inactivity_task))
@@ -1051,31 +1087,56 @@ async def _cancel(task: asyncio.Task) -> None:
     task.cancel()
 
 
+class ActivityClock:
+    """
+    purpose: When either side of a session was last active. The session's state-change
+             handlers stamp it, so activity between two inactivity polls is never missed.
+    """
+
+    def __init__(self, now: Callable[[], float]) -> None:
+        """
+        purpose: Start the clock at the current time.
+        @param now: (Callable[[], float]) The time source (the event loop's time).
+        """
+        self._now = now
+        self.last = now()
+
+    def touch(self) -> None:
+        """
+        purpose: Record activity now.
+        """
+        self.last = self._now()
+
+
 async def watch_inactivity(
     session: object,
     end_session: Callable[[], object],
     timeout_s: float,
     check_s: float,
+    activity: ActivityClock | None = None,
 ) -> None:
     """
     purpose: End the session once neither side has spoken or been working for timeout_s. The
-             session counts as active while the user is speaking or the agent is speaking or
-             thinking; the clock restarts each time it is.
+             activity clock is stamped by the session's state changes; a check also stamps it
+             while the user is speaking or the agent is speaking or thinking, so a long turn
+             is never cut. The poll only decides when the deadline has passed.
     @param session: (object) The AgentSession (reads user_state and agent_state).
     @param end_session: (Callable[[], object]) Called once to end the session.
     @param timeout_s: (float) Seconds of inactivity allowed.
     @param check_s: (float) Seconds between checks.
+    @param activity: (ActivityClock | None) The clock the state handlers stamp; a new one when
+                     None.
     """
     loop = asyncio.get_running_loop()
-    last_active = loop.time()
+    clock = activity or ActivityClock(loop.time)
     while True:
         await asyncio.sleep(check_s)
         busy = getattr(session, "user_state", None) == "speaking" or getattr(
             session, "agent_state", None
         ) in ("speaking", "thinking")
         if busy:
-            last_active = loop.time()
-        elif loop.time() - last_active >= timeout_s:
+            clock.touch()
+        elif loop.time() - clock.last >= timeout_s:
             logger.info(f"No speech for {timeout_s:.0f} s; ending the session")
             end_session()
             return

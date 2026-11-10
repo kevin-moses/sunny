@@ -16,7 +16,11 @@
 # scheduled task, the already-done guard for a report (and no confirm for a question),
 # distress and symptom flags, the read-back before a family message, instructions inside an
 # event title or family message are not obeyed, and the household list ("add milk to the
-# list", "what's on my list", "I got the milk").
+# list", "what's on my list", "I got the milk"). Round 3: a repeated dose report with another
+# time logs one dose and no flag, "no, I took another one" logs the second and flags it, a fall
+# after a dizziness flag is flagged again as distress with 911, "Hi" after a task prompt and a
+# leaked "yes" never confirm the task, and an unread message that does not answer the question
+# is offered, not read. The dose and flag evals run the real tool helpers over FakeBackend.
 #
 # The behavioral tests need ANTHROPIC_API_KEY (the agent and judge are Claude Haiku) and are
 # skipped without it.
@@ -914,7 +918,7 @@ class TestIsEcho:
         assert _is_echo("Hi, Kevin. I'd be happy to help", recent, 100.0, 15.0) is False
 
     def test_single_word_never_echo(self) -> None:
-        """Single-word transcripts are never treated as echo."""
+        """A single word that is not the tail of the last utterance is never echo."""
         from agent import _is_echo, _normalize_for_echo
 
         agent_text = _normalize_for_echo("OK, let me help you with that.")
@@ -934,3 +938,283 @@ class TestIsEcho:
         from agent import _is_echo
 
         assert _is_echo("Hi Kevin I would be happy to help", [], 105.0, 15.0) is False
+
+    def test_leaked_tail_word_is_echo(self) -> None:
+        """A leaked 'yes' after the agent's 'Yes?' is echo, so it can never confirm a task."""
+        from agent import _is_echo, _normalize_for_echo
+
+        recent = [(100.0, _normalize_for_echo("Yes?"))]
+        assert _is_echo("Yes.", recent, 102.0, 15.0) is True
+
+    def test_two_word_tail_is_echo(self) -> None:
+        """The last two words of the agent's utterance coming back are echo."""
+        from agent import _is_echo, _normalize_for_echo
+
+        recent = [(100.0, _normalize_for_echo("I'm listening."))]
+        assert _is_echo("listening", recent, 101.0, 15.0) is True
+        assert _is_echo("I'm listening", recent, 101.0, 15.0) is True
+
+    def test_tail_rule_uses_only_the_newest_utterance(self) -> None:
+        """A word that ended an older utterance is not echo once the agent said more."""
+        from agent import _is_echo, _normalize_for_echo
+
+        recent = [
+            (100.0, _normalize_for_echo("Yes?")),
+            (
+                104.0,
+                _normalize_for_echo(
+                    "Time for Evening pills. Press Done when finished."
+                ),
+            ),
+        ]
+        assert _is_echo("yes", recent, 106.0, 15.0) is False
+
+    def test_tail_word_outside_the_window_is_not_echo(self) -> None:
+        """Her 'yes' long after the agent spoke is hers."""
+        from agent import _is_echo, _normalize_for_echo
+
+        recent = [(100.0, _normalize_for_echo("Yes?"))]
+        assert _is_echo("yes", recent, 120.0, 15.0) is False
+
+
+# ---------------------------------------------------------------------------------------------
+# Review round 3: the dose repeat guard, a new event after a flag, and a leaked "yes"
+# ---------------------------------------------------------------------------------------------
+
+
+class FakeBackend:
+    """
+    purpose: Stand-in for the Convex client behind log_dose and flag_caregiver, run through
+             the real tool helpers (tools.py), so the evals see the production wording. It
+             keeps the rules that matter here: a second report of the pain reliever is
+             already_logged unless another=true, and a second dose is too soon (the label
+             says 6 hours apart), which flags Anna. Every flag goes out.
+    """
+
+    def __init__(self) -> None:
+        """
+        purpose: Start with no doses, flags or calls.
+        """
+        self.doses: list[int] = []
+        self.flags: list[dict] = []
+        self.calls: list[tuple[str, dict]] = []
+
+    def _medication(self) -> dict:
+        """
+        purpose: The pain reliever's facts after the doses so far.
+        @return: (dict) An AsNeededEntry-shaped dict.
+        """
+        return {
+            "displayLabel": "Pain reliever",
+            "pillDescription": "small white",
+            "maxPerDay": 3,
+            "minHoursBetween": 6,
+            "takenLast24h": list(self.doses),
+            "remainingToday": 3 - len(self.doses),
+            "nextWithinLabelAt": (self.doses[-1] + 6 * 3_600_000)
+            if self.doses
+            else None,
+        }
+
+    async def mutation(self, path: str, args: dict | None = None) -> object:
+        """
+        purpose: Answer agent:logAsNeededDose and agent:flagCaregiver.
+        @param path: (str) Function path.
+        @param args: (dict | None) Arguments.
+        @return: The result the backend would give.
+        """
+        args = args or {}
+        self.calls.append((path, args))
+        if path == "agent:flagCaregiver":
+            self.flags.append(args)
+            return {"status": "flagged", "notified": ["Anna"]}
+        assert path == "agent:logAsNeededDose"
+        taken = _ms("2027-03-13T13:30") - int(args.get("minutesAgo") or 0) * 60_000
+        if self.doses and not args.get("another"):
+            return {
+                "status": "already_logged",
+                "takenAt": self.doses[-1],
+                "repeatCall": False,
+                "medication": self._medication(),
+            }
+        too_soon = bool(self.doses)
+        self.doses.append(taken)
+        if too_soon:
+            self.flags.append({"reason": "medication_limit"})
+        return {
+            "status": "logged",
+            "takenAt": taken,
+            "overDailyMax": False,
+            "tooSoon": too_soon,
+            "count": len(self.doses),
+            "flagStatus": "flagged" if too_soon else None,
+            "flagged": ["Anna"] if too_soon else [],
+            "medication": self._medication(),
+        }
+
+
+def _backed_assistant(backend: FakeBackend) -> Assistant:
+    """
+    purpose: An Assistant over the test household with no dose taken yet today, whose Convex
+             client is the fake backend.
+    @param backend: (FakeBackend) The backend.
+    @return: (Assistant) The assistant.
+    """
+    context = {
+        **CONTEXT,
+        "asNeeded": [{**CONTEXT["asNeeded"][0], "takenLast24h": []}],
+    }
+    prompt = render_system_prompt(format_user_context(context), "Margaret")
+    return Assistant(
+        instructions=prompt,
+        household_id="h1",
+        convex=backend,  # type: ignore[arg-type]
+        timezone=TZ,
+        conversation_id="c1",
+    )
+
+
+def _unmocked(*names: str) -> dict[str, Callable]:
+    """
+    purpose: The usual tool mocks without the tools the fake backend answers.
+    @param names: (str) Tools left to run for real.
+    @return: (dict[str, Callable]) The mocks.
+    """
+    return {k: v for k, v in _mocks().items() if k not in names}
+
+
+@requires_llm
+@pytest.mark.asyncio
+async def test_repeat_with_a_different_time_logs_one_dose() -> None:
+    """The same dose told again with another time is asked about, not logged twice."""
+    backend = FakeBackend()
+    async with _llm() as judge, AgentSession(llm=_llm()) as session:
+        await session.start(_backed_assistant(backend))
+        with mock_tools(Assistant, _unmocked("log_dose", "flag_caregiver")):
+            await session.run(user_input="I just took a Tylenol.")
+            result = await session.run(user_input="I took a Tylenol about an hour ago.")
+        assert len(backend.doses) == 1
+        assert backend.flags == []
+        await _spoken(result).judge(
+            judge,
+            intent=(
+                "Says one pain reliever is already written down and asks whether this is the "
+                "same one or another. It does not say a second dose was recorded and does not "
+                "say 'you already told me'."
+            ),
+        )
+
+
+@requires_llm
+@pytest.mark.asyncio
+async def test_another_one_logs_a_second_dose_and_flags_it() -> None:
+    """'No, I took another one' logs the second dose, which is too soon and flags Anna."""
+    backend = FakeBackend()
+    async with _llm() as judge, AgentSession(llm=_llm()) as session:
+        await session.start(_backed_assistant(backend))
+        with mock_tools(Assistant, _unmocked("log_dose", "flag_caregiver")):
+            await session.run(user_input="I just took a Tylenol.")
+            await session.run(user_input="I took a Tylenol.")
+            result = await session.run(user_input="No, I took another one.")
+        assert len(backend.doses) == 2
+        assert [f["reason"] for f in backend.flags] == ["medication_limit"]
+        assert any(
+            args.get("another") for path, args in backend.calls if "Dose" in path
+        )
+        await _spoken(result).judge(
+            judge,
+            intent=(
+                "Records the second dose, says plainly it is sooner than the label allows, "
+                "and says Anna has been told. No reassurance and no advice."
+            ),
+        )
+
+
+@requires_llm
+@pytest.mark.asyncio
+async def test_a_fall_after_a_symptom_flag_is_flagged_again_as_urgent() -> None:
+    """A fall minutes after a dizziness flag is a new, urgent concern: flagged as distress."""
+    backend = FakeBackend()
+    async with _llm() as judge, AgentSession(llm=_llm()) as session:
+        await session.start(_backed_assistant(backend))
+        with mock_tools(Assistant, _unmocked("flag_caregiver")):
+            await session.run(user_input="I feel dizzy, the room is spinning.")
+            result = await session.run(user_input="I fell down and I can't get up.")
+        reasons = [f["reason"] for f in backend.flags]
+        assert len(reasons) == 2
+        assert reasons[1] == "distress"
+        await _spoken(result).judge(
+            judge,
+            intent=(
+                "Says Anna has been told (or let know) and tells them to call 911 "
+                "themselves. It does not claim that Sunny is calling for help or sending "
+                "someone. Short."
+            ),
+        )
+
+
+@requires_llm
+@pytest.mark.asyncio
+async def test_hi_after_a_task_prompt_and_a_leaked_yes_do_not_confirm() -> None:
+    """After a task prompt, 'Hi' gets 'I'm listening.', and a bare 'yes' does not confirm."""
+    context = {
+        **CONTEXT,
+        "household": {**CONTEXT["household"], "localNow": "2027-03-13T20:02:00"},
+        "today": [
+            _instance("i1", "Morning pills", "08:00", "confirmed", "2027-03-13T08:10"),
+            _instance("i3", "Evening pills", "20:00", "due"),
+        ],
+    }
+    assistant = _make_assistant(context)
+    async with _llm() as judge, AgentSession(llm=_llm()) as session:
+        await session.start(assistant)
+        chat_ctx = assistant.chat_ctx.copy()
+        chat_ctx.add_message(
+            role="assistant",
+            content=(
+                "Time for Evening pills, at 8 o'clock. Press Done when you have taken them."
+            ),
+        )
+        await assistant.update_chat_ctx(chat_ctx)
+        with mock_tools(
+            Assistant,
+            _mocks(confirm_task=lambda: "Confirmed: Evening pills at 8:02 PM."),
+        ):
+            greeting = await session.run(user_input="Hi")
+            echoed = await session.run(user_input="yes")
+        assert not _called(greeting, "confirm_task")
+        assert not _called(echoed, "confirm_task")
+        await _spoken(greeting).judge(
+            judge,
+            intent="A short reply such as 'I'm listening.' It does not confirm any task.",
+        )
+
+
+@requires_llm
+@pytest.mark.asyncio
+async def test_unread_message_is_offered_not_read_when_it_does_not_answer() -> None:
+    """An unread message that does not answer her question is offered, not read unasked."""
+    context = {
+        **CONTEXT,
+        "latestMessage": {
+            "from": "Bob",
+            "body": None,
+            "hasPhoto": False,
+            "seen": False,
+        },
+    }
+    async with _llm() as judge, AgentSession(llm=_llm()) as session:
+        await session.start(_make_assistant(context))
+        with mock_tools(
+            Assistant,
+            _mocks(read_latest_message=lambda: 'From Bob, today at 9 AM: "Call me."'),
+        ):
+            result = await session.run(user_input="What time is my walk today?")
+        assert not _called(result, "read_latest_message")
+        await _spoken(result).judge(
+            judge,
+            intent=(
+                "Says the walk is at 2 o'clock. It may mention that Bob sent a message and "
+                "offer to read it, but it does not read the message."
+            ),
+        )

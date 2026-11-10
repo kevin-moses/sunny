@@ -12,7 +12,11 @@
 # already logged / scheduled_due / undo, "in 24 hours" wording with yesterday and days used,
 # the opening only for due tasks with the spec template, the garbage filter letting short
 # words through, the inactivity watch, the extraction's timeout retry and plain-summary
-# fallback, and the household list tools (list_tools.py). No network, no LLM: Convex is the
+# fallback, and the household list tools (list_tools.py). Round 3: another=true, the
+# "same one or another" question and the silent repeated call, undo outside the conversation,
+# the correction, distress always giving the emergency lines, no "phone" reason in what she
+# hears, a repeated message phrased from its earlier outcome, quoted list items, items past
+# the tenth, and the inactivity clock stamped between polls. No network, no LLM: Convex is the
 # FakeConvex from test_tools, Open-Meteo is an httpx.MockTransport, and the tools' clock is
 # fixed (tools.now_epoch_ms).
 #
@@ -286,10 +290,20 @@ class TestMedication:
                     "householdId": "h1",
                     "label": "pain",
                     "minutesAgo": 5,
+                    "another": False,
                     "conversationId": "c1",
                 },
             )
         ]
+
+    @pytest.mark.asyncio
+    async def test_another_is_sent(self) -> None:
+        """'No, I took another one' sends another=true."""
+        client = FakeConvex(
+            {"agent:logAsNeededDose": {"status": "no_rule", "options": []}}
+        )
+        await db_log_dose(client, "h1", TZ, "", 0, "c1", another=True)  # type: ignore[arg-type]
+        assert client.calls[0][1]["another"] is True
 
     @pytest.mark.asyncio
     async def test_log_past_limit_says_family_was_told(self) -> None:
@@ -313,7 +327,7 @@ class TestMedication:
         result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
         assert result.endswith(
             "This dose is 4 in 24 hours, more than the label allows and sooner than the "
-            "label's hours apart. Anna has been told."
+            "label's 6 hours apart. Anna has been told."
         )
         assert client.calls[0][1]["label"] is None
         assert client.calls[0][1]["conversationId"] is None
@@ -341,24 +355,44 @@ class TestMedication:
         result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
         assert "Family could not be reached from here" in result
         assert "has been told" not in result
+        assert "phone" not in result
 
     @pytest.mark.asyncio
-    async def test_already_logged_is_neutral(self) -> None:
-        """A dose already written down is stated neutrally, with its time."""
+    async def test_already_logged_asks_same_or_another(self) -> None:
+        """A dose that may repeat one written down asks whether it is the same or another."""
         client = FakeConvex(
             {
                 "agent:logAsNeededDose": {
                     "status": "already_logged",
                     "takenAt": ms("2027-03-13T13:50"),
+                    "repeatCall": False,
                     "medication": RELIEF,
                 }
             }
         )
         result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
         assert result.startswith(
-            "Nothing new was logged: one Pain reliever is already written down at 1:50 PM."
+            "Nothing new was logged yet: one Pain reliever is already written down at 1:50 PM."
         )
-        assert "do not say they already told you" in result
+        assert "same one or another one" in result
+        assert "another set to true" in result
+
+    @pytest.mark.asyncio
+    async def test_repeated_call_reads_as_logged(self) -> None:
+        """The same call made twice in a turn is passed on as logged, with no question."""
+        client = FakeConvex(
+            {
+                "agent:logAsNeededDose": {
+                    "status": "already_logged",
+                    "takenAt": ms("2027-03-13T13:50"),
+                    "repeatCall": True,
+                    "medication": RELIEF,
+                }
+            }
+        )
+        result = await db_log_dose(client, "h1", TZ, "", 0, None)  # type: ignore[arg-type]
+        assert result.startswith("Logged Pain reliever at 1:50 PM.")
+        assert "another" not in result
 
     @pytest.mark.asyncio
     async def test_scheduled_due_points_to_confirm_task(self) -> None:
@@ -390,6 +424,16 @@ class TestMedication:
         assert await db_undo_last_dose(client, "h1", TZ, "", "c1") == (  # type: ignore[arg-type]
             "Removed the Pain reliever written down at 1:50 PM."
         )
+        client.responses["agent:undoLastDose"] = {
+            "status": "removed",
+            "displayLabel": "Pain reliever",
+            "takenAt": ms("2027-03-13T13:50"),
+            "corrected": ["Anna"],
+        }
+        assert await db_undo_last_dose(client, "h1", TZ, "", "c1") == (  # type: ignore[arg-type]
+            "Removed the Pain reliever written down at 1:50 PM. Anna has been told it was a "
+            "mistake."
+        )
         assert client.calls[0][1] == {
             "householdId": "h1",
             "label": None,
@@ -398,9 +442,10 @@ class TestMedication:
         client = FakeConvex(
             {"agent:undoLastDose": {"status": "nothing_to_undo", "options": []}}
         )
-        assert await db_undo_last_dose(client, "h1", TZ, "", None) == (  # type: ignore[arg-type]
-            "There is no dose they reported today to take back."
-        )
+        result = await db_undo_last_dose(client, "h1", TZ, "", None)  # type: ignore[arg-type]
+        assert result.startswith("Nothing was changed")
+        assert "cannot change earlier records" in result
+        assert "offer to let family know" in result
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -409,6 +454,12 @@ class TestMedication:
             (
                 {"status": "no_rule", "options": []},
                 "Nothing was logged: family has not",
+            ),
+            (
+                {"status": "no_rule", "options": []},
+                "Nothing was logged: family has not set up an as-needed medication with "
+                "label limits. Say what was taken today if asked, and offer to let family "
+                "know or suggest asking the pharmacy.",
             ),
             (
                 {"status": "not_found", "options": ["Tylenol"]},
@@ -475,8 +526,22 @@ class TestFamilyTools:
             {"agent:flagCaregiver": {"status": "already_flagged", "notified": ["Anna"]}}
         )
         assert await db_flag_caregiver(client, "h1", "scam", "x", None) == (  # type: ignore[arg-type]
-            "Anna was already told a few minutes ago."
+            "Anna was already told about this a few minutes ago."
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status", ["flagged", "already_flagged", "unreachable", "rate_limited"]
+    )
+    async def test_distress_always_gives_the_emergency_lines(self, status: str) -> None:
+        """Distress adds 911 and 988 whatever happened to the flag."""
+        notified = ["Anna"] if status in ("flagged", "already_flagged") else []
+        client = FakeConvex(
+            {"agent:flagCaregiver": {"status": status, "notified": notified}}
+        )
+        result = await db_flag_caregiver(client, "h1", "distress", "She fell", None)  # type: ignore[arg-type]
+        assert "call 911" in result
+        assert "988" in result
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["unreachable", "rate_limited"])
@@ -497,6 +562,7 @@ class TestFamilyTools:
         )
         result = await db_flag_caregiver(client, "h1", "distress", "Scared", None)  # type: ignore[arg-type]
         assert "Family could not be reached from here" in result
+        assert "phone" not in result
         assert "911" in result
         assert "988" in result
 
@@ -534,7 +600,6 @@ class TestFamilyTools:
         ("status", "expected"),
         [
             ("unreachable", "family could not be reached from here"),
-            ("already_sent", "was not sent again"),
             ("rate_limited", "No more messages can be sent right now"),
         ],
     )
@@ -548,6 +613,31 @@ class TestFamilyTools:
         result = await db_send_family_message(client, "h1", "", "Hi", None)  # type: ignore[arg-type]
         assert expected in result
         assert "Sent to" not in result
+        assert "phone" not in result
+
+    @pytest.mark.asyncio
+    async def test_repeated_message_says_how_the_first_went(self) -> None:
+        """already_sent phrases the earlier outcome: never "sent" for an unreachable one."""
+        client = FakeConvex(
+            {
+                "agent:sendFamilyMessage": {
+                    "status": "already_sent",
+                    "recipients": [],
+                    "earlierStatus": "unreachable",
+                }
+            }
+        )
+        result = await db_send_family_message(client, "h1", "", "Hi", None)  # type: ignore[arg-type]
+        assert "could not be reached from here" in result
+        assert "went to" not in result
+        client.responses["agent:sendFamilyMessage"] = {
+            "status": "already_sent",
+            "recipients": ["Anna"],
+            "earlierStatus": "sent",
+        }
+        assert await db_send_family_message(client, "h1", "", "Hi", None) == (  # type: ignore[arg-type]
+            "That same message went to Anna a moment ago; it was not sent again."
+        )
 
     @pytest.mark.asyncio
     async def test_read_latest_message(self) -> None:
@@ -1196,6 +1286,25 @@ class TestReviewFixes:
         assert ended == [True]
 
     @pytest.mark.asyncio
+    async def test_inactivity_counts_activity_between_polls(self) -> None:
+        """Speech stamped by a state change between two polls restarts the clock."""
+        from agent import ActivityClock
+
+        session = MagicMock(user_state="listening", agent_state="listening")
+        loop = asyncio.get_running_loop()
+        activity = ActivityClock(loop.time)
+        ended: list[bool] = []
+        task = asyncio.create_task(
+            watch_inactivity(session, lambda: ended.append(True), 0.1, 0.06, activity)
+        )
+        await asyncio.sleep(0.08)
+        activity.touch()  # she spoke briefly; no poll saw it
+        await asyncio.sleep(0.07)
+        assert ended == []
+        await asyncio.wait_for(task, 1)
+        assert ended == [True]
+
+    @pytest.mark.asyncio
     async def test_inactivity_waits_while_someone_is_speaking(self) -> None:
         """While the senior speaks, the session is not ended."""
         session = MagicMock(user_state="speaking", agent_state="listening")
@@ -1239,16 +1348,34 @@ class TestListTools:
         ]
 
     @pytest.mark.asyncio
+    async def test_add_reports_items_past_the_tenth(self) -> None:
+        """Items one add cannot carry are named, not dropped silently."""
+        client = FakeConvex(
+            {
+                "agent:addListItems": [
+                    {"text": "milk", "status": "added"},
+                    {"text": "jam", "status": "too_many"},
+                    {"text": "tea", "status": "too_many"},
+                ]
+            }
+        )
+        result = await db_add_to_list(client, "h1", ["milk", "jam", "tea"])  # type: ignore[arg-type]
+        assert result == (
+            "Added milk to the list. Only 10 items can be added at once, so jam and tea "
+            "were not added; offer to add them next."
+        )
+
+    @pytest.mark.asyncio
     async def test_read_short_long_and_empty_lists(self) -> None:
         """A short list is read whole; a long one as a count and the first six."""
-        client = FakeConvex({"agent:listItems": ["milk", "eggs"]})
-        assert (
-            await db_read_list(client, "h1") == "The list has 2 items: milk and eggs."
-        )  # type: ignore[arg-type]
+        client = FakeConvex({"agent:listItems": ["milk", 'eggs "large"']})
+        assert await db_read_list(client, "h1") == (  # type: ignore[arg-type]
+            'The list has 2 items: "milk" and "eggs \'large\'".'
+        )
         client = FakeConvex({"agent:listItems": [f"item {i}" for i in range(9)]})
         assert await db_read_list(client, "h1") == (  # type: ignore[arg-type]
-            "The list has 9 items. The first 6: item 0, item 1, item 2, item 3, item 4 and "
-            "item 5."
+            'The list has 9 items. The first 6: "item 0", "item 1", "item 2", "item 3", '
+            '"item 4" and "item 5".'
         )
         client = FakeConvex({"agent:listItems": []})
         assert await db_read_list(client, "h1") == "The list is empty."  # type: ignore[arg-type]
@@ -1257,10 +1384,10 @@ class TestListTools:
     @pytest.mark.parametrize(
         ("response", "expected"),
         [
-            ({"status": "ticked", "text": "milk"}, "Took milk off the list."),
+            ({"status": "ticked", "text": "milk"}, 'Took "milk" off the list.'),
             (
                 {"status": "ambiguous", "options": ["whole milk", "oat milk"]},
-                "Several items match: whole milk and oat milk. Ask which one.",
+                'Several items match: "whole milk" and "oat milk". Ask which one.',
             ),
             ({"status": "not_found", "options": []}, "the milk is not on the list."),
         ],

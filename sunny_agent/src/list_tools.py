@@ -3,12 +3,14 @@
 # take_off_list in agent.py): "Add milk and eggs to the list", "What's on my list?", "I bought
 # the milk". Every rule (one line, caps, duplicates, which item words mean) lives in the Convex
 # functions agent:addListItems, agent:listItems and agent:tickListItem; these only call them and
-# phrase the result for voice. The list is one shared list caregivers can see.
+# phrase the result for voice. The list is one shared list caregivers can see, so items read
+# from it (which family may have written) reach the model in quotes, like other household text.
+# Items past the tenth in one add are reported (too_many), never dropped silently.
 #
 # Last modified: 2026-11-09
 
 from convex_client import ConvexClient
-from tools import join_names, one_line
+from tools import join_names, one_line, quoted
 
 # A list longer than this is read as its count and the first few items.
 READ_ALOUD_MAX = 6
@@ -44,6 +46,11 @@ async def db_add_to_list(
         parts.append(
             f"The list is full, so {join_names(by_status['list_full'])} could not be added."
         )
+    if by_status.get("too_many"):
+        parts.append(
+            f"Only 10 items can be added at once, so {join_names(by_status['too_many'])} "
+            "were not added; offer to add them next."
+        )
     return " ".join(parts) or "Nothing was added: no item was named."
 
 
@@ -56,7 +63,7 @@ async def db_read_list(client: ConvexClient, household_id: str) -> str:
     @return: (str) The list for voice.
     """
     items = [
-        one_line(i)
+        quoted(i)
         for i in (
             await client.query("agent:listItems", {"householdId": household_id}) or []
         )
@@ -88,9 +95,8 @@ async def db_take_off_list(client: ConvexClient, household_id: str, item: str) -
     )
     status = r.get("status")
     if status == "ticked":
-        return f"Took {one_line(r.get('text'))} off the list."
+        return f"Took {quoted(r.get('text'))} off the list."
     if status == "ambiguous":
-        return (
-            f"Several items match: {join_names(r.get('options') or [])}. Ask which one."
-        )
+        options = [quoted(o) for o in r.get("options") or []]
+        return f"Several items match: {join_names(options)}. Ask which one."
     return f"{one_line(item)} is not on the list."
