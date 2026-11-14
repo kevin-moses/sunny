@@ -12,8 +12,13 @@
 // unchanged, the push data (notification_id, kind, household_id, task_instance_id), the
 // interruption level and category per kind and role (and for a device), the digest's push
 // title, the SMS fallback for the same row when every token is unregistered or refused for good
-// (and its failure), no fallback without a verified phone or for a retryable failure, and a
-// removed member skipped even with a token.
+// (and its failure), mixed token results (a dead token deleted and the row texted or retried),
+// no fallback without a verified phone or for a retryable failure, and a removed member skipped
+// even with a token. APNs not configured: texted with a verified phone, held pending without.
+// Push retries running out: a caregiver with a verified phone is texted exactly once (also
+// through the workpool end to end; a second completion, the sweeper and another run text
+// nothing more), a text that also runs out ends failed, and without a phone, for a device or
+// for an SMS-only caregiver the row ends failed as before.
 //
 // Last modified: 2026-11-14
 
@@ -714,7 +719,149 @@ describe("caregiver push", () => {
     const id = await insertOutbox(f, { recipientUserId: "pat" });
     await expect(deliver(f, id)).rejects.toThrow(/will retry/);
     expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    expect(await outboxRow(f, id)).toMatchObject({ state: "pending", pushState: "retrying" });
+  });
+
+  test("one token unregistered and one retryable: the dead one goes, the row is retried", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-dead", "pat-busy");
+    providerMocks.apnsSend.mockResolvedValue([
+      { token: "pat-dead", outcome: "unregistered", status: 410, reason: "Gone", retryable: false },
+      { token: "pat-busy", outcome: "failed", status: 503, reason: "Busy", retryable: true },
+    ]);
+    const id = await insertOutbox(f, { recipientUserId: "pat" });
+    await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
     expect((await outboxRow(f, id)).state).toBe("pending");
+    const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+    expect(left.map((t) => t.token)).toContain("pat-busy");
+    expect(left.map((t) => t.token)).not.toContain("pat-dead");
+  });
+
+  test("APNs not configured: a caregiver with a verified phone is texted", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    providerMocks.apnsSend.mockResolvedValue({
+      results: [],
+      configError: "APNs is not configured",
+    });
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(providerMocks.smsSend).toHaveBeenCalledWith({
+      to: "+15550000001",
+      body: "Title\nBody\nReply 1 if you're on it.",
+    });
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "sms" });
+  });
+
+  test("APNs not configured and no verified phone: the row waits for the configuration", async () => {
+    const f = await setup();
+    await addTokens(f, "val", "val-1");
+    providerMocks.apnsSend.mockResolvedValue({
+      results: [],
+      configError: "APNs is not configured",
+    });
+    const id = await insertOutbox(f, { recipientUserId: "val" });
+    expect(await deliver(f, id)).toBe("config");
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "pending",
+      detail: "APNs is not configured",
+    });
+  });
+
+  describe("push retries running out", () => {
+    let errorSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      errorSpy.mockRestore();
+    });
+
+    /**
+     * purpose: Report the row's workpool run as failed for good, as the workpool does when the
+     *          retries are used up.
+     * @param f: (DeliveryFixture) Fixture.
+     * @param id: (Id<"notificationOutbox">) The row.
+     * @return: (Promise<void>) Resolves when handled.
+     */
+    async function retriesRanOut(f: DeliveryFixture, id: Id<"notificationOutbox">): Promise<void> {
+      await f.t.mutation(internal.delivery.onDeliveryComplete, {
+        workId: "work_1" as WorkId,
+        context: { outboxId: id },
+        result: { kind: "failed", error: "APNs delivery failed, will retry: 503 Busy" },
+      });
+    }
+
+    test("with a verified phone the row is texted exactly once", async () => {
+      const f = await setup();
+      await addTokens(f, "pat", "pat-1");
+      apnsAnswers("failed", 503, true);
+      const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "pat" });
+      await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+      await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+      await retriesRanOut(f, id);
+      expect(await outboxRow(f, id)).toMatchObject({ state: "pending", pushState: "gave_up" });
+      const pushes = providerMocks.apnsSend.mock.calls.length;
+      expect(await deliver(f, id)).toBe("sent");
+      expect(providerMocks.apnsSend).toHaveBeenCalledTimes(pushes);
+      expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+      expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "sms" });
+      // A second completion, a sweeper pass and another run text nothing more.
+      await retriesRanOut(f, id);
+      vi.setSystemTime(NOW + STUCK_AFTER_MS + 60_000);
+      expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(0);
+      expect(await deliver(f, id)).toBe("settled");
+      expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+    });
+
+    test("a text that also runs out of retries ends failed, not enqueued again", async () => {
+      const f = await setup();
+      await addTokens(f, "pat", "pat-1");
+      apnsAnswers("failed", 503, true);
+      providerMocks.smsSend.mockResolvedValue({ ok: false, retryable: true, error: "503 busy" });
+      const id = await insertOutbox(f, { recipientUserId: "pat" });
+      await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+      await retriesRanOut(f, id);
+      await expect(deliver(f, id)).rejects.toThrow(/SMS delivery failed/);
+      await retriesRanOut(f, id);
+      expect(await outboxRow(f, id)).toMatchObject({ state: "failed", pushState: "gave_up" });
+      expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+    });
+
+    test("without a verified phone the row ends failed", async () => {
+      const f = await setup();
+      await addTokens(f, "val", "val-1");
+      apnsAnswers("failed", 503, true);
+      const id = await insertOutbox(f, { recipientUserId: "val" });
+      await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+      await retriesRanOut(f, id);
+      expect((await outboxRow(f, id)).state).toBe("failed");
+      expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    });
+
+    test("a device row ends failed as before", async () => {
+      const f = await setup();
+      apnsAnswers("failed", 503, true);
+      const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+      await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+      expect((await outboxRow(f, id)).pushState).toBeUndefined();
+      await retriesRanOut(f, id);
+      expect((await outboxRow(f, id)).state).toBe("failed");
+    });
+
+    test("an SMS-only caregiver whose text runs out of retries ends failed", async () => {
+      const f = await setup();
+      providerMocks.smsSend.mockResolvedValue({ ok: false, retryable: true, error: "503 busy" });
+      const id = await insertOutbox(f, { recipientUserId: "pat" });
+      await expect(deliver(f, id)).rejects.toThrow(/SMS delivery failed/);
+      await retriesRanOut(f, id);
+      expect((await outboxRow(f, id)).state).toBe("failed");
+      expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+    });
   });
 
   test("a member who left is skipped even with a token", async () => {
@@ -986,5 +1133,33 @@ describe("insertNotification", () => {
     expect(providerMocks.smsSend).toHaveBeenCalledTimes(2);
     expect((await outboxRow(f, id)).state).toBe("sent");
     expect((await outboxRow(f, id)).attempts).toBe(2);
+  });
+
+  test("a caregiver's push that keeps failing is texted once when the retries run out", async () => {
+    const f = await setup();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await addTokens(f, "pat", "pat-1");
+    apnsAnswers("failed", 503, true);
+    const id = await f.t.run(
+      async (ctx) =>
+        await insertNotification(ctx, {
+          householdId: f.householdId,
+          kind: "caregiver_alert",
+          recipientUserId: "pat",
+          title: "t",
+          body: "b",
+          payload: {},
+        }),
+    );
+    await drivePool(f, id);
+    expect(providerMocks.apnsSend.mock.calls.length).toBeGreaterThan(1);
+    expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
+    expect(providerMocks.smsSend.mock.calls[0]![0].body).toBe("t\nb\nReply 1 if you're on it.");
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "sent",
+      channel: "sms",
+      pushState: "gave_up",
+    });
+    errorSpy.mockRestore();
   });
 });

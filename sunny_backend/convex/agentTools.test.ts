@@ -603,6 +603,23 @@ describe("buildBriefing", () => {
     expect(text).not.toContain("Someone else");
   });
 
+  test("every kind of line break in a digest becomes one separator", async () => {
+    const { t, a } = await makeWorld();
+    const breaks = ["\r\n", "\v", "\f", "\u0085", "\u2028", "\u2029"];
+    await t.run(async (ctx) => {
+      await ctx.db.insert("digests", {
+        householdId: a,
+        localDate: "2027-03-01",
+        status: "done",
+        text: ["one", ...breaks.map((b, i) => `${b}part${i}`)].join(""),
+      });
+    });
+    const text = await briefing(t, a, "user_a");
+    const last = text.split("\n").at(-1)!;
+    expect(last).toBe("  2027-03-01: one / part0 / part1 / part2 / part3 / part4 / part5");
+    expect(/[\r\v\f\u0085\u2028\u2029]/.test(text)).toBe(false);
+  });
+
   test("cuts a long digest to the cap", async () => {
     const { t, a } = await makeWorld();
     await t.run(async (ctx) => {

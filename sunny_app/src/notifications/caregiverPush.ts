@@ -19,12 +19,15 @@
 //     (instances.claimTaskInstance) and shows Home; tapping an alert's body shows Home; tapping
 //     a digest shows Chat; any other kind shows Home; a dismiss does nothing. The action opens
 //     the app in the foreground (opensAppToForeground), so the claim runs with the signed-in
-//     Clerk session. A claim that finds someone else on it is not an error (the server returns
-//     the instance unchanged and Home shows who is on it); any failure is only logged. The tap
-//     that launched the app (cold start) is read once with getLastNotificationResponse when the
-//     caregiver app mounts; every handled response is cleared and remembered, so a remount
-//     does not handle it again. A claim is made only for the household on screen and only by a
-//     caregiver who may claim (not a viewer).
+//     Clerk session. A claim that finds someone else on it, or the task already done, is not
+//     an error (the server returns the instance unchanged and Home shows who is on it); a claim
+//     call that fails shows a short alert ("Could not claim it") so the caregiver claims from
+//     Home instead. The tap that launched the app (cold start) is read once with
+//     getLastNotificationResponse when the caregiver app mounts; every handled response is
+//     cleared and remembered, so a remount does not handle it again. A response that arrived
+//     while signed out never gets here: the signed-out and onboarding screens discard it
+//     (push.ts useDiscardNotificationTaps). A claim is made only for the household on screen
+//     and only by a caregiver who may claim (not a viewer).
 //   - Sign-out (signOutCaregiver): the remembered token is unregistered (bounded by push.ts's
 //     timeout) before the Clerk session ends, while the call can still authenticate.
 //
@@ -36,7 +39,7 @@
 
 import * as Notifications from 'expo-notifications';
 import { useEffect, useRef } from 'react';
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 import { callMutation } from '../backend/api';
 import { api, type HouseholdId, type TaskInstanceId } from '../backend/convexApi';
@@ -44,8 +47,17 @@ import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 import { registerPushToken, unregisterStoredPushToken } from './push';
 
-/** The category of a claimable caregiver alert; the backend sets it in aps (pushStyle). */
+/**
+ * The category of a claimable caregiver alert. It must equal CAREGIVER_ALERT_CATEGORY in
+ * sunny_backend/convex/lib/apnsPayload.ts, which the backend sets in aps (pushStyle).
+ */
 export const CAREGIVER_ALERT_CATEGORY = 'caregiver_alert';
+
+/** The alert title shown when the "I'm on it" claim call fails. */
+export const CLAIM_FAILED_TITLE = 'Could not claim it';
+
+/** The alert message shown when the "I'm on it" claim call fails. */
+export const CLAIM_FAILED_MESSAGE = "Open Home and tap I'm on it.";
 
 /** The identifier of the "I'm on it" action. */
 export const CLAIM_ACTION = 'claim';
@@ -161,9 +173,10 @@ function firstTime(response: Notifications.NotificationResponse): boolean {
 }
 
 /**
- * purpose: Claim a task for the signed-in caregiver. Someone else already on it is not a
- *          failure (the server leaves the instance as it is and Home shows who is on it); any
- *          error is logged and never shown.
+ * purpose: Claim a task for the signed-in caregiver. Someone else already on it, or the task
+ *          already done, is not a failure (the server leaves the instance as it is and Home
+ *          shows who is on it). A call that fails is logged and shown as a short alert, so
+ *          "I'm on it" never fails silently.
  * @param instanceId: (TaskInstanceId) The task instance.
  * @return: (Promise<void>) Resolves when the call settles; never rejects.
  */
@@ -172,6 +185,7 @@ async function claimFromPush(instanceId: TaskInstanceId): Promise<void> {
     await callMutation(api.instances.claimTaskInstance, { instanceId });
   } catch (e) {
     logger.warning('Push', `Claim from a notification failed: ${errorMessage(e)}`);
+    Alert.alert(CLAIM_FAILED_TITLE, CLAIM_FAILED_MESSAGE);
   }
 }
 

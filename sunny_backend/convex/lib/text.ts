@@ -4,9 +4,11 @@
 // caller-supplied message so every function keeps its own wording. Also the one way text is
 // flattened to a single line (oneLine) and the one comparison key for duplicates (textKey:
 // one line, lower case), used by the life profile, agent memory and the household list;
-// searchWords is the one normalization of words that name a task or medication.
+// searchWords is the one normalization of words that name a task or medication. joinLines puts
+// text on one line for the agent's line-based prompt sections, keeping the breaks as " / "
+// (the carried-over chat, lib/agentHistory.ts, and the briefing's daily summaries).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { appError } from "./errors";
 
@@ -18,6 +20,20 @@ import { appError } from "./errors";
  */
 export function oneLine(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+/** Every character that can end a line: CR, LF, VT, FF, NEL, LINE and PARAGRAPH SEPARATOR. */
+const LINE_BREAKS = /\s*[\r\n\v\f\u0085\u2028\u2029]+\s*/g;
+
+/**
+ * purpose: Text for a line-based prompt section: trimmed, every run of line breaks (any kind,
+ *          Unicode separators included) and the spaces around it replaced by " / ", so the text
+ *          cannot start a line that poses as another speaker or another section.
+ * @param value: (string) Raw text.
+ * @return: (string) One line, with the original breaks still visible as " / ".
+ */
+export function joinLines(value: string): string {
+  return value.trim().replace(LINE_BREAKS, " / ");
 }
 
 /**

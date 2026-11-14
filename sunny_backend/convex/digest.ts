@@ -169,7 +169,7 @@ export const complete = internalMutation({
     if (!digest || digest.status !== "pending") return 0;
     const household = await ctx.db.get(digest.householdId);
     if (!household) return 0;
-    const postId = await postDigest(ctx, digest, text);
+    await postDigest(ctx, digest, text);
     const members = await ctx.db
       .query("householdMembers")
       .withIndex("by_household_user", (q) => q.eq("householdId", household._id))
@@ -185,7 +185,6 @@ export const complete = internalMutation({
         payload: {
           digestId,
           localDate: digest.localDate,
-          postId,
           pushTitle: `${household.seniorPreferredName}'s day`,
         },
       });

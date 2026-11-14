@@ -13,13 +13,14 @@
 // MAX_BRIEFING_TIMES times (then "+N more"); an as-needed medication reads "as needed
 // (managed in the app)"; an anytime task (no times, not a medication) reads "anytime" and its
 // instance "anytime <state>".
-// Last come the daily summaries (digests) sent for the household's local today and yesterday,
-// with their dates, so a caregiver replying to the digest in the chat ("why was the 8 o'clock
-// late?") gets an answer that knows what it said. The briefing heads every request's message,
-// so this works in a continued session and in a fresh one alike. The section is labelled
-// information, never instructions (the system prompt says the same); each summary is one line
-// (line breaks become " / ") of at most MAX_DIGEST_CHARS characters, so the section adds at
-// most two lines and about 1,300 characters. Older digests are never included.
+// Last come the daily summaries (digests whose text is done) for the household's local today
+// and yesterday, with their dates, so a caregiver replying to the digest in the chat ("why was
+// the 8 o'clock late?") gets an answer that knows what it said. The briefing heads every
+// request's message, so this works in a continued session and in a fresh one alike. The
+// section is labelled information, never instructions (the system prompt says the same); each
+// summary is one line (every kind of line break, Unicode separators included, becomes " / ")
+// of at most MAX_DIGEST_CHARS characters, so the section adds at most two lines and about
+// 1,300 characters. Older digests are never included.
 //
 // Last modified: 2026-11-14
 
@@ -29,6 +30,7 @@ import { householdWeek } from "../calendar";
 import { isAsNeededTask, listTasksCore } from "../tasks";
 import { findMember } from "./access";
 import { isAnytimeTask } from "./anytime";
+import { joinLines } from "./text";
 import { addDays, localDate, localDateTime, weekdayCodes } from "./time";
 import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
@@ -132,9 +134,10 @@ async function taskLines(
 
 /**
  * purpose: The briefing's daily summary lines: the digests of the household's local today and
- *          yesterday that were sent, oldest first, each "  <date>: <text>" with the text on one
- *          line (line breaks become " / ", so it cannot pose as a briefing line) and cut to
- *          MAX_DIGEST_CHARS.
+ *          yesterday whose text is done (status done), oldest first, each "  <date>: <text>"
+ *          with the text on one line (lib/text joinLines: every line break becomes " / ", so it
+ *          cannot pose as a briefing line) and cut to MAX_DIGEST_CHARS. DIGEST_DAYS matches the
+ *          range read (yesterday through today).
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param today: (string) The household's local date now, "YYYY-MM-DD".
@@ -152,9 +155,8 @@ async function digestLines(
     )
     .take(DIGEST_DAYS);
   const lines = rows.flatMap((row) => {
-    const text = row.status === "done" ? row.text?.trim() : undefined;
-    if (!text) return [];
-    const flat = text.replace(/\s*[\r\n]+\s*/g, " / ");
+    const flat = row.status === "done" ? joinLines(row.text ?? "") : "";
+    if (!flat) return [];
     const clipped =
       flat.length <= MAX_DIGEST_CHARS ? flat : `${flat.slice(0, MAX_DIGEST_CHARS - 3)}...`;
     return [`  ${row.localDate}: ${clipped}`];

@@ -44,7 +44,10 @@ const EXPIRATION_SECONDS = 3 * 60 * 60;
 const TOKEN_BUCKET_SECONDS = 30 * 60;
 const MAX_PAYLOAD_BYTES = 4096;
 
-/** The aps category of a claimable caregiver alert; the caregiver app registers it. */
+/**
+ * The aps category of a claimable caregiver alert. It must equal CAREGIVER_ALERT_CATEGORY in
+ * sunny_app/src/notifications/caregiverPush.ts, which registers it with the "I'm on it" action.
+ */
 export const CAREGIVER_ALERT_CATEGORY = "caregiver_alert";
 
 /** How a push presents: its interruption level (absent is the default, "active") and category. */

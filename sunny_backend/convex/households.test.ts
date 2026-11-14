@@ -5,14 +5,15 @@
 // the generic not_found error), caregiver and device redemption, the one-household-per-caregiver
 // rule (create and redeem reject a caregiver who already belongs to a household, leave the code
 // unredeemed, and allow a removed caregiver to join another), member removal
-// and the on-call rule, push token ownership (a live owner's token is protected, an orphaned
+// and the on-call rule, push token ownership (a paired device's token is protected, a device
+// cannot take a live caregiver's, a caregiver takes over another caregiver's, an orphaned
 // owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
 // the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
 // and RLS checks of the Supabase test suite.
 //
 // mine's accountKind is covered for signed out, device (claim or device row) and caregiver accounts.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -1100,23 +1101,58 @@ describe("push tokens", () => {
     expect(await owners(t, TOK_1)).toEqual(["user_a"]);
   });
 
-  test("a token owned by a live caregiver is not taken over", async () => {
+  test("a caregiver takes over another live caregiver's token (the newest holds the phone)", async () => {
     const t = makeBackend();
-    await createHousehold(t);
+    const householdId = await createHousehold(t);
+    await addCaregiver(t, householdId, "user_b", "caregiver_member");
     await t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {
       token: TOK_1,
     });
+    await t.withIdentity({ subject: "user_b" }).mutation(api.households.registerPushToken, {
+      token: TOK_1,
+    });
+    expect(await owners(t, TOK_1)).toEqual(["user_b"]);
+  });
+
+  test("a caregiver cannot take a paired device's token", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await pairDevice(t, householdId, "device_1");
+    await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
+      token: TOK_1,
+    });
     await expect(
-      t.withIdentity({ subject: "user_b" }).mutation(api.households.registerPushToken, {
+      t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {
         token: TOK_1,
       }),
     ).rejects.toMatchObject({
       data: { code: "forbidden", message: "This push token belongs to another account" },
     });
+    expect(await owners(t, TOK_1)).toEqual(["device_1"]);
+  });
+
+  test("a device cannot take a live caregiver's token", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await pairDevice(t, householdId, "device_1");
+    await t.withIdentity({ subject: "user_a" }).mutation(api.households.registerPushToken, {
+      token: TOK_1,
+    });
+    await expect(
+      t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
+        token: TOK_1,
+      }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    // A device user recognised only by its token claim is refused as well.
+    await expect(
+      t
+        .withIdentity({ subject: "device_new", sunny_kind: "device" })
+        .mutation(api.households.registerPushToken, { token: TOK_1 }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
     expect(await owners(t, TOK_1)).toEqual(["user_a"]);
   });
 
-  test("a token owned by a paired device is not taken over", async () => {
+  test("a token owned by a paired device is not taken over by another device", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     await pairDevice(t, householdId, "device_1");

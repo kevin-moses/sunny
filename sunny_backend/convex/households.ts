@@ -7,7 +7,9 @@
 // and redeemed by the internal pairDevice mutation, both called from the /pair HTTP action
 // (pairing.ts) around the creation of the device's Clerk user. Removing a device also drops
 // its push tokens and schedules deletion of its Clerk user. A push token may be taken over
-// from an orphaned previous owner (see registerPushToken). pairDevice stores the pairing time
+// from an orphaned previous owner, and from another caregiver (the newest caregiver to register
+// a phone's token holds it); a paired device's token never moves and a device never takes a
+// live caregiver's (see registerPushToken, mayTakeOverToken). pairDevice stores the pairing time
 // and the client's retry nonce on the device row so /pair can answer a retry whose first
 // response was lost (findRecentPairing); listDevices never returns the nonce.
 // Google Calendar: update schedules a re-push of the events (lib/calendarSync.ts, chunked, not
@@ -28,7 +30,7 @@
 // update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
 // clears it).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -707,15 +709,38 @@ async function isOrphanedUser(ctx: QueryCtx, userId: string): Promise<boolean> {
 }
 
 /**
+ * purpose: Whether a token registered to another user may move to the caller. An orphaned
+ *          owner's token always may (no device row and no memberships: re-pairing creates a new
+ *          Clerk user, and an unpaired device cannot always clean up its old token). Between
+ *          two caregivers it may too: the phone holds one token, so the newest caregiver to
+ *          register it holds the phone (an earlier caregiver whose sign-out could not
+ *          unregister must not keep receiving that household's alerts there). A paired device's
+ *          token never moves, and a device never takes a live caregiver's token.
+ * @param ctx: (QueryCtx) Context.
+ * @param ownerId: (string) The token's current owner.
+ * @param callerId: (string) The signed-in user registering it.
+ * @return: (Promise<boolean>) True when the token may move to the caller.
+ */
+async function mayTakeOverToken(
+  ctx: QueryCtx,
+  ownerId: string,
+  callerId: string,
+): Promise<boolean> {
+  if (await isOrphanedUser(ctx, ownerId)) return true;
+  if (await findDevice(ctx, ownerId)) return false;
+  const identity = await ctx.auth.getUserIdentity();
+  return !isDeviceAccount(identity, await findDevice(ctx, callerId));
+}
+
+/**
  * purpose: Register a push token for the signed-in user. Re-registering one's own token is a
- *          no-op. A token registered to another user is taken over only when that previous
- *          owner is orphaned (no device row and no memberships): re-pairing creates a new
- *          Clerk user, and an unpaired device cannot always clean up its old token. Otherwise
- *          it is rejected.
+ *          no-op. A token registered to another user moves to the caller when mayTakeOverToken
+ *          allows it (an orphaned owner, or one caregiver after another on the same phone);
+ *          otherwise it is rejected.
  * @param token: (string) Push token (64 to 200 hex characters).
  * @return: (null)
  * @raises invalid for a token that is not hex of that length; forbidden when the token belongs
- *         to another account.
+ *         to a paired device, or to a live caregiver and the caller is a device.
  */
 export const registerPushToken = mutation({
   args: { token: v.string() },
@@ -730,8 +755,7 @@ export const registerPushToken = mutation({
     if (!existing) {
       await ctx.db.insert("pushTokens", { userId, token });
     } else if (existing.userId !== userId) {
-      // A live owner's token is not ours to take; an orphaned owner's is.
-      if (!(await isOrphanedUser(ctx, existing.userId))) {
+      if (!(await mayTakeOverToken(ctx, existing.userId, userId))) {
         throw appError("forbidden", "This push token belongs to another account");
       }
       await ctx.db.patch(existing._id, { userId });

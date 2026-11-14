@@ -6,11 +6,13 @@
 // notifications on), otherwise an SMS at the verified phone exactly as before (title and body
 // on separate lines; a caregiver_alert for a member who can claim ends with the reply hint). A
 // member's APNs route also carries that SMS as smsFallback (null without a verified phone):
-// delivery.ts sends it for the same row when APNs accepted no token and nothing is worth
-// retrying (every token unregistered, or refused for good), so a dead token never leaves the
-// caregiver uninformed; `channel` then records sms. Every push carries data notification_id,
-// kind, household_id and, with an instance, task_instance_id, and the interruption level and
-// category of lib/apnsPayload pushStyle. A push's title is payload.pushTitle when the row has
+// delivery.ts sends it for the same row when APNs is not configured or accepted no token with
+// nothing worth retrying (every token unregistered, or refused for good), and, when the push
+// retries run out, textAfterPushGaveUp marks the row "gave_up" and enqueues it again so
+// memberRoute texts it. A caregiver who would have been texted before push existed is never
+// left with nothing; `channel` records sms when the text delivered it. Every push carries data
+// notification_id, kind, household_id and, with an instance, task_instance_id, and the
+// interruption level and category of lib/apnsPayload pushStyle. A push's title is payload.pushTitle when the row has
 // one (the digest: "<name>'s day", while its SMS keeps "Sunny: <name>'s day"), else the title.
 // Membership, device and content are re-checked at send time; a row with no reachable address
 // or stale content is skipped, with the reason in `detail`. A row a run started less than 5
@@ -28,7 +30,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { verifiedPhone } from "./access";
+import { findMember, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
 import type { NotificationKind } from "./validators";
@@ -287,7 +289,8 @@ function smsRoute(
 
 /**
  * purpose: The route of a member-addressed row: APNs when the member's user has a push token
- *          (with their SMS as the fallback), else SMS at the verified phone.
+ *          (with their SMS as the fallback), else SMS at the verified phone. A row whose push
+ *          retries ran out (pushState "gave_up") goes by SMS.
  * @param ctx: (QueryCtx) Context.
  * @param row: (Doc<"notificationOutbox">) The row.
  * @param userId: (string) The recipient member's user id.
@@ -299,15 +302,10 @@ async function memberRoute(
   row: Doc<"notificationOutbox">,
   userId: string,
 ): Promise<Route> {
-  const member = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) =>
-      q.eq("householdId", row.householdId).eq("userId", userId),
-    )
-    .unique();
+  const member = await findMember(ctx, row.householdId, userId);
   if (!member) return { kind: "skip", reason: "recipient_left" };
   const sms = smsRoute(row, member);
-  const tokens = await userPushTokens(ctx, userId);
+  const tokens = row.pushState === "gave_up" ? [] : await userPushTokens(ctx, userId);
   if (tokens.length > 0) {
     const recipient = { kind: "caregiver" as const, canClaim: member.role !== "viewer" };
     return apnsRoute(row, tokens, recipient, sms);
@@ -364,6 +362,29 @@ export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">
     return await deviceRoute(ctx, row, row.recipientDeviceId);
   if (row.recipientUserId !== undefined) return await memberRoute(ctx, row, row.recipientUserId);
   return { kind: "skip", reason: "no_recipient" };
+}
+
+/**
+ * purpose: When the workpool's retries of a caregiver's push ran out (the row is marked
+ *          pushState "retrying") and the caregiver has a verified phone, mark the row "gave_up"
+ *          and enqueue it once more, so it is texted (memberRoute) instead of failing. Runs at
+ *          most once per row: a row already "gave_up" is left to fail as usual.
+ * @param ctx: (MutationCtx) Context.
+ * @param row: (Doc<"notificationOutbox">) A pending row whose delivery run failed for good.
+ * @param error: (string) The run's error, kept in detail.
+ * @return: (Promise<boolean>) True when the row was enqueued to be texted.
+ */
+export async function textAfterPushGaveUp(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  error: string,
+): Promise<boolean> {
+  if (row.pushState !== "retrying" || row.recipientUserId === undefined) return false;
+  const member = await findMember(ctx, row.householdId, row.recipientUserId);
+  if (!member || verifiedPhone(member) === undefined) return false;
+  await ctx.db.patch(row._id, { pushState: "gave_up", detail: `push gave up: ${error}` });
+  await queueDelivery(ctx, row._id);
+  return true;
 }
 
 /**

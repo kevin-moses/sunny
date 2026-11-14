@@ -17,7 +17,10 @@
 //     start, handled once) call onTap, which starts a voice session with trigger
 //     'notification_tap'.
 //   - The hook is meant to be mounted only for a paired device. discardStaleLaunchTap()
-//     drops a launch tap that arrived while the device was unpaired.
+//     drops a launch tap that arrived while the device was unpaired; useDiscardNotificationTaps
+//     (mounted by the signed-out screens and caregiver onboarding) drops the launch tap and
+//     every tap that arrives while it is mounted, so no tap made while signed out runs later.
+//     A signed-in caregiver's pushes are handled by caregiverPush.ts.
 //   - Unpairing: unregisterStoredPushToken() removes the remembered token (bounded by a short
 //     timeout so an offline device can still unpair). If it cannot run, the backend lets a
 //     re-paired device take over a token whose previous owner is gone (an orphaned user).
@@ -27,7 +30,7 @@
 //   task_instance_id is optional. When it is a string it is forwarded to voice.livekitToken
 //   as taskInstanceId so the agent opens the conversation in the context of that task.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
@@ -133,6 +136,23 @@ export async function unregisterStoredPushToken(): Promise<void> {
  */
 export function discardStaleLaunchTap(): void {
   Notifications.clearLastNotificationResponse();
+}
+
+/**
+ * purpose: While mounted (the signed-out screens and caregiver onboarding), discard the last
+ *          notification response on mount and every response that arrives, so a tap made while
+ *          no one who may act on it is signed in never runs later (a voice session on a device
+ *          paired afterwards, or a claim when a caregiver app mounts hours later).
+ * @return: (void)
+ */
+export function useDiscardNotificationTaps(): void {
+  useEffect(() => {
+    discardStaleLaunchTap();
+    const subscription = Notifications.addNotificationResponseReceivedListener(() =>
+      discardStaleLaunchTap(),
+    );
+    return () => subscription.remove();
+  }, []);
 }
 
 /**

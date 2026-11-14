@@ -7,12 +7,16 @@
 // category registered with a foreground action; permission asked only while undetermined, the
 // APNs token registered when granted and again when the OS rotates it; nothing registered and no
 // error when permission is denied; notifications turned off in Settings unregister the token
-// when the app returns to the foreground (and turned on again re-register it); no permission prompt on onboarding (no household yet); a
-// digest tap opening Chat, an alert's body and other kinds opening Home; "I'm on it" claiming
-// the push's task and showing Home, also on a cold start (the launch tap, read once and
-// cleared); a failed claim showing no error; no claim for a viewer, another household or a
-// dismiss; a response handled once even when seen twice; and sign-out unregistering the token
-// before Clerk's session ends. Plus routeCaregiverResponse as a pure function.
+// when the app returns to the foreground (and turned on again re-register it); no permission
+// prompt on onboarding (no household yet), where a stale tap is discarded; a digest tap opening
+// Chat, an alert's body and other kinds opening Home; "I'm on it" claiming the push's task and
+// showing Home, also on a cold start (the launch tap, read once and cleared); a claim call that
+// fails showing a short alert, while someone else on it or a task already done shows nothing;
+// a tap made while signed out (SignedOutFlow) discarded so it never claims after sign-in; no
+// claim for a viewer, another household or a dismiss; a response handled once even when seen
+// twice; and sign-out unregistering the token before Clerk's session ends. Plus
+// routeCaregiverResponse as a pure function. The native module keeps a last response that
+// clearLastNotificationResponse empties, as the real one does.
 //
 // Last modified: 2026-11-14
 
@@ -20,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { getFunctionName } from 'convex/server';
 import type * as NotificationsTypes from 'expo-notifications';
 import React from 'react';
-import { Alert, AppState, Text } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { callMutation } from '../../backend/api';
@@ -28,6 +32,7 @@ import type { HouseholdId } from '../../backend/convexApi';
 import { CaregiverApp } from '../../caregiver/CaregiverApp';
 import { CaregiverTabBar } from '../../caregiver/CaregiverTabBar';
 import { CaregiverOnboardingScreen } from '../../screens/CaregiverOnboardingScreen';
+import { SignedOutFlow } from '../../screens/SignedOutFlow';
 import { CLAIM_ACTION, routeCaregiverResponse } from '../caregiverPush';
 
 /** expo-notifications' identifier for a tap on the notification body. */
@@ -99,6 +104,13 @@ jest.mock('react-native-safe-area-context', () => ({
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
 
+jest.mock('@clerk/expo/legacy', () => ({
+  useSignIn: () => ({ isLoaded: false }),
+  useSignUp: () => ({ isLoaded: false }),
+}));
+
+jest.mock('../../backend/pairing', () => ({ pair: jest.fn() }));
+
 jest.mock('../../theme/ThemeProvider', () => ({
   useTheme: () => ({
     accentColor: '#FA8539',
@@ -119,6 +131,8 @@ let responseListener: ((r: NotificationsTypes.NotificationResponse) => void) | n
 let tokenListener: ((t: { data: unknown }) => void) | null = null;
 /** A fresh notification identifier per response, since handled responses are remembered. */
 let nextId = 0;
+/** The response the OS keeps as the last one (the launch tap), as the native module would. */
+let lastResponse: NotificationsTypes.NotificationResponse | null = null;
 
 /**
  * purpose: Build a notification response as expo-notifications delivers it.
@@ -218,7 +232,11 @@ beforeEach(() => {
   });
   mockNotifications.requestPermissionsAsync.mockResolvedValue({ granted: true, status: 'granted' });
   mockNotifications.getDevicePushTokenAsync.mockResolvedValue({ type: 'ios', data: TOKEN });
-  mockNotifications.getLastNotificationResponse.mockReturnValue(null);
+  lastResponse = null;
+  mockNotifications.getLastNotificationResponse.mockImplementation(() => lastResponse);
+  mockNotifications.clearLastNotificationResponse.mockImplementation(() => {
+    lastResponse = null;
+  });
   mockNotifications.addPushTokenListener.mockImplementation((listener) => {
     tokenListener = listener;
     return { remove: () => undefined };
@@ -312,11 +330,13 @@ describe('registration', () => {
     expect(mockCall.mock.calls[2]![1]).toEqual({ token: TOKEN });
   });
 
-  it('a caregiver without a household is not asked for permission', async () => {
+  it('a caregiver without a household is not asked, and a stale tap is discarded', async () => {
+    lastResponse = response(CLAIM_ACTION, ALERT);
     await act(async () => {
       mounted.push(create(<CaregiverOnboardingScreen />));
     });
     await flush();
+    expect(lastResponse).toBeNull();
     expect(mockNotifications.getPermissionsAsync).not.toHaveBeenCalled();
     expect(mockNotifications.requestPermissionsAsync).not.toHaveBeenCalled();
     expect(mockCall).not.toHaveBeenCalled();
@@ -361,7 +381,7 @@ describe('taps', () => {
 
   it('a cold start from "I\'m on it" claims once and clears the launch response', async () => {
     const launch = response(CLAIM_ACTION, ALERT);
-    mockNotifications.getLastNotificationResponse.mockReturnValue(launch);
+    lastResponse = launch;
     const renderer = await renderApp();
     expect(calledMutations()).toContain('instances:claimTaskInstance');
     expect(mockNotifications.clearLastNotificationResponse).toHaveBeenCalled();
@@ -372,27 +392,58 @@ describe('taps', () => {
   });
 
   it('a cold start from a digest opens Chat', async () => {
-    mockNotifications.getLastNotificationResponse.mockReturnValue(
-      response(DEFAULT_ACTION, { kind: 'digest', household_id: HOUSEHOLD }),
-    );
+    lastResponse = response(DEFAULT_ACTION, { kind: 'digest', household_id: HOUSEHOLD });
     const renderer = await renderApp();
     expect(activeTab(renderer)).toBe('chat');
   });
 
-  it('a claim that fails shows no error', async () => {
+  it('a claim call that fails shows a short alert and Home', async () => {
     const alertSpy = jest.spyOn(Alert, 'alert');
     mockCall.mockImplementation(async (ref) =>
       getFunctionName(ref as never) === 'instances:claimTaskInstance'
-        ? Promise.reject(new Error('forbidden'))
+        ? Promise.reject(new Error('offline'))
         : null,
     );
     const renderer = await renderApp();
     await tap(response(CLAIM_ACTION, ALERT));
     expect(calledMutations()).toContain('instances:claimTaskInstance');
-    expect(alertSpy).not.toHaveBeenCalled();
-    const texts = renderer.root.findAllByType(Text).map((t) => String(t.props.children));
-    expect(texts.some((t) => /forbidden|went wrong|could not/i.test(t))).toBe(false);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy).toHaveBeenCalledWith('Could not claim it', "Open Home and tap I'm on it.");
     expect(activeTab(renderer)).toBe('home');
+  });
+
+  it('someone else already on it, or the task done, shows nothing', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    for (const instance of [
+      { _id: 'inst_1', state: 'escalated', claimedBy: 'user_max' },
+      { _id: 'inst_1', state: 'resolved' },
+    ]) {
+      mockCall.mockImplementation(async (ref) =>
+        getFunctionName(ref as never) === 'instances:claimTaskInstance' ? instance : null,
+      );
+      const renderer = await renderApp();
+      await tap(response(CLAIM_ACTION, ALERT));
+      expect(activeTab(renderer)).toBe('home');
+    }
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  it('a tap made while signed out is discarded and never claims after sign-in', async () => {
+    lastResponse = response(CLAIM_ACTION, ALERT);
+    let signedOut: ReactTestRenderer | undefined;
+    await act(async () => {
+      signedOut = create(<SignedOutFlow />);
+    });
+    // A tap arriving while the welcome screen shows is discarded as well.
+    const later = response(CLAIM_ACTION, ALERT);
+    await act(async () => {
+      lastResponse = later;
+      responseListener?.(later);
+    });
+    await act(async () => signedOut!.unmount());
+    expect(lastResponse).toBeNull();
+    await renderApp();
+    expect(calledMutations()).not.toContain('instances:claimTaskInstance');
   });
 
   it('a viewer\'s "I\'m on it" claims nothing', async () => {
@@ -462,6 +513,12 @@ describe('routeCaregiverResponse', () => {
   });
 
   it('routes a digest to Chat and everything else to Home; ignores other actions', () => {
+    /**
+     * purpose: Route a response for this household as an editor.
+     * @param data: (Record<string, unknown>) The push's custom keys.
+     * @param action: (string) The action identifier; a body tap by default.
+     * @return: (CaregiverPushRoute | null) The route.
+     */
     const route = (data: Record<string, unknown>, action = DEFAULT_ACTION) =>
       routeCaregiverResponse(response(action, data), HOUSEHOLD, true);
     expect(route({ kind: 'digest' })).toEqual({ tab: 'chat', claimInstanceId: null });

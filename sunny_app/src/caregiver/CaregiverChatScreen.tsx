@@ -11,10 +11,11 @@
 // while any request is queued or running (the server allows one at a time per conversation).
 // Viewers cannot send (the server requires an editor), so they see a note instead of the input;
 // the thread they read holds the digest posts only. The draft text lives in the composer, so
-// typing does not re-render the transcript. The screen is keyboard-aware, sticks to the newest message, and leaves room for
-// the tab bar (useTabBarInset). The transcript is shared by every editor: messages from other
-// caregivers carry their name above the bubble (the signed-in caregiver's id comes from
-// CaregiverApp). Sends are guarded by a ref so two taps in one frame cannot both send.
+// typing does not re-render the transcript. The screen is keyboard-aware, sticks to the newest
+// message, and leaves room for the tab bar (useTabBarInset). The transcript is shared by every
+// editor: messages from other caregivers carry their name above the bubble (the signed-in
+// caregiver's id comes from CaregiverApp). Sends are guarded by a ref so two taps in one frame
+// cannot both send.
 //
 // Last modified: 2026-11-14
 

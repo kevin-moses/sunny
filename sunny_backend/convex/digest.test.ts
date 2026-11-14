@@ -15,7 +15,9 @@
 //
 // Also: a late-synced confirm reads "(phone app, sent at 11:00 AM)".
 // Chat thread (2026-11-14): a composed digest is posted once in the caregiver chat (also when
-// nobody can be reached, and once per local day however often the tick runs); a caregiver with
+// nobody can be reached, once per local day however often the tick runs, and once when
+// complete is called twice, with one set of outbox rows); recentPosts returns the newest posts
+// first, at most the limit; a caregiver with
 // only a push token gets a row, whose push reads "<name>'s day" while the texts keep "Sunny:
 // <name>'s day"; agentRequests.transcript merges requests and posts newest first with the limit
 // on the merged list; a viewer reads posts but not requests; a senior device, another
@@ -37,6 +39,7 @@ import {
   templateDigest,
   validateDigestReply,
 } from "./lib/digestText";
+import { recentPosts } from "./lib/chatPosts";
 import type { DigestFacts, TaskFact } from "./lib/digestFacts";
 import { addInstance, createHousehold, insertRequest, makeBackend } from "./testing.helpers";
 
@@ -684,6 +687,46 @@ describe("chat thread", () => {
       localDate: "2026-11-02",
       digestId,
     });
+  });
+
+  test("complete called twice posts once and queues one set of rows", async () => {
+    const f = await setup();
+    const digestId = await pendingDigest(f);
+    for (let i = 0; i < 2; i++) {
+      await f.t.mutation(internal.digest.complete, {
+        digestId,
+        text: "All done.",
+        source: "template",
+      });
+    }
+    expect(await posts(f)).toHaveLength(1);
+    expect((await digestRows(f)).map((r) => r.recipientUserId).sort()).toEqual(["max", "pat"]);
+  });
+
+  test("recentPosts returns the newest posts first, at most the limit", async () => {
+    const f = await setup();
+    for (const [i, localDate] of ["2026-11-01", "2026-11-02", "2026-11-03"].entries()) {
+      vi.setSystemTime(CREATED + i * 60_000);
+      const digestId = await pendingDigest(f, localDate);
+      await f.t.mutation(internal.digest.complete, {
+        digestId,
+        text: `Day ${localDate}`,
+        source: "template",
+      });
+    }
+    /**
+     * purpose: Read the household's newest posts.
+     * @param limit: (number) How many at most.
+     * @return: (Promise<ChatPostView[]>) The posts, newest first.
+     */
+    const read = async (limit: number) =>
+      await f.t.run(async (ctx) => await recentPosts(ctx, f.householdId, limit));
+    expect((await read(10)).map((p) => p.localDate)).toEqual([
+      "2026-11-03",
+      "2026-11-02",
+      "2026-11-01",
+    ]);
+    expect((await read(2)).map((p) => p.body)).toEqual(["Day 2026-11-03", "Day 2026-11-02"]);
   });
 
   test("only one digest is posted per local day however often the tick runs", async () => {

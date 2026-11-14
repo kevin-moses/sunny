@@ -30,7 +30,7 @@ export interface ChatPostView {
  * @param row: (Doc<"chatPosts">) The row.
  * @return: (ChatPostView) The view.
  */
-export function toPostView(row: Doc<"chatPosts">): ChatPostView {
+function toPostView(row: Doc<"chatPosts">): ChatPostView {
   return {
     id: row._id,
     householdId: row.householdId,
@@ -47,14 +47,14 @@ export function toPostView(row: Doc<"chatPosts">): ChatPostView {
  * @param ctx: (MutationCtx) Context.
  * @param digest: (Doc<"digests">) The digest being completed.
  * @param text: (string) Its text.
- * @return: (Promise<Id<"chatPosts">>) The new post.
+ * @return: (Promise<void>) Resolves when posted.
  */
 export async function postDigest(
   ctx: MutationCtx,
   digest: Doc<"digests">,
   text: string,
-): Promise<Id<"chatPosts">> {
-  return await ctx.db.insert("chatPosts", {
+): Promise<void> {
+  await ctx.db.insert("chatPosts", {
     householdId: digest.householdId,
     kind: "digest",
     body: text,

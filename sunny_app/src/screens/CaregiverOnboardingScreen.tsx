@@ -8,7 +8,9 @@
 // nothing more: households.mine updates reactively and the app shell moves to the caregiver
 // home. A "Sign out" button (Clerk) lets the user leave with a different account; it first
 // unregisters a push token this phone may still hold from an earlier household
-// (signOutCaregiver). No notification permission is asked here: that waits for a household.
+// (signOutCaregiver). No notification permission is asked here: that waits for a household. A
+// notification tap while this screen shows (left from an earlier household) is discarded
+// (useDiscardNotificationTaps), so it cannot claim anything once a household is joined.
 //
 // Last modified: 2026-11-14
 
@@ -25,6 +27,7 @@ import { useBusyAction } from '../components/useBusyAction';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 import { signOutCaregiver } from '../notifications/caregiverPush';
+import { useDiscardNotificationTaps } from '../notifications/push';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
@@ -84,6 +87,7 @@ function Field({ label, ...input }: FieldProps) {
  */
 export function CaregiverOnboardingScreen() {
   const { signOut } = useAuth();
+  useDiscardNotificationTaps();
   const [mode, setMode] = useState<Mode>('choose');
   const [code, setCode] = useState('');
   const [seniorName, setSeniorName] = useState('');
