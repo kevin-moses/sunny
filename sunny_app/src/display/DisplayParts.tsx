@@ -22,7 +22,7 @@
 // The drawn keycaps only point at the physical Done and Talk keys; nothing here is pressable.
 // Text ignores the system text size because the canvas is a fixed page that scales as a whole.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { SymbolView } from 'expo-symbols';
 import type { SFSymbol } from 'expo-symbols';
@@ -30,7 +30,7 @@ import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';
 
-import { clockTime, displayTime, MISSED_SPOKEN } from '../day/format';
+import { clockTime, displayTime, SPOKEN } from '../day/format';
 import type { DayViewData } from '../day/types';
 import { doneQuestion, fullDate, taskIcon } from './model';
 import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
@@ -422,8 +422,9 @@ function NextCard({ item }: { item: NextItem }) {
 }
 
 /**
- * purpose: The Today screen's body: one row per task or event, and a closing line when some
- *          later rows did not fit.
+ * purpose: The Today screen's body: one row per task or event (finished rows grey with a
+ *          check, missed rows grey without one, the Now row boxed and tagged), and a closing
+ *          line when some later rows did not fit.
  * @param props: ({ rows: TodayRow[], hidden: number }) The rows and the count left out.
  * @return: (JSX.Element) The list.
  */
@@ -456,11 +457,11 @@ export function TodayBody({ rows, hidden }: { rows: TodayRow[]; hidden: number }
 function todayRowValue(mark: TodayRow['mark']): { text: string } | undefined {
   switch (mark) {
     case 'done':
-      return { text: 'Done' };
+      return { text: SPOKEN.done };
     case 'now':
-      return { text: 'Now' };
+      return { text: SPOKEN.now };
     case 'missed':
-      return { text: MISSED_SPOKEN };
+      return { text: SPOKEN.missed };
     case 'none':
       return undefined;
   }

@@ -8,7 +8,7 @@
 // the empty circle), plus the offline mark the caregiver home also uses. The home
 // display has its own parts in src/display. Calm, high contrast, no motion.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -20,7 +20,7 @@ import {
   isDone,
   isDue,
   isMissed,
-  MISSED_SPOKEN,
+  SPOKEN,
   whenText,
 } from '../day/format';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
@@ -148,7 +148,7 @@ function AgendaRow({ icon, time, text, done, missed, highlighted }: AgendaRowDat
             flex: 1,
             fontSize: 22,
             fontWeight: highlighted ? '700' : '400',
-            ...(missed ? { color: colors.secondaryText } : {}),
+            color: missed ? colors.secondaryText : colors.text,
             textDecorationLine: done ? 'line-through' : 'none',
           },
         ]}
@@ -177,14 +177,15 @@ interface AgendaRowData {
  * @return: (string) "Done", "Due now", the neutral missed wording, or an empty string.
  */
 function rowValue(done: boolean, missed: boolean, highlighted: boolean): string {
-  if (done) return 'Done';
-  if (highlighted) return 'Due now';
-  return missed ? MISSED_SPOKEN : '';
+  if (done) return SPOKEN.done;
+  if (highlighted) return SPOKEN.dueNow;
+  return missed ? SPOKEN.missed : '';
 }
 
 /**
  * purpose: Reduce an agenda line to what its row shows: tasks are checked off when done,
- *          highlighted when due and dimmed when missed; events (nothing to confirm) carry a calendar icon.
+ *          highlighted when due and dimmed when missed; events (nothing to confirm) carry a
+ *          calendar icon.
  * @param item: (AgendaItem) The task or event line.
  * @return: (AgendaRowData) The row's icon, time, text and state.
  */
@@ -212,7 +213,8 @@ function toRow(item: AgendaItem): AgendaRowData {
 
 /**
  * purpose: Today's tasks and events in time order; finished tasks are checked off, the due
- *          one is highlighted, and events (nothing to confirm) carry a calendar icon.
+ *          one is highlighted, a missed one is dimmed with its empty circle, and events
+ *          (nothing to confirm) carry a calendar icon.
  * @param props: ({ items: AgendaItem[] }) The agenda.
  * @return: (JSX.Element) The list.
  */
