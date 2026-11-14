@@ -43,15 +43,23 @@
 //
 // Env: CLERK_SECRET_KEY (missing -> 500 from /pair).
 //
-// Last modified: 2026-10-29
+// The shared response helpers (JSON, errors, no-store, 429, client IP) are lib/httpResponse.ts.
+//
+// Last modified: 2026-11-13
 
 import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { httpAction, internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
-import type { AppErrorData } from "./lib/errors";
+import {
+  convexErrorResponse,
+  errorResponse,
+  ipKey,
+  jsonResponse,
+  rateLimitedResponse,
+} from "./lib/httpResponse";
 import type { DeviceKind } from "./lib/validators";
 
 const CLERK_API = "https://api.clerk.com/v1";
@@ -59,7 +67,6 @@ const SIGN_IN_TOKEN_TTL_SECONDS = 600;
 const MAX_DEVICE_NAME_LENGTH = 100;
 const MIN_NONCE_LENGTH = 16;
 const MAX_NONCE_LENGTH = 128;
-const MAX_IP_KEY_LENGTH = 64;
 const CLERK_TIMEOUT_MS = 8000;
 const USERNAME_PREFIX = "device_";
 const USERNAME_TAKEN_CODE = "form_identifier_exists";
@@ -74,18 +81,6 @@ const rateLimiter = new RateLimiter(components.rateLimiter, {
   pairFailedPerIp: { kind: "token bucket", rate: 10, period: MINUTE, capacity: 10 },
 });
 
-/** Headers on every /pair response. */
-const NO_STORE = { "Cache-Control": "no-store" };
-
-/** HTTP status for each application error code. */
-const HTTP_STATUS: Record<AppErrorData["code"], number> = {
-  not_found: 404,
-  invalid: 400,
-  forbidden: 403,
-  unauthenticated: 401,
-  limit: 429,
-};
-
 /** The JSON body /pair accepts. */
 interface PairRequest {
   code: string;
@@ -98,49 +93,6 @@ interface PairResult {
   householdId: Id<"households">;
   deviceId: Id<"devices">;
   kind: DeviceKind;
-}
-
-/**
- * purpose: A JSON error response in the shape { error: { code, message } }.
- * @param status: (number) HTTP status.
- * @param code: (string) Machine-readable code.
- * @param message: (string) Message safe to show.
- * @param headers: (Record<string, string>, optional) Extra headers.
- * @return: (Response) The response.
- */
-function errorResponse(
-  status: number,
-  code: string,
-  message: string,
-  headers: Record<string, string> = {},
-): Response {
-  return jsonResponse({ error: { code, message } }, status, headers);
-}
-
-/**
- * purpose: A JSON response that must never be cached.
- * @param body: (unknown) JSON body.
- * @param status: (number, optional) HTTP status; default 200.
- * @param headers: (Record<string, string>, optional) Extra headers.
- * @return: (Response) The response.
- */
-function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
-  return Response.json(body, { status, headers: { ...NO_STORE, ...headers } });
-}
-
-/**
- * purpose: The client IP as far as the request headers reveal it: the rightmost
- *          x-forwarded-for entry (the one appended by the nearest proxy), else x-real-ip.
- * @param request: (Request) The HTTP request.
- * @return: (string | null) The address, or null when no header carries one.
- */
-export function clientIp(request: Request): string | null {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    const last = forwarded.split(",").pop()?.trim();
-    if (last) return last;
-  }
-  return request.headers.get("x-real-ip")?.trim() || null;
 }
 
 /**
@@ -327,17 +279,6 @@ async function deleteUserQuietly(secret: string, userId: string): Promise<void> 
 }
 
 /**
- * purpose: The per-IP rate limit key: the client IP truncated to 64 characters, so a forged
- *          header cannot create unbounded keys.
- * @param request: (Request) The HTTP request.
- * @return: (string | null) The key, or null when no IP is known.
- */
-function ipKey(request: Request): string | null {
-  const ip = clientIp(request);
-  return ip === null ? null : ip.slice(0, MAX_IP_KEY_LENGTH);
-}
-
-/**
  * purpose: Spend one request from the overall bucket.
  * @param ctx: (ActionCtx) Action context.
  * @return: (Promise<number | null>) Milliseconds to wait when limited, else null.
@@ -373,35 +314,6 @@ async function failedAttemptRetryAfter(ctx: ActionCtx, key: string | null): Prom
 async function recordFailedAttempt(ctx: ActionCtx, key: string | null): Promise<void> {
   await rateLimiter.limit(ctx, "pairFailedGlobal");
   if (key !== null) await rateLimiter.limit(ctx, "pairFailedPerIp", { key });
-}
-
-/**
- * purpose: A 429 response with Retry-After.
- * @param retryAfter: (number) Milliseconds to wait.
- * @return: (Response) The response.
- */
-function rateLimitedResponse(retryAfter: number): Response {
-  return errorResponse(429, "rate_limited", "Too many attempts. Try again shortly.", {
-    "Retry-After": String(Math.max(1, Math.ceil(retryAfter / 1000))),
-  });
-}
-
-/**
- * purpose: Map a failure from a Convex function to an HTTP error response. Application
- *          errors keep their code and message; anything else is a generic 500.
- * @param e: (unknown) The caught error.
- * @return: (Response) The response.
- */
-function convexErrorResponse(e: unknown): Response {
-  if (e instanceof ConvexError) {
-    const data = e.data as Partial<AppErrorData>;
-    const status = data.code === undefined ? undefined : HTTP_STATUS[data.code];
-    if (status !== undefined && typeof data.message === "string") {
-      return errorResponse(status, data.code!, data.message);
-    }
-  }
-  console.error(`pairing: unexpected error: ${String(e)}`);
-  return errorResponse(500, "server_error", "Pairing failed");
 }
 
 /**
@@ -490,7 +402,7 @@ export const pair = httpAction(async (ctx, request) => {
       if (retried !== null) return retried;
     }
     await recordFailedAttempt(ctx, key);
-    return convexErrorResponse(e);
+    return convexErrorResponse(e, "pairing", "Pairing failed");
   }
 
   if (!secret) {
@@ -516,7 +428,7 @@ export const pair = httpAction(async (ctx, request) => {
     });
   } catch (e) {
     await deleteUserQuietly(secret, userId);
-    return convexErrorResponse(e);
+    return convexErrorResponse(e, "pairing", "Pairing failed");
   }
 
   try {

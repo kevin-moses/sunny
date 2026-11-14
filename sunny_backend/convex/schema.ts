@@ -26,8 +26,10 @@
 // Not yet ported (later phases): storage for photos and voice clips.
 // Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
 // looks up) and listItems (the household's one shared list).
+// Device API (2026-11-13): devices.tokenHash and tokenIssuedAt (the HTTP device token, stored
+// only as a hash, index by_token_hash), screen and firmware (reported by the device).
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -39,6 +41,7 @@ import {
   confirmVia,
   deliveryChannel,
   deviceKind,
+  deviceScreen,
   digestSource,
   digestStatus,
   escalationAction,
@@ -133,9 +136,19 @@ export default defineSchema({
     // to clients (listDevices strips pairingNonce).
     pairedAt: v.optional(v.number()),
     pairingNonce: v.optional(v.string()),
+    // The device token for the HTTP device API (deviceApi.ts): only the SHA-256 hex digest of
+    // the token is stored, and when it was issued. Never returned to clients (listDevices
+    // strips tokenHash). Issuing a new token replaces the hash; deleting the row revokes it.
+    tokenHash: v.optional(v.string()),
+    tokenIssuedAt: v.optional(v.number()),
+    // What the device reported about itself through PUT /device/info: its panel in pixels
+    // and grey levels, and its firmware version (at most 40 characters).
+    screen: v.optional(deviceScreen),
+    firmware: v.optional(v.string()),
   })
     .index("by_user", ["userId"])
-    .index("by_household", ["householdId"]),
+    .index("by_household", ["householdId"])
+    .index("by_token_hash", ["tokenHash"]),
 
   pushTokens: defineTable({
     userId: v.string(),

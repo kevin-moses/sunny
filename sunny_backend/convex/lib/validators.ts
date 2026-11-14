@@ -3,8 +3,9 @@
 // by function arguments, so a type such as a task state or a local date has one
 // definition. Mirrors the Postgres enums from the Supabase schema. LIFE_CATEGORIES lists the
 // life categories in order for code that sorts or checks them (profile.ts, the profile loader).
+// deviceScreen and deviceVia are the device API's reported panel and confirm surfaces.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { v, type Infer } from "convex/values";
 
@@ -17,6 +18,18 @@ export type MemberRole = Infer<typeof memberRole>;
 export const deviceKind = v.union(v.literal("senior_phone"), v.literal("home_display"));
 /** Type of deviceKind. */
 export type DeviceKind = Infer<typeof deviceKind>;
+
+/** A device's panel as it reports it (PUT /device/info): pixels per side and grey levels. */
+export const deviceScreen = v.object({ width: v.number(), height: v.number(), greys: v.number() });
+/** Type of deviceScreen. */
+export type DeviceScreen = Infer<typeof deviceScreen>;
+
+/** The surfaces a device token may confirm from (a subset of confirmVia). */
+export const DEVICE_VIAS = ["button", "widget", "live_activity", "phone_app"] as const;
+/** Validator for a surface a device token may confirm from. */
+export const deviceVia = v.union(...DEVICE_VIAS.map((via) => v.literal(via)));
+/** Type of deviceVia. */
+export type DeviceVia = Infer<typeof deviceVia>;
 
 /** What a join code grants: a device kind or a caregiver role. */
 export const joinGrant = v.union(

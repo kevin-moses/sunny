@@ -27,7 +27,9 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Auth config (Clerk issuer, `applicationID: "convex"`) | `auth.config.ts` |
 | Access rules (`requireReader`, `requireCaregiverReader`, `requireEditor`, `requirePrimary`, `requireSenior`, device claim) | `lib/access.ts` |
 | Households, members, roles, join codes, devices, push tokens | `households.ts` |
-| Device pairing over HTTP (`POST /pair`, Clerk device users, rate limits) | `pairing.ts`, `http.ts` |
+| Device pairing over HTTP (`POST /pair`, Clerk device users, rate limits) | `pairing.ts`, `http.ts`, `lib/httpResponse.ts` (JSON, no-store, 429 and client IP helpers shared with the device API) |
+| Device API for clients without Clerk (widget, Live Activity, e-ink firmware): device token (`deviceApi.issueToken`), `GET /device/state` (ETag, 304), `POST /device/confirm`, `PUT /device/info`, rate limits, `lastSeenAt` | `deviceApi.ts`, `lib/deviceToken.ts`, `http.ts` |
+| Device state: the one server-computed object every senior surface renders (Now card, Done target, Next up, Today rows, cues with the policy's prompt instants, tuning); also `deviceApi.state` for the app | `lib/deviceState.ts`, `lib/deviceWording.ts` (wording ported from the app), `lib/escalation.ts` (when a step fires, shared with the scheduler) |
 | Tasks and escalation policies | `tasks.ts`, `lib/policies.ts` |
 | Task instances (confirm, snooze, claim, dose log, senior reminders); the rule for when a senior device may confirm (60 minutes early) and the day view's `confirmable` flag; senior undo (`undoPressedTask`, 60 s) and caregiver reopen (`reopenTaskInstance`, confirmed today) with the day view's `reopenable` flag, rules in `lib/confirmRule.ts` | `instances.ts`, `lib/confirmRule.ts` |
 | Scheduler tick (expand, open and close windows, escalation) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
@@ -84,7 +86,7 @@ The app imports only the type of the backend's generated API; after backend chan
 
 The caregiver app (`src/caregiver`, shown to a signed-in caregiver) has three tabs: Home (the week, alerts, tasks), Chat (the household agent) and About (what Sunny knows: life profile, hard questions, memory facts to confirm, family messages).
 
-Not built: the e-ink display client, widget and Live Activity (native Swift extensions to add to the Expo project).
+Not built: the e-ink display client, widget and Live Activity (native Swift extensions to add to the Expo project). Their backend is ready: the device token and HTTP device API (`sunny_backend/convex/deviceApi.ts`, described in `notes/SCHEMA.md` "Device API").
 
 ## sunny_agent
 
@@ -112,7 +114,8 @@ Style is enforced by pre-commit: `uv tool run pre-commit run --all-files` from t
 | Tasks, escalation ladder, claim | `tasks.ts`, `instances.ts`, `scheduler.ts` |
 | Day clock and Next up | `calendar.dayView`, `sunny_app/src/day` |
 | Calendar events, Google sync | `calendar.ts`, `googleCalendar.ts`, `calendarPush.ts` |
-| Done button, widget, voice confirm | `instances.confirmDueTask` (button via the app, voice via `agent.confirmDueTask`) |
+| Done button, widget, voice confirm | `instances.confirmDueTask` (button via the app, voice via `agent.confirmDueTask`); clients without Clerk confirm through `POST /device/confirm` (`deviceApi.ts`) |
+| What every senior surface shows (one rule set on the server) | `lib/deviceState.ts`, served by `GET /device/state` and `deviceApi.state`; the app still uses its own rules (`sunny_app/src/display/model.ts`, `day/useDoneAction.ts`, `display/cue.ts`) until it switches |
 | Voice (Talk) | `voice.ts`, `sunny_agent`, `sunny_app/src/voice`; on the home display `sunny_app/src/display/useDisplayVoice.ts` |
 | Display due cue (chime and spoken prompt, repeated per reprompt) | `sunny_app/src/display/useDueCue.ts`, `cue.ts`, `cueAudio.ts`; reprompt count `seniorPrompts` in `lib/today.ts` |
 | Caregiver requests to the agent | `agentRequests.ts`, `agentRuntime.ts` |

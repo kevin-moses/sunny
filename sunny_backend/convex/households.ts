@@ -9,7 +9,9 @@
 // its push tokens and schedules deletion of its Clerk user. A push token may be taken over
 // from an orphaned previous owner (see registerPushToken). pairDevice stores the pairing time
 // and the client's retry nonce on the device row so /pair can answer a retry whose first
-// response was lost (findRecentPairing); listDevices never returns the nonce.
+// response was lost (findRecentPairing); listDevices never returns the nonce or the device
+// token's hash (deviceApi.ts). Removing a device deletes its row, which revokes its device
+// token at once.
 // Google Calendar: update schedules a re-push of the events (lib/calendarSync.ts, chunked, not
 // inline) when the timezone, event notice time or senior's preferred name actually changes or
 // a pause ends; removeMember drops the removed caregiver's Google connections, links and
@@ -28,7 +30,7 @@
 // update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
 // clears it).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-13
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -650,27 +652,32 @@ export const findRecentPairing = internalQuery({
   },
 });
 
+/** A device as clients see it: without the pairing retry nonce and the device token's hash. */
+export type DeviceView = Omit<Doc<"devices">, "pairingNonce" | "tokenHash">;
+
 /**
  * purpose: The household's paired devices.
  * @param householdId: (Id<"households">) Household.
- * @return: (Omit<Doc<"devices">, "pairingNonce">[]) Devices, without the pairing retry nonce.
- *          Readers only.
+ * @return: (DeviceView[]) Devices, without the pairing retry nonce and the device token's hash
+ *          (tokenIssuedAt says whether and when a token was issued). Readers only.
  */
 export const listDevices = query({
   args: { householdId: v.id("households") },
-  handler: async (ctx, args): Promise<Omit<Doc<"devices">, "pairingNonce">[]> => {
+  handler: async (ctx, args): Promise<DeviceView[]> => {
     await requireReader(ctx, args.householdId);
     const rows = await ctx.db
       .query("devices")
       .withIndex("by_household", (q) => q.eq("householdId", args.householdId))
       .collect();
-    return rows.map(({ pairingNonce: _nonce, ...device }) => device);
+    return rows.map(({ pairingNonce: _nonce, tokenHash: _hash, ...device }) => device);
   },
 });
 
 /**
- * purpose: Unpair a device. Editors only. Also deletes the device's push tokens and schedules
- *          deletion of its Clerk user (best effort, see pairing.deleteClerkUser).
+ * purpose: Unpair a device. Editors only. Deleting the row revokes its device token at once
+ *          (the HTTP device API resolves the token through the row). Also deletes the device's
+ *          push tokens and schedules deletion of its Clerk user (best effort, see
+ *          pairing.deleteClerkUser).
  * @param householdId: (Id<"households">) Household.
  * @param deviceId: (Id<"devices">) Device to remove.
  * @return: (null)

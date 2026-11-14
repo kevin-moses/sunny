@@ -20,9 +20,12 @@
 // tickHouseholdCore is the pure pass tests call directly. Anytime instances (tasks without a
 // time, lib/anytime.ts) open and close like the others but never fire a step, so they never
 // notify anyone; their window ends at the next local midnight when the task
-// also occurs the next day, else two midnights after their date.
+// also occurs the next day, else two midnights after their date. When a step is due, whether it
+// is held back (snooze, claim) and which steps a task can fire (active, with a policy) is
+// lib/escalation.ts, which the device state also uses to predict when the next senior prompt
+// goes out.
 //
-// Last modified: 2026-11-04
+// Last modified: 2026-11-14
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -35,8 +38,9 @@ import { isAnytimeInstance } from "./lib/anytime";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
 import { announceEvents } from "./lib/eventNotices";
+import { activePolicySteps, stepDueAt, stepHeld } from "./lib/escalation";
 import { changeInstance, expandTasks } from "./lib/schedule";
-import { formatTime12, minutes } from "./lib/time";
+import { formatTime12 } from "./lib/time";
 import type { EscalationStep } from "./lib/validators";
 
 /** Households a tick page schedules; the next page is scheduled as a follow-up. */
@@ -85,7 +89,8 @@ async function openWindows(
 /**
  * purpose: The escalation steps that are due on an instance now and not yet fired. A step is
  *          due once now reaches max(windowStart, createdAt) plus its offset; prompts wait
- *          while snoozed; skipIfClaimed steps are skipped once claimed. Within each kind
+ *          while snoozed; skipIfClaimed steps are skipped once claimed (lib/escalation.ts
+ *          stepDueAt and stepHeld, shared with the device state's promptTimes). Within each kind
  *          (prompt, caregiver alert) only the latest due step, by current position in the
  *          policy, is marked to notify. Fired steps are matched by step id, so editing the
  *          policy does not change which steps count as fired.
@@ -95,14 +100,11 @@ async function openWindows(
  * @return: (DueStep[]) Due steps in policy order.
  */
 function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: number): DueStep[] {
-  const base = Math.max(instance.windowStart, instance.createdAt);
   const fired = new Set(instance.firedSteps.map((f) => f.stepId));
-  const snoozed = instance.snoozedUntil !== undefined && now < instance.snoozedUntil;
   const due: DueStep[] = [];
   for (const step of steps) {
-    if (fired.has(step.id) || now < base + minutes(step.offsetMinutes)) continue;
-    if (step.action === "prompt_senior" && snoozed) continue;
-    if (step.skipIfClaimed && instance.claimedBy !== undefined) continue;
+    if (fired.has(step.id) || now < stepDueAt(instance, step)) continue;
+    if (stepHeld(instance, step, now)) continue;
     due.push({ step, notify: false });
   }
   for (const isPrompt of [true, false]) {
@@ -197,11 +199,9 @@ async function fireSteps(
       .collect();
     for (const instance of open) {
       if (instance.windowEnd <= now || isAnytimeInstance(instance)) continue;
-      const task = await ctx.db.get(instance.taskId);
-      if (!task || !task.active || task.escalationPolicyId === undefined) continue;
-      const policy = await ctx.db.get(task.escalationPolicyId);
-      if (!policy) continue;
-      const due = dueSteps(instance, policy.steps, now);
+      const steps = await activePolicySteps(ctx, await ctx.db.get(instance.taskId));
+      if (steps === null) continue;
+      const due = dueSteps(instance, steps, now);
       if (due.length === 0) continue;
       await ctx.db.patch(instance._id, {
         firedSteps: [

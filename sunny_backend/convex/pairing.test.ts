@@ -7,20 +7,21 @@
 // network errors (502, nothing left behind), request validation, the overall bucket and the
 // failed-attempt buckets (global and per-IP, 429 with Retry-After), the lost-response retry
 // with pairingNonce (same Clerk user, username patched on when missing, wrong nonce and late retry give 404), no-store
-// caching, a missing CLERK_SECRET_KEY (500), clientIp header parsing, and the best-effort
-// deleteClerkUser action. No real network calls are made.
+// caching, a missing CLERK_SECRET_KEY (500), clientIp header parsing (now in
+// lib/httpResponse.ts, shared with the device API), and the best-effort deleteClerkUser
+// action. No real network calls are made.
 //
 // The clock is frozen (Date only) for every test so the rate limiter's token buckets never refill
 // mid-test, which made the 300 request test flaky under load.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-13
 
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { clientIp } from "./pairing";
+import { clientIp } from "./lib/httpResponse";
 import schema from "./schema";
 
 /** Every non-test module in the backend, for the convex-test harness. */
