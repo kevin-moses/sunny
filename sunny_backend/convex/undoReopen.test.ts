@@ -33,9 +33,16 @@
 // rule still refuses an older press with an id; a reopen of a device confirm records its id, so
 // a resend of that press (age 0) is refused, also after a later undo by the device, while a
 // reopen of a confirm without an id or of a caregiver's resolve leaves the list as it was; the
-// confirm stores and the undo clears the id;
+// confirm stores and the undo clears the id; a same-device no-op press joins confirmPressIds
+// (not audited) and its Undo applies, while a no-op from another device, on another device's
+// confirm or on a caregiver's resolve adds nothing; the cap of 4 keeps the confirming press;
+// after a take-back a resend of any id of the confirmation is refused ("This press was taken
+// back"); a reopen takes back and audits every id; an old-format undo audits the ids it took
+// back; an invalid id on a no-op is never stored; a too_late undo writes undo_not_applied; a
+// 100,000-character id leaves a small row without the id (missing and existing instance);
+// confirmInstance refuses a press id from a caregiver actor;
 // invalid ids are refused; the id is audited on the confirm, the undo and a refused press; and
-// queuedPressTakenBack and withTakenBackPressId directly.
+// queuedPressTakenBack and withTakenBackPressIds directly.
 //
 // Last modified: 2026-11-14
 
@@ -46,14 +53,19 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { confirmInstance } from "./instances";
 import {
+  MAX_CONFIRM_PRESS_IDS,
   MAX_TAKEN_BACK_PRESS_IDS,
+  PRESS_BEFORE_TAKE_BACK,
+  PRESS_ID_NOT_VALID,
+  PRESS_TAKEN_BACK,
+  withConfirmPressId,
   SENIOR_UNDO_MS,
   caregiverCanReopen,
   pressWasTakenBack,
   queuedPressTakenBack,
   reopenedState,
   seniorCanUndo,
-  withTakenBackPressId,
+  withTakenBackPressIds,
 } from "./lib/confirmRule";
 import schema from "./schema";
 
@@ -433,7 +445,7 @@ describe("undoPressedTask", () => {
     expect((await row(f)).state).toBe("confirmed");
   });
 
-  test("too late changes nothing and writes no audit row", async () => {
+  test("too late changes nothing and writes one undo_not_applied row", async () => {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
     await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
@@ -441,7 +453,17 @@ describe("undoPressedTask", () => {
     const auditCount = (await audits(f)).length;
     expect(await undoAs(f, "phone", "2027-03-14T12:07:00Z")).toEqual({ status: "too_late" });
     expect(await row(f)).toEqual(before);
-    expect((await audits(f)).length).toBe(auditCount);
+    const rows = await audits(f);
+    expect(rows.length).toBe(auditCount + 1);
+    expect(rows.at(-1)).toMatchObject({
+      action: "undo_not_applied",
+      detail: {
+        reason: "The task is not confirmed by this device within the undo window",
+        undoneAgoMs: 0,
+        tappedAt: Date.parse("2027-03-14T12:07:00Z"),
+        receivedAt: Date.parse("2027-03-14T12:07:00Z"),
+      },
+    });
   });
 
   test("another device's confirm is too_late", async () => {
@@ -1314,7 +1336,7 @@ describe("press ids", () => {
     const { f, result } = await resentPressScenario(true);
     expect(result).toMatchObject({ status: "confirmed" });
     expect((await row(f)).state).toBe("confirmed");
-    expect((await row(f)).confirmPressId).toBe(B);
+    expect((await row(f)).confirmPressIds).toEqual([B]);
   });
 
   test("(a) without ids the time rule still refuses that second press, as before", async () => {
@@ -1331,7 +1353,7 @@ describe("press ids", () => {
     expect(await undo(f, "2027-03-14T12:05:30Z", 20_000, A)).toEqual({ status: "too_late" });
     const after = await row(f);
     expect(after.state).toBe("confirmed");
-    expect(after.confirmPressId).toBe(B);
+    expect(after.confirmPressIds).toEqual([B]);
   });
 
   test("(b) without ids the resent undo still takes the later press back, as before", async () => {
@@ -1442,9 +1464,9 @@ describe("press ids", () => {
   test("the confirm stores the id and an undo clears it and records it", async () => {
     const f = await dueFixture();
     await press(f, "2027-03-14T12:05:00Z", 0, A);
-    expect((await row(f)).confirmPressId).toBe(A);
+    expect((await row(f)).confirmPressIds).toEqual([A]);
     await undo(f, "2027-03-14T12:05:10Z", 0, A);
-    expect((await row(f)).confirmPressId).toBeUndefined();
+    expect((await row(f)).confirmPressIds).toBeUndefined();
     expect((await row(f)).takenBackPressIds).toEqual([A]);
   });
 
@@ -1473,7 +1495,202 @@ describe("press ids", () => {
     expect(changes.at(-2)!.detail).toMatchObject({ to: "confirmed", pressId: A });
     expect(changes.at(-1)!.detail).toMatchObject({ undo: true, pressId: A });
     const refused = rows.filter((r) => r.action === "press_not_applied").at(-1)!;
-    expect(refused.detail).toMatchObject({ pressId: A });
+    expect(refused.detail).toMatchObject({ pressId: A, reason: PRESS_TAKEN_BACK });
+  });
+
+  /** A third well-formed press id. */
+  const C = "pressCCCCCCCCCCCCCCC";
+
+  /**
+   * purpose: Send a queued press from a given device identity.
+   * @param f: (Fixture) Fixture.
+   * @param subject: (string) "phone" or "display".
+   * @param iso: (string) UTC instant it arrives.
+   * @param pressId: (string) Its id.
+   * @return: (Promise<object>) The PressResult.
+   */
+  async function pressFrom(f: Fixture, subject: string, iso: string, pressId: string) {
+    at(iso);
+    return await f.t.withIdentity({ subject }).mutation(api.instances.confirmPressedTask, {
+      instanceId: f.instanceId,
+      via: "button",
+      pressedAgoMs: 0,
+      pressId,
+    });
+  }
+
+  test("a same-device press that lands as a no-op joins the confirmation and its Undo applies", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    const auditCount = (await audits(f)).length;
+    expect(await press(f, "2027-03-14T12:05:05Z", 0, B)).toMatchObject({ status: "confirmed" });
+    expect((await row(f)).confirmPressIds).toEqual([A, B]);
+    expect((await audits(f)).length).toBe(auditCount);
+    expect(await undo(f, "2027-03-14T12:05:10Z", 0, B)).toMatchObject({ status: "undone" });
+    const after = await row(f);
+    expect(after.state).toBe("due");
+    expect(after.confirmPressIds).toBeUndefined();
+    expect(after.takenBackPressIds).toEqual([A, B]);
+  });
+
+  test("a no-op press from another device user adds no id, and its undo is too_late", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await pressFrom(f, "display", "2027-03-14T12:05:05Z", C)).toMatchObject({
+      status: "confirmed",
+    });
+    expect((await row(f)).confirmPressIds).toEqual([A]);
+    const undone = await f.t
+      .withIdentity({ subject: "display" })
+      .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId, pressId: C });
+    expect(undone).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("a no-op press on a caregiver's resolve adds no id", async () => {
+    const f = await dueFixture();
+    await confirmAs(f, "max", "2027-03-14T12:05:00Z");
+    await press(f, "2027-03-14T12:05:05Z", 0, A);
+    expect((await row(f)).confirmPressIds).toBeUndefined();
+    expect(await undo(f, "2027-03-14T12:05:10Z", 0, A)).toEqual({ status: "too_late" });
+  });
+
+  test("a no-op press on another device's confirm adds no id", async () => {
+    const f = await dueFixture();
+    await pressFrom(f, "display", "2027-03-14T12:05:00Z", C);
+    await press(f, "2027-03-14T12:05:05Z", 0, A);
+    expect((await row(f)).confirmPressIds).toEqual([C]);
+    expect(await undo(f, "2027-03-14T12:05:10Z", 0, A)).toEqual({ status: "too_late" });
+  });
+
+  test("the cap of 4 keeps the confirming press, and its Undo still applies", async () => {
+    const f = await dueFixture();
+    const others = ["n1", "n2", "n3", "n4"].map((n) => `press${n}xxxxxxxxxxxxx`);
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    for (const [i, id] of others.entries()) {
+      await press(f, `2027-03-14T12:05:0${i + 1}Z`, 0, id);
+    }
+    expect((await row(f)).confirmPressIds).toEqual([A, ...others.slice(1)]);
+    expect(await undo(f, "2027-03-14T12:05:10Z", 0, A)).toMatchObject({ status: "undone" });
+  });
+
+  test("after the take-back a resend of any id of the confirmation is refused", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await press(f, "2027-03-14T12:05:05Z", 0, B);
+    await undo(f, "2027-03-14T12:05:10Z", 0, B);
+    for (const id of [A, B]) {
+      expect(await press(f, "2027-03-14T12:05:20Z", 0, id)).toMatchObject({
+        status: "rejected",
+        reason: PRESS_TAKEN_BACK,
+      });
+    }
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test("a resend of an undone press on a later confirm does not join it, so its resent undo is too_late", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await undo(f, "2027-03-14T12:05:10Z", 0, A);
+    await press(f, "2027-03-14T12:05:20Z", 0, B);
+    await press(f, "2027-03-14T12:05:25Z", 0, A);
+    expect((await row(f)).confirmPressIds).toEqual([B]);
+    expect(await undo(f, "2027-03-14T12:05:30Z", 20_000, A)).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("a reopen takes back every id of the confirmation and audits them", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await press(f, "2027-03-14T12:05:05Z", 0, B);
+    const reopened = await reopenAs(f, "pat", "2027-03-14T12:06:00Z");
+    expect(reopened.takenBackPressIds).toEqual([A, B]);
+    expect(reopened.confirmPressIds).toBeUndefined();
+    const last = (await audits(f)).filter((r) => r.action === "state_change").at(-1)!;
+    expect(last.detail).toMatchObject({ reopen: true, takenBackPressIds: [A, B] });
+    expect(await press(f, "2027-03-14T12:06:10Z", 0, B)).toMatchObject({ status: "rejected" });
+  });
+
+  test("an old-format undo (no id) audits the ids it actually took back", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await undo(f, "2027-03-14T12:05:10Z", 0);
+    const last = (await audits(f)).filter((r) => r.action === "state_change").at(-1)!;
+    expect(last.detail).toMatchObject({ undo: true, takenBackPressIds: [A] });
+    expect(last.detail).not.toHaveProperty("pressId");
+  });
+
+  test("an invalid id on a no-op press is refused and never stored", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await press(f, "2027-03-14T12:05:05Z", 0, "bad id")).toMatchObject({
+      status: "rejected",
+      reason: PRESS_ID_NOT_VALID,
+    });
+    expect((await row(f)).confirmPressIds).toEqual([A]);
+  });
+
+  test("an undo answered too_late is audited with its reason, valid id, tap age and times", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await undo(f, "2027-03-14T12:05:30Z", 10_000, B)).toEqual({ status: "too_late" });
+    const row1 = (await audits(f)).filter((r) => r.action === "undo_not_applied").at(-1)!;
+    expect(row1.detail).toEqual({
+      reason: "This press is not part of the task's confirmation",
+      instanceId: f.instanceId,
+      undoneAgoMs: 10_000,
+      tappedAt: Date.parse("2027-03-14T12:05:20Z"),
+      receivedAt: Date.parse("2027-03-14T12:05:30Z"),
+      pressId: B,
+    });
+  });
+
+  test.each(["missing instance", "existing instance"])(
+    "a 100,000-character id leaves a small audit row without the id (%s)",
+    async (which) => {
+      const f = await dueFixture();
+      if (which === "missing instance") {
+        await f.t.run(async (ctx) => await ctx.db.delete(f.instanceId));
+      }
+      const huge = "x".repeat(100_000);
+      expect(await press(f, "2027-03-14T12:05:00Z", 0, huge)).toMatchObject({
+        status: "rejected",
+        reason: PRESS_ID_NOT_VALID,
+      });
+      const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+      const refused = rows.filter((r) => r.action === "press_not_applied");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]!.detail).not.toHaveProperty("pressId");
+      expect(JSON.stringify(refused[0]!.detail).length).toBeLessThan(1000);
+    },
+  );
+
+  test("confirmInstance refuses a press id from a caregiver actor", async () => {
+    const f = await dueFixture();
+    at("2027-03-14T12:05:00Z");
+    await expect(
+      f.t.run(async (ctx) => {
+        const member = await ctx.db
+          .query("householdMembers")
+          .filter((q) => q.eq(q.field("userId"), "pat"))
+          .first();
+        const actor = {
+          kind: "caregiver" as const,
+          userId: "pat",
+          householdId: f.householdId,
+          role: "primary" as const,
+          member: member!,
+        };
+        return await confirmInstance(
+          ctx,
+          actor,
+          { instanceId: f.instanceId, via: "caregiver", pressId: A },
+          Date.now(),
+        );
+      }),
+    ).rejects.toMatchObject({
+      data: { code: "invalid", message: "Only the senior's device can send a press id" },
+    });
   });
 });
 
@@ -1486,14 +1703,25 @@ describe("queuedPressTakenBack", () => {
    * @param pressId: (string | undefined) Its id.
    * @param userId: (string) The device sending it.
    * @param instance: (object) The take-back fields.
-   * @return: (boolean) Whether it is refused.
+   * @return: (boolean) Whether it is refused (the rule gives a reason).
    */
   const refused = (
     pressedAt: number,
     pressId: string | undefined,
     userId: string,
     instance: Parameters<typeof queuedPressTakenBack>[1] = stamped,
-  ) => queuedPressTakenBack({ pressedAt, pressId, userId }, instance);
+  ) => queuedPressTakenBack({ pressedAt, pressId, userId }, instance) !== null;
+
+  test("gives the list check and the time rule different reasons", () => {
+    const undone = { ...stamped, takenBackPressIds: ["p"] };
+    expect(queuedPressTakenBack({ pressedAt: 5000, pressId: "p", userId: "x" }, undone)).toBe(
+      PRESS_TAKEN_BACK,
+    );
+    expect(queuedPressTakenBack({ pressedAt: 999, pressId: undefined, userId: "x" }, stamped)).toBe(
+      PRESS_BEFORE_TAKE_BACK,
+    );
+    expect(PRESS_TAKEN_BACK).toBe("This press was taken back");
+  });
 
   test("uses the time rule for a press without an id", () => {
     expect(refused(1000, undefined, "phone")).toBe(true);
@@ -1512,9 +1740,18 @@ describe("queuedPressTakenBack", () => {
     expect(refused(5000, "p", "phone", { ...stamped, takenBackPressIds: ["p"] })).toBe(true);
   });
 
-  test("withTakenBackPressId adds nothing for no id and caps the list", () => {
-    expect(withTakenBackPressId(undefined, undefined)).toBeUndefined();
+  test("withTakenBackPressIds adds nothing for no ids and caps the list", () => {
+    expect(withTakenBackPressIds(undefined, undefined)).toBeUndefined();
     const full = Array.from({ length: MAX_TAKEN_BACK_PRESS_IDS }, (_, i) => `id${i}`);
-    expect(withTakenBackPressId(full, "new")).toEqual([...full.slice(1), "new"]);
+    expect(withTakenBackPressIds(full, ["new"])).toEqual([...full.slice(1), "new"]);
+  });
+
+  test("withConfirmPressId keeps the confirming press first and the newest three others", () => {
+    expect(withConfirmPressId(undefined, "a")).toEqual(["a"]);
+    expect(withConfirmPressId(["a"], "a")).toEqual(["a"]);
+    let ids = ["c0"];
+    for (const id of ["n1", "n2", "n3", "n4"]) ids = withConfirmPressId(ids, id);
+    expect(ids).toEqual(["c0", "n2", "n3", "n4"]);
+    expect(ids).toHaveLength(MAX_CONFIRM_PRESS_IDS);
   });
 });

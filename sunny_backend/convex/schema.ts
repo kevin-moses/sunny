@@ -246,12 +246,14 @@ export default defineSchema({
     // senior undo, the caregiver's for a reopen. A press with an id from that same device skips
     // the time rule (lib/confirmRule.queuedPressTakenBack). Never cleared.
     confirmTakenBackBy: v.optional(v.string()),
-    // The id the phone's queue gave the press that confirmed the instance; cleared with the
-    // confirmation. A senior undo carrying a press id applies only when it matches.
-    confirmPressId: v.optional(v.string()),
-    // Ids of presses taken back (by a senior undo, or a caregiver's reopen of a device confirm
-    // that carried one), newest last, at most 8. A press resent with one of these ids is
-    // refused. Never cleared.
+    // The ids the phone's queue gave the presses that make up this confirmation: the confirming
+    // press first, then the newest presses of the same device user that landed on it as
+    // no-ops (at most 4 in all). Cleared with the confirmation. A senior undo carrying a press
+    // id applies only when its id is here.
+    confirmPressIds: v.optional(v.array(v.string())),
+    // Ids of presses taken back (every take-back, a senior undo or a caregiver's reopen,
+    // appends all of confirmPressIds), newest last, at most 8. A press resent with one of these
+    // ids is refused. Never cleared.
     takenBackPressIds: v.optional(v.array(v.string())),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),

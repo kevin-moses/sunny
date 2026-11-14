@@ -25,7 +25,7 @@
 // ticking and items past the tenth; askedAt within the conversation; and every agent function
 // in the agent-key checks.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -394,6 +394,7 @@ describe("getContext", () => {
         confirmReceivedDaysLater: null,
         confirmable: true,
         reopenable: false,
+        confirmPressIds: [],
         seniorPrompts: 0,
         snoozed: false,
         snoozedUntil: null,
