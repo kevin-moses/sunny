@@ -18,7 +18,12 @@
 // undo goes through undoPressedTask with the tap's age, order is kept per task through a server
 // error and a backoff while other tasks are sent, a press dropped for good lets its undo go,
 // stored undos survive a restart (malformed ones are ignored), an undo expires by its tap time,
-// and too_late removes the undo with a log.
+// and too_late removes the undo with a log. applyPending after an undo: own press delivered
+// shows open, own press still queued while another surface confirmed shows done, both queued
+// and the server open shows open. Press ids (expo-crypto mocked): sent with the press and the
+// same id with its undo, kept across a restart, old stored entries sent without one; stored
+// items that are not entries (an unknown restore state, a prototype key, a non-text id) are
+// dropped with a warning that gives only their count. clear() logs presses and undos.
 //
 // Last modified: 2026-11-14
 
@@ -30,7 +35,6 @@ import { convex } from '../../backend/convex';
 import { logger } from '../../logging/logger';
 import type { DayTask } from '../types';
 import {
-  applyPending,
   classifyFailure,
   createConfirmQueue,
   MAX_AGE_MS,
@@ -42,17 +46,26 @@ import {
   BACKOFF_MS,
   STUCK_LOG_EVERY_MS,
   STUCK_MS,
-  toPending,
-  toUndo,
-  latestByInstance,
   SEND_MAX_LIFETIME_MS,
   type ConfirmQueue,
   type ConnectionSource,
   type ConnectionState,
+} from '../pendingConfirms';
+import {
+  applyPending,
+  newPressId,
+  toPending,
+  toUndo,
   type PendingConfirm,
   type PendingEntry,
   type PendingUndo,
-} from '../pendingConfirms';
+} from '../pendingEntries';
+
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => `id-${String(++mockIdCounter).padStart(16, '0')}`,
+}));
+
+let mockIdCounter = 0;
 
 const mockStore = new Map<string, string>();
 let mockFailWrites = false;
@@ -95,13 +108,16 @@ const NOW = Date.parse('2026-11-09T12:00:00Z');
 const NETWORK_DOWN = (): Error => new Error('Network request failed');
 
 /**
- * purpose: Build a queued press.
+ * purpose: Build a queued press as stored before press ids existed (no id), the shape most
+ *          tests use; pass an id for a current press.
  * @param id: (string) Instance id.
  * @param pressedAt: (number) Epoch ms of the press.
+ * @param pressId: (string | undefined) The press id, or none.
  * @return: (PendingConfirm) The entry.
  */
-function entry(id: string, pressedAt = NOW): PendingConfirm {
-  return { instanceId: id as PendingConfirm['instanceId'], label: `Task ${id}`, pressedAt };
+function entry(id: string, pressedAt = NOW, pressId?: string): PendingConfirm {
+  const base = { instanceId: id as PendingConfirm['instanceId'], label: `Task ${id}`, pressedAt };
+  return pressId === undefined ? base : { ...base, pressId };
 }
 
 /**
@@ -110,6 +126,7 @@ function entry(id: string, pressedAt = NOW): PendingConfirm {
  * @param undoneAt: (number) Epoch ms of the tap.
  * @param state: (DayTask['state']) The task's state before the press.
  * @param label: (string) The task's label.
+ * @param pressId: (string | undefined) The id of the press it takes back, or none.
  * @return: (PendingUndo) The entry.
  */
 function undo(
@@ -117,14 +134,16 @@ function undo(
   undoneAt = NOW,
   state: DayTask['state'] = 'due',
   label = `Task ${id}`,
+  pressId?: string,
 ): PendingUndo {
-  return {
+  const base: PendingUndo = {
     kind: 'undo',
     instanceId: id as PendingUndo['instanceId'],
     label,
     undoneAt,
     restore: { state, confirmable: true },
   };
+  return pressId === undefined ? base : { ...base, pressId };
 }
 
 /**
@@ -468,7 +487,7 @@ describe('clear', () => {
     expect(stored()).toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(
       'PendingConfirms',
-      'Dropped queued Done presses on unpair',
+      'Dropped queued Done presses and Undos on unpair',
       expect.objectContaining({ count: 1 }),
     );
   });
@@ -549,11 +568,22 @@ describe('expiry', () => {
     expect(stored()).toEqual([entry('a')]);
   });
 
-  it('ignores stored items that are not entries', async () => {
-    mockStore.set(STORAGE_KEY, JSON.stringify([{ instanceId: 5 }, entry('a')]));
+  it('ignores stored items that are not entries, with a warning that gives only their count', async () => {
+    mockStore.set(STORAGE_KEY, JSON.stringify([{ instanceId: 5 }, entry('a'), 'secret']));
     const queue = makeQueue();
     await queue.load();
     expect(queue.getEntries()).toEqual([entry('a')]);
+    expect(logger.warning).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Ignored stored items that are not entries',
+      { count: 2 },
+    );
+  });
+
+  it('logs nothing when every stored item is an entry', async () => {
+    mockStore.set(STORAGE_KEY, JSON.stringify([entry('a')]));
+    await makeQueue().load();
+    expect(logger.warning).not.toHaveBeenCalled();
   });
 });
 
@@ -859,39 +889,49 @@ describe('applyPending', () => {
   ] as unknown as DayTask[];
 
   /**
-   * purpose: The latest-entry map of a list of entries.
+   * purpose: A queue list, for readability.
    * @param list: (PendingEntry[]) Entries, oldest first.
-   * @return: (ReadonlyMap<string, PendingEntry>) The map applyPending takes.
+   * @return: (PendingEntry[]) The same entries.
    */
-  const latest = (...list: PendingEntry[]) => latestByInstance(list);
+  const queued = (...list: PendingEntry[]): PendingEntry[] => list;
 
   it('marks queued tasks confirmed and not confirmable', () => {
-    const out = applyPending(tasks, latest(entry('a')));
+    const out = applyPending(tasks, queued(entry('a')));
     expect(out[0]).toMatchObject({ state: 'confirmed', confirmable: false });
     expect(out[1]).toBe(tasks[1]);
   });
 
   it('returns the same list when nothing is queued', () => {
-    expect(applyPending(tasks, new Map())).toBe(tasks);
+    expect(applyPending(tasks, [])).toBe(tasks);
   });
 
   it('leaves an already confirmed task as it is', () => {
-    expect(applyPending(tasks, latest(entry('c')))[2]).toBe(tasks[2]);
+    expect(applyPending(tasks, queued(entry('c')))[2]).toBe(tasks[2]);
   });
 
-  it('after an undo shows a task the server still has confirmed as it was before the press', () => {
-    const out = applyPending(tasks, latest(entry('c'), undo('c', NOW + 1, 'upcoming')));
+  it('own press delivered, undo queued: the server says confirmed and the task shows open', () => {
+    const out = applyPending(tasks, queued(undo('c', NOW + 1, 'upcoming')));
     expect(out[2]).toMatchObject({ state: 'upcoming', confirmable: true });
   });
 
-  it('after an undo leaves a task the server shows open, or resolved by a caregiver', () => {
-    const out = applyPending(tasks, latest(entry('a'), undo('a'), undo('d')));
+  it('own press still queued ahead of the undo and confirmed by another surface: shows done', () => {
+    const out = applyPending(tasks, queued(entry('c'), undo('c', NOW + 1)));
+    expect(out[2]).toBe(tasks[2]);
+    expect(out[2]).toMatchObject({ state: 'confirmed', confirmable: false });
+  });
+
+  it('press and undo both queued and the server not done: shows open as the server says', () => {
+    const out = applyPending(tasks, queued(entry('a'), undo('a', NOW + 1)));
     expect(out[0]).toBe(tasks[0]);
-    expect(out[3]).toBe(tasks[3]);
+    expect(out[0]).toMatchObject({ state: 'due', confirmable: true });
+  });
+
+  it('after an undo leaves a task resolved by a caregiver as it is', () => {
+    expect(applyPending(tasks, queued(undo('d')))[3]).toBe(tasks[3]);
   });
 
   it('press, undo, press again reads confirmed', () => {
-    const out = applyPending(tasks, latest(entry('a'), undo('a', NOW + 1), entry('a', NOW + 2)));
+    const out = applyPending(tasks, queued(entry('a'), undo('a', NOW + 1), entry('a', NOW + 2)));
     expect(out[0]).toMatchObject({ state: 'confirmed', confirmable: false });
   });
 });
@@ -999,13 +1039,85 @@ describe('toUndo', () => {
       state: 'due',
       confirmable: true,
     } as unknown as DayTask;
-    expect(toUndo(task, 9)).toEqual(undo('a', 9, 'due', 'Pills'));
+    expect(toUndo(task, 9, 'pid-0000000000000001')).toEqual(
+      undo('a', 9, 'due', 'Pills', 'pid-0000000000000001'),
+    );
   });
 });
 
 describe('toPending', () => {
-  it('builds an entry from a task and the press time', () => {
+  it('builds an entry from a task, the press time and the press id', () => {
     const task = { instanceId: 'a', displayLabel: 'Pills' } as unknown as DayTask;
-    expect(toPending(task, 7)).toEqual({ instanceId: 'a', label: 'Pills', pressedAt: 7 });
+    expect(toPending(task, 7, 'pid-0000000000000001')).toEqual({
+      instanceId: 'a',
+      label: 'Pills',
+      pressedAt: 7,
+      pressId: 'pid-0000000000000001',
+    });
+  });
+});
+
+describe('press ids', () => {
+  /** A press id in the server's accepted form. */
+  const PID = 'pid-0000000000000001';
+
+  /**
+   * purpose: The arguments of the sent calls, in order.
+   * @return: (unknown[]) Arguments.
+   */
+  const sentArgs = (): unknown[] => mockMutation.mock.calls.map((c) => c[1]);
+
+  it('newPressId comes from the platform CSPRNG', () => {
+    expect(newPressId()).toMatch(/^id-\d{16}$/);
+  });
+
+  it('sends the press id with the press and the same id with its undo', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a', NOW, PID));
+    await queue.enqueue(undo('a', NOW + 1, 'due', 'Task a', PID));
+    mockMutation.mockImplementation(async (ref) =>
+      getFunctionName(ref as never) === 'instances:undoPressedTask'
+        ? { status: 'undone' }
+        : { status: 'confirmed' },
+    );
+    jest.setSystemTime(NOW + 5000);
+    await queue.replay();
+    expect(sentArgs()).toEqual([
+      { instanceId: 'a', via: 'phone_app', pressedAgoMs: 5000, pressId: PID },
+      { instanceId: 'a', undoneAgoMs: 4999, pressId: PID },
+    ]);
+  });
+
+  it('keeps the ids across a restart', async () => {
+    await makeQueue().enqueue(entry('a', NOW, PID));
+    await makeQueue().enqueue(undo('a', NOW + 1, 'due', 'Task a', PID));
+    expect(stored()).toEqual([entry('a', NOW, PID), undo('a', NOW + 1, 'due', 'Task a', PID)]);
+    const restarted = makeQueue();
+    await restarted.replay();
+    expect(sentArgs().map((a) => (a as { pressId?: string }).pressId)).toEqual([PID, PID]);
+  });
+
+  it('sends an old stored press and undo (no id) without one', async () => {
+    mockStore.set(STORAGE_KEY, JSON.stringify([entry('a'), undo('a', NOW + 1)]));
+    await makeQueue().replay();
+    expect(sentArgs()).toEqual([
+      { instanceId: 'a', via: 'phone_app', pressedAgoMs: 0 },
+      { instanceId: 'a', undoneAgoMs: 0 },
+    ]);
+  });
+
+  it('ignores a stored undo whose saved state is not a known state, or whose id is not text', async () => {
+    const badState = { ...undo('x'), restore: { state: 'gone', confirmable: true } };
+    const badProto = { ...undo('y'), restore: { state: 'toString', confirmable: true } };
+    const badId = { ...entry('z'), pressId: 7 };
+    mockStore.set(STORAGE_KEY, JSON.stringify([badState, badProto, badId, entry('a')]));
+    const queue = makeQueue();
+    await queue.load();
+    expect(queue.getEntries()).toEqual([entry('a')]);
+    expect(logger.warning).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Ignored stored items that are not entries',
+      { count: 3 },
+    );
   });
 });

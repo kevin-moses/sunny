@@ -4,23 +4,28 @@
 // earlier-listed upcoming task, otherwise the first upcoming task that is confirmable, never an
 // unconfirmable, missed or anytime task. The real useDoneAction hook over a real queue and the
 // real callMutation / toBackendError, with only convex.mutation (the network) and AsyncStorage
-// (in memory) stubbed: a press is stored before "Checked off" shows and is sent with via
-// phone_app and the press time; offline it is stored, not sent, and sent after the connection
-// returns or the app restarts; a network failure keeps the press while the senior still sees
-// "Checked off"; presses inside the gap and while being stored are ignored; the button is
-// withdrawn for the settle period (two tasks due: a doubting second press sends nothing, then
-// the next task is offered and its line is not shown under another task's button); a storage
-// failure says so and keeps the task offered; a permanent rejection shows a calm line;
-// announcements; nothing happens after unmount. Undo on the phone: offered and announced after
-// a press, gone 30 s after the press itself (also when the press was stored late), replaced by
-// a newer press, never hiding another task's Done; tapping it takes effect at once and the undo
-// is sent after the press with the tap's age, online, offline, and as press, Undo, press again;
-// too_late and permanent failures drop it with a log and no message; a network failure retries;
-// a queued Undo survives a restart (with no offer after it); a double tap queues one; an Undo
-// that cannot be stored is offered again. usePendingConfirms: the latest entry per task follows
-// the queue, load at mount, replay at mount. DoneCard: label, due time for an early task,
-// exactly one button with its label, onPress, message only, nothing, the Undo line under
-// another task's Done with its label, and its large secondary look.
+// (in memory) stubbed, and expo-crypto's randomUUID counting up: a press is stored before its
+// one line ("<label> done.", the Undo line; offline with the "will be sent" note) shows and is
+// announced, and it is sent with via phone_app, the press time and its press id; offline it is
+// stored, not sent, and sent after the connection returns or the app restarts; a network
+// failure keeps the press while the senior still sees it done; presses inside the gap and while
+// being stored are ignored; the button is withdrawn for the settle period (two tasks due: a
+// doubting second press sends nothing, then the next task is offered); a storage failure says
+// so (that line clears after MESSAGE_MS) and keeps the task offered; a permanent rejection
+// shows nothing new; nothing happens after unmount and every timer the hook armed (the Undo
+// offer's included) is cleared. Undo on the phone: offered and announced after a press, gone 30
+// seconds (the literal) after the press itself (also when the press was stored late), replaced
+// by a newer press, never hiding another task's Done; tapping it withdraws the offer, keeps the
+// settle block until the undo is stored and then lifts it and announces "<label> is not done.";
+// a failed or timed-out undo store brings the offer back with the settle block, and a timed-out
+// write that lands later withdraws it and lifts the block; the undo is sent after the press with
+// the tap's age and the press's id, online, offline, and as press, Undo, press again (each press
+// with its own id); too_late and permanent failures drop it with a log and no message; a
+// network failure retries; a queued Undo survives a restart with its id (no offer after it); a
+// double tap queues one. usePendingConfirms: the queued entries follow the queue, load at
+// mount, replay at mount. DoneCard: label, due time for an early task, exactly one button with
+// its label, onPress, message only, nothing, the Undo line under another task's Done with its
+// label, and its large secondary look.
 //
 // Last modified: 2026-11-14
 
@@ -36,14 +41,12 @@ import { logger } from '../../logging/logger';
 import { DoneCard, type UndoOffer } from '../../components/DayComponents';
 import { colors } from '../../theme/colors';
 import {
-  applyPending,
   createConfirmQueue,
-  latestByInstance,
   sendConfirm,
   STORAGE_KEY,
   type ConfirmQueue,
-  type PendingEntry,
 } from '../pendingConfirms';
+import { applyPending, type PendingEntry } from '../pendingEntries';
 import type { DayTask } from '../types';
 import {
   dayIsCurrent,
@@ -58,6 +61,12 @@ import {
   type DoneAction,
 } from '../useDoneAction';
 import { usePendingConfirms } from '../usePendingConfirms';
+
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => `press-${String(++mockIdCounter).padStart(16, '0')}`,
+}));
+
+let mockIdCounter = 0;
 
 const mockStore = new Map<string, string>();
 let mockFailWrites = false;
@@ -96,6 +105,9 @@ jest.mock('../../theme/ThemeProvider', () => ({ useTheme: () => ({ accentColor: 
 const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const mounted: ReactTestRenderer[] = [];
 let announce: jest.SpiedFunction<typeof AccessibilityInfo.announceForAccessibility>;
+let announceQueued: jest.SpiedFunction<
+  typeof AccessibilityInfo.announceForAccessibilityWithOptions
+>;
 const NOW = Date.parse('2026-11-09T08:00:00Z');
 
 /**
@@ -285,6 +297,9 @@ describe('useDoneAction', () => {
     announce = jest
       .spyOn(AccessibilityInfo, 'announceForAccessibility')
       .mockImplementation(() => {});
+    announceQueued = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+      .mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -292,19 +307,23 @@ describe('useDoneAction', () => {
       mounted.splice(0).forEach((renderer) => renderer.unmount());
     });
     announce.mockRestore();
+    announceQueued.mockRestore();
     jest.useRealTimers();
   });
 
-  it('stores the press, shows and announces the result, and sends it with the press time', async () => {
+  it('stores the press, shows and announces one Undo line, and sends it with its time and id', async () => {
     const h = renderDone(makeQueue(), task());
     await press(h);
-    expect(h.get().message).toBe('Checked off: Morning pills.');
-    expect(announce).toHaveBeenCalledWith('Checked off: Morning pills.');
+    expect(h.get().message).toBeNull();
+    expect(h.get().undo).toEqual({ label: 'Morning pills', text: 'Morning pills done.' });
+    expect(announce).not.toHaveBeenCalled();
+    expect(announceQueued).toHaveBeenCalledWith('Morning pills done. Undo', { queue: true });
     expect(mockMutation).toHaveBeenCalledTimes(1);
     expect(mockMutation.mock.calls[0][1]).toEqual({
       instanceId: 'inst1',
       via: 'phone_app',
       pressedAgoMs: 0,
+      pressId: expect.stringMatching(/^press-\d{16}$/),
     });
     expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toEqual([]);
   });
@@ -314,7 +333,7 @@ describe('useDoneAction', () => {
     const h = renderDone(makeQueue(), task());
     await press(h);
     expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toHaveLength(1);
-    expect(h.get().message).toBe('Checked off: Morning pills.');
+    expect(h.get().undo?.text).toBe('Morning pills done.');
   });
 
   it('offline: stores without sending, says it will be sent, and sends after reconnect', async () => {
@@ -322,8 +341,13 @@ describe('useDoneAction', () => {
     const h = renderDone(queue, task(), true);
     await press(h);
     expect(mockMutation).not.toHaveBeenCalled();
-    expect(h.get().message).toBe(
-      'Checked off: Morning pills. It will be sent when the internet is back.',
+    expect(h.get().message).toBeNull();
+    expect(h.get().undo?.text).toBe(
+      'Morning pills done. It will be sent when the internet is back.',
+    );
+    expect(announceQueued).toHaveBeenCalledWith(
+      'Morning pills done. It will be sent when the internet is back. Undo',
+      { queue: true },
     );
     await act(async () => {
       await queue.replay();
@@ -347,11 +371,11 @@ describe('useDoneAction', () => {
     );
   });
 
-  it('a network failure keeps the press and the senior still sees "Checked off"', async () => {
+  it('a network failure keeps the press and the senior still sees it done', async () => {
     mockMutation.mockRejectedValue(new Error('Network request failed'));
     const h = renderDone(makeQueue(), task());
     await press(h);
-    expect(h.get().message).toBe('Checked off: Morning pills.');
+    expect(h.get().undo?.text).toBe('Morning pills done.');
     expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toHaveLength(1);
   });
 
@@ -381,9 +405,11 @@ describe('useDoneAction', () => {
     expect(mockMutation).not.toHaveBeenCalled();
   });
 
-  it('clears the result line after MESSAGE_MS', async () => {
+  it('clears the press-again line after MESSAGE_MS', async () => {
+    mockFailWrites = true;
     const h = renderDone(makeQueue(), task());
     await press(h);
+    expect(h.get().message).toBe(NOT_STORED_MESSAGE);
     await advance(MESSAGE_MS + 1);
     expect(h.get().message).toBeNull();
   });
@@ -393,8 +419,10 @@ describe('useDoneAction', () => {
     const h = renderDone(makeQueue(), task());
     await press(h);
     await advance(SETTLE_MS + 1);
-    expect(h.get().message).toBe('Checked off: Morning pills.');
-    expect(announce).toHaveBeenCalledTimes(1);
+    expect(h.get().message).toBeNull();
+    expect(h.get().undo?.text).toBe('Morning pills done.');
+    expect(announce).not.toHaveBeenCalled();
+    expect(announceQueued).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(
       'PendingConfirms',
       'Dropped a queued Done (rejected)',
@@ -423,13 +451,13 @@ describe('useDoneAction', () => {
       await press(h);
       h.rerender(second());
       expect(h.get().task).toBeNull();
-      expect(h.get().message).toBe('Checked off: Morning pills.');
+      expect(h.get().undo?.text).toBe('Morning pills done.');
       await advance(1000);
       await press(h);
       expect(sentIds()).toEqual(['inst1']);
     });
 
-    it('offers the next task after the settle period, without the first task line', async () => {
+    it('offers the next task after the settle period; its press replaces the Undo line', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(second());
@@ -438,7 +466,7 @@ describe('useDoneAction', () => {
       expect(h.get().message).toBeNull();
       await press(h);
       expect(sentIds()).toEqual(['inst1', 'inst2']);
-      expect(h.get().message).toBe('Checked off: Evening pills.');
+      expect(h.get().undo?.text).toBe('Evening pills done.');
     });
   });
 
@@ -451,13 +479,13 @@ describe('useDoneAction', () => {
         state: 'upcoming',
       });
 
-    it('does not offer the early task until the Checked off line has finished', async () => {
+    it('does not offer the early task until MESSAGE_MS after the press', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(early());
       await advance(SETTLE_MS + 1);
       expect(h.get().task).toBeNull();
-      expect(h.get().message).toBe('Checked off: Morning pills.');
+      expect(h.get().undo?.text).toBe('Morning pills done.');
       await advance(MESSAGE_MS - SETTLE_MS);
       expect(h.get().task?.instanceId).toBe('early1');
       expect(h.get().message).toBeNull();
@@ -518,7 +546,7 @@ describe('useDoneAction', () => {
       expect(h.get().message).toBe(NOT_STORED_MESSAGE);
     });
 
-    it('a late successful write applies the checked-off line and the settle block', async () => {
+    it('a late successful write replaces the press-again line with the Undo line and settles', async () => {
       const { queue, release } = gatedQueue();
       const h = renderDone(queue, task());
       await press(h);
@@ -527,7 +555,8 @@ describe('useDoneAction', () => {
       await act(async () => release());
       await advance(0);
       expect(sentIds()).toEqual(['inst1']);
-      expect(h.get().message).toBe('Checked off: Morning pills.');
+      expect(h.get().message).toBeNull();
+      expect(h.get().undo?.text).toBe('Morning pills done.');
       expect(h.get().task).toBeNull();
       await advance(SETTLE_MS + 1);
       h.rerender(second());
@@ -551,20 +580,28 @@ describe('useDoneAction', () => {
       await press(h);
       h.unmount();
       announce.mockClear();
+      announceQueued.mockClear();
       const timers = jest.getTimerCount();
       await act(async () => release());
       await advance(0);
       expect(announce).not.toHaveBeenCalled();
+      expect(announceQueued).not.toHaveBeenCalled();
       expect(jest.getTimerCount()).toBeLessThanOrEqual(timers + 1);
+    });
+
+    it('clears every timer it armed, the Undo offer timer included', async () => {
+      const h = renderDone(makeQueue(), task());
+      await press(h);
+      expect(h.get().undo).not.toBeNull();
+      // The hook armed two timers: the settle block and the Undo offer's expiry.
+      const before = jest.getTimerCount();
+      h.unmount();
+      expect(jest.getTimerCount()).toBe(before - 2);
     });
   });
 });
 
 describe('Undo on the phone', () => {
-  let announceQueued: jest.SpiedFunction<
-    typeof AccessibilityInfo.announceForAccessibilityWithOptions
-  >;
-
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(NOW);
@@ -614,6 +651,20 @@ describe('Undo on the phone', () => {
   }
 
   /**
+   * purpose: The press id the n-th press of this test got (the mocked CSPRNG counts up).
+   * @param n: (number) 1 for the first press of the test.
+   * @return: (string) The id.
+   */
+  function pressId(n: number): string {
+    return `press-${String(firstId + n).padStart(16, '0')}`;
+  }
+
+  let firstId = 0;
+  beforeEach(() => {
+    firstId = mockIdCounter;
+  });
+
+  /**
    * purpose: Tap Undo inside act and let promises settle.
    * @param h: (object) The rendered hook.
    * @return: (Promise<void>)
@@ -624,20 +675,23 @@ describe('Undo on the phone', () => {
     });
   }
 
-  it('offers Undo for the pressed task and announces it, queued behind the result line', async () => {
+  it('offers Undo for the pressed task as the one line and announces it, queued', async () => {
     const h = renderDone(makeQueue(), task());
     await press(h);
-    expect(h.get().undoLabel).toBe('Morning pills');
+    expect(h.get().undo).toEqual({ label: 'Morning pills', text: 'Morning pills done.' });
+    expect(h.get().message).toBeNull();
     expect(announceQueued).toHaveBeenCalledWith('Morning pills done. Undo', { queue: true });
   });
 
   it('withdraws the offer 30 seconds after the press', async () => {
+    expect(UNDO_MS).toBe(30_000);
     const h = renderDone(makeQueue(), task());
     await press(h);
-    await advance(UNDO_MS - 1);
-    expect(h.get().undoLabel).toBe('Morning pills');
+    await advance(29_999);
+    expect(h.get().undo?.label).toBe('Morning pills');
     await advance(1);
-    expect(h.get().undoLabel).toBeNull();
+    expect(h.get().undo).toBeNull();
+    expect(h.get().message).toBeNull();
   });
 
   it('counts the 30 seconds from the press, not from when the press was stored', async () => {
@@ -649,9 +703,9 @@ describe('Undo on the phone', () => {
     mockWriteGate = null;
     await act(async () => release());
     await advance(0);
-    expect(h.get().undoLabel).toBe('Morning pills');
-    await advance(UNDO_MS - 10_000);
-    expect(h.get().undoLabel).toBeNull();
+    expect(h.get().undo?.label).toBe('Morning pills');
+    await advance(20_000);
+    expect(h.get().undo).toBeNull();
   });
 
   it('a new press replaces the offer; only the latest press has one', async () => {
@@ -660,7 +714,7 @@ describe('Undo on the phone', () => {
     h.rerender(second());
     await advance(SETTLE_MS + 1);
     await press(h);
-    expect(h.get().undoLabel).toBe('Evening pills');
+    expect(h.get().undo?.label).toBe('Evening pills');
   });
 
   it('does not hide the Done button of another due task', async () => {
@@ -669,38 +723,99 @@ describe('Undo on the phone', () => {
     h.rerender(second());
     await advance(SETTLE_MS + 1);
     expect(h.get().task?.instanceId).toBe('inst2');
-    expect(h.get().undoLabel).toBe('Morning pills');
+    expect(h.get().undo?.label).toBe('Morning pills');
   });
 
-  it('online: takes effect at once and sends the undo after the press, with the tap age', async () => {
+  it('online: withdraws the offer, sends the undo after the press with the tap age and the id', async () => {
     const queue = makeQueue();
     const h = renderDone(queue, task());
     await press(h);
-    jest.setSystemTime(NOW + 5000);
+    jest.setSystemTime(NOW + 1000);
     await tapUndo(h);
-    expect(h.get().undoLabel).toBeNull();
+    expect(h.get().undo).toBeNull();
     expect(h.get().message).toBeNull();
     expect(h.get().task?.instanceId).toBe('inst1');
     await advance(0);
     expect(calls()).toEqual([
-      ['instances:confirmPressedTask', { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0 }],
-      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 0 }],
+      [
+        'instances:confirmPressedTask',
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0, pressId: pressId(1) },
+      ],
+      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 0, pressId: pressId(1) }],
     ]);
     expect(queue.getEntries()).toEqual([]);
+    expect(announceQueued).toHaveBeenLastCalledWith('Morning pills is not done.', { queue: true });
+  });
+
+  it('keeps the settle block until the undo is stored, then lifts it', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    h.rerender(second(), true);
+    let release!: () => void;
+    mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+    await tapUndo(h);
+    expect(h.get().task).toBeNull();
+    mockWriteGate = null;
+    await act(async () => release());
+    await advance(0);
+    expect(h.get().task?.instanceId).toBe('inst2');
+  });
+
+  it('re-enters the settle block when the undo cannot be stored, beside the offer again', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    h.rerender(second(), true);
+    await advance(SETTLE_MS + 1);
+    expect(h.get().task?.instanceId).toBe('inst2');
+    mockFailWrites = true;
+    await tapUndo(h);
+    await advance(0);
+    expect(h.get().undo?.label).toBe('Morning pills');
+    expect(h.get().task).toBeNull();
+    expect(h.get().message).toBeNull();
+    expect(queue.getEntries()).toHaveLength(1);
+    expect(logger.warning).toHaveBeenCalledWith(
+      'DoneAction',
+      'Could not store an Undo',
+      expect.objectContaining({ instanceId: 'inst1' }),
+    );
+  });
+
+  it('an undo write that times out and lands later withdraws the offer and lifts the block', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    h.rerender(second(), true);
+    let release!: () => void;
+    mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+    await tapUndo(h);
+    await advance(STORE_TIMEOUT_MS + 1);
+    expect(h.get().undo?.label).toBe('Morning pills');
+    expect(h.get().task).toBeNull();
+    mockWriteGate = null;
+    await act(async () => release());
+    await advance(0);
+    expect(h.get().undo).toBeNull();
+    expect(h.get().task?.instanceId).toBe('inst2');
+    expect(queue.getEntries().map((e) => e.kind ?? 'press')).toEqual(['press', 'undo']);
+    expect(announceQueued).toHaveBeenLastCalledWith('Morning pills is not done.', { queue: true });
   });
 
   it('shows the task open again and offers Done while the server still says confirmed', async () => {
     const queue = makeQueue();
-    const h = renderDone(queue, task(), true);
+    const h = renderDone(queue, task());
     await press(h);
+    mockConnected = false;
     await tapUndo(h);
     const server = [task({ state: 'confirmed', confirmable: false })];
-    const shown = applyPending(server, latestByInstance(queue.getEntries()));
+    const shown = applyPending(server, queue.getEntries());
     expect(shown[0]).toMatchObject({ state: 'due', confirmable: true });
     expect(doneTarget(shown)?.instanceId).toBe('inst1');
   });
 
-  it('offline: press then Undo are both stored and sent in order with their ages', async () => {
+  it('offline: press then Undo are both stored and sent in order with their ages and id', async () => {
     const queue = makeQueue();
     const h = renderDone(queue, task(), true);
     await press(h);
@@ -715,13 +830,16 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 600_000 },
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 600_000, pressId: pressId(1) },
       ],
-      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 590_000 }],
+      [
+        'instances:undoPressedTask',
+        { instanceId: 'inst1', undoneAgoMs: 590_000, pressId: pressId(1) },
+      ],
     ]);
   });
 
-  it('offline: press, Undo, press again are sent in that order and end with a press', async () => {
+  it('offline: press, Undo, press again are sent in that order, each press with its own id', async () => {
     const queue = makeQueue();
     const h = renderDone(queue, task(), true);
     await press(h);
@@ -729,7 +847,7 @@ describe('Undo on the phone', () => {
     await tapUndo(h);
     jest.setSystemTime(NOW + 20_000);
     await press(h);
-    expect(h.get().undoLabel).toBe('Morning pills');
+    expect(h.get().undo?.label).toBe('Morning pills');
     jest.setSystemTime(NOW + 900_000);
     await act(async () => {
       await queue.replay();
@@ -737,12 +855,15 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 900_000 },
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 900_000, pressId: pressId(1) },
       ],
-      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 890_000 }],
+      [
+        'instances:undoPressedTask',
+        { instanceId: 'inst1', undoneAgoMs: 890_000, pressId: pressId(1) },
+      ],
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 880_000 },
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 880_000, pressId: pressId(2) },
       ],
     ]);
   });
@@ -813,7 +934,7 @@ describe('Undo on the phone', () => {
     ]);
   });
 
-  it('a queued Undo survives a restart and is sent then; no Undo is offered after it', async () => {
+  it('a queued Undo survives a restart and is sent then with its id; no Undo is offered after it', async () => {
     const h = renderDone(makeQueue(), task(), true);
     await press(h);
     jest.setSystemTime(NOW + 3000);
@@ -822,16 +943,19 @@ describe('Undo on the phone', () => {
     jest.setSystemTime(NOW + 60_000);
     const restarted = makeQueue();
     const after = renderDone(restarted, task());
-    expect(after.get().undoLabel).toBeNull();
+    expect(after.get().undo).toBeNull();
     await act(async () => {
       await restarted.replay();
     });
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 60_000 },
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 60_000, pressId: pressId(1) },
       ],
-      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 57_000 }],
+      [
+        'instances:undoPressedTask',
+        { instanceId: 'inst1', undoneAgoMs: 57_000, pressId: pressId(1) },
+      ],
     ]);
   });
 
@@ -845,23 +969,6 @@ describe('Undo on the phone', () => {
       undo();
     });
     expect(queue.getEntries()).toHaveLength(2);
-  });
-
-  it('an Undo that cannot be stored is logged and offered again, with no message', async () => {
-    const queue = makeQueue();
-    const h = renderDone(queue, task(), true);
-    await press(h);
-    mockFailWrites = true;
-    await tapUndo(h);
-    await advance(0);
-    expect(h.get().undoLabel).toBe('Morning pills');
-    expect(h.get().message).toBeNull();
-    expect(queue.getEntries()).toHaveLength(1);
-    expect(logger.warning).toHaveBeenCalledWith(
-      'DoneAction',
-      'Could not store an Undo',
-      expect.objectContaining({ instanceId: 'inst1' }),
-    );
   });
 });
 
@@ -885,13 +992,13 @@ describe('usePendingConfirms', () => {
   });
 
   /**
-   * purpose: Render the hook and expose the latest map of queued entries by instance.
+   * purpose: Render the hook and expose the latest queued entries.
    * @param queue: (ConfirmQueue) The queue.
    * @return: (object) get.
    */
   function renderPending(queue: ConfirmQueue) {
-    let latest: ReadonlyMap<string, PendingEntry> = new Map();
-    const record = (value: ReadonlyMap<string, PendingEntry>): void => {
+    let latest: readonly PendingEntry[] = [];
+    const record = (value: readonly PendingEntry[]): void => {
       latest = value;
     };
     /**
@@ -913,7 +1020,7 @@ describe('usePendingConfirms', () => {
     mockMutation.mockReturnValue(new Promise(() => {}));
     const h = renderPending(makeQueue());
     await advance(0);
-    expect(h.get().has('inst1')).toBe(true);
+    expect(h.get().map((e) => e.instanceId)).toEqual(['inst1']);
     expect(sentIds()).toEqual(['inst1']);
   });
 });
@@ -1012,7 +1119,7 @@ describe('DoneCard', () => {
     const out = render({
       task: second(),
       message: null,
-      undo: { label: 'Morning pills', onPress: onUndo },
+      undo: { label: 'Morning pills', text: 'Morning pills done.', onPress: onUndo },
     });
     expect(out.texts).toEqual(['Evening pills', 'Done', 'Morning pills done.', 'Undo']);
     expect(out.buttons.map((b) => b.props.accessibilityLabel)).toEqual([
@@ -1024,7 +1131,11 @@ describe('DoneCard', () => {
   });
 
   it('draws Undo as a large secondary control, not the filled Done style', () => {
-    const out = render({ task: null, message: null, undo: { label: 'Pills', onPress: () => {} } });
+    const out = render({
+      task: null,
+      message: null,
+      undo: { label: 'Pills', text: 'Pills done.', onPress: () => {} },
+    });
     expect(out.empty).toBe(false);
     const style = StyleSheet.flatten(
       (out.buttons[0].props.style as (s: { pressed: boolean }) => StyleProp<ViewStyle>)({

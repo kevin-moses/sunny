@@ -36,7 +36,8 @@ import {
   UpcomingList,
 } from '../components/DayComponents';
 import { buildAgenda } from '../day/format';
-import { applyPending, confirmQueue } from '../day/pendingConfirms';
+import { confirmQueue } from '../day/pendingConfirms';
+import { applyPending } from '../day/pendingEntries';
 import type { DayViewState } from '../day/useDayView';
 import { dayIsCurrent, doneTarget, STALE_DAY_MESSAGE, useDoneAction } from '../day/useDoneAction';
 import { usePendingConfirms } from '../day/usePendingConfirms';
@@ -69,13 +70,13 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const tasks = useMemo(() => applyPending(day?.tasks ?? [], pending), [day, pending]);
   const agenda = useMemo(
     () =>
-      pending.size === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
+      pending.length === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
     [dayView.agenda, pending, day, tasks],
   );
   const stale = day !== null && !dayIsCurrent(day, now);
   const target = stale ? null : doneTarget(tasks, isWebSocketConnected);
   const done = useDoneAction(target, isOffline, confirmQueue);
-  const undo = done.undoLabel === null ? null : { label: done.undoLabel, onPress: done.pressUndo };
+  const undo = done.undo === null ? null : { ...done.undo, onPress: done.pressUndo };
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 
   return (

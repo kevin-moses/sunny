@@ -2,10 +2,10 @@
 //
 // Purpose: The building blocks of the senior phone's day clock: the orientation header
 // ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
-// coming week, the Done card (the task's label above one large Done button, the result line
-// of the last press, and for 30 seconds after a press the Undo line "<label> done." with an
-// outlined secondary Undo button; a task that is not due yet gets a "Coming up at ..." heading
-// and an outlined "Done early" button; a task whose window closed unconfirmed is drawn dimmed,
+// coming week, the Done card (the task's label above one large Done button, a result line such
+// as "press again", and for 30 seconds after a press the Undo line "<label> done." with an
+// outlined secondary Undo button, the one line confirming the press; a task that is not due
+// yet gets a "Coming up at ..." heading and an outlined "Done early" button; a task whose window closed unconfirmed is drawn dimmed,
 // with the empty circle), plus the offline mark the caregiver home also uses. The home
 // display has its own parts in src/display. Calm, high contrast, no motion.
 //
@@ -284,20 +284,23 @@ const UNDO_BUTTON_HEIGHT = 64;
 export interface UndoOffer {
   /** The task's label. */
   label: string;
+  /** The line: "<label> done.", with the offline note when the press was made offline. */
+  text: string;
   /** Called when Undo is tapped. */
   onPress: () => void;
 }
 
 /**
- * purpose: The Undo line under the Done area: "<label> done." and an outlined secondary Undo
- *          button (not the filled Done style), at least 60 points high.
- * @param props: ({ undo: UndoOffer }) The task's label and the tap handler.
+ * purpose: The Undo line under the Done area, the one line confirming a press: its text
+ *          ("<label> done.", plus the offline note) and an outlined secondary Undo button (not
+ *          the filled Done style), at least 60 points high, labelled "Undo <label> done".
+ * @param props: ({ undo: UndoOffer }) The task's label, the line and the tap handler.
  * @return: (JSX.Element) The line.
  */
 export function UndoLine({ undo }: { undo: UndoOffer }) {
   return (
     <View style={styles.undoLine}>
-      <Text style={[styles.rounded, styles.undoLabel]}>{`${undo.label} done.`}</Text>
+      <Text style={[styles.rounded, styles.undoLabel]}>{undo.text}</Text>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Undo ${undo.label} done`}
