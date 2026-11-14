@@ -15,7 +15,7 @@
 // audits nothing. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-13
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -982,6 +982,7 @@ describe("today", () => {
       confirmedByName: null,
       resolutionNote: null,
       carriedOver: false,
+      reopenable: false,
     });
   });
 
