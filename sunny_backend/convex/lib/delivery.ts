@@ -12,11 +12,14 @@
 // memberRoute texts it. A caregiver who would have been texted before push existed is never
 // left with nothing; `channel` records sms when the text delivered it. Every push carries data
 // notification_id, kind, household_id and, with an instance, task_instance_id, and the
-// interruption level and category of lib/apnsPayload pushStyle. A push's title is payload.pushTitle when the row has
-// one (the digest: "<name>'s day", while its SMS keeps "Sunny: <name>'s day"), else the title.
+// interruption level and category of lib/apnsPayload pushStyle. A push's title is
+// payload.pushTitle when the row has one (the digest: "<name>'s day", while its SMS keeps
+// "Sunny: <name>'s day"), else the title.
 // Membership, device and content are re-checked at send time; a row with no reachable address
 // or stale content is skipped, with the reason in `detail`. A row a run started less than 5
-// minutes ago is leased: the sweeper leaves it alone.
+// minutes ago is leased: the sweeper leaves it alone. Every run counts against the row's
+// MAX_ATTEMPTS, the text after a push gave up included: a row that reaches the bound is failed
+// by delivery.begin, not texted.
 // Reachability (isReachableMember, reachableMembers): a caregiver can be reached when they have
 // a verified phone or at least one push token; lib/voiceRouting and the digest queue rows only
 // for reachable caregivers.

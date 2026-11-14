@@ -17,8 +17,9 @@
 // even with a token. APNs not configured: texted with a verified phone, held pending without.
 // Push retries running out: a caregiver with a verified phone is texted exactly once (also
 // through the workpool end to end; a second completion, the sweeper and another run text
-// nothing more), a text that also runs out ends failed, and without a phone, for a device or
-// for an SMS-only caregiver the row ends failed as before.
+// nothing more), a text that also runs out ends failed, a fallback text that fails after an
+// earlier push retry clears the mark and ends failed without another text, and without a
+// phone, for a device or for an SMS-only caregiver the row ends failed as before.
 //
 // Last modified: 2026-11-14
 
@@ -851,6 +852,28 @@ describe("caregiver push", () => {
       expect((await outboxRow(f, id)).pushState).toBeUndefined();
       await retriesRanOut(f, id);
       expect((await outboxRow(f, id)).state).toBe("failed");
+    });
+
+    test("a fallback text that fails after an earlier push retry clears the mark and ends failed", async () => {
+      const f = await setup();
+      await addTokens(f, "pat", "pat-1");
+      const id = await insertOutbox(f, { recipientUserId: "pat" });
+      // Run 1: the push fails retryably, so the row is marked.
+      apnsAnswers("failed", 503, true);
+      await expect(deliver(f, id)).rejects.toThrow(/APNs delivery failed/);
+      expect((await outboxRow(f, id)).pushState).toBe("retrying");
+      // Run 2: the push fails for good, the fallback text is tried and fails retryably.
+      apnsAnswers("unregistered", 410);
+      providerMocks.smsSend.mockResolvedValue({ ok: false, retryable: true, error: "503 busy" });
+      await expect(deliver(f, id)).rejects.toThrow(/SMS delivery failed/);
+      expect((await outboxRow(f, id)).pushState).toBeUndefined();
+      // The workpool gives up: the row fails and is not enqueued to be texted again.
+      await retriesRanOut(f, id);
+      const row = await outboxRow(f, id);
+      expect(row.state).toBe("failed");
+      expect(row.pushState).toBeUndefined();
+      expect(await deliver(f, id)).toBe("settled");
+      expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
     });
 
     test("an SMS-only caregiver whose text runs out of retries ends failed", async () => {

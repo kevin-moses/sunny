@@ -7,21 +7,20 @@
 // cannot be reached) while Clerk, Convex auth and the household queries load and while a removed
 // device is being unpaired. Signed out shows SignedOutFlow (src/screens/SignedOutFlow.tsx):
 // WelcomeScreen, which leads to the caregiver email code sign-in (CaregiverSignInScreen) or to
-// PairingScreen for a senior's device. A paired
-// senior device gets the paired home: TodayScreen on the senior phone, or ConversationScreen
-// while a voice conversation is live on the phone; DisplayScreen on the home display, which
-// shows its voice session on its own panel and status line instead (no conversation screen
-// and no voice banners). The paired home is keyed by household and owns the day view so it
-// survives a conversation. A signed-in caregiver
-// gets CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen
-// (join with an invite code or create one). Only devices get voice sessions (VoiceProvider is
-// idle without a paired device); CaregiverApp registers a caregiver's push itself. Nothing about
-// the pairing or the role is stored locally, so an offline cold start shows "Connecting..."
-// until Clerk and Convex answer. Notification taps are discarded while signed out
-// (SignedOutFlow) and during caregiver onboarding. Shows a "Trying to reconnect"
-// warning and voice errors as banners; __DEV__ builds add the DEV pill for developer settings
-// (src/screens/DevTools.tsx; on the home display it opens only on a long press, so the senior
-// cannot open it by accident, and the sheet then also shows the display's tunables).
+// PairingScreen for a senior's device. A paired senior device gets the paired home: TodayScreen
+// on the senior phone, or ConversationScreen while a voice conversation is live on the phone;
+// DisplayScreen on the home display, which shows its voice session on its own panel and status
+// line instead (no conversation screen and no voice banners). The paired home is keyed by
+// household and owns the day view so it survives a conversation. A signed-in caregiver gets
+// CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen (join
+// with an invite code or create one). Only devices get voice sessions (VoiceProvider is idle
+// without a paired device); CaregiverApp registers a caregiver's push itself. Nothing about the
+// pairing or the role is stored locally, so an offline cold start shows "Connecting..." until
+// Clerk and Convex answer. Notification taps are discarded while signed out (SignedOutFlow) and
+// during caregiver onboarding. Shows a "Trying to reconnect" warning and voice errors as
+// banners; __DEV__ builds add the DEV pill for developer settings (src/screens/DevTools.tsx; on
+// the home display it opens only on a long press, so the senior cannot open it by accident, and
+// the sheet then also shows the display's tunables).
 // Provider order: SafeAreaProvider > ThemeProvider > TuningProvider > ClerkProvider >
 // ConvexProviderWithClerk > VoiceProvider.
 //
