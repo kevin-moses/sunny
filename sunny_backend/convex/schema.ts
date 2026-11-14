@@ -27,7 +27,7 @@
 // Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
 // looks up) and listItems (the household's one shared list).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-13
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -219,10 +219,11 @@ export default defineSchema({
     // When the server received a confirm that a senior device had held (it was pressed offline)
     // and sent later; set only when that is more than LATE_SYNC_MS after confirmedAt.
     confirmReceivedAt: v.optional(v.number()),
-    // The state an editor caregiver's resolve replaced, kept so instances.undoResolve can
-    // restore it; cleared by the undo.
+    // The state any confirm (a senior device's, the voice agent's or a caregiver's resolve)
+    // replaced, kept so instances.undoPressedTask, undoResolve and reopenTaskInstance can
+    // restore it; cleared by each of them. (Named for the caregiver resolve it began with.)
     resolvedFromState: v.optional(instanceState),
-    // The snooze that resolve cleared, restored by the undo.
+    // The snooze that confirm cleared, restored by the undo (not by a reopen).
     resolvedFromSnoozedUntil: v.optional(v.number()),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),

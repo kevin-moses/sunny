@@ -1,0 +1,774 @@
+// undoReopen.test.ts
+// Purpose: Tests for the two ways back out of a confirm: undoPressedTask (a senior device takes
+// back its own Done press for 60 seconds) and reopenTaskInstance (an editor caregiver reopens a
+// task confirmed or resolved earlier today). The pure rules in lib/confirmRule.ts (seniorCanUndo,
+// caregiverCanReopen, reopenedState) are tested directly, then through the mutations.
+// Undo: restores the exact prior state (due, escalated, an early upcoming confirm, a snooze),
+// allows an offline replayed press by the time the server recorded it, returns too_late
+// (changing and auditing nothing) for a late tap, another device's confirm, a voice-agent
+// confirm, a caregiver's resolve and an instance that is gone, throws forbidden for another
+// household, a caregiver or a viewer, falls back to the clock when no prior state was recorded,
+// and audits the change with undo: true. Also: the caregiver's undoResolve still refuses a
+// device's confirm. Reopen: from confirmed and from resolved, the three clock outcomes
+// (before the window, inside it, at or after its end), the recorded prior state, anytime
+// instances, confirmed yesterday refused, not-done refused, viewers, devices and other
+// households forbidden, note and claim kept, the audit detail, the ladder continuing without
+// repeating fired steps, and the day view's `reopenable` flag agreeing with the mutation.
+// The clock is faked; the scheduler is driven through tickHousehold with an explicit now.
+//
+// Last modified: 2026-11-13
+
+import workpoolTest from "@convex-dev/workpool/test";
+import { convexTest } from "convex-test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { api, internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import { confirmInstance } from "./instances";
+import {
+  SENIOR_UNDO_MS,
+  caregiverCanReopen,
+  reopenedState,
+  seniorCanUndo,
+} from "./lib/confirmRule";
+import schema from "./schema";
+
+/** Every non-test module in the backend, for the convex-test harness. */
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./**/*.helpers.ts"]);
+
+/** The voice agent: acts for no caregiver, so its confirms have no confirmedBy. */
+const AGENT = { kind: "agent" } as const;
+
+/** The 08:00 task on 2027-03-14 (New York, daylight time): window 12:00Z to 13:00Z. */
+const WINDOW_START = Date.parse("2027-03-14T12:00:00Z");
+const WINDOW_END = Date.parse("2027-03-14T13:00:00Z");
+const MINUTE = 60_000;
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/**
+ * purpose: Set the faked clock.
+ * @param iso: (string) UTC instant.
+ * @return: (number) The same instant in epoch ms.
+ */
+function at(iso: string): number {
+  vi.setSystemTime(new Date(iso));
+  return Date.parse(iso);
+}
+
+/**
+ * purpose: A fresh in-memory backend.
+ * @return: The convex-test harness typed with the schema.
+ */
+function makeBackend() {
+  const t = convexTest(schema, modules);
+  workpoolTest.register(t, "deliveryPool");
+  return t;
+}
+
+/** The convex-test harness type. */
+type TestConvex = ReturnType<typeof makeBackend>;
+
+/** Household with Pat (primary), Max (member), Val (viewer), a phone and a display. */
+interface Fixture {
+  t: TestConvex;
+  householdId: Id<"households">;
+  medication: Id<"escalationPolicies">;
+  instanceId: Id<"taskInstances">;
+}
+
+/**
+ * purpose: Pair a device through a join code.
+ * @param t: (TestConvex) Harness.
+ * @param householdId: (Id<"households">) Household.
+ * @param owner: (string) Subject of a primary caregiver of that household.
+ * @param userId: (string) Device user id.
+ * @param grants: ("senior_phone" | "home_display") Device kind.
+ * @return: (Promise<void>)
+ */
+async function pair(
+  t: TestConvex,
+  householdId: Id<"households">,
+  owner: string,
+  userId: string,
+  grants: "senior_phone" | "home_display",
+): Promise<void> {
+  const { code } = await t
+    .withIdentity({ subject: owner })
+    .mutation(api.households.createJoinCode, { householdId, grants });
+  await t.mutation(internal.households.pairDevice, { code, userId });
+}
+
+/**
+ * purpose: Build the household with the 08:00 medication task at a faked time.
+ * @param iso: (string) UTC instant to start the clock at.
+ * @param times: (string[]) The task's times; empty makes an anytime reminder instead.
+ * @return: (Promise<Fixture>) The fixture; instanceId is the day's only instance.
+ */
+async function setup(iso = "2027-03-14T11:00:00Z", times: string[] = ["08:00"]): Promise<Fixture> {
+  at(iso);
+  const t = makeBackend();
+  const pat = t.withIdentity({ subject: "pat" });
+  const householdId = await pat.mutation(api.households.create, {
+    seniorPreferredName: "Mom",
+    timezone: "America/New_York",
+    caregiverDisplayName: "Pat",
+  });
+  for (const [user, grants] of [
+    ["max", "caregiver_member"],
+    ["val", "caregiver_viewer"],
+  ] as const) {
+    const { code } = await pat.mutation(api.households.createJoinCode, { householdId, grants });
+    await t.withIdentity({ subject: user }).mutation(api.households.redeemJoinCode, { code });
+  }
+  await pair(t, householdId, "pat", "phone", "senior_phone");
+  await pair(t, householdId, "pat", "display", "home_display");
+  const policies = await pat.query(api.tasks.listPolicies, { householdId });
+  const medication = policies.find((p) => p.systemKey === "medication")!._id;
+  await pat.mutation(api.tasks.create, {
+    householdId,
+    type: times.length > 0 ? "medication" : "reminder",
+    title: "Morning pills",
+    displayLabel: "Morning pills",
+    times,
+    escalationPolicyId: times.length > 0 ? medication : undefined,
+  });
+  const rows = await t.run(async (ctx) => await ctx.db.query("taskInstances").collect());
+  return { t, householdId, medication, instanceId: rows[0]!._id };
+}
+
+/**
+ * purpose: Run the scheduler for the fixture's household at an instant.
+ * @param f: (Fixture) Fixture.
+ * @param iso: (string) UTC instant.
+ * @return: (Promise<void>)
+ */
+async function tick(f: Fixture, iso: string): Promise<void> {
+  await f.t.mutation(internal.scheduler.tickHousehold, {
+    householdId: f.householdId,
+    now: Date.parse(iso),
+  });
+}
+
+/**
+ * purpose: Read the fixture's instance.
+ * @param f: (Fixture) Fixture.
+ * @return: (Promise<Doc<"taskInstances">>) The row.
+ */
+async function row(f: Fixture): Promise<Doc<"taskInstances">> {
+  return (await f.t.run(async (ctx) => await ctx.db.get(f.instanceId)))!;
+}
+
+/**
+ * purpose: Confirm the instance as an identity at an instant.
+ * @param f: (Fixture) Fixture.
+ * @param subject: (string) Identity ("phone", "display" or a caregiver).
+ * @param iso: (string) UTC instant.
+ * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
+ */
+async function confirmAs(f: Fixture, subject: string, iso: string): Promise<Doc<"taskInstances">> {
+  at(iso);
+  return await f.t.withIdentity({ subject }).mutation(api.instances.confirmTaskInstance, {
+    instanceId: f.instanceId,
+    via: subject === "phone" || subject === "display" ? "button" : "caregiver",
+  });
+}
+
+/**
+ * purpose: Undo the instance as an identity at an instant.
+ * @param f: (Fixture) Fixture.
+ * @param subject: (string) Identity.
+ * @param iso: (string | number) UTC instant, or epoch ms.
+ * @return: (Promise<object>) The mutation result.
+ */
+async function undoAs(f: Fixture, subject: string, iso: string | number) {
+  vi.setSystemTime(typeof iso === "number" ? iso : new Date(iso));
+  return await f.t
+    .withIdentity({ subject })
+    .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId });
+}
+
+/**
+ * purpose: Reopen the instance as an identity at an instant.
+ * @param f: (Fixture) Fixture.
+ * @param subject: (string) Identity.
+ * @param iso: (string) UTC instant.
+ * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
+ */
+async function reopenAs(f: Fixture, subject: string, iso: string): Promise<Doc<"taskInstances">> {
+  at(iso);
+  return await f.t
+    .withIdentity({ subject })
+    .mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId });
+}
+
+/**
+ * purpose: All audit rows of the instance, oldest first.
+ * @param f: (Fixture) Fixture.
+ * @return: (Promise<Doc<"auditLog">[]>) The rows.
+ */
+async function audits(f: Fixture): Promise<Doc<"auditLog">[]> {
+  const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+  return rows.filter((r) => r.entityId === f.instanceId);
+}
+
+describe("the pure rules", () => {
+  const confirmed = { state: "confirmed", confirmedBy: "phone", confirmedAt: 1_000_000 } as const;
+
+  test("seniorCanUndo allows exactly SENIOR_UNDO_MS after the confirm and no later", () => {
+    expect(seniorCanUndo(confirmed, "phone", 1_000_000 + SENIOR_UNDO_MS)).toBe(true);
+    expect(seniorCanUndo(confirmed, "phone", 1_000_000 + SENIOR_UNDO_MS + 1)).toBe(false);
+  });
+
+  test("seniorCanUndo measures from confirmReceivedAt when there is one", () => {
+    const replayed = { ...confirmed, confirmedAt: 0, confirmReceivedAt: 1_000_000 };
+    expect(seniorCanUndo(replayed, "phone", 1_000_000 + SENIOR_UNDO_MS)).toBe(true);
+    expect(seniorCanUndo(replayed, "phone", 1_000_000 + SENIOR_UNDO_MS + 1)).toBe(false);
+  });
+
+  test("seniorCanUndo refuses another user, a resolved instance and an open one", () => {
+    expect(seniorCanUndo(confirmed, "display", 1_000_000)).toBe(false);
+    expect(seniorCanUndo({ ...confirmed, state: "resolved" }, "phone", 1_000_000)).toBe(false);
+    expect(seniorCanUndo({ ...confirmed, state: "due" }, "phone", 1_000_000)).toBe(false);
+    expect(seniorCanUndo({ state: "confirmed", confirmedBy: "phone" }, "phone", 1)).toBe(false);
+  });
+
+  test("caregiverCanReopen needs a done state confirmed on today's household date", () => {
+    const tz = "America/New_York";
+    const noon = Date.parse("2027-03-14T16:00:00Z");
+    const lateNight = Date.parse("2027-03-15T03:59:59Z");
+    const midnight = Date.parse("2027-03-15T04:00:00Z");
+    expect(caregiverCanReopen({ state: "confirmed", confirmedAt: noon }, lateNight, tz)).toBe(true);
+    expect(caregiverCanReopen({ state: "resolved", confirmedAt: noon }, noon, tz)).toBe(true);
+    expect(caregiverCanReopen({ state: "confirmed", confirmedAt: noon }, midnight, tz)).toBe(false);
+    expect(caregiverCanReopen({ state: "due", confirmedAt: noon }, noon, tz)).toBe(false);
+    expect(caregiverCanReopen({ state: "confirmed" }, noon, tz)).toBe(false);
+  });
+
+  test("reopenedState follows the clock and the recorded prior state", () => {
+    const timed = { scheduledTime: "08:00", windowStart: 100, windowEnd: 200 };
+    expect(reopenedState(timed, 99)).toBe("upcoming");
+    expect(reopenedState(timed, 100)).toBe("due");
+    expect(reopenedState({ ...timed, resolvedFromState: "escalated" }, 150)).toBe("escalated");
+    expect(reopenedState({ ...timed, resolvedFromState: "due" }, 150)).toBe("due");
+    expect(reopenedState({ ...timed, resolvedFromState: "upcoming" }, 150)).toBe("due");
+    expect(reopenedState({ ...timed, resolvedFromState: "missed" }, 150)).toBe("due");
+    expect(reopenedState({ ...timed, resolvedFromState: "escalated" }, 200)).toBe("missed");
+  });
+
+  test("reopenedState never escalates an anytime instance", () => {
+    const anytime = { scheduledTime: "anytime", windowStart: 100, windowEnd: 200 };
+    expect(reopenedState({ ...anytime, resolvedFromState: "escalated" }, 150)).toBe("due");
+  });
+});
+
+describe("confirm records the state it replaced for every actor", () => {
+  test("a device confirm records the prior state and snooze", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    const snoozedUntil = Date.parse("2027-03-14T12:30:00Z");
+    await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, { snoozedUntil }));
+    const done = await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    expect(done).toMatchObject({
+      state: "confirmed",
+      resolvedFromState: "due",
+      resolvedFromSnoozedUntil: snoozedUntil,
+    });
+    expect(done.snoozedUntil).toBeUndefined();
+  });
+
+  test("a caregiver resolve still records them, and undoResolve restores them", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    const done = await confirmAs(f, "max", "2027-03-14T12:05:00Z");
+    expect(done).toMatchObject({ state: "resolved", resolvedFromState: "due" });
+    at("2027-03-14T12:05:10Z");
+    const undone = await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.undoResolve, { instanceId: f.instanceId });
+    expect(undone.state).toBe("due");
+  });
+
+  test("a caregiver cannot use undoResolve on a device's confirm", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    at("2027-03-14T12:05:10Z");
+    await expect(
+      f.t
+        .withIdentity({ subject: "max" })
+        .mutation(api.instances.undoResolve, { instanceId: f.instanceId }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+});
+
+describe("undoPressedTask", () => {
+  const CLEARED = {
+    confirmedAt: undefined,
+    confirmedBy: undefined,
+    confirmedVia: undefined,
+    confirmReceivedAt: undefined,
+    resolvedFromState: undefined,
+    resolvedFromSnoozedUntil: undefined,
+  };
+
+  test("restores a due instance and clears every confirmation field", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    const result = await undoAs(f, "phone", "2027-03-14T12:05:30Z");
+    expect(result).toMatchObject({ status: "undone", instance: { state: "due" } });
+    const after = await row(f);
+    expect(after).toMatchObject({ state: "due" });
+    for (const key of Object.keys(CLEARED)) expect(after, key).not.toHaveProperty(key);
+  });
+
+  test("restores an escalated instance", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, { state: "escalated" }));
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:30Z")).toMatchObject({ status: "undone" });
+    expect((await row(f)).state).toBe("escalated");
+  });
+
+  test("restores an upcoming instance confirmed early", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    expect((await confirmAs(f, "phone", "2027-03-14T11:30:00Z")).state).toBe("confirmed");
+    expect(await undoAs(f, "phone", "2027-03-14T11:30:20Z")).toMatchObject({ status: "undone" });
+    expect((await row(f)).state).toBe("upcoming");
+  });
+
+  test("restores the snooze the confirm cleared", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:02:00Z");
+    const snoozed = await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.snoozeTaskInstance, { instanceId: f.instanceId, minutes: 15 });
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    expect((await row(f)).snoozedUntil).toBeUndefined();
+    await undoAs(f, "phone", "2027-03-14T12:05:20Z");
+    expect(await row(f)).toMatchObject({ state: "due", snoozedUntil: snoozed.snoozedUntil });
+  });
+
+  test("an offline press recorded long ago can be undone just after it arrives", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:30:00Z");
+    await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, {
+      instanceId: f.instanceId,
+      via: "button",
+      pressedAgoMs: 20 * MINUTE,
+    });
+    const held = await row(f);
+    expect(held.confirmedAt).toBe(Date.parse("2027-03-14T12:10:00Z"));
+    expect(held.confirmReceivedAt).toBe(Date.parse("2027-03-14T12:30:00Z"));
+    expect(await undoAs(f, "phone", "2027-03-14T12:30:45Z")).toMatchObject({
+      status: "undone",
+      instance: { state: "due" },
+    });
+  });
+
+  // The harness advances the function clock a few ms per call, so these stay clear of the exact
+  // edge (the pure rule test above covers it).
+  test("works just inside SENIOR_UNDO_MS after the server recorded the confirm", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    const recorded = (await confirmAs(f, "phone", "2027-03-14T12:05:00Z")).confirmedAt!;
+    expect(await undoAs(f, "phone", recorded + SENIOR_UNDO_MS - 100)).toMatchObject({
+      status: "undone",
+    });
+  });
+
+  test("is too_late just past SENIOR_UNDO_MS and leaves the confirm in place", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    const recorded = (await confirmAs(f, "phone", "2027-03-14T12:05:00Z")).confirmedAt!;
+    expect(await undoAs(f, "phone", recorded + SENIOR_UNDO_MS + 100)).toEqual({
+      status: "too_late",
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("too late changes nothing and writes no audit row", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    const before = await row(f);
+    const auditCount = (await audits(f)).length;
+    expect(await undoAs(f, "phone", "2027-03-14T12:07:00Z")).toEqual({ status: "too_late" });
+    expect(await row(f)).toEqual(before);
+    expect((await audits(f)).length).toBe(auditCount);
+  });
+
+  test("another device's confirm is too_late", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:10Z")).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("a voice-agent confirm is too_late", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    const now = at("2027-03-14T12:05:00Z");
+    await f.t.run(
+      async (ctx) =>
+        await confirmInstance(ctx, AGENT, { instanceId: f.instanceId, via: "voice" }, now),
+    );
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:10Z")).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("a caregiver-resolved instance is too_late", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "max", "2027-03-14T12:05:00Z");
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:10Z")).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("resolved");
+  });
+
+  test("an instance that was never confirmed is too_late", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:10Z")).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test("an instance that no longer exists is too_late, not an error", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => await ctx.db.delete(f.instanceId));
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:10Z")).toEqual({ status: "too_late" });
+  });
+
+  test("another household's device is forbidden", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    const other = await f.t.withIdentity({ subject: "zed" }).mutation(api.households.create, {
+      seniorPreferredName: "Dad",
+      timezone: "America/New_York",
+      caregiverDisplayName: "Zed",
+    });
+    await pair(f.t, other, "zed", "otherphone", "senior_phone");
+    await expect(undoAs(f, "otherphone", "2027-03-14T12:05:10Z")).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test.each(["pat", "max", "val"])("caregiver %s is forbidden", async (subject) => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    await expect(undoAs(f, subject, "2027-03-14T12:05:10Z")).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("falls back to the clock when the prior state was never recorded", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    await f.t.run(
+      async (ctx) => await ctx.db.patch(f.instanceId, { resolvedFromState: undefined }),
+    );
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:20Z")).toMatchObject({
+      status: "undone",
+      instance: { state: "due" },
+    });
+  });
+
+  test("is audited as a state change by the device with undo: true", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    await undoAs(f, "phone", "2027-03-14T12:05:30Z");
+    const last = (await audits(f)).filter((r) => r.action === "state_change").at(-1)!;
+    expect(last.detail).toMatchObject({ from: "confirmed", to: "due", undo: true });
+    expect(last.actorUserId).toBe("phone");
+    expect(last.actorKind).toBe("senior_device");
+  });
+
+  test("the scheduler carries on with the restored instance", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await confirmAs(f, "phone", "2027-03-14T11:30:00Z");
+    await undoAs(f, "phone", "2027-03-14T11:30:30Z");
+    await tick(f, "2027-03-14T12:00:00Z");
+    expect((await row(f)).state).toBe("due");
+  });
+});
+
+describe("reopenTaskInstance", () => {
+  test("reopens a device's confirm inside the window to due and clears the confirm", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    const reopened = await reopenAs(f, "pat", "2027-03-14T12:20:00Z");
+    expect(reopened.state).toBe("due");
+    for (const key of [
+      "confirmedAt",
+      "confirmedBy",
+      "confirmedVia",
+      "confirmReceivedAt",
+      "resolvedFromState",
+      "resolvedFromSnoozedUntil",
+    ]) {
+      expect(reopened, key).not.toHaveProperty(key);
+    }
+  });
+
+  test("reopens a caregiver's resolve, by a different editor", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "max", "2027-03-14T12:05:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-14T12:10:00Z")).state).toBe("due");
+  });
+
+  test("an escalated instance is reopened as escalated", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, { state: "escalated" }));
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-14T12:20:00Z")).state).toBe("escalated");
+  });
+
+  test("before the window it becomes upcoming", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await confirmAs(f, "display", "2027-03-14T11:30:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-14T11:40:00Z")).state).toBe("upcoming");
+  });
+
+  test("at exactly the window end it becomes missed, and a minute before it is due", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:30:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-14T12:59:00Z")).state).toBe("due");
+    await confirmAs(f, "display", "2027-03-14T12:59:30Z");
+    expect(WINDOW_END).toBe(Date.parse("2027-03-14T13:00:00Z"));
+    expect((await reopenAs(f, "pat", "2027-03-14T13:00:00Z")).state).toBe("missed");
+  });
+
+  test("a late confirm of a missed task is reopened as missed", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await tick(f, "2027-03-14T13:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T13:10:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-14T13:20:00Z")).state).toBe("missed");
+  });
+
+  test("an instance confirmed before this change (no prior state) is reopened by the clock", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    await f.t.run(
+      async (ctx) => await ctx.db.patch(f.instanceId, { resolvedFromState: undefined }),
+    );
+    expect((await reopenAs(f, "pat", "2027-03-14T12:10:00Z")).state).toBe("due");
+  });
+
+  test("refuses a task confirmed yesterday, at household midnight", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-15T03:59:59Z")).state).toBe("missed");
+    await confirmAs(f, "display", "2027-03-15T03:59:59.5Z");
+    await expect(reopenAs(f, "pat", "2027-03-15T04:00:00Z")).rejects.toMatchObject({
+      data: { code: "invalid", message: "Only a task marked done today can be reopened." },
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("refuses a task that is not marked done", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await expect(reopenAs(f, "pat", "2027-03-14T12:10:00Z")).rejects.toMatchObject({
+      data: { code: "invalid" },
+    });
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test.each(["val", "phone", "display"])("%s is forbidden", async (subject) => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    await expect(reopenAs(f, subject, "2027-03-14T12:10:00Z")).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("a caregiver of another household is forbidden", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    await f.t.withIdentity({ subject: "zed" }).mutation(api.households.create, {
+      seniorPreferredName: "Dad",
+      timezone: "America/New_York",
+      caregiverDisplayName: "Zed",
+    });
+    await expect(reopenAs(f, "zed", "2027-03-14T12:10:00Z")).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("keeps the note and the claim", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:01:00Z");
+    const asMax = f.t.withIdentity({ subject: "max" });
+    await asMax.mutation(api.instances.claimTaskInstance, { instanceId: f.instanceId });
+    await asMax.mutation(api.instances.setTaskNote, { instanceId: f.instanceId, note: "Hi" });
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    expect(await reopenAs(f, "pat", "2027-03-14T12:10:00Z")).toMatchObject({
+      state: "due",
+      resolutionNote: "Hi",
+      claimedBy: "max",
+    });
+  });
+
+  test("is audited as a state change with reopen: true and the previous confirm", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    const confirmed = await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    await reopenAs(f, "pat", "2027-03-14T12:10:00Z");
+    const last = (await audits(f)).filter((r) => r.action === "state_change").at(-1)!;
+    expect(last.detail).toMatchObject({
+      from: "confirmed",
+      to: "due",
+      reopen: true,
+      state: "confirmed",
+      confirmedAt: confirmed.confirmedAt,
+      confirmedBy: "display",
+      confirmedVia: "button",
+    });
+    expect(last.actorUserId).toBe("pat");
+  });
+
+  test("an anytime instance reopens as due while its window is open, never escalated", async () => {
+    const f = await setup("2027-03-14T14:00:00Z", []);
+    await confirmAs(f, "display", "2027-03-14T14:00:00Z");
+    await f.t.run(
+      async (ctx) => await ctx.db.patch(f.instanceId, { resolvedFromState: "escalated" }),
+    );
+    const reopened = await reopenAs(f, "pat", "2027-03-14T14:10:00Z");
+    expect(reopened.state).toBe("due");
+    expect(reopened.scheduledTime).toBe("anytime");
+  });
+
+  test("an anytime instance reopened after its window ended is missed", async () => {
+    const f = await setup("2027-03-14T14:00:00Z", []);
+    await confirmAs(f, "display", "2027-03-14T14:00:00Z");
+    await f.t.run(
+      async (ctx) =>
+        await ctx.db.patch(f.instanceId, {
+          windowEnd: Date.parse("2027-03-14T14:05:00Z"),
+        }),
+    );
+    expect((await reopenAs(f, "pat", "2027-03-14T14:10:00Z")).state).toBe("missed");
+  });
+
+  test("the ladder continues: fired steps are not repeated and unfired ones fire", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await tick(f, "2027-03-14T12:15:00Z");
+    const policy = (await f.t.run(async (ctx) => await ctx.db.get(f.medication)))!;
+    const [first, second, third, fourth] = policy.steps;
+    const firedBefore = (await row(f)).firedSteps;
+    expect(firedBefore.map((s) => s.stepId)).toEqual([first!.id, second!.id]);
+
+    await confirmAs(f, "display", "2027-03-14T12:20:00Z");
+    await tick(f, "2027-03-14T12:30:00Z");
+    expect((await row(f)).firedSteps).toEqual(firedBefore);
+
+    expect((await reopenAs(f, "pat", "2027-03-14T12:35:00Z")).state).toBe("due");
+    await tick(f, "2027-03-14T12:35:00Z");
+    const afterReopen = await row(f);
+    expect(afterReopen.firedSteps.slice(0, 2)).toEqual(firedBefore);
+    expect(afterReopen.firedSteps.map((s) => s.stepId)).toEqual([first!.id, second!.id, third!.id]);
+    expect(afterReopen.state).toBe("escalated");
+
+    await tick(f, "2027-03-14T12:36:00Z");
+    expect((await row(f)).firedSteps).toHaveLength(3);
+    await tick(f, "2027-03-14T12:45:00Z");
+    expect((await row(f)).firedSteps.map((s) => s.stepId)).toEqual([
+      first!.id,
+      second!.id,
+      third!.id,
+      fourth!.id,
+    ]);
+  });
+});
+
+describe("the day view's reopenable flag agrees with the mutation", () => {
+  /**
+   * purpose: Read the flag for the fixture's instance and try the reopen, both at the current
+   *          faked time.
+   * @param f: (Fixture) Fixture.
+   * @return: (Promise<object>) The flag and whether the mutation was accepted.
+   */
+  async function flagAndReopen(f: Fixture): Promise<{ flag: boolean; accepted: boolean }> {
+    const pat = f.t.withIdentity({ subject: "pat" });
+    const day = await pat.query(api.calendar.dayView, { householdId: f.householdId });
+    const flag = day.tasks.find((x) => x.instanceId === f.instanceId)!.reopenable;
+    const accepted = await pat
+      .mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId })
+      .then(
+        () => true,
+        () => false,
+      );
+    return { flag, accepted };
+  }
+
+  test("an open task is not reopenable", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:10:00Z");
+    expect(await flagAndReopen(f)).toEqual({ flag: false, accepted: false });
+  });
+
+  test.each(["display", "max"])("a task %s marked done today is reopenable", async (subject) => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, subject, "2027-03-14T12:05:00Z");
+    at("2027-03-14T12:10:00Z");
+    expect(await flagAndReopen(f)).toEqual({ flag: true, accepted: true });
+  });
+
+  test("a task confirmed late tonight is reopenable until household midnight", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    at("2027-03-15T03:59:59Z");
+    expect(await flagAndReopen(f)).toEqual({ flag: true, accepted: true });
+  });
+
+  test("a task confirmed yesterday is not reopenable", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => {
+      await ctx.db.patch(f.instanceId, {
+        state: "confirmed",
+        confirmedAt: Date.parse("2027-03-14T12:05:00Z"),
+        confirmedBy: "display",
+      });
+    });
+    at("2027-03-15T14:00:00Z");
+    const day = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.instances.today, { householdId: f.householdId });
+    expect(day.find((x) => x.instanceId === f.instanceId)).toBeUndefined();
+    await expect(
+      f.t
+        .withIdentity({ subject: "pat" })
+        .mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+});

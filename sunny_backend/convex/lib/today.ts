@@ -20,7 +20,10 @@
 // confirm pressed offline reached the server late (confirmReceivedLocalTime and
 // confirmReceivedDaysLater say when, in household time). confirmable says whether a senior
 // device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own rule), so
-// a surface can offer Done early without copying the 60 minute constant. seniorPrompts counts
+// a surface can offer Done early without copying the 60 minute constant; reopenable says
+// whether an editor caregiver may reopen it (confirmed or resolved and marked done today;
+// the role is the mutation's check), so the app can show the control without copying the
+// rule. seniorPrompts counts
 // the senior prompts the escalation policy has sent for the instance (fired prompt_senior
 // steps that were notified), so the home display can repeat its due cue on each reprompt;
 // snoozed is true while a snooze ("not yet") holds the senior prompts back at `now`, the
@@ -28,13 +31,13 @@
 // when the latest snooze ends (kept after it passed), so the display owes one cue per snooze
 // end.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-13
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
-import { seniorCanConfirm } from "./confirmRule";
+import { caregiverCanReopen, seniorCanConfirm } from "./confirmRule";
 import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -76,6 +79,8 @@ export interface TodayEntry {
   resolutionNote: string | null;
   /** A senior device may confirm it now (open and not more than 60 minutes early). */
   confirmable: boolean;
+  /** An editor caregiver may reopen it now: confirmed or resolved, and marked done today. */
+  reopenable: boolean;
   /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
   seniorPrompts: number;
   /** True while the instance is snoozed (now is before its snoozedUntil). */
@@ -178,6 +183,7 @@ export async function todayInstances(
       confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
       confirmable: seniorCanConfirm(instance, now),
+      reopenable: caregiverCanReopen(instance, now, household.timezone),
       seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
         .length,
       snoozed: instance.snoozedUntil !== undefined && now < instance.snoozedUntil,

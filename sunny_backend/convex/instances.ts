@@ -3,7 +3,10 @@
 // snooze and claim one instance; today's schedule; "Done" (confirmDueTask: which task the
 // senior means, with the already-done double dose guard); senior-created reminders; and
 // as-needed dose logging; setTaskNote (an editor's note on a task instance, open or done); and
-// undoResolve (a caregiver takes back their own "Mark done" within 30 seconds).
+// undoResolve (a caregiver takes back their own "Mark done" within 30 seconds); undoPressedTask
+// (a senior device takes back its own Done press within 60 seconds; a late tap returns
+// too_late, never an error); and reopenTaskInstance (an editor caregiver reopens a task
+// confirmed or resolved earlier today, for example a mistaken tap on the home display).
 // The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
 // the public functions resolve the actor from auth and use the server clock. Every instance
@@ -11,7 +14,7 @@
 // (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
 // Which task "Done" means is lib/dueTask.pickDueEntry, shared with the voice agent's "not yet".
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-13
 
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -28,7 +31,15 @@ import {
 } from "./lib/access";
 import type { Actor, CaregiverActor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
-import { EARLY_CONFIRM_MS, LATE_SYNC_MS, REPLAY_GRACE_MS, notTooEarly } from "./lib/confirmRule";
+import {
+  EARLY_CONFIRM_MS,
+  LATE_SYNC_MS,
+  REPLAY_GRACE_MS,
+  caregiverCanReopen,
+  notTooEarly,
+  reopenedState,
+  seniorCanUndo,
+} from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
@@ -74,6 +85,20 @@ async function loadInstance(
   const instance = await ctx.db.get(instanceId);
   if (!instance) throw appError("not_found", "Task instance not found");
   return instance;
+}
+
+/**
+ * purpose: Resolve the caller to the senior device they are signed in as, whatever household it
+ *          belongs to (the core checks the instance's household).
+ * @param ctx: (QueryCtx) Context.
+ * @return: (Promise<DeviceActor>) The device actor.
+ * @raises unauthenticated when signed out; forbidden when the caller is not a paired device.
+ */
+async function requireDeviceActor(ctx: QueryCtx): Promise<DeviceActor> {
+  const userId = await requireUserId(ctx);
+  const device = await findDevice(ctx, userId);
+  if (!device) throw appError("forbidden", "Only the senior's devices can do this");
+  return { kind: "senior_device", userId, householdId: device.householdId, device };
 }
 
 /**
@@ -165,6 +190,9 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
  *          A blank note is stored as absent, but never erases a note already on the
  *          instance (set earlier with setTaskNote): without a note the existing one is kept.
+ *          Every confirm (device, agent or caregiver) records the state and snooze it replaced
+ *          in resolvedFromState and resolvedFromSnoozedUntil, so the senior's undo
+ *          (undoPressedInstance), the caregiver's undo and a reopen can use them.
  */
 export async function confirmInstance(
   ctx: MutationCtx,
@@ -227,8 +255,8 @@ export async function confirmInstance(
       confirmReceivedAt: lateSynced ? now : undefined,
       confirmedBy: actorUserId(actor),
       confirmedVia: asCaregiver ? "caregiver" : args.via,
-      resolvedFromState: asCaregiver ? instance.state : undefined,
-      resolvedFromSnoozedUntil: asCaregiver ? instance.snoozedUntil : undefined,
+      resolvedFromState: instance.state,
+      resolvedFromSnoozedUntil: instance.snoozedUntil,
       resolutionNote: note ?? instance.resolutionNote,
       snoozedUntil: undefined,
     },
@@ -360,6 +388,123 @@ export async function undoResolveInstance(
       resolvedFromSnoozedUntil: undefined,
     },
     { undo: true },
+  );
+}
+
+/** Result of undoPressedTask: the restored instance, or too_late (nothing was changed). */
+export type UndoPressResult =
+  { status: "undone"; instance: Doc<"taskInstances"> } | { status: "too_late" };
+
+/**
+ * purpose: Take back a senior device's own Done press ("Morning pills done. Undo"). The instance
+ *          returns to the state it had before the confirm (by the clock when that was not
+ *          recorded, as a reopen does), with the confirmation fields cleared and the snooze the
+ *          confirm cleared restored. Allowed only when the instance is confirmed, this device's
+ *          user id is its confirmedBy (not another device's, the voice agent's or a caregiver's
+ *          confirm), and the server recorded the confirm at most SENIOR_UNDO_MS ago, measured from
+ *          confirmReceivedAt when set (an offline press) else confirmedAt. Any failed condition
+ *          returns too_late and changes nothing: a late tap is never an error for the senior,
+ *          and an instance that no longer exists also reads as too_late. The change is audited
+ *          as a state change with detail undo: true.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Must be a senior device of the instance's household.
+ * @param args: ({instanceId}) The instance.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<UndoPressResult>) undone with the instance, or too_late.
+ * @raises forbidden when the actor is not a senior device or the instance belongs to another
+ *          household.
+ */
+export async function undoPressedInstance(
+  ctx: MutationCtx,
+  actor: Actor,
+  args: { instanceId: Id<"taskInstances"> },
+  now: number,
+): Promise<UndoPressResult> {
+  if (actor.kind !== "senior_device") {
+    throw appError("forbidden", "Only the senior's devices can do this");
+  }
+  const instance = await ctx.db.get(args.instanceId);
+  if (instance === null) return { status: "too_late" };
+  if (instance.householdId !== actor.householdId) {
+    throw appError("forbidden", "Not allowed to undo this task");
+  }
+  if (!seniorCanUndo(instance, actor.userId, now)) return { status: "too_late" };
+  const restored = await changeInstance(
+    ctx,
+    actor,
+    instance,
+    {
+      state: instance.resolvedFromState ?? reopenedState(instance, now),
+      confirmedAt: undefined,
+      confirmedBy: undefined,
+      confirmedVia: undefined,
+      confirmReceivedAt: undefined,
+      snoozedUntil: instance.resolvedFromSnoozedUntil,
+      resolvedFromState: undefined,
+      resolvedFromSnoozedUntil: undefined,
+    },
+    { undo: true },
+  );
+  return { status: "undone", instance: restored };
+}
+
+/**
+ * purpose: Reopen a task that was confirmed or resolved by mistake (the home display has no
+ *          undo). The instance gets the state the clock says (reopenedState): before its window
+ *          upcoming; inside it the recorded prior state when that was due or escalated, else due
+ *          (an anytime instance: due); at or after its window end missed. The confirmation
+ *          fields and the recorded prior state are cleared; the caregiver's note and any claim
+ *          are kept, and no snooze is restored. The escalation ladder simply continues: steps
+ *          already fired (firedSteps) are not repeated and steps not yet fired fire as usual
+ *          when due. Audited as a state change with detail reopen: true and the previous state,
+ *          confirmedAt, confirmedBy and confirmedVia.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) Must be an editor caregiver of the instance's household.
+ * @param args: ({instanceId}) The instance.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
+ * @raises forbidden for any other actor (viewers, devices, another household); invalid, with a
+ *          message a caregiver can read, when the task is not marked done or was marked done on
+ *          an earlier day (household time).
+ */
+export async function reopenInstance(
+  ctx: MutationCtx,
+  actor: Actor,
+  args: { instanceId: Id<"taskInstances"> },
+  now: number,
+): Promise<Doc<"taskInstances">> {
+  const instance = await loadInstance(ctx, args.instanceId);
+  if (!isHouseholdEditor(actor, instance.householdId)) {
+    throw appError("forbidden", "Not allowed to reopen this task");
+  }
+  const household = await loadHousehold(ctx, instance.householdId);
+  if (!caregiverCanReopen(instance, now, household.timezone)) {
+    const done = instance.state === "confirmed" || instance.state === "resolved";
+    throw appError(
+      "invalid",
+      done
+        ? "Only a task marked done today can be reopened."
+        : "This task is not marked done, so there is nothing to reopen.",
+    );
+  }
+  const previous: Record<string, unknown> = { reopen: true, state: instance.state };
+  if (instance.confirmedAt !== undefined) previous["confirmedAt"] = instance.confirmedAt;
+  if (instance.confirmedBy !== undefined) previous["confirmedBy"] = instance.confirmedBy;
+  if (instance.confirmedVia !== undefined) previous["confirmedVia"] = instance.confirmedVia;
+  return await changeInstance(
+    ctx,
+    actor,
+    instance,
+    {
+      state: reopenedState(instance, now),
+      confirmedAt: undefined,
+      confirmedBy: undefined,
+      confirmedVia: undefined,
+      confirmReceivedAt: undefined,
+      resolvedFromState: undefined,
+      resolvedFromSnoozedUntil: undefined,
+    },
+    previous,
   );
 }
 
@@ -656,16 +801,37 @@ export async function confirmPressedInstance(
 export const confirmPressedTask = mutation({
   args: { instanceId: v.id("taskInstances"), via: confirmVia, pressedAgoMs: v.number() },
   handler: async (ctx, args): Promise<PressResult> => {
-    const userId = await requireUserId(ctx);
-    const device = await findDevice(ctx, userId);
-    if (!device) throw appError("forbidden", "Only the senior's devices can do this");
-    const actor: DeviceActor = {
-      kind: "senior_device",
-      userId,
-      householdId: device.householdId,
-      device,
-    };
+    const actor = await requireDeviceActor(ctx);
     return await confirmPressedInstance(ctx, actor, args, Date.now());
+  },
+});
+
+/**
+ * purpose: Take back the senior device's own Done press (the phone shows Undo for 30 seconds;
+ *          the server allows 60). Senior devices only. A press that can no longer be undone
+ *          returns { status: "too_late" } and changes nothing, never an error.
+ * @param instanceId: (Id<"taskInstances">) Instance.
+ * @return: (UndoPressResult) undone with the instance, or too_late.
+ */
+export const undoPressedTask = mutation({
+  args: { instanceId: v.id("taskInstances") },
+  handler: async (ctx, args): Promise<UndoPressResult> => {
+    const actor = await requireDeviceActor(ctx);
+    return await undoPressedInstance(ctx, actor, args, Date.now());
+  },
+});
+
+/**
+ * purpose: Reopen a task confirmed or resolved earlier today, by anyone. Editor caregivers only.
+ * @param instanceId: (Id<"taskInstances">) Instance.
+ * @return: (Doc<"taskInstances">) The instance after the call.
+ */
+export const reopenTaskInstance = mutation({
+  args: { instanceId: v.id("taskInstances") },
+  handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
+    const instance = await loadInstance(ctx, args.instanceId);
+    const actor = await requireEditor(ctx, instance.householdId);
+    return await reopenInstance(ctx, actor, args, Date.now());
   },
 });
 
