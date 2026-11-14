@@ -10,7 +10,9 @@
 // the selected-day title and fallback rule,
 // the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
-// fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
+// fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise. Also
+// digest posts in the transcript (time order, the "Daily summary" label with the day) and
+// posts never counting as in progress.
 //
 // Last modified: 2026-11-14
 
@@ -43,7 +45,10 @@ import {
   WORKING_TEXT,
   weekMonthLabel,
   weekRangeLabel,
+  DIGEST_LABEL,
+  postLabel,
   type AgentRequest,
+  type ChatPost,
   type EventRowData,
   type TaskRowData,
 } from '../format';
@@ -147,12 +152,30 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
 }
 
 /**
- * purpose: Build an agent request as agentRequests.list returns it.
+ * purpose: Build a digest post as agentRequests.transcript returns it.
+ * @param overrides: (Partial<Record<keyof ChatPost, unknown>>) Fields to set.
+ * @return: (ChatPost) A digest post for 2026-10-28 unless overridden.
+ */
+function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): ChatPost {
+  return {
+    type: 'post',
+    id: 'p1',
+    kind: 'digest',
+    body: 'All done today.',
+    localDate: '2026-10-28',
+    createdAt: 1,
+    ...overrides,
+  } as ChatPost;
+}
+
+/**
+ * purpose: Build an agent request as agentRequests.transcript returns it.
  * @param overrides: (Partial<Record<keyof AgentRequest, unknown>>) Fields to set.
  * @return: (AgentRequest) A succeeded request with a reply unless overridden.
  */
 function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {}): AgentRequest {
   return {
+    type: 'request',
     id: 'r1',
     requestedBy: 'user_a',
     requestedByName: 'Pat',
@@ -678,12 +701,40 @@ describe('buildTranscript', () => {
     expect(speakers).toEqual([null, 'Max']);
     expect(entries.filter((e) => e.kind === 'sunny').every((e) => e.speaker === null)).toBe(true);
   });
+
+  it('places a digest post in time order as a labelled Sunny line', () => {
+    const entries = buildTranscript(
+      [
+        makeRequest({ id: 'r2', message: 'Why was the 8 o’clock late?', reply: 'She slept in.' }),
+        makePost({ body: 'Morning pills: confirmed at 9:10.', localDate: '2026-11-13' }),
+        makeRequest({ id: 'r1' }),
+      ],
+      'user_a',
+    );
+    expect(entries.map((e) => [e.kind, e.text, e.label])).toEqual([
+      ['caregiver', 'How is the day?', null],
+      ['sunny', 'Going well.', null],
+      ['sunny', 'Morning pills: confirmed at 9:10.', 'Daily summary, Friday, November 13'],
+      ['caregiver', 'Why was the 8 o’clock late?', null],
+      ['sunny', 'She slept in.', null],
+    ]);
+    expect(new Set(entries.map((e) => e.id)).size).toBe(entries.length);
+  });
+
+  it('labels a post with a bad date plainly', () => {
+    expect(postLabel('not a date')).toBe(DIGEST_LABEL);
+    expect(postLabel('2026-11-14')).toBe('Daily summary, Saturday, November 14');
+  });
 });
 
 describe('hasInProgress', () => {
   it('is true while any request is queued or running', () => {
     expect(hasInProgress([makeRequest(), makeRequest({ status: 'queued' })])).toBe(true);
     expect(hasInProgress([makeRequest({ status: 'running' }), makeRequest()])).toBe(true);
+  });
+
+  it('is false for posts alone', () => {
+    expect(hasInProgress([makePost()])).toBe(false);
   });
 
   it('is false when every request has finished or there are none', () => {

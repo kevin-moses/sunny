@@ -15,7 +15,9 @@
 //   from task schedules by the server; none for today, whose tasks are the tickable list);
 // - the title for the day selected in the week strip, and the later days of the week grouped by
 //   day;
-// - the chat transcript built from the household's agent requests (oldest first).
+// - the chat transcript built from the household's chat thread (agentRequests.transcript:
+//   agent requests and Sunny's posts such as the daily digest, labelled "Daily summary" and the
+//   day; oldest first).
 // Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date arithmetic comes
 // from day/localDate (parsed once, then counted as days). No timezone conversion happens here:
 // the server sends each confirmation as a household-local "HH:MM" (confirmedLocalTime) and marks
@@ -48,8 +50,17 @@ import {
 } from '../day/localDate';
 import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../day/types';
 
-/** An agent request as the chat tab sees it (agentRequests.list, newest first). */
-export type AgentRequest = FunctionReturnType<typeof api.agentRequests.list>[number];
+/** One item of the chat thread (agentRequests.transcript, newest first): a request or a post. */
+export type ChatItem = FunctionReturnType<typeof api.agentRequests.transcript>[number];
+
+/** An agent request in the chat thread. */
+export type AgentRequest = Extract<ChatItem, { type: 'request' }>;
+
+/** A post from Sunny in the chat thread (the daily digest). */
+export type ChatPost = Extract<ChatItem, { type: 'post' }>;
+
+/** The plain label above a digest post. */
+export const DIGEST_LABEL = 'Daily summary';
 
 /** Number of days the week strip and schedule cover, starting today. */
 export const WEEK_LENGTH = 7;
@@ -603,6 +614,23 @@ export interface TranscriptEntry {
    * "Another caregiver"); null for the signed-in caregiver's own messages and other kinds.
    */
   speaker: string | null;
+  /**
+   * Sunny lines only: a small label above a post from Sunny ("Daily summary, Friday, November
+   * 13"); null for a reply and other kinds.
+   */
+  label: string | null;
+}
+
+/**
+ * purpose: The label above a digest post: "Daily summary" and the day it is about.
+ * @param localDate: (string) The post's household-local date, "YYYY-MM-DD".
+ * @return: (string) For example "Daily summary, Friday, November 13"; just "Daily summary" for
+ *          an invalid date.
+ */
+export function postLabel(localDate: string): string {
+  const time = parseLocalDate(localDate);
+  if (time === null) return DIGEST_LABEL;
+  return `${DIGEST_LABEL}, ${weekdayName(time)}, ${monthName(time)} ${dayOfMonth(time)}`;
 }
 
 /** The speaker label for a message from a caregiver whose name is unknown. */
@@ -626,58 +654,71 @@ export function messageSpeaker(
 }
 
 /**
- * purpose: Turn the household's agent requests into chat lines, oldest first: each request is
- *          the caregiver's message, then Sunny's reply, a "working" line while it is queued or
- *          running, or the error when it failed. Cancelled requests show only the message.
- * @param requests: (AgentRequest[]) Requests as agentRequests.list returns them (newest first).
- * @param userId: (string | null) The signed-in caregiver's Clerk user id, to tell their own
- *        messages from other caregivers'.
- * @return: (TranscriptEntry[]) The lines in reading order.
+ * purpose: The chat lines of one request: the caregiver's message, then Sunny's reply, a
+ *          "working" line while it is queued or running, or the error when it failed. A
+ *          cancelled request shows only the message.
+ * @param request: (AgentRequest) The request.
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id.
+ * @return: (TranscriptEntry[]) One or two lines.
  */
-export function buildTranscript(
-  requests: AgentRequest[],
-  userId: string | null,
-): TranscriptEntry[] {
-  const entries: TranscriptEntry[] = [];
-  for (const request of [...requests].reverse()) {
-    entries.push({
+function requestEntries(request: AgentRequest, userId: string | null): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [
+    {
       id: `${request.id}-message`,
       kind: 'caregiver',
       text: request.message,
       speaker: messageSpeaker(request.requestedBy, request.requestedByName, userId),
+      label: null,
+    },
+  ];
+  const line = { id: `${request.id}-status`, speaker: null, label: null };
+  if (request.status === 'queued' || request.status === 'running') {
+    entries.push({ ...line, kind: 'working', text: WORKING_TEXT });
+  } else if (request.status === 'failed') {
+    entries.push({
+      ...line,
+      kind: 'error',
+      text: request.error?.trim() ? request.error : FAILED_TEXT,
     });
-    if (request.status === 'queued' || request.status === 'running') {
-      entries.push({
-        id: `${request.id}-status`,
-        kind: 'working',
-        text: WORKING_TEXT,
-        speaker: null,
-      });
-    } else if (request.status === 'failed') {
-      entries.push({
-        id: `${request.id}-status`,
-        kind: 'error',
-        text: request.error?.trim() ? request.error : FAILED_TEXT,
-        speaker: null,
-      });
-    } else if (request.status === 'succeeded' && request.reply?.trim()) {
-      entries.push({
-        id: `${request.id}-reply`,
-        kind: 'sunny',
-        text: request.reply,
-        speaker: null,
-      });
-    }
+  } else if (request.status === 'succeeded' && request.reply?.trim()) {
+    entries.push({ ...line, id: `${request.id}-reply`, kind: 'sunny', text: request.reply });
   }
   return entries;
 }
 
 /**
- * purpose: Whether any request is still queued or running; the server allows only one request
- *          at a time in a conversation, so sending waits until none is.
- * @param requests: (AgentRequest[]) Requests as agentRequests.list returns them.
- * @return: (boolean) True while one is queued or running.
+ * purpose: Turn the household's chat thread into chat lines, oldest first: each request as
+ *          its message and outcome (requestEntries), and each post from Sunny (the daily
+ *          digest) as a Sunny line with its label.
+ * @param items: (ChatItem[]) The thread as agentRequests.transcript returns it (newest first).
+ * @param userId: (string | null) The signed-in caregiver's Clerk user id, to tell their own
+ *        messages from other caregivers'.
+ * @return: (TranscriptEntry[]) The lines in reading order.
  */
-export function hasInProgress(requests: AgentRequest[]): boolean {
-  return requests.some((r) => r.status === 'queued' || r.status === 'running');
+export function buildTranscript(items: ChatItem[], userId: string | null): TranscriptEntry[] {
+  return [...items].reverse().flatMap((item): TranscriptEntry[] =>
+    item.type === 'request'
+      ? requestEntries(item, userId)
+      : [
+          {
+            id: `${item.id}-post`,
+            kind: 'sunny',
+            text: item.body,
+            speaker: null,
+            label: postLabel(item.localDate),
+          },
+        ],
+  );
+}
+
+/**
+ * purpose: Whether any request is still queued or running; the server allows only one request
+ *          at a time in a conversation, so sending waits until none is. Posts never block.
+ * @param items: (ChatItem[]) The thread as agentRequests.transcript returns it.
+ * @return: (boolean) True while a request is queued or running.
+ */
+export function hasInProgress(items: ChatItem[]): boolean {
+  return items.some(
+    (item) => item.type === 'request' && (item.status === 'queued' || item.status === 'running'),
+  );
 }

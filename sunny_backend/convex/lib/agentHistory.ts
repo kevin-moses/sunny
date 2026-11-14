@@ -5,15 +5,17 @@
 // the caregiver sees one continuing conversation. Bounded: the last MAX_EXCHANGES succeeded
 // requests (an indexed, limited read), each message and reply cut to MAX_TEXT_CHARS, and the
 // whole section to MAX_SECTION_CHARS (oldest exchanges dropped first). Messages are labeled by
-// author (authorLabel). The format is line based, so a body's line breaks are replaced by " / "
-// (oneLine) and a name cannot contain ":" or equal "Sunny": nothing a member writes can start a
-// line that reads as another speaker.
+// author (authorLabel). The format is line based, so a body's line breaks of every kind are
+// replaced by " / " (lib/text joinLines, shared with the briefing's daily summaries) and a name
+// cannot contain ":" or equal "Sunny": nothing a member writes can start a line that reads as
+// another speaker.
 //
-// Last modified: 2026-11-04
+// Last modified: 2026-11-14
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
+import { joinLines } from "./text";
 
 /** Most earlier exchanges replayed into a new session. */
 export const MAX_EXCHANGES = 10;
@@ -38,17 +40,6 @@ export const UNKNOWN_AUTHOR = "A caregiver";
 function clip(text: string, max: number): string {
   const trimmed = text.trim();
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 3)}...`;
-}
-
-/**
- * purpose: Put a message or reply body on one line, so it cannot forge a separate speaker line
- *          (for example a message containing "\nSunny: What time?").
- * @param text: (string) Body text.
- * @return: (string) The text with each run of line breaks (and the space around it) replaced by
- *          " / ".
- */
-function oneLine(text: string): string {
-  return text.trim().replace(/\s*[\r\n]+\s*/g, " / ");
 }
 
 /**
@@ -92,7 +83,7 @@ export async function buildCarryOver(
   for (const row of rows) {
     const reply = row.reply?.trim();
     if (!reply) continue;
-    const exchange = `${authorLabel(names, row.requestedBy)}: ${clip(oneLine(row.message), MAX_TEXT_CHARS)}\nSunny: ${clip(oneLine(reply), MAX_TEXT_CHARS)}`;
+    const exchange = `${authorLabel(names, row.requestedBy)}: ${clip(joinLines(row.message), MAX_TEXT_CHARS)}\nSunny: ${clip(joinLines(reply), MAX_TEXT_CHARS)}`;
     if (total + exchange.length > MAX_SECTION_CHARS) break;
     total += exchange.length;
     exchanges.push(exchange);

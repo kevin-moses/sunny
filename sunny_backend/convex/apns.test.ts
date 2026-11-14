@@ -3,9 +3,10 @@
 // reused across tokens and closed afterwards, host and request headers, payload body, per-token
 // outcomes (sent, unregistered, retryable and permanent failures), timeouts and connection
 // errors as retryable failures, empty token list, and configuration errors. Also covers the
-// deleteTokens mutation from apnsTokens.ts with convex-test.
+// deleteTokens mutation from apnsTokens.ts with convex-test. The interruption level and category
+// arguments end up inside aps.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-14
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
@@ -153,6 +154,27 @@ describe("apns.send", () => {
     expect(JSON.parse(req.body)).toEqual({
       task_instance_id: "inst1",
       aps: { alert: { title: "Title", body: "Body" }, sound: "default" },
+    });
+  });
+
+  test("puts the interruption level and category into aps", async () => {
+    const t = makeBackend();
+    await t.action(internal.apns.send, {
+      tokens: [tok("1")],
+      title: "Title",
+      body: "Body",
+      data: { kind: "caregiver_alert" },
+      interruptionLevel: "time-sensitive",
+      category: "caregiver_alert",
+    });
+    expect(JSON.parse(state.sessions[0]!.requests[0]!.body)).toEqual({
+      kind: "caregiver_alert",
+      aps: {
+        alert: { title: "Title", body: "Body" },
+        sound: "default",
+        "interruption-level": "time-sensitive",
+        category: "caregiver_alert",
+      },
     });
   });
 

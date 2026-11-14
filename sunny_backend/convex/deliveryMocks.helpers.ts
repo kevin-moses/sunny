@@ -6,9 +6,10 @@
 //   vi.mock("./lib/twilio", async (orig) => (await import("./deliveryMocks.helpers")).twilioModule(await orig()));
 // The fixture helpers build a household (Pat primary, Max member, Val viewer, one paired
 // device "phone") with push tokens and verified phones, and insert outbox rows directly.
-// The name has two dots, so Convex does not treat this file as a function module.
+// The name has two dots, so Convex does not treat this file as a function module. The mocked
+// apns.send accepts the interruptionLevel and category arguments, so tests can read them.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-14
 
 import { internalActionGeneric } from "convex/server";
 import { v } from "convex/values";
@@ -55,6 +56,8 @@ export function apnsModule(original: object = {}) {
         title: v.string(),
         body: v.string(),
         data: v.optional(v.record(v.string(), v.string())),
+        interruptionLevel: v.optional(v.literal("time-sensitive")),
+        category: v.optional(v.string()),
       },
       handler: async (_ctx, args) => {
         // Tests may script a bare per-token array or a full { results, configError }.
