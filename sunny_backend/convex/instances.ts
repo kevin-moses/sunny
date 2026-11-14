@@ -17,9 +17,10 @@
 // state, claim, snooze and note change is audited (lib/schedule.changeInstance). A bare "Done"
 // (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
 // Which task "Done" means is lib/dueTask.pickDueEntry, shared with the voice agent's "not yet".
-// Every confirm records how it arrived (ConfirmTransport: "app" for the app's mutations,
-// "device_api" for the HTTP device API in deviceApi.ts) as `transport` in its audit detail; a
-// confirm through either is a device confirm (state confirmed), so a reopen stamps both alike.
+// A confirm through the app's mutations or the HTTP device API records how it arrived
+// (ConfirmTransport: "app", or "device_api" from deviceApi.ts) as `transport` in its audit
+// detail; a voice-agent confirm records no transport key. A device confirm through either is
+// state confirmed, so a reopen stamps both alike.
 // A press on another household's instance is refused by confirmInstance's household check, the
 // same check every confirm goes through. NO_SUCH_TASK is the reason for a missing instance.
 //
@@ -205,12 +206,12 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  * @param actor: (Actor) Who confirms.
  * @param args: ({instanceId, via, note, pressedAgoMs, transport}) The instance, the surface, an
  *        optional note, an optional press age and how the confirm arrived (ConfirmTransport,
- *        recorded in the audit detail when given). pressedAgoMs is how long before this call the senior
- *        pressed Done on a device that held the press (offline) and sent it later. An age, not
- *        a time, so the device's clock skew cannot move the record. Only a senior device may
- *        send it, and it must be a finite number of at least 0. confirmedAt is `now` minus the
- *        age, clamped to between the instance's early-confirm point (windowStart minus
- *        EARLY_CONFIRM_MS) and `now` (never the future); when that is more than
+ *        recorded in the audit detail when given). pressedAgoMs is how long before this call
+ *        the senior pressed Done on a device that held the press (offline) and sent it later.
+ *        An age, not a time, so the device's clock skew cannot move the record. Only a senior
+ *        device may send it, and it must be a finite number of at least 0. confirmedAt is
+ *        `now` minus the age, clamped to between the instance's early-confirm point
+ *        (windowStart minus EARLY_CONFIRM_MS) and `now` (never the future); when that is more than
  *        LATE_SYNC_MS before `now`, confirmReceivedAt records `now` so readers can tell a
  *        late-synced confirm from a live one. The audit detail records pressedAgoMs,
  *        confirmedAt and receivedAt. A live press (age of at most LATE_SYNC_MS) is subject to
@@ -254,6 +255,9 @@ export async function confirmInstance(
 ): Promise<Doc<"taskInstances">> {
   const instance = await loadInstance(ctx, args.instanceId);
   const asCaregiver = isHouseholdEditor(actor, instance.householdId);
+  // The household check must stay the first check after loadInstance: the device API answers
+  // another household's instance like a missing one only because this refuses it before any
+  // other rule (done, too early, taken back) could say something about it.
   if (!asCaregiver && !actsForSenior(actor, instance.householdId)) {
     throw appError("forbidden", "Not allowed to confirm this task");
   }

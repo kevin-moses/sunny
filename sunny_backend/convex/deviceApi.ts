@@ -31,9 +31,11 @@
 //                         instance, recorded without that id), at most 20 an hour per device
 //                         (refusedPresses); past that the answer is the same and nothing is
 //                         written. A confirm here is a device confirm like the app's (state
-//                         confirmed, confirmedBy the device), so a caregiver's reopen stamps it
-//                         and the phone app's Undo can take it back. There is no undo route:
-//                         the board and the widget offer no Undo (notes/SPEC.md).
+//                         confirmed, confirmedBy the device), so a caregiver's reopen stamps it,
+//                         and the phone app's Undo can take back a press the same device made
+//                         (undo needs confirmedBy to be the caller; a press made with the wall
+//                         display's own token cannot be undone from the phone). There is no
+//                         undo route: the board and the widget offer no Undo (notes/SPEC.md).
 //   PUT  /device/info     { screen?: { width, height, greys }, firmware? }: stored on the row;
 //                         204. Only those two fields can be changed.
 // A missing, malformed or unknown token is 401 with one fixed body. A bad body or instance id
@@ -107,8 +109,9 @@ const SCREEN_SIDE = { min: 1, max: 10_000 };
 const SCREEN_GREYS = { min: 2, max: 256 };
 
 /**
- * Audit reasons for presses the device API refuses itself: before instances.confirmPressedInstance
- * sees them, or (notHere) when its household check refuses another household's instance.
+ * Audit reasons for presses the device API records itself: refused before
+ * instances.confirmPressedInstance sees them, or (notHere) another household's instance, which
+ * instances.confirmInstance's household check refuses with forbidden.
  */
 const REFUSED = {
   unreadable: "The press could not be read",

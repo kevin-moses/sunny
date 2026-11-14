@@ -23,7 +23,14 @@
 // a press before the early window or on a deleted task, count and stop being written too), and a
 // body over 4096 characters. A device-API confirm is a device confirm: its audit rows say
 // transport device_api (the app's say app), a caregiver's reopen stamps it so an older queued
-// press is refused, the phone app's Undo takes it back, and there is no /device/undo route.
+// press is refused, the phone app's Undo takes back a press the same device made, and there is
+// no /device/undo route. Isolation: another household's instance in any state (confirmed,
+// resolved, upcoming hours ahead, missed) is answered exactly like a deleted one, left unchanged,
+// and leaves no row in its household and no trace of its id in the device's. The refused-press
+// budget: successful confirms do not spend it, a valid press still confirms once it is spent,
+// and a foreign press writes no row then. An error the core does not turn into a rejection (a
+// negative press age, raised through the internal confirm mutation since the route validates
+// it) propagates. The core's own refusal row carries the press's transport (device_api, app).
 // Info: stored and trimmed, 204, validation, no other field writable. A device removed between
 // the gate and the effect: every by-token function finds nothing and writes nothing.
 // lastSeenAt: written at most every 5 minutes, not for a failed authentication.
@@ -843,6 +850,13 @@ describe("POST /device/confirm", () => {
       reason: "This task was not due yet when it was pressed",
     });
     expect(await refusedRows()).toBe(20);
+    // The budget only limits refusal rows: with it spent, a valid press still confirms.
+    const valid = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 0,
+      via: "button",
+    });
+    expect(((await valid.json()) as { status: string }).status).toBe("confirmed");
     await t.run(async (ctx) => await ctx.db.delete(f.instanceId));
     const deleted = await postConfirm(t, token, {
       instanceId: f.instanceId,
@@ -879,6 +893,146 @@ describe("the refused-press budget", () => {
       (await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "button" })).status,
     ).toBe(400);
     expect(await refusedRows()).toBe(20);
+  });
+
+  test("successful confirms do not spend it", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    const press = { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" };
+    for (let i = 0; i < 25; i++) {
+      const res = await postConfirm(t, token, press);
+      expect(((await res.json()) as { status: string }).status).toBe("confirmed");
+    }
+    await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "button" });
+    const refused = (await audits(t)).filter((a) => a.action === "press_not_applied");
+    expect(refused).toHaveLength(1);
+  });
+
+  test("with it spent, a press on another household's instance writes no row", async () => {
+    const t = makeBackend();
+    await household(t);
+    const theirs = await household(t, "z_");
+    const token = await issue(t);
+    const malformed = { instanceId: "abc", pressedAgoMs: 0, via: "button" };
+    for (let i = 0; i < 20; i++) await postConfirm(t, token, malformed);
+    /**
+     * purpose: How many press_not_applied rows exist.
+     * @return: (Promise<number>) The count.
+     */
+    const refusedRows = async (): Promise<number> =>
+      (await audits(t)).filter((a) => a.action === "press_not_applied").length;
+    expect(await refusedRows()).toBe(20);
+    const res = await postConfirm(t, token, {
+      instanceId: theirs.instanceId,
+      pressedAgoMs: 0,
+      via: "button",
+    });
+    expect(await res.json()).toMatchObject({
+      status: "rejected",
+      reason: "The task no longer exists",
+    });
+    expect(await refusedRows()).toBe(20);
+  });
+});
+
+describe("errors the core does not turn into a rejection", () => {
+  // The HTTP route validates the press age, so a negative age cannot arrive through it; the
+  // core's age check (invalid, thrown before it decides anything) is reached here through the
+  // route's own internal mutation, the level at which it can honestly be raised.
+  test("propagate from the confirm mutation instead of reading as a missing task", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    const tokenHash = await hashDeviceToken(token);
+    await expect(
+      t.mutation(internal.deviceApi.confirmByToken, {
+        tokenHash,
+        instanceId: f.instanceId,
+        via: "button",
+        pressedAgoMs: -1,
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("upcoming");
+    expect((await audits(t)).some((a) => a.action === "press_not_applied")).toBe(false);
+  });
+});
+
+describe("isolation from another household", () => {
+  test("its instance in any state is answered like a deleted one, unchanged and unrecorded", async () => {
+    const t = makeBackend();
+    const mine = await household(t);
+    const theirs = await household(t, "z_");
+    const token = await issue(t);
+    const press = { pressedAgoMs: 0, via: "button" };
+    await t.run(async (ctx) => await ctx.db.delete(mine.instanceId));
+    const reference = await postConfirm(t, token, { instanceId: mine.instanceId, ...press });
+    const { state: _ref, ...referenceBody } = (await reference.json()) as Record<string, unknown>;
+    expect(referenceBody).toEqual({ status: "rejected", reason: "The task no longer exists" });
+    // "Far ahead" moves the window later; moving the clock back would not reach Date.now()
+    // inside the functions in this harness.
+    const farAhead = Date.parse(START) + 4 * 60 * MIN;
+    const cases: Record<string, unknown>[] = [
+      {
+        state: "confirmed",
+        confirmedAt: Date.parse(START) - MIN,
+        confirmedBy: "z_phone",
+        confirmedVia: "button",
+      },
+      {
+        state: "resolved",
+        confirmedAt: Date.parse(START) - MIN,
+        confirmedBy: "z_pat",
+        confirmedVia: "caregiver",
+      },
+      { state: "upcoming", windowStart: farAhead, windowEnd: farAhead + 60 * MIN },
+      { state: "missed" },
+    ];
+    /**
+     * purpose: The audit rows of the other household.
+     * @return: (Promise<number>) How many there are.
+     */
+    const theirRows = async (): Promise<number> =>
+      (await audits(t)).filter((a) => a.householdId === theirs.householdId).length;
+    for (const patch of cases) {
+      await t.run(async (ctx) => await ctx.db.patch(theirs.instanceId, patch));
+      const before = await t.run(async (ctx) => await ctx.db.get(theirs.instanceId));
+      const rowsBefore = await theirRows();
+      const res = await postConfirm(t, token, { instanceId: theirs.instanceId, ...press });
+      expect(res.status, String(patch.state)).toBe(reference.status);
+      const { state: _s, ...body } = (await res.json()) as Record<string, unknown>;
+      expect(body, String(patch.state)).toEqual(referenceBody);
+      expect(await t.run(async (ctx) => await ctx.db.get(theirs.instanceId))).toEqual(before);
+      expect(await theirRows(), String(patch.state)).toBe(rowsBefore);
+    }
+    const mineRows = (await audits(t)).filter((a) => a.householdId === mine.householdId);
+    for (const row of mineRows) {
+      expect(row.entityId).not.toBe(theirs.instanceId);
+      expect(JSON.stringify(row.detail ?? {})).not.toContain(theirs.instanceId);
+    }
+  });
+});
+
+describe("the core's refusal row", () => {
+  test("carries the transport the press arrived by", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t, "display");
+    // Pressed 10 minutes before the early window opened: only the core refuses this.
+    const early = { instanceId: f.instanceId, pressedAgoMs: 10 * MIN, via: "button" as const };
+    await postConfirm(t, token, early);
+    await t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, early);
+    const rows = (await audits(t)).filter(
+      (a) =>
+        a.action === "press_not_applied" &&
+        (a.detail as { reason?: string }).reason ===
+          "This task was not due yet when it was pressed",
+    );
+    expect(rows.map((a) => (a.detail as { transport?: string }).transport).sort()).toEqual([
+      "app",
+      "device_api",
+    ]);
   });
 });
 

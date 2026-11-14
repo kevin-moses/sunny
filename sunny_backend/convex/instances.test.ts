@@ -12,10 +12,12 @@
 // a device only within 60 minutes), and the scheduler leaves it resolved. Also: undoResolve (the same
 // caregiver within 30 seconds restores the pre-resolve state and the scheduler carries on;
 // others, late undos, devices and viewers are refused) and an unchanged note writes and
-// audits nothing. The clock is driven by faking Date
+// audits nothing. Transport: a confirm through confirmTaskInstance or the public confirmDueTask
+// records transport app in its audit detail, and the voice agent's Done records no transport
+// key. The clock is driven by faking Date
 // for public functions and by passing `now` to the exported core helpers.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -193,7 +195,43 @@ async function tick(t: TestConvex, iso: string): Promise<void> {
   }
 }
 
+/**
+ * purpose: The detail of an instance's confirm audit row: its state_change to confirmed or
+ *          resolved (earlier state changes, such as the scheduler's upcoming to due, are skipped).
+ * @param f: (Fixture) Fixture.
+ * @param instanceId: (Id<"taskInstances">) The instance.
+ * @return: (Promise<Record<string, unknown> | undefined>) The detail, if the row exists.
+ */
+async function confirmDetail(
+  f: Fixture,
+  instanceId: Id<"taskInstances">,
+): Promise<Record<string, unknown> | undefined> {
+  const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+  const row = rows.find((a) => {
+    const to = (a.detail as { to?: unknown }).to;
+    return (
+      a.action === "state_change" &&
+      a.entityId === instanceId &&
+      (to === "confirmed" || to === "resolved")
+    );
+  });
+  return row?.detail as Record<string, unknown> | undefined;
+}
+
 describe("confirmTaskInstance", () => {
+  test("records that the confirm came through the app (transport app)", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await makeTask(f, "Morning pills", ["08:00"]);
+    const [instance] = await instancesOn(f, "2027-03-14");
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmTaskInstance, { instanceId: instance!._id, via: "phone_app" });
+    expect(await confirmDetail(f, instance!._id)).toMatchObject({
+      to: "confirmed",
+      transport: "app",
+    });
+  });
+
   test("a device cannot confirm more than an hour early, the agent can at 30 minutes", async () => {
     const f = await setup("2027-03-14T10:00:00Z");
     await makeTask(f, "Morning pills", ["08:00"]);
@@ -1225,6 +1263,28 @@ describe("confirmDueTask", () => {
       .withIdentity({ subject: "phone" })
       .mutation(api.instances.confirmDueTask, { householdId: f.householdId, via: "widget" });
     expect(result).toMatchObject({ status: "confirmed", displayLabel: "Morning pills" });
+  });
+
+  test("a device's Done through the public function records transport app", async () => {
+    const f = await dayFixture();
+    at("2027-03-20T12:05:00Z");
+    await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmDueTask, { householdId: f.householdId, via: "button" });
+    const morning = (await instancesOn(f, "2027-03-20")).find((i) => i.scheduledTime === "08:00")!;
+    expect(await confirmDetail(f, morning._id)).toMatchObject({
+      to: "confirmed",
+      transport: "app",
+    });
+  });
+
+  test("the voice agent's Done records no transport key at all", async () => {
+    const f = await dayFixture();
+    await done(f, "2027-03-20T12:05:00Z", undefined, "voice");
+    const morning = (await instancesOn(f, "2027-03-20")).find((i) => i.scheduledTime === "08:00")!;
+    const detail = await confirmDetail(f, morning._id);
+    expect(detail).toMatchObject({ to: "confirmed", via: "voice" });
+    expect(detail).not.toHaveProperty("transport");
   });
 
   test("access: only the household's devices may press Done", async () => {
