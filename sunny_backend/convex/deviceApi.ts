@@ -20,15 +20,20 @@
 //                         (null when confirmed), state } and the state's ETag. The state is read
 //                         after the press in its own query; if that fails, state is null (no
 //                         ETag) and the press still stands: the device fetches GET
-//                         /device/state. An instance of another household gets exactly the
-//                         answer a deleted one gets (nothing is confirmed and nothing says
-//                         whether it exists). pressedAgoMs is 0 to 7 days; a body is at most
-//                         4096 characters. Every refused press is audited as press_not_applied,
-//                         as instances.confirmPressedInstance does for its own refusals: an
-//                         unreadable body, a bad instance id, a press over 7 days old and
-//                         another household's instance (recorded without that id), at most 20
-//                         an hour per device (refusedPresses); past that the answer is the same
-//                         and nothing is written.
+//                         /device/state. An instance of another household, refused by the
+//                         core's household check, gets exactly the answer a deleted one gets
+//                         (nothing is confirmed and nothing says whether it exists).
+//                         pressedAgoMs is 0 to 7 days; a body is at most 4096 characters. Every
+//                         refused press is audited as press_not_applied with transport
+//                         device_api: the core's refusals (deleted, too early, outside the
+//                         replay window, taken back) and this module's (an unreadable body, a
+//                         bad instance id, a press over 7 days old, another household's
+//                         instance, recorded without that id), at most 20 an hour per device
+//                         (refusedPresses); past that the answer is the same and nothing is
+//                         written. A confirm here is a device confirm like the app's (state
+//                         confirmed, confirmedBy the device), so a caregiver's reopen stamps it
+//                         and the phone app's Undo can take it back. There is no undo route:
+//                         the board and the widget offer no Undo (notes/SPEC.md).
 //   PUT  /device/info     { screen?: { width, height, greys }, firmware? }: stored on the row;
 //                         204. Only those two fields can be changed.
 // A missing, malformed or unknown token is 401 with one fixed body. A bad body or instance id
@@ -58,14 +63,15 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { action, httpAction, internalMutation, internalQuery, query } from "./_generated/server";
 import type { PublicHttpAction } from "convex/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { confirmPressedInstance } from "./instances";
+import { NO_SUCH_TASK, confirmPressedInstance } from "./instances";
+import type { ConfirmTransport, PressResult } from "./instances";
 import { findDevice, requireUserId } from "./lib/access";
 import type { DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
-import { appError } from "./lib/errors";
+import { appError, isAppError } from "./lib/errors";
 import {
   NO_STORE,
   convexErrorResponse,
@@ -101,13 +107,9 @@ const SCREEN_SIDE = { min: 1, max: 10_000 };
 const SCREEN_GREYS = { min: 2, max: 256 };
 
 /**
- * The reason confirmPressedInstance gives for an instance that no longer exists. An instance of
- * another household gets the same, so the two cannot be told apart (deviceApi.test.ts checks
- * that the bodies match).
+ * Audit reasons for presses the device API refuses itself: before instances.confirmPressedInstance
+ * sees them, or (notHere) when its household check refuses another household's instance.
  */
-const NO_SUCH_TASK = "The task no longer exists";
-
-/** Audit reasons for presses refused before instances.confirmPressedInstance sees them. */
 const REFUSED = {
   unreadable: "The press could not be read",
   badId: "The task id is not valid",
@@ -322,7 +324,11 @@ async function auditRefusal(
 ): Promise<void> {
   const limit = await rateLimiter.limit(ctx, "refusedPresses", { key: device._id });
   if (!limit.ok) return;
-  const detail: Record<string, unknown> = { reason, receivedAt: Date.now() };
+  const detail: Record<string, unknown> = {
+    reason,
+    receivedAt: Date.now(),
+    transport: "device_api" satisfies ConfirmTransport,
+  };
   if (press.pressedAgoMs !== null) detail.pressedAgoMs = press.pressedAgoMs;
   if (press.via !== null) detail.via = press.via;
   await audit(ctx, {
@@ -335,11 +341,13 @@ async function auditRefusal(
 }
 
 /**
- * purpose: Confirm a press for a device. An instance of another household is answered exactly
- *          like a deleted one (rejected, NO_SUCH_TASK), is left alone, and is audited in the
- *          device's own household without its id. A missing instance goes to
- *          instances.confirmPressedInstance (which audits it) only while the refused-press bucket
- *          has room. Everything else is instances.confirmPressedInstance's decision.
+ * purpose: Confirm a press for a device through instances.confirmPressedInstance (transport
+ *          device_api), which decides everything, including refusing another household's
+ *          instance by its household check. That refusal (forbidden) is answered exactly like a
+ *          missing instance (rejected, NO_SUCH_TASK), so nothing says whether the instance exists,
+ *          and is audited in the device's own household without its id. Refusals the core
+ *          records (press_not_applied) count against the device's refused-press bucket; once it
+ *          is empty the core writes no row.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (DeviceActor) The device.
  * @param args: ({ instanceId, via, pressedAgoMs }) The press.
@@ -352,19 +360,21 @@ async function confirmForDevice(
   args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number },
   now: number,
 ): Promise<{ status: "confirmed" | "rejected"; reason: string | null }> {
-  const instance = await ctx.db.get(args.instanceId);
-  if (instance !== null && instance.householdId !== actor.householdId) {
+  const budget = { key: actor.device._id };
+  const room = (await rateLimiter.check(ctx, "refusedPresses", budget)).ok;
+  let result: PressResult;
+  try {
+    result = await confirmPressedInstance(ctx, actor, { ...args, transport: "device_api" }, now, {
+      recordRefusal: room,
+    });
+  } catch (e) {
+    if (!isAppError(e, "forbidden")) throw e;
     await auditRefusal(ctx, actor.device, REFUSED.notHere, args);
     return { status: "rejected", reason: NO_SUCH_TASK };
   }
-  if (instance === null) {
-    const limit = await rateLimiter.limit(ctx, "refusedPresses", { key: actor.device._id });
-    if (!limit.ok) return { status: "rejected", reason: NO_SUCH_TASK };
-  }
-  const result = await confirmPressedInstance(ctx, actor, args, now);
-  return result.status === "confirmed"
-    ? { status: "confirmed", reason: null }
-    : { status: "rejected", reason: result.reason };
+  if (result.status === "confirmed") return { status: "confirmed", reason: null };
+  if (room) await rateLimiter.limit(ctx, "refusedPresses", budget);
+  return { status: "rejected", reason: result.reason };
 }
 
 /**

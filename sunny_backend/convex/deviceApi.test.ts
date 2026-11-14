@@ -19,8 +19,11 @@
 // instances by id, replayed presses (late sync at the press time, too early, too late), a
 // deleted instance (rejected, audited), another household's instance (same answer as a deleted
 // one, left alone, audited without its id), 400 for bad bodies, ids and press ages (each
-// audited, nothing raw stored), the 20-an-hour cap on refusal rows, and a body over 4096
-// characters.
+// audited, nothing raw stored), the 20-an-hour cap on refusal rows (the core's refusals, such as
+// a press before the early window or on a deleted task, count and stop being written too), and a
+// body over 4096 characters. A device-API confirm is a device confirm: its audit rows say
+// transport device_api (the app's say app), a caregiver's reopen stamps it so an older queued
+// press is refused, the phone app's Undo takes it back, and there is no /device/undo route.
 // Info: stored and trimmed, 204, validation, no other field writable. A device removed between
 // the gate and the effect: every by-token function finds nothing and writes nothing.
 // lastSeenAt: written at most every 5 minutes, not for a failed authentication.
@@ -829,6 +832,17 @@ describe("POST /device/confirm", () => {
     for (let i = 0; i < 20; i++) expect((await postConfirm(t, token, malformed)).status).toBe(400);
     expect(await refusedRows()).toBe(20);
     expect((await postConfirm(t, token, malformed)).status).toBe(400);
+    // A refusal by the core (pressed before the early window) is answered but not written either.
+    const early = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 10 * MIN,
+      via: "button",
+    });
+    expect(await early.json()).toMatchObject({
+      status: "rejected",
+      reason: "This task was not due yet when it was pressed",
+    });
+    expect(await refusedRows()).toBe(20);
     await t.run(async (ctx) => await ctx.db.delete(f.instanceId));
     const deleted = await postConfirm(t, token, {
       instanceId: f.instanceId,
@@ -843,6 +857,116 @@ describe("POST /device/confirm", () => {
     setNow(Date.parse(START) + 4 * MIN);
     expect((await postConfirm(t, token, malformed)).status).toBe(400);
     expect(await refusedRows()).toBe(21);
+  });
+});
+
+describe("the refused-press budget", () => {
+  test("refusals the core records spend it too", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    await t.run(async (ctx) => await ctx.db.delete(f.instanceId));
+    const deleted = { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" };
+    for (let i = 0; i < 20; i++) await postConfirm(t, token, deleted);
+    /**
+     * purpose: How many press_not_applied rows exist.
+     * @return: (Promise<number>) The count.
+     */
+    const refusedRows = async (): Promise<number> =>
+      (await audits(t)).filter((a) => a.action === "press_not_applied").length;
+    expect(await refusedRows()).toBe(20);
+    expect(
+      (await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "button" })).status,
+    ).toBe(400);
+    expect(await refusedRows()).toBe(20);
+  });
+});
+
+describe("a confirm through the device API is a device confirm", () => {
+  test("every confirm and refusal records how it arrived (transport)", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t, "display");
+    await postConfirm(t, token, { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" });
+    await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "button" });
+    const second = await household(t, "z_");
+    await force(second, { state: "due" });
+    await t.withIdentity({ subject: "z_phone" }).mutation(api.instances.confirmPressedTask, {
+      instanceId: second.instanceId,
+      via: "phone_app",
+      pressedAgoMs: 0,
+    });
+    const rows = await audits(t);
+    /**
+     * purpose: The transport of a household's audit row with an action.
+     * @param householdId: (Id<"households">) The household.
+     * @param action: (string) The action.
+     * @return: (unknown) detail.transport.
+     */
+    const transportOf = (householdId: Id<"households">, action: string): unknown =>
+      (
+        rows.find((a) => a.householdId === householdId && a.action === action)?.detail as {
+          transport?: unknown;
+        }
+      )?.transport;
+    expect(transportOf(f.householdId, "state_change")).toBe("device_api");
+    expect(transportOf(f.householdId, "press_not_applied")).toBe("device_api");
+    expect(transportOf(second.householdId, "state_change")).toBe("app");
+  });
+
+  test("a caregiver's reopen stamps it, so an older queued press is refused", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t, "display");
+    setNow(local("08:05"));
+    await postConfirm(t, token, { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" });
+    setNow(local("08:06"));
+    await t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId });
+    const reopened = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(reopened!.state).toBe("due");
+    expect(near(reopened!.confirmTakenBackAt, local("08:06"))).toBe(true);
+    const stale = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 2 * MIN,
+      via: "button",
+    });
+    expect(await stale.json()).toMatchObject({
+      status: "rejected",
+      reason: "This press was made before the confirmation was taken back",
+    });
+    const fresh = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 0,
+      via: "button",
+    });
+    expect(((await fresh.json()) as { status: string }).status).toBe("confirmed");
+  });
+
+  test("the phone app's Undo takes back a press the same device made through the API", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t, "phone");
+    setNow(local("08:05"));
+    await postConfirm(t, token, { instanceId: f.instanceId, pressedAgoMs: 0, via: "widget" });
+    setNow(local("08:05") + 20_000);
+    const undone = await t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId });
+    expect(undone.status).toBe("undone");
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("due");
+  });
+
+  test("the device API offers no undo route", async () => {
+    const t = makeBackend();
+    await household(t);
+    const token = await issue(t, "display");
+    const res = await call(t, "POST", "/device/undo", { token, body: {} });
+    expect(res.status).toBe(404);
   });
 });
 

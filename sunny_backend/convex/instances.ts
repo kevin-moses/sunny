@@ -17,8 +17,13 @@
 // state, claim, snooze and note change is audited (lib/schedule.changeInstance). A bare "Done"
 // (no label) never picks an anytime instance (lib/anytime.ts); it needs the task's label.
 // Which task "Done" means is lib/dueTask.pickDueEntry, shared with the voice agent's "not yet".
+// Every confirm records how it arrived (ConfirmTransport: "app" for the app's mutations,
+// "device_api" for the HTTP device API in deviceApi.ts) as `transport` in its audit detail; a
+// confirm through either is a device confirm (state confirmed), so a reopen stamps both alike.
+// A press on another household's instance is refused by confirmInstance's household check, the
+// same check every confirm goes through. NO_SUCH_TASK is the reason for a missing instance.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -78,6 +83,17 @@ const CLEAR_CONFIRMATION = {
   resolvedFromState: undefined,
   resolvedFromSnoozedUntil: undefined,
 } satisfies Partial<Doc<"taskInstances">>;
+
+/** The reason a press on an instance that does not exist is rejected with. */
+export const NO_SUCH_TASK = "The task no longer exists";
+
+/**
+ * How a confirm reached the backend, recorded as `transport` in its audit detail so the log can
+ * tell a press on a board or widget from one in the app: "app" for the app's Convex mutations,
+ * "device_api" for the HTTP device API (deviceApi.ts). Backend callers (the voice agent) leave it
+ * unset.
+ */
+export type ConfirmTransport = "app" | "device_api";
 
 /** Result of confirmDueTask: a status plus the matched entry's fields where there is one. */
 export type ConfirmDueResult = Partial<TodayEntry> & {
@@ -187,8 +203,9 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *          and returns it.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
- * @param args: ({instanceId, via, note, pressedAgoMs}) The instance, the surface, an optional
- *        note and an optional press age. pressedAgoMs is how long before this call the senior
+ * @param args: ({instanceId, via, note, pressedAgoMs, transport}) The instance, the surface, an
+ *        optional note, an optional press age and how the confirm arrived (ConfirmTransport,
+ *        recorded in the audit detail when given). pressedAgoMs is how long before this call the senior
  *        pressed Done on a device that held the press (offline) and sent it later. An age, not
  *        a time, so the device's clock skew cannot move the record. Only a senior device may
  *        send it, and it must be a finite number of at least 0. confirmedAt is `now` minus the
@@ -231,6 +248,7 @@ export async function confirmInstance(
     via: ConfirmVia;
     note?: string;
     pressedAgoMs?: number;
+    transport?: ConfirmTransport;
   },
   now: number,
 ): Promise<Doc<"taskInstances">> {
@@ -271,15 +289,12 @@ export async function confirmInstance(
       ? now
       : Math.min(now, Math.max(now - args.pressedAgoMs, instance.windowStart - EARLY_CONFIRM_MS));
   const lateSynced = now - confirmedAt > LATE_SYNC_MS;
-  const pressDetail =
-    args.pressedAgoMs === undefined
-      ? undefined
-      : {
-          pressedAgoMs: args.pressedAgoMs,
-          confirmedAt,
-          receivedAt: now,
-          replayed,
-        };
+  const pressDetail = {
+    ...(args.pressedAgoMs === undefined
+      ? {}
+      : { pressedAgoMs: args.pressedAgoMs, confirmedAt, receivedAt: now, replayed }),
+    ...(args.transport === undefined ? {} : { transport: args.transport }),
+  };
   return await changeInstance(
     ctx,
     actor,
@@ -571,7 +586,8 @@ export async function reopenInstance(
  *          doses; not_due_yet means the matched task is more than an hour away.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be the household's senior device or the backend.
- * @param args: ({householdId, via, label}) Household, surface and optional label to match.
+ * @param args: ({householdId, via, label, transport}) Household, surface, optional label to
+ *        match and how the confirm arrived (ConfirmTransport; unset for the voice agent).
  * @param now: (number) Epoch ms; its household-local date defines today.
  * @return: (Promise<ConfirmDueResult>) Status plus the matched entry's fields.
  * @raises forbidden for other actors.
@@ -579,7 +595,12 @@ export async function reopenInstance(
 export async function confirmDueTaskCore(
   ctx: MutationCtx,
   actor: Actor,
-  args: { householdId: Id<"households">; via: ConfirmVia; label?: string },
+  args: {
+    householdId: Id<"households">;
+    via: ConfirmVia;
+    label?: string;
+    transport?: ConfirmTransport;
+  },
   now: number,
 ): Promise<ConfirmDueResult> {
   if (!actsForSenior(actor, args.householdId)) {
@@ -590,7 +611,12 @@ export async function confirmDueTaskCore(
   const { entry } = picked;
   let row: Doc<"taskInstances">;
   try {
-    row = await confirmInstance(ctx, actor, { instanceId: entry.instanceId, via: args.via }, now);
+    row = await confirmInstance(
+      ctx,
+      actor,
+      { instanceId: entry.instanceId, via: args.via, transport: args.transport },
+      now,
+    );
   } catch (e) {
     if (isAppError(e, "invalid")) return { ...entry, status: "not_due_yet" };
     throw e;
@@ -774,7 +800,7 @@ export const confirmTaskInstance = mutation({
   handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
     const instance = await loadInstance(ctx, args.instanceId);
     const actor = await requireReader(ctx, instance.householdId);
-    return await confirmInstance(ctx, actor, args, Date.now());
+    return await confirmInstance(ctx, actor, { ...args, transport: "app" }, Date.now());
   },
 });
 
@@ -789,12 +815,18 @@ export type PressResult =
  *          (and was told was checked off), so a refused press (instance gone, not due yet for
  *          a live press, ...) returns { status: "rejected", reason } and writes an audit row
  *          (action "press_not_applied", the instance id if known, the reason, the press age and
- *          time) so the household has a server-side record. Authorization failures still throw:
- *          a caller that is not a device, or an instance of another household.
+ *          time, and the transport when given) so the household has a server-side record, unless
+ *          the caller passes recordRefusal false (the device API does once a device's
+ *          refused-press budget is spent). Authorization failures still throw: a caller that is
+ *          not a device, and an instance of another household, refused by confirmInstance's
+ *          household check (the one every confirm goes through), with no audit row.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be a senior device.
- * @param args: ({instanceId, via, pressedAgoMs}) The instance, the surface and the press age.
+ * @param args: ({instanceId, via, pressedAgoMs, transport}) The instance, the surface, the press
+ *        age and how the press arrived (ConfirmTransport).
  * @param now: (number) Epoch ms.
+ * @param options: ({ recordRefusal?: boolean }, optional) recordRefusal false writes no
+ *        press_not_applied row for a refused press; default true.
  * @return: (Promise<PressResult>) confirmed with the instance, or rejected with the reason.
  * @raises forbidden when the actor is not a senior device or the instance belongs to another
  *          household; invalid for an age that is not a finite number of at least 0.
@@ -802,23 +834,28 @@ export type PressResult =
 export async function confirmPressedInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; via: ConfirmVia; pressedAgoMs: number },
+  args: {
+    instanceId: Id<"taskInstances">;
+    via: ConfirmVia;
+    pressedAgoMs: number;
+    transport: ConfirmTransport;
+  },
   now: number,
+  options: { recordRefusal?: boolean } = {},
 ): Promise<PressResult> {
   if (actor.kind !== "senior_device") {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
   requirePressAge(args.pressedAgoMs);
   const instance = await ctx.db.get(args.instanceId);
-  if (instance !== null && instance.householdId !== actor.householdId) {
-    throw appError("forbidden", "Not allowed to confirm this task");
-  }
   /**
-   * purpose: Record a press that could not be applied and build the rejected result.
+   * purpose: Record a press that could not be applied (unless the caller said not to) and build
+   *          the rejected result.
    * @param reason: (string) Why.
    * @return: (Promise<PressResult>) The rejected result.
    */
   const rejected = async (reason: string): Promise<PressResult> => {
+    if (options.recordRefusal === false) return { status: "rejected", reason };
     await audit(ctx, {
       householdId: actor.householdId,
       actor,
@@ -832,11 +869,12 @@ export async function confirmPressedInstance(
         receivedAt: now,
         via: args.via,
         instanceId: args.instanceId,
+        transport: args.transport,
       },
     });
     return { status: "rejected", reason };
   };
-  if (instance === null) return await rejected("The task no longer exists");
+  if (instance === null) return await rejected(NO_SUCH_TASK);
   try {
     return { status: "confirmed", instance: await confirmInstance(ctx, actor, args, now) };
   } catch (error) {
@@ -859,7 +897,7 @@ export const confirmPressedTask = mutation({
   args: { instanceId: v.id("taskInstances"), via: confirmVia, pressedAgoMs: v.number() },
   handler: async (ctx, args): Promise<PressResult> => {
     const actor = await requireDeviceActor(ctx);
-    return await confirmPressedInstance(ctx, actor, args, Date.now());
+    return await confirmPressedInstance(ctx, actor, { ...args, transport: "app" }, Date.now());
   },
 });
 
@@ -978,7 +1016,7 @@ export const confirmDueTask = mutation({
   args: { householdId: v.id("households"), via: confirmVia, label: v.optional(v.string()) },
   handler: async (ctx, args): Promise<ConfirmDueResult> => {
     const actor = await requireSenior(ctx, args.householdId);
-    return await confirmDueTaskCore(ctx, actor, args, Date.now());
+    return await confirmDueTaskCore(ctx, actor, { ...args, transport: "app" }, Date.now());
   },
 });
 
