@@ -2,7 +2,8 @@
 // Purpose: Unit tests for the device state rules (lib/deviceState.ts), driven through the pure
 // buildDeviceState with a fixed clock (Saturday 2026-11-07, 09:30 in New York). Ported from the
 // app: the Now card (display/__tests__/model.test.ts nowCard: first due timed task, overdue,
-// steps, clear and all done), Next up, the Today rows (marks and overflow), the Done target
+// steps, clear and all done, and PR 14's rule that a missed task keeps the day from being all
+// done), Next up, the Today rows (marks, PR 14's missed mark, and overflow), the Done target
 // (day/__tests__/useDoneAction.test.tsx doneTarget) and which tasks may cue
 // (display/__tests__/cue.test.ts isCueable and the cue cases that do not depend on the device's
 // memory of played cues). Added: an early target is shown on the Now card and in done, anytime
@@ -324,12 +325,53 @@ describe("now (the Now card)", () => {
     });
   });
 
+  // The second task was "missed" here before PR 14; a missed task now keeps the day from being
+  // all done (see the next tests), so, as in the app's own test of the same name, it is resolved.
   it("is all done when every task is finished and no event is ahead", () => {
     const state = stateOf({
-      tasks: [makeTask({ state: "confirmed" }), makeTask({ instanceId: "t2", state: "missed" })],
+      tasks: [makeTask({ state: "confirmed" }), makeTask({ instanceId: "t2", state: "resolved" })],
       eventsToday: [makeEvent({ startTime: "09:00" })],
     });
     expect(state.now).toEqual({ kind: "clear", task: null, allDone: true });
+  });
+
+  // The following four mirror sunny_app/src/display/__tests__/model.test.ts nowCard ("is all
+  // done with no tasks and no events", "is not all done while a task is missed, even with the
+  // rest done", "is all done again once the missed task is confirmed or resolved", "still shows a
+  // due task over a missed one"); change both together.
+  it("is all done with no tasks and no events", () => {
+    expect(stateOf().now).toEqual({ kind: "clear", task: null, allDone: true });
+  });
+
+  it("is not all done while a task is missed, even with the rest done", () => {
+    const state = stateOf({
+      tasks: [
+        makeTask({ instanceId: "a", scheduledTime: "07:00", state: "confirmed" }),
+        makeTask({ instanceId: "b", state: "missed" }),
+      ],
+    });
+    expect(state.now).toEqual({ kind: "clear", task: null, allDone: false });
+  });
+
+  it("is all done again once the missed task is confirmed or resolved", () => {
+    for (const state of ["confirmed", "resolved"]) {
+      expect(stateOf({ tasks: [makeTask({ state })] }).now).toEqual({
+        kind: "clear",
+        task: null,
+        allDone: true,
+      });
+    }
+  });
+
+  it("still shows a due task over a missed one", () => {
+    const state = stateOf({
+      tasks: [
+        makeTask({ instanceId: "a", state: "missed" }),
+        makeTask({ instanceId: "b", scheduledTime: "09:00", state: "due" }),
+      ],
+    });
+    expect(state.now.task?.instanceId).toBe("b");
+    expect(state.done).toEqual({ instanceId: "b", early: false });
   });
 });
 
@@ -422,6 +464,55 @@ describe("rows (the Today page)", () => {
       [makeEvent({ eventId: "e9", startTime: "09:00" })],
     );
     expect(agenda.map((a) => a.id)).toEqual(["task-nine", "event-e9-2026-11-07", "task-any"]);
+  });
+
+  // The next two mirror sunny_app/src/display/__tests__/model.test.ts todayRows ("marks a
+  // missed task missed, and done once it is confirmed or resolved", "leaves due, escalated and
+  // upcoming tasks unmarked and the Now task now"); change both together.
+  it("marks a missed task missed, and done once it is confirmed or resolved", () => {
+    /**
+     * purpose: The row marks of a day with one task in a state.
+     * @param state: (string) The task's state.
+     * @return: (string[]) The marks.
+     */
+    const marks = (state: string): string[] =>
+      todayRows(buildAgenda([makeTask({ state })], []), null).rows.map((r) => r.mark);
+    expect(marks("missed")).toEqual(["missed"]);
+    expect(marks("confirmed")).toEqual(["done"]);
+    expect(marks("resolved")).toEqual(["done"]);
+    expect(marks("upcoming")).toEqual(["none"]);
+  });
+
+  it("leaves due, escalated and upcoming tasks unmarked and the Now task now", () => {
+    const tasks = [
+      makeTask({ instanceId: "a", scheduledTime: "06:00", state: "missed" }),
+      makeTask({ instanceId: "b", scheduledTime: "07:00", state: "escalated", carriedOver: true }),
+      makeTask({ instanceId: "c", scheduledTime: "08:00", state: "due" }),
+      makeTask({ instanceId: "d", scheduledTime: "09:00", state: "upcoming" }),
+    ];
+    const { rows } = todayRows(buildAgenda(tasks, []), "c");
+    expect(rows.map((r) => [r.time, r.mark])).toEqual([
+      ["6:00", "missed"],
+      ["7:00", "none"],
+      ["8:00", "now"],
+      ["9:00", "none"],
+    ]);
+  });
+
+  it("a missed row is not dropped as a done row when rows overflow", () => {
+    const tasks = ["06:00", "07:00", "08:00", "09:00"].map((time, i) =>
+      makeTask({
+        instanceId: `t${i}`,
+        scheduledTime: time,
+        state: i === 0 ? "missed" : "upcoming",
+      }),
+    );
+    const { rows, hidden } = todayRows(buildAgenda(tasks, []), null, 3);
+    expect(rows.map((r) => [r.time, r.mark])).toEqual([
+      ["6:00", "missed"],
+      ["7:00", "none"],
+    ]);
+    expect(hidden).toBe(2);
   });
 
   it("drops the earliest done rows first, then counts the latest rows left out", () => {

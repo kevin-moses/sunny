@@ -16,10 +16,13 @@
 // - now (the Now card) shows that same task, so Done always confirms the task on screen: overdue
 //   once escalated or carried over from yesterday, early when it is not due yet, and its steps
 //   (two or more checklist items stand in for steps). Without one it is a clear card, all done
-//   when no task is open and no event is still ahead today.
-// - nextUp skips the Now task; rows (the Today page) mark it "now", done tasks "done", and drop
-//   the earliest done rows first when there are more than MAX_TODAY_ROWS, then the latest
-//   (rowsHidden counts those).
+//   only when no task is open, no event is still ahead today and no task is missed (a missed
+//   task keeps it at "nothing to do right now"; PR 14's rule, mirrored from the app's nowCard).
+// - nextUp skips the Now task; rows (the Today page) mark it "now", done tasks "done" (by
+//   lib/confirmRule.ts isDoneState), missed tasks "missed" (dimmed, no check, no tag; mirrored
+//   from the app's taskMark), and drop the earliest done rows first when there are more than
+//   MAX_TODAY_ROWS, then the latest (rowsHidden counts those). The tests that pin these mirror
+//   sunny_app/src/display/__tests__/model.test.ts; change both together.
 // - cues: what to chime and say. Every timed due or escalated task is listed (cueableNow says
 //   whether it may cue right now: not snoozed), and every other open timed task, tomorrow's
 //   included, that the escalation policy will prompt within CUE_HORIZON_MS. promptTimes are those
@@ -41,6 +44,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
 import { ANYTIME, compareDayOrder, isAnytimeInstance } from "./anytime";
+import { isDoneState } from "./confirmRule";
 import {
   clockTime,
   cueSpeech,
@@ -189,7 +193,10 @@ export interface NowCard {
   kind: "task" | "clear";
   /** The task; null exactly when kind is "clear". */
   task: NowTask | null;
-  /** Clear and nothing is left today (no open task, no later event); false for a task. */
+  /**
+   * Clear and nothing is left today: no open task, no later event and no missed task (a missed
+   * task keeps the card at "nothing to do right now"); false for a task.
+   */
   allDone: boolean;
 }
 
@@ -215,8 +222,11 @@ export interface TodayRow {
   key: string;
   time: string;
   label: string;
-  /** done: checked and grey; now: the Now task, boxed and tagged; none: plain. */
-  mark: "done" | "now" | "none";
+  /**
+   * done: checked and grey; now: the Now task, boxed and tagged; missed: grey with no check and
+   * no tag (its window closed unconfirmed); none: plain.
+   */
+  mark: "done" | "now" | "missed" | "none";
 }
 
 /** A task to chime for and the sentence to say. */
@@ -278,12 +288,28 @@ export type AgendaItem =
   | { kind: "event"; id: string; time: string; event: DayEvent };
 
 /**
- * purpose: Whether a task was confirmed by the senior or a caregiver.
+ * purpose: Whether a task's window closed without a confirmation (mirrors isMissed in
+ *          sunny_app/src/day/format.ts). Surfaces draw it dimmed, never as still to do and never
+ *          as done; a later confirmation moves it to confirmed or resolved.
  * @param task: (Pick<DayTask, "state">) The task.
- * @return: (boolean) True once confirmed or resolved.
+ * @return: (boolean) True while its state is missed.
  */
-function isDone(task: Pick<DayTask, "state">): boolean {
-  return task.state === "confirmed" || task.state === "resolved";
+function isMissed(task: Pick<DayTask, "state">): boolean {
+  return task.state === "missed";
+}
+
+/**
+ * purpose: The mark of a task's Today row (mirrors taskMark in sunny_app/src/display/model.ts):
+ *          now for the Now task, done once confirmed or resolved (lib/confirmRule.ts
+ *          isDoneState), missed when its window closed unconfirmed, otherwise none.
+ * @param task: (DayTask) The task.
+ * @param nowTaskId: (string | null) The Now task's instanceId.
+ * @return: (TodayRow["mark"]) The mark.
+ */
+function taskMark(task: DayTask, nowTaskId: string | null): TodayRow["mark"] {
+  if (task.instanceId === nowTaskId) return "now";
+  if (isDoneState(task.state)) return "done";
+  return isMissed(task) ? "missed" : "none";
 }
 
 /**
@@ -372,10 +398,11 @@ export function nowCard(
       allDone: false,
     };
   }
-  // A missed task (its window closed) is not waiting, so it does not keep the day open.
+  // A missed task (its window closed) is not waiting, but the day is not all done either.
   const openTask = tasks.some((t) => isOpenState(t.state));
   const laterEvent = events.some((e) => e.startTime > time);
-  return { kind: "clear", task: null, allDone: !openTask && !laterEvent };
+  const anyMissed = tasks.some(isMissed);
+  return { kind: "clear", task: null, allDone: !openTask && !laterEvent && !anyMissed };
 }
 
 /**
@@ -462,7 +489,7 @@ export function todayRows(
       key: item.id,
       time: clockTime(task.scheduledTime),
       label: task.displayLabel,
-      mark: task.instanceId === nowTaskId ? "now" : isDone(task) ? "done" : "none",
+      mark: taskMark(task, nowTaskId),
     };
   });
   let excess = all.length - maxRows;
