@@ -11,9 +11,10 @@
 // config change carries the recent chat (and a first request or continuation does not). Plus the step functions
 // directly: executeToolCalls reuses a stored result, fails when the requester is no longer an
 // editor of the household, pollUntil's outcomes, the paused gate on
-// every acting step, and the onComplete handler.
+// every acting step, and the onComplete handler. The day's digest is in the first message of
+// a fresh session and in the message posted to a continued one (the briefing heads both).
 //
-// Last modified: 2026-11-04
+// Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -26,6 +27,7 @@ import {
   TIMEOUT_ERROR,
 } from "./agentRuntime";
 import { MAX_NAME_CHARS, UNKNOWN_AUTHOR } from "./lib/agentHistory";
+import { localDate } from "./lib/time";
 import { GENERIC_ERROR } from "./lib/agentRequestState";
 import { isInProgress } from "./lib/agentRequestState";
 import type { SessionEvent } from "./lib/managedAgents";
@@ -409,6 +411,45 @@ describe("workflow end to end", () => {
     const calls = await t.run(async (ctx) => await ctx.db.query("agentToolCalls").collect());
     expect(calls).toHaveLength(1);
     expect(calls[0]!.sentAt).toBeTypeOf("number");
+  });
+
+  test("the day's digest reaches the agent in a fresh session and in a continued one", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const today = localDate(Date.now(), "America/New_York");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("digests", {
+        householdId,
+        localDate: today,
+        status: "done",
+        text: "Morning pills: confirmed late at 9:10.",
+      });
+    });
+    const earlier = await insertRequest(t, householdId, {
+      status: "succeeded",
+      sessionId: "sess_old",
+    });
+    const asA = t.withIdentity({ subject: "user_a" });
+    const fresh = await asA.mutation(api.agentRequests.request, {
+      householdId,
+      message: "Why was the 8 o'clock late?",
+    });
+    const freshInputs = await t.query(internal.agentRuntime.sessionInputs, { requestId: fresh });
+    await t.run(async (ctx) => await ctx.db.patch(fresh, { status: "succeeded" }));
+    const continued = await asA.mutation(api.agentRequests.request, {
+      householdId,
+      message: "And yesterday?",
+      continueRequestId: earlier,
+    });
+    const continuedInputs = await t.query(internal.agentRuntime.sessionInputs, {
+      requestId: continued,
+    });
+    const line = `  ${today}: Morning pills: confirmed late at 9:10.`;
+    for (const inputs of [freshInputs, continuedInputs]) {
+      expect(inputs.stop).toBeNull();
+      expect(inputs.stop === null && inputs.text).toContain(line);
+    }
+    expect(continuedInputs.stop === null && continuedInputs.continueSessionId).toBe("sess_old");
   });
 
   test("a continued request posts to the earlier session and ignores the stale reply", async () => {

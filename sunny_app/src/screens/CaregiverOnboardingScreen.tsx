@@ -6,9 +6,11 @@
 // "Your name" and an editable timezone defaulting to the phone's -> households.create). The
 // backend's message is shown inline when a call fails. After a call succeeds the screen does
 // nothing more: households.mine updates reactively and the app shell moves to the caregiver
-// home. A "Sign out" button (Clerk) lets the user leave with a different account.
+// home. A "Sign out" button (Clerk) lets the user leave with a different account; it first
+// unregisters a push token this phone may still hold from an earlier household
+// (signOutCaregiver). No notification permission is asked here: that waits for a household.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-14
 
 import { useAuth } from '@clerk/expo';
 import { useState } from 'react';
@@ -22,6 +24,7 @@ import { TextButton } from '../components/TextButton';
 import { useBusyAction } from '../components/useBusyAction';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
+import { signOutCaregiver } from '../notifications/caregiverPush';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
@@ -124,13 +127,14 @@ export function CaregiverOnboardingScreen() {
     );
 
   /**
-   * purpose: Sign the account out of Clerk; the shell then shows the welcome screen.
+   * purpose: Sign the account out of Clerk, first unregistering a push token this phone may
+   *          still hold from an earlier household; the shell then shows the welcome screen.
    * @return: (Promise<void>) Resolves when signed out or the failure is shown.
    */
   const handleSignOut = async (): Promise<void> => {
     setMessage(null);
     try {
-      await signOut();
+      await signOutCaregiver(signOut);
     } catch (error) {
       logger.warning('Onboarding', `Sign out failed: ${errorMessage(error)}`);
       setMessage('Could not sign out. Please try again.');

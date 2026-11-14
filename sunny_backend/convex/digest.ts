@@ -4,10 +4,14 @@
 // enqueues `compose` on the delivery workpool. `compose` writes the not-done and alert lines
 // from the template, asks Claude Haiku for the rest (lib/digestText.ts), and falls back to the
 // whole template on any failure, invalid reply or quiet day; `complete` then stores the text and
-// the path that wrote it and inserts one "digest" outbox row per member with a verified phone. Rules: a paused household gets no
-// digest until resumed; a household created after that day's digest time gets none that day.
+// the path that wrote it, posts the text as a message from Sunny in the household's caregiver
+// chat thread (lib/chatPosts.ts, once per digest), and inserts one "digest" outbox row per
+// reachable member (a verified phone or a push token): a push previews it ("<name>'s day" over
+// the text) and opens the chat; a caregiver without the app gets the full text by SMS as
+// before. Rules: a paused household gets no digest until resumed; a household created after
+// that day's digest time gets none that day.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-14
 
 import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
@@ -15,8 +19,14 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import { verifiedPhone } from "./lib/access";
-import { deliveryPool, insertNotification, STUCK_AFTER_MS, SWEEP_BATCH } from "./lib/delivery";
+import { postDigest } from "./lib/chatPosts";
+import {
+  deliveryPool,
+  insertNotification,
+  reachableMembers,
+  STUCK_AFTER_MS,
+  SWEEP_BATCH,
+} from "./lib/delivery";
 import { gatherDigestFacts } from "./lib/digestFacts";
 import {
   composeWithClaude,
@@ -142,9 +152,11 @@ export const load = internalQuery({
 });
 
 /**
- * purpose: Store the digest text and queue one SMS outbox row per member with a verified
- *          phone (read now, so a number verified or removed since loading is honored). Does
- *          nothing unless the digest is still pending.
+ * purpose: Store the digest text, post it in the household's caregiver chat thread (once: only
+ *          a pending digest gets here, and this marks it done), and queue one outbox row per
+ *          reachable member (a verified phone or a push token, read now, so a change since
+ *          loading is honored). A push shows "<name>'s day" (payload.pushTitle) over the text;
+ *          an SMS keeps "Sunny: <name>'s day". Does nothing unless the digest is still pending.
  * @param digestId: (Id<"digests">) The digest.
  * @param text: (string) The digest text.
  * @param source: ("claude" | "template") Which path produced it.
@@ -157,11 +169,12 @@ export const complete = internalMutation({
     if (!digest || digest.status !== "pending") return 0;
     const household = await ctx.db.get(digest.householdId);
     if (!household) return 0;
+    const postId = await postDigest(ctx, digest, text);
     const members = await ctx.db
       .query("householdMembers")
       .withIndex("by_household_user", (q) => q.eq("householdId", household._id))
       .collect();
-    const recipients = members.filter((m) => verifiedPhone(m) !== undefined);
+    const recipients = await reachableMembers(ctx, members);
     for (const member of recipients) {
       await insertNotification(ctx, {
         householdId: household._id,
@@ -169,7 +182,12 @@ export const complete = internalMutation({
         recipientUserId: member.userId,
         title: `Sunny: ${household.seniorPreferredName}'s day`,
         body: text,
-        payload: { digestId, localDate: digest.localDate },
+        payload: {
+          digestId,
+          localDate: digest.localDate,
+          postId,
+          pushTitle: `${household.seniorPreferredName}'s day`,
+        },
       });
     }
     await ctx.db.patch(digestId, { status: "done", source, text });

@@ -8,12 +8,18 @@
 // versus permanent failures for both channels; configuration errors not retried; settled and
 // missing rows left alone; the attempt cap; the completion handler; the sweeper; and insertion
 // through insertNotification being delivered end to end.
+// Caregiver push: a member with a push token gets APNs and no SMS, one without gets the SMS
+// unchanged, the push data (notification_id, kind, household_id, task_instance_id), the
+// interruption level and category per kind and role (and for a device), the digest's push
+// title, the SMS fallback for the same row when every token is unregistered or refused for good
+// (and its failure), no fallback without a verified phone or for a retryable failure, and a
+// removed member skipped even with a token.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-14
 
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   deliveryFixture,
@@ -481,6 +487,247 @@ describe("SMS routing", () => {
     expect(providerMocks.smsSend.mock.calls[1]![0].body).toBe(
       "Title\nBody\nReply 1 if you're on it.",
     );
+  });
+});
+
+/**
+ * purpose: Give a caregiver push tokens (the caregiver app with notifications on).
+ * @param f: (DeliveryFixture) Fixture.
+ * @param userId: (string) The caregiver's user id.
+ * @param tokens: (string[]) Tokens to register.
+ * @return: (Promise<void>) Resolves when written.
+ */
+async function addTokens(f: DeliveryFixture, userId: string, ...tokens: string[]): Promise<void> {
+  await f.t.run(async (ctx) => {
+    for (const token of tokens) await ctx.db.insert("pushTokens", { userId, token });
+  });
+}
+
+/**
+ * purpose: Script APNs to answer every token with one outcome.
+ * @param outcome: ("unregistered" | "failed") The outcome.
+ * @param status: (number) HTTP status.
+ * @param retryable: (boolean) Whether a failure is retryable.
+ * @return: (void)
+ */
+function apnsAnswers(outcome: "unregistered" | "failed", status: number, retryable = false): void {
+  providerMocks.apnsSend.mockImplementation(async (args: { tokens: string[] }) =>
+    args.tokens.map((token) => ({ token, outcome, status, reason: "Why", retryable })),
+  );
+}
+
+describe("caregiver push", () => {
+  test("a member with a push token gets APNs to every token and no SMS", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1", "pat-2");
+    const id = await insertOutbox(f, { kind: "event_notice", recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(providerMocks.apnsSend).toHaveBeenCalledWith(
+      expect.objectContaining({ tokens: ["pat-1", "pat-2"], title: "Title", body: "Body" }),
+    );
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "apns" });
+  });
+
+  test("a member without a token is texted exactly as before", async () => {
+    const f = await setup();
+    await addTokens(f, "max", "max-1");
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(providerMocks.apnsSend).not.toHaveBeenCalled();
+    expect(providerMocks.smsSend).toHaveBeenCalledWith({
+      to: "+15550000001",
+      body: "Title\nBody\nReply 1 if you're on it.",
+    });
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "sms" });
+  });
+
+  test("a member with a token but no verified phone is pushed", async () => {
+    const f = await setup();
+    await addTokens(f, "val", "val-1");
+    const id = await insertOutbox(f, { kind: "event_notice", recipientUserId: "val" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(await outboxRow(f, id)).toMatchObject({ channel: "apns" });
+  });
+
+  test("the push carries notification_id, kind, household_id and task_instance_id", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    const taskInstanceId = await addInstance(f.t, f.householdId, "Pills", { state: "escalated" });
+    const id = await insertOutbox(f, {
+      kind: "caregiver_alert",
+      recipientUserId: "pat",
+      taskInstanceId,
+    });
+    await deliver(f, id);
+    expect(providerMocks.apnsSend.mock.calls[0]![0].data).toEqual({
+      notification_id: id,
+      kind: "caregiver_alert",
+      household_id: f.householdId,
+      task_instance_id: taskInstanceId,
+    });
+  });
+
+  test("a claimable alert is time-sensitive with the caregiver_alert category", async () => {
+    const f = await setup();
+    await addTokens(f, "max", "max-1");
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "max" });
+    await deliver(f, id);
+    expect(providerMocks.apnsSend.mock.calls[0]![0]).toMatchObject({
+      interruptionLevel: "time-sensitive",
+      category: "caregiver_alert",
+    });
+  });
+
+  test("a viewer's alert is time-sensitive with no category", async () => {
+    const f = await setup();
+    await addTokens(f, "val", "val-1");
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "val" });
+    await deliver(f, id);
+    const sent = providerMocks.apnsSend.mock.calls[0]![0];
+    expect(sent.interruptionLevel).toBe("time-sensitive");
+    expect(sent).not.toHaveProperty("category");
+  });
+
+  test("an agent flag is time-sensitive; a digest, notice and message are not", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    const kinds = ["agent_flag", "digest", "event_notice", "family_message"] as const;
+    for (const kind of kinds) {
+      await deliver(f, await insertOutbox(f, { kind, recipientUserId: "pat" }));
+    }
+    const levels = providerMocks.apnsSend.mock.calls.map((c) => c[0].interruptionLevel);
+    expect(levels).toEqual(["time-sensitive", undefined, undefined, undefined]);
+    for (const call of providerMocks.apnsSend.mock.calls)
+      expect(call[0]).not.toHaveProperty("category");
+  });
+
+  test("a senior prompt to a device is time-sensitive with no category", async () => {
+    const f = await setup();
+    await deliver(
+      f,
+      await insertOutbox(f, { kind: "senior_prompt", recipientDeviceId: f.deviceId }),
+    );
+    await deliver(
+      f,
+      await insertOutbox(f, { kind: "event_notice", recipientDeviceId: f.deviceId }),
+    );
+    const [prompt, notice] = providerMocks.apnsSend.mock.calls.map((c) => c[0]);
+    expect(prompt).toMatchObject({ interruptionLevel: "time-sensitive" });
+    expect(prompt).not.toHaveProperty("category");
+    expect(notice).not.toHaveProperty("interruptionLevel");
+  });
+
+  test("a push uses payload.pushTitle while the SMS keeps the title", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    const fields = {
+      kind: "digest" as const,
+      title: "Sunny: Mom's day",
+      body: "All done.",
+      payload: { pushTitle: "Mom's day" },
+    };
+    await deliver(f, await insertOutbox(f, { ...fields, recipientUserId: "pat" }));
+    await deliver(f, await insertOutbox(f, { ...fields, recipientUserId: "max" }));
+    expect(providerMocks.apnsSend.mock.calls[0]![0]).toMatchObject({
+      title: "Mom's day",
+      body: "All done.",
+    });
+    expect(providerMocks.smsSend).toHaveBeenCalledWith({
+      to: "+15550000002",
+      body: "Sunny: Mom's day\nAll done.",
+    });
+  });
+
+  test("every token unregistered: the same row is texted and the tokens are gone", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1", "pat-2");
+    apnsAnswers("unregistered", 410);
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(providerMocks.smsSend).toHaveBeenCalledWith({
+      to: "+15550000001",
+      body: "Title\nBody\nReply 1 if you're on it.",
+    });
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "sms", attempts: 1 });
+    const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+    expect(left.map((t) => t.userId)).toEqual(["phone", "phone"]);
+  });
+
+  test("every token refused for good also falls back to the text", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    apnsAnswers("failed", 400);
+    const id = await insertOutbox(f, { recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(await outboxRow(f, id)).toMatchObject({ channel: "sms" });
+  });
+
+  test("one token unregistered and one refused for good: the dead one goes, the row is texted", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-dead", "pat-bad");
+    providerMocks.apnsSend.mockResolvedValue([
+      { token: "pat-dead", outcome: "unregistered", status: 410, reason: "Gone", retryable: false },
+      {
+        token: "pat-bad",
+        outcome: "failed",
+        status: 400,
+        reason: "BadDeviceToken",
+        retryable: false,
+      },
+    ]);
+    const id = await insertOutbox(f, { recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("sent");
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "sms" });
+    const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+    expect(left.map((t) => t.token)).toContain("pat-bad");
+    expect(left.map((t) => t.token)).not.toContain("pat-dead");
+  });
+
+  test("a failed fallback text settles the row as the SMS path does", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    apnsAnswers("unregistered", 410);
+    providerMocks.smsSend.mockResolvedValue({ ok: false, retryable: false, error: "21211 bad" });
+    const id = await insertOutbox(f, { recipientUserId: "pat" });
+    expect(await deliver(f, id)).toBe("failed");
+    expect(await outboxRow(f, id)).toMatchObject({ state: "failed", detail: "21211 bad" });
+  });
+
+  test("dead tokens and no verified phone: skipped, nothing texted", async () => {
+    const f = await setup();
+    await addTokens(f, "val", "val-1");
+    apnsAnswers("unregistered", 410);
+    const id = await insertOutbox(f, { recipientUserId: "val" });
+    expect(await deliver(f, id)).toBe("skipped");
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "skipped",
+      detail: "tokens_unregistered",
+    });
+  });
+
+  test("a retryable push failure is retried, not texted", async () => {
+    const f = await setup();
+    await addTokens(f, "pat", "pat-1");
+    apnsAnswers("failed", 503, true);
+    const id = await insertOutbox(f, { recipientUserId: "pat" });
+    await expect(deliver(f, id)).rejects.toThrow(/will retry/);
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    expect((await outboxRow(f, id)).state).toBe("pending");
+  });
+
+  test("a member who left is skipped even with a token", async () => {
+    const f = await setup();
+    await addTokens(f, "max", "max-1");
+    await f.t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.households.removeMember, { householdId: f.householdId, userId: "max" });
+    const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "max" });
+    expect(await deliver(f, id)).toBe("skipped");
+    expect(providerMocks.apnsSend).not.toHaveBeenCalled();
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
+    expect((await outboxRow(f, id)).detail).toBe("recipient_left");
   });
 });
 

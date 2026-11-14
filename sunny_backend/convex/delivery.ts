@@ -4,7 +4,10 @@
 // calls APNs or SMS, `record` stores the outcome. Contracts worth knowing:
 // - APNs counts a row as sent when any token was accepted; only tokens APNs reports unregistered
 //   are deleted. A retryable failure is thrown so the workpool retries with backoff; other
-//   failures end the row as failed.
+//   failures end the row as failed. A caregiver's push (an apns route with smsFallback) that no
+//   token took, with nothing worth retrying (every token unregistered or refused for good), is
+//   sent as that SMS in the same run, so the row settles sent with channel sms (or as the SMS
+//   path settles it); without a verified phone it ends skipped or failed as a device push would.
 // - A configuration problem returned by a sender leaves the row pending with the detail
 //   recorded, so the sweeper retries after the configuration is fixed (bounded by MAX_ATTEMPTS).
 // - An SMS that timed out is retried only for a caregiver_alert or an agent_flag (the voice
@@ -13,7 +16,7 @@
 // - begin stamps attemptStartedAt (a lease the sweeper respects). Retries exhausted ends the row
 //   as failed (onDeliveryComplete). A settled row is never delivered again.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
@@ -24,7 +27,7 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { requeueStuckDigests } from "./digest";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import { MAX_ATTEMPTS, requeueStuckDeliveries, resolveRoute } from "./lib/delivery";
-import type { SendRoute } from "./lib/delivery";
+import type { ApnsRoute, SendRoute, SmsRoute } from "./lib/delivery";
 import { sendSmsFromEnv } from "./lib/twilio";
 import { deliveryChannel } from "./lib/validators";
 
@@ -127,23 +130,26 @@ function apnsDetail(results: ApnsResult[]): string {
 }
 
 /**
- * purpose: Send a row by APNs and record the result, deleting unregistered tokens.
+ * purpose: Send a row by APNs and record the result, deleting unregistered tokens. When no
+ *          token took the push and no failure is worth retrying (every token unregistered or
+ *          refused for good), a member's row is sent as its SMS fallback instead.
  * @param ctx: (ActionCtx) Context.
  * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (SendRoute) An apns route.
+ * @param route: (ApnsRoute) An apns route.
  * @return: (Promise<DeliveryOutcome>) The outcome.
  * @raises Error for a retryable failure.
  */
 async function sendApns(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
-  route: Extract<SendRoute, { kind: "apns" }>,
+  route: ApnsRoute,
 ): Promise<DeliveryOutcome> {
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     tokens: route.tokens,
     title: route.title,
     body: route.body,
     data: route.data,
+    ...route.style,
   });
   if (configError !== undefined) {
     await ctx.runMutation(internal.delivery.record, {
@@ -159,6 +165,12 @@ async function sendApns(
     await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "sent", channel: "apns" });
     return "sent";
   }
+  const retryable = results.some((r) => r.outcome === "failed" && r.retryable);
+  if (!retryable && route.smsFallback !== null) {
+    const why = dead.length === results.length ? "tokens unregistered" : apnsDetail(results);
+    console.warn(`Push not delivered (${why}); sending the text instead`);
+    return await sendSms(ctx, outboxId, route.smsFallback);
+  }
   if (results.length > 0 && dead.length === results.length) {
     await ctx.runMutation(internal.delivery.record, {
       outboxId,
@@ -168,7 +180,7 @@ async function sendApns(
     return "skipped";
   }
   const detail = apnsDetail(results);
-  if (results.some((r) => r.outcome === "failed" && r.retryable)) {
+  if (retryable) {
     throw new Error(`APNs delivery failed, will retry: ${detail}`);
   }
   await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "failed", detail });
@@ -180,14 +192,14 @@ async function sendApns(
  *          pending; a timeout is retried only when the route allows it.
  * @param ctx: (ActionCtx) Context.
  * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (SendRoute) An sms route.
+ * @param route: (SmsRoute) An sms route (a member's own, or an apns route's fallback).
  * @return: (Promise<DeliveryOutcome>) The outcome.
  * @raises Error for a retryable failure.
  */
 async function sendSms(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
-  route: Extract<SendRoute, { kind: "sms" }>,
+  route: SmsRoute,
 ): Promise<DeliveryOutcome> {
   const result = await sendSmsFromEnv(route.to, route.body);
   if (result.ok) {

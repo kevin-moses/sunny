@@ -26,8 +26,10 @@
 // Not yet ported (later phases): storage for photos and voice clips.
 // Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
 // looks up) and listItems (the household's one shared list).
+// Caregiver chat (2026-11-14): chatPosts, Sunny's own posts in the caregiver chat thread (the
+// daily digest), merged with agentRequests into the transcript.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -315,6 +317,22 @@ export default defineSchema({
   })
     .index("by_household_date", ["householdId", "localDate"])
     .index("by_status", ["status"]),
+
+  // A post from Sunny in the household's one caregiver chat thread (lib/chatPosts.ts). The only
+  // kind today is the daily digest, posted once by digest.complete when the digest's text is
+  // stored (so one per household per local date, like digests). The chat transcript
+  // (agentRequests.transcript) merges these with the agentRequests rows by creation time.
+  chatPosts: defineTable({
+    householdId: v.id("households"),
+    kind: v.literal("digest"),
+    // The text as posted (the digest text, at most 600 characters).
+    body: v.string(),
+    // The household-local date the post is about ("YYYY-MM-DD").
+    localDate: v.string(),
+    digestId: v.id("digests"),
+  })
+    // Newest first (creation time is the implicit last index field).
+    .index("by_household", ["householdId"]),
 
   // A caregiver's Google account connection; Sunny keeps its own secondary calendar there.
   calendarConnections: defineTable({

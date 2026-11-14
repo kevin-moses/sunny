@@ -3,15 +3,20 @@
 // payload and header building, ES256 provider token header, claims and signature (verified with
 // the matching public key), PEM handling (literal "\n" escapes, bad PEM), the 30 minute iat
 // bucket, device token validation, the 4 KB payload cap, and outcome mapping for each status
-// and reason (only 410 means unregistered).
+// and reason (only 410 means unregistered). Also the push style per kind and recipient
+// (time-sensitive caregiver_alert and agent_flag to caregivers and senior_prompt to devices;
+// the caregiver_alert category only for a caregiver who may claim), the style's keys inside aps,
+// and one collapse id for two alerts about the same task.
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-14
 
 import { beforeEach, describe, expect, test } from "vitest";
 import { fromBase64Url } from "./base64";
 import {
   apnsHost,
+  CAREGIVER_ALERT_CATEGORY,
   isValidDeviceToken,
+  pushStyle,
   buildHeaders,
   buildPayload,
   getProviderToken,
@@ -146,6 +151,63 @@ describe("buildPayload", () => {
     const p = JSON.parse(buildPayload("T", "B", { aps: "evil" }));
     expect(p.aps.alert).toEqual({ title: "T", body: "B" });
   });
+
+  test("a style adds interruption-level and category inside aps, data stays outside", () => {
+    const style = { interruptionLevel: "time-sensitive" as const, category: "caregiver_alert" };
+    const p = JSON.parse(buildPayload("T", "B", { kind: "caregiver_alert" }, style));
+    expect(p).toEqual({
+      kind: "caregiver_alert",
+      aps: {
+        alert: { title: "T", body: "B" },
+        sound: "default",
+        "interruption-level": "time-sensitive",
+        category: "caregiver_alert",
+      },
+    });
+  });
+
+  test("a long body is still cut under 4 KB with a style", () => {
+    const style = { interruptionLevel: "time-sensitive" as const, category: "caregiver_alert" };
+    const payload = buildPayload("T", "x".repeat(10_000), undefined, style);
+    expect(new TextEncoder().encode(payload).length).toBeLessThanOrEqual(4096);
+    expect(JSON.parse(payload).aps.category).toBe("caregiver_alert");
+  });
+});
+
+describe("pushStyle", () => {
+  const editor = { kind: "caregiver", canClaim: true } as const;
+  const viewer = { kind: "caregiver", canClaim: false } as const;
+  const device = { kind: "device" } as const;
+
+  test("a caregiver alert to an editor is time-sensitive with the action category", () => {
+    expect(pushStyle("caregiver_alert", editor)).toEqual({
+      interruptionLevel: "time-sensitive",
+      category: CAREGIVER_ALERT_CATEGORY,
+    });
+    expect(CAREGIVER_ALERT_CATEGORY).toBe("caregiver_alert");
+  });
+
+  test("a caregiver alert to a viewer is time-sensitive with no category", () => {
+    expect(pushStyle("caregiver_alert", viewer)).toEqual({ interruptionLevel: "time-sensitive" });
+  });
+
+  test("an agent flag is time-sensitive for every caregiver, never with a category", () => {
+    expect(pushStyle("agent_flag", editor)).toEqual({ interruptionLevel: "time-sensitive" });
+    expect(pushStyle("agent_flag", viewer)).toEqual({ interruptionLevel: "time-sensitive" });
+  });
+
+  test("a digest, an event notice and a family message are plain for caregivers", () => {
+    for (const kind of ["digest", "event_notice", "family_message"] as const) {
+      expect(pushStyle(kind, editor)).toEqual({});
+    }
+  });
+
+  test("a senior prompt to a device is time-sensitive; other device pushes are plain", () => {
+    expect(pushStyle("senior_prompt", device)).toEqual({ interruptionLevel: "time-sensitive" });
+    for (const kind of ["event_notice", "caregiver_alert", "agent_flag"] as const) {
+      expect(pushStyle(kind, device)).toEqual({});
+    }
+  });
 });
 
 describe("device tokens and payload size", () => {
@@ -190,6 +252,29 @@ describe("buildHeaders", () => {
     const long = "x".repeat(100);
     const h = buildHeaders(config(), "j", { task_instance_id: long }, 0);
     expect(h["apns-collapse-id"]).toHaveLength(64);
+  });
+
+  test("two caregiver alerts about one task share a collapse id; other tasks do not", () => {
+    /**
+     * purpose: The collapse id of a caregiver alert push's data.
+     * @param id: (string) Notification row id.
+     * @param instance: (string) Task instance id.
+     * @return: (string | undefined) The header.
+     */
+    const collapse = (id: string, instance: string): string | undefined =>
+      buildHeaders(
+        config(),
+        "j",
+        {
+          notification_id: id,
+          kind: "caregiver_alert",
+          household_id: "h",
+          task_instance_id: instance,
+        },
+        0,
+      )["apns-collapse-id"];
+    expect(collapse("n1", "inst1")).toBe(collapse("n2", "inst1"));
+    expect(collapse("n1", "inst1")).not.toBe(collapse("n3", "inst2"));
   });
 });
 
