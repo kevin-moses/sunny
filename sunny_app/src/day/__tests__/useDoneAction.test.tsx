@@ -22,7 +22,11 @@
 // the tap's age and the press's id, online, offline, and as press, Undo, press again (each press
 // with its own id); too_late and permanent failures drop it with a log and no message; a
 // network failure retries; a queued Undo survives a restart with its id (no offer after it); a
-// double tap queues one. usePendingConfirms: the queued entries follow the queue, load at
+// double tap queues one; a press stored late then pressed again gets an offer that names the
+// press actually queued; the offline note shows only while offline and the press is queued;
+// "is not done" is announced only when the screen shows the task open (not for a confirm by
+// another surface). The harness gives the hook the shown tasks the way the Today screen does.
+// usePendingConfirms: the queued entries follow the queue, load at
 // mount, replay at mount. DoneCard: label, due time for an early task, exactly one button with
 // its label, onPress, message only, nothing, the Undo line under another task's Done with its
 // label, and its large secondary look.
@@ -32,7 +36,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { AccessibilityInfo, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -139,20 +143,24 @@ function makeQueue(): ConfirmQueue {
 }
 
 /**
- * purpose: Render the real hook and expose its latest return value; the target and offline
- *          flag can be changed with rerender.
+ * purpose: Render the real hook and expose its latest return value; the target, offline flag
+ *          and the server's day can be changed with rerender. Like the Today screen, the hook
+ *          gets the tasks as shown: the server's tasks (by default just the target) after
+ *          applyPending over the queue's entries.
  * @param queue: (ConfirmQueue) The queue presses go to.
  * @param target: (DayTask | null) The task Done confirms.
  * @param isOffline: (boolean) Whether the phone is offline.
+ * @param server: (DayTask[] | undefined) The server's tasks; the target alone when omitted.
  * @return: (object) get (the current DoneAction), rerender and unmount.
  */
 function renderDone(
   queue: ConfirmQueue,
   target: DayTask | null,
   isOffline = false,
+  server?: DayTask[],
 ): {
   get: () => DoneAction;
-  rerender: (target: DayTask | null, isOffline?: boolean) => void;
+  rerender: (target: DayTask | null, isOffline?: boolean, server?: DayTask[]) => void;
   unmount: () => void;
 } {
   let latest: DoneAction | undefined;
@@ -161,21 +169,24 @@ function renderDone(
   };
   /**
    * purpose: Test component that runs the hook and records its latest return value.
-   * @param props: ({ t, off }) The target task and the offline flag.
+   * @param props: ({ t, off, day }) The target task, the offline flag and the server's tasks.
    * @return: (null) Renders nothing.
    */
-  const Probe = ({ t, off }: { t: DayTask | null; off: boolean }): null => {
-    record(useDoneAction(t, off, queue));
+  const Probe = ({ t, off, day }: { t: DayTask | null; off: boolean; day?: DayTask[] }): null => {
+    const entries = useSyncExternalStore(queue.subscribe, queue.getEntries);
+    const shown = applyPending(day ?? (t === null ? [] : [t]), entries);
+    record(useDoneAction(t, off, queue, shown));
     return null;
   };
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(<Probe t={target} off={isOffline} />);
+    renderer = create(<Probe t={target} off={isOffline} day={server} />);
     mounted.push(renderer);
   });
   return {
     get: () => latest as DoneAction,
-    rerender: (t, off = false) => act(() => renderer.update(<Probe t={t} off={off} />)),
+    rerender: (t, off = false, day = server) =>
+      act(() => renderer.update(<Probe t={t} off={off} day={day} />)),
     unmount: () => act(() => renderer.unmount()),
   };
 }
@@ -573,7 +584,7 @@ describe('useDoneAction', () => {
         ...queue,
         enqueue: async (e) => {
           await new Promise<void>((resolve) => (release = resolve));
-          await realEnqueue(e);
+          return await realEnqueue(e);
         },
       };
       const h = renderDone(gated, task());
@@ -787,7 +798,7 @@ describe('Undo on the phone', () => {
     const queue = makeQueue();
     const h = renderDone(queue, task(), true);
     await press(h);
-    h.rerender(second(), true);
+    h.rerender(second(), true, [task(), second()]);
     let release!: () => void;
     mockWriteGate = new Promise<void>((resolve) => (release = resolve));
     await tapUndo(h);
@@ -803,16 +814,51 @@ describe('Undo on the phone', () => {
     expect(announceQueued).toHaveBeenLastCalledWith('Morning pills is not done.', { queue: true });
   });
 
-  it('shows the task open again and offers Done while the server still says confirmed', async () => {
+  it('shows the task open again and offers Done while the server still has its own confirm', async () => {
     const queue = makeQueue();
     const h = renderDone(queue, task());
     await press(h);
     mockConnected = false;
     await tapUndo(h);
-    const server = [task({ state: 'confirmed', confirmable: false })];
+    const server = [
+      task({ state: 'confirmed', confirmable: false, confirmPressIds: [pressId(1)] }),
+    ];
     const shown = applyPending(server, queue.getEntries());
     expect(shown[0]).toMatchObject({ state: 'due', confirmable: true });
     expect(doneTarget(shown)?.instanceId).toBe('inst1');
+  });
+
+  it('announces "is not done" only when the screen shows the task open after the undo', async () => {
+    const own = task({ state: 'confirmed', confirmable: false, confirmPressIds: [pressId(1)] });
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    mockConnected = false;
+    h.rerender(task(), false, [own]);
+    await tapUndo(h);
+    await advance(0);
+    expect(announceQueued).toHaveBeenLastCalledWith('Morning pills is not done.', { queue: true });
+  });
+
+  it('confirmed by another surface (its id not ours): stays done and says nothing', async () => {
+    const display = task({
+      state: 'confirmed',
+      confirmable: false,
+      confirmPressIds: ['press-display-confirm'],
+    });
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    mockConnected = false;
+    h.rerender(task(), false, [display]);
+    announceQueued.mockClear();
+    await tapUndo(h);
+    await advance(0);
+    const shown = applyPending([display], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'confirmed', confirmable: false });
+    expect(announceQueued).not.toHaveBeenCalledWith('Morning pills is not done.', {
+      queue: true,
+    });
   });
 
   it('offline: press then Undo are both stored and sent in order with their ages and id', async () => {
@@ -957,6 +1003,50 @@ describe('Undo on the phone', () => {
         { instanceId: 'inst1', undoneAgoMs: 57_000, pressId: pressId(1) },
       ],
     ]);
+  });
+
+  it('a press stored late, then pressed again: the offer names the press actually queued', async () => {
+    let release!: () => void;
+    mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    await advance(STORE_TIMEOUT_MS + 1);
+    expect(h.get().message).toBe(NOT_STORED_MESSAGE);
+    await press(h);
+    mockWriteGate = null;
+    await act(async () => release());
+    await advance(0);
+    expect(queue.getEntries()).toHaveLength(1);
+    await tapUndo(h);
+    await act(async () => {
+      await queue.replay();
+    });
+    const sent = calls().map(([, args]) => (args as { pressId?: string }).pressId);
+    expect(sent).toEqual([pressId(1), pressId(1)]);
+  });
+
+  it('shows the offline note only while offline and while the press is still queued', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    expect(h.get().undo?.text).toBe(
+      'Morning pills done. It will be sent when the internet is back.',
+    );
+    await act(async () => {
+      await queue.replay();
+    });
+    expect(queue.getEntries()).toEqual([]);
+    expect(h.get().undo?.text).toBe('Morning pills done.');
+  });
+
+  it('shows no offline note online, even while the press is still queued', async () => {
+    mockMutation.mockReturnValue(new Promise(() => {}));
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    expect(queue.getEntries()).toHaveLength(1);
+    expect(h.get().undo?.text).toBe('Morning pills done.');
   });
 
   it('a second tap on Undo queues nothing more', async () => {

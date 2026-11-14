@@ -5,8 +5,8 @@
 // coming week, the Done card (the task's label above one large Done button, a result line such
 // as "press again", and for 30 seconds after a press the Undo line "<label> done." with an
 // outlined secondary Undo button, the one line confirming the press; a task that is not due
-// yet gets a "Coming up at ..." heading and an outlined "Done early" button; a task whose window closed unconfirmed is drawn dimmed,
-// with the empty circle), plus the offline mark the caregiver home also uses. The home
+// yet gets a "Coming up at ..." heading and an outlined "Done early" button; a task whose
+// window closed unconfirmed is drawn dimmed, with the empty circle), plus the offline mark the caregiver home also uses. The home
 // display has its own parts in src/display. Calm, high contrast, no motion.
 //
 // Last modified: 2026-11-14

@@ -410,8 +410,9 @@ export const REOPEN_MESSAGE =
  *          alerts at once, which is why this one action asks first.
  * @param label: (string) The task's label.
  * @param onReopen: (() => void) Called when the caregiver chooses Reopen.
- * @param onClose: (() => void) Called first whenever the alert goes away (either button, or a
- *        dismissal where the platform allows one).
+ * @param onClose: (() => void) Called first whenever the alert goes away. On iOS (this app's
+ *        only platform) an alert cannot be dismissed without a button, so the Cancel and Reopen
+ *        buttons are what call it; onDismiss is Android-only and kept for completeness.
  * @return: (void)
  */
 export function confirmReopen(label: string, onReopen: () => void, onClose: () => void): void {

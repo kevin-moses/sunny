@@ -6,7 +6,8 @@
 // stubbed, Alert.alert is spied, and native-only modules (symbols, haptics, safe area) are
 // mocked. Covers: an editor's reopenable done box is labelled "Reopen <label>", stays checked
 // and asks first with the exact title, message and buttons; only one alert at a time per row
-// (a second tap while it is up opens none; after Cancel a tap asks again); Cancel sends
+// (a second tap while it is up opens none; after Cancel, and after a Reopen followed by Mark
+// done, a tap asks again); Cancel sends
 // nothing; Reopen sends reopenTaskInstance (not the Mark done mutation), shows "Reopening..."
 // with the box checked, not interactive and still labelled "Reopen <label>" with busy set, and
 // clears on success; a failure shows the server's message and keeps the box checked; a viewer,
@@ -222,6 +223,18 @@ describe('reopening a done task', () => {
       ['Reopen', 'default'],
     ]);
     expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it('asks again after a reopen: reopen, mark done, reopen again', async () => {
+    const h = render([makeTask()]);
+    await tap(h.box());
+    await choose('Reopen');
+    h.update([makeTask({ state: 'due', confirmedAt: null, confirmedBy: null })]);
+    await tap(h.box());
+    h.update([makeTask({ state: 'resolved', confirmedBy: 'user_1' })]);
+    await tap(h.box());
+    expect(alertSpy).toHaveBeenCalledTimes(2);
+    expect(alertSpy.mock.calls[1]![0]).toBe('Reopen Morning pills?');
   });
 
   it('opens only one alert at a time per row; after Cancel a tap asks again', async () => {

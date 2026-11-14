@@ -13,7 +13,9 @@
 // Here: the entry types; the builders (toPending, toUndo); the helpers every reader shares
 // (entryKind, entryWhat, entryTime, entryKey, describeEntry, latestByInstance); the stored-value
 // check (isEntry, which also checks an undo's restore state against the known states); and the
-// optimistic display (applyPending).
+// optimistic display (applyPending: after an undo the task reads open only when the undo takes
+// back the confirmation the server shows, which for an undo with an id means its press id is in
+// the day entry's confirmPressIds).
 //
 // Last modified: 2026-11-14
 
@@ -36,7 +38,7 @@ export interface PendingConfirm {
 }
 
 /** What a task looked like before the press an undo takes back. */
-export interface RestoreState {
+interface RestoreState {
   state: DayTask['state'];
   confirmable: boolean;
 }
@@ -196,38 +198,57 @@ export function toPending(
 /**
  * purpose: The Undo of a press, as an entry. It keeps the state and confirmable flag the task
  *          had when it was pressed, so the task can be shown open again while the undo waits,
- *          and the id of the press it takes back.
+ *          and the id of the press it takes back (when that press has one).
  * @param task: (Pick<DayTask, 'instanceId' | 'displayLabel' | 'state' | 'confirmable'>) The
  *        task as it was when Done was pressed.
  * @param undoneAt: (number) Epoch ms of the Undo tap.
- * @param pressId: (string) The id of the press being taken back.
+ * @param pressId: (string | undefined) The id of the press being taken back; undefined for a
+ *        press stored before ids existed.
  * @return: (PendingUndo) The entry.
  */
 export function toUndo(
   task: Pick<DayTask, 'instanceId' | 'displayLabel' | 'state' | 'confirmable'>,
   undoneAt: number,
-  pressId: string,
+  pressId: string | undefined,
 ): PendingUndo {
-  return {
+  const undo: PendingUndo = {
     kind: 'undo',
     instanceId: task.instanceId,
     label: task.displayLabel,
     undoneAt,
     restore: { state: task.state, confirmable: task.confirmable },
-    pressId,
   };
+  return pressId === undefined ? undo : { ...undo, pressId };
+}
+
+/**
+ * purpose: Whether an undo would take back the confirmation the server shows: the server shows
+ *          the task confirmed, no press of the task is still queued ahead of the undo (so the
+ *          confirm is not still the phone's own unsent press, and a "confirmed" seen then came
+ *          from another surface), and, for an undo that names its press, that press id is one
+ *          of the confirmation's confirmPressIds (otherwise the confirm is someone else's, for
+ *          example the wall display's with the phone's Done landing on it as a no-op, and the
+ *          server will answer too_late). An undo without an id (stored before ids existed)
+ *          keeps the first two conditions only.
+ * @param task: (DayTask) The task as the server shows it.
+ * @param queued: (readonly PendingEntry[]) The task's queued entries, oldest first, ending with
+ *        the undo.
+ * @param undo: (PendingUndo) The task's latest entry.
+ * @return: (boolean) True when the task should be shown as it was before the press.
+ */
+function undoTakesBack(task: DayTask, queued: readonly PendingEntry[], undo: PendingUndo): boolean {
+  if (task.state !== 'confirmed') return false;
+  if (queued.some((e) => entryKind(e) === 'press')) return false;
+  return undo.pressId === undefined || (task.confirmPressIds ?? []).includes(undo.pressId);
 }
 
 /**
  * purpose: Show each task as its queued entries say, until the server catches up. When the
  *          latest entry is a press, the task reads confirmed and the Done card does not offer
  *          it again. When it is an undo, the task gets back the state and confirmable flag it
- *          had before the press only if the server shows it confirmed and no press of the task
- *          is still queued ahead of the undo (so the server's confirm is the phone's own press,
- *          now landed). With a press still queued, a server "confirmed" came from another
- *          surface (the wall display, voice) and the task stays done, so a done medication is
- *          never offered again; a task the server shows open, or resolved by a caregiver, is
- *          left as the server says.
+ *          had before the press only when the undo takes back the confirmation the server
+ *          shows (undoTakesBack); otherwise it is left as the server says, so a medication
+ *          done on another surface is never shown open with a Done button.
  * @param tasks: (DayTask[]) The day view's tasks.
  * @param entries: (readonly PendingEntry[]) The queue, oldest first.
  * @return: (DayTask[]) The tasks as they should be shown (the same array when nothing is queued).
@@ -243,8 +264,7 @@ export function applyPending(tasks: DayTask[], entries: readonly PendingEntry[])
     const latest = queued?.at(-1);
     if (queued === undefined || latest === undefined) return task;
     if (latest.kind === 'undo') {
-      const pressAhead = queued.some((e) => entryKind(e) === 'press');
-      return task.state === 'confirmed' && !pressAhead ? { ...task, ...latest.restore } : task;
+      return undoTakesBack(task, queued, latest) ? { ...task, ...latest.restore } : task;
     }
     return task.state !== 'confirmed' && task.state !== 'resolved'
       ? { ...task, state: 'confirmed', confirmable: false }

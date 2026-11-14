@@ -24,7 +24,8 @@
 //     never overwritten. The entry shows in getEntries (and so the task reads checked, or open
 //     again for an undo) only once its write has finished; entries are added one at a time. An
 //     entry whose task's latest queued entry is of the same kind is not queued again (a second
-//     press of a task already pressed, a second undo).
+//     press of a task already pressed, a second undo); enqueue then resolves with that queued
+//     entry instead, so the caller (the Undo offer) always names the press actually queued.
 //  2. replay() sends entries oldest first, one at a time: a press through
 //     instances.confirmPressedTask with via "phone_app", pressedAgoMs (the age of the press at
 //     send time) and pressId; an undo through instances.undoPressedTask with undoneAgoMs (the
@@ -147,10 +148,10 @@ export interface ConfirmQueue {
   /** Read the persisted entries (retried on the next call if it failed) and drop expired ones. */
   load: () => Promise<void>;
   /**
-   * Persist an entry, then resolve; an entry is not queued when its task's latest queued entry
-   * is of the same kind.
+   * Persist an entry, then resolve with the entry that stands for its task: an entry is not
+   * queued when its task's latest queued entry is of the same kind, and that one is returned.
    */
-  enqueue: (entry: PendingEntry) => Promise<void>;
+  enqueue: (entry: PendingEntry) => Promise<PendingEntry>;
   /** Send queued entries oldest first (does nothing while offline or before a successful load). */
   replay: () => Promise<void>;
   /** Tell the queue whether the connection is known to be down. */
@@ -449,19 +450,20 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
    *          write snapshot is complete; the entry is not in getEntries (the task does not read
    *          checked, or open again) until its write has finished. An entry whose task's latest
    *          queued entry is of the same kind is skipped (a press of a task already pressed, a
-   *          second undo).
+   *          second undo), and that latest entry is the result, so the caller always learns the
+   *          entry that actually stands for the task (an Undo must name the press that is queued).
    * @param entry: (PendingEntry) The press or undo.
    * @param gen: (number) The generation when it was queued; a clear() since then drops it.
-   * @return: (Promise<void>) Resolves once stored (or when it was skipped).
+   * @return: (Promise<PendingEntry>) The stored entry, or the queued entry it was skipped for.
    * @raises: An error when the stored queue could not be read, the entry could not be stored,
    *          or the queue was cleared first.
    */
-  const add = async (entry: PendingEntry, gen: number): Promise<void> => {
+  const add = async (entry: PendingEntry, gen: number): Promise<PendingEntry> => {
     await load();
     if (gen !== generation) throw new Error('The queue was cleared');
     if (!loadedOk) throw new Error('The stored queue could not be read');
     const latest = latestByInstance(entries).get(entry.instanceId);
-    if (latest !== undefined && entryKind(latest) === entryKind(entry)) return;
+    if (latest !== undefined && entryKind(latest) === entryKind(entry)) return latest;
     adding = entry;
     try {
       await persist();
@@ -469,17 +471,23 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
       adding = null;
     }
     if (gen === generation) setEntries([...entries, entry]);
+    return entry;
   };
 
   /**
    * purpose: Queue a press or an undo, stored before the returned promise resolves.
    * @param entry: (PendingEntry) The entry.
-   * @return: (Promise<void>) Resolves once stored; rejects if it could not be stored.
+   * @return: (Promise<PendingEntry>) Resolves once stored with the entry that stands for the
+   *          task (this one, or the queued one of the same kind it was skipped for); rejects if
+   *          it could not be stored.
    */
-  const enqueue = (entry: PendingEntry): Promise<void> => {
+  const enqueue = (entry: PendingEntry): Promise<PendingEntry> => {
     const gen = generation;
     const run = addChain.then(() => add(entry, gen));
-    addChain = run.catch(() => undefined);
+    addChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
     return run;
   };
 

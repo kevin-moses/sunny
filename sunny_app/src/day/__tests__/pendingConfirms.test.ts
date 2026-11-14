@@ -23,7 +23,9 @@
 // and the server open shows open. Press ids (expo-crypto mocked): sent with the press and the
 // same id with its undo, kept across a restart, old stored entries sent without one; stored
 // items that are not entries (an unknown restore state, a prototype key, a non-text id) are
-// dropped with a warning that gives only their count. clear() logs presses and undos.
+// dropped with a warning that gives only their count. clear() logs presses and undos. enqueue
+// resolves with the stored entry, or with the queued one a duplicate was skipped for; an undo
+// with an id restores only a confirm whose confirmPressIds hold that id.
 //
 // Last modified: 2026-11-14
 
@@ -231,6 +233,16 @@ describe('enqueue', () => {
     await queue.enqueue(entry('a'));
     await queue.enqueue(entry('a', NOW + 5));
     expect(stored()).toEqual([entry('a')]);
+  });
+
+  it('resolves with the stored entry, or with the queued one a duplicate was skipped for', async () => {
+    const queue = makeQueue();
+    const first = entry('a', NOW, 'pid-0000000000000001');
+    expect(await queue.enqueue(first)).toBe(first);
+    expect(await queue.enqueue(entry('a', NOW + 5, 'pid-0000000000000002'))).toBe(first);
+    const back = undo('a', NOW + 6, 'due', 'Task a', 'pid-0000000000000001');
+    expect(await queue.enqueue(back)).toBe(back);
+    expect(await queue.enqueue(undo('a', NOW + 7))).toBe(back);
   });
 
   it('rolls back only the new entry when the write fails', async () => {
@@ -912,6 +924,15 @@ describe('applyPending', () => {
   it('own press delivered, undo queued: the server says confirmed and the task shows open', () => {
     const out = applyPending(tasks, queued(undo('c', NOW + 1, 'upcoming')));
     expect(out[2]).toMatchObject({ state: 'upcoming', confirmable: true });
+  });
+
+  it('an undo with an id restores only a confirm whose confirmPressIds hold that id', () => {
+    const PID = 'pid-0000000000000001';
+    const ours = { ...tasks[2], confirmPressIds: ['pid-confirming-press', PID] } as DayTask;
+    const theirs = { ...tasks[2], confirmPressIds: ['pid-of-the-display'] } as DayTask;
+    const back = undo('c', NOW + 1, 'upcoming', 'Task c', PID);
+    expect(applyPending([ours], queued(back))[0]).toMatchObject({ state: 'upcoming' });
+    expect(applyPending([theirs], queued(back))[0]).toBe(theirs);
   });
 
   it('own press still queued ahead of the undo and confirmed by another surface: shows done', () => {

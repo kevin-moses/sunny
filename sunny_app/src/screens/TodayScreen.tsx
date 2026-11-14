@@ -75,7 +75,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   );
   const stale = day !== null && !dayIsCurrent(day, now);
   const target = stale ? null : doneTarget(tasks, isWebSocketConnected);
-  const done = useDoneAction(target, isOffline, confirmQueue);
+  const done = useDoneAction(target, isOffline, confirmQueue, tasks);
   const undo = done.undo === null ? null : { ...done.undo, onPress: done.pressUndo };
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 

@@ -10,8 +10,8 @@
 // the day view marks reopenable to reopen it, after a native confirm alert and with no toast
 // (reopening a task whose toast is still up dismisses that toast); editors tap a task's text
 // to open an autosaving inline note editor, one at a time; saved notes show as a subtitle),
-// the calendar card (seven-day week strip whose cells choose the day shown; the dots mean events) with the
-// selected day's section directly below it: for today, its events only (its tasks are the list
+// the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
+// events) with the selected day's section directly below it: for today, its events only (its tasks are the list
 // above); for a later day, first that day's planned tasks in their own read-only card (dulled
 // disabled checkboxes, "No tasks." when none), then its events in a separate card. Then "Later
 // this week", the events of the days after the selected one grouped by day (hidden when there
