@@ -38,14 +38,26 @@
 // effect, after the screen re-rendered without the button. After unmount nothing is set,
 // scheduled or announced.
 //
-// Last modified: 2026-11-09
+// Undo (phone only; the home display has none): once a press is stored, the hook offers an
+// Undo for that press (undoLabel, the task's label) until UNDO_MS after the press itself. Only
+// the latest press has one: a new press replaces it. The offer lives in memory, so after a
+// restart there is none. Its appearance is announced, queued behind the "Checked off" line.
+// pressUndo withdraws the offer, clears the result line and the settle block at once (so the
+// task, shown open again by applyPending, is offered Done again straight away when it is
+// confirmable) and queues an undo (toUndo, stamped with the tap time and the task's state
+// before the press) in the same durable queue, which sends it in order after the press, with
+// the tap's age. If the undo cannot be stored (STORE_TIMEOUT_MS or a storage error) it is
+// logged and the offer comes back while time remains; the senior sees no error.
+//
+// Last modified: 2026-11-14
 
 import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo } from 'react-native';
 
+import { logger } from '../logging/logger';
 import { isAnytime, isDue } from './format';
 import { currentLocalDate } from './localDate';
-import { toPending, type ConfirmQueue } from './pendingConfirms';
+import { toPending, toUndo, type ConfirmQueue } from './pendingConfirms';
 import type { DayTask, DayViewData } from './types';
 import { withTimeout } from './withTimeout';
 
@@ -64,6 +76,9 @@ export const STORE_TIMEOUT_MS = 4_000;
 /** Said when the press could not be stored on the phone. */
 export const NOT_STORED_MESSAGE = 'Sunny could not save that. Please press Done again.';
 
+/** How long (ms) after a press its Undo is offered (the server allows 60 s). */
+export const UNDO_MS = 30_000;
+
 /** What useDoneAction returns. */
 export interface DoneAction {
   /** The task to offer a Done button for, or null (nothing to confirm, or settling). */
@@ -72,6 +87,16 @@ export interface DoneAction {
   message: string | null;
   /** The Done button was pressed. */
   pressDone: () => void;
+  /** The label of the task whose latest press may be undone now, or null. */
+  undoLabel: string | null;
+  /** The Undo button was tapped. */
+  pressUndo: () => void;
+}
+
+/** A stored press that may still be undone: the task as it was when pressed, and when. */
+interface Pressed {
+  task: DayTask;
+  pressedAt: number;
 }
 
 /**
@@ -124,8 +149,9 @@ export const STALE_DAY_MESSAGE = "Waiting for today's list to load.";
  * @param target: (DayTask | null) The task Done confirms (doneTarget), or null.
  * @param isOffline: (boolean) The connection to the backend is down (only changes the wording
  *        and whether a send is started now).
- * @param queue: (ConfirmQueue) The queue presses go to.
- * @return: (DoneAction) The task to offer, result line and press handler.
+ * @param queue: (ConfirmQueue) The queue presses and undos go to.
+ * @return: (DoneAction) The task to offer, result line and press handler, and the Undo offer
+ *          with its handler.
  */
 export function useDoneAction(
   target: DayTask | null,
@@ -140,6 +166,9 @@ export function useDoneAction(
   const blockRef = useRef<Block>('none');
   const clearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const blockTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [undoable, setUndoable] = useState<Pressed | null>(null);
+  const undoRef = useRef<Pressed | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     mounted.current = true;
@@ -147,12 +176,45 @@ export function useDoneAction(
       mounted.current = false;
       clearTimeout(clearTimer.current);
       clearTimeout(blockTimer.current);
+      clearTimeout(undoTimer.current);
     };
   }, []);
 
   useEffect(() => {
     if (line !== null) AccessibilityInfo.announceForAccessibility(line.text);
   }, [line]);
+
+  useEffect(() => {
+    if (undoable === null) return;
+    AccessibilityInfo.announceForAccessibilityWithOptions(
+      `${undoable.task.displayLabel} done. Undo`,
+      { queue: true },
+    );
+  }, [undoable]);
+
+  /**
+   * purpose: Set the Undo offer (null withdraws it) and stop its expiry timer.
+   * @param pressed: (Pressed | null) The press now offered, or null.
+   * @return: (void)
+   */
+  const setOffer = (pressed: Pressed | null): void => {
+    clearTimeout(undoTimer.current);
+    undoRef.current = pressed;
+    setUndoable(pressed);
+  };
+
+  /**
+   * purpose: Offer the Undo of a press while UNDO_MS has not passed since the press, and
+   *          withdraw it by itself then; a press already older than that withdraws the offer.
+   * @param pressed: (Pressed) The press.
+   * @param now: (number) Epoch ms now.
+   * @return: (void)
+   */
+  const offerUndo = (pressed: Pressed, now: number): void => {
+    const left = pressed.pressedAt + UNDO_MS - now;
+    setOffer(left > 0 ? pressed : null);
+    if (left > 0) undoTimer.current = setTimeout(() => setOffer(null), left);
+  };
 
   /**
    * purpose: Show a result line for MESSAGE_MS (announced by the effect above).
@@ -181,14 +243,17 @@ export function useDoneAction(
   };
 
   /**
-   * purpose: Show that a press is stored: the result line, and the settle block.
+   * purpose: Show that a press is stored: the result line, the settle block, and the Undo
+   *          offer (replacing an earlier press's offer).
    * @param task: (DayTask) The task that was pressed.
+   * @param pressedAt: (number) Epoch ms of the press.
    * @return: (void)
    */
-  const stored = (task: DayTask): void => {
+  const stored = (task: DayTask, pressedAt: number): void => {
     const sent = isOffline ? ' It will be sent when the internet is back.' : '';
     show(`Checked off: ${task.displayLabel}.${sent}`, task.instanceId);
     enter('settle');
+    offerUndo({ task, pressedAt }, Date.now());
   };
 
   /**
@@ -207,19 +272,64 @@ export function useDoneAction(
     try {
       await withTimeout(write, STORE_TIMEOUT_MS, 'Storing the press took too long');
       if (!isOffline) void queue.replay();
-      if (mounted.current) stored(task);
+      if (mounted.current) stored(task, pressedAt);
     } catch {
       if (mounted.current) show(NOT_STORED_MESSAGE, task.instanceId);
       write.then(
         () => {
           if (!isOffline) void queue.replay();
-          if (mounted.current) stored(task);
+          if (mounted.current) stored(task, pressedAt);
         },
         () => undefined,
       );
     } finally {
       storing.current = false;
     }
+  };
+
+  /**
+   * purpose: Store the Undo of a press and let the queue send it after the press. When it
+   *          cannot be stored in STORE_TIMEOUT_MS it is logged and the offer comes back (while
+   *          time remains and no newer press replaced it); the senior is told nothing. Should a
+   *          timed-out write finish later after all, that offer is withdrawn again.
+   * @param pressed: (Pressed) The press being taken back.
+   * @param undoneAt: (number) Epoch ms of the Undo tap.
+   * @return: (Promise<void>) Resolves when the outcome is handled; never rejects.
+   */
+  const storeUndo = async (pressed: Pressed, undoneAt: number): Promise<void> => {
+    const write = queue.enqueue(toUndo(pressed.task, undoneAt));
+    write.then(
+      () => {
+        if (!isOffline) void queue.replay();
+        if (mounted.current && undoRef.current === pressed) setOffer(null);
+      },
+      () => undefined,
+    );
+    try {
+      await withTimeout(write, STORE_TIMEOUT_MS, 'Storing the undo took too long');
+    } catch (error) {
+      logger.warning('DoneAction', 'Could not store an Undo', {
+        instanceId: pressed.task.instanceId,
+        error: String(error),
+      });
+      if (mounted.current && undoRef.current === null) offerUndo(pressed, Date.now());
+    }
+  };
+
+  /**
+   * purpose: The Undo button: withdraw the offer, the result line and the settle block at once
+   *          (so the task, shown open again, is offered Done again straight away) and queue
+   *          the undo. Ignored when nothing may be undone.
+   * @return: (void)
+   */
+  const pressUndo = (): void => {
+    const pressed = undoRef.current;
+    if (pressed === null) return;
+    setOffer(null);
+    clearTimeout(clearTimer.current);
+    setLine(null);
+    enter('none');
+    void storeUndo(pressed, Date.now());
   };
 
   /**
@@ -242,5 +352,11 @@ export function useDoneAction(
   const message =
     line !== null && (task === null || line.instanceId === task.instanceId) ? line.text : null;
 
-  return { task, message, pressDone };
+  return {
+    task,
+    message,
+    pressDone,
+    undoLabel: undoable?.task.displayLabel ?? null,
+    pressUndo,
+  };
 }

@@ -11,26 +11,38 @@
 // withdrawn for the settle period (two tasks due: a doubting second press sends nothing, then
 // the next task is offered and its line is not shown under another task's button); a storage
 // failure says so and keeps the task offered; a permanent rejection shows a calm line;
-// announcements; nothing happens after unmount. usePendingConfirms: ids follow the queue, load
-// at mount, replay at mount and on reconnect. DoneCard: label, due time for an early task,
-// exactly one button with its label, onPress, message only, nothing.
+// announcements; nothing happens after unmount. Undo on the phone: offered and announced after
+// a press, gone 30 s after the press itself (also when the press was stored late), replaced by
+// a newer press, never hiding another task's Done; tapping it takes effect at once and the undo
+// is sent after the press with the tap's age, online, offline, and as press, Undo, press again;
+// too_late and permanent failures drop it with a log and no message; a network failure retries;
+// a queued Undo survives a restart (with no offer after it); a double tap queues one; an Undo
+// that cannot be stored is offered again. usePendingConfirms: the latest entry per task follows
+// the queue, load at mount, replay at mount. DoneCard: label, due time for an early task,
+// exactly one button with its label, onPress, message only, nothing, the Undo line under
+// another task's Done with its label, and its large secondary look.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
+import { getFunctionName } from 'convex/server';
 import React from 'react';
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { convex } from '../../backend/convex';
 import { logger } from '../../logging/logger';
-import { DoneCard } from '../../components/DayComponents';
+import { DoneCard, type UndoOffer } from '../../components/DayComponents';
+import { colors } from '../../theme/colors';
 import {
+  applyPending,
   createConfirmQueue,
+  latestByInstance,
   sendConfirm,
   STORAGE_KEY,
   type ConfirmQueue,
+  type PendingEntry,
 } from '../pendingConfirms';
 import type { DayTask } from '../types';
 import {
@@ -41,6 +53,7 @@ import {
   STORE_TIMEOUT_MS,
   PRESS_GAP_MS,
   SETTLE_MS,
+  UNDO_MS,
   useDoneAction,
   type DoneAction,
 } from '../useDoneAction';
@@ -547,6 +560,311 @@ describe('useDoneAction', () => {
   });
 });
 
+describe('Undo on the phone', () => {
+  let announceQueued: jest.SpiedFunction<
+    typeof AccessibilityInfo.announceForAccessibilityWithOptions
+  >;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+    mockStore.clear();
+    mockFailWrites = false;
+    mockWriteGate = null;
+    mockConnected = true;
+    mockMutation.mockReset();
+    mockMutation.mockImplementation(async (ref) => serverAnswer(ref));
+    (logger.error as jest.Mock).mockClear();
+    (logger.info as jest.Mock).mockClear();
+    (logger.warning as jest.Mock).mockClear();
+    announce = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    announceQueued = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+    announce.mockRestore();
+    announceQueued.mockRestore();
+    jest.useRealTimers();
+  });
+
+  /**
+   * purpose: What the server answers a call: undone for an undo, confirmed for a press.
+   * @param ref: (unknown) The mutation reference.
+   * @return: (object) The result.
+   */
+  function serverAnswer(ref: unknown): { status: string } {
+    return getFunctionName(ref as never) === 'instances:undoPressedTask'
+      ? { status: 'undone' }
+      : { status: 'confirmed' };
+  }
+
+  /**
+   * purpose: The calls sent so far, as the mutation name and its arguments.
+   * @return: ([string, unknown][]) In order.
+   */
+  function calls(): [string, unknown][] {
+    return mockMutation.mock.calls.map((c) => [getFunctionName(c[0] as never), c[1]]);
+  }
+
+  /**
+   * purpose: Tap Undo inside act and let promises settle.
+   * @param h: (object) The rendered hook.
+   * @return: (Promise<void>)
+   */
+  async function tapUndo(h: { get: () => DoneAction }): Promise<void> {
+    await act(async () => {
+      h.get().pressUndo();
+    });
+  }
+
+  it('offers Undo for the pressed task and announces it, queued behind the result line', async () => {
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    expect(h.get().undoLabel).toBe('Morning pills');
+    expect(announceQueued).toHaveBeenCalledWith('Morning pills done. Undo', { queue: true });
+  });
+
+  it('withdraws the offer 30 seconds after the press', async () => {
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    await advance(UNDO_MS - 1);
+    expect(h.get().undoLabel).toBe('Morning pills');
+    await advance(1);
+    expect(h.get().undoLabel).toBeNull();
+  });
+
+  it('counts the 30 seconds from the press, not from when the press was stored', async () => {
+    let release!: () => void;
+    mockWriteGate = new Promise<void>((resolve) => (release = resolve));
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    await advance(10_000);
+    mockWriteGate = null;
+    await act(async () => release());
+    await advance(0);
+    expect(h.get().undoLabel).toBe('Morning pills');
+    await advance(UNDO_MS - 10_000);
+    expect(h.get().undoLabel).toBeNull();
+  });
+
+  it('a new press replaces the offer; only the latest press has one', async () => {
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    h.rerender(second());
+    await advance(SETTLE_MS + 1);
+    await press(h);
+    expect(h.get().undoLabel).toBe('Evening pills');
+  });
+
+  it('does not hide the Done button of another due task', async () => {
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    h.rerender(second());
+    await advance(SETTLE_MS + 1);
+    expect(h.get().task?.instanceId).toBe('inst2');
+    expect(h.get().undoLabel).toBe('Morning pills');
+  });
+
+  it('online: takes effect at once and sends the undo after the press, with the tap age', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    jest.setSystemTime(NOW + 5000);
+    await tapUndo(h);
+    expect(h.get().undoLabel).toBeNull();
+    expect(h.get().message).toBeNull();
+    expect(h.get().task?.instanceId).toBe('inst1');
+    await advance(0);
+    expect(calls()).toEqual([
+      ['instances:confirmPressedTask', { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0 }],
+      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 0 }],
+    ]);
+    expect(queue.getEntries()).toEqual([]);
+  });
+
+  it('shows the task open again and offers Done while the server still says confirmed', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    await tapUndo(h);
+    const server = [task({ state: 'confirmed', confirmable: false })];
+    const shown = applyPending(server, latestByInstance(queue.getEntries()));
+    expect(shown[0]).toMatchObject({ state: 'due', confirmable: true });
+    expect(doneTarget(shown)?.instanceId).toBe('inst1');
+  });
+
+  it('offline: press then Undo are both stored and sent in order with their ages', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    jest.setSystemTime(NOW + 10_000);
+    await tapUndo(h);
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(queue.getEntries().map((e) => e.kind ?? 'press')).toEqual(['press', 'undo']);
+    jest.setSystemTime(NOW + 600_000);
+    await act(async () => {
+      await queue.replay();
+    });
+    expect(calls()).toEqual([
+      [
+        'instances:confirmPressedTask',
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 600_000 },
+      ],
+      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 590_000 }],
+    ]);
+  });
+
+  it('offline: press, Undo, press again are sent in that order and end with a press', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    jest.setSystemTime(NOW + 10_000);
+    await tapUndo(h);
+    jest.setSystemTime(NOW + 20_000);
+    await press(h);
+    expect(h.get().undoLabel).toBe('Morning pills');
+    jest.setSystemTime(NOW + 900_000);
+    await act(async () => {
+      await queue.replay();
+    });
+    expect(calls()).toEqual([
+      [
+        'instances:confirmPressedTask',
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 900_000 },
+      ],
+      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 890_000 }],
+      [
+        'instances:confirmPressedTask',
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 880_000 },
+      ],
+    ]);
+  });
+
+  it('too_late: drops the undo, logs it, and says nothing to the senior', async () => {
+    mockMutation.mockImplementation(async (ref) =>
+      getFunctionName(ref as never) === 'instances:undoPressedTask'
+        ? { status: 'too_late' }
+        : { status: 'confirmed' },
+    );
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    await tapUndo(h);
+    await advance(0);
+    expect(queue.getEntries()).toEqual([]);
+    expect(h.get().message).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'An Undo came too late; the task stays done',
+      expect.objectContaining({ instanceId: 'inst1', kind: 'undo' }),
+    );
+  });
+
+  it.each([
+    ['forbidden', { code: 'forbidden', message: 'no' }],
+    ['invalid', { code: 'invalid', message: 'bad age' }],
+    ['not found', { code: 'not_found', message: 'gone' }],
+  ])(
+    'an undo that fails for good (%s) is dropped and logged, with no message',
+    async (_n, data) => {
+      mockMutation.mockImplementation(async (ref) => {
+        if (getFunctionName(ref as never) === 'instances:undoPressedTask') {
+          throw new ConvexError(data);
+        }
+        return { status: 'confirmed' };
+      });
+      const queue = makeQueue();
+      const h = renderDone(queue, task());
+      await press(h);
+      await tapUndo(h);
+      await advance(0);
+      expect(queue.getEntries()).toEqual([]);
+      expect(h.get().message).toBeNull();
+      expect(logger.error).toHaveBeenCalledWith(
+        'PendingConfirms',
+        'Dropped a queued Undo (rejected)',
+        expect.objectContaining({ instanceId: 'inst1', kind: 'undo', undoneAt: NOW }),
+      );
+    },
+  );
+
+  it('a network failure keeps the undo queued and retries it', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    mockMutation.mockRejectedValueOnce(new Error('Network request failed'));
+    await tapUndo(h);
+    await advance(0);
+    expect(queue.getEntries()).toHaveLength(1);
+    expect(queue.getEntries()[0]).toMatchObject({ kind: 'undo' });
+    await advance(30_000);
+    expect(queue.getEntries()).toEqual([]);
+    expect(calls().map(([name]) => name)).toEqual([
+      'instances:confirmPressedTask',
+      'instances:undoPressedTask',
+      'instances:undoPressedTask',
+    ]);
+  });
+
+  it('a queued Undo survives a restart and is sent then; no Undo is offered after it', async () => {
+    const h = renderDone(makeQueue(), task(), true);
+    await press(h);
+    jest.setSystemTime(NOW + 3000);
+    await tapUndo(h);
+    h.unmount();
+    jest.setSystemTime(NOW + 60_000);
+    const restarted = makeQueue();
+    const after = renderDone(restarted, task());
+    expect(after.get().undoLabel).toBeNull();
+    await act(async () => {
+      await restarted.replay();
+    });
+    expect(calls()).toEqual([
+      [
+        'instances:confirmPressedTask',
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 60_000 },
+      ],
+      ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 57_000 }],
+    ]);
+  });
+
+  it('a second tap on Undo queues nothing more', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    const undo = h.get().pressUndo;
+    await act(async () => {
+      undo();
+      undo();
+    });
+    expect(queue.getEntries()).toHaveLength(2);
+  });
+
+  it('an Undo that cannot be stored is logged and offered again, with no message', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, task(), true);
+    await press(h);
+    mockFailWrites = true;
+    await tapUndo(h);
+    await advance(0);
+    expect(h.get().undoLabel).toBe('Morning pills');
+    expect(h.get().message).toBeNull();
+    expect(queue.getEntries()).toHaveLength(1);
+    expect(logger.warning).toHaveBeenCalledWith(
+      'DoneAction',
+      'Could not store an Undo',
+      expect.objectContaining({ instanceId: 'inst1' }),
+    );
+  });
+});
+
 describe('usePendingConfirms', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -567,13 +885,13 @@ describe('usePendingConfirms', () => {
   });
 
   /**
-   * purpose: Render the hook and expose the latest set of queued ids.
+   * purpose: Render the hook and expose the latest map of queued entries by instance.
    * @param queue: (ConfirmQueue) The queue.
    * @return: (object) get.
    */
   function renderPending(queue: ConfirmQueue) {
-    let latest: ReadonlySet<string> = new Set();
-    const record = (value: ReadonlySet<string>): void => {
+    let latest: ReadonlyMap<string, PendingEntry> = new Map();
+    const record = (value: ReadonlyMap<string, PendingEntry>): void => {
       latest = value;
     };
     /**
@@ -620,10 +938,15 @@ describe('DoneCard', () => {
 
   /**
    * purpose: Render the card and report what it shows.
-   * @param props: (object) The task, message and press handler.
+   * @param props: (object) The task, message, press handler and Undo offer.
    * @return: (object) texts, the buttons found, and whether nothing rendered.
    */
-  function render(props: { task: DayTask | null; message: string | null; onPress?: () => void }) {
+  function render(props: {
+    task: DayTask | null;
+    message: string | null;
+    onPress?: () => void;
+    undo?: UndoOffer | null;
+  }) {
     let renderer!: ReactTestRenderer;
     act(() => {
       renderer = create(
@@ -631,6 +954,7 @@ describe('DoneCard', () => {
           task={props.task}
           message={props.message}
           onPress={props.onPress ?? (() => {})}
+          undo={props.undo}
         />,
       );
       mounted.push(renderer);
@@ -681,5 +1005,34 @@ describe('DoneCard', () => {
 
   it('renders nothing when there is no task and no message', () => {
     expect(render({ task: null, message: null }).empty).toBe(true);
+  });
+
+  it('shows the Undo line under another task Done button, with its own label', () => {
+    const onUndo = jest.fn();
+    const out = render({
+      task: second(),
+      message: null,
+      undo: { label: 'Morning pills', onPress: onUndo },
+    });
+    expect(out.texts).toEqual(['Evening pills', 'Done', 'Morning pills done.', 'Undo']);
+    expect(out.buttons.map((b) => b.props.accessibilityLabel)).toEqual([
+      'Done: Evening pills',
+      'Undo Morning pills done',
+    ]);
+    act(() => out.buttons[1].props.onPress());
+    expect(onUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws Undo as a large secondary control, not the filled Done style', () => {
+    const out = render({ task: null, message: null, undo: { label: 'Pills', onPress: () => {} } });
+    expect(out.empty).toBe(false);
+    const style = StyleSheet.flatten(
+      (out.buttons[0].props.style as (s: { pressed: boolean }) => StyleProp<ViewStyle>)({
+        pressed: false,
+      }),
+    );
+    expect(style.minHeight).toBeGreaterThanOrEqual(60);
+    expect(style.backgroundColor).not.toBe(colors.success);
+    expect(style.backgroundColor).toBe(colors.surface);
   });
 });

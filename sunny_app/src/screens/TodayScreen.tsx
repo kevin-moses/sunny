@@ -6,12 +6,14 @@
 // a conversation. When a task is due (or may be confirmed early, up to an hour ahead), a Done
 // card sits under the header (the task's label, its due time if early, and one large Done
 // button, see useDoneAction). Done presses go through a durable queue (pendingConfirms), so they
-// work offline; queued tasks show as checked at once. Offline across midnight the cached day is
+// work offline; queued tasks show as checked at once. For 30 seconds after a press the card
+// ends with "<label> done." and an Undo button (phone only); an Undo goes through the same
+// queue and the task shows open again at once. Offline across midnight the cached day is
 // yesterday's: then no Done card is offered and a calm line says today's list is loading; an
 // early task is only offered while the socket is connected. Talk stays fixed at the bottom, far
 // from it.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { useConvexConnectionState } from 'convex/react';
 import { useMemo } from 'react';
@@ -51,8 +53,9 @@ const REGULAR_WIDTH = 768;
 /**
  * purpose: Today screen for a paired senior phone: the day clock, the Done card for the task
  *          to confirm (the due one, else one that may be confirmed early; hidden when there is
- *          none or just after a press) and the Talk button. Tasks with a queued Done press show
- *          as checked at once, also offline and after a restart.
+ *          none or just after a press), the Undo line of the latest press for 30 seconds, and
+ *          the Talk button. Tasks with a queued Done press show as checked at once, and tasks
+ *          with a queued Undo as open again, also offline and after a restart.
  * @param props: ({ dayView: DayViewState }) The household's day view, loaded by the app shell.
  * @return: (JSX.Element) The screen.
  */
@@ -62,16 +65,17 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const insets = useSafeAreaInsets();
   const { isWebSocketConnected } = useConvexConnectionState();
   const now = useTick(TICK_MS);
-  const pendingIds = usePendingConfirms(confirmQueue);
-  const tasks = useMemo(() => applyPending(day?.tasks ?? [], pendingIds), [day, pendingIds]);
+  const pending = usePendingConfirms(confirmQueue);
+  const tasks = useMemo(() => applyPending(day?.tasks ?? [], pending), [day, pending]);
   const agenda = useMemo(
     () =>
-      pendingIds.size === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
-    [dayView.agenda, pendingIds, day, tasks],
+      pending.size === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
+    [dayView.agenda, pending, day, tasks],
   );
   const stale = day !== null && !dayIsCurrent(day, now);
   const target = stale ? null : doneTarget(tasks, isWebSocketConnected);
   const done = useDoneAction(target, isOffline, confirmQueue);
+  const undo = done.undoLabel === null ? null : { label: done.undoLabel, onPress: done.pressUndo };
   const horizontal = width >= REGULAR_WIDTH ? 24 * GRID : 6 * GRID;
 
   return (
@@ -91,6 +95,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
               task={done.task}
               message={done.message ?? (stale ? STALE_DAY_MESSAGE : null)}
               onPress={done.pressDone}
+              undo={undo}
             />
             {day.nextUp !== null && <NextUpCard event={day.nextUp} today={day.localDate} />}
             <AgendaList items={agenda} />

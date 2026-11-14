@@ -13,9 +13,14 @@
 // its entry when it lands; nothing is sent while offline; a press made during a pass is sent in
 // it; an entry failing online for over ten minutes is logged loudly; clear() drops everything
 // and ignores in-flight results; entries older than the maximum age are dropped as expired;
-// classifyFailure; applyPending; toPending.
+// classifyFailure; applyPending (presses, undos, press again); toPending; toUndo. Undo entries:
+// press, undo and a second press of one task are three entries, a second undo is not queued, an
+// undo goes through undoPressedTask with the tap's age, order is kept per task through a server
+// error and a backoff while other tasks are sent, a press dropped for good lets its undo go,
+// stored undos survive a restart (malformed ones are ignored), an undo expires by its tap time,
+// and too_late removes the undo with a log.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
@@ -38,11 +43,15 @@ import {
   STUCK_LOG_EVERY_MS,
   STUCK_MS,
   toPending,
+  toUndo,
+  latestByInstance,
   SEND_MAX_LIFETIME_MS,
   type ConfirmQueue,
   type ConnectionSource,
   type ConnectionState,
   type PendingConfirm,
+  type PendingEntry,
+  type PendingUndo,
 } from '../pendingConfirms';
 
 const mockStore = new Map<string, string>();
@@ -77,7 +86,7 @@ jest.mock('../../backend/convex', () => ({
 }));
 
 jest.mock('../../logging/logger', () => ({
-  logger: { warning: jest.fn(), error: jest.fn() },
+  logger: { info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
 
 const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
@@ -93,6 +102,29 @@ const NETWORK_DOWN = (): Error => new Error('Network request failed');
  */
 function entry(id: string, pressedAt = NOW): PendingConfirm {
   return { instanceId: id as PendingConfirm['instanceId'], label: `Task ${id}`, pressedAt };
+}
+
+/**
+ * purpose: Build a queued Undo.
+ * @param id: (string) Instance id.
+ * @param undoneAt: (number) Epoch ms of the tap.
+ * @param state: (DayTask['state']) The task's state before the press.
+ * @param label: (string) The task's label.
+ * @return: (PendingUndo) The entry.
+ */
+function undo(
+  id: string,
+  undoneAt = NOW,
+  state: DayTask['state'] = 'due',
+  label = `Task ${id}`,
+): PendingUndo {
+  return {
+    kind: 'undo',
+    instanceId: id as PendingUndo['instanceId'],
+    label,
+    undoneAt,
+    restore: { state, confirmable: true },
+  };
 }
 
 /**
@@ -160,6 +192,7 @@ beforeEach(() => {
   mockMutation.mockResolvedValue({ status: 'confirmed' });
   (logger.error as jest.Mock).mockClear();
   (logger.warning as jest.Mock).mockClear();
+  (logger.info as jest.Mock).mockClear();
 });
 
 afterEach(() => {
@@ -822,20 +855,151 @@ describe('applyPending', () => {
     { instanceId: 'a', state: 'due', confirmable: true },
     { instanceId: 'b', state: 'upcoming', confirmable: true },
     { instanceId: 'c', state: 'confirmed', confirmable: false },
+    { instanceId: 'd', state: 'resolved', confirmable: false },
   ] as unknown as DayTask[];
 
+  /**
+   * purpose: The latest-entry map of a list of entries.
+   * @param list: (PendingEntry[]) Entries, oldest first.
+   * @return: (ReadonlyMap<string, PendingEntry>) The map applyPending takes.
+   */
+  const latest = (...list: PendingEntry[]) => latestByInstance(list);
+
   it('marks queued tasks confirmed and not confirmable', () => {
-    const out = applyPending(tasks, new Set(['a']));
+    const out = applyPending(tasks, latest(entry('a')));
     expect(out[0]).toMatchObject({ state: 'confirmed', confirmable: false });
     expect(out[1]).toBe(tasks[1]);
   });
 
   it('returns the same list when nothing is queued', () => {
-    expect(applyPending(tasks, new Set())).toBe(tasks);
+    expect(applyPending(tasks, new Map())).toBe(tasks);
   });
 
   it('leaves an already confirmed task as it is', () => {
-    expect(applyPending(tasks, new Set(['c']))[2]).toBe(tasks[2]);
+    expect(applyPending(tasks, latest(entry('c')))[2]).toBe(tasks[2]);
+  });
+
+  it('after an undo shows a task the server still has confirmed as it was before the press', () => {
+    const out = applyPending(tasks, latest(entry('c'), undo('c', NOW + 1, 'upcoming')));
+    expect(out[2]).toMatchObject({ state: 'upcoming', confirmable: true });
+  });
+
+  it('after an undo leaves a task the server shows open, or resolved by a caregiver', () => {
+    const out = applyPending(tasks, latest(entry('a'), undo('a'), undo('d')));
+    expect(out[0]).toBe(tasks[0]);
+    expect(out[3]).toBe(tasks[3]);
+  });
+
+  it('press, undo, press again reads confirmed', () => {
+    const out = applyPending(tasks, latest(entry('a'), undo('a', NOW + 1), entry('a', NOW + 2)));
+    expect(out[0]).toMatchObject({ state: 'confirmed', confirmable: false });
+  });
+});
+
+describe('undo entries in the queue', () => {
+  it('queues press, undo and a second press of one task as three entries', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(undo('a', NOW + 1));
+    await queue.enqueue(entry('a', NOW + 2));
+    expect(stored()).toEqual([entry('a'), undo('a', NOW + 1), entry('a', NOW + 2)]);
+  });
+
+  it('does not queue a second undo behind an undo', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(undo('a', NOW + 1));
+    await queue.enqueue(undo('a', NOW + 2));
+    expect(stored()).toHaveLength(2);
+  });
+
+  it('sends an undo through undoPressedTask with the age of the tap', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(undo('a', NOW - 4000));
+    await queue.replay();
+    const [ref, args] = mockMutation.mock.calls[0];
+    expect(getFunctionName(ref as never)).toBe('instances:undoPressedTask');
+    expect(args).toEqual({ instanceId: 'a', undoneAgoMs: 4000 });
+    expect(stored()).toEqual([]);
+  });
+
+  it('a server error on a press holds that task undo, while other tasks are sent', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(undo('a', NOW + 1));
+    await queue.enqueue(entry('b', NOW + 2));
+    mockMutation.mockRejectedValueOnce(new Error('boom'));
+    await queue.replay();
+    expect(sentIds()).toEqual(['a', 'b']);
+    expect(queue.getEntries()).toEqual([entry('a'), undo('a', NOW + 1)]);
+  });
+
+  it('a press waiting out its backoff still holds the undo behind it', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(undo('a', NOW + 1));
+    mockMutation.mockRejectedValueOnce(new Error('boom'));
+    await queue.replay();
+    await queue.replay();
+    expect(sentIds()).toEqual(['a']);
+    await jest.advanceTimersByTimeAsync(BACKOFF_MS[0]!);
+    expect(sentIds()).toEqual(['a', 'a', 'a']);
+    expect(queue.getEntries()).toEqual([]);
+  });
+
+  it('a press dropped for good lets the undo behind it go out', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(undo('a', NOW + 1));
+    mockMutation.mockRejectedValueOnce(new ConvexError({ code: 'not_found', message: 'gone' }));
+    await queue.replay();
+    expect(sentIds()).toEqual(['a', 'a']);
+    expect(queue.getEntries()).toEqual([]);
+  });
+
+  it('keeps stored undo entries across a restart and ignores malformed ones', async () => {
+    const bad = { kind: 'undo', instanceId: 'x', label: 'X', undoneAt: NOW };
+    mockStore.set(STORAGE_KEY, JSON.stringify([entry('a'), undo('a', NOW + 1), bad]));
+    const queue = makeQueue();
+    await queue.load();
+    expect(queue.getEntries()).toEqual([entry('a'), undo('a', NOW + 1)]);
+  });
+
+  it('expires an undo by the time of its tap', async () => {
+    mockStore.set(STORAGE_KEY, JSON.stringify([undo('old', NOW - MAX_AGE_MS - 1)]));
+    const queue = makeQueue();
+    await queue.load();
+    expect(queue.getEntries()).toEqual([]);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Dropped a queued Undo (expired)',
+      expect.objectContaining({ instanceId: 'old', kind: 'undo' }),
+    );
+  });
+
+  it('logs and removes an undo answered too_late', async () => {
+    mockMutation.mockResolvedValueOnce({ status: 'too_late' });
+    const queue = makeQueue();
+    await queue.enqueue(undo('a'));
+    await queue.replay();
+    expect(queue.getEntries()).toEqual([]);
+    expect(logger.info).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'An Undo came too late; the task stays done',
+      expect.objectContaining({ instanceId: 'a', undoneAt: NOW }),
+    );
+  });
+});
+
+describe('toUndo', () => {
+  it('builds an undo from the task as it was when pressed and the tap time', () => {
+    const task = {
+      instanceId: 'a',
+      displayLabel: 'Pills',
+      state: 'due',
+      confirmable: true,
+    } as unknown as DayTask;
+    expect(toUndo(task, 9)).toEqual(undo('a', 9, 'due', 'Pills'));
   });
 });
 
