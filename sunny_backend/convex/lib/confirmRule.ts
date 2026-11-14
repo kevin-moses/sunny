@@ -159,9 +159,12 @@ export function queuedPressTakenBack(
     // queue: the phone app's pendingConfirms queue, the only sender of press ids today (the HTTP
     // device API refuses a pressId key). No second sender of press ids may share a device user
     // with the phone's queue unless this skip is re-keyed per queue (or replaced with per-queue
-    // sequence numbers). Known limit: after more than MAX_TAKEN_BACK_PRESS_IDS take-backs on one
-    // instance, a resend of the oldest press would pass here; one phone cannot produce it,
-    // because its queue never resends an acknowledged entry.
+    // sequence numbers). Known limits: each take-back appends up to MAX_CONFIRM_PRESS_IDS ids
+    // and the list keeps MAX_TAKEN_BACK_PRESS_IDS, so after more than 8 taken-back ids on one
+    // instance (as few as 3 take-backs) the oldest id falls out and a resend of that press
+    // would pass here; and an id dropped from confirmPressIds by its cap of 4 never reaches
+    // takenBackPressIds at all. One phone's queue cannot produce either: it never sends two
+    // presses in a row for one task and never resends an acknowledged entry.
     if (press.userId !== undefined && instance.confirmTakenBackBy === press.userId) return null;
   }
   return pressWasTakenBack(press.pressedAt, instance.confirmTakenBackAt)

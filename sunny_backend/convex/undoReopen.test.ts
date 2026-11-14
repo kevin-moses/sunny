@@ -5,7 +5,7 @@
 // caregiverCanReopen, reopenedState) are tested directly, then through the mutations.
 // Undo: restores the exact prior state (due, escalated, an early upcoming confirm, a snooze),
 // allows an offline replayed press by the time the server recorded it, returns too_late
-// (changing and auditing nothing) for a late tap, another device's confirm, a voice-agent
+// (leaving the instance unchanged and writing an undo_not_applied row) for a late tap, another device's confirm, a voice-agent
 // confirm, a caregiver's resolve and an instance that is gone, throws forbidden for another
 // household, a caregiver or a viewer, falls back to the clock when no prior state was recorded,
 // and audits the change with undo: true. Also: the caregiver's undoResolve still refuses a
@@ -40,7 +40,9 @@
 // back"); a reopen takes back and audits every id; an old-format undo audits the ids it took
 // back; an invalid id on a no-op is never stored; a too_late undo writes undo_not_applied; a
 // 100,000-character id leaves a small row without the id (missing and existing instance);
-// confirmInstance refuses a press id from a caregiver actor;
+// confirmInstance refuses a press id from a caregiver actor; an invalid id for another
+// household's instance is forbidden with no audit row and no raw id; the day entry (dayView and
+// agent.today) carries confirmPressIds through confirm, a same-device no-op and an undo;
 // invalid ids are refused; the id is audited on the confirm, the undo and a refused press; and
 // queuedPressTakenBack and withTakenBackPressIds directly.
 //
@@ -1664,6 +1666,68 @@ describe("press ids", () => {
       expect(JSON.stringify(refused[0]!.detail).length).toBeLessThan(1000);
     },
   );
+
+  test("an invalid id for another household's instance is forbidden, with no row and no raw id", async () => {
+    const f = await dueFixture();
+    const other = await f.t.withIdentity({ subject: "zed" }).mutation(api.households.create, {
+      seniorPreferredName: "Dad",
+      timezone: "America/New_York",
+      caregiverDisplayName: "Zed",
+    });
+    await pair(f.t, other, "zed", "otherphone", "senior_phone");
+    const before = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    const raw = "not a valid id " + "y".repeat(500);
+    at("2027-03-14T12:05:00Z");
+    await expect(
+      f.t.withIdentity({ subject: "otherphone" }).mutation(api.instances.confirmPressedTask, {
+        instanceId: f.instanceId,
+        via: "button",
+        pressedAgoMs: 0,
+        pressId: raw,
+      }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    const after = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    expect(after).toHaveLength(before.length);
+    expect(JSON.stringify(after)).not.toContain("yyyyyyyy");
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test("the day entry carries confirmPressIds: the confirm, a same-device no-op, then [] after undo", async () => {
+    const f = await dueFixture();
+    /**
+     * purpose: The fixture's entry as the phone reads it (calendar.dayView) and as the voice
+     *          agent's context reads it (agent.today), which share lib/today's builder.
+     * @return: (Promise<string[][]>) confirmPressIds from both, in that order.
+     */
+    const ids = async (): Promise<string[][]> => {
+      const day = await f.t
+        .withIdentity({ subject: "phone" })
+        .query(api.calendar.dayView, { householdId: f.householdId });
+      const agent = await f.t.query(api.agent.today, {
+        agentKey: "test-agent-key",
+        householdId: f.householdId,
+      });
+      return [day.tasks, agent].map(
+        (list) => list.find((e) => e.instanceId === f.instanceId)!.confirmPressIds,
+      );
+    };
+    const saved = process.env.SUNNY_AGENT_KEY;
+    process.env.SUNNY_AGENT_KEY = "test-agent-key";
+    try {
+      await press(f, "2027-03-14T12:05:00Z", 0, A);
+      expect(await ids()).toEqual([[A], [A]]);
+      await press(f, "2027-03-14T12:05:05Z", 0, B);
+      expect(await ids()).toEqual([
+        [A, B],
+        [A, B],
+      ]);
+      await undo(f, "2027-03-14T12:05:10Z", 0, B);
+      expect(await ids()).toEqual([[], []]);
+    } finally {
+      if (saved === undefined) delete process.env.SUNNY_AGENT_KEY;
+      else process.env.SUNNY_AGENT_KEY = saved;
+    }
+  });
 
   test("confirmInstance refuses a press id from a caregiver actor", async () => {
     const f = await dueFixture();

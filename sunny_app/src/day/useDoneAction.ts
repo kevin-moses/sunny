@@ -241,6 +241,12 @@ export function useDoneAction(
     if (offer !== null) announceQueued(offer.spoken);
   }, [offer]);
 
+  // "<label> is not done.", once per stored undo. The ref is cleared on the first run so later
+  // day-view re-renders (every minute in production) do not repeat it. undoneTick must stay in
+  // the dependencies: in production the queue's useSyncExternalStore render can run before the
+  // `.then` that sets the ref, and shownTasks is memoized, so without the tick this effect would
+  // not run again and the announcement would be missed. jest's act() batches the two updates
+  // into one render, so no test can catch the tick's removal.
   useEffect(() => {
     const undone = undoneRef.current;
     if (undone === null) return;

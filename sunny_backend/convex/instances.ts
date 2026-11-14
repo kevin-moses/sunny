@@ -234,7 +234,8 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *        queue; senior devices only, isPressId; stored in confirmPressIds, or added there by
  *        recordNoOpPress when the press is a no-op, and recorded in the audit detail) and how
  *        the confirm arrived (ConfirmTransport, recorded in the audit detail when given).
- *        pressedAgoMs is how long before this call the senior pressed Done on a device that held the press (offline) and sent it later.
+ *        pressedAgoMs is how long before this call the senior pressed Done on a device that
+ *        held the press (offline) and sent it later.
  *        An age, not a time, so the device's clock skew cannot move the record. Only a senior
  *        device may send it, and it must be a finite number of at least 0. confirmedAt is
  *        `now` minus the age, clamped to between the instance's early-confirm point
@@ -266,7 +267,8 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *          refused when its id was taken back, by an undo or a caregiver's reopen, with the
  *          reason "This press was taken back", and is not held to the time rule after this
  *          same device user's own undo), so a stale press held by the device's queue cannot
- *          re-confirm a task that was taken back; through confirmPressedInstance that is a rejected result,
+ *          re-confirm a task that was taken back; through confirmPressedInstance that is a
+ *          rejected result,
  *          never an error the senior sees. A press without an age, or made after the take-back,
  *          confirms as usual, and so does a caregiver's "Mark done". A press without an age
  *          (the home display's live confirm, voice, a caregiver's Mark done) is not checked

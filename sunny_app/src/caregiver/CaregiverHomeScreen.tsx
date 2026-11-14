@@ -11,11 +11,11 @@
 // (reopening a task whose toast is still up dismisses that toast); editors tap a task's text
 // to open an autosaving inline note editor, one at a time; saved notes show as a subtitle),
 // the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
-// events) with the selected day's section directly below it: for today, its events only (its tasks are the list
-// above); for a later day, first that day's planned tasks in their own read-only card (dulled
-// disabled checkboxes, "No tasks." when none), then its events in a separate card. Then "Later
-// this week", the events of the days after the selected one grouped by day (hidden when there
-// are none; events only).
+// events) with the selected day's section directly below it: for today, its events only (its
+// tasks are the list above); for a later day, first that day's planned tasks in their own
+// read-only card (dulled disabled checkboxes, "No tasks." when none), then its events in a
+// separate card. Then "Later this week", the events of the days after the selected one grouped
+// by day (hidden when there are none; events only).
 // Everything comes from the shared day view state owned by CaregiverApp. The derived lists are
 // computed in two memos: one per day view and user (tasks, alerts, the strip, the range) and one
 // per day view and selection (the selected day's planned tasks and events, the later days, the

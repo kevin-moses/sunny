@@ -25,7 +25,8 @@
 // double tap queues one; a press stored late then pressed again gets an offer that names the
 // press actually queued; the offline note shows only while offline and the press is queued;
 // "is not done" is announced only when the screen shows the task open (not for a confirm by
-// another surface). The harness gives the hook the shown tasks the way the Today screen does.
+// another surface), and exactly once across later day-view re-renders. The harness gives the
+// hook the shown tasks the way the Today screen does.
 // usePendingConfirms: the queued entries follow the queue, load at
 // mount, replay at mount. DoneCard: label, due time for an early task, exactly one button with
 // its label, onPress, message only, nothing, the Undo line under another task's Done with its
@@ -840,6 +841,24 @@ describe('Undo on the phone', () => {
     expect(announceQueued).toHaveBeenLastCalledWith('Morning pills is not done.', { queue: true });
   });
 
+  it('announces "is not done" exactly once across later day-view re-renders', async () => {
+    const own = (): DayTask =>
+      task({ state: 'confirmed', confirmable: false, confirmPressIds: [pressId(1)] });
+    const queue = makeQueue();
+    const h = renderDone(queue, task());
+    await press(h);
+    mockConnected = false;
+    h.rerender(task(), false, [own()]);
+    await tapUndo(h);
+    await advance(0);
+    for (let minute = 0; minute < 3; minute++) {
+      h.rerender(task(), false, [own()]);
+      await advance(0);
+    }
+    const notDone = announceQueued.mock.calls.filter(([text]) => text.endsWith('is not done.'));
+    expect(notDone).toHaveLength(1);
+  });
+
   it('confirmed by another surface (its id not ours): stays done and says nothing', async () => {
     const display = task({
       state: 'confirmed',
@@ -1195,8 +1214,8 @@ describe('DoneCard', () => {
   });
 
   it('shows only the message, with no button, when there is no task', () => {
-    const out = render({ task: null, message: 'Checked off: Morning pills.' });
-    expect(out.texts).toEqual(['Checked off: Morning pills.']);
+    const out = render({ task: null, message: NOT_STORED_MESSAGE });
+    expect(out.texts).toEqual([NOT_STORED_MESSAGE]);
     expect(out.buttons).toHaveLength(0);
   });
 

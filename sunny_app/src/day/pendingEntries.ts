@@ -17,6 +17,12 @@
 // back the confirmation the server shows, which for an undo with an id means its press id is in
 // the day entry's confirmPressIds).
 //
+// Known display limit (no replay): offline, after Done (acknowledged), then Undo, Done, Undo all
+// queued, the phone shows the task done until it reconnects, because a press of the task is
+// queued ahead of the latest undo, so applyPending keeps the server's "confirmed"; the server
+// ends with the task open, as the senior last asked. The offline work in build step 3 should
+// replace this rule with a local replay of the task's queued entries.
+//
 // Last modified: 2026-11-14
 
 import * as Crypto from 'expo-crypto';
