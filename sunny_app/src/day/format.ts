@@ -1,6 +1,7 @@
 // sunny_app/src/day/format.ts
 //
-// Purpose: Pure helpers for the day clock: task state checks (done, open, due), the
+// Purpose: Pure helpers for the day clock: task state checks (done, missed, open, due), the
+// neutral screen reader wording of a missed task (MISSED_SPOKEN), the
 // time-ordered agenda merge, plain-language time text (with AM and PM, or the home display's
 // clock form without), and relative day names. Dates and times from calendar.dayView are
 // already in the household's local time, so nothing here converts timezones (date arithmetic
@@ -8,7 +9,7 @@
 // tasks (no time of day, done anytime that day) arrive with the scheduledTime sentinel
 // ANYTIME; they read "Anytime", are never "due", and are listed after the day's timed items.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-13
 
 import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
@@ -52,6 +53,23 @@ export function compareTaskTime(
  */
 export function isDone(task: DayTask): boolean {
   return task.state === 'confirmed' || task.state === 'resolved';
+}
+
+/**
+ * What a screen reader says for a missed task. Neutral on purpose: it must not suggest the
+ * senior failed or that the task is still to do.
+ */
+export const MISSED_SPOKEN = 'Earlier today, not marked done';
+
+/**
+ * purpose: Whether a task's confirmation window closed without a confirmation. Both senior
+ *          surfaces draw such a task dimmed (never as still to do, never as done); a later
+ *          confirmation moves it to confirmed or resolved, which is done.
+ * @param task: (Pick<DayTask, 'state'>) The task.
+ * @return: (boolean) True while its state is missed.
+ */
+export function isMissed(task: Pick<DayTask, 'state'>): boolean {
+  return task.state === 'missed';
 }
 
 /**

@@ -4,7 +4,8 @@
 // display shows: the Now card (the task to act on, overdue or not, and its steps; or a calm
 // "nothing to do" state), the Next up item, the rows of the Today screen, and the date line
 // ("November 8, 2026"), and the household-local time now (nowTime). Times use clockTime from
-// day/format ("8:00").
+// day/format ("8:00"). A task whose window closed unconfirmed (missed) gets its own row mark
+// so the screen can grey it without a check and without a "Now" tag.
 //
 // The Now task is the first due or escalated timed task in the day view's order; the Done key
 // confirms it by its instance id, so it always confirms the task the screen shows. A task is
@@ -12,11 +13,11 @@
 // yesterday. Multi-step instructions have no backend fields yet:
 // until they do, a task's checklist items (two or more) stand in for its steps.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-13
 
 import type { SFSymbol } from 'expo-symbols';
 
-import { ANYTIME, clockTime, isDone, isDue, relativeDayName } from '../day/format';
+import { ANYTIME, clockTime, isDone, isDue, isMissed, relativeDayName } from '../day/format';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
 
 /** How many rows fit on the Today screen. */
@@ -56,8 +57,11 @@ export interface TodayRow {
   key: string;
   time: string;
   label: string;
-  /** done: checked and grey; now: the Now task, boxed and tagged; none: plain. */
-  mark: 'done' | 'now' | 'none';
+  /**
+   * done: checked and grey; now: the Now task, boxed and tagged; missed: grey with no check
+   * and no tag (its window closed unconfirmed); none: plain.
+   */
+  mark: 'done' | 'now' | 'missed' | 'none';
 }
 
 /**
@@ -208,6 +212,19 @@ export function nextItem(
 }
 
 /**
+ * purpose: The mark of a task's Today row: now for the Now task, done once confirmed, missed
+ *          when its window closed unconfirmed, otherwise none.
+ * @param task: (DayTask) The task.
+ * @param nowTaskId: (string | null) The Now task's instanceId.
+ * @return: (TodayRow['mark']) The mark.
+ */
+function taskMark(task: DayTask, nowTaskId: string | null): TodayRow['mark'] {
+  if (task.instanceId === nowTaskId) return 'now';
+  if (isDone(task)) return 'done';
+  return isMissed(task) ? 'missed' : 'none';
+}
+
+/**
  * purpose: The rows of the Today screen. When there are more than fit, the earliest finished
  *          rows are dropped first, then the latest rows, which `hidden` counts.
  * @param agenda: (AgendaItem[]) Today's merged, time-ordered agenda.
@@ -234,7 +251,7 @@ export function todayRows(
       key: item.id,
       time: clockTime(task.scheduledTime),
       label: task.displayLabel,
-      mark: task.instanceId === nowTaskId ? 'now' : isDone(task) ? 'done' : 'none',
+      mark: taskMark(task, nowTaskId),
     };
   });
   let excess = all.length - maxRows;

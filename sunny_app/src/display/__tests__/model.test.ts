@@ -4,7 +4,7 @@
 // shows and when it reads as overdue or multi-step, the Next up pick, and the Today rows
 // (marks and overflow). Fixtures fill only what the rules read.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-13
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -190,6 +190,40 @@ describe('todayRows', () => {
       ['2:00', 'none'],
     ]);
     expect(hidden).toBe(0);
+  });
+
+  it('marks a missed task missed, and done once it is confirmed or resolved', () => {
+    const marks = (state: string): string[] =>
+      todayRows(buildAgenda(makeDay({ tasks: [makeTask({ state })] })), null).rows.map(
+        (r) => r.mark,
+      );
+    expect(marks('missed')).toEqual(['missed']);
+    expect(marks('confirmed')).toEqual(['done']);
+    expect(marks('resolved')).toEqual(['done']);
+    expect(marks('upcoming')).toEqual(['none']);
+  });
+
+  it('leaves due, escalated and upcoming tasks unmarked and the Now task now', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'a', scheduledTime: '06:00', state: 'missed' }),
+        makeTask({
+          instanceId: 'b',
+          scheduledTime: '07:00',
+          state: 'escalated',
+          carriedOver: true,
+        }),
+        makeTask({ instanceId: 'c', scheduledTime: '08:00', state: 'due' }),
+        makeTask({ instanceId: 'd', scheduledTime: '09:00', state: 'upcoming' }),
+      ],
+    });
+    const { rows } = todayRows(buildAgenda(day), 'c');
+    expect(rows.map((r) => [r.time, r.mark])).toEqual([
+      ['6:00', 'missed'],
+      ['7:00', 'none'],
+      ['8:00', 'now'],
+      ['9:00', 'none'],
+    ]);
   });
 
   it('drops the earliest done rows first, then counts the latest rows left out', () => {
