@@ -278,11 +278,11 @@ These features move Sunny from reminding the senior to helping them act. None of
 
 ## Build order and success metrics
 
-Built so far (merged to `main` through PR 16, 2026-11-14, plus the device API change this line ships with):
+Built so far (merged to `main` through PR 17, 2026-11-14, plus the Undo and Reopen change this line ships with):
 
 - Backend: shared state, scheduler, escalation ladder with claim, question log, household list, senior undo and caregiver reopen (no buttons in the app yet), caregiver alerts by push with text as the fallback, daily digest posted in the chat thread, device token, HTTP device API and one server-computed device state (nothing in the app reads it yet)
-- Caregiver app: Home timeline with mark done, Chat with task and calendar tools, About tab (life profile, hard questions, remembered facts, messages)
-- Senior phone: Today screen with Talk and one large Done (up to 60 minutes early, presses queued durably offline and recorded at the time of the press)
+- Caregiver app: Home timeline with mark done and Reopen, alerts by push with "I'm on it", the daily summary in Chat, Chat with task and calendar tools, About tab (life profile, hard questions, remembered facts, messages)
+- Senior phone: Today screen with Talk and one large Done (up to 60 minutes early, presses queued durably offline and recorded at the time of the press, Undo for 30 seconds after a press)
 - iPad display: Now and Today pages, Done and Talk keys, Talk on the panel with the answer shown for 3 minutes, chime and spoken prompt at every prompt step
 - Voice agent: guardrails prompt, confirm, snooze, medication facts and dose log, caregiver flags, family messages, memory, weather, the list
 
