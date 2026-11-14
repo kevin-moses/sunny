@@ -5,7 +5,8 @@
 // "nothing to do" state), the Next up item, the rows of the Today screen, and the date line
 // ("November 8, 2026"), and the household-local time now (nowTime). Times use clockTime from
 // day/format ("8:00"). A task whose window closed unconfirmed (missed) gets its own row mark
-// so the screen can grey it without a check and without a "Now" tag.
+// so the screen can grey it without a check and without a "Now" tag. A missed task never
+// becomes the Now task, but it stops the Now card from claiming the day is all done.
 //
 // The Now task is the first due or escalated timed task in the day view's order; the Done key
 // confirms it by its instance id, so it always confirms the task the screen shows. A task is
@@ -13,7 +14,7 @@
 // yesterday. Multi-step instructions have no backend fields yet:
 // until they do, a task's checklist items (two or more) stand in for its steps.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import type { SFSymbol } from 'expo-symbols';
 
@@ -38,7 +39,10 @@ export type NowCard =
   | TaskCard
   | {
       kind: 'clear';
-      /** Nothing is left today (no open task, no later event). */
+      /**
+       * Nothing is left today: no open task, no later event and no missed task (a missed
+       * task keeps the card at the calm "nothing to do right now" until it is confirmed).
+       */
       allDone: boolean;
     };
 
@@ -124,7 +128,8 @@ export function instructionSteps(task: Pick<DayTask, 'checklistItems'>): string[
 
 /**
  * purpose: Decide what the Now card shows: the first due or escalated timed task (the task
- *          a bare Done confirms), otherwise a calm clear state.
+ *          a bare Done confirms), otherwise a calm clear state. The clear state says the day is
+ *          all done only when nothing is waiting or coming and no task today is missed.
  * @param day: (DayViewData) The day view.
  * @return: (NowCard) The card.
  */
@@ -139,12 +144,13 @@ export function nowCard(day: DayViewData): NowCard {
     };
   }
   const now = nowTime(day);
-  // A missed task (its window closed) is not waiting, so it does not keep the day open.
+  // A missed task (its window closed) is not waiting, but the day is not all done either.
   const openTask = day.tasks.some(
     (t) => t.state === 'upcoming' || t.state === 'due' || t.state === 'escalated',
   );
   const laterEvent = day.eventsToday.some((e) => e.startTime > now);
-  return { kind: 'clear', allDone: !openTask && !laterEvent };
+  const anyMissed = day.tasks.some(isMissed);
+  return { kind: 'clear', allDone: !openTask && !laterEvent && !anyMissed };
 }
 
 /**

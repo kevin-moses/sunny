@@ -8,7 +8,7 @@
 // check and no "Now" tag and reads "Earlier today, not marked done"; done, plain and Now rows
 // are as before.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { describe, expect, it } from '@jest/globals';
 import React from 'react';
@@ -17,7 +17,8 @@ import { StyleSheet, Text } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { NowBody, TodayBody, tabText } from '../DisplayParts';
-import type { NextItem, NowCard, TodayRow } from '../model';
+import type { DayViewData } from '../../day/types';
+import { nowCard, type NextItem, type NowCard, type TodayRow } from '../model';
 import { ink } from '../theme';
 import type { VoiceCard } from '../voiceModel';
 
@@ -81,6 +82,35 @@ describe('NowBody', () => {
       detail: 'Ask your question.',
     };
     expect(textOf(CLEAR, listening)).toContain('Listening|Ask your question.');
+  });
+
+  it('shows the calm card with no check when the day is clear but a task was missed', () => {
+    const day = {
+      tasks: [{ instanceId: 'm', scheduledTime: '08:00', state: 'missed' }],
+      eventsToday: [],
+      localNow: '2026-11-07T21:00:00',
+    } as unknown as DayViewData;
+    const card = nowCard(day);
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(<NowBody card={card} step={0} next={null} voice={null} />);
+    });
+    const texts = renderer.root.findAllByType(Text).map((t) => t.props.children as unknown);
+    expect(texts).toContain('Nothing to do right now.');
+    expect(texts).not.toContain('Everything is done.');
+    expect(renderer.root.findAllByType(SymbolView)).toHaveLength(0);
+  });
+
+  it('shows the check and Everything is done when nothing is missed', () => {
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        <NowBody card={{ kind: 'clear', allDone: true }} step={0} next={null} voice={null} />,
+      );
+    });
+    const texts = renderer.root.findAllByType(Text).map((t) => t.props.children as unknown);
+    expect(texts).toContain('Everything is done.');
+    expect(renderer.root.findAllByType(SymbolView)).toHaveLength(1);
   });
 
   it('shows Next up without a voice card', () => {

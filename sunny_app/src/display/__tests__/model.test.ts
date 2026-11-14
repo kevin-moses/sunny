@@ -4,7 +4,7 @@
 // shows and when it reads as overdue or multi-step, the Next up pick, and the Today rows
 // (marks and overflow). Fixtures fill only what the rules read.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -117,10 +117,42 @@ describe('nowCard', () => {
 
   it('is all done when every task is finished and no event is ahead', () => {
     const day = makeDay({
-      tasks: [makeTask({ state: 'confirmed' }), makeTask({ instanceId: 't2', state: 'missed' })],
+      tasks: [makeTask({ state: 'confirmed' }), makeTask({ instanceId: 't2', state: 'resolved' })],
       eventsToday: [makeEvent({ startTime: '09:00' })],
     });
     expect(nowCard(day)).toEqual({ kind: 'clear', allDone: true });
+  });
+
+  it('is all done with no tasks and no events', () => {
+    expect(nowCard(makeDay())).toEqual({ kind: 'clear', allDone: true });
+  });
+
+  it('is not all done while a task is missed, even with the rest done', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'a', scheduledTime: '07:00', state: 'confirmed' }),
+        makeTask({ instanceId: 'b', state: 'missed' }),
+      ],
+    });
+    expect(nowCard(day)).toEqual({ kind: 'clear', allDone: false });
+  });
+
+  it('is all done again once the missed task is confirmed or resolved', () => {
+    for (const state of ['confirmed', 'resolved']) {
+      const day = makeDay({ tasks: [makeTask({ state })] });
+      expect(nowCard(day)).toEqual({ kind: 'clear', allDone: true });
+    }
+  });
+
+  it('still shows a due task over a missed one', () => {
+    const day = makeDay({
+      tasks: [
+        makeTask({ instanceId: 'a', state: 'missed' }),
+        makeTask({ instanceId: 'b', scheduledTime: '09:00', state: 'due' }),
+      ],
+    });
+    const card = nowCard(day);
+    expect(card.kind === 'task' && card.task.instanceId).toBe('b');
   });
 });
 
