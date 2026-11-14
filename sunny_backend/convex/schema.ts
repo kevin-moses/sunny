@@ -249,8 +249,9 @@ export default defineSchema({
     // The id the phone's queue gave the press that confirmed the instance; cleared with the
     // confirmation. A senior undo carrying a press id applies only when it matches.
     confirmPressId: v.optional(v.string()),
-    // Ids of presses a senior undo took back, newest last, at most 8. A press resent with one
-    // of these ids is refused. Never cleared.
+    // Ids of presses taken back (by a senior undo, or a caregiver's reopen of a device confirm
+    // that carried one), newest last, at most 8. A press resent with one of these ids is
+    // refused. Never cleared.
     takenBackPressIds: v.optional(v.array(v.string())),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),

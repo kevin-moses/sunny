@@ -26,9 +26,9 @@
 // back. A press without an age (a live confirm, voice, a caregiver's Mark done) is made now
 // and is never checked against the stamp. Press ids (the phone's queue gives each press a
 // random id, isPressId) replace the estimated times where both sides come from one device:
-// queuedPressTakenBack refuses a resend of an undone press id and skips the time rule after
-// this device's own undo; withTakenBackPressId keeps the last MAX_TAKEN_BACK_PRESS_IDS undone
-// ids.
+// queuedPressTakenBack refuses a resend of a taken-back press id (undone, or reopened by a
+// caregiver) and skips the time rule after this device's own undo; withTakenBackPressId keeps
+// the last MAX_TAKEN_BACK_PRESS_IDS taken-back ids.
 //
 // Last modified: 2026-11-14
 
@@ -117,8 +117,8 @@ export interface QueuedPress {
 
 /**
  * purpose: Whether a senior device's queued press must be refused because the confirmation was
- *          taken back after it. A press with an id is refused when that id was undone before
- *          (a resend of an undone press); otherwise, when the last take-back was this same
+ *          taken back after it. A press with an id is refused when that id was taken back before
+ *          (a resend of a press that was undone, or whose confirm a caregiver reopened); otherwise, when the last take-back was this same
  *          device's own undo, it is accepted without the time rule, because the device's queue
  *          sends a task's entries strictly in order, so a different press arriving after its own
  *          undo was made after it. Every other case (no id, a caregiver's reopen, another

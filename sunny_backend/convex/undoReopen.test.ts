@@ -30,7 +30,10 @@
 // resent undo after a later press; Done just after Undo on a slow network) end confirmed with
 // ids and behave as before without them; a resend of an undone id is refused; an undo of
 // another id is too_late; the last 8 taken-back ids are kept; after a caregiver reopen the time
-// rule still refuses an older press with an id; the confirm stores and the undo clears the id;
+// rule still refuses an older press with an id; a reopen of a device confirm records its id, so
+// a resend of that press (age 0) is refused, also after a later undo by the device, while a
+// reopen of a confirm without an id or of a caregiver's resolve leaves the list as it was; the
+// confirm stores and the undo clears the id;
 // invalid ids are refused; the id is audited on the confirm, the undo and a refused press; and
 // queuedPressTakenBack and withTakenBackPressId directly.
 //
@@ -1395,6 +1398,45 @@ describe("press ids", () => {
       status: "rejected",
     });
     expect(await press(f, "2027-03-14T12:06:40Z", 0, B)).toMatchObject({ status: "confirmed" });
+  });
+
+  test("after a reopen of a device confirm a resend of that press with age 0 is refused", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    const reopened = await reopenAs(f, "pat", "2027-03-14T12:06:00Z");
+    expect(reopened.takenBackPressIds).toEqual([A]);
+    expect(await press(f, "2027-03-14T12:06:30Z", 0, A)).toMatchObject({ status: "rejected" });
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test("a press reopened by a caregiver stays refused after a later undo by the device", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await reopenAs(f, "pat", "2027-03-14T12:06:00Z");
+    await press(f, "2027-03-14T12:07:00Z", 0, B);
+    expect(await undo(f, "2027-03-14T12:07:10Z", 0, B)).toMatchObject({ status: "undone" });
+    expect((await row(f)).confirmTakenBackBy).toBe("phone");
+    expect(await press(f, "2027-03-14T12:07:20Z", 0, A)).toMatchObject({ status: "rejected" });
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test("a reopen of a confirm without an id leaves takenBackPressIds as it was", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await undo(f, "2027-03-14T12:05:10Z", 0, A);
+    await press(f, "2027-03-14T12:05:20Z", 0);
+    const reopened = await reopenAs(f, "pat", "2027-03-14T12:06:00Z");
+    expect(reopened.takenBackPressIds).toEqual([A]);
+  });
+
+  test("a reopen of a caregiver's resolve leaves takenBackPressIds as it was", async () => {
+    const f = await dueFixture();
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    await undo(f, "2027-03-14T12:05:10Z", 0, A);
+    await confirmAs(f, "max", "2027-03-14T12:05:20Z");
+    const reopened = await reopenAs(f, "pat", "2027-03-14T12:06:00Z");
+    expect(reopened.takenBackPressIds).toEqual([A]);
+    expect(reopened.confirmTakenBackBy).toBe("phone");
   });
 
   test("the confirm stores the id and an undo clears it and records it", async () => {

@@ -12,7 +12,8 @@
 // cannot re-confirm what was taken back (lib/confirmRule.pressWasTakenBack). An undo may be
 // tapped offline too (undoneAgoMs). A press from the phone's queue carries a press id
 // (pressId); the confirm stores it as confirmPressId, an undo carrying the id applies only to
-// that press and records it in takenBackPressIds, and lib/confirmRule.queuedPressTakenBack
+// that press and records it in takenBackPressIds (a caregiver's reopen of a device confirm
+// records the confirm's id there too), and lib/confirmRule.queuedPressTakenBack
 // replaces the time comparison by the ids where both sides come from the same device.
 // The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
@@ -580,7 +581,10 @@ export async function undoPressedInstance(
  *          device or voice confirm (state confirmed) is stamped: reopening a caregiver's resolve
  *          takes nothing back from the senior, whose own queued press must still apply. The stamp
  *          also sets confirmTakenBackBy to the caregiver, so a device's queued press is held to
- *          the time rule after a reopen even when it carries a press id. Audited as a
+ *          the time rule after a reopen even when it carries a press id, and adds the reopened
+ *          confirm's confirmPressId (if it had one) to takenBackPressIds (withTakenBackPressId),
+ *          so a resend of that same press is refused whatever its age, also after a later undo
+ *          by the device. Audited as a
  *          state change with detail reopen: true and the previous confirmedAt, confirmedBy and
  *          confirmedVia (the previous state is the row's `from`).
  * @param ctx: (MutationCtx) Mutation context.
@@ -624,7 +628,14 @@ export async function reopenInstance(
       ...CLEAR_CONFIRMATION,
       state: reopenedState(instance, now),
       ...(instance.state === "confirmed"
-        ? { confirmTakenBackAt: now, confirmTakenBackBy: actor.userId }
+        ? {
+            confirmTakenBackAt: now,
+            confirmTakenBackBy: actor.userId,
+            takenBackPressIds: withTakenBackPressId(
+              instance.takenBackPressIds,
+              instance.confirmPressId,
+            ),
+          }
         : {}),
     },
     {
