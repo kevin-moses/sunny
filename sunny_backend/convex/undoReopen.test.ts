@@ -16,6 +16,13 @@
 // repeating fired steps, and the day view's `reopenable` flag agreeing with the mutation.
 // The clock is faked; the scheduler is driven through tickHousehold with an explicit now.
 //
+// Take-back stamp: a press made before an undo or reopen that a device's queue replays is
+// rejected and audited, a fresh press confirms, a caregiver's Mark done still resolves. Also:
+// undo twice, undo then reopen, a signed-out caller, a new confirm after a reopen, undo of a
+// late confirm of a missed task, the clock fallback before and after the window, a slow
+// press already past the undo window, a task confirmed the evening before reopened after
+// midnight, and a deactivated, anytime, moved or deleted task refused by reopen and undo.
+//
 // Last modified: 2026-11-13
 
 import workpoolTest from "@convex-dev/workpool/test";
@@ -238,16 +245,28 @@ describe("the pure rules", () => {
     expect(seniorCanUndo({ state: "confirmed", confirmedBy: "phone" }, "phone", 1)).toBe(false);
   });
 
-  test("caregiverCanReopen needs a done state confirmed on today's household date", () => {
+  test("caregiverCanReopen needs a done state confirmed today or belonging to today", () => {
     const tz = "America/New_York";
     const noon = Date.parse("2027-03-14T16:00:00Z");
     const lateNight = Date.parse("2027-03-15T03:59:59Z");
     const midnight = Date.parse("2027-03-15T04:00:00Z");
-    expect(caregiverCanReopen({ state: "confirmed", confirmedAt: noon }, lateNight, tz)).toBe(true);
-    expect(caregiverCanReopen({ state: "resolved", confirmedAt: noon }, noon, tz)).toBe(true);
-    expect(caregiverCanReopen({ state: "confirmed", confirmedAt: noon }, midnight, tz)).toBe(false);
-    expect(caregiverCanReopen({ state: "due", confirmedAt: noon }, noon, tz)).toBe(false);
-    expect(caregiverCanReopen({ state: "confirmed" }, noon, tz)).toBe(false);
+    const done = { state: "confirmed", confirmedAt: noon, localDate: "2027-03-14" } as const;
+    expect(caregiverCanReopen(done, lateNight, tz)).toBe(true);
+    expect(caregiverCanReopen({ ...done, state: "resolved" }, noon, tz)).toBe(true);
+    expect(caregiverCanReopen(done, midnight, tz)).toBe(false);
+    expect(caregiverCanReopen({ ...done, state: "due" }, noon, tz)).toBe(false);
+    expect(caregiverCanReopen({ state: "confirmed", localDate: "2027-03-14" }, noon, tz)).toBe(
+      true,
+    );
+  });
+
+  test("caregiverCanReopen accepts today's task confirmed the evening before", () => {
+    const tz = "America/New_York";
+    const evening = Date.parse("2027-03-15T03:45:00Z");
+    const after = Date.parse("2027-03-15T04:10:00Z");
+    const early = { state: "confirmed", confirmedAt: evening, localDate: "2027-03-15" } as const;
+    expect(caregiverCanReopen(early, after, tz)).toBe(true);
+    expect(caregiverCanReopen({ ...early, localDate: "2027-03-14" }, after, tz)).toBe(false);
   });
 
   test("reopenedState follows the clock and the recorded prior state", () => {
@@ -581,7 +600,10 @@ describe("reopenTaskInstance", () => {
     expect((await reopenAs(f, "pat", "2027-03-15T03:59:59Z")).state).toBe("missed");
     await confirmAs(f, "display", "2027-03-15T03:59:59.5Z");
     await expect(reopenAs(f, "pat", "2027-03-15T04:00:00Z")).rejects.toMatchObject({
-      data: { code: "invalid", message: "Only a task marked done today can be reopened." },
+      data: {
+        code: "invalid",
+        message: "This task was marked done on an earlier day, so it can no longer be reopened.",
+      },
     });
     expect((await row(f)).state).toBe("confirmed");
   });
@@ -645,7 +667,6 @@ describe("reopenTaskInstance", () => {
       from: "confirmed",
       to: "due",
       reopen: true,
-      state: "confirmed",
       confirmedAt: confirmed.confirmedAt,
       confirmedBy: "display",
       confirmedVia: "button",
@@ -770,5 +791,252 @@ describe("the day view's reopenable flag agrees with the mutation", () => {
         .withIdentity({ subject: "pat" })
         .mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId }),
     ).rejects.toMatchObject({ data: { code: "invalid" } });
+  });
+});
+
+describe("more undo and reopen cases", () => {
+  test("a signed-out caller gets unauthenticated from both mutations", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    at("2027-03-14T12:05:10Z");
+    await expect(
+      f.t.mutation(api.instances.undoPressedTask, { instanceId: f.instanceId }),
+    ).rejects.toMatchObject({ data: { code: "unauthenticated" } });
+    await expect(
+      f.t.mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId }),
+    ).rejects.toMatchObject({ data: { code: "unauthenticated" } });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("undoing twice: the second is too_late", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:10Z")).toMatchObject({ status: "undone" });
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:20Z")).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("due");
+  });
+
+  test("after an undo a caregiver cannot reopen: the task is not done", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    await undoAs(f, "phone", "2027-03-14T12:05:10Z");
+    await expect(reopenAs(f, "pat", "2027-03-14T12:06:00Z")).rejects.toMatchObject({
+      data: { code: "invalid", message: expect.stringContaining("not marked done") },
+    });
+  });
+
+  test("a new confirm after a reopen records a fresh prior state and can be undone and reopened", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    await reopenAs(f, "pat", "2027-03-14T12:10:00Z");
+    const again = await confirmAs(f, "phone", "2027-03-14T12:12:00Z");
+    expect(again).toMatchObject({ state: "confirmed", resolvedFromState: "due" });
+    expect(await undoAs(f, "phone", "2027-03-14T12:12:30Z")).toMatchObject({
+      status: "undone",
+      instance: { state: "due" },
+    });
+    await confirmAs(f, "phone", "2027-03-14T12:14:00Z");
+    expect((await reopenAs(f, "pat", "2027-03-14T12:20:00Z")).state).toBe("due");
+  });
+
+  test("undo of a late confirm of a missed instance restores missed", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await tick(f, "2027-03-14T13:00:00Z");
+    expect((await row(f)).state).toBe("missed");
+    await confirmAs(f, "phone", "2027-03-14T13:10:00Z");
+    expect(await undoAs(f, "phone", "2027-03-14T13:10:20Z")).toMatchObject({
+      status: "undone",
+      instance: { state: "missed" },
+    });
+  });
+
+  test("with no recorded prior state, undo falls back to the clock: upcoming before the window", async () => {
+    const f = await setup("2027-03-14T11:30:00Z");
+    await confirmAs(f, "phone", "2027-03-14T11:30:00Z");
+    await f.t.run(
+      async (ctx) => await ctx.db.patch(f.instanceId, { resolvedFromState: undefined }),
+    );
+    expect(await undoAs(f, "phone", "2027-03-14T11:30:20Z")).toMatchObject({
+      status: "undone",
+      instance: { state: "upcoming" },
+    });
+  });
+
+  test("with no recorded prior state, undo falls back to the clock: missed after the window", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await tick(f, "2027-03-14T13:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T13:10:00Z");
+    await f.t.run(
+      async (ctx) => await ctx.db.patch(f.instanceId, { resolvedFromState: undefined }),
+    );
+    expect(await undoAs(f, "phone", "2027-03-14T13:10:20Z")).toMatchObject({
+      status: "undone",
+      instance: { state: "missed" },
+    });
+  });
+
+  test("a press that took 2 minutes to arrive is already past the undo window when it lands", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    at("2027-03-14T12:10:00Z");
+    await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, {
+      instanceId: f.instanceId,
+      via: "button",
+      pressedAgoMs: 2 * MINUTE,
+    });
+    expect((await row(f)).confirmReceivedAt).toBeUndefined();
+    expect(await undoAs(f, "phone", "2027-03-14T12:10:01Z")).toEqual({ status: "too_late" });
+  });
+
+  test("a 00:30 task confirmed at 23:45 the evening before can be reopened at 00:10", async () => {
+    const f = await setup("2027-03-15T03:45:00Z", ["00:30"]);
+    expect((await row(f)).localDate).toBe("2027-03-15");
+    await confirmAs(f, "display", "2027-03-15T03:45:00Z");
+    at("2027-03-15T04:10:00Z");
+    const day = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.calendar.dayView, { householdId: f.householdId });
+    expect(day.tasks.find((x) => x.instanceId === f.instanceId)!.reopenable).toBe(true);
+    expect((await reopenAs(f, "pat", "2027-03-15T04:10:00Z")).state).toBe("upcoming");
+  });
+});
+
+describe("a press made before a take-back does not confirm again", () => {
+  /**
+   * purpose: Send a held press through confirmPressedTask as an identity at an instant.
+   * @param f: (Fixture) Fixture.
+   * @param subject: (string) Device identity.
+   * @param iso: (string) UTC instant the press arrives.
+   * @param ageMs: (number) The press age.
+   * @return: (Promise<object>) The PressResult.
+   */
+  async function press(f: Fixture, subject: string, iso: string, ageMs: number) {
+    at(iso);
+    return await f.t.withIdentity({ subject }).mutation(api.instances.confirmPressedTask, {
+      instanceId: f.instanceId,
+      via: "button",
+      pressedAgoMs: ageMs,
+    });
+  }
+
+  /**
+   * purpose: The press_not_applied audit rows of the instance.
+   * @param f: (Fixture) Fixture.
+   * @return: (Promise<Doc<"auditLog">[]>) The rows.
+   */
+  async function notApplied(f: Fixture): Promise<Doc<"auditLog">[]> {
+    return (await audits(f)).filter((r) => r.action === "press_not_applied");
+  }
+
+  test("after the senior's undo, the same press replayed is rejected, audited, and the task stays open", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    expect(await press(f, "phone", "2027-03-14T12:05:00Z", 1000)).toMatchObject({
+      status: "confirmed",
+    });
+    await undoAs(f, "phone", "2027-03-14T12:05:20Z");
+    const replay = await press(f, "phone", "2027-03-14T12:06:00Z", 61_000);
+    expect(replay).toMatchObject({
+      status: "rejected",
+      reason: expect.stringContaining("taken back"),
+    });
+    expect((await row(f)).state).toBe("due");
+    expect(await notApplied(f)).toHaveLength(1);
+  });
+
+  test("after the senior's undo, a fresh press confirms", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await press(f, "phone", "2027-03-14T12:05:00Z", 1000);
+    await undoAs(f, "phone", "2027-03-14T12:05:20Z");
+    expect(await press(f, "phone", "2027-03-14T12:06:00Z", 0)).toMatchObject({
+      status: "confirmed",
+    });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("after a caregiver's reopen, the same press replayed is rejected and a fresh press confirms", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await press(f, "display", "2027-03-14T12:05:00Z", 1000);
+    await reopenAs(f, "pat", "2027-03-14T12:10:00Z");
+    expect(await press(f, "display", "2027-03-14T12:11:00Z", 7 * MINUTE)).toMatchObject({
+      status: "rejected",
+      reason: expect.stringContaining("taken back"),
+    });
+    expect((await row(f)).state).toBe("due");
+    expect(await notApplied(f)).toHaveLength(1);
+    expect(await press(f, "display", "2027-03-14T12:12:00Z", 0)).toMatchObject({
+      status: "confirmed",
+    });
+  });
+
+  test("after a reopen a caregiver's Mark done still resolves", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    await reopenAs(f, "pat", "2027-03-14T12:10:00Z");
+    expect((await confirmAs(f, "max", "2027-03-14T12:11:00Z")).state).toBe("resolved");
+  });
+
+  test("a press without an age confirms after a take-back", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    await undoAs(f, "phone", "2027-03-14T12:05:20Z");
+    expect((await confirmAs(f, "phone", "2027-03-14T12:06:00Z")).state).toBe("confirmed");
+  });
+});
+
+describe("a task that no longer runs is not reopened", () => {
+  /**
+   * purpose: Change the fixture's task as Pat through the real tasks.update.
+   * @param f: (Fixture) Fixture.
+   * @param changes: (object) The fields to change.
+   * @return: (Promise<void>)
+   */
+  async function updateTask(f: Fixture, changes: Record<string, unknown>): Promise<void> {
+    const instance = await row(f);
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: instance.taskId,
+      ...changes,
+    });
+  }
+
+  test.each([
+    ["deactivated", { active: false }],
+    ["made anytime", { type: "reminder", times: [] }],
+    ["moved to another time", { times: ["09:00"] }],
+  ])("a task %s keeps its confirmed row, which reopen and undo refuse", async (_name, changes) => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    at("2027-03-14T12:06:00Z");
+    await updateTask(f, changes);
+    expect((await row(f)).state).toBe("confirmed");
+    await expect(reopenAs(f, "pat", "2027-03-14T12:07:00Z")).rejects.toMatchObject({
+      data: { code: "invalid", message: "This task is no longer on the schedule." },
+    });
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:30Z")).toEqual({ status: "too_late" });
+    expect((await row(f)).state).toBe("confirmed");
+  });
+
+  test("a deleted task is refused the same way", async () => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
+    const { taskId } = await row(f);
+    await f.t.run(async (ctx) => await ctx.db.delete(taskId));
+    await expect(reopenAs(f, "pat", "2027-03-14T12:07:00Z")).rejects.toMatchObject({
+      data: { code: "invalid", message: "This task is no longer on the schedule." },
+    });
+    expect(await undoAs(f, "phone", "2027-03-14T12:05:30Z")).toEqual({ status: "too_late" });
   });
 });

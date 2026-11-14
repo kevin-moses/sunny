@@ -12,13 +12,17 @@
 // device may take back its own confirm for SENIOR_UNDO_MS after the server recorded it (the app
 // offers Undo for 30 s; the server allows 60 s so a slow network never refuses a press the
 // senior was still offered), measured from confirmReceivedAt when there is one because an
-// offline press is recorded with an earlier confirmedAt. caregiverCanReopen: an editor
-// caregiver may reopen a confirmed or resolved instance whose confirmedAt falls on the
-// household-local date of `now` (the home display has no undo). reopenedState says which state
-// a reopened (or an unrecorded undone) instance gets from the clock alone.
+// offline press is recorded with an earlier confirmedAt (a press that took 1 to 5 minutes to
+// arrive has no confirmReceivedAt and lands already past the window; accepted, the phone's own
+// Undo has expired by then). caregiverCanReopen: an editor caregiver may reopen a confirmed or
+// resolved instance whose confirmedAt falls on the household-local date of `now`, or that is
+// one of today's tasks (a 00:30 task confirmed at 23:45 the evening before); the home display
+// has no undo. reopenedState says which state a reopened (or an unrecorded undone) instance
+// gets from the clock alone.
 //
 // Last modified: 2026-11-13
 
+import type { Doc } from "../_generated/dataModel";
 import { isAnytimeInstance } from "./anytime";
 import { localDate, minutes } from "./time";
 import type { InstanceState } from "./validators";
@@ -62,32 +66,44 @@ export function notTooEarly(instance: ConfirmRuleInput, now: number): boolean {
  * @return: (boolean) True for an open instance a senior device may confirm.
  */
 export function seniorCanConfirm(instance: ConfirmRuleInput, now: number): boolean {
-  const done = instance.state === "confirmed" || instance.state === "resolved";
-  return !done && notTooEarly(instance, now);
+  return !isDoneState(instance.state) && notTooEarly(instance, now);
 }
 
 /** How long (ms) after the server recorded a senior device's confirm that device may undo it. */
 export const SENIOR_UNDO_MS = 60_000;
 
-/** The instance fields seniorCanUndo reads. */
-export interface UndoRuleInput {
-  state: InstanceState;
-  confirmedBy?: string;
-  confirmedAt?: number;
-  confirmReceivedAt?: number;
+/**
+ * purpose: Whether a state is a done one (confirmed by a device or the agent, or resolved by a
+ *          caregiver).
+ * @param state: (InstanceState) The instance's state.
+ * @return: (boolean) True for confirmed and resolved.
+ */
+export function isDoneState(state: InstanceState): boolean {
+  return state === "confirmed" || state === "resolved";
 }
 
 /**
  * purpose: Whether a senior device may take back its own confirm now: the instance is confirmed
  *          (not resolved by a caregiver), the confirm is this device's own, and the server
- *          recorded it at most SENIOR_UNDO_MS ago. Recorded means confirmReceivedAt when set (an
- *          offline press), else confirmedAt.
- * @param instance: (UndoRuleInput) The instance's state, confirmer and confirm times.
+ *          recorded it at most SENIOR_UNDO_MS ago. Recorded means confirmReceivedAt when set (a
+ *          press held offline for more than LATE_SYNC_MS), else confirmedAt. A press that took
+ *          between one and LATE_SYNC_MS to arrive has no confirmReceivedAt, so it is already
+ *          past the window when it lands; that is accepted, because the phone's own 30 second
+ *          Undo has expired by then.
+ * @param instance: (Pick<Doc<"taskInstances">, "state" | "confirmedBy" | "confirmedAt" |
+ *        "confirmReceivedAt">) The instance's state, confirmer and confirm times.
  * @param userId: (string) The device account asking.
  * @param now: (number) Epoch ms.
  * @return: (boolean) True when the undo is allowed.
  */
-export function seniorCanUndo(instance: UndoRuleInput, userId: string, now: number): boolean {
+export function seniorCanUndo(
+  instance: Pick<
+    Doc<"taskInstances">,
+    "state" | "confirmedBy" | "confirmedAt" | "confirmReceivedAt"
+  >,
+  userId: string,
+  now: number,
+): boolean {
   const recordedAt = instance.confirmReceivedAt ?? instance.confirmedAt;
   return (
     instance.state === "confirmed" &&
@@ -97,40 +113,29 @@ export function seniorCanUndo(instance: UndoRuleInput, userId: string, now: numb
   );
 }
 
-/** The instance fields caregiverCanReopen reads. */
-export interface ReopenRuleInput {
-  state: InstanceState;
-  confirmedAt?: number;
-}
-
 /**
  * purpose: Whether an editor caregiver may reopen the instance now (the role is checked by the
- *          caller): it is confirmed or resolved, by anyone, and its confirmedAt is on the same
- *          household-local date as `now`.
- * @param instance: (ReopenRuleInput) The instance's state and confirmedAt.
+ *          caller): it is confirmed or resolved, by anyone, and it belongs to today's list: its
+ *          confirmedAt is on the household-local date of `now`, or the instance's own local date
+ *          is (a task confirmed up to 60 minutes early, or a press replayed after midnight, for a
+ *          task of today).
+ * @param instance: (Pick<Doc<"taskInstances">, "state" | "confirmedAt" | "localDate">) The
+ *        instance's state, confirmedAt and own local date.
  * @param now: (number) Epoch ms.
  * @param timezone: (string) The household's IANA zone.
  * @return: (boolean) True when the instance may be reopened.
  */
 export function caregiverCanReopen(
-  instance: ReopenRuleInput,
+  instance: Pick<Doc<"taskInstances">, "state" | "confirmedAt" | "localDate">,
   now: number,
   timezone: string,
 ): boolean {
-  const done = instance.state === "confirmed" || instance.state === "resolved";
+  const today = localDate(now, timezone);
   return (
-    done &&
-    instance.confirmedAt !== undefined &&
-    localDate(instance.confirmedAt, timezone) === localDate(now, timezone)
+    isDoneState(instance.state) &&
+    (instance.localDate === today ||
+      (instance.confirmedAt !== undefined && localDate(instance.confirmedAt, timezone) === today))
   );
-}
-
-/** The instance fields reopenedState reads. */
-export interface ReopenStateInput {
-  scheduledTime: string;
-  windowStart: number;
-  windowEnd: number;
-  resolvedFromState?: InstanceState;
 }
 
 /**
@@ -139,11 +144,18 @@ export interface ReopenStateInput {
  *          window it is the recorded prior state when that was due or escalated, else due.
  *          An anytime instance (lib/anytime.ts) never escalates, so inside its window it is
  *          always due.
- * @param instance: (ReopenStateInput) Window, scheduledTime and the recorded prior state.
+ * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime" | "windowStart" | "windowEnd" |
+ *        "resolvedFromState">) Window, scheduledTime and the recorded prior state.
  * @param now: (number) Epoch ms.
  * @return: (InstanceState) upcoming, due, escalated or missed.
  */
-export function reopenedState(instance: ReopenStateInput, now: number): InstanceState {
+export function reopenedState(
+  instance: Pick<
+    Doc<"taskInstances">,
+    "scheduledTime" | "windowStart" | "windowEnd" | "resolvedFromState"
+  >,
+  now: number,
+): InstanceState {
   if (now < instance.windowStart) return "upcoming";
   if (now >= instance.windowEnd) return "missed";
   const prior = instance.resolvedFromState;

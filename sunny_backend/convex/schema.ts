@@ -225,6 +225,10 @@ export default defineSchema({
     resolvedFromState: v.optional(instanceState),
     // The snooze that confirm cleared, restored by the undo (not by a reopen).
     resolvedFromSnoozedUntil: v.optional(v.number()),
+    // When a senior's undo or a caregiver's reopen last took a confirmation back. A press with
+    // an age made at or before this instant is refused (instances.confirmInstance), so a stale
+    // press still held in a device's queue cannot confirm the task again. Never cleared.
+    confirmTakenBackAt: v.optional(v.number()),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),
     claimedBy: v.optional(v.string()),
