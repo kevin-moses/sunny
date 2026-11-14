@@ -21,8 +21,9 @@
 // confirmReceivedDaysLater say when, in household time). confirmable says whether a senior
 // device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own rule), so
 // a surface can offer Done early without copying the 60 minute constant. reopenable says
-// whether an editor caregiver may reopen it (confirmed or resolved, and either marked done
-// today or one of today's tasks; the role is the mutation's check), so the app can show the
+// whether an editor caregiver may reopen it (confirmed or resolved, either marked done
+// today or one of today's tasks, and its task still runs that way: active, and still timed at
+// that time or anytime to match; the role is the mutation's check), so the app can show the
 // control without copying the rule. seniorPrompts counts the senior prompts the escalation
 // policy has sent for the instance (fired prompt_senior steps that were notified), so the
 // home display can repeat its due cue on each reprompt; snoozed is true while a snooze
@@ -36,7 +37,7 @@ import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
-import { caregiverCanReopen, seniorCanConfirm } from "./confirmRule";
+import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
 import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -78,7 +79,10 @@ export interface TodayEntry {
   resolutionNote: string | null;
   /** A senior device may confirm it now (open and not more than 60 minutes early). */
   confirmable: boolean;
-  /** An editor caregiver may reopen it now: confirmed or resolved, marked done today or due today. */
+  /**
+   * An editor caregiver may reopen it now: confirmed or resolved, marked done today or due
+   * today, and its task still runs (not deactivated, not switched to or from anytime, time kept).
+   */
   reopenable: boolean;
   /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
   seniorPrompts: number;
@@ -182,7 +186,8 @@ export async function todayInstances(
       confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
       confirmable: seniorCanConfirm(instance, now),
-      reopenable: caregiverCanReopen(instance, now, household.timezone),
+      reopenable:
+        caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
       seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
         .length,
       snoozed: instance.snoozedUntil !== undefined && now < instance.snoozedUntil,

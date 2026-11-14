@@ -23,7 +23,7 @@
 // Last modified: 2026-11-13
 
 import type { Doc } from "../_generated/dataModel";
-import { isAnytimeInstance } from "./anytime";
+import { isAnytimeInstance, isAnytimeTask } from "./anytime";
 import { localDate, minutes } from "./time";
 import type { InstanceState } from "./validators";
 
@@ -136,6 +136,29 @@ export function caregiverCanReopen(
     (instance.localDate === today ||
       (instance.confirmedAt !== undefined && localDate(instance.confirmedAt, timezone) === today))
   );
+}
+
+/**
+ * purpose: Whether the instance's task still runs the way the instance was made: the task
+ *          exists, is active, and is still timed with the instance's time among its times, or
+ *          still anytime to match an anytime instance. Deactivating a task, or switching it
+ *          between timed and anytime or to other times, removes only its open instances, so a
+ *          confirmed or resolved instance of such a task survives as history; putting it back
+ *          to open would prompt for a task that no longer runs, or sit next to the row that
+ *          replaced it. Used by the reopen and senior undo mutations and by the day view's
+ *          `reopenable` flag so they agree.
+ * @param task: (Pick<Doc<"tasks">, "active" | "type" | "times"> | null) The instance's task, or
+ *        null when it is gone.
+ * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime">) The instance.
+ * @return: (boolean) True when reopening the instance would match the schedule.
+ */
+export function taskStillRuns(
+  task: Pick<Doc<"tasks">, "active" | "type" | "times"> | null,
+  instance: Pick<Doc<"taskInstances">, "scheduledTime">,
+): boolean {
+  if (task === null || !task.active) return false;
+  if (isAnytimeInstance(instance)) return isAnytimeTask(task);
+  return !isAnytimeTask(task) && task.times.includes(instance.scheduledTime);
 }
 
 /**

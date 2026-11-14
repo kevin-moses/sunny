@@ -30,7 +30,6 @@ import {
   requireUserId,
 } from "./lib/access";
 import type { Actor, CaregiverActor, DeviceActor } from "./lib/access";
-import { isAnytimeInstance, isAnytimeTask } from "./lib/anytime";
 import { audit } from "./lib/audit";
 import {
   EARLY_CONFIRM_MS,
@@ -41,6 +40,7 @@ import {
   notTooEarly,
   reopenedState,
   seniorCanUndo,
+  taskStillRuns,
 } from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
@@ -419,22 +419,14 @@ export type UndoPressResult =
   { status: "undone"; instance: Doc<"taskInstances"> } | { status: "too_late" };
 
 /**
- * purpose: Whether the instance's task still runs the way the instance was made: the task
- *          exists, is active, and is still timed at the instance's time or still anytime to match
- *          an anytime instance. Deactivating a task removes only its open instances, and
- *          switching a task between timed and anytime (or changing its times) removes only open
- *          ones, so a confirmed or resolved instance of such a task survives as history.
- *          Putting one of those back to open would prompt for a task that no longer runs, or
- *          sit next to the row that replaced it.
+ * purpose: Whether reopening the instance would match its task's schedule (taskStillRuns, the
+ *          rule the day view's `reopenable` flag shares).
  * @param ctx: (QueryCtx) Context.
  * @param instance: (Doc<"taskInstances">) The instance.
- * @return: (Promise<boolean>) True when reopening it would match the schedule.
+ * @return: (Promise<boolean>) True when the task still runs that way.
  */
 async function runsOnSchedule(ctx: QueryCtx, instance: Doc<"taskInstances">): Promise<boolean> {
-  const task = await ctx.db.get(instance.taskId);
-  if (task === null || !task.active) return false;
-  if (isAnytimeInstance(instance)) return isAnytimeTask(task);
-  return !isAnytimeTask(task) && task.times.includes(instance.scheduledTime);
+  return taskStillRuns(await ctx.db.get(instance.taskId), instance);
 }
 
 /**

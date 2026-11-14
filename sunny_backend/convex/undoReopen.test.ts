@@ -772,6 +772,24 @@ describe("the day view's reopenable flag agrees with the mutation", () => {
     expect(await flagAndReopen(f)).toEqual({ flag: true, accepted: true });
   });
 
+  test.each([
+    ["deactivated", { active: false }],
+    ["switched to anytime", { type: "reminder" as const, times: [] }],
+    ["moved to another time", { times: ["09:00"] }],
+  ])("a task that was %s is not reopenable", async (_name, changes) => {
+    const f = await setup();
+    await tick(f, "2027-03-14T12:00:00Z");
+    await confirmAs(f, "display", "2027-03-14T12:05:00Z");
+    at("2027-03-14T12:06:00Z");
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: (await row(f)).taskId,
+      ...changes,
+    });
+    at("2027-03-14T12:10:00Z");
+    expect(await flagAndReopen(f)).toEqual({ flag: false, accepted: false });
+  });
+
   test("a task confirmed yesterday is not reopenable", async () => {
     const f = await setup();
     await f.t.run(async (ctx) => {
