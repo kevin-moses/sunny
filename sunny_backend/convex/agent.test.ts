@@ -24,8 +24,10 @@
 // a correction to the flagged caregivers; a repeated message's earlier outcome; whole-word list
 // ticking and items past the tenth; askedAt within the conversation; and every agent function
 // in the agent-key checks.
+// Caregiver push (2026-11-14): a caregiver is reachable with a push token only, a verified
+// phone only, or both, and not with neither; nobody is named as told without a queued row.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -2286,6 +2288,56 @@ describe("reachability: nobody is named as told without a queued text", () => {
     expect(stored!.body).toBe("For Anna: I'm home");
     expect(await outbox(f, "family_message")).toEqual([]);
     expect((await auditRows(f, "send"))[0]!.detail).toMatchObject({ status: "unreachable" });
+  });
+
+  test("reachable with a token only, a phone only, or both; not with neither", async () => {
+    const f = await setup();
+    await addMember(f.t, f.householdId, "user_b", "member", "Bob");
+    await addMember(f.t, f.householdId, "user_c", "member", "Sarah Lee");
+    await addMember(f.t, f.householdId, "user_d", "viewer", "Dee");
+    // Anna (user_a): phone only. Bob: token only. Sarah: both. Dee: neither.
+    await setPhone(f.t, f.householdId, "user_c", "+15555550103");
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "user_b", token: "tok-bob" });
+      await ctx.db.insert("pushTokens", { userId: "user_c", token: "tok-sarah" });
+    });
+    const result = await flagAt(f, "distress", NOW);
+    expect(result.status).toBe("flagged");
+    expect(result.notified.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
+    expect((await outbox(f, "agent_flag")).map((r) => r.recipientUserId).sort()).toEqual([
+      "user_a",
+      "user_b",
+      "user_c",
+    ]);
+  });
+
+  test("a caregiver with only a push token is reachable alone", async () => {
+    const f = await setup();
+    await unreachable(f, "user_a");
+    expect((await flagAt(f, "help_requested", NOW)).status).toBe("unreachable");
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "user_a", token: "tok-anna" });
+    });
+    expect(await flagAt(f, "help_requested", NOW + MINUTE)).toEqual({
+      status: "flagged",
+      notified: ["Anna"],
+    });
+    const message = await f.t.mutation(api.agent.sendFamilyMessage, {
+      agentKey: KEY,
+      householdId: f.householdId,
+      body: "I'm home",
+    });
+    expect(message).toMatchObject({ status: "sent", recipients: ["Anna"] });
+  });
+
+  test("another user's push token does not make a caregiver reachable", async () => {
+    const f = await setup();
+    await unreachable(f, "user_a");
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "someone_else", token: "tok-x" });
+    });
+    expect(await flagAt(f, "distress", NOW)).toEqual({ status: "unreachable", notified: [] });
+    expect(await outbox(f, "agent_flag")).toEqual([]);
   });
 
   test("a named caregiver without a phone gets it through the reachable family", async () => {

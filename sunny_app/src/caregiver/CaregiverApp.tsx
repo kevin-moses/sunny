@@ -11,8 +11,13 @@
 // through NoteFocusContext), and the room screens must leave for it is provided through
 // useTabBarInset. The caregiver's role decides what they may do: viewers cannot claim alerts,
 // mark tasks done, message Sunny or change what Sunny knows.
+// Push (useCaregiverPush, src/notifications/caregiverPush.ts): mounted here, so it starts only
+// once the caregiver has a household. It asks for notification permission once, registers this
+// phone's APNs token, and opens the tab a tapped notification asks for (Chat for a digest, Home
+// otherwise, "I'm on it" claims the task and shows Home). Sign-out unregisters the token before
+// the Clerk session ends (signOutCaregiver).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { useAuth } from '@clerk/expo';
 import { useState } from 'react';
@@ -22,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { CaregiverHome } from '../backend/pairing';
 import { useDayView } from '../day/useDayView';
 import { logger } from '../logging/logger';
+import { signOutCaregiver, useCaregiverPush } from '../notifications/caregiverPush';
 import { BACKGROUND } from '../theme/colors';
 import { useKeyboardVisible } from '../theme/useKeyboardVisible';
 import { aboutTabLabel } from './aboutFormat';
@@ -60,8 +66,11 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
     setTab(next);
   };
 
+  useCaregiverPush(householdId, isEditor, selectTab);
+
   /**
-   * purpose: Ask for confirmation, then sign the caregiver out of Clerk.
+   * purpose: Ask for confirmation, then unregister this phone's push token and sign the
+   *          caregiver out of Clerk.
    * @return: (void)
    */
   const confirmSignOut = (): void => {
@@ -71,7 +80,7 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
         text: 'Sign out',
         style: 'destructive',
         onPress: () => {
-          signOut().catch((e: unknown) => {
+          signOutCaregiver(signOut).catch((e: unknown) => {
             logger.warning('Caregiver', `Sign out failed: ${String(e)}`);
             Alert.alert('Could not sign out', 'Please try again.');
           });

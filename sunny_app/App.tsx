@@ -5,31 +5,31 @@
 // Clerk's token cache) and ConvexProviderWithClerk (one client, Clerk "convex" JWT template),
 // then follows useSession: a calm "Connecting..." view (with a one-line notice when the backend
 // cannot be reached) while Clerk, Convex auth and the household queries load and while a removed
-// device is being unpaired. Signed out shows WelcomeScreen, which leads to the caregiver email
-// code sign-in (CaregiverSignInScreen) or to PairingScreen for a senior's device. A paired
-// senior device gets the paired home: TodayScreen on the senior phone, or ConversationScreen
-// while a voice conversation is live on the phone; DisplayScreen on the home display, which
-// shows its voice session on its own panel and status line instead (no conversation screen
-// and no voice banners). The paired home is keyed by household and owns the day view so it
-// survives a conversation. A signed-in caregiver
-// gets CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen
-// (join with an invite code or create one). Only devices get voice sessions and push
-// registration (VoiceProvider is idle without a paired device). Nothing about the pairing or the
-// role is stored locally, so an offline cold start shows "Connecting..." until Clerk and Convex
-// answer. Stale notification taps are discarded while signed out. Shows a "Trying to reconnect"
-// warning and voice errors as banners; __DEV__ builds add the DEV pill for developer settings
-// (src/screens/DevTools.tsx; on the home display it opens only on a long press, so the senior
-// cannot open it by accident, and the sheet then also shows the display's tunables).
+// device is being unpaired. Signed out shows SignedOutFlow (src/screens/SignedOutFlow.tsx):
+// WelcomeScreen, which leads to the caregiver email code sign-in (CaregiverSignInScreen) or to
+// PairingScreen for a senior's device. A paired senior device gets the paired home: TodayScreen
+// on the senior phone, or ConversationScreen while a voice conversation is live on the phone;
+// DisplayScreen on the home display, which shows its voice session on its own panel and status
+// line instead (no conversation screen and no voice banners). The paired home is keyed by
+// household and owns the day view so it survives a conversation. A signed-in caregiver gets
+// CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen (join
+// with an invite code or create one). Only devices get voice sessions (VoiceProvider is idle
+// without a paired device); CaregiverApp registers a caregiver's push itself. Nothing about the
+// pairing or the role is stored locally, so an offline cold start shows "Connecting..." until
+// Clerk and Convex answer. Notification taps are discarded while signed out (SignedOutFlow) and
+// during caregiver onboarding. Shows a "Trying to reconnect" warning and voice errors as
+// banners; __DEV__ builds add the DEV pill for developer settings (src/screens/DevTools.tsx; on
+// the home display it opens only on a long press, so the senior cannot open it by accident, and
+// the sheet then also shows the display's tunables).
 // Provider order: SafeAreaProvider > ThemeProvider > TuningProvider > ClerkProvider >
 // ConvexProviderWithClerk > VoiceProvider.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { ClerkProvider, useAuth } from '@clerk/expo';
 import { tokenCache } from '@clerk/expo/token-cache';
 import { ConvexProviderWithClerk } from 'convex/react-clerk';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -40,16 +40,13 @@ import { CaregiverApp } from './src/caregiver/CaregiverApp';
 import { Banner } from './src/components/Banner';
 import { CLERK_PUBLISHABLE_KEY } from './src/config';
 import { useDayView } from './src/day/useDayView';
-import { discardStaleLaunchTap } from './src/notifications/push';
 import { CaregiverOnboardingScreen } from './src/screens/CaregiverOnboardingScreen';
-import { CaregiverSignInScreen } from './src/screens/CaregiverSignInScreen';
 import { ConfigErrorScreen } from './src/screens/ConfigErrorScreen';
 import { TuningProvider } from './src/display/TuningProvider';
 import { DevTools } from './src/screens/DevTools';
 import { DisplayScreen } from './src/screens/DisplayScreen';
-import { PairingScreen } from './src/screens/PairingScreen';
+import { SignedOutFlow } from './src/screens/SignedOutFlow';
 import { TodayScreen } from './src/screens/TodayScreen';
-import { WelcomeScreen } from './src/screens/WelcomeScreen';
 import { BACKGROUND, colors } from './src/theme/colors';
 import { ThemeProvider } from './src/theme/ThemeProvider';
 import { ConversationScreen } from './src/voice/ConversationScreen';
@@ -99,31 +96,6 @@ function Banners({ voiceBanners }: { voiceBanners: boolean }) {
         <Banner tone="serious" title="Error" message={voice.error} onDismiss={voice.clearError} />
       )}
     </View>
-  );
-}
-
-/** The screens a signed-out user can move between. */
-type SignedOutScreen = 'welcome' | 'caregiver' | 'device';
-
-/**
- * purpose: The signed-out flow: the welcome choice, which leads to the caregiver sign-in or to
- *          device pairing, each with a way back.
- * @return: (JSX.Element) The current signed-out screen.
- */
-function SignedOutFlow() {
-  const [screen, setScreen] = useState<SignedOutScreen>('welcome');
-  /**
-   * purpose: Return to the welcome choice.
-   * @return: (void) Nothing.
-   */
-  const back = (): void => setScreen('welcome');
-  if (screen === 'caregiver') return <CaregiverSignInScreen onBack={back} />;
-  if (screen === 'device') return <PairingScreen onBack={back} />;
-  return (
-    <WelcomeScreen
-      onCaregiver={() => setScreen('caregiver')}
-      onSeniorDevice={() => setScreen('device')}
-    />
   );
 }
 
@@ -189,12 +161,6 @@ function LoadingView({ notice }: { notice?: string }) {
  */
 function Root() {
   const decision = useSession();
-  const signedOut = decision.state === 'signedOut';
-
-  useEffect(() => {
-    if (signedOut) discardStaleLaunchTap();
-  }, [signedOut]);
-
   if (decision.state === 'loading') return <LoadingView notice={decision.notice} />;
   if (decision.state === 'removed') return <LoadingView />;
   const paired = decision.state === 'paired' ? decision.device : null;

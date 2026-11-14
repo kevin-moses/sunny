@@ -28,6 +28,9 @@
 // looks up) and listItems (the household's one shared list).
 // Device API (2026-11-13): devices.tokenHash and tokenIssuedAt (the HTTP device token, stored
 // only as a hash, index by_token_hash), screen and firmware (reported by the device).
+// Caregiver chat (2026-11-14): chatPosts, Sunny's own posts in the caregiver chat thread (the
+// daily digest), merged with agentRequests into the transcript; notificationOutbox.pushState,
+// which lets a caregiver's push whose retries ran out be texted.
 //
 // Last modified: 2026-11-14
 
@@ -285,9 +288,11 @@ export default defineSchema({
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
 
   // The only place notifications are queued (insert with lib/delivery.ts insertNotification,
-  // which enqueues delivery). One recipient per row: a device gets APNs, a member gets SMS.
-  // state leaves "pending" once; settledAt is then set, channel only when sent, and detail holds
-  // the skip reason or an internal error (never returned to clients).
+  // which enqueues delivery). One recipient per row: a device gets APNs; a member gets APNs when
+  // they have a push token, else SMS, and SMS as the fallback when the push cannot be delivered
+  // (lib/delivery.ts). state leaves "pending" once; settledAt is then set, channel (what
+  // actually delivered it) only when sent, and detail holds the skip reason or an internal error
+  // (never returned to clients).
   notificationOutbox: defineTable({
     householdId: v.id("households"),
     kind: notificationKind,
@@ -306,6 +311,10 @@ export default defineSchema({
     attempts: v.optional(v.number()),
     attemptStartedAt: v.optional(v.number()),
     detail: v.optional(v.string()),
+    // A member row's push with a text to fall back on: "retrying" after a retryable push
+    // failure, "gave_up" once the push retries ran out and the row was enqueued again to be
+    // texted (delivery.onDeliveryComplete). Absent otherwise.
+    pushState: v.optional(v.union(v.literal("retrying"), v.literal("gave_up"))),
   })
     // Reply-to-claim finds a member's latest alerts without paging past other kinds.
     .index("by_recipient_kind", ["recipientUserId", "kind"])
@@ -317,7 +326,8 @@ export default defineSchema({
     .index("by_state", ["state"]),
 
   // One row per household per local date: the daily digest (digest.ts). pending until the text
-  // is composed and its SMS rows are queued; source records which path wrote the text.
+  // is composed, posted in the caregiver chat and its outbox rows (push or SMS per caregiver)
+  // are queued; source records which path wrote the text.
   digests: defineTable({
     householdId: v.id("households"),
     localDate: v.string(),
@@ -328,6 +338,22 @@ export default defineSchema({
   })
     .index("by_household_date", ["householdId", "localDate"])
     .index("by_status", ["status"]),
+
+  // A post from Sunny in the household's one caregiver chat thread (lib/chatPosts.ts). The only
+  // kind today is the daily digest, posted once by digest.complete when the digest's text is
+  // stored (so one per household per local date, like digests). The chat transcript
+  // (agentRequests.transcript) merges these with the agentRequests rows by creation time.
+  chatPosts: defineTable({
+    householdId: v.id("households"),
+    kind: v.literal("digest"),
+    // The text as posted (the digest text, at most 600 characters).
+    body: v.string(),
+    // The household-local date the post is about ("YYYY-MM-DD").
+    localDate: v.string(),
+    digestId: v.id("digests"),
+  })
+    // Newest first (creation time is the implicit last index field).
+    .index("by_household", ["householdId"]),
 
   // A caregiver's Google account connection; Sunny keeps its own secondary calendar there.
   calendarConnections: defineTable({

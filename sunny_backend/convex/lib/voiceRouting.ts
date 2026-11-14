@@ -6,16 +6,19 @@
 // ("Tell Sarah I'm home"). Both queue through the notification outbox (insertNotification, so
 // delivery, retries and the send-time checks are the usual ones) and write an audit row.
 //
-// Reachability: caregivers are texted, so only a member with a verified phone (lib/access
-// verifiedPhone) is reachable, and only reachable members get an outbox row and are named as
-// told. A flag goes to the on-call caregiver when reachable, else to every reachable caregiver;
-// a distress flag always goes to every reachable caregiver.
+// Reachability: a member is reachable when they have a verified phone (texted) or at least one
+// push token (the caregiver app; lib/delivery isReachableMember), and only reachable members
+// get an outbox row and are named as told. A flag goes to the on-call caregiver when
+// reachable, else to every reachable caregiver; a distress flag always goes to every reachable
+// caregiver.
 // A family message goes to the reachable caregivers whose display name matches the name the
 // senior used (whole name or first name, case-insensitive), else to every reachable caregiver.
 // When nobody is reachable the status is "unreachable": the flag is still audited and the
 // message still stored and audited, and the tool says family could not be reached from here.
 // (Delivery may still skip a row at send time, for example a number outside the allowed
-// countries; a verified phone is the best check available when the row is queued.)
+// countries, or a push token APNs no longer accepts for a caregiver with no verified phone;
+// a verified phone or a registered token is the best check available when the row is queued.
+// A dead token with a verified phone falls back to the text, lib/delivery.)
 //
 // familyMessages has no recipient field, so when the senior named someone the stored body
 // itself starts "For <name>:" ("For Sarah: I'm home"), and the notification carries the same
@@ -44,15 +47,14 @@
 // between them allowed: card, bank and account numbers) replaced by "[number removed]", cut to
 // 240 characters.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { verifiedPhone } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
-import { insertNotification } from "./delivery";
+import { insertNotification, reachableMembers } from "./delivery";
 import { appError } from "./errors";
 import { oneLine, textKey } from "./text";
 import { HOUR_MS, MINUTE_MS } from "./time";
@@ -110,8 +112,8 @@ const FLAG_TITLES: Record<FlagReason, (name: string, subject: string) => string>
 /** What flagCaregiverCore did. */
 export interface FlagResult {
   /** flagged: rows were queued for `notified`; already_flagged: an earlier flag with the same
-   * key reached `notified`; unreachable: no caregiver has a verified phone; rate_limited: the
-   * hourly cap was reached. */
+   * key reached `notified`; unreachable: no caregiver has a verified phone or a push token;
+   * rate_limited: the hourly cap was reached. */
   status: "flagged" | "already_flagged" | "unreachable" | "rate_limited";
   /** Display names of the caregivers a notification was queued for; empty otherwise. */
   notified: string[];
@@ -124,7 +126,7 @@ type SendStatus = "sent" | "sent_to_family" | "unreachable";
 export interface FamilyMessageResult {
   /** sent: to the named caregiver(s) or, with no name, to every reachable caregiver;
    * sent_to_family: the named person is not a reachable caregiver, so every reachable caregiver
-   * got it; unreachable: stored, but nobody could be texted; already_sent: the same message was
+   * got it; unreachable: stored, but nobody could be reached; already_sent: the same message was
    * handled moments ago (see earlierStatus); rate_limited: the hourly cap was reached and
    * nothing was stored. */
   status: SendStatus | "already_sent" | "rate_limited";
@@ -152,28 +154,18 @@ export async function householdCaregivers(
 }
 
 /**
- * purpose: Whether a caregiver can be texted (has a verified phone).
- * @param member: (Doc<"householdMembers">) The caregiver.
- * @return: (boolean) True when a notification row for them has a route.
- */
-function isReachable(member: Doc<"householdMembers">): boolean {
-  return verifiedPhone(member) !== undefined;
-}
-
-/**
  * purpose: Who a flag goes to: every reachable caregiver for distress; otherwise the on-call
  *          caregiver when reachable, else every reachable one.
- * @param members: (Doc<"householdMembers">[]) The household's caregivers.
+ * @param reachable: (Doc<"householdMembers">[]) The household's reachable caregivers.
  * @param household: (Doc<"households">) The household.
  * @param reason: (FlagReason) Why.
  * @return: (Doc<"householdMembers">[]) The recipients; empty when nobody is reachable.
  */
 function flagRecipients(
-  members: Doc<"householdMembers">[],
+  reachable: Doc<"householdMembers">[],
   household: Doc<"households">,
   reason: FlagReason,
 ): Doc<"householdMembers">[] {
-  const reachable = members.filter(isReachable);
   if (reason === "distress") return reachable;
   const onCall = reachable.find((m) => m.userId === household.onCallUserId);
   return onCall ? [onCall] : reachable;
@@ -298,7 +290,11 @@ export async function flagCaregiverCore(
   const recipients =
     earlier || rateLimited
       ? []
-      : flagRecipients(await householdCaregivers(ctx, household._id), household, reason);
+      : flagRecipients(
+          await reachableMembers(ctx, await householdCaregivers(ctx, household._id)),
+          household,
+          reason,
+        );
   const status: FlagResult["status"] = earlier
     ? "already_flagged"
     : rateLimited
@@ -495,7 +491,7 @@ export async function sendFamilyMessageCore(
   } else if (recent.length >= MAX_MESSAGES_PER_HOUR) {
     result = { status: "rate_limited", messageId: null, recipients: [], earlierStatus: null };
   } else {
-    const reachable = (await householdCaregivers(ctx, household._id)).filter(isReachable);
+    const reachable = await reachableMembers(ctx, await householdCaregivers(ctx, household._id));
     const named = membersNamed(reachable, to);
     recipients = named.length > 0 ? named : reachable;
     const messageId = await ctx.db.insert("familyMessages", {

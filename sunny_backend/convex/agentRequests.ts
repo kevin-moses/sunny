@@ -20,7 +20,14 @@
 // runtime then replays the recent chat into it). Views carry requestedByName (the requester's
 // member display name, null once they have left) so the shared chat can attribute messages.
 //
-// Last modified: 2026-11-01
+// The chat thread (`transcript`): the household's requests and Sunny's own posts (the daily
+// digest, lib/chatPosts.ts) merged by creation time, newest first, as one list of items tagged
+// "request" or "post". Unlike the request functions it is open to every caregiver of the
+// household (requireCaregiverReader, so never a senior device): a viewer gets the posts only,
+// since viewers cannot send requests and request replies stay editor-only as before. The app's
+// Chat tab reads `transcript`; `list` and `get` keep serving the dev script and existing callers.
+//
+// Last modified: 2026-11-14
 
 import { v } from "convex/values";
 import type { WorkflowId } from "@convex-dev/workflow";
@@ -29,9 +36,16 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { workflow } from "./agentRuntime";
 import { AGENT_CONFIG_FINGERPRINT } from "./lib/agentFingerprint";
-import { findMember, requireEditor, type CaregiverActor } from "./lib/access";
+import {
+  EDITOR_ROLES,
+  findMember,
+  requireCaregiverReader,
+  requireEditor,
+  type CaregiverActor,
+} from "./lib/access";
 import { isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { audit } from "./lib/audit";
+import { recentPosts, type ChatPostView } from "./lib/chatPosts";
 import { appError } from "./lib/errors";
 import { requireMaxLength, requireNonBlank } from "./lib/text";
 import type { AgentRequestStatus } from "./lib/validators";
@@ -295,19 +309,75 @@ export const list = query({
   args: { householdId: v.id("households"), limit: v.optional(v.number()) },
   handler: async (ctx, { householdId, limit }): Promise<AgentRequestView[]> => {
     await requireEditor(ctx, householdId);
-    const wanted = limit !== undefined && Number.isFinite(limit) ? limit : DEFAULT_LIST_LIMIT;
-    const count = Math.min(Math.max(Math.floor(wanted), 1), MAX_LIST_LIMIT);
-    const rows = await ctx.db
-      .query("agentRequests")
-      .withIndex("by_household", (q) => q.eq("householdId", householdId))
-      .order("desc")
-      .take(count);
-    const names = new Map<string, string | null>();
-    const views: AgentRequestView[] = [];
-    for (const row of rows) {
-      views.push(toView(row, await requesterName(ctx, householdId, row.requestedBy, names)));
+    return await recentRequests(ctx, householdId, listCount(limit));
+  },
+});
+
+/**
+ * purpose: The page size of a list call: the given limit floored and clamped to 1 to
+ *          MAX_LIST_LIMIT, or DEFAULT_LIST_LIMIT when absent or not finite.
+ * @param limit: (number | undefined) The requested size.
+ * @return: (number) The size to read.
+ */
+function listCount(limit: number | undefined): number {
+  const wanted = limit !== undefined && Number.isFinite(limit) ? limit : DEFAULT_LIST_LIMIT;
+  return Math.min(Math.max(Math.floor(wanted), 1), MAX_LIST_LIMIT);
+}
+
+/**
+ * purpose: A household's newest requests as views, with each requester's display name.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @param count: (number) How many at most.
+ * @return: (Promise<AgentRequestView[]>) The requests, newest first.
+ */
+async function recentRequests(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  count: number,
+): Promise<AgentRequestView[]> {
+  const rows = await ctx.db
+    .query("agentRequests")
+    .withIndex("by_household", (q) => q.eq("householdId", householdId))
+    .order("desc")
+    .take(count);
+  const names = new Map<string, string | null>();
+  const views: AgentRequestView[] = [];
+  for (const row of rows) {
+    views.push(toView(row, await requesterName(ctx, householdId, row.requestedBy, names)));
+  }
+  return views;
+}
+
+/** One item of the household's chat thread: a caregiver's request or a post from Sunny. */
+export type TranscriptItem =
+  ({ type: "request" } & AgentRequestView) | ({ type: "post" } & ChatPostView);
+
+/**
+ * purpose: The household's caregiver chat thread: the agent requests and Sunny's own posts (the
+ *          daily digest) merged by creation time, newest first. Any caregiver of the household
+ *          may read it, a senior device never: an editor gets requests and posts; a viewer, who
+ *          cannot send requests, gets the posts only.
+ * @param householdId: (Id<"households">) Household.
+ * @param limit: (number, optional) How many items to return; default 20, at most 100.
+ * @return: (TranscriptItem[]) The items, newest first.
+ * @raises forbidden for a senior device, a non-member or another household's caregiver.
+ */
+export const transcript = query({
+  args: { householdId: v.id("households"), limit: v.optional(v.number()) },
+  handler: async (ctx, { householdId, limit }): Promise<TranscriptItem[]> => {
+    const actor = await requireCaregiverReader(ctx, householdId);
+    const count = listCount(limit);
+    const items: TranscriptItem[] = (await recentPosts(ctx, householdId, count)).map((post) => ({
+      type: "post" as const,
+      ...post,
+    }));
+    if (EDITOR_ROLES.includes(actor.role)) {
+      for (const request of await recentRequests(ctx, householdId, count)) {
+        items.push({ type: "request", ...request });
+      }
     }
-    return views;
+    return items.sort((a, b) => b.createdAt - a.createdAt).slice(0, count);
   },
 });
 

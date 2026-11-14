@@ -6,14 +6,33 @@
 // the ES256 provider token (signed with an iat from a 30-minute bucket so containers share
 // claims, re-signed when the bucket changes), and the mapping from an APNs response to a
 // per-token outcome. Configuration problems raise ConfigError ("APNs is not configured").
-// Exports: APNS_NOT_CONFIGURED, ApnsConfig, ApnsOutcome, ApnsResult, ApnsSendResult,
-// loadApnsConfig, apnsHost, isValidDeviceToken, buildPayload, buildHeaders, jwtClaims,
-// signProviderToken, getProviderToken, resetProviderTokenCache, mapOutcome, failureResult.
 //
-// Last modified: 2026-10-29
+// Presentation per kind and recipient (pushStyle): a caregiver_alert or agent_flag to a
+// caregiver, and a senior_prompt to a senior device, carry aps "interruption-level":
+// "time-sensitive" (it can break through a Focus; the app needs the
+// com.apple.developer.usernotifications.time-sensitive entitlement); every other kind stays at
+// the default level ("active", so the key is left out). A caregiver_alert to a caregiver who may
+// claim (not a viewer) carries aps "category": "caregiver_alert", the category the caregiver app
+// registers with its one "I'm on it" action; a viewer's push has no category. Custom keys
+// (notification_id, kind, household_id, task_instance_id) sit beside aps, never inside it (APNs
+// ignores custom keys inside aps). The apns-collapse-id header is the task instance id, so a
+// later alert about the same task replaces the earlier one on the caregiver's phone (and a
+// reprompt replaces the earlier prompt on a senior device).
+// The aps keys follow Apple's "Generating a remote notification" (Table 1, keys of the aps
+// dictionary: alert, sound, category, interruption-level with "passive", "active",
+// "time-sensitive" or "critical"; custom keys as peers of aps; 4 KB payload limit):
+// https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
+//
+// Exports: APNS_NOT_CONFIGURED, CAREGIVER_ALERT_CATEGORY, ApnsConfig, ApnsOutcome, ApnsResult,
+// ApnsSendResult, PushStyle, PushRecipient, pushStyle, loadApnsConfig, apnsHost,
+// isValidDeviceToken, buildPayload, buildHeaders, jwtClaims, signProviderToken,
+// getProviderToken, resetProviderTokenCache, mapOutcome, failureResult.
+//
+// Last modified: 2026-11-14
 
 import { fromBase64, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
+import type { NotificationKind } from "./validators";
 
 /** Message prefix the caller can recognise as a configuration error. */
 export const APNS_NOT_CONFIGURED = "APNs is not configured";
@@ -24,6 +43,46 @@ const DEFAULT_BUNDLE_ID = "com.kmsunny.sunny";
 const EXPIRATION_SECONDS = 3 * 60 * 60;
 const TOKEN_BUCKET_SECONDS = 30 * 60;
 const MAX_PAYLOAD_BYTES = 4096;
+
+/**
+ * The aps category of a claimable caregiver alert. It must equal CAREGIVER_ALERT_CATEGORY in
+ * sunny_app/src/notifications/caregiverPush.ts, which registers it with the "I'm on it" action.
+ */
+export const CAREGIVER_ALERT_CATEGORY = "caregiver_alert";
+
+/** How a push presents: its interruption level (absent is the default, "active") and category. */
+export type PushStyle = {
+  interruptionLevel?: "time-sensitive";
+  category?: string;
+};
+
+/** Who a push goes to: a paired senior device, or a caregiver who may or may not claim tasks. */
+export type PushRecipient = { kind: "device" } | { kind: "caregiver"; canClaim: boolean };
+
+/** Kinds that are time-sensitive for a caregiver: an escalated task and a voice agent flag. */
+const CAREGIVER_TIME_SENSITIVE: ReadonlySet<NotificationKind> = new Set([
+  "caregiver_alert",
+  "agent_flag",
+]);
+
+/**
+ * purpose: The interruption level and category of a push, by kind and recipient. Time-sensitive:
+ *          caregiver_alert and agent_flag to a caregiver, senior_prompt to a senior device.
+ *          Category: caregiver_alert to a caregiver who may claim it. Everything else is plain.
+ * @param kind: (NotificationKind) The outbox row's kind.
+ * @param recipient: (PushRecipient) A device, or a caregiver and whether they may claim.
+ * @return: (PushStyle) The style; an empty object for a default push.
+ */
+export function pushStyle(kind: NotificationKind, recipient: PushRecipient): PushStyle {
+  const style: PushStyle = {};
+  const timeSensitive =
+    recipient.kind === "device" ? kind === "senior_prompt" : CAREGIVER_TIME_SENSITIVE.has(kind);
+  if (timeSensitive) style.interruptionLevel = "time-sensitive";
+  if (recipient.kind === "caregiver" && recipient.canClaim && kind === "caregiver_alert") {
+    style.category = CAREGIVER_ALERT_CATEGORY;
+  }
+  return style;
+}
 
 /** Resolved APNs configuration. */
 export type ApnsConfig = {
@@ -101,16 +160,34 @@ export function isValidDeviceToken(token: string): boolean {
 }
 
 /**
- * purpose: Build the JSON body of an alert push. Data keys stay as given (snake_case) and
- *          cannot override the aps dictionary.
+ * purpose: Build the JSON body of an alert push. Data keys stay as given (snake_case), sit beside
+ *          aps and cannot override it. The style adds aps "interruption-level" and "category"
+ *          when set.
  * @param title: (string) Alert title.
  * @param body: (string) Alert body.
  * @param data: (Record<string, string>) Optional custom keys.
+ * @param style: (PushStyle) Optional interruption level and category; default plain.
  * @return: (string) Serialized payload, with the body cut so it stays under 4 KB.
  */
-export function buildPayload(title: string, body: string, data?: Record<string, string>): string {
+export function buildPayload(
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+  style: PushStyle = {},
+): string {
+  const extra: Record<string, string> = {};
+  if (style.interruptionLevel !== undefined) extra["interruption-level"] = style.interruptionLevel;
+  if (style.category !== undefined) extra["category"] = style.category;
+  /**
+   * purpose: Serialize the payload with a given alert body.
+   * @param text: (string) The alert body.
+   * @return: (string) The JSON payload.
+   */
   const encode = (text: string): string =>
-    JSON.stringify({ ...data, aps: { alert: { title, body: text }, sound: "default" } });
+    JSON.stringify({
+      ...data,
+      aps: { alert: { title, body: text }, sound: "default", ...extra },
+    });
   let text = body;
   let payload = encode(text);
   while (new TextEncoder().encode(payload).length > MAX_PAYLOAD_BYTES && text.length > 0) {

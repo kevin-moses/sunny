@@ -1,20 +1,23 @@
 // sunny_app/src/caregiver/CaregiverChatScreen.tsx
 //
 // Purpose: The caregiver Chat tab: a conversation with the household's agent. The transcript is
-// the household's agent requests (agentRequests.list, newest first) shown oldest first: the
+// the household's chat thread (agentRequests.transcript, newest first) shown oldest first: the
 // caregiver's message as a right-aligned accent bubble, Sunny's reply as plain text on the
 // left (the shared UserBubble and AgentMessage), a calm "working" line while a request is
-// queued or running, and the error when it failed. Sending calls agentRequests.request with
-// continueLatest, so the server keeps the one household conversation going. Sending waits while
-// any request is queued or running (the server allows one at a time per conversation). Viewers
-// cannot send (the server requires an editor), so they see a note instead of the input and the
-// list query is skipped. The draft text lives in the composer, so typing does not re-render the
-// transcript. The screen is keyboard-aware, sticks to the newest message, and leaves room for
-// the tab bar (useTabBarInset). The transcript is shared by every editor: messages from other
-// caregivers carry their name above the bubble (the signed-in caregiver's id comes from
-// CaregiverApp). Sends are guarded by a ref so two taps in one frame cannot both send.
+// queued or running, and the error when it failed. Sunny's own posts (the daily digest) show as
+// Sunny messages under a small "Daily summary" label with the day; a reply to one is an
+// ordinary message (the agent knows the recent digests). Sending calls agentRequests.request
+// with continueLatest, so the server keeps the one household conversation going. Sending waits
+// while any request is queued or running (the server allows one at a time per conversation).
+// Viewers cannot send (the server requires an editor), so they see a note instead of the input;
+// the thread they read holds the digest posts only. The draft text lives in the composer, so
+// typing does not re-render the transcript. The screen is keyboard-aware, sticks to the newest
+// message, and leaves room for the tab bar (useTabBarInset). The transcript is shared by every
+// editor: messages from other caregivers carry their name above the bubble (the signed-in
+// caregiver's id comes from CaregiverApp). Sends are guarded by a ref so two taps in one frame
+// cannot both send.
 //
-// Last modified: 2026-10-31
+// Last modified: 2026-11-14
 
 import { useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -31,8 +34,8 @@ import { ScreenHeader } from './CaregiverComponents';
 import { buildTranscript, hasInProgress, type TranscriptEntry } from './format';
 import { useTabBarInset } from './tabBarInset';
 
-/** How many recent requests the transcript loads. */
-const REQUEST_LIMIT = 20;
+/** How many recent items (requests and posts) the transcript loads. */
+const TRANSCRIPT_LIMIT = 20;
 
 /** The transcript before the first load or for a viewer. */
 const EMPTY: TranscriptEntry[] = [];
@@ -61,7 +64,7 @@ function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
     );
   }
   if (entry.kind === 'sunny') {
-    return <AgentMessage text={entry.text} textStyle={textStyle} inset={32} />;
+    return <AgentMessage text={entry.text} textStyle={textStyle} inset={32} label={entry.label} />;
   }
   return (
     <View accessible accessibilityLabel={entry.text} style={styles.statusRow}>
@@ -138,10 +141,10 @@ export function CaregiverChatScreen({
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
-  const result = useQueryWithStatus(
-    api.agentRequests.list,
-    canSend ? { householdId, limit: REQUEST_LIMIT } : 'skip',
-  );
+  const result = useQueryWithStatus(api.agentRequests.transcript, {
+    householdId,
+    limit: TRANSCRIPT_LIMIT,
+  });
   const entries = useMemo(
     () => (result.data === undefined ? EMPTY : buildTranscript(result.data, userId)),
     [result.data, userId],
@@ -197,9 +200,11 @@ export function CaregiverChatScreen({
         showsVerticalScrollIndicator={false}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
       >
-        {entries.length === 0 && result.status !== 'pending' && canSend && (
+        {entries.length === 0 && result.status !== 'pending' && (
           <Text style={[type.callout, styles.empty]}>
-            Ask how the day is going, or what&apos;s on the calendar.
+            {canSend
+              ? "Ask how the day is going, or what's on the calendar."
+              : "Sunny's daily summaries will show here."}
           </Text>
         )}
         {entries.map((entry) => (
@@ -216,7 +221,7 @@ export function CaregiverChatScreen({
           <ChatComposer placeholder={placeholder} disabled={sending || busy} onSend={send} />
         ) : (
           <Text style={[type.callout, styles.note]}>
-            Viewers can read the week but cannot message Sunny.
+            Viewers can read the week and Sunny&apos;s daily summaries but cannot message Sunny.
           </Text>
         )}
       </View>
