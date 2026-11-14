@@ -18,7 +18,13 @@
 // resolved instance whose confirmedAt falls on the household-local date of `now`, or that is
 // one of today's tasks (a 00:30 task confirmed at 23:45 the evening before); the home display
 // has no undo. reopenedState says which state a reopened (or an unrecorded undone) instance
-// gets from the clock alone.
+// gets from the clock alone. taskStillRuns (shared by reopen, senior undo and the day view's
+// `reopenable`) says whether the instance's task still runs the way the instance was made.
+// isDoneState is the one confirmed-or-resolved test. pressWasTakenBack is the boundary of the
+// take-back stamp: a queued press made at or before the instance's confirmTakenBackAt is
+// refused, so a stale press cannot re-confirm what a senior undo or a caregiver reopen took
+// back. A press without an age (a live confirm, voice, a caregiver's Mark done) is made now
+// and is never checked against the stamp.
 //
 // Last modified: 2026-11-13
 
@@ -67,6 +73,17 @@ export function notTooEarly(instance: ConfirmRuleInput, now: number): boolean {
  */
 export function seniorCanConfirm(instance: ConfirmRuleInput, now: number): boolean {
   return !isDoneState(instance.state) && notTooEarly(instance, now);
+}
+
+/**
+ * purpose: Whether a queued press was made at or before the instance's take-back stamp and so
+ *          must be refused (the senior undid, or a caregiver reopened, after that press).
+ * @param pressedAt: (number) Epoch ms the press was made (server now minus the press age).
+ * @param takenBackAt: (number | undefined) The instance's confirmTakenBackAt.
+ * @return: (boolean) True when the press must be refused; never for an instance never taken back.
+ */
+export function pressWasTakenBack(pressedAt: number, takenBackAt: number | undefined): boolean {
+  return takenBackAt !== undefined && pressedAt <= takenBackAt;
 }
 
 /** How long (ms) after the server recorded a senior device's confirm that device may undo it. */
@@ -146,7 +163,9 @@ export function caregiverCanReopen(
  *          confirmed or resolved instance of such a task survives as history; putting it back
  *          to open would prompt for a task that no longer runs, or sit next to the row that
  *          replaced it. Used by the reopen and senior undo mutations and by the day view's
- *          `reopenable` flag so they agree.
+ *          `reopenable` flag so they agree. Deliberately not checked: days of week, startsOn,
+ *          endsOn and onceOn. An open instance on a day the task no longer occurs is also left
+ *          open by resyncTask, so a reopened one behaves like one that was never confirmed.
  * @param task: (Pick<Doc<"tasks">, "active" | "type" | "times"> | null) The instance's task, or
  *        null when it is gone.
  * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime">) The instance.
@@ -158,7 +177,7 @@ export function taskStillRuns(
 ): boolean {
   if (task === null || !task.active) return false;
   if (isAnytimeInstance(instance)) return isAnytimeTask(task);
-  return !isAnytimeTask(task) && task.times.includes(instance.scheduledTime);
+  return task.times.includes(instance.scheduledTime);
 }
 
 /**

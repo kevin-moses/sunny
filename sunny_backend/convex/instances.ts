@@ -7,6 +7,10 @@
 // (a senior device takes back its own Done press within 60 seconds; a late tap returns
 // too_late, never an error); and reopenTaskInstance (an editor caregiver reopens a task
 // confirmed or resolved earlier today, for example a mistaken tap on the home display).
+// An undo or a reopen of a device's confirm stamps confirmTakenBackAt; confirmInstance then
+// refuses a queued press (one sent with an age) made at or before the stamp, so a stale press
+// cannot re-confirm what was taken back (lib/confirmRule.pressWasTakenBack). An undo may be
+// tapped offline too (undoneAgoMs).
 // The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
 // the public functions resolve the actor from auth and use the server clock. Every instance
@@ -38,6 +42,7 @@ import {
   caregiverCanReopen,
   isDoneState,
   notTooEarly,
+  pressWasTakenBack,
   reopenedState,
   seniorCanUndo,
   taskStillRuns,
@@ -200,7 +205,8 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *        is not an on-time record of last night's task). Without an age confirmedAt is `now`.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- * @raises forbidden when the actor may not confirm; invalid when not due yet (devices and the
+ * @raises forbidden when the actor may not confirm; invalid when the press was made before
+ *          the confirmation was taken back (a press age at or before confirmTakenBackAt), when not due yet (devices and the
  *          agent: more than 60 minutes early; editors: the instance's local date is after today), when via is
  *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
  *          A blank note is stored as absent, but never erases a note already on the
@@ -213,7 +219,9 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *          refused as invalid, so a stale press held by the device's queue cannot re-confirm a
  *          task that was taken back; through confirmPressedInstance that is a rejected result,
  *          never an error the senior sees. A press without an age, or made after the take-back,
- *          confirms as usual, and so does a caregiver's "Mark done".
+ *          confirms as usual, and so does a caregiver's "Mark done". A press without an age
+ *          (the home display's live confirm, voice, a caregiver's Mark done) is not checked
+ *          against the stamp, since it is by definition made now.
  */
 export async function confirmInstance(
   ctx: MutationCtx,
@@ -245,8 +253,7 @@ export async function confirmInstance(
   if (isDoneState(instance.state)) return instance;
   if (
     args.pressedAgoMs !== undefined &&
-    instance.confirmTakenBackAt !== undefined &&
-    now - args.pressedAgoMs <= instance.confirmTakenBackAt
+    pressWasTakenBack(now - args.pressedAgoMs, instance.confirmTakenBackAt)
   ) {
     throw appError("invalid", "This press was made before the confirmation was taken back");
   }
@@ -444,29 +451,36 @@ async function runsOnSchedule(ctx: QueryCtx, instance: Doc<"taskInstances">): Pr
  *          before the take-back that the device's queue still holds is not applied later
  *          (confirmInstance refuses it). A caregiver alert the scheduler skipped as
  *          instance_closed while the instance was confirmed is not re-sent after the undo.
+ *          An Undo tapped offline and sent later carries undoneAgoMs: the 60 second rule is then
+ *          judged at the tap time (now minus the age) and confirmTakenBackAt is the tap time,
+ *          clamped to between the confirm's confirmedAt and now, so a Done pressed after the
+ *          Undo tap is still applied when it is delivered later.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be a senior device of the instance's household.
- * @param args: ({instanceId}) The instance.
+ * @param args: ({instanceId, undoneAgoMs}) The instance and, for an offline tap, how long
+ *        before this call the senior tapped Undo (finite, at least 0, like a press age).
  * @param now: (number) Epoch ms.
  * @return: (Promise<UndoPressResult>) undone with the instance, or too_late.
  * @raises forbidden when the actor is not a senior device or the instance belongs to another
- *          household.
+ *          household; invalid for an undoneAgoMs that is not a finite number of at least 0.
  */
 export async function undoPressedInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances"> },
+  args: { instanceId: Id<"taskInstances">; undoneAgoMs?: number },
   now: number,
 ): Promise<UndoPressResult> {
   if (actor.kind !== "senior_device") {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
+  if (args.undoneAgoMs !== undefined) requirePressAge(args.undoneAgoMs);
   const instance = await ctx.db.get(args.instanceId);
   if (instance === null) return { status: "too_late" };
   if (instance.householdId !== actor.householdId) {
     throw appError("forbidden", "Not allowed to undo this task");
   }
-  if (!seniorCanUndo(instance, actor.userId, now) || !(await runsOnSchedule(ctx, instance))) {
+  const tappedAt = now - (args.undoneAgoMs ?? 0);
+  if (!seniorCanUndo(instance, actor.userId, tappedAt) || !(await runsOnSchedule(ctx, instance))) {
     return { status: "too_late" };
   }
   const restored = await changeInstance(
@@ -477,7 +491,7 @@ export async function undoPressedInstance(
       ...CLEAR_CONFIRMATION,
       state: instance.resolvedFromState ?? reopenedState(instance, now),
       snoozedUntil: instance.resolvedFromSnoozedUntil,
-      confirmTakenBackAt: now,
+      confirmTakenBackAt: Math.min(now, Math.max(tappedAt, instance.confirmedAt ?? tappedAt)),
     },
     { undo: true },
   );
@@ -495,7 +509,9 @@ export async function undoPressedInstance(
  *          when due. A caregiver alert the scheduler skipped as instance_closed while the
  *          instance was done is not re-sent after the reopen. Stamps confirmTakenBackAt, so a
  *          press made before the reopen that a device's queue still holds is not applied later
- *          (confirmInstance refuses it); a caregiver's "Mark done" still resolves. Audited as a
+ *          (confirmInstance refuses it); a caregiver's "Mark done" still resolves. Only a
+ *          device or voice confirm (state confirmed) is stamped: reopening a caregiver's resolve
+ *          takes nothing back from the senior, whose own queued press must still apply. Audited as a
  *          state change with detail reopen: true and the previous confirmedAt, confirmedBy and
  *          confirmedVia (the previous state is the row's `from`).
  * @param ctx: (MutationCtx) Mutation context.
@@ -535,7 +551,11 @@ export async function reopenInstance(
     ctx,
     actor,
     instance,
-    { ...CLEAR_CONFIRMATION, state: reopenedState(instance, now), confirmTakenBackAt: now },
+    {
+      ...CLEAR_CONFIRMATION,
+      state: reopenedState(instance, now),
+      ...(instance.state === "confirmed" ? { confirmTakenBackAt: now } : {}),
+    },
     {
       reopen: true,
       confirmedAt: instance.confirmedAt,
@@ -848,10 +868,12 @@ export const confirmPressedTask = mutation({
  *          the server allows 60). Senior devices only. A press that can no longer be undone
  *          returns { status: "too_late" } and changes nothing, never an error.
  * @param instanceId: (Id<"taskInstances">) Instance.
+ * @param undoneAgoMs: (number, optional) For an Undo tapped offline and sent later: how long ago
+ *        (ms) it was tapped.
  * @return: (UndoPressResult) undone with the instance, or too_late.
  */
 export const undoPressedTask = mutation({
-  args: { instanceId: v.id("taskInstances") },
+  args: { instanceId: v.id("taskInstances"), undoneAgoMs: v.optional(v.number()) },
   handler: async (ctx, args): Promise<UndoPressResult> => {
     const actor = await requireDeviceActor(ctx);
     return await undoPressedInstance(ctx, actor, args, Date.now());
