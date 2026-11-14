@@ -6,10 +6,11 @@
 // token and outcome mapping live in lib/apnsPayload.ts. Nothing is thrown for a push: per-token
 // failures and a missing or invalid configuration (configError, message starts with "APNs is
 // not configured") are returned. The companion deleteTokens mutation is in apnsTokens.ts
-// because a "use node" file may only hold actions.
+// because a "use node" file may only hold actions. The caller passes the push's interruption
+// level and category (lib/apnsPayload pushStyle), which go into the aps dictionary.
 // Exports: send (internalAction).
 //
-// Last modified: 2026-10-29
+// Last modified: 2026-11-14
 
 import { connect } from "node:http2";
 import type { ClientHttp2Session } from "node:http2";
@@ -110,6 +111,9 @@ function sendOne(
  * @param title: (string) Alert title.
  * @param body: (string) Alert body.
  * @param data: (Record<string, string>) Optional custom keys (snake_case), e.g. task_instance_id.
+ * @param interruptionLevel: ("time-sensitive", optional) aps interruption-level; absent is the
+ *        default level.
+ * @param category: (string, optional) aps category (the caregiver alert's action category).
  * @return: (ApnsSendResult) One result per token, in order, or configError when the key, team id
  *          or key text is missing or invalid.
  */
@@ -119,6 +123,8 @@ export const send = internalAction({
     title: v.string(),
     body: v.string(),
     data: v.optional(v.record(v.string(), v.string())),
+    interruptionLevel: v.optional(v.literal("time-sensitive")),
+    category: v.optional(v.string()),
   },
   handler: async (_ctx, args): Promise<ApnsSendResult> => {
     let config: ApnsConfig;
@@ -131,7 +137,10 @@ export const send = internalAction({
       throw e;
     }
     if (args.tokens.length === 0) return { results: [] };
-    const payload = buildPayload(args.title, args.body, args.data);
+    const payload = buildPayload(args.title, args.body, args.data, {
+      interruptionLevel: args.interruptionLevel,
+      category: args.category,
+    });
     const session = connect(`https://${apnsHost(config.environment)}`);
     // A session-level error also surfaces on each pending request's own error event.
     session.on("error", () => {});

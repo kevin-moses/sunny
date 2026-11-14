@@ -14,8 +14,17 @@
 // through the workpool. Questions are given by topic unless transcripts are shared.
 //
 // Also: a late-synced confirm reads "(phone app, sent at 11:00 AM)".
+// Chat thread (2026-11-14): a composed digest is posted once in the caregiver chat (also when
+// nobody can be reached, once per local day however often the tick runs, and once when
+// complete is called twice, with one set of outbox rows); recentPosts returns the newest posts
+// first, at most the limit; a caregiver with
+// only a push token gets a row, whose push reads "<name>'s day" while the texts keep "Sunny:
+// <name>'s day"; agentRequests.transcript merges requests and posts newest first with the limit
+// on the merged list; a viewer reads posts but not requests; a senior device, another
+// household's caregiver, a stranger and a signed-out caller cannot read it; another
+// household's posts never appear.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -30,8 +39,9 @@ import {
   templateDigest,
   validateDigestReply,
 } from "./lib/digestText";
+import { recentPosts } from "./lib/chatPosts";
 import type { DigestFacts, TaskFact } from "./lib/digestFacts";
-import { addInstance, makeBackend } from "./testing.helpers";
+import { addInstance, createHousehold, insertRequest, makeBackend } from "./testing.helpers";
 
 const modelMock = vi.hoisted(() => vi.fn());
 
@@ -621,6 +631,241 @@ describe("compose", () => {
     }
     const sent = providerMocks.smsSend.mock.calls.map((c) => c[0].to).sort();
     expect(sent).toEqual(["+15550000001", "+15550000002"]);
+  });
+});
+
+describe("chat thread", () => {
+  /**
+   * purpose: Compose a digest for 2 Nov with a confirmed task, so it uses GOOD_REPLY.
+   * @param f: (DeliveryFixture) Fixture.
+   * @return: (Promise<Id<"digests">>) The digest.
+   */
+  async function composeDay(f: DeliveryFixture): Promise<Id<"digests">> {
+    await addDayInstance(f, "Morning pills", {
+      scheduledTime: "08:00",
+      windowStart: 1,
+      state: "confirmed",
+      confirmedAt: Date.parse("2026-11-02T13:05:00Z"),
+      confirmedVia: "voice",
+    });
+    const digestId = await pendingDigest(f);
+    await compose(f, digestId);
+    return digestId;
+  }
+
+  /**
+   * purpose: The household's chat posts.
+   * @param f: (DeliveryFixture) Fixture.
+   * @return: (Promise<Doc<"chatPosts">[]>) The rows.
+   */
+  async function posts(f: DeliveryFixture): Promise<Doc<"chatPosts">[]> {
+    return await f.t.run(async (ctx) => await ctx.db.query("chatPosts").collect());
+  }
+
+  /**
+   * purpose: Read the chat transcript as a user.
+   * @param f: (DeliveryFixture) Fixture.
+   * @param subject: (string) Who reads it.
+   * @return: The transcript items, newest first.
+   */
+  async function transcriptAs(f: DeliveryFixture, subject: string) {
+    return await f.t
+      .withIdentity({ subject })
+      .query(api.agentRequests.transcript, { householdId: f.householdId });
+  }
+
+  test("a composed digest is posted once in the thread, with its text and date", async () => {
+    const f = await setup();
+    const digestId = await composeDay(f);
+    expect(await compose(f, digestId)).toBe("skipped");
+    const rows = await posts(f);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      householdId: f.householdId,
+      kind: "digest",
+      body: GOOD_REPLY,
+      localDate: "2026-11-02",
+      digestId,
+    });
+  });
+
+  test("complete called twice posts once and queues one set of rows", async () => {
+    const f = await setup();
+    const digestId = await pendingDigest(f);
+    for (let i = 0; i < 2; i++) {
+      await f.t.mutation(internal.digest.complete, {
+        digestId,
+        text: "All done.",
+        source: "template",
+      });
+    }
+    expect(await posts(f)).toHaveLength(1);
+    expect((await digestRows(f)).map((r) => r.recipientUserId).sort()).toEqual(["max", "pat"]);
+  });
+
+  test("recentPosts returns the newest posts first, at most the limit", async () => {
+    const f = await setup();
+    for (const [i, localDate] of ["2026-11-01", "2026-11-02", "2026-11-03"].entries()) {
+      vi.setSystemTime(CREATED + i * 60_000);
+      const digestId = await pendingDigest(f, localDate);
+      await f.t.mutation(internal.digest.complete, {
+        digestId,
+        text: `Day ${localDate}`,
+        source: "template",
+      });
+    }
+    /**
+     * purpose: Read the household's newest posts.
+     * @param limit: (number) How many at most.
+     * @return: (Promise<ChatPostView[]>) The posts, newest first.
+     */
+    const read = async (limit: number) =>
+      await f.t.run(async (ctx) => await recentPosts(ctx, f.householdId, limit));
+    expect((await read(10)).map((p) => p.localDate)).toEqual([
+      "2026-11-03",
+      "2026-11-02",
+      "2026-11-01",
+    ]);
+    expect((await read(2)).map((p) => p.body)).toEqual(["Day 2026-11-03", "Day 2026-11-02"]);
+  });
+
+  test("only one digest is posted per local day however often the tick runs", async () => {
+    const f = await setup();
+    vi.setSystemTime(DIGEST_TIME);
+    await tick(f, DIGEST_TIME);
+    for (let i = 0; i < 200 && (await posts(f)).length === 0; i++) {
+      let finished = false;
+      void f.t.finishInProgressScheduledFunctions().then(() => {
+        finished = true;
+      });
+      while (!finished) await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(1_100);
+    }
+    await tick(f, DIGEST_TIME + 10 * 60_000);
+    await tick(f, DIGEST_TIME + 60 * 60_000);
+    expect((await posts(f)).map((p) => p.localDate)).toEqual(["2026-11-02"]);
+  });
+
+  test("the digest is posted even when no caregiver can be reached", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => {
+      for (const m of await ctx.db.query("householdMembers").collect()) {
+        await ctx.db.patch(m._id, { phoneVerifiedAt: undefined });
+      }
+    });
+    await composeDay(f);
+    expect(await digestRows(f)).toHaveLength(0);
+    expect(await posts(f)).toHaveLength(1);
+  });
+
+  test("a caregiver with only a push token gets a row; the push says '<name>'s day'", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "val", token: "val-1" });
+    });
+    await composeDay(f);
+    const rows = await digestRows(f);
+    expect(rows.map((r) => r.recipientUserId).sort()).toEqual(["max", "pat", "val"]);
+    for (const row of rows) {
+      await f.t.action(internal.delivery.deliver, { outboxId: row._id });
+    }
+    expect(providerMocks.apnsSend).toHaveBeenCalledTimes(1);
+    expect(providerMocks.apnsSend.mock.calls[0]![0]).toMatchObject({
+      tokens: ["val-1"],
+      title: "Mom's day",
+      body: GOOD_REPLY,
+      data: { kind: "digest", household_id: f.householdId },
+    });
+    expect(providerMocks.smsSend.mock.calls.map((c) => c[0].body)).toEqual([
+      `Sunny: Mom's day\n${GOOD_REPLY}`,
+      `Sunny: Mom's day\n${GOOD_REPLY}`,
+    ]);
+  });
+
+  test("the transcript merges requests and posts by time, newest first", async () => {
+    const f = await setup();
+    vi.setSystemTime(Date.parse("2026-11-02T20:00:00Z"));
+    const before = await insertRequest(f.t, f.householdId, {
+      requestedBy: "pat",
+      status: "succeeded",
+      message: "How was lunch?",
+      reply: "She ate at noon.",
+    });
+    vi.setSystemTime(Date.parse("2026-11-03T00:00:00Z"));
+    await composeDay(f);
+    vi.setSystemTime(Date.parse("2026-11-03T00:05:00Z"));
+    const after = await insertRequest(f.t, f.householdId, {
+      requestedBy: "max",
+      status: "queued",
+      message: "Why was the 8 o'clock late?",
+    });
+    const items = await transcriptAs(f, "pat");
+    expect(items.map((i) => (i.type === "post" ? `post:${i.body}` : `request:${i.id}`))).toEqual([
+      `request:${after}`,
+      `post:${GOOD_REPLY}`,
+      `request:${before}`,
+    ]);
+    expect(items[1]).toMatchObject({ type: "post", kind: "digest", localDate: "2026-11-02" });
+    expect(items[2]).toMatchObject({
+      type: "request",
+      requestedByName: "Pat",
+      reply: "She ate at noon.",
+    });
+  });
+
+  test("the limit applies to the merged list", async () => {
+    const f = await setup();
+    await composeDay(f);
+    vi.setSystemTime(Date.parse("2026-11-03T00:05:00Z"));
+    await insertRequest(f.t, f.householdId, { requestedBy: "pat" });
+    const items = await f.t
+      .withIdentity({ subject: "pat" })
+      .query(api.agentRequests.transcript, { householdId: f.householdId, limit: 1 });
+    expect(items.map((i) => i.type)).toEqual(["request"]);
+  });
+
+  test("a viewer reads the posts but not the requests", async () => {
+    const f = await setup();
+    await insertRequest(f.t, f.householdId, { requestedBy: "pat", message: "Private ask" });
+    await composeDay(f);
+    const items = await transcriptAs(f, "val");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ type: "post", body: GOOD_REPLY });
+  });
+
+  test("a senior device, another household's caregiver and a stranger cannot read it", async () => {
+    const f = await setup();
+    await composeDay(f);
+    await createHousehold(f.t, { subject: "user_other" });
+    await expect(transcriptAs(f, "phone")).rejects.toMatchObject({ data: { code: "forbidden" } });
+    await expect(transcriptAs(f, "user_other")).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
+    await expect(transcriptAs(f, "nobody")).rejects.toMatchObject({ data: { code: "forbidden" } });
+    await expect(
+      f.t.query(api.agentRequests.transcript, { householdId: f.householdId }),
+    ).rejects.toMatchObject({ data: { code: "unauthenticated" } });
+  });
+
+  test("another household's posts never appear", async () => {
+    const f = await setup();
+    const other = await createHousehold(f.t, { subject: "user_other" });
+    await f.t.run(async (ctx) => {
+      const digestId = await ctx.db.insert("digests", {
+        householdId: other,
+        localDate: "2026-11-02",
+        status: "done",
+        text: "Their day",
+      });
+      await ctx.db.insert("chatPosts", {
+        householdId: other,
+        kind: "digest",
+        body: "Their day",
+        localDate: "2026-11-02",
+        digestId,
+      });
+    });
+    expect(await transcriptAs(f, "pat")).toEqual([]);
   });
 });
 

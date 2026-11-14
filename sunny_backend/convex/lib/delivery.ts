@@ -1,22 +1,41 @@
 // lib/delivery.ts
 // Purpose: Queueing and routing of notification delivery. Every outbox row is inserted through
 // insertNotification, which enqueues delivery.deliver on the workpool "deliveryPool".
-// Routing: a device recipient gets APNs to every push token of its user; a member recipient
-// gets an SMS at the verified phone (title and body on separate lines; a caregiver_alert for a
-// member who can claim ends with the reply hint). Membership, device and content are re-checked
-// at send time; a row with no reachable address or stale content is skipped, with the reason in
-// `detail`. A row a run started less than 5 minutes ago is leased: the sweeper leaves it alone.
+// Routing: a device recipient gets APNs to every push token of its user. A member recipient
+// gets APNs when that user has at least one push token (the caregiver app is installed with
+// notifications on), otherwise an SMS at the verified phone exactly as before (title and body
+// on separate lines; a caregiver_alert for a member who can claim ends with the reply hint). A
+// member's APNs route also carries that SMS as smsFallback (null without a verified phone):
+// delivery.ts sends it for the same row when APNs is not configured or accepted no token with
+// nothing worth retrying (every token unregistered, or refused for good), and, when the push
+// retries run out, textAfterPushGaveUp marks the row "gave_up" and enqueues it again so
+// memberRoute texts it. A caregiver who would have been texted before push existed is never
+// left with nothing; `channel` records sms when the text delivered it. Every push carries data
+// notification_id, kind, household_id and, with an instance, task_instance_id, and the
+// interruption level and category of lib/apnsPayload pushStyle. A push's title is
+// payload.pushTitle when the row has one (the digest: "<name>'s day", while its SMS keeps
+// "Sunny: <name>'s day"), else the title.
+// Membership, device and content are re-checked at send time; a row with no reachable address
+// or stale content is skipped, with the reason in `detail`. A row a run started less than 5
+// minutes ago is leased: the sweeper leaves it alone. Every run counts against the row's
+// MAX_ATTEMPTS, the text after a push gave up included: a row that reaches the bound is failed
+// by delivery.begin, not texted.
+// Reachability (isReachableMember, reachableMembers): a caregiver can be reached when they have
+// a verified phone or at least one push token; lib/voiceRouting and the digest queue rows only
+// for reachable caregivers.
 // SMS_KIND_POLICY says, per kind, whether a timed-out text is retried (caregiver_alert and
 // agent_flag) and whether a newer text of that kind means a "1" reply answers it rather than an
 // older task alert (agent_flag and family_message; sms.ts).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { verifiedPhone } from "./access";
+import { findMember, verifiedPhone } from "./access";
+import { pushStyle } from "./apnsPayload";
+import type { PushRecipient, PushStyle } from "./apnsPayload";
 import type { NotificationKind } from "./validators";
 
 /** Deliveries that may run at the same time across all households. */
@@ -73,17 +92,22 @@ export type NewNotification = Omit<
   "_id" | "_creationTime" | "state" | "channel" | "settledAt" | "attempts" | "detail"
 >;
 
+/** An SMS to send. */
+export type SmsRoute = { kind: "sms"; to: string; body: string; retryOnTimeout: boolean };
+
+/** A push to send, with the text to send instead when no token takes it (members only). */
+export type ApnsRoute = {
+  kind: "apns";
+  tokens: string[];
+  title: string;
+  body: string;
+  data: Record<string, string>;
+  style: PushStyle;
+  smsFallback: SmsRoute | null;
+};
+
 /** Where to send an outbox row, decided at send time. */
-export type Route =
-  | {
-      kind: "apns";
-      tokens: string[];
-      title: string;
-      body: string;
-      data: Record<string, string>;
-    }
-  | { kind: "sms"; to: string; body: string; retryOnTimeout: boolean }
-  | { kind: "skip"; reason: string };
+export type Route = ApnsRoute | SmsRoute | { kind: "skip"; reason: string };
 
 /** A route that sends something. */
 export type SendRoute = Exclude<Route, { kind: "skip" }>;
@@ -155,8 +179,74 @@ async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promi
   return null;
 }
 
-/** Push tokens read per device user. */
+/** Push tokens read per user. */
 const MAX_TOKENS_PER_USER = 20;
+
+/**
+ * purpose: A user's push tokens, at most MAX_TOKENS_PER_USER.
+ * @param ctx: (QueryCtx) Context.
+ * @param userId: (string) The device's or caregiver's user id.
+ * @return: (Promise<string[]>) The raw APNs tokens; empty when there are none.
+ */
+async function userPushTokens(ctx: QueryCtx, userId: string): Promise<string[]> {
+  const rows = await ctx.db
+    .query("pushTokens")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(MAX_TOKENS_PER_USER);
+  return rows.map((r) => r.token);
+}
+
+/**
+ * purpose: The custom keys every push of a row carries, beside aps.
+ * @param row: (Doc<"notificationOutbox">) The row.
+ * @return: (Record<string, string>) notification_id, kind, household_id, and task_instance_id
+ *          when the row is about an instance.
+ */
+function pushData(row: Doc<"notificationOutbox">): Record<string, string> {
+  const data: Record<string, string> = {
+    notification_id: row._id,
+    kind: row.kind,
+    household_id: row.householdId,
+  };
+  if (row.taskInstanceId !== undefined) data["task_instance_id"] = row.taskInstanceId;
+  return data;
+}
+
+/**
+ * purpose: The title of a row's push: payload.pushTitle when it is a non-empty string (the
+ *          digest's "<name>'s day"), else the row's title (which its SMS uses).
+ * @param row: (Doc<"notificationOutbox">) The row.
+ * @return: (string) The push title.
+ */
+function pushTitle(row: Doc<"notificationOutbox">): string {
+  const custom: unknown = row.payload["pushTitle"];
+  return typeof custom === "string" && custom !== "" ? custom : row.title;
+}
+
+/**
+ * purpose: The APNs route of a row for some tokens.
+ * @param row: (Doc<"notificationOutbox">) The row.
+ * @param tokens: (string[]) The recipient's tokens (at least one).
+ * @param recipient: (PushRecipient) A device, or a caregiver and whether they may claim.
+ * @param smsFallback: (SmsRoute | null) The text to send instead when no token takes the push.
+ * @return: (ApnsRoute) The route.
+ */
+function apnsRoute(
+  row: Doc<"notificationOutbox">,
+  tokens: string[],
+  recipient: PushRecipient,
+  smsFallback: SmsRoute | null,
+): ApnsRoute {
+  return {
+    kind: "apns",
+    tokens,
+    title: pushTitle(row),
+    body: row.body,
+    data: pushData(row),
+    style: pushStyle(row.kind, recipient),
+    smsFallback,
+  };
+}
 
 /**
  * purpose: The APNs route of a device-addressed row.
@@ -174,49 +264,91 @@ async function deviceRoute(
   if (!device || device.householdId !== row.householdId) {
     return { kind: "skip", reason: "device_removed" };
   }
-  const tokens = await ctx.db
-    .query("pushTokens")
-    .withIndex("by_user", (q) => q.eq("userId", device.userId))
-    .take(MAX_TOKENS_PER_USER);
+  const tokens = await userPushTokens(ctx, device.userId);
   if (tokens.length === 0) return { kind: "skip", reason: "no_push_tokens" };
-  const data: Record<string, string> = { notification_id: row._id, kind: row.kind };
-  if (row.taskInstanceId !== undefined) data["task_instance_id"] = row.taskInstanceId;
-  return {
-    kind: "apns",
-    tokens: tokens.map((t) => t.token),
-    title: row.title,
-    body: row.body,
-    data,
-  };
+  return apnsRoute(row, tokens, { kind: "device" }, null);
 }
 
 /**
- * purpose: The SMS route of a member-addressed row.
- * @param ctx: (QueryCtx) Context.
+ * purpose: The SMS route of a row for a member, unchanged from before push existed for
+ *          caregivers: the verified phone and the text with the claim hint when they may claim.
  * @param row: (Doc<"notificationOutbox">) The row.
- * @param userId: (string) The recipient member's user id.
- * @return: (Promise<Route>) sms, or a skip when the member left or has no verified phone.
+ * @param member: (Doc<"householdMembers">) The recipient.
+ * @return: (SmsRoute | null) The route, or null without a verified phone.
  */
-async function memberRoute(
-  ctx: QueryCtx,
+function smsRoute(
   row: Doc<"notificationOutbox">,
-  userId: string,
-): Promise<Route> {
-  const member = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) =>
-      q.eq("householdId", row.householdId).eq("userId", userId),
-    )
-    .unique();
-  if (!member) return { kind: "skip", reason: "recipient_left" };
+  member: Doc<"householdMembers">,
+): SmsRoute | null {
   const to = verifiedPhone(member);
-  if (to === undefined) return { kind: "skip", reason: "no_verified_phone" };
+  if (to === undefined) return null;
   return {
     kind: "sms",
     to,
     body: smsText(row, member.role !== "viewer"),
     retryOnTimeout: SMS_KIND_POLICY[row.kind].retryOnTimeout,
   };
+}
+
+/**
+ * purpose: The route of a member-addressed row: APNs when the member's user has a push token
+ *          (with their SMS as the fallback), else SMS at the verified phone. A row whose push
+ *          retries ran out (pushState "gave_up") goes by SMS.
+ * @param ctx: (QueryCtx) Context.
+ * @param row: (Doc<"notificationOutbox">) The row.
+ * @param userId: (string) The recipient member's user id.
+ * @return: (Promise<Route>) apns or sms, or a skip when the member left or has neither a push
+ *          token nor a verified phone.
+ */
+async function memberRoute(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+  userId: string,
+): Promise<Route> {
+  const member = await findMember(ctx, row.householdId, userId);
+  if (!member) return { kind: "skip", reason: "recipient_left" };
+  const sms = smsRoute(row, member);
+  const tokens = row.pushState === "gave_up" ? [] : await userPushTokens(ctx, userId);
+  if (tokens.length > 0) {
+    const recipient = { kind: "caregiver" as const, canClaim: member.role !== "viewer" };
+    return apnsRoute(row, tokens, recipient, sms);
+  }
+  return sms ?? { kind: "skip", reason: "no_verified_phone" };
+}
+
+/**
+ * purpose: Whether a caregiver can be reached: a verified phone, or at least one push token.
+ * @param ctx: (QueryCtx) Context.
+ * @param member: (Doc<"householdMembers">) The caregiver.
+ * @return: (Promise<boolean>) True when a notification row for them has a route.
+ */
+export async function isReachableMember(
+  ctx: QueryCtx,
+  member: Doc<"householdMembers">,
+): Promise<boolean> {
+  if (verifiedPhone(member) !== undefined) return true;
+  const token = await ctx.db
+    .query("pushTokens")
+    .withIndex("by_user", (q) => q.eq("userId", member.userId))
+    .first();
+  return token !== null;
+}
+
+/**
+ * purpose: The caregivers among some members who can be reached (isReachableMember).
+ * @param ctx: (QueryCtx) Context.
+ * @param members: (Doc<"householdMembers">[]) Members.
+ * @return: (Promise<Doc<"householdMembers">[]>) The reachable ones, in the same order.
+ */
+export async function reachableMembers(
+  ctx: QueryCtx,
+  members: Doc<"householdMembers">[],
+): Promise<Doc<"householdMembers">[]> {
+  const reachable: Doc<"householdMembers">[] = [];
+  for (const member of members) {
+    if (await isReachableMember(ctx, member)) reachable.push(member);
+  }
+  return reachable;
 }
 
 /**
@@ -233,6 +365,29 @@ export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">
     return await deviceRoute(ctx, row, row.recipientDeviceId);
   if (row.recipientUserId !== undefined) return await memberRoute(ctx, row, row.recipientUserId);
   return { kind: "skip", reason: "no_recipient" };
+}
+
+/**
+ * purpose: When the workpool's retries of a caregiver's push ran out (the row is marked
+ *          pushState "retrying") and the caregiver has a verified phone, mark the row "gave_up"
+ *          and enqueue it once more, so it is texted (memberRoute) instead of failing. Runs at
+ *          most once per row: a row already "gave_up" is left to fail as usual.
+ * @param ctx: (MutationCtx) Context.
+ * @param row: (Doc<"notificationOutbox">) A pending row whose delivery run failed for good.
+ * @param error: (string) The run's error, kept in detail.
+ * @return: (Promise<boolean>) True when the row was enqueued to be texted.
+ */
+export async function textAfterPushGaveUp(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  error: string,
+): Promise<boolean> {
+  if (row.pushState !== "retrying" || row.recipientUserId === undefined) return false;
+  const member = await findMember(ctx, row.householdId, row.recipientUserId);
+  if (!member || verifiedPhone(member) === undefined) return false;
+  await ctx.db.patch(row._id, { pushState: "gave_up", detail: `push gave up: ${error}` });
+  await queueDelivery(ctx, row._id);
+  return true;
 }
 
 /**

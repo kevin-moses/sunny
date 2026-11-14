@@ -75,7 +75,7 @@ All setup and all visibility live here; the senior never configures anything. Ch
 | Today timeline | Live status of every task instance, with who confirmed it and on which surface | Must have |
 | Mark done for them | Resolve a task after checking in by phone, recorded under the caregiver's name | Must have |
 | Reopen a task | Reopen any task confirmed that day, for a Done pressed by mistake; recorded in the audit log | Must have |
-| Escalation alerts and claim | Time-sensitive push when a task escalates, with "I'm on it" on the notification; it stops alerts going to the others. A caregiver without the app gets a text instead | Must have |
+| Escalation alerts and claim | Time-sensitive push when a task escalates, with "I'm on it" on the notification; it stops alerts going to the others. The action opens the app to claim. A caregiver without the app gets a text instead, and so does a caregiver whose push could not be delivered | Must have |
 | Calendar events | Appointments and visits, including who is coming, added by chat; feeds the display's Next up | Must have |
 | Daily digest | Posted as a message from Sunny in the chat thread, with a push as its preview; a caregiver can reply to it. Delivery time and recipients are set by chat | Must have |
 | Knowledge | Life profile, sensitive-topic guidance and remembered facts are read, confirmed and corrected in the About tab. They can also be told to Sunny in chat ("Mom's doctor is Dr. Patel"); Sunny shows what it stored | Must have |
@@ -186,7 +186,7 @@ Routines and checklists default to digest-only, with no escalation. Every delay 
 
 **Memory hygiene:** things the senior says can be mistaken, so they never overwrite caregiver-verified facts. Conflicts surface in the caregiver app for a quick yes or no.
 
-**Daily digest:** one message at the caregiver's chosen time, 3–5 lines written only from the day's logged events, with a plain template as fallback. It covers what was confirmed and when, misses and escalations, questions voice couldn't answer, and repeat-question counts. It is posted in the caregiver chat thread with a push as its preview; a caregiver without the app gets it by text.
+**Daily digest:** one message at the caregiver's chosen time, 3–5 lines written only from the day's logged events, with a plain template as fallback. It covers what was confirmed and when, misses and escalations, questions voice couldn't answer, and repeat-question counts. It is posted in the caregiver chat thread with a push as its preview; a caregiver without the app, or whose push could not be delivered, gets it by text. Until the chat tools for delivery time and recipients exist (build step 8), it goes to every caregiver who can be reached.
 
 **Fan-out:** push to the caregiver app; push updates to the widget and Live Activity. The e-ink display checks the device API over HTTPS (see Power above); a persistent connection (WebSocket or MQTT) can replace the checks later behind the same API.
 
@@ -278,9 +278,9 @@ These features move Sunny from reminding the senior to helping them act. None of
 
 ## Build order and success metrics
 
-Built so far (merged to `main` through PR 12, 2026-11-10):
+Built so far (merged to `main` through PR 15, 2026-11-14, plus the caregiver push change this line ships with):
 
-- Backend: shared state, scheduler, escalation ladder with claim, daily digest by text, question log, household list
+- Backend: shared state, scheduler, escalation ladder with claim, question log, household list, senior undo and caregiver reopen (no buttons in the app yet), caregiver alerts by push with text as the fallback, daily digest posted in the chat thread
 - Caregiver app: Home timeline with mark done, Chat with task and calendar tools, About tab (life profile, hard questions, remembered facts, messages)
 - Senior phone: Today screen with Talk and one large Done (up to 60 minutes early, presses queued durably offline and recorded at the time of the press)
 - iPad display: Now and Today pages, Done and Talk keys, Talk on the panel with the answer shown for 3 minutes, chime and spoken prompt at every prompt step
@@ -291,9 +291,9 @@ On 2026-11-13 pairing, the phone's Done, the display's due card and Done key, an
 Remaining, in order:
 
 1. Device check on a real iPhone and iPad of what the simulator cannot show: Talk and a live conversation with the voice agent, the sound of the due cue, the offline queue, push, and the caregiver screens
-2. Backend foundation: device token and HTTP device API, the display rules moved into one server device state, senior undo, caregiver reopen
+2. Backend foundation: device token and HTTP device API, the display rules moved into one server device state (senior undo and caregiver reopen are built)
 3. Senior surfaces offline: day view kept across a restart, due transitions and the cue on the device's own clock, display Done through the durable queue, the phone's 30-second undo
-4. Caregiver alerts: push with "I'm on it", text as fallback, digest posted in the chat thread
+4. Caregiver alerts: push with "I'm on it", text as fallback, digest posted in the chat thread (built; still to check on a real phone: time-sensitive delivery, the action on the lock screen, a tap that starts the app)
 5. iOS extension: home screen widget, lock screen widget, Live Activity, iOS 17.2 floor, Assistive Access check (runs alongside 3 and 4)
 6. Frame renderer: server-drawn frames sized per device, prompt audio clips, iPad switched to frames
 7. Firmware: `sunny_display/`, code and QR pairing, wifi hotspot setup, over-the-air updates, docked and battery modes, frames sent ahead for offline; then Talk on the ESP32
@@ -316,4 +316,4 @@ Steps 6 and 7 start when a board that can be flashed arrives (expected around 20
 ## Change log
 
 - 2026-11-13: This file became the living spec. Caregiver editing is chat only, with Sunny choosing the settings; schedule and event forms dropped; knowledge and preferences by chat; a small settings screen for actions that need a tap. Senior phone gets one large Done with a 30-second undo; the display has no undo and caregivers can reopen a confirmed task. Offline devices keep their own clock and send the press time. Prompts play as local audio at every prompt step. Device token, HTTP device API and a server device state shared by every senior surface. E-ink hardware named (Waveshare 13.3 inch, ESP32-S3), server-drawn frames sized per device, docked with a battery mode, pairing by code and QR, over-the-air updates. Caregiver alerts by push with text as fallback; digest in the chat thread. Widgets and Live Activity scoped; iOS 17.2 floor. "After the pilot" section added from the newer doc export. Build order rewritten against `origin/main` as of PR 12. Missed tasks are dimmed on senior surfaces (decided after the first simulator check).
-- 2026-11-14: After a reopen the ladder continues and overdue prompts and alerts go out right away. On a day with a missed task the display says "Nothing to do right now.", never that everything is done. An offline Undo is queued and judged from the tap; a press made before a take-back is ignored. Status lines updated after the first simulator check.
+- 2026-11-14: After a reopen the ladder continues and overdue prompts and alerts go out right away. On a day with a missed task the display says "Nothing to do right now.", never that everything is done. An offline Undo is queued and judged from the tap; a press made before a take-back is ignored. Status lines updated after the first simulator check. Caregiver push built: a caregiver whose push cannot be delivered is texted, "I'm on it" opens the app to claim, the newest sign-in on a shared phone takes over its push token, and the digest goes to every reachable caregiver until recipients can be set by chat.

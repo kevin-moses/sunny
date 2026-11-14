@@ -32,7 +32,8 @@
         }
       },
       "entitlements": {
-        "com.apple.security.application-groups": ["group.com.kmsunny.sunny"]
+        "com.apple.security.application-groups": ["group.com.kmsunny.sunny"],
+        "com.apple.developer.usernotifications.time-sensitive": true
       }
     },
     "plugins": [
