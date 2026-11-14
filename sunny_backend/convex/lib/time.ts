@@ -8,9 +8,10 @@
 //
 // Zone names are validated and canonicalized through canonicalTimezone. WEEKDAY_NAMES and
 // WEEKDAY_CODES (mon..sun, with weekdayCodes) name ISO weekdays. MINUTE_MS, HOUR_MS, DAY_MS
-// and minutes() are for window arithmetic; dayRange is a local day's instant range.
+// and minutes() are for window arithmetic; dayRange is a local day's instant range. offsetAt is
+// the zone's UTC offset at an instant (the device state reports it).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 /** Durations in ms, for window arithmetic (DAY_MS is 24 hours, not a local day). */
 export const MINUTE_MS = 60_000;
@@ -82,7 +83,7 @@ function wallClock(instant: number, timezone: string): WallClock {
  * @param timezone: (string) IANA zone.
  * @return: (number) Offset in ms (negative west of UTC).
  */
-function offsetAt(instant: number, timezone: string): number {
+export function offsetAt(instant: number, timezone: string): number {
   const w = wallClock(instant, timezone);
   const asUtc = Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second);
   return asUtc - Math.floor(instant / 1000) * 1000;

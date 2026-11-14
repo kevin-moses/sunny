@@ -29,15 +29,18 @@
 // home display can repeat its due cue on each reprompt; snoozed is true while a snooze
 // ("not yet") holds the senior prompts back at `now`, the scheduler's own test, so the
 // display holds its cue until the snooze ends; snoozedUntil is when the latest snooze ends
-// (kept after it passed), so the display owes one cue per snooze end.
+// (kept after it passed), so the display owes one cue per snooze end. Both are the shared
+// rules in lib/escalation.ts (seniorPromptCount, isSnoozed), which the scheduler and the device
+// state use too.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
+import { isSnoozed, seniorPromptCount } from "./escalation";
 import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -188,9 +191,8 @@ export async function todayInstances(
       confirmable: seniorCanConfirm(instance, now),
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
-      seniorPrompts: instance.firedSteps.filter((s) => s.action === "prompt_senior" && s.notified)
-        .length,
-      snoozed: instance.snoozedUntil !== undefined && now < instance.snoozedUntil,
+      seniorPrompts: seniorPromptCount(instance.firedSteps),
+      snoozed: isSnoozed(instance.snoozedUntil, now),
       snoozedUntil: instance.snoozedUntil ?? null,
     });
   }

@@ -11,7 +11,9 @@
 // a phone's token holds it); a paired device's token never moves and a device never takes a
 // live caregiver's (see registerPushToken, mayTakeOverToken). pairDevice stores the pairing time
 // and the client's retry nonce on the device row so /pair can answer a retry whose first
-// response was lost (findRecentPairing); listDevices never returns the nonce.
+// response was lost (findRecentPairing); listDevices never returns the nonce or the device
+// token's hash (deviceApi.ts). Removing a device deletes its row, which revokes its device
+// token at once; revokeDeviceToken revokes only the token and keeps the device paired.
 // Google Calendar: update schedules a re-push of the events (lib/calendarSync.ts, chunked, not
 // inline) when the timezone, event notice time or senior's preferred name actually changes or
 // a pause ends; removeMember drops the removed caregiver's Google connections, links and
@@ -52,6 +54,7 @@ import {
   requireReader,
   requireUserId,
 } from "./lib/access";
+import { audit } from "./lib/audit";
 import { dropMemberConnections, resyncHouseholdCalendars } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
@@ -652,27 +655,32 @@ export const findRecentPairing = internalQuery({
   },
 });
 
+/** A device as clients see it: without the pairing retry nonce and the device token's hash. */
+export type DeviceView = Omit<Doc<"devices">, "pairingNonce" | "tokenHash">;
+
 /**
  * purpose: The household's paired devices.
  * @param householdId: (Id<"households">) Household.
- * @return: (Omit<Doc<"devices">, "pairingNonce">[]) Devices, without the pairing retry nonce.
- *          Readers only.
+ * @return: (DeviceView[]) Devices, without the pairing retry nonce and the device token's hash
+ *          (tokenIssuedAt says whether and when a token was issued). Readers only.
  */
 export const listDevices = query({
   args: { householdId: v.id("households") },
-  handler: async (ctx, args): Promise<Omit<Doc<"devices">, "pairingNonce">[]> => {
+  handler: async (ctx, args): Promise<DeviceView[]> => {
     await requireReader(ctx, args.householdId);
     const rows = await ctx.db
       .query("devices")
       .withIndex("by_household", (q) => q.eq("householdId", args.householdId))
       .collect();
-    return rows.map(({ pairingNonce: _nonce, ...device }) => device);
+    return rows.map(({ pairingNonce: _nonce, tokenHash: _hash, ...device }) => device);
   },
 });
 
 /**
- * purpose: Unpair a device. Editors only. Also deletes the device's push tokens and schedules
- *          deletion of its Clerk user (best effort, see pairing.deleteClerkUser).
+ * purpose: Unpair a device. Editors only. Deleting the row revokes its device token at once
+ *          (the HTTP device API resolves the token through the row). Also deletes the device's
+ *          push tokens and schedules deletion of its Clerk user (best effort, see
+ *          pairing.deleteClerkUser).
  * @param householdId: (Id<"households">) Household.
  * @param deviceId: (Id<"devices">) Device to remove.
  * @return: (null)
@@ -692,6 +700,37 @@ export const removeDevice = mutation({
       .collect();
     for (const token of tokens) await ctx.db.delete(token._id);
     await ctx.scheduler.runAfter(0, internal.pairing.deleteClerkUser, { userId: device.userId });
+    return null;
+  },
+});
+
+/**
+ * purpose: Revoke a device's token for the HTTP device API without unpairing it: the token stops
+ *          working at once and the device keeps its Clerk sign-in (it can issue a new token with
+ *          deviceApi.issueToken). Editors only. Audited as revoke_device_token.
+ * @param householdId: (Id<"households">) Household.
+ * @param deviceId: (Id<"devices">) The device.
+ * @return: (null)
+ * @raises forbidden for a viewer, a device or a caregiver of another household; not_found when
+ *         the device is not in the household.
+ */
+export const revokeDeviceToken = mutation({
+  args: { householdId: v.id("households"), deviceId: v.id("devices") },
+  handler: async (ctx, args): Promise<null> => {
+    const actor = await requireEditor(ctx, args.householdId);
+    const device = await ctx.db.get(args.deviceId);
+    if (!device || device.householdId !== args.householdId) {
+      throw appError("not_found", "Device not found");
+    }
+    await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
+    await audit(ctx, {
+      householdId: args.householdId,
+      actor,
+      action: "revoke_device_token",
+      entity: "device",
+      entityId: device._id,
+      detail: { hadToken: device.tokenHash !== undefined },
+    });
     return null;
   },
 });
