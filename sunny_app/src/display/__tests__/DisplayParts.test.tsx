@@ -4,16 +4,22 @@
 // up column beside a waiting task, so the task Done confirms stays in view; across the whole
 // body when nothing is waiting; and the Next up card as before without a voice card. Also the
 // Now card's tab: "Now", "Still to do" when overdue, "Later" with AM or PM when snoozed
-// (also at midnight and noon).
+// (also at midnight and noon). And the Today rows (TodayBody): a missed row is grey with no
+// check and no "Now" tag and reads "Earlier today, not marked done"; done, plain and Now rows
+// are as before.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { describe, expect, it } from '@jest/globals';
 import React from 'react';
+import { SymbolView } from 'expo-symbols';
+import { StyleSheet, Text } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { NowBody, tabText } from '../DisplayParts';
-import type { NextItem, NowCard } from '../model';
+import { NowBody, TodayBody, tabText } from '../DisplayParts';
+import type { DayViewData } from '../../day/types';
+import { nowCard, type NextItem, type NowCard, type TodayRow } from '../model';
+import { ink } from '../theme';
 import type { VoiceCard } from '../voiceModel';
 
 const TASK: NowCard = {
@@ -78,6 +84,35 @@ describe('NowBody', () => {
     expect(textOf(CLEAR, listening)).toContain('Listening|Ask your question.');
   });
 
+  it('shows the calm card with no check when the day is clear but a task was missed', () => {
+    const day = {
+      tasks: [{ instanceId: 'm', scheduledTime: '08:00', state: 'missed' }],
+      eventsToday: [],
+      localNow: '2026-11-07T21:00:00',
+    } as unknown as DayViewData;
+    const card = nowCard(day);
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(<NowBody card={card} step={0} next={null} voice={null} />);
+    });
+    const texts = renderer.root.findAllByType(Text).map((t) => t.props.children as unknown);
+    expect(texts).toContain('Nothing to do right now.');
+    expect(texts).not.toContain('Everything is done.');
+    expect(renderer.root.findAllByType(SymbolView)).toHaveLength(0);
+  });
+
+  it('shows the check and Everything is done when nothing is missed', () => {
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(
+        <NowBody card={{ kind: 'clear', allDone: true }} step={0} next={null} voice={null} />,
+      );
+    });
+    const texts = renderer.root.findAllByType(Text).map((t) => t.props.children as unknown);
+    expect(texts).toContain('Everything is done.');
+    expect(renderer.root.findAllByType(SymbolView)).toHaveLength(1);
+  });
+
   it('shows Next up without a voice card', () => {
     expect(textOf(TASK, null)).toContain('Next up');
   });
@@ -118,5 +153,68 @@ describe('tabText', () => {
 
   it('reads Now alone when nothing is waiting', () => {
     expect(tabText(CLEAR)).toBe('Now');
+  });
+});
+
+describe('TodayBody row marks', () => {
+  /**
+   * purpose: Render one Today row with the given mark and read what it draws.
+   * @param mark: (TodayRow['mark']) The row's mark.
+   * @return: (object) The row's accessibility value, time and label colors, symbol names and
+   *          the text drawn.
+   */
+  function renderRow(mark: TodayRow['mark']) {
+    const row: TodayRow = { key: 'r1', time: '8:00', label: 'Breakfast pills', mark };
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(<TodayBody rows={[row]} hidden={0} />);
+    });
+    const line = renderer.root.findByProps({ accessibilityLabel: '8:00, Breakfast pills' });
+    const colorOf = (text: string): unknown => {
+      const node = line.findAllByType(Text).find((t) => t.props.children === text);
+      return (StyleSheet.flatten(node!.props.style) as { color: unknown }).color;
+    };
+    return {
+      value: (line.props.accessibilityValue as { text: string } | undefined)?.text,
+      timeColor: colorOf('8:00'),
+      labelColor: colorOf('Breakfast pills'),
+      symbols: line.findAllByType(SymbolView).map((s) => s.props.name as string),
+      texts: line.findAllByType(Text).map((t) => t.props.children as unknown),
+    };
+  }
+
+  it('draws a missed row in grey with no check and no Now tag', () => {
+    const view = renderRow('missed');
+    expect(view.timeColor).toBe(ink.grey);
+    expect(view.labelColor).toBe(ink.grey);
+    expect(view.symbols).toEqual([]);
+    expect(view.texts).not.toContain('Now');
+  });
+
+  it('reads a missed row as earlier today, not marked done', () => {
+    const view = renderRow('missed');
+    expect(view.value).toBe('Earlier today, not marked done');
+    expect(view.value).not.toMatch(/missed|late|overdue|forgot|failed/i);
+  });
+
+  it('keeps a done row grey with a check', () => {
+    const view = renderRow('done');
+    expect(view.labelColor).toBe(ink.grey);
+    expect(view.symbols).toEqual(['checkmark']);
+    expect(view.value).toBe('Done');
+  });
+
+  it('keeps a plain row in ink with nothing added', () => {
+    const view = renderRow('none');
+    expect(view.timeColor).toBe(ink.ink);
+    expect(view.labelColor).toBe(ink.ink);
+    expect(view.symbols).toEqual([]);
+    expect(view.value).toBeUndefined();
+  });
+
+  it('keeps the Now row tagged', () => {
+    const view = renderRow('now');
+    expect(view.texts).toContain('Now');
+    expect(view.value).toBe('Now');
   });
 });

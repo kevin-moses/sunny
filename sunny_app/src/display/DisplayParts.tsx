@@ -17,12 +17,12 @@
 //   the left and Done still confirms what the screen shows. With nothing waiting, the voice
 //   card takes the whole body instead, because an answer of a few sentences only fits the
 //   full width at a size the senior can read across the room.
-// - TodayBody: today's tasks and events as rows; finished ones grey with a check, the Now task
-//   boxed with a black "Now" tag.
+// - TodayBody: today's tasks and events as rows; finished ones grey with a check, a task whose
+//   window closed unconfirmed grey without a check, the Now task boxed with a black "Now" tag.
 // The drawn keycaps only point at the physical Done and Talk keys; nothing here is pressable.
 // Text ignores the system text size because the canvas is a fixed page that scales as a whole.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { SymbolView } from 'expo-symbols';
 import type { SFSymbol } from 'expo-symbols';
@@ -30,7 +30,7 @@ import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';
 
-import { clockTime, displayTime } from '../day/format';
+import { clockTime, displayTime, SPOKEN } from '../day/format';
 import type { DayViewData } from '../day/types';
 import { doneQuestion, fullDate, taskIcon } from './model';
 import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
@@ -422,8 +422,9 @@ function NextCard({ item }: { item: NextItem }) {
 }
 
 /**
- * purpose: The Today screen's body: one row per task or event, and a closing line when some
- *          later rows did not fit.
+ * purpose: The Today screen's body: one row per task or event (finished rows grey with a
+ *          check, missed rows grey without one, the Now row boxed and tagged), and a closing
+ *          line when some later rows did not fit.
  * @param props: ({ rows: TodayRow[], hidden: number }) The rows and the count left out.
  * @return: (JSX.Element) The list.
  */
@@ -448,24 +449,45 @@ export function TodayBody({ rows, hidden }: { rows: TodayRow[]; hidden: number }
 }
 
 /**
+ * purpose: The screen reader state of a Today row.
+ * @param mark: (TodayRow['mark']) The row's mark.
+ * @return: ({ text: string } | undefined) "Done", "Now", the neutral "Earlier today, not marked
+ *          done" for a missed row, or nothing for a plain row.
+ */
+function todayRowValue(mark: TodayRow['mark']): { text: string } | undefined {
+  switch (mark) {
+    case 'done':
+      return { text: SPOKEN.done };
+    case 'now':
+      return { text: SPOKEN.now };
+    case 'missed':
+      return { text: SPOKEN.missed };
+    case 'none':
+      return undefined;
+  }
+}
+
+/**
  * purpose: One Today row: time, label, and a grey check (done) or a black "Now" tag (the Now
- *          task, which is also boxed).
+ *          task, which is also boxed). A missed row is grey with neither, and its screen reader
+ *          value is the neutral "Earlier today, not marked done".
  * @param props: ({ row: TodayRow }) The row.
  * @return: (JSX.Element) The row.
  */
 function TodayLine({ row }: { row: TodayRow }) {
   const done = row.mark === 'done';
   const now = row.mark === 'now';
+  const grey = done || row.mark === 'missed';
   return (
     <View
       accessible
       accessibilityLabel={`${row.time}, ${row.label}`}
-      accessibilityValue={done || now ? { text: done ? 'Done' : 'Now' } : undefined}
+      accessibilityValue={todayRowValue(row.mark)}
       style={[styles.row, now && styles.rowNow]}
     >
-      <DText style={[font.rowTime, styles.rowTime, done && styles.grey]}>{row.time}</DText>
+      <DText style={[font.rowTime, styles.rowTime, grey && styles.grey]}>{row.time}</DText>
       <DText
-        style={[now ? font.rowLabelNow : font.rowLabel, styles.rowLabel, done && styles.grey]}
+        style={[now ? font.rowLabelNow : font.rowLabel, styles.rowLabel, grey && styles.grey]}
         numberOfLines={1}
       >
         {row.label}

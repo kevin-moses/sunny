@@ -4,15 +4,25 @@
 // ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
 // coming week, the Done card (the task's label above one large Done button, and the result
 // line of the last press; a task that is not due yet gets a "Coming up at ..." heading and an
-// outlined "Done early" button), plus the offline mark the caregiver home also uses. The home
+// outlined "Done early" button; a task whose window closed unconfirmed is drawn dimmed, with
+// the empty circle), plus the offline mark the caregiver home also uses. The home
 // display has its own parts in src/display. Calm, high contrast, no motion.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
-import { displayTime, eventDetails, eventKey, isDone, isDue, whenText } from '../day/format';
+import {
+  displayTime,
+  eventDetails,
+  eventKey,
+  isDone,
+  isDue,
+  isMissed,
+  SPOKEN,
+  whenText,
+} from '../day/format';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
@@ -93,18 +103,20 @@ export function NextUpCard({ event, today }: { event: EventOccurrence; today: st
 
 /**
  * purpose: One agenda line: icon, time and text. A finished task is checked off and struck
- *          through; the due one is highlighted.
- * @param props: (AgendaRowData) icon (SF Symbol name), time, text, done and highlighted.
+ *          through; the due one is highlighted; a missed one keeps the empty circle with its
+ *          label in the dimmed time color (no strike, no highlight) and is spoken as "Earlier
+ *          today, not marked done".
+ * @param props: (AgendaRowData) icon (SF Symbol name), time, text, done, missed and highlighted.
  * @return: (JSX.Element) The row.
  */
-function AgendaRow({ icon, time, text, done, highlighted }: AgendaRowData) {
+function AgendaRow({ icon, time, text, done, missed, highlighted }: AgendaRowData) {
   const theme = useTheme();
   const label = `${time}, ${text}`;
   return (
     <View
       accessible
       accessibilityLabel={label}
-      accessibilityValue={{ text: done ? 'Done' : highlighted ? 'Due now' : '' }}
+      accessibilityValue={{ text: rowValue(done, missed, highlighted) }}
       style={{
         flexDirection: 'row',
         alignItems: 'center',
@@ -136,6 +148,7 @@ function AgendaRow({ icon, time, text, done, highlighted }: AgendaRowData) {
             flex: 1,
             fontSize: 22,
             fontWeight: highlighted ? '700' : '400',
+            color: missed ? colors.secondaryText : colors.text,
             textDecorationLine: done ? 'line-through' : 'none',
           },
         ]}
@@ -152,12 +165,27 @@ interface AgendaRowData {
   time: string;
   text: string;
   done: boolean;
+  missed: boolean;
   highlighted: boolean;
 }
 
 /**
- * purpose: Reduce an agenda line to what its row shows: tasks are checked off when done and
- *          highlighted when due; events (nothing to confirm) carry a calendar icon.
+ * purpose: The screen reader state of an agenda row.
+ * @param done: (boolean) The task is confirmed.
+ * @param missed: (boolean) The task's window closed unconfirmed.
+ * @param highlighted: (boolean) The task is due now.
+ * @return: (string) "Done", "Due now", the neutral missed wording, or an empty string.
+ */
+function rowValue(done: boolean, missed: boolean, highlighted: boolean): string {
+  if (done) return SPOKEN.done;
+  if (highlighted) return SPOKEN.dueNow;
+  return missed ? SPOKEN.missed : '';
+}
+
+/**
+ * purpose: Reduce an agenda line to what its row shows: tasks are checked off when done,
+ *          highlighted when due and dimmed when missed; events (nothing to confirm) carry a
+ *          calendar icon.
  * @param item: (AgendaItem) The task or event line.
  * @return: (AgendaRowData) The row's icon, time, text and state.
  */
@@ -168,6 +196,7 @@ function toRow(item: AgendaItem): AgendaRowData {
       time: displayTime(item.event.startTime),
       text: item.event.label,
       done: false,
+      missed: false,
       highlighted: false,
     };
   }
@@ -177,13 +206,15 @@ function toRow(item: AgendaItem): AgendaRowData {
     time: displayTime(item.task.scheduledTime),
     text: item.task.displayLabel,
     done,
+    missed: isMissed(item.task),
     highlighted: isDue(item.task),
   };
 }
 
 /**
  * purpose: Today's tasks and events in time order; finished tasks are checked off, the due
- *          one is highlighted, and events (nothing to confirm) carry a calendar icon.
+ *          one is highlighted, a missed one is dimmed with its empty circle, and events
+ *          (nothing to confirm) carry a calendar icon.
  * @param props: ({ items: AgendaItem[] }) The agenda.
  * @return: (JSX.Element) The list.
  */
