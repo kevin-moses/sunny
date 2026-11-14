@@ -24,9 +24,13 @@
 // take-back stamp: a queued press made at or before the instance's confirmTakenBackAt is
 // refused, so a stale press cannot re-confirm what a senior undo or a caregiver reopen took
 // back. A press without an age (a live confirm, voice, a caregiver's Mark done) is made now
-// and is never checked against the stamp.
+// and is never checked against the stamp. Press ids (the phone's queue gives each press a
+// random id, isPressId) replace the estimated times where both sides come from one device:
+// queuedPressTakenBack refuses a resend of an undone press id and skips the time rule after
+// this device's own undo; withTakenBackPressId keeps the last MAX_TAKEN_BACK_PRESS_IDS undone
+// ids.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import type { Doc } from "../_generated/dataModel";
 import { isAnytimeInstance, isAnytimeTask } from "./anytime";
@@ -84,6 +88,73 @@ export function seniorCanConfirm(instance: ConfirmRuleInput, now: number): boole
  */
 export function pressWasTakenBack(pressedAt: number, takenBackAt: number | undefined): boolean {
   return takenBackAt !== undefined && pressedAt <= takenBackAt;
+}
+
+/** A press id the phone's queue makes for each press: 16 to 64 URL-safe characters. */
+const PRESS_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** How many taken-back press ids an instance keeps (newest last). */
+export const MAX_TAKEN_BACK_PRESS_IDS = 8;
+
+/**
+ * purpose: Whether a value is a well-formed press id.
+ * @param value: (string) The id the device sent.
+ * @return: (boolean) True for 16 to 64 characters of letters, digits, "-" and "_".
+ */
+export function isPressId(value: string): boolean {
+  return PRESS_ID_PATTERN.test(value);
+}
+
+/** What the take-back check reads from a queued press. */
+export interface QueuedPress {
+  /** Epoch ms the press was made (server now minus the press age). */
+  pressedAt: number;
+  /** The press's id, when the device's queue gave it one. */
+  pressId: string | undefined;
+  /** The device account sending it (undefined only for a caller without a user, never a device). */
+  userId: string | undefined;
+}
+
+/**
+ * purpose: Whether a senior device's queued press must be refused because the confirmation was
+ *          taken back after it. A press with an id is refused when that id was undone before
+ *          (a resend of an undone press); otherwise, when the last take-back was this same
+ *          device's own undo, it is accepted without the time rule, because the device's queue
+ *          sends a task's entries strictly in order, so a different press arriving after its own
+ *          undo was made after it. Every other case (no id, a caregiver's reopen, another
+ *          device's undo, an instance taken back before ids existed) uses pressWasTakenBack.
+ * @param press: (QueuedPress) The press.
+ * @param instance: (Pick<Doc<"taskInstances">, "confirmTakenBackAt" | "confirmTakenBackBy" |
+ *        "takenBackPressIds">) The instance's take-back fields.
+ * @return: (boolean) True when the press must be refused.
+ */
+export function queuedPressTakenBack(
+  press: QueuedPress,
+  instance: Pick<
+    Doc<"taskInstances">,
+    "confirmTakenBackAt" | "confirmTakenBackBy" | "takenBackPressIds"
+  >,
+): boolean {
+  if (press.pressId !== undefined) {
+    if (instance.takenBackPressIds?.includes(press.pressId)) return true;
+    if (press.userId !== undefined && instance.confirmTakenBackBy === press.userId) return false;
+  }
+  return pressWasTakenBack(press.pressedAt, instance.confirmTakenBackAt);
+}
+
+/**
+ * purpose: The taken-back press ids after one more press is undone: newest last, at most
+ *          MAX_TAKEN_BACK_PRESS_IDS (the oldest falls out).
+ * @param ids: (string[] | undefined) The instance's takenBackPressIds.
+ * @param pressId: (string | undefined) The id of the press just undone; none adds nothing.
+ * @return: (string[] | undefined) The new list (undefined when there never was an id).
+ */
+export function withTakenBackPressId(
+  ids: string[] | undefined,
+  pressId: string | undefined,
+): string[] | undefined {
+  if (pressId === undefined) return ids;
+  return [...(ids ?? []), pressId].slice(-MAX_TAKEN_BACK_PRESS_IDS);
 }
 
 /** How long (ms) after the server recorded a senior device's confirm that device may undo it. */

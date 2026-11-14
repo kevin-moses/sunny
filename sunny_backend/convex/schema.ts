@@ -242,6 +242,16 @@ export default defineSchema({
     // an age made at or before this instant is refused (instances.confirmInstance), so a stale
     // press still held in a device's queue cannot confirm the task again. Never cleared.
     confirmTakenBackAt: v.optional(v.number()),
+    // Who last took the confirmation back (with confirmTakenBackAt): the device's user id for a
+    // senior undo, the caregiver's for a reopen. A press with an id from that same device skips
+    // the time rule (lib/confirmRule.queuedPressTakenBack). Never cleared.
+    confirmTakenBackBy: v.optional(v.string()),
+    // The id the phone's queue gave the press that confirmed the instance; cleared with the
+    // confirmation. A senior undo carrying a press id applies only when it matches.
+    confirmPressId: v.optional(v.string()),
+    // Ids of presses a senior undo took back, newest last, at most 8. A press resent with one
+    // of these ids is refused. Never cleared.
+    takenBackPressIds: v.optional(v.array(v.string())),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),
     claimedBy: v.optional(v.string()),
