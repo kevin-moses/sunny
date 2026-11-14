@@ -1,14 +1,15 @@
 // sunny_app/src/day/format.ts
 //
-// Purpose: Pure helpers for the day clock: task state checks (done, open, due), the
-// time-ordered agenda merge, plain-language time text (with AM and PM, or the home display's
+// Purpose: Pure helpers for the day clock: task state checks (done, missed, open, due), the
+// screen reader state wording both senior surfaces share (SPOKEN, neutral for a missed task),
+// the time-ordered agenda merge, plain-language time text (with AM and PM, or the home display's
 // clock form without), and relative day names. Dates and times from calendar.dayView are
 // already in the household's local time, so nothing here converts timezones (date arithmetic
 // lives in localDate.ts). Also the shared wording of an event line (eventDetails). Anytime
 // tasks (no time of day, done anytime that day) arrive with the scheduledTime sentinel
 // ANYTIME; they read "Anytime", are never "due", and are listed after the day's timed items.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-14
 
 import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
@@ -52,6 +53,29 @@ export function compareTaskTime(
  */
 export function isDone(task: DayTask): boolean {
   return task.state === 'confirmed' || task.state === 'resolved';
+}
+
+/**
+ * What a screen reader says for a row's state, shared by the phone agenda and the display's
+ * Today page. The missed wording is neutral on purpose: it must not suggest the senior failed
+ * or that the task is still to do.
+ */
+export const SPOKEN = {
+  done: 'Done',
+  now: 'Now',
+  dueNow: 'Due now',
+  missed: 'Earlier today, not marked done',
+} as const;
+
+/**
+ * purpose: Whether a task's confirmation window closed without a confirmation. Both senior
+ *          surfaces draw such a task dimmed (never as still to do, never as done); a later
+ *          confirmation moves it to confirmed or resolved, which is done.
+ * @param task: (DayTask) The task.
+ * @return: (boolean) True while its state is missed.
+ */
+export function isMissed(task: DayTask): boolean {
+  return task.state === 'missed';
 }
 
 /**

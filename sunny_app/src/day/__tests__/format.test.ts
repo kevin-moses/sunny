@@ -6,7 +6,7 @@
 // task state checks. Fixtures are built with small helpers that fill the fields the helpers do
 // not read, so each test states only what it cares about.
 //
-// Last modified: 2026-11-07
+// Last modified: 2026-11-13
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -21,6 +21,7 @@ import {
   isAnytime,
   isDone,
   isDue,
+  isMissed,
   isOpen,
   relativeDayName,
   whenText,
@@ -290,6 +291,11 @@ describe('task state checks', () => {
     expect(isDone(makeTask({ state: 'confirmed' }))).toBe(true);
     expect(isDone(makeTask({ state: 'resolved' }))).toBe(true);
     expect(isDone(makeTask({ state: 'due' }))).toBe(false);
+  });
+
+  it('treats only the missed state as missed', () => {
+    const states = ['upcoming', 'due', 'escalated', 'missed', 'confirmed', 'resolved'] as const;
+    expect(states.filter((state) => isMissed(makeTask({ state })))).toEqual(['missed']);
   });
 
   it('treats every task that is not done as open', () => {
