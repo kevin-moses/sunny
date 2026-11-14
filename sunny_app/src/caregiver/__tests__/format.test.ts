@@ -3,7 +3,8 @@
 // Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
 // alert detection (never for anytime tasks), messages and claim text, anytime rows listed last, leftover (carried-over) tasks,
 // the note input, the done detail line (who confirmed, surface), today's task rows (leftover
-// split, notes, checkboxState for editors, viewers and busy rows, note visibility), the
+// split, notes, checkboxState for editors, viewers, busy rows and reopenable done rows, the
+// row's reopenable flag, note visibility), the
 // events-only rows of any day (a separate row type from task rows), the planned task rows of a
 // selected future day (none for today, so today's tasks are not duplicated),
 // the selected-day title and fallback rule,
@@ -11,7 +12,7 @@
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -792,6 +793,47 @@ describe('checkboxState', () => {
   it('shows a task whose Mark done call is running as checked and not tappable', () => {
     expect(look('due', true, true)).toEqual({ kind: 'done', interactive: false });
     expect(look('missed', true, true)).toEqual({ kind: 'done', interactive: false });
+  });
+
+  describe('reopen', () => {
+    const reopenRow = (state: string, reopenable: boolean) =>
+      taskRows(makeDay({ tasks: [makeTask({ state, reopenable })] }))[0];
+
+    it('lets an editor tap a reopenable done task, which stays checked', () => {
+      for (const state of ['confirmed', 'resolved']) {
+        expect(checkboxState(reopenRow(state, true), { canEdit: true, busy: false })).toEqual({
+          kind: 'done',
+          interactive: true,
+        });
+      }
+    });
+
+    it('never lets a viewer reopen', () => {
+      expect(checkboxState(reopenRow('confirmed', true), { canEdit: false, busy: false })).toEqual({
+        kind: 'done',
+        interactive: false,
+      });
+    });
+
+    it('keeps a done task that is not reopenable as today', () => {
+      expect(checkboxState(reopenRow('confirmed', false), { canEdit: true, busy: false })).toEqual({
+        kind: 'done',
+        interactive: false,
+      });
+    });
+
+    it('is not tappable while a Reopen call runs', () => {
+      expect(checkboxState(reopenRow('confirmed', true), { canEdit: true, busy: true })).toEqual({
+        kind: 'done',
+        interactive: false,
+      });
+    });
+
+    it('takes the flag only for a done task', () => {
+      expect(reopenRow('confirmed', true).reopenable).toBe(true);
+      expect(reopenRow('due', true).reopenable).toBe(false);
+      expect(reopenRow('confirmed', false).reopenable).toBe(false);
+    });
   });
 });
 

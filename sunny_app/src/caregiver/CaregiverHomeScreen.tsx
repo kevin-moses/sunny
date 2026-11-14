@@ -6,7 +6,9 @@
 // tasks, then today's tasks in time order; editors tick any open task's checkbox, which marks it
 // done at once on the server and shows it checked, with a light haptic tap; for 5 seconds a
 // "Task completed / Undo" toast offers to take it back (a selection click, and the server
-// restores the task), only the latest tick has a toast; editors tap a task's text to open an
+// restores the task), only the latest tick has a toast; editors tap the checked box of a task
+// the day view marks reopenable to reopen it, after a native confirm alert and with no toast;
+// editors tap a task's text to open an
 // autosaving inline note editor, one at a time; saved notes show as a subtitle), the calendar
 // card (seven-day week strip whose cells choose the day shown; the dots mean events) with the
 // selected day's section directly below it: for today, its events only (its tasks are the list
@@ -23,7 +25,7 @@
 // editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses the keyboard on
 // drag, which closes (and saves) an open note.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { SymbolView } from 'expo-symbols';
 import { useCallback, useMemo, useState } from 'react';
@@ -112,7 +114,7 @@ export function CaregiverHomeScreen({
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const reduceMotion = useReduceMotion();
-  const { actions, claim, markDone, undoMarkDone, saveNote } = useTaskActions(userId);
+  const { actions, claim, markDone, undoMarkDone, reopen, saveNote } = useTaskActions(userId);
   const noteEditor = useNoteEditor(saveNote);
   const { id: toastId, show: showToast, dismiss: dismissToast } = useUndoToast<TaskInstanceId>();
   const [selection, setSelection] = useState<DaySelection | null>(null);
@@ -158,8 +160,8 @@ export function CaregiverHomeScreen({
   );
 
   const rowActions = useMemo<TaskRowActions>(
-    () => ({ states: actions, markDone: tick }),
-    [actions, tick],
+    () => ({ states: actions, markDone: tick, reopen: (id: TaskInstanceId) => void reopen(id) }),
+    [actions, tick, reopen],
   );
 
   const view = useMemo(() => {
