@@ -17,16 +17,25 @@
 //   POST /device/confirm  { instanceId, pressedAgoMs, via } with via button, widget,
 //                         live_activity or phone_app: instances.confirmPressedInstance as the
 //                         token's DeviceActor; 200 { status: "confirmed" | "rejected", reason
-//                         (null when confirmed), state } and the state's ETag. An instance of
-//                         another household gets exactly the answer a deleted one gets (nothing
-//                         is confirmed and nothing says whether it exists). pressedAgoMs is 0
-//                         to 7 days; a body is at most 4096 characters.
+//                         (null when confirmed), state } and the state's ETag. The state is read
+//                         after the press in its own query; if that fails, state is null (no
+//                         ETag) and the press still stands: the device fetches GET
+//                         /device/state. An instance of another household gets exactly the
+//                         answer a deleted one gets (nothing is confirmed and nothing says
+//                         whether it exists). pressedAgoMs is 0 to 7 days; a body is at most
+//                         4096 characters. Every refused press is audited as press_not_applied,
+//                         as instances.confirmPressedInstance does for its own refusals: an
+//                         unreadable body, a bad instance id, a press over 7 days old and
+//                         another household's instance (recorded without that id), at most 20
+//                         an hour per device (refusedPresses); past that the answer is the same
+//                         and nothing is written.
 //   PUT  /device/info     { screen?: { width, height, greys }, firmware? }: stored on the row;
 //                         204. Only those two fields can be changed.
 // A missing, malformed or unknown token is 401 with one fixed body. A bad body or instance id
 // is 400 (checked only after the token, so validation never answers an unauthenticated caller).
 // Each internal function resolves the device from the token hash again inside its own
-// transaction, so a device removed mid-request can do nothing more.
+// transaction, so a device removed mid-request can do nothing more. All three routes go through
+// deviceRoute, so every answer, an unexpected 500 included, carries Cache-Control: no-store.
 //
 // Rate limits (@convex-dev/rate-limiter, as pairing.ts): an authenticated request spends the
 // device's own bucket (120 a minute); a failed authentication spends a strict global bucket and
@@ -47,6 +56,7 @@ import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { action, httpAction, internalMutation, internalQuery, query } from "./_generated/server";
+import type { PublicHttpAction } from "convex/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { confirmPressedInstance } from "./instances";
 import { findDevice, requireUserId } from "./lib/access";
@@ -97,13 +107,27 @@ const SCREEN_GREYS = { min: 2, max: 256 };
  */
 const NO_SUCH_TASK = "The task no longer exists";
 
+/** Audit reasons for presses refused before instances.confirmPressedInstance sees them. */
+const REFUSED = {
+  unreadable: "The press could not be read",
+  badId: "The task id is not valid",
+  tooOld: "The press is too old",
+  notHere: "The task is not in this household",
+} as const;
+
+/** The 400 message for an instance id that is not one. */
+const BAD_ID_MESSAGE = "instanceId must be a task instance id";
+
 /**
  * Requests per minute: each device's own bucket for authenticated requests; failed
  * authentications spend a global bucket and, when an IP is known, a per-IP bucket. Token issues:
  * 10 an hour per device user (each one revokes the previous token and writes an audit row).
+ * Refused presses: 20 an hour per device are audited; past that they are answered the same way
+ * but leave no row, so a leaked token cannot fill the audit log.
  */
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   tokenIssues: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
+  refusedPresses: { kind: "token bucket", rate: 20, period: HOUR, capacity: 20 },
   deviceRequests: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 120 },
   deviceAuthFailedGlobal: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 60 },
   deviceAuthFailedPerIp: { kind: "token bucket", rate: 10, period: MINUTE, capacity: 10 },
@@ -125,16 +149,19 @@ interface InfoRequest {
 /** What admit answers: the token is unknown, its device is over its limit, or it may go on. */
 type Admission = { kind: "unknown" } | { kind: "limited"; retryAfter: number } | { kind: "ok" };
 
+/** A confirm body that cannot be applied: the 400 message and what the audit row records. */
+interface RefusedRequest {
+  message: string;
+  reason: string;
+  pressedAgoMs: number | null;
+  via: DeviceVia | null;
+}
+
 /** What confirmByToken answers. */
 type ConfirmOutcome =
   | { kind: "unauthorized" }
   | { kind: "bad_instance" }
-  | {
-      kind: "done";
-      status: "confirmed" | "rejected";
-      reason: string | null;
-      state: DeviceState;
-    };
+  | { kind: "done"; status: "confirmed" | "rejected"; reason: string | null };
 
 /**
  * purpose: The device a token hash belongs to.
@@ -277,9 +304,42 @@ export const stateByToken = internalQuery({
 });
 
 /**
- * purpose: Confirm a press for a device: an instance of another household is answered exactly
- *          like a deleted one (rejected, NO_SUCH_TASK) and nothing is written; otherwise
- *          instances.confirmPressedInstance decides (and audits a press it cannot apply).
+ * purpose: Audit a press this module refuses before instances.confirmPressedInstance sees it, as
+ *          that function audits its own refusals (action press_not_applied), while the device's
+ *          refused-press bucket has room; past it nothing is written. Never records a foreign
+ *          instance id or the raw text the device sent.
+ * @param ctx: (MutationCtx) Context.
+ * @param device: (Doc<"devices">) The device that pressed.
+ * @param reason: (string) One of REFUSED.
+ * @param press: ({ pressedAgoMs, via }) What is known of the press; null when unreadable.
+ * @return: (Promise<void>)
+ */
+async function auditRefusal(
+  ctx: MutationCtx,
+  device: Doc<"devices">,
+  reason: string,
+  press: { pressedAgoMs: number | null; via: DeviceVia | null },
+): Promise<void> {
+  const limit = await rateLimiter.limit(ctx, "refusedPresses", { key: device._id });
+  if (!limit.ok) return;
+  const detail: Record<string, unknown> = { reason, receivedAt: Date.now() };
+  if (press.pressedAgoMs !== null) detail.pressedAgoMs = press.pressedAgoMs;
+  if (press.via !== null) detail.via = press.via;
+  await audit(ctx, {
+    householdId: device.householdId,
+    actor: deviceActor(device),
+    action: "press_not_applied",
+    entity: "task_instance",
+    detail,
+  });
+}
+
+/**
+ * purpose: Confirm a press for a device. An instance of another household is answered exactly
+ *          like a deleted one (rejected, NO_SUCH_TASK), is left alone, and is audited in the
+ *          device's own household without its id. A missing instance goes to
+ *          instances.confirmPressedInstance (which audits it) only while the refused-press bucket
+ *          has room. Everything else is instances.confirmPressedInstance's decision.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (DeviceActor) The device.
  * @param args: ({ instanceId, via, pressedAgoMs }) The press.
@@ -294,8 +354,12 @@ async function confirmForDevice(
 ): Promise<{ status: "confirmed" | "rejected"; reason: string | null }> {
   const instance = await ctx.db.get(args.instanceId);
   if (instance !== null && instance.householdId !== actor.householdId) {
-    console.warn(`deviceApi: device ${actor.device._id} pressed another household's task`);
+    await auditRefusal(ctx, actor.device, REFUSED.notHere, args);
     return { status: "rejected", reason: NO_SUCH_TASK };
+  }
+  if (instance === null) {
+    const limit = await rateLimiter.limit(ctx, "refusedPresses", { key: actor.device._id });
+    if (!limit.ok) return { status: "rejected", reason: NO_SUCH_TASK };
   }
   const result = await confirmPressedInstance(ctx, actor, args, now);
   return result.status === "confirmed"
@@ -304,14 +368,15 @@ async function confirmForDevice(
 }
 
 /**
- * purpose: Confirm a press for the token's device and return the fresh device state in the same
- *          transaction. Internal.
+ * purpose: Confirm a press for the token's device. Only the press is decided here; the HTTP
+ *          route reads the fresh state afterwards, so a failure to build the state can never
+ *          roll back a confirmation. Internal.
  * @param tokenHash: (string) SHA-256 hex of the token.
  * @param instanceId: (string) The instance id as the device sent it.
  * @param via: (DeviceVia) The surface.
  * @param pressedAgoMs: (number) How long ago (ms) the press happened; zero or more.
  * @return: (ConfirmOutcome) unauthorized (token no longer resolves), bad_instance (not an
- *          instance id), or done with the status, reason and state.
+ *          instance id; audited), or done with the status and reason.
  */
 export const confirmByToken = internalMutation({
   args: { tokenHash: v.string(), instanceId: v.string(), via: deviceVia, pressedAgoMs: v.number() },
@@ -319,15 +384,40 @@ export const confirmByToken = internalMutation({
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
     if (device === null) return { kind: "unauthorized" };
     const instanceId = ctx.db.normalizeId("taskInstances", args.instanceId);
-    if (instanceId === null) return { kind: "bad_instance" };
-    const now = Date.now();
+    if (instanceId === null) {
+      await auditRefusal(ctx, device, REFUSED.badId, args);
+      return { kind: "bad_instance" };
+    }
     const result = await confirmForDevice(
       ctx,
       deviceActor(device),
       { instanceId, via: args.via, pressedAgoMs: args.pressedAgoMs },
-      now,
+      Date.now(),
     );
-    return { kind: "done", ...result, state: await loadDeviceState(ctx, device.householdId, now) };
+    return { kind: "done", ...result };
+  },
+});
+
+/**
+ * purpose: Audit a confirm body the HTTP route refused (unreadable, a bad id, a press too old)
+ *          for the token's device, within its refused-press bucket. Internal.
+ * @param tokenHash: (string) SHA-256 hex of the token.
+ * @param reason: (string) One of REFUSED.
+ * @param pressedAgoMs: (number | null) The press age when the body had a finite number.
+ * @param via: (DeviceVia | null) The surface when the body named a valid one.
+ * @return: (null)
+ */
+export const refusePressByToken = internalMutation({
+  args: {
+    tokenHash: v.string(),
+    reason: v.string(),
+    pressedAgoMs: v.union(v.number(), v.null()),
+    via: v.union(deviceVia, v.null()),
+  },
+  handler: async (ctx, args): Promise<null> => {
+    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
+    if (device !== null) await auditRefusal(ctx, device, args.reason, args);
+    return null;
   },
 });
 
@@ -367,22 +457,22 @@ function unauthorizedResponse(): Response {
 }
 
 /**
- * purpose: Answer a failed authentication: spend the global and per-IP failed buckets; 429 when
- *          either is empty, else 401.
+ * purpose: Answer a failed authentication: spend the global failed bucket, then the per-IP one;
+ *          429 when either is empty, else 401. Once the global bucket is empty the per-IP bucket
+ *          is not touched, so a flood of forged forwarded-for values creates no limiter rows.
  * @param ctx: (ActionCtx) Action context.
  * @param request: (Request) The HTTP request.
  * @return: (Promise<Response>) The response.
  */
 async function refuseAuthentication(ctx: ActionCtx, request: Request): Promise<Response> {
-  const waits: number[] = [];
   const global = await rateLimiter.limit(ctx, "deviceAuthFailedGlobal");
-  if (!global.ok) waits.push(global.retryAfter);
+  if (!global.ok) return rateLimitedResponse(global.retryAfter);
   const key = ipKey(request);
   if (key !== null) {
     const perIp = await rateLimiter.limit(ctx, "deviceAuthFailedPerIp", { key });
-    if (!perIp.ok) waits.push(perIp.retryAfter);
+    if (!perIp.ok) return rateLimitedResponse(perIp.retryAfter);
   }
-  return waits.length > 0 ? rateLimitedResponse(Math.max(...waits)) : unauthorizedResponse();
+  return unauthorizedResponse();
 }
 
 /**
@@ -436,31 +526,54 @@ function unknownKey(body: Record<string, unknown>, allowed: readonly string[]): 
 }
 
 /**
+ * purpose: A refused confirm body, keeping only the parts of it that are safe to audit: a finite
+ *          press age and a valid surface.
+ * @param message: (string) The 400 message.
+ * @param reason: (string) The audit reason (one of REFUSED).
+ * @param body: (Record<string, unknown> | null) The body, or null when unreadable.
+ * @return: (RefusedRequest) The refusal.
+ */
+function refusedRequest(
+  message: string,
+  reason: string,
+  body: Record<string, unknown> | null,
+): RefusedRequest {
+  const age = body?.pressedAgoMs;
+  const via = body?.via;
+  return {
+    message,
+    reason,
+    pressedAgoMs: typeof age === "number" && Number.isFinite(age) ? age : null,
+    via:
+      typeof via === "string" && (DEVICE_VIAS as readonly string[]).includes(via)
+        ? (via as DeviceVia)
+        : null,
+  };
+}
+
+/**
  * purpose: Validate the body of POST /device/confirm.
  * @param body: (Record<string, unknown>) The JSON object.
- * @return: (ConfirmRequest | string) The press, or an error message.
+ * @return: (ConfirmRequest | RefusedRequest) The press, or why it is refused.
  */
-function parseConfirmRequest(body: Record<string, unknown>): ConfirmRequest | string {
+function parseConfirmRequest(body: Record<string, unknown>): ConfirmRequest | RefusedRequest {
   const extra = unknownKey(body, ["instanceId", "pressedAgoMs", "via"]);
-  if (extra !== null) return extra;
+  if (extra !== null) return refusedRequest(extra, REFUSED.unreadable, body);
   const { instanceId, pressedAgoMs, via } = body;
   if (
     typeof instanceId !== "string" ||
     instanceId === "" ||
     instanceId.length > MAX_INSTANCE_ID_LENGTH
   ) {
-    return "instanceId must be a task instance id";
+    return refusedRequest(BAD_ID_MESSAGE, REFUSED.badId, body);
   }
-  if (
-    typeof pressedAgoMs !== "number" ||
-    !Number.isFinite(pressedAgoMs) ||
-    pressedAgoMs < 0 ||
-    pressedAgoMs > MAX_PRESS_AGE_MS
-  ) {
-    return `pressedAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`;
+  const ageMessage = `pressedAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`;
+  if (typeof pressedAgoMs !== "number" || !Number.isFinite(pressedAgoMs) || pressedAgoMs < 0) {
+    return refusedRequest(ageMessage, REFUSED.unreadable, body);
   }
+  if (pressedAgoMs > MAX_PRESS_AGE_MS) return refusedRequest(ageMessage, REFUSED.tooOld, body);
   if (typeof via !== "string" || !(DEVICE_VIAS as readonly string[]).includes(via)) {
-    return `via must be one of ${DEVICE_VIAS.join(", ")}`;
+    return refusedRequest(`via must be one of ${DEVICE_VIAS.join(", ")}`, REFUSED.unreadable, body);
   }
   return { instanceId, pressedAgoMs, via: via as DeviceVia };
 }
@@ -540,6 +653,42 @@ function etagMatches(header: string | null, etag: string): boolean {
 function etagOf(state: DeviceState): string {
   return `"${state.version}"`;
 }
+/**
+ * purpose: An HTTP device route whose every answer, an unexpected failure included, is a JSON
+ *          response with Cache-Control: no-store (Convex's own 500 would carry no such header).
+ * @param fallback: (string) The 500 message.
+ * @param handle: ((ctx, request) => Promise<Response>) The route.
+ * @return: (PublicHttpAction) The HTTP action.
+ */
+function deviceRoute(
+  fallback: string,
+  handle: (ctx: ActionCtx, request: Request) => Promise<Response>,
+): PublicHttpAction {
+  return httpAction(async (ctx, request) => {
+    try {
+      return await handle(ctx, request);
+    } catch (e) {
+      return convexErrorResponse(e, "deviceApi", fallback);
+    }
+  });
+}
+
+/**
+ * purpose: The device state after a press, read in its own query so a failure to build it never
+ *          undoes the press.
+ * @param ctx: (ActionCtx) Action context.
+ * @param tokenHash: (string) SHA-256 hex of the token.
+ * @return: (Promise<DeviceState | null>) The state, or null when it could not be read or the
+ *          device is gone (the device then fetches it with GET /device/state).
+ */
+async function stateAfterPress(ctx: ActionCtx, tokenHash: string): Promise<DeviceState | null> {
+  try {
+    return await ctx.runQuery(internal.deviceApi.stateByToken, { tokenHash });
+  } catch (e) {
+    console.error(`deviceApi: state after a press could not be read: ${String(e)}`);
+    return null;
+  }
+}
 
 /**
  * purpose: GET /device/state: the token's device state with its ETag; 304 when If-None-Match
@@ -548,50 +697,49 @@ function etagOf(state: DeviceState): string {
  * @param request: (Request) The HTTP request.
  * @return: (Response) The response.
  */
-export const getState = httpAction(async (ctx, request) => {
+export const getState = deviceRoute("Could not load the device state", async (ctx, request) => {
   const tokenHash = await gate(ctx, request);
   if (tokenHash instanceof Response) return tokenHash;
-  try {
-    const state = await ctx.runQuery(internal.deviceApi.stateByToken, { tokenHash });
-    if (state === null) return unauthorizedResponse();
-    const etag = etagOf(state);
-    if (etagMatches(request.headers.get("If-None-Match"), etag)) {
-      return new Response(null, { status: 304, headers: { ...NO_STORE, ETag: etag } });
-    }
-    return jsonResponse(state, 200, { ETag: etag });
-  } catch (e) {
-    return convexErrorResponse(e, "deviceApi", "Could not load the device state");
+  const state = await ctx.runQuery(internal.deviceApi.stateByToken, { tokenHash });
+  if (state === null) return unauthorizedResponse();
+  const etag = etagOf(state);
+  if (etagMatches(request.headers.get("If-None-Match"), etag)) {
+    return new Response(null, { status: 304, headers: { ...NO_STORE, ETag: etag } });
   }
+  return jsonResponse(state, 200, { ETag: etag });
 });
 
 /**
  * purpose: POST /device/confirm: confirm a press as the token's device. 200 { status, reason,
- *          state } with the state's ETag; 400 bad body or instance id; 401 bad token; 429 rate
- *          limited.
+ *          state } with the state's ETag; state is null (and there is no ETag) when it could not
+ *          be read after the press, which stands. 400 bad body or instance id (audited); 401 bad
+ *          token; 429 rate limited.
  * @param ctx: (ActionCtx) Action context.
  * @param request: (Request) The HTTP request.
  * @return: (Response) The response.
  */
-export const confirm = httpAction(async (ctx, request) => {
+export const confirm = deviceRoute("Could not confirm the task", async (ctx, request) => {
   const tokenHash = await gate(ctx, request);
   if (tokenHash instanceof Response) return tokenHash;
   const body = await readJsonObject(request);
-  const press = typeof body === "string" ? body : parseConfirmRequest(body);
-  if (typeof press === "string") return errorResponse(400, "invalid", press);
-  try {
-    const outcome = await ctx.runMutation(internal.deviceApi.confirmByToken, {
-      tokenHash,
-      ...press,
-    });
-    if (outcome.kind === "unauthorized") return unauthorizedResponse();
-    if (outcome.kind === "bad_instance") {
-      return errorResponse(400, "invalid", "instanceId must be a task instance id");
-    }
-    const { status, reason, state } = outcome;
-    return jsonResponse({ status, reason, state }, 200, { ETag: etagOf(state) });
-  } catch (e) {
-    return convexErrorResponse(e, "deviceApi", "Could not confirm the task");
+  const press =
+    typeof body === "string"
+      ? refusedRequest(body, REFUSED.unreadable, null)
+      : parseConfirmRequest(body);
+  if ("message" in press) {
+    const { message, ...refusal } = press;
+    await ctx.runMutation(internal.deviceApi.refusePressByToken, { tokenHash, ...refusal });
+    return errorResponse(400, "invalid", message);
   }
+  const outcome = await ctx.runMutation(internal.deviceApi.confirmByToken, {
+    tokenHash,
+    ...press,
+  });
+  if (outcome.kind === "unauthorized") return unauthorizedResponse();
+  if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
+  const state = await stateAfterPress(ctx, tokenHash);
+  const { status, reason } = outcome;
+  return jsonResponse({ status, reason, state }, 200, state ? { ETag: etagOf(state) } : {});
 });
 
 /**
@@ -601,19 +749,15 @@ export const confirm = httpAction(async (ctx, request) => {
  * @param request: (Request) The HTTP request.
  * @return: (Response) The response.
  */
-export const putInfo = httpAction(async (ctx, request) => {
+export const putInfo = deviceRoute("Could not store the device info", async (ctx, request) => {
   const tokenHash = await gate(ctx, request);
   if (tokenHash instanceof Response) return tokenHash;
   const body = await readJsonObject(request);
   const info = typeof body === "string" ? body : parseInfoRequest(body);
   if (typeof info === "string") return errorResponse(400, "invalid", info);
-  try {
-    const stored = await ctx.runMutation(internal.deviceApi.updateInfoByToken, {
-      tokenHash,
-      ...info,
-    });
-    return stored ? new Response(null, { status: 204, headers: NO_STORE }) : unauthorizedResponse();
-  } catch (e) {
-    return convexErrorResponse(e, "deviceApi", "Could not store the device info");
-  }
+  const stored = await ctx.runMutation(internal.deviceApi.updateInfoByToken, {
+    tokenHash,
+    ...info,
+  });
+  return stored ? new Response(null, { status: 204, headers: NO_STORE }) : unauthorizedResponse();
 });

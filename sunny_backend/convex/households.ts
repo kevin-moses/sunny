@@ -11,7 +11,7 @@
 // and the client's retry nonce on the device row so /pair can answer a retry whose first
 // response was lost (findRecentPairing); listDevices never returns the nonce or the device
 // token's hash (deviceApi.ts). Removing a device deletes its row, which revokes its device
-// token at once.
+// token at once; revokeDeviceToken revokes only the token and keeps the device paired.
 // Google Calendar: update schedules a re-push of the events (lib/calendarSync.ts, chunked, not
 // inline) when the timezone, event notice time or senior's preferred name actually changes or
 // a pause ends; removeMember drops the removed caregiver's Google connections, links and
@@ -30,7 +30,7 @@
 // update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
 // clears it).
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -52,6 +52,7 @@ import {
   requireReader,
   requireUserId,
 } from "./lib/access";
+import { audit } from "./lib/audit";
 import { dropMemberConnections, resyncHouseholdCalendars } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
@@ -697,6 +698,37 @@ export const removeDevice = mutation({
       .collect();
     for (const token of tokens) await ctx.db.delete(token._id);
     await ctx.scheduler.runAfter(0, internal.pairing.deleteClerkUser, { userId: device.userId });
+    return null;
+  },
+});
+
+/**
+ * purpose: Revoke a device's token for the HTTP device API without unpairing it: the token stops
+ *          working at once and the device keeps its Clerk sign-in (it can issue a new token with
+ *          deviceApi.issueToken). Editors only. Audited as revoke_device_token.
+ * @param householdId: (Id<"households">) Household.
+ * @param deviceId: (Id<"devices">) The device.
+ * @return: (null)
+ * @raises forbidden for a viewer, a device or a caregiver of another household; not_found when
+ *         the device is not in the household.
+ */
+export const revokeDeviceToken = mutation({
+  args: { householdId: v.id("households"), deviceId: v.id("devices") },
+  handler: async (ctx, args): Promise<null> => {
+    const actor = await requireEditor(ctx, args.householdId);
+    const device = await ctx.db.get(args.deviceId);
+    if (!device || device.householdId !== args.householdId) {
+      throw appError("not_found", "Device not found");
+    }
+    await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
+    await audit(ctx, {
+      householdId: args.householdId,
+      actor,
+      action: "revoke_device_token",
+      entity: "device",
+      entityId: device._id,
+      detail: { hadToken: device.tokenHash !== undefined },
+    });
     return null;
   },
 });

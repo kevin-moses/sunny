@@ -9,10 +9,12 @@
 // and missed tasks are never targeted, a carried-over task is overdue, promptTimes against a
 // policy with prompts at 0 and 15 minutes, a snoozed instance, a task created after its window
 // opened, tomorrow's instance inside the 24 hours (and one outside), the header and date lines,
-// the null convention, the tuning values, and that version changes when and only when the
-// content changes (generatedAt excluded), with the FNV-1a and canonical JSON helpers.
+// the null convention, the tuning values, an allowlist of the state's keys at every level, and
+// that version changes when and only when the content changes (generatedAt excluded) while
+// displayVersion changes only with what is drawn (rows, the hidden count; not a passing prompt
+// time), with the FNV-1a and canonical JSON helpers.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import { describe, expect, it } from "vitest";
 import {
@@ -587,6 +589,81 @@ describe("cues", () => {
   });
 });
 
+describe("the state's shape", () => {
+  it("has exactly the allowed keys at every level", () => {
+    const state = stateOf({
+      tasks: [makeTask({ state: "due", checklistItems: ["Wash", "Dry"] })],
+      eventsToday: [makeEvent()],
+      upcoming: [makeEvent({ localDate: "2026-11-08" })],
+      cueInputs: [cueInput({ state: "due" })],
+    });
+    /**
+     * purpose: The sorted keys of an object.
+     * @param value: (unknown) An object.
+     * @return: (string[]) Its keys.
+     */
+    const keys = (value: unknown): string[] => Object.keys(value as object).sort();
+    expect(keys(state)).toEqual(
+      [
+        "version",
+        "displayVersion",
+        "generatedAt",
+        "seniorPreferredName",
+        "timezone",
+        "utcOffsetMinutes",
+        "localDate",
+        "header",
+        "dateLabel",
+        "fullDate",
+        "now",
+        "done",
+        "nextUp",
+        "rows",
+        "rowsHidden",
+        "cues",
+        "tuning",
+      ].sort(),
+    );
+    expect(keys(state.now)).toEqual(["allDone", "kind", "task"]);
+    expect(keys(state.now.task)).toEqual(
+      [
+        "instanceId",
+        "type",
+        "label",
+        "time",
+        "icon",
+        "question",
+        "pillDescription",
+        "overdue",
+        "early",
+        "steps",
+      ].sort(),
+    );
+    expect(keys(state.done)).toEqual(["early", "instanceId"]);
+    expect(keys(state.nextUp)).toEqual(["icon", "initial", "title", "when"]);
+    expect(state.rows.length).toBeGreaterThan(0);
+    for (const row of state.rows) expect(keys(row)).toEqual(["key", "label", "mark", "time"]);
+    expect(state.cues.length).toBeGreaterThan(0);
+    for (const cue of state.cues) {
+      expect(keys(cue)).toEqual(
+        [
+          "instanceId",
+          "localDate",
+          "speech",
+          "cueableNow",
+          "seniorPrompts",
+          "snoozed",
+          "snoozedUntil",
+          "promptTimes",
+        ].sort(),
+      );
+    }
+    expect(keys(state.tuning)).toEqual(["carousel", "checkAfterMs"]);
+    expect(keys(state.tuning.checkAfterMs)).toEqual(["battery", "powered"]);
+    expect(keys(state.tuning.carousel)).toEqual(["intervalMs", "pages"]);
+  });
+});
+
 describe("version", () => {
   const input = makeInput({
     tasks: [makeTask({ state: "due" })],
@@ -627,6 +704,38 @@ describe("version", () => {
     expect(before.cues[0]!.promptTimes).toEqual([local("08:15")]);
     expect(after.cues[0]!.promptTimes).toEqual([]);
     expect(after.version).not.toBe(before.version);
+    expect(after.displayVersion).toBe(before.displayVersion);
+  });
+
+  it("changes displayVersion with what is drawn, and version with it", () => {
+    const base = buildDeviceState(input, NOW);
+    const confirmed = buildDeviceState(
+      { ...input, tasks: [makeTask({ state: "confirmed" })] },
+      NOW,
+    );
+    expect(base.displayVersion).toMatch(/^[0-9a-f]{16}$/);
+    expect(confirmed.rows).not.toEqual(base.rows);
+    expect(confirmed.displayVersion).not.toBe(base.displayVersion);
+    expect(confirmed.version).not.toBe(base.version);
+  });
+
+  it("changes displayVersion when only the count of hidden rows changes", () => {
+    /**
+     * purpose: The state for a number of upcoming hourly tasks from 10:00.
+     * @param count: (number) How many tasks.
+     * @return: The device state.
+     */
+    const withTasks = (count: number) =>
+      stateOf({
+        tasks: Array.from({ length: count }, (_, i) =>
+          makeTask({ instanceId: `t${i}`, scheduledTime: `${10 + i}:00` }),
+        ),
+      });
+    const nine = withTasks(9);
+    const ten = withTasks(10);
+    expect(ten.rows).toEqual(nine.rows);
+    expect(ten.rowsHidden).toBe(nine.rowsHidden + 1);
+    expect(ten.displayVersion).not.toBe(nine.displayVersion);
   });
 
   it("hashes canonical JSON (key order does not matter) with FNV-1a 64", () => {

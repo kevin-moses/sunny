@@ -32,7 +32,8 @@
 // Absent optional values are null, never a missing key. Times shown to the senior are
 // household-local strings in the app's formats; instants are epoch ms. version is a short hash
 // (FNV-1a 64 over canonical JSON) of everything except generatedAt: a change detector for ETag,
-// not a secret.
+// not a secret. displayVersion hashes only what a panel draws, so a battery display repaints
+// only when that changes, not when a cue time passes.
 //
 // Last modified: 2026-11-14
 
@@ -239,8 +240,14 @@ export interface Cue {
 
 /** Everything a senior surface renders. */
 export interface DeviceState {
-  /** Hash of every other field except generatedAt; changes exactly when the content does. */
+  /** Hash of every other field except generatedAt and displayVersion (the ETag). */
   version: string;
+  /**
+   * Hash of only what a panel draws (localDate, dateLabel, fullDate, header, now, done, nextUp,
+   * rows, rowsHidden): a display repaints only when this changes. New cue times change version
+   * but not this.
+   */
+  displayVersion: string;
   /** When the state was computed (epoch ms). */
   generatedAt: number;
   seniorPreferredName: string;
@@ -577,7 +584,23 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
     cues: cueList(input.cueInputs, now),
     tuning: deviceTuning(),
   };
-  return { version: fnv1a64(canonicalJson(content)), generatedAt: now, ...content };
+  const drawn = {
+    localDate: content.localDate,
+    dateLabel: content.dateLabel,
+    fullDate: content.fullDate,
+    header: content.header,
+    now: content.now,
+    done: content.done,
+    nextUp: content.nextUp,
+    rows: content.rows,
+    rowsHidden: content.rowsHidden,
+  };
+  return {
+    version: fnv1a64(canonicalJson(content)),
+    displayVersion: fnv1a64(canonicalJson(drawn)),
+    generatedAt: now,
+    ...content,
+  };
 }
 
 /** A task and the escalation steps it can fire. */
@@ -591,14 +614,24 @@ type TaskSteps = { task: Doc<"tasks">; steps: EscalationStep[] };
  */
 function taskStepsLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<TaskSteps | null> {
   const cache = new Map<Id<"tasks">, Promise<TaskSteps | null>>();
-  return (taskId) => {
+  /**
+   * purpose: Read one task and the steps it can fire.
+   * @param taskId: (Id<"tasks">) The task.
+   * @return: (Promise<TaskSteps | null>) The task and its steps, or null when it is gone.
+   */
+  const read = async (taskId: Id<"tasks">): Promise<TaskSteps | null> => {
+    const task = await ctx.db.get(taskId);
+    return task === null ? null : { task, steps: (await activePolicySteps(ctx, task)) ?? [] };
+  };
+  /**
+   * purpose: The task and its steps, read on the first request for it and shared afterwards.
+   * @param taskId: (Id<"tasks">) The task.
+   * @return: (Promise<TaskSteps | null>) The task and its steps, or null when it is gone.
+   */
+  return (taskId: Id<"tasks">): Promise<TaskSteps | null> => {
     let loaded = cache.get(taskId);
     if (loaded === undefined) {
-      loaded = ctx.db
-        .get(taskId)
-        .then(async (task) =>
-          task === null ? null : { task, steps: (await activePolicySteps(ctx, task)) ?? [] },
-        );
+      loaded = read(taskId);
       cache.set(taskId, loaded);
     }
     return loaded;

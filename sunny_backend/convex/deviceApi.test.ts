@@ -1,23 +1,31 @@
 // convex/deviceApi.test.ts
-// Purpose: Tests for the device API (deviceApi.ts) with convex-test and a frozen clock (Date
-// only, so the rate limiter's buckets never refill mid-test). Token: issue (format, only the
-// hash stored, audited without the token), rotation (the old token gets 401), removal revokes at
-// once, the hash never appears in listDevices or any response, the token never in a log line,
-// a caregiver or signed-out caller cannot issue, at most 10 issues an hour. Authentication: 401 for missing, malformed and
-// unknown tokens with one identical body; the failed-attempt buckets (global and per-IP) turn
-// 401 into 429 with Retry-After while a valid token keeps working; the per-device bucket.
-// State: ETag and 304 (weak and list forms), the Clerk query and the HTTP route return the same
-// object, the query refuses caregivers and signed-out callers, the loader's cues against the
-// real scheduler (prompt instants predicted before 08:00 are exactly when the tick sends them)
-// and tomorrow's instance inside the 24 hours. Confirm: success (instance confirmed with the
-// device's via and user, fresh state and ETag returned), rejected for a deleted instance
-// (audited), another household's instance answered exactly like a deleted one and left alone,
-// 400 for bad bodies, ids and press ages over 7 days (only after the token is accepted), and
-// for a body over 4096 characters. Info: stored and trimmed, 204,
-// validation, no other field writable. lastSeenAt written at most every 5 minutes, and not
-// for a failed authentication.
+// Purpose: Tests for the device API (deviceApi.ts) and the caregiver's token revoke
+// (households.revokeDeviceToken) with convex-test and a frozen clock (Date only, so the rate
+// limiter's buckets never refill mid-test).
+// Token: issue (format, only the hash stored, audited without the token), rotation (the old token
+// gets 401), at most 10 issues an hour, removal revokes at once, a caregiver revoke (editor only;
+// a viewer, a device and another household's editor refused; the device stays paired), the hash
+// in no listDevices or response and the token in no log or audit row, a caregiver or signed-out
+// caller cannot issue.
+// Authentication: one identical 401 for missing, malformed and unknown tokens; the failed-attempt
+// buckets (global and per-IP, the per-IP one untouched while the global one is empty) turn 401
+// into 429 while a valid token keeps working; the per-device bucket; no-store on 401, 400, 429
+// and an unexpected 500 on every route.
+// State: ETag and 304 (weak, list and "*" forms), the Clerk query and the HTTP route return the
+// same object, the query refuses caregivers and signed-out callers, cue prompt instants match
+// the real scheduler's ticks, tomorrow's instance inside the 24 hours.
+// Confirm: success (device's via, confirmedBy and audit actor; fresh state and ETag), a press
+// that stands when the state cannot be read afterwards (state null), missed and anytime
+// instances by id, replayed presses (late sync at the press time, too early, too late), a
+// deleted instance (rejected, audited), another household's instance (same answer as a deleted
+// one, left alone, audited without its id), 400 for bad bodies, ids and press ages (each
+// audited, nothing raw stored), the 20-an-hour cap on refusal rows, and a body over 4096
+// characters.
+// Info: stored and trimmed, 204, validation, no other field writable. A device removed between
+// the gate and the effect: every by-token function finds nothing and writes nothing.
+// lastSeenAt: written at most every 5 minutes, not for a failed authentication.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import workpoolTest from "@convex-dev/workpool/test";
@@ -220,6 +228,15 @@ async function deviceRow(t: TestConvex, deviceId: Id<"devices">) {
 }
 
 /**
+ * purpose: Every audit row, oldest first.
+ * @param t: (TestConvex) Harness.
+ * @return: The rows.
+ */
+async function audits(t: TestConvex) {
+  return await t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+}
+
+/**
  * purpose: Force an instance's fields (the scheduler is not run unless a test runs it).
  * @param f: (Fixture) Fixture.
  * @param patch: (Record<string, unknown>) Fields to set.
@@ -364,11 +381,15 @@ describe("issueToken", () => {
       expect(text).not.toContain(hash);
       expect(text).not.toContain(token);
     }
-    // Pressing another household's task logs a warning; it must not carry the token either.
+    // Refused presses and failures are audited or logged; none of it carries the token either.
     const theirs = await household(t, "z_");
     await postConfirm(t, token, { instanceId: theirs.instanceId, pressedAgoMs: 0, via: "widget" });
-    expect(logged.some((line) => line.includes("another household"))).toBe(true);
-    expect(logged.some((line) => line.includes(token) || line.includes(hash))).toBe(false);
+    await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "widget" });
+    const audits = await t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+    for (const text of [...logged, ...audits.map((a) => JSON.stringify(a))]) {
+      expect(text).not.toContain(token);
+      expect(text).not.toContain(hash);
+    }
   });
 });
 
@@ -419,6 +440,22 @@ describe("authentication", () => {
     expect((await getState(t, UNKNOWN_TOKEN)).status).toBe(401);
   });
 
+  test("while the global bucket is empty the per-IP bucket is not spent", async () => {
+    const t = makeBackend();
+    await household(t);
+    const ipA = { "x-forwarded-for": "203.0.113.7" };
+    for (let i = 0; i < 60; i++) await getState(t, UNKNOWN_TOKEN);
+    for (let i = 0; i < 10; i++) {
+      expect((await getState(t, UNKNOWN_TOKEN, ipA)).status).toBe(429);
+    }
+    // 30 s refill the global bucket by 30; had IP A's bucket been spent above, it would hold
+    // only 5 and the sixth request below would be 429.
+    setNow(Date.parse(START) + 30_000);
+    for (let i = 0; i < 10; i++) {
+      expect((await getState(t, UNKNOWN_TOKEN, ipA)).status).toBe(401);
+    }
+  });
+
   test("10 failed attempts a minute from one IP limit that IP only", async () => {
     const t = makeBackend();
     await household(t);
@@ -440,6 +477,7 @@ describe("authentication", () => {
     const limited = await getState(t, phone);
     expect(limited.status).toBe(429);
     expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1);
+    expect(limited.headers.get("Cache-Control")).toBe("no-store");
     expect((await getState(t, display)).status).toBe(200);
   });
 });
@@ -567,8 +605,115 @@ describe("POST /device/confirm", () => {
     expect(body.state.done).toBeNull();
     expect(body.state.rows.map((r) => r.mark)).toEqual(["done"]);
     expect(res.headers.get("ETag")).toBe(`"${body.state.version}"`);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
     const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
     expect(row).toMatchObject({ state: "confirmed", confirmedVia: "widget", confirmedBy: "phone" });
+    const change = (await audits(t)).find((a) => a.action === "state_change");
+    expect(change).toMatchObject({
+      actorKind: "senior_device",
+      actorUserId: "phone",
+      entityId: f.instanceId,
+      detail: { from: "due", to: "confirmed", via: "widget" },
+    });
+  });
+
+  test("a press stands when the state cannot be read afterwards: state is null", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // With the household row gone the press still applies but the state load throws.
+    await t.run(async (ctx) => await ctx.db.delete(f.householdId));
+    const res = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 0,
+      via: "button",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "confirmed", reason: null, state: null });
+    expect(res.headers.get("ETag")).toBeNull();
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(row).toMatchObject({ state: "confirmed", confirmedBy: "phone" });
+    expect((await audits(t)).some((a) => a.action === "state_change")).toBe(true);
+  });
+
+  test("a press of a missed instance and of an anytime instance by id is confirmed", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "missed" });
+    await t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
+      householdId: f.householdId,
+      type: "routine",
+      title: "Water the plants",
+      displayLabel: "Water the plants",
+      times: [],
+    });
+    const anytime = await t.run(async (ctx) =>
+      (await ctx.db.query("taskInstances").collect()).find((i) => i.scheduledTime === "anytime"),
+    );
+    const token = await issue(t);
+    for (const instanceId of [f.instanceId, anytime!._id]) {
+      const res = await postConfirm(t, token, { instanceId, pressedAgoMs: 0, via: "button" });
+      expect(((await res.json()) as { status: string }).status).toBe("confirmed");
+      const row = await t.run(async (ctx) => await ctx.db.get(instanceId));
+      expect(row!.state).toBe("confirmed");
+    }
+  });
+
+  test("a replayed press is recorded at the press time, as a late sync", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    setNow(local("08:30"));
+    const res = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 20 * MIN,
+      via: "button",
+    });
+    expect(((await res.json()) as { status: string }).status).toBe("confirmed");
+    const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(near(row!.confirmedAt, local("08:10"))).toBe(true);
+    expect(near(row!.confirmReceivedAt, local("08:30"))).toBe(true);
+  });
+
+  test("a replayed press from before the early window is refused and audited", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    setNow(local("07:30"));
+    const res = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 40 * MIN,
+      via: "button",
+    });
+    expect(await res.json()).toMatchObject({
+      status: "rejected",
+      reason: "This task was not due yet when it was pressed",
+    });
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("upcoming");
+    expect((await audits(t)).some((a) => a.action === "press_not_applied")).toBe(true);
+  });
+
+  test("a replayed press long after the window is refused", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "missed" });
+    const token = await issue(t);
+    const windowEnd = (await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.windowEnd;
+    setNow(windowEnd + 4 * 60 * MIN);
+    const res = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 10 * MIN,
+      via: "button",
+    });
+    expect(await res.json()).toMatchObject({
+      status: "rejected",
+      reason: "This press was too long after the task's window",
+    });
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("missed");
   });
 
   test("a deleted instance is rejected, audited, and the state still returned", async () => {
@@ -607,12 +752,20 @@ describe("POST /device/confirm", () => {
     const theirRow = await t.run(async (ctx) => await ctx.db.get(theirs.instanceId));
     expect(theirRow!.state).toBe("due");
     expect(theirRow!.confirmedAt).toBeUndefined();
-    const theirAudits = await t.run(async (ctx) =>
-      (await ctx.db.query("auditLog").collect()).filter(
-        (a) => a.householdId === theirs.householdId && a.actorKind === "senior_device",
-      ),
+    const all = await audits(t);
+    expect(
+      all.filter((a) => a.householdId === theirs.householdId && a.actorKind === "senior_device"),
+    ).toEqual([]);
+    const refused = all.filter(
+      (a) => a.householdId === mine.householdId && a.action === "press_not_applied",
     );
-    expect(theirAudits).toEqual([]);
+    expect(refused).toHaveLength(2);
+    const foreignRow = refused.find(
+      (a) => (a.detail as { reason: string }).reason === "The task is not in this household",
+    );
+    expect(foreignRow).toMatchObject({ actorKind: "senior_device", actorUserId: "phone" });
+    expect(foreignRow!.entityId).toBeUndefined();
+    expect(JSON.stringify(foreignRow)).not.toContain(theirs.instanceId);
   });
 
   test("a bad body or instance id is 400", async () => {
@@ -625,8 +778,8 @@ describe("POST /device/confirm", () => {
       "[]",
       { ...good, instanceId: undefined },
       { ...good, instanceId: "" },
-      { ...good, instanceId: "abc" },
-      { ...good, instanceId: f.householdId },
+      { ...good, instanceId: "zzz-malformed" },
+      { ...good, instanceId: f.phoneId },
       { ...good, pressedAgoMs: -1 },
       { ...good, pressedAgoMs: 7 * 24 * 60 * MIN + 1 },
       { ...good, pressedAgoMs: 1e300 },
@@ -638,10 +791,158 @@ describe("POST /device/confirm", () => {
     for (const body of bad) {
       const res = await postConfirm(t, token, body);
       expect(res.status).toBe(400);
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
       expect(((await res.json()) as { error: { code: string } }).error.code).toBe("invalid");
     }
     const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
     expect(row!.state).toBe("upcoming");
+    // Every refused press is audited, with only the safe parts of what was sent.
+    const refused = (await audits(t)).filter((a) => a.action === "press_not_applied");
+    expect(refused).toHaveLength(bad.length);
+    const details = refused.map((a) => a.detail as Record<string, unknown>);
+    expect(new Set(details.map((d) => d.reason))).toEqual(
+      new Set(["The press could not be read", "The task id is not valid", "The press is too old"]),
+    );
+    expect(details.filter((d) => d.reason === "The task id is not valid")).toHaveLength(4);
+    expect(details.find((d) => d.reason === "The press is too old")).toMatchObject({
+      pressedAgoMs: 7 * 24 * 60 * MIN + 1,
+      via: "widget",
+    });
+    for (const a of refused) {
+      expect(a).toMatchObject({ actorKind: "senior_device", actorUserId: "phone" });
+      expect(JSON.stringify(a.detail)).not.toContain("zzz");
+      expect(JSON.stringify(a.detail)).not.toContain(f.phoneId);
+    }
+  });
+
+  test("refused presses are audited 20 an hour per device, then answered without a row", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    const malformed = { instanceId: "abc", pressedAgoMs: 0, via: "button" };
+    /**
+     * purpose: How many press_not_applied rows exist.
+     * @return: (Promise<number>) The count.
+     */
+    const refusedRows = async (): Promise<number> =>
+      (await audits(t)).filter((a) => a.action === "press_not_applied").length;
+    for (let i = 0; i < 20; i++) expect((await postConfirm(t, token, malformed)).status).toBe(400);
+    expect(await refusedRows()).toBe(20);
+    expect((await postConfirm(t, token, malformed)).status).toBe(400);
+    await t.run(async (ctx) => await ctx.db.delete(f.instanceId));
+    const deleted = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 0,
+      via: "button",
+    });
+    expect(await deleted.json()).toMatchObject({
+      status: "rejected",
+      reason: "The task no longer exists",
+    });
+    expect(await refusedRows()).toBe(20);
+    setNow(Date.parse(START) + 4 * MIN);
+    expect((await postConfirm(t, token, malformed)).status).toBe(400);
+    expect(await refusedRows()).toBe(21);
+  });
+});
+
+describe("revokeDeviceToken", () => {
+  test("an editor revokes the token; the device stays paired and can issue a new one", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    await t.withIdentity({ subject: "pat" }).mutation(api.households.revokeDeviceToken, {
+      householdId: f.householdId,
+      deviceId: f.phoneId,
+    });
+    expect((await getState(t, token)).status).toBe(401);
+    const row = await deviceRow(t, f.phoneId);
+    expect(row).not.toBeNull();
+    expect(row!.tokenHash).toBeUndefined();
+    expect(row!.tokenIssuedAt).toBeUndefined();
+    expect((await audits(t)).find((a) => a.action === "revoke_device_token")).toMatchObject({
+      actorKind: "caregiver",
+      actorUserId: "pat",
+      entityId: f.phoneId,
+      detail: { hadToken: true },
+    });
+    expect((await getState(t, await issue(t))).status).toBe(200);
+  });
+
+  test("a viewer, a device and another household's editor are refused", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const theirs = await household(t, "z_");
+    const { code } = await t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.households.createJoinCode, {
+        householdId: f.householdId,
+        grants: "caregiver_viewer",
+      });
+    await t.withIdentity({ subject: "val" }).mutation(api.households.redeemJoinCode, { code });
+    const token = await issue(t);
+    const args = { householdId: f.householdId, deviceId: f.phoneId };
+    for (const subject of ["val", "phone", "z_pat"]) {
+      await expect(
+        t.withIdentity({ subject }).mutation(api.households.revokeDeviceToken, args),
+      ).rejects.toThrow(/Not allowed/);
+    }
+    await expect(
+      t.withIdentity({ subject: "pat" }).mutation(api.households.revokeDeviceToken, {
+        householdId: f.householdId,
+        deviceId: theirs.phoneId,
+      }),
+    ).rejects.toThrow(/Device not found/);
+    expect((await getState(t, token)).status).toBe(200);
+  });
+});
+
+describe("a device removed between the gate and the effect", () => {
+  test("every by-token function finds nothing and writes nothing", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const tokenHash = await hashDeviceToken(UNKNOWN_TOKEN);
+    expect(await t.mutation(internal.deviceApi.admit, { tokenHash })).toEqual({ kind: "unknown" });
+    expect(await t.query(internal.deviceApi.stateByToken, { tokenHash })).toBeNull();
+    expect(
+      await t.mutation(internal.deviceApi.confirmByToken, {
+        tokenHash,
+        instanceId: f.instanceId,
+        via: "button",
+        pressedAgoMs: 0,
+      }),
+    ).toEqual({ kind: "unauthorized" });
+    expect(
+      await t.mutation(internal.deviceApi.updateInfoByToken, { tokenHash, firmware: "1.0" }),
+    ).toBe(false);
+    await t.mutation(internal.deviceApi.refusePressByToken, {
+      tokenHash,
+      reason: "The press could not be read",
+      pressedAgoMs: null,
+      via: null,
+    });
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("upcoming");
+    expect((await audits(t)).some((a) => a.action === "press_not_applied")).toBe(false);
+    expect((await deviceRow(t, f.phoneId))!.firmware).toBeUndefined();
+  });
+});
+
+describe("unexpected errors", () => {
+  test("an internal failure is a 500 that still carries no-store, on every route", async () => {
+    const t = makeBackend();
+    await household(t);
+    const token = await issue(t);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(crypto.subtle, "digest").mockRejectedValue(new Error("boom"));
+    for (const res of [
+      await getState(t, token),
+      await postConfirm(t, token, {}),
+      await putInfo(t, token, {}),
+    ]) {
+      expect(res.status).toBe(500);
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe("server_error");
+    }
   });
 });
 
