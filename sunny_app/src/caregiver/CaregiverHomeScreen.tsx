@@ -7,10 +7,10 @@
 // done at once on the server and shows it checked, with a light haptic tap; for 5 seconds a
 // "Task completed / Undo" toast offers to take it back (a selection click, and the server
 // restores the task), only the latest tick has a toast; editors tap the checked box of a task
-// the day view marks reopenable to reopen it, after a native confirm alert and with no toast;
-// editors tap a task's text to open an
-// autosaving inline note editor, one at a time; saved notes show as a subtitle), the calendar
-// card (seven-day week strip whose cells choose the day shown; the dots mean events) with the
+// the day view marks reopenable to reopen it, after a native confirm alert and with no toast
+// (reopening a task whose toast is still up dismisses that toast); editors tap a task's text
+// to open an autosaving inline note editor, one at a time; saved notes show as a subtitle),
+// the calendar card (seven-day week strip whose cells choose the day shown; the dots mean events) with the
 // selected day's section directly below it: for today, its events only (its tasks are the list
 // above); for a later day, first that day's planned tasks in their own read-only card (dulled
 // disabled checkboxes, "No tasks." when none), then its events in a separate card. Then "Later
@@ -28,7 +28,7 @@
 // Last modified: 2026-11-14
 
 import { SymbolView } from 'expo-symbols';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -117,6 +117,7 @@ export function CaregiverHomeScreen({
   const { actions, claim, markDone, undoMarkDone, reopen, saveNote } = useTaskActions(userId);
   const noteEditor = useNoteEditor(saveNote);
   const { id: toastId, show: showToast, dismiss: dismissToast } = useUndoToast<TaskInstanceId>();
+  const toastIdRef = useRef<TaskInstanceId | null>(null);
   const [selection, setSelection] = useState<DaySelection | null>(null);
   const todayDate = day?.localDate ?? null;
 
@@ -159,9 +160,28 @@ export function CaregiverHomeScreen({
     [todayDate],
   );
 
+  useEffect(() => {
+    toastIdRef.current = toastId;
+  }, [toastId]);
+
+  /**
+   * purpose: Reopen a task the caregiver confirmed in the alert. A "Task completed / Undo"
+   *          toast still up for that task is dismissed first, since its Undo could no longer
+   *          apply. Keeps its identity between renders (the toast is read through a ref).
+   * @param id: (TaskInstanceId) The task being reopened.
+   * @return: (void)
+   */
+  const reopenTask = useCallback(
+    (id: TaskInstanceId): void => {
+      if (toastIdRef.current === id) dismissToast();
+      void reopen(id);
+    },
+    [dismissToast, reopen],
+  );
+
   const rowActions = useMemo<TaskRowActions>(
-    () => ({ states: actions, markDone: tick, reopen: (id: TaskInstanceId) => void reopen(id) }),
-    [actions, tick, reopen],
+    () => ({ states: actions, markDone: tick, reopen: reopenTask }),
+    [actions, tick, reopenTask],
   );
 
   const view = useMemo(() => {

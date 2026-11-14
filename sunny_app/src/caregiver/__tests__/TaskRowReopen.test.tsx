@@ -1,36 +1,48 @@
 // sunny_app/src/caregiver/__tests__/TaskRowReopen.test.tsx
 //
-// Purpose: Tests for reopening a done task from the caregiver Home tab's task rows. The real
-// TasksCard and TaskRow are rendered from real day-view rows (todaysTasks) and wired to the
-// real useTaskActions as CaregiverHomeScreen wires them; only convex.mutation (the network) is
-// stubbed and Alert.alert is spied. Covers: an editor's reopenable done box is labelled
-// "Reopen <label>", stays checked and asks first with the exact title, message and buttons;
-// Cancel sends nothing; Reopen sends reopenTaskInstance, shows "Reopening..." with the box
-// checked and not interactive, and clears on success; a failure shows the server's message and
-// keeps the box checked; a viewer, and a row whose reopenable flag is false, are as before (not
-// interactive, labelled "Mark <label> done", no alert); an open task's box still marks it done;
-// and the same holds for a done task in the Leftover group.
+// Purpose: Tests for reopening a done task from the caregiver Home tab. The real
+// CaregiverHomeScreen is rendered (so its wiring of the row's Reopen to useTaskActions is under
+// test, not a copy of it) with a day view passed in; only convex.mutation (the network) is
+// stubbed, Alert.alert is spied, and native-only modules (symbols, haptics, safe area) are
+// mocked. Covers: an editor's reopenable done box is labelled "Reopen <label>", stays checked
+// and asks first with the exact title, message and buttons; only one alert at a time per row
+// (a second tap while it is up opens none; after Cancel a tap asks again); Cancel sends
+// nothing; Reopen sends reopenTaskInstance (not the Mark done mutation), shows "Reopening..."
+// with the box checked, not interactive and still labelled "Reopen <label>" with busy set, and
+// clears on success; a failure shows the server's message and keeps the box checked; a viewer,
+// and a row whose reopenable flag is false, are as before (not interactive, labelled "Mark
+// <label> done", no alert); an open task's box still marks it done; a done task in the Leftover
+// group reopens the same way; reopening a task whose "Task completed / Undo" toast is still up
+// dismisses that toast; the row's reopen handler keeps its identity across action changes.
 //
 // Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
-import React, { useMemo } from 'react';
+import React from 'react';
 import { Alert, type AlertButton } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { convex } from '../../backend/convex';
-import type { TaskInstanceId } from '../../backend/convexApi';
 import type { DayTask, DayViewData } from '../../day/types';
-import { REOPEN_MESSAGE, TasksCard, type TaskRowActions } from '../CaregiverComponents';
-import { todaysTasks } from '../format';
-import type { NoteEditor } from '../useNoteEditor';
-import { useTaskActions } from '../useTaskActions';
+import type { DayViewState } from '../../day/useDayView';
+import { REOPEN_MESSAGE } from '../CaregiverComponents';
+import { CaregiverHomeScreen } from '../CaregiverHomeScreen';
 
 jest.mock('../../backend/convex', () => ({ convex: { mutation: jest.fn() } }));
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
+
+jest.mock('expo-haptics', () => ({
+  impactAsync: jest.fn(async () => undefined),
+  selectionAsync: jest.fn(async () => undefined),
+  ImpactFeedbackStyle: { Light: 'light' },
+}));
+
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 jest.mock('../../theme/ThemeProvider', () => ({
   useTheme: () => ({ accentColor: '#FA8539', cornerRadius: 12 }),
@@ -39,14 +51,6 @@ jest.mock('../../theme/ThemeProvider', () => ({
 const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const mounted: ReactTestRenderer[] = [];
 let alertSpy: jest.SpiedFunction<typeof Alert.alert>;
-
-/** A note editor that is never open (notes are not under test here). */
-const noteEditor: NoteEditor = {
-  open: null,
-  toggle: () => {},
-  setDraft: () => {},
-  close: () => {},
-};
 
 /**
  * purpose: Build one of today's tasks.
@@ -78,12 +82,12 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
 }
 
 /**
- * purpose: A day view holding the given tasks.
- * @param tasks: (DayTask[]) The tasks.
- * @return: (DayViewData) The day.
+ * purpose: The day view state the Home screen takes, holding the given tasks.
+ * @param tasks: (DayTask[]) Today's tasks.
+ * @return: (DayViewState) The state.
  */
-function makeDay(tasks: DayTask[]): DayViewData {
-  return {
+function dayView(tasks: DayTask[]): DayViewState {
+  const day = {
     seniorPreferredName: 'Margaret',
     timezone: 'America/New_York',
     localDate: '2026-11-14',
@@ -92,51 +96,32 @@ function makeDay(tasks: DayTask[]): DayViewData {
     upcoming: [],
     upcomingTasks: [],
   } as unknown as DayViewData;
+  return { day, agenda: [], errorMessage: null, isOffline: false };
 }
 
 /**
- * purpose: Test screen: the tasks card wired to the real hook the way the Home tab wires it.
- * @param props: ({ day: DayViewData, canEdit: boolean, onMarkDone: (id) => void }) The day,
- *        the caregiver's edit permission and a spy for the Mark done handler.
- * @return: (JSX.Element) The card.
- */
-function Screen({
-  day,
-  canEdit,
-  onMarkDone,
-}: {
-  day: DayViewData;
-  canEdit: boolean;
-  onMarkDone: (id: TaskInstanceId) => void;
-}) {
-  const { actions, reopen } = useTaskActions('user_1');
-  const rowActions = useMemo<TaskRowActions>(
-    () => ({ states: actions, markDone: onMarkDone, reopen: (id) => void reopen(id) }),
-    [actions, onMarkDone, reopen],
-  );
-  const { leftover, today } = todaysTasks(day, 'user_1');
-  return (
-    <TasksCard
-      leftover={leftover}
-      today={today}
-      canEdit={canEdit}
-      rowActions={rowActions}
-      noteEditor={noteEditor}
-    />
-  );
-}
-
-/**
- * purpose: Render the screen and give access to the checkbox and the texts.
+ * purpose: Render the Home screen and give access to the first checkbox, texts and the toast.
  * @param tasks: (DayTask[]) Today's tasks.
  * @param canEdit: (boolean) Whether the caregiver is an editor.
- * @return: (object) box (the first checkbox), texts and the Mark done spy.
+ * @return: (object) box, texts, toastShown and update (render new tasks).
  */
 function render(tasks: DayTask[], canEdit = true) {
-  const onMarkDone = jest.fn();
   let renderer!: ReactTestRenderer;
+  /**
+   * purpose: The screen element for a list of tasks.
+   * @param list: (DayTask[]) The tasks.
+   * @return: (JSX.Element) The element.
+   */
+  const element = (list: DayTask[]) => (
+    <CaregiverHomeScreen
+      dayView={dayView(list)}
+      canEdit={canEdit}
+      userId="user_1"
+      onAccountPress={() => {}}
+    />
+  );
   act(() => {
-    renderer = create(<Screen day={makeDay(tasks)} canEdit={canEdit} onMarkDone={onMarkDone} />);
+    renderer = create(element(tasks));
     mounted.push(renderer);
   });
   const outer = (n: ReactTestInstance): boolean =>
@@ -149,17 +134,25 @@ function render(tasks: DayTask[], canEdit = true) {
       renderer.root
         .findAll((n) => (n.type as unknown) === 'Text')
         .map((n) => String(n.props.children)),
-    onMarkDone,
+    toastShown: (): boolean =>
+      renderer.root.findAll((n) => n.props.accessibilityLabel === 'Task completed. Undo available.')
+        .length > 0,
+    rowReopen: (): unknown =>
+      renderer.root.findAll((n) => n.props.onReopen !== undefined && n.props.row !== undefined)[0]!
+        .props.onReopen,
+    update: (list: DayTask[]) => act(() => renderer.update(element(list))),
   };
 }
 
 /**
- * purpose: Tap a checkbox inside act.
+ * purpose: Tap a checkbox inside act and let promises settle.
  * @param box: (ReactTestInstance) The checkbox.
- * @return: (void)
+ * @return: (Promise<void>)
  */
-function tap(box: ReactTestInstance): void {
-  act(() => box.props.onPress());
+async function tap(box: ReactTestInstance): Promise<void> {
+  await act(async () => {
+    box.props.onPress();
+  });
 }
 
 /**
@@ -183,9 +176,18 @@ async function choose(text: string): Promise<void> {
   });
 }
 
+/**
+ * purpose: The names of the mutations sent so far.
+ * @return: (string[]) In order.
+ */
+function sentNames(): string[] {
+  return mockMutation.mock.calls.map((c) => getFunctionName(c[0] as never));
+}
+
 beforeEach(() => {
+  jest.useFakeTimers();
   mockMutation.mockReset();
-  mockMutation.mockResolvedValue(null);
+  mockMutation.mockResolvedValue({ confirmedBy: 'user_1' });
   alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 });
 
@@ -194,6 +196,7 @@ afterEach(() => {
     mounted.splice(0).forEach((renderer) => renderer.unmount());
   });
   alertSpy.mockRestore();
+  jest.useRealTimers();
 });
 
 describe('reopening a done task', () => {
@@ -204,9 +207,9 @@ describe('reopening a done task', () => {
     expect(box().props.disabled).toBe(false);
   });
 
-  it('asks first with a native alert: title, message, Cancel and a non-destructive Reopen', () => {
+  it('asks first with a native alert: title, message, Cancel and a non-destructive Reopen', async () => {
     const { box } = render([makeTask()]);
-    tap(box());
+    await tap(box());
     expect(alertSpy).toHaveBeenCalledTimes(1);
     const [title, message] = alertSpy.mock.calls[0]!;
     expect(title).toBe('Reopen Morning pills?');
@@ -221,9 +224,19 @@ describe('reopening a done task', () => {
     expect(mockMutation).not.toHaveBeenCalled();
   });
 
+  it('opens only one alert at a time per row; after Cancel a tap asks again', async () => {
+    const { box } = render([makeTask()]);
+    await tap(box());
+    await tap(box());
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    await choose('Cancel');
+    await tap(box());
+    expect(alertSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('sends nothing on Cancel', async () => {
     const { box } = render([makeTask()]);
-    tap(box());
+    await tap(box());
     await choose('Cancel');
     expect(mockMutation).not.toHaveBeenCalled();
   });
@@ -232,13 +245,13 @@ describe('reopening a done task', () => {
     let finish!: (value: unknown) => void;
     mockMutation.mockReturnValue(new Promise((resolve) => (finish = resolve)));
     const { box, texts } = render([makeTask()]);
-    tap(box());
+    await tap(box());
     await choose('Reopen');
-    const [ref, args] = mockMutation.mock.calls[0]!;
-    expect(getFunctionName(ref as never)).toBe('instances:reopenTaskInstance');
-    expect(args).toEqual({ instanceId: 'inst1' });
+    expect(sentNames()).toEqual(['instances:reopenTaskInstance']);
+    expect(mockMutation.mock.calls[0]![1]).toEqual({ instanceId: 'inst1' });
     expect(texts()).toContain('Reopening...');
     expect(box().props.disabled).toBe(true);
+    expect(box().props.accessibilityLabel).toBe('Reopen Morning pills');
     expect(box().props.accessibilityState).toMatchObject({
       checked: true,
       disabled: true,
@@ -253,7 +266,7 @@ describe('reopening a done task', () => {
       new ConvexError({ code: 'invalid', message: 'This task is no longer on the schedule.' }),
     );
     const { box, texts } = render([makeTask()]);
-    tap(box());
+    await tap(box());
     await choose('Reopen');
     expect(texts()).toContain('This task is no longer on the schedule.');
     expect(texts()).not.toContain('Reopening...');
@@ -264,11 +277,32 @@ describe('reopening a done task', () => {
     const leftover = makeTask({ carriedOver: true, localDate: '2026-11-13' });
     const { box } = render([leftover, makeTask({ instanceId: 'inst2', state: 'due' })]);
     expect(box().props.accessibilityLabel).toBe('Reopen Morning pills');
-    tap(box());
+    await tap(box());
     await choose('Reopen');
-    expect(getFunctionName(mockMutation.mock.calls[0]![0] as never)).toBe(
-      'instances:reopenTaskInstance',
-    );
+    expect(sentNames()).toEqual(['instances:reopenTaskInstance']);
+  });
+
+  it('dismisses the "Task completed / Undo" toast of the task it reopens', async () => {
+    const open = makeTask({ state: 'due', confirmedAt: null, confirmedBy: null });
+    const h = render([open]);
+    await tap(h.box());
+    expect(h.toastShown()).toBe(true);
+    h.update([makeTask({ state: 'resolved', confirmedBy: 'user_1' })]);
+    await tap(h.box());
+    await choose('Reopen');
+    expect(sentNames()).toEqual(['instances:confirmTaskInstance', 'instances:reopenTaskInstance']);
+    expect(h.toastShown()).toBe(false);
+  });
+
+  it('gives the rows a reopen handler that keeps its identity across action changes', async () => {
+    let finish!: (value: unknown) => void;
+    mockMutation.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const h = render([makeTask()]);
+    const first = h.rowReopen();
+    await tap(h.box());
+    await choose('Reopen');
+    expect(h.rowReopen()).toBe(first);
+    await act(async () => finish(null));
   });
 });
 
@@ -284,11 +318,11 @@ describe('when reopening is not allowed', () => {
     expect(alertSpy).not.toHaveBeenCalled();
   });
 
-  it('an open task box still marks it done, without asking', () => {
-    const { box, onMarkDone } = render([makeTask({ state: 'due', confirmedAt: null })]);
+  it('an open task box still marks it done, without asking', async () => {
+    const { box } = render([makeTask({ state: 'due', confirmedAt: null })]);
     expect(box().props.accessibilityLabel).toBe('Mark Morning pills done');
-    tap(box());
-    expect(onMarkDone).toHaveBeenCalledWith('inst1');
+    await tap(box());
+    expect(sentNames()).toEqual(['instances:confirmTaskInstance']);
     expect(alertSpy).not.toHaveBeenCalled();
   });
 });
