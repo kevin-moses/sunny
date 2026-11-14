@@ -29,7 +29,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Households, members, roles, join codes, devices, push tokens | `households.ts` |
 | Device pairing over HTTP (`POST /pair`, Clerk device users, rate limits) | `pairing.ts`, `http.ts` |
 | Tasks and escalation policies | `tasks.ts`, `lib/policies.ts` |
-| Task instances (confirm, snooze, claim, dose log, senior reminders); the rule for when a senior device may confirm (60 minutes early) and the day view's `confirmable` flag | `instances.ts`, `lib/confirmRule.ts` |
+| Task instances (confirm, snooze, claim, dose log, senior reminders); the rule for when a senior device may confirm (60 minutes early) and the day view's `confirmable` flag; senior undo (`undoPressedTask`, 60 s) and caregiver reopen (`reopenTaskInstance`, confirmed today) with the day view's `reopenable` flag, rules in `lib/confirmRule.ts` | `instances.ts`, `lib/confirmRule.ts` |
 | Scheduler tick (expand, open and close windows, escalation) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
 | Calendar events, occurrences, day view (`calendar.dayView`) | `calendar.ts`, `lib/occurrences.ts`, `lib/today.ts`, `lib/eventNotices.ts` |
 | Time zones | `lib/time.ts` |

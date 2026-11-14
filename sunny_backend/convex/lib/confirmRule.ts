@@ -8,9 +8,29 @@
 // escalated and missed instances can always be confirmed (missed ones late). Done instances are
 // not confirmable (confirming them changes nothing).
 //
-// Last modified: 2026-11-09
+// The two ways back out of a confirm live here too, for the same reason. seniorCanUndo: a senior
+// device may take back its own confirm for SENIOR_UNDO_MS after the server recorded it (the app
+// offers Undo for 30 s; the server allows 60 s so a slow network never refuses a press the
+// senior was still offered), measured from confirmReceivedAt when there is one because an
+// offline press is recorded with an earlier confirmedAt (a press that took 1 to 5 minutes to
+// arrive has no confirmReceivedAt and lands already past the window; accepted, the phone's own
+// Undo has expired by then). caregiverCanReopen: an editor caregiver may reopen a confirmed or
+// resolved instance whose confirmedAt falls on the household-local date of `now`, or that is
+// one of today's tasks (a 00:30 task confirmed at 23:45 the evening before); the home display
+// has no undo. reopenedState says which state a reopened (or an unrecorded undone) instance
+// gets from the clock alone. taskStillRuns (shared by reopen, senior undo and the day view's
+// `reopenable`) says whether the instance's task still runs the way the instance was made.
+// isDoneState is the one confirmed-or-resolved test. pressWasTakenBack is the boundary of the
+// take-back stamp: a queued press made at or before the instance's confirmTakenBackAt is
+// refused, so a stale press cannot re-confirm what a senior undo or a caregiver reopen took
+// back. A press without an age (a live confirm, voice, a caregiver's Mark done) is made now
+// and is never checked against the stamp.
+//
+// Last modified: 2026-11-13
 
-import { minutes } from "./time";
+import type { Doc } from "../_generated/dataModel";
+import { isAnytimeInstance, isAnytimeTask } from "./anytime";
+import { localDate, minutes } from "./time";
 import type { InstanceState } from "./validators";
 
 /** How long (ms) before its window starts an upcoming instance may already be confirmed. */
@@ -52,6 +72,135 @@ export function notTooEarly(instance: ConfirmRuleInput, now: number): boolean {
  * @return: (boolean) True for an open instance a senior device may confirm.
  */
 export function seniorCanConfirm(instance: ConfirmRuleInput, now: number): boolean {
-  const done = instance.state === "confirmed" || instance.state === "resolved";
-  return !done && notTooEarly(instance, now);
+  return !isDoneState(instance.state) && notTooEarly(instance, now);
+}
+
+/**
+ * purpose: Whether a queued press was made at or before the instance's take-back stamp and so
+ *          must be refused (the senior undid, or a caregiver reopened, after that press).
+ * @param pressedAt: (number) Epoch ms the press was made (server now minus the press age).
+ * @param takenBackAt: (number | undefined) The instance's confirmTakenBackAt.
+ * @return: (boolean) True when the press must be refused; never for an instance never taken back.
+ */
+export function pressWasTakenBack(pressedAt: number, takenBackAt: number | undefined): boolean {
+  return takenBackAt !== undefined && pressedAt <= takenBackAt;
+}
+
+/** How long (ms) after the server recorded a senior device's confirm that device may undo it. */
+export const SENIOR_UNDO_MS = 60_000;
+
+/**
+ * purpose: Whether a state is a done one (confirmed by a device or the agent, or resolved by a
+ *          caregiver).
+ * @param state: (InstanceState) The instance's state.
+ * @return: (boolean) True for confirmed and resolved.
+ */
+export function isDoneState(state: InstanceState): boolean {
+  return state === "confirmed" || state === "resolved";
+}
+
+/**
+ * purpose: Whether a senior device may take back its own confirm now: the instance is confirmed
+ *          (not resolved by a caregiver), the confirm is this device's own, and the server
+ *          recorded it at most SENIOR_UNDO_MS ago. Recorded means confirmReceivedAt when set (a
+ *          press held offline for more than LATE_SYNC_MS), else confirmedAt. A press that took
+ *          between one and LATE_SYNC_MS to arrive has no confirmReceivedAt, so it is already
+ *          past the window when it lands; that is accepted, because the phone's own 30 second
+ *          Undo has expired by then.
+ * @param instance: (Pick<Doc<"taskInstances">, "state" | "confirmedBy" | "confirmedAt" |
+ *        "confirmReceivedAt">) The instance's state, confirmer and confirm times.
+ * @param userId: (string) The device account asking.
+ * @param now: (number) Epoch ms.
+ * @return: (boolean) True when the undo is allowed.
+ */
+export function seniorCanUndo(
+  instance: Pick<
+    Doc<"taskInstances">,
+    "state" | "confirmedBy" | "confirmedAt" | "confirmReceivedAt"
+  >,
+  userId: string,
+  now: number,
+): boolean {
+  const recordedAt = instance.confirmReceivedAt ?? instance.confirmedAt;
+  return (
+    instance.state === "confirmed" &&
+    instance.confirmedBy === userId &&
+    recordedAt !== undefined &&
+    now - recordedAt <= SENIOR_UNDO_MS
+  );
+}
+
+/**
+ * purpose: Whether an editor caregiver may reopen the instance now (the role is checked by the
+ *          caller): it is confirmed or resolved, by anyone, and it belongs to today's list: its
+ *          confirmedAt is on the household-local date of `now`, or the instance's own local date
+ *          is (a task confirmed up to 60 minutes early, or a press replayed after midnight, for a
+ *          task of today).
+ * @param instance: (Pick<Doc<"taskInstances">, "state" | "confirmedAt" | "localDate">) The
+ *        instance's state, confirmedAt and own local date.
+ * @param now: (number) Epoch ms.
+ * @param timezone: (string) The household's IANA zone.
+ * @return: (boolean) True when the instance may be reopened.
+ */
+export function caregiverCanReopen(
+  instance: Pick<Doc<"taskInstances">, "state" | "confirmedAt" | "localDate">,
+  now: number,
+  timezone: string,
+): boolean {
+  const today = localDate(now, timezone);
+  return (
+    isDoneState(instance.state) &&
+    (instance.localDate === today ||
+      (instance.confirmedAt !== undefined && localDate(instance.confirmedAt, timezone) === today))
+  );
+}
+
+/**
+ * purpose: Whether the instance's task still runs the way the instance was made: the task
+ *          exists, is active, and is still timed with the instance's time among its times, or
+ *          still anytime to match an anytime instance. Deactivating a task, or switching it
+ *          between timed and anytime or to other times, removes only its open instances, so a
+ *          confirmed or resolved instance of such a task survives as history; putting it back
+ *          to open would prompt for a task that no longer runs, or sit next to the row that
+ *          replaced it. Used by the reopen and senior undo mutations and by the day view's
+ *          `reopenable` flag so they agree. Deliberately not checked: days of week, startsOn,
+ *          endsOn and onceOn. An open instance on a day the task no longer occurs is also left
+ *          open by resyncTask, so a reopened one behaves like one that was never confirmed.
+ * @param task: (Pick<Doc<"tasks">, "active" | "type" | "times"> | null) The instance's task, or
+ *        null when it is gone.
+ * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime">) The instance.
+ * @return: (boolean) True when reopening the instance would match the schedule.
+ */
+export function taskStillRuns(
+  task: Pick<Doc<"tasks">, "active" | "type" | "times"> | null,
+  instance: Pick<Doc<"taskInstances">, "scheduledTime">,
+): boolean {
+  if (task === null || !task.active) return false;
+  if (isAnytimeInstance(instance)) return isAnytimeTask(task);
+  return task.times.includes(instance.scheduledTime);
+}
+
+/**
+ * purpose: The open state an instance gets when its confirmation is taken away, by the clock:
+ *          before windowStart it is upcoming; at or after windowEnd it is missed; inside the
+ *          window it is the recorded prior state when that was due or escalated, else due.
+ *          An anytime instance (lib/anytime.ts) never escalates, so inside its window it is
+ *          always due.
+ * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime" | "windowStart" | "windowEnd" |
+ *        "resolvedFromState">) Window, scheduledTime and the recorded prior state.
+ * @param now: (number) Epoch ms.
+ * @return: (InstanceState) upcoming, due, escalated or missed.
+ */
+export function reopenedState(
+  instance: Pick<
+    Doc<"taskInstances">,
+    "scheduledTime" | "windowStart" | "windowEnd" | "resolvedFromState"
+  >,
+  now: number,
+): InstanceState {
+  if (now < instance.windowStart) return "upcoming";
+  if (now >= instance.windowEnd) return "missed";
+  const prior = instance.resolvedFromState;
+  if (!isAnytimeInstance(instance) && (prior === "due" || prior === "escalated")) return prior;
+  return "due";
 }
