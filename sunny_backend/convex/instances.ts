@@ -10,7 +10,14 @@
 // An undo or a reopen of a device's confirm stamps confirmTakenBackAt; confirmInstance then
 // refuses a queued press (one sent with an age) made at or before the stamp, so a stale press
 // cannot re-confirm what was taken back (lib/confirmRule.pressWasTakenBack). An undo may be
-// tapped offline too (undoneAgoMs).
+// tapped offline too (undoneAgoMs). A press from the phone's queue carries a press id
+// (pressId); the confirm stores it in confirmPressIds, and a later press of the same device
+// user that lands on that confirm as a no-op adds its id there too (recordNoOpPress, not
+// audited). An undo carrying an id applies only when the id is in confirmPressIds; every
+// take-back (undo or reopen) appends all of confirmPressIds to takenBackPressIds and clears
+// them, and lib/confirmRule.queuedPressTakenBack replaces the time comparison by the ids where
+// both sides come from the same device's queue. An undo answered too_late is audited as
+// undo_not_applied; a refused press as press_not_applied (an invalid id never reaches a row).
 // The core of each operation is an exported helper taking
 // (ctx, actor, args, now) so the voice agent wrappers (phase 2) and the scheduler reuse it;
 // the public functions resolve the actor from auth and use the server clock. Every instance
@@ -48,10 +55,14 @@ import {
   caregiverCanReopen,
   isDoneState,
   notTooEarly,
-  pressWasTakenBack,
+  isPressId,
+  PRESS_ID_NOT_VALID,
+  queuedPressTakenBack,
   reopenedState,
   seniorCanUndo,
   taskStillRuns,
+  withConfirmPressId,
+  withTakenBackPressIds,
 } from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
@@ -83,6 +94,7 @@ const CLEAR_CONFIRMATION = {
   confirmReceivedAt: undefined,
   resolvedFromState: undefined,
   resolvedFromSnoozedUntil: undefined,
+  confirmPressIds: undefined,
 } satisfies Partial<Doc<"taskInstances">>;
 
 /** The reason a press on an instance that does not exist is rejected with. */
@@ -177,6 +189,18 @@ function requirePressAge(ageMs: number): void {
 }
 
 /**
+ * purpose: Check a press id sent by a senior device.
+ * @param pressId: (string | undefined) The id, or undefined when none was sent.
+ * @return: (void)
+ * @raises invalid unless it is absent or 16 to 64 letters, digits, "-" or "_".
+ */
+function requirePressId(pressId: string | undefined): void {
+  if (pressId !== undefined && !isPressId(pressId)) {
+    throw appError("invalid", PRESS_ID_NOT_VALID);
+  }
+}
+
+/**
  * purpose: Judge a replayed press as of the moment it was pressed.
  * @param instance: (Doc<"taskInstances">) The instance.
  * @param pressedAt: (number) Epoch ms the senior pressed (server now minus the press age).
@@ -201,13 +225,17 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *          list or earlier (for example pills given early, or a leftover from yesterday), judged
  *          by the household's timezone, but not one of a later day. Missed ones can still be
  *          confirmed late. Confirming an already confirmed or resolved instance changes nothing
- *          and returns it.
+ *          and returns it, except that a same-device press with an id joins confirmPressIds
+ *          (recordNoOpPress).
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Who confirms.
- * @param args: ({instanceId, via, note, pressedAgoMs, transport}) The instance, the surface, an
- *        optional note, an optional press age and how the confirm arrived (ConfirmTransport,
- *        recorded in the audit detail when given). pressedAgoMs is how long before this call
- *        the senior pressed Done on a device that held the press (offline) and sent it later.
+ * @param args: ({instanceId, via, note, pressedAgoMs, pressId, transport}) The instance, the
+ *        surface, an optional note, an optional press age, an optional press id (the phone's
+ *        queue; senior devices only, isPressId; stored in confirmPressIds, or added there by
+ *        recordNoOpPress when the press is a no-op, and recorded in the audit detail) and how
+ *        the confirm arrived (ConfirmTransport, recorded in the audit detail when given).
+ *        pressedAgoMs is how long before this call the senior pressed Done on a device that
+ *        held the press (offline) and sent it later.
  *        An age, not a time, so the device's clock skew cannot move the record. Only a senior
  *        device may send it, and it must be a finite number of at least 0. confirmedAt is
  *        `now` minus the age, clamped to between the instance's early-confirm point
@@ -223,10 +251,11 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *        is not an on-time record of last night's task). Without an age confirmedAt is `now`.
  * @param now: (number) Epoch ms.
  * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- * @raises forbidden when the actor may not confirm; invalid when the press was made before
- *          the confirmation was taken back (a press age at or before confirmTakenBackAt), when not due yet (devices and the
- *          agent: more than 60 minutes early; editors: the instance's local date is after today), when via is
- *          "caregiver" for a non-editor, or when the trimmed note is over 500 characters.
+ * @raises forbidden when the actor may not confirm; invalid when the press was taken back
+ *          (see below), when not due yet (devices and the agent: more than 60 minutes early;
+ *          editors: the instance's local date is after today), when via is "caregiver" for a
+ *          non-editor, when a press age or press id comes from anything but a senior device or
+ *          is not valid, or when the trimmed note is over 500 characters.
  *          A blank note is stored as absent, but never erases a note already on the
  *          instance (set earlier with setTaskNote): without a note the existing one is kept.
  *          Every confirm (device, agent or caregiver) records the state and snooze it replaced
@@ -234,8 +263,12 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
  *          (undoPressedInstance), the caregiver's undo and a reopen can use them.
  *          A press with an age (a device's queued press) made at or before the instance's
  *          confirmTakenBackAt (the senior undid, or a caregiver reopened, after that press) is
- *          refused as invalid, so a stale press held by the device's queue cannot re-confirm a
- *          task that was taken back; through confirmPressedInstance that is a rejected result,
+ *          refused as invalid (lib/confirmRule.queuedPressTakenBack: a press with an id is
+ *          refused when its id was taken back, by an undo or a caregiver's reopen, with the
+ *          reason "This press was taken back", and is not held to the time rule after this
+ *          same device user's own undo), so a stale press held by the device's queue cannot
+ *          re-confirm a task that was taken back; through confirmPressedInstance that is a
+ *          rejected result,
  *          never an error the senior sees. A press without an age, or made after the take-back,
  *          confirms as usual, and so does a caregiver's "Mark done". A press without an age
  *          (the home display's live confirm, voice, a caregiver's Mark done) is not checked
@@ -249,6 +282,7 @@ export async function confirmInstance(
     via: ConfirmVia;
     note?: string;
     pressedAgoMs?: number;
+    pressId?: string;
     transport?: ConfirmTransport;
   },
   now: number,
@@ -270,15 +304,23 @@ export async function confirmInstance(
     }
     requirePressAge(args.pressedAgoMs);
   }
+  if (args.pressId !== undefined) {
+    if (actor.kind !== "senior_device") {
+      throw appError("invalid", "Only the senior's device can send a press id");
+    }
+    requirePressId(args.pressId);
+  }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
-  if (isDoneState(instance.state)) return instance;
-  if (
-    args.pressedAgoMs !== undefined &&
-    pressWasTakenBack(now - args.pressedAgoMs, instance.confirmTakenBackAt)
-  ) {
-    throw appError("invalid", "This press was made before the confirmation was taken back");
-  }
+  if (isDoneState(instance.state)) return await recordNoOpPress(ctx, actor, instance, args.pressId);
+  const takenBack =
+    args.pressedAgoMs === undefined
+      ? null
+      : queuedPressTakenBack(
+          { pressedAt: now - args.pressedAgoMs, pressId: args.pressId, userId: actorUserId(actor) },
+          instance,
+        );
+  if (takenBack !== null) throw appError("invalid", takenBack);
   if (asCaregiver) {
     const household = await loadHousehold(ctx, instance.householdId);
     if (instance.localDate > localDate(now, household.timezone)) {
@@ -297,6 +339,7 @@ export async function confirmInstance(
     ...(args.pressedAgoMs === undefined
       ? {}
       : { pressedAgoMs: args.pressedAgoMs, confirmedAt, receivedAt: now, replayed }),
+    ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
     ...(args.transport === undefined ? {} : { transport: args.transport }),
   };
   return await changeInstance(
@@ -313,9 +356,46 @@ export async function confirmInstance(
       resolvedFromSnoozedUntil: instance.snoozedUntil,
       resolutionNote: note ?? instance.resolutionNote,
       snoozedUntil: undefined,
+      confirmPressIds: args.pressId === undefined ? undefined : [args.pressId],
     },
     pressDetail,
   );
+}
+
+/**
+ * purpose: Note a senior device's press that landed on a confirmation as a no-op. When the press
+ *          carries an id, the instance is confirmed (not resolved) by this same device user and
+ *          the id was never taken back, the id joins confirmPressIds (withConfirmPressId), so
+ *          the Undo the phone offers for that press finds the confirmation it belongs to. Not
+ *          audited (nothing changed for the household). A press without an id, from another
+ *          actor, or on a confirm made by anyone else (another device, voice, a caregiver's
+ *          resolve) changes nothing.
+ * @param ctx: (MutationCtx) Mutation context.
+ * @param actor: (Actor) The caller.
+ * @param instance: (Doc<"taskInstances">) The done instance.
+ * @param pressId: (string | undefined) The press's id, already validated.
+ * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
+ */
+async function recordNoOpPress(
+  ctx: MutationCtx,
+  actor: Actor,
+  instance: Doc<"taskInstances">,
+  pressId: string | undefined,
+): Promise<Doc<"taskInstances">> {
+  if (
+    pressId === undefined ||
+    actor.kind !== "senior_device" ||
+    instance.state !== "confirmed" ||
+    instance.confirmedBy !== actor.userId ||
+    instance.takenBackPressIds?.includes(pressId) ||
+    instance.confirmPressIds?.includes(pressId)
+  ) {
+    return instance;
+  }
+  await ctx.db.patch(instance._id, {
+    confirmPressIds: withConfirmPressId(instance.confirmPressIds, pressId),
+  });
+  return (await ctx.db.get(instance._id))!;
 }
 
 /**
@@ -456,6 +536,33 @@ async function runsOnSchedule(ctx: QueryCtx, instance: Doc<"taskInstances">): Pr
 }
 
 /**
+ * purpose: Why a senior undo cannot apply now, or null when it can (the checks of
+ *          undoPressedInstance after the household check, in order).
+ * @param ctx: (QueryCtx) Context.
+ * @param instance: (Doc<"taskInstances">) The instance.
+ * @param userId: (string) The device user asking.
+ * @param pressId: (string | undefined) The validated id of the press being taken back.
+ * @param tappedAt: (number) When the senior tapped Undo (server now minus the tap age).
+ * @return: (Promise<string | null>) The reason, or null.
+ */
+async function undoRefusal(
+  ctx: QueryCtx,
+  instance: Doc<"taskInstances">,
+  userId: string,
+  pressId: string | undefined,
+  tappedAt: number,
+): Promise<string | null> {
+  if (pressId !== undefined && !(instance.confirmPressIds ?? []).includes(pressId)) {
+    return "This press is not part of the task's confirmation";
+  }
+  if (!seniorCanUndo(instance, userId, tappedAt)) {
+    return "The task is not confirmed by this device within the undo window";
+  }
+  if (!(await runsOnSchedule(ctx, instance))) return "This task is no longer on the schedule";
+  return null;
+}
+
+/**
  * purpose: Take back a senior device's own Done press ("Morning pills done. Undo"). The instance
  *          returns to the state it had before the confirm (by the clock when that was not
  *          recorded, as a reopen does), with the confirmation fields cleared and the snooze the
@@ -464,42 +571,73 @@ async function runsOnSchedule(ctx: QueryCtx, instance: Doc<"taskInstances">): Pr
  *          confirm), the server recorded the confirm at most SENIOR_UNDO_MS ago (measured from
  *          confirmReceivedAt when set, an offline press held more than 5 minutes, else
  *          confirmedAt), and the task still runs (runsOnSchedule). Any failed condition returns
- *          too_late and changes nothing: a late tap is never an error for the senior, and an
- *          instance that no longer exists also reads as too_late. The change is audited as a
- *          state change with detail undo: true and stamps confirmTakenBackAt, so a press made
- *          before the take-back that the device's queue still holds is not applied later
- *          (confirmInstance refuses it). A caregiver alert the scheduler skipped as
- *          instance_closed while the instance was confirmed is not re-sent after the undo.
+ *          too_late and changes the instance in no way: a late tap is never an error for the
+ *          senior, and an instance that no longer exists also reads as too_late. A too_late is
+ *          audited as undo_not_applied with the reason, the validated press id if any, the tap
+ *          age, the tap time and receivedAt (like press_not_applied, this row is written on
+ *          every refused undo of the app path, with no budget). The change is audited as a state
+ *          change with detail undo: true, the press id argument and the ids actually taken back
+ *          (takenBackPressIds: the instance's confirmPressIds), and stamps confirmTakenBackAt,
+ *          so a press made before the take-back that the device's queue still holds is not
+ *          applied later (confirmInstance refuses it). A caregiver alert the scheduler skipped
+ *          as instance_closed while the instance was confirmed is not re-sent after the undo.
  *          An Undo tapped offline and sent later carries undoneAgoMs: the 60 second rule is then
  *          judged at the tap time (now minus the age) and confirmTakenBackAt is the tap time,
  *          clamped to between the confirm's confirmedAt and now, so a Done pressed after the
- *          Undo tap is still applied when it is delivered later.
+ *          Undo tap is still applied when it is delivered later. An undo carrying pressId (the
+ *          phone's queue: the id of the press it takes back) applies only when that id is in
+ *          the instance's confirmPressIds (the confirming press, or a same-device press that
+ *          landed on it as a no-op), else too_late, so a resent undo cannot take back a later
+ *          press. The undo appends all of confirmPressIds to takenBackPressIds
+ *          (withTakenBackPressIds), clears them, and sets confirmTakenBackBy to this device's
+ *          user.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be a senior device of the instance's household.
- * @param args: ({instanceId, undoneAgoMs}) The instance and, for an offline tap, how long
- *        before this call the senior tapped Undo (finite, at least 0, like a press age).
+ * @param args: ({instanceId, undoneAgoMs, pressId}) The instance, for an offline tap how long
+ *        before this call the senior tapped Undo (finite, at least 0, like a press age), and
+ *        the id of the press being taken back (optional, isPressId).
  * @param now: (number) Epoch ms.
  * @return: (Promise<UndoPressResult>) undone with the instance, or too_late.
  * @raises forbidden when the actor is not a senior device or the instance belongs to another
- *          household; invalid for an undoneAgoMs that is not a finite number of at least 0.
+ *          household; invalid for an undoneAgoMs that is not a finite number of at least 0, or
+ *          a press id that is not valid (checked before anything is read or written).
  */
 export async function undoPressedInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; undoneAgoMs?: number },
+  args: { instanceId: Id<"taskInstances">; undoneAgoMs?: number; pressId?: string },
   now: number,
 ): Promise<UndoPressResult> {
   if (actor.kind !== "senior_device") {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
   if (args.undoneAgoMs !== undefined) requirePressAge(args.undoneAgoMs);
+  requirePressId(args.pressId);
   const instance = await ctx.db.get(args.instanceId);
-  if (instance === null) return { status: "too_late" };
-  if (instance.householdId !== actor.householdId) {
+  if (instance !== null && instance.householdId !== actor.householdId) {
     throw appError("forbidden", "Not allowed to undo this task");
   }
   const tappedAt = now - (args.undoneAgoMs ?? 0);
-  if (!seniorCanUndo(instance, actor.userId, tappedAt) || !(await runsOnSchedule(ctx, instance))) {
+  const refusal =
+    instance === null
+      ? NO_SUCH_TASK
+      : await undoRefusal(ctx, instance, actor.userId, args.pressId, tappedAt);
+  if (refusal !== null || instance === null) {
+    await audit(ctx, {
+      householdId: actor.householdId,
+      actor,
+      action: "undo_not_applied",
+      entity: "task_instance",
+      entityId: instance?._id,
+      detail: {
+        reason: refusal ?? NO_SUCH_TASK,
+        instanceId: args.instanceId,
+        undoneAgoMs: args.undoneAgoMs ?? 0,
+        tappedAt,
+        receivedAt: now,
+        ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
+      },
+    });
     return { status: "too_late" };
   }
   const restored = await changeInstance(
@@ -511,8 +649,17 @@ export async function undoPressedInstance(
       state: instance.resolvedFromState ?? reopenedState(instance, now),
       snoozedUntil: instance.resolvedFromSnoozedUntil,
       confirmTakenBackAt: Math.min(now, Math.max(tappedAt, instance.confirmedAt ?? tappedAt)),
+      confirmTakenBackBy: actor.userId,
+      takenBackPressIds: withTakenBackPressIds(
+        instance.takenBackPressIds,
+        instance.confirmPressIds,
+      ),
     },
-    { undo: true },
+    {
+      undo: true,
+      ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
+      takenBackPressIds: instance.confirmPressIds ?? [],
+    },
   );
   return { status: "undone", instance: restored };
 }
@@ -530,9 +677,15 @@ export async function undoPressedInstance(
  *          press made before the reopen that a device's queue still holds is not applied later
  *          (confirmInstance refuses it); a caregiver's "Mark done" still resolves. Only a
  *          device or voice confirm (state confirmed) is stamped: reopening a caregiver's resolve
- *          takes nothing back from the senior, whose own queued press must still apply. Audited as a
- *          state change with detail reopen: true and the previous confirmedAt, confirmedBy and
- *          confirmedVia (the previous state is the row's `from`).
+ *          takes nothing back from the senior, whose own queued press must still apply. The stamp
+ *          also sets confirmTakenBackBy to the caregiver, so a device's queued press is held to
+ *          the time rule after a reopen even when it carries a press id, and appends all of the
+ *          confirm's confirmPressIds to takenBackPressIds (withTakenBackPressIds; the ids are
+ *          cleared with the confirmation), so a resend of any of those presses is refused
+ *          whatever its age, also after a later undo by the device. Audited as a state change
+ *          with detail reopen: true, the previous confirmedAt, confirmedBy and confirmedVia (the
+ *          previous state is the row's `from`) and the press ids it took back
+ *          (takenBackPressIds, empty when there were none).
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be an editor caregiver of the instance's household.
  * @param args: ({instanceId}) The instance.
@@ -573,13 +726,23 @@ export async function reopenInstance(
     {
       ...CLEAR_CONFIRMATION,
       state: reopenedState(instance, now),
-      ...(instance.state === "confirmed" ? { confirmTakenBackAt: now } : {}),
+      ...(instance.state === "confirmed"
+        ? {
+            confirmTakenBackAt: now,
+            confirmTakenBackBy: actor.userId,
+            takenBackPressIds: withTakenBackPressIds(
+              instance.takenBackPressIds,
+              instance.confirmPressIds,
+            ),
+          }
+        : {}),
     },
     {
       reopen: true,
       confirmedAt: instance.confirmedAt,
       confirmedBy: instance.confirmedBy,
       confirmedVia: instance.confirmedVia,
+      takenBackPressIds: instance.confirmPressIds ?? [],
     },
   );
 }
@@ -823,11 +986,15 @@ export type PressResult =
  *          the caller passes recordRefusal false (the device API does once a device's
  *          refused-press budget is spent). Authorization failures still throw: a caller that is
  *          not a device, and an instance of another household, refused by confirmInstance's
- *          household check (the one every confirm goes through), with no audit row.
+ *          household check (the one every confirm goes through), with no audit row. The press id
+ *          is checked first: an invalid one is answered rejected with PRESS_ID_NOT_VALID and its
+ *          row omits the id (after the household check, so another household's instance is
+ *          still forbidden); a valid one is recorded in the row.
  * @param ctx: (MutationCtx) Mutation context.
  * @param actor: (Actor) Must be a senior device.
- * @param args: ({instanceId, via, pressedAgoMs, transport}) The instance, the surface, the press
- *        age and how the press arrived (ConfirmTransport).
+ * @param args: ({instanceId, via, pressedAgoMs, pressId, transport}) The instance, the surface,
+ *        the press age, the press's id (optional; the phone's queue) and how the press arrived
+ *        (ConfirmTransport).
  * @param now: (number) Epoch ms.
  * @param options: ({ recordRefusal?: boolean }, optional) recordRefusal false writes no
  *        press_not_applied row for a refused press; default true.
@@ -842,6 +1009,7 @@ export async function confirmPressedInstance(
     instanceId: Id<"taskInstances">;
     via: ConfirmVia;
     pressedAgoMs: number;
+    pressId?: string;
     transport: ConfirmTransport;
   },
   now: number,
@@ -851,10 +1019,12 @@ export async function confirmPressedInstance(
     throw appError("forbidden", "Only the senior's devices can do this");
   }
   requirePressAge(args.pressedAgoMs);
+  const idValid = args.pressId === undefined || isPressId(args.pressId);
   const instance = await ctx.db.get(args.instanceId);
   /**
    * purpose: Record a press that could not be applied (unless the caller said not to) and build
-   *          the rejected result.
+   *          the rejected result. The press id is recorded only when it is valid, so a raw
+   *          (possibly huge) id never reaches an audit row.
    * @param reason: (string) Why.
    * @return: (Promise<PressResult>) The rejected result.
    */
@@ -874,10 +1044,18 @@ export async function confirmPressedInstance(
         via: args.via,
         instanceId: args.instanceId,
         transport: args.transport,
+        ...(args.pressId === undefined || !idValid ? {} : { pressId: args.pressId }),
       },
     });
     return { status: "rejected", reason };
   };
+  if (!idValid) {
+    // Another household's instance stays forbidden first, as in confirmInstance.
+    if (instance !== null && instance.householdId !== actor.householdId) {
+      throw appError("forbidden", "Not allowed to confirm this task");
+    }
+    return await rejected(PRESS_ID_NOT_VALID);
+  }
   if (instance === null) return await rejected(NO_SUCH_TASK);
   try {
     return { status: "confirmed", instance: await confirmInstance(ctx, actor, args, now) };
@@ -895,10 +1073,17 @@ export async function confirmPressedInstance(
  * @param instanceId: (Id<"taskInstances">) Instance.
  * @param via: (ConfirmVia) Surface that confirmed.
  * @param pressedAgoMs: (number) How long ago (ms) the senior pressed Done.
+ * @param pressId: (string, optional) The id the phone's queue gave the press (16 to 64 letters,
+ *        digits, "-" or "_").
  * @return: (PressResult) confirmed with the instance, or rejected with the reason (also audited).
  */
 export const confirmPressedTask = mutation({
-  args: { instanceId: v.id("taskInstances"), via: confirmVia, pressedAgoMs: v.number() },
+  args: {
+    instanceId: v.id("taskInstances"),
+    via: confirmVia,
+    pressedAgoMs: v.number(),
+    pressId: v.optional(v.string()),
+  },
   handler: async (ctx, args): Promise<PressResult> => {
     const actor = await requireDeviceActor(ctx);
     return await confirmPressedInstance(ctx, actor, { ...args, transport: "app" }, Date.now());
@@ -912,10 +1097,16 @@ export const confirmPressedTask = mutation({
  * @param instanceId: (Id<"taskInstances">) Instance.
  * @param undoneAgoMs: (number, optional) For an Undo tapped offline and sent later: how long ago
  *        (ms) it was tapped.
+ * @param pressId: (string, optional) The id of the press being taken back; the undo applies only
+ *        while that press is the instance's confirmation.
  * @return: (UndoPressResult) undone with the instance, or too_late.
  */
 export const undoPressedTask = mutation({
-  args: { instanceId: v.id("taskInstances"), undoneAgoMs: v.optional(v.number()) },
+  args: {
+    instanceId: v.id("taskInstances"),
+    undoneAgoMs: v.optional(v.number()),
+    pressId: v.optional(v.string()),
+  },
   handler: async (ctx, args): Promise<UndoPressResult> => {
     const actor = await requireDeviceActor(ctx);
     return await undoPressedInstance(ctx, actor, args, Date.now());

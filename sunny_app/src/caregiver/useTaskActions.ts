@@ -2,8 +2,9 @@
 //
 // Purpose: Hook behind the caregiver's actions on a task: "I'm on it" (claim), "Mark done"
 // (confirm on the senior's behalf, immediately and without a note), undoing a Mark done within
-// the server's window (instances.undoResolve) and saving a task's note. It calls
-// instances.claimTaskInstance, instances.confirmTaskInstance, instances.undoResolve and
+// the server's window (instances.undoResolve), reopening a task marked done today (editors; the
+// caller asks first) and saving a task's note. It calls instances.claimTaskInstance,
+// instances.confirmTaskInstance, instances.undoResolve, instances.reopenTaskInstance and
 // instances.setTaskNote and tracks only what the day view cannot show: actions in flight and
 // actions that failed (with the error message). A success needs no local state: the day view is
 // a live subscription and carries the claim, the confirmation or the undo, so every caregiver
@@ -16,7 +17,7 @@
 // that instance starts. The action functions keep their identity between renders, so memoized
 // rows can receive them.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -32,6 +33,7 @@ export type TaskActionState =
   | { status: 'claiming' }
   | { status: 'marking' }
   | { status: 'undoing' }
+  | { status: 'reopening' }
   | { status: 'saving' }
   | { status: 'error'; message: string };
 
@@ -44,6 +46,8 @@ export interface TaskActions {
   markDone: (instanceId: TaskInstanceId) => Promise<boolean>;
   /** Undo this caregiver's recent Mark done; an error that follows shows in the task's slot. */
   undoMarkDone: (instanceId: TaskInstanceId) => Promise<void>;
+  /** Reopen a task marked done today; a failure shows in the task's slot. */
+  reopen: (instanceId: TaskInstanceId) => Promise<void>;
   /** Save (or, with undefined, clear) the task's note; resolves true when it was saved. */
   saveNote: (instanceId: TaskInstanceId, note: string | undefined) => Promise<boolean>;
 }
@@ -52,8 +56,8 @@ export interface TaskActions {
  * purpose: Track and perform caregiver actions on tasks.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id, to tell their own
  *        confirmation from one made first by someone else.
- * @return: (TaskActions) The in-flight and failed actions and the claim, markDone, undoMarkDone
- *          and saveNote functions.
+ * @return: (TaskActions) The in-flight and failed actions and the claim, markDone, undoMarkDone,
+ *          reopen and saveNote functions.
  */
 export function useTaskActions(userId: string | null): TaskActions {
   const [actions, setActions] = useState<Partial<Record<string, TaskActionState>>>({});
@@ -194,6 +198,22 @@ export function useTaskActions(userId: string | null): TaskActions {
   );
 
   /**
+   * purpose: Reopen one task that was marked done today (by anyone). The day view then shows it
+   *          open again; reminders and family alerts already overdue go out at once (server).
+   * @param instanceId: (TaskInstanceId) The task instance.
+   * @return: (Promise<void>) Resolves once the outcome is recorded; never rejects. A refusal
+   *          shows its message in the task's slot.
+   */
+  const reopen = useCallback(
+    async (instanceId: TaskInstanceId): Promise<void> => {
+      await run(instanceId, { status: 'reopening' }, () =>
+        callMutation(api.instances.reopenTaskInstance, { instanceId }),
+      );
+    },
+    [run],
+  );
+
+  /**
    * purpose: Save or clear one task's note.
    * @param instanceId: (TaskInstanceId) The task instance.
    * @param note: (string | undefined) The trimmed note; undefined clears it (dropped when the
@@ -208,5 +228,5 @@ export function useTaskActions(userId: string | null): TaskActions {
     [run],
   );
 
-  return { actions, claim, markDone, undoMarkDone, saveNote };
+  return { actions, claim, markDone, undoMarkDone, reopen, saveNote };
 }

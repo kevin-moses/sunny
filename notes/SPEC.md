@@ -59,7 +59,7 @@ This state is the agent's context, not its boundary. Questions it can't answer f
 
 **Task instance states:** upcoming -> due -> confirmed, or due -> missed -> escalated -> resolved. A caregiver can resolve on the senior's behalf ("I called; she took them"), recorded under their name. An editor caregiver can also reopen any task confirmed that day, recorded in the audit log; this is the backstop for a Done pressed by mistake. A reopened task is simply unconfirmed again: its escalation ladder continues, so prompts and family alerts whose time has already passed go out right away.
 
-**Offline rule:** the display and phone cache today's and tomorrow's instances, move tasks to due on their own clock and keep prompting from the cache. Confirmations queue locally, survive a restart, and sync when the connection returns. The device sends how long ago the press was, so the task is recorded at the time of the press and a wrong device clock cannot shift it. A family alert can still fire for a task that was confirmed offline; that is accepted. An Undo tapped offline is queued the same way and judged from when it was tapped. A press made before an undo, or before a caregiver reopened a device's confirmation, is ignored if it arrives afterwards, so a queued press can never mark a task done again after it was taken back.
+**Offline rule:** the display and phone cache today's and tomorrow's instances, move tasks to due on their own clock and keep prompting from the cache. Confirmations queue locally, survive a restart, and sync when the connection returns. The device sends how long ago the press was, so the task is recorded at the time of the press and a wrong device clock cannot shift it. A family alert can still fire for a task that was confirmed offline; that is accepted. An Undo tapped offline is queued the same way and judged from when it was tapped. Every Done press on the phone carries its own id and its Undo names that press, so the phone's presses and undos take effect in the order they were made whatever the network does (delay, a dropped connection, a message sent twice); the last thing the senior did wins. A press made before an undo, or before a caregiver reopened a device's confirmation, is ignored if it arrives afterwards, so a queued press can never mark a task done again after it was taken back. Against a caregiver's reopen and presses from other devices the order is still judged by estimated press times. Known limit: a press sent on a connection that had silently dropped is recorded at the time the connection came back, not when it was pressed.
 
 **Devices and the device API:** the rules that decide what a senior surface shows (which task is "Now", what is Next up, which rows appear, when to chime and what to say) live in the backend as one device state. Every senior surface reads it: the phone app, the widget, the Live Activity, the iPad and the e-ink display. A device gets a long-lived device token at pairing and uses a small HTTP device API (read the state, fetch a drawn frame, confirm); the phone's Undo goes through the app's own signed-in call, because only the phone app offers it; removing the device in the caregiver app revokes the token. A device reports its screen resolution and grey levels, and the server draws e-ink frames to fit, so no layout assumes one screen size.
 
@@ -74,7 +74,7 @@ All setup and all visibility live here; the senior never configures anything. Ch
 | Senior-facing wording | Sunny writes the short label the display shows and the exact sentence voice speaks; its reply shows both, with a play button for the sentence | Must have |
 | Today timeline | Live status of every task instance, with who confirmed it and on which surface | Must have |
 | Mark done for them | Resolve a task after checking in by phone, recorded under the caregiver's name | Must have |
-| Reopen a task | Reopen any task confirmed that day, for a Done pressed by mistake; recorded in the audit log | Must have |
+| Reopen a task | Reopen any task confirmed that day, for a Done pressed by mistake, by tapping its ticked box and confirming; recorded in the audit log | Must have |
 | Escalation alerts and claim | Time-sensitive push when a task escalates, with "I'm on it" on the notification; it stops alerts going to the others. The action opens the app to claim. A caregiver without the app gets a text instead, and so does a caregiver whose push could not be delivered | Must have |
 | Calendar events | Appointments and visits, including who is coming, added by chat; feeds the display's Next up | Must have |
 | Daily digest | Posted as a message from Sunny in the chat thread, with a push as its preview; a caregiver can reply to it. Delivery time and recipients are set by chat | Must have |
@@ -280,7 +280,7 @@ These features move Sunny from reminding the senior to helping them act. None of
 
 ## Build order and success metrics
 
-Built so far (merged to `main` through PR 16, 2026-11-14, plus the device API change this line ships with):
+Built so far (merged to `main` through PR 17, 2026-11-14, plus the Undo and Reopen change this line ships with):
 
 - Backend: shared state, scheduler, escalation ladder with claim, question log, household list, senior undo and caregiver reopen (no buttons in the app yet), caregiver alerts by push with text as the fallback, daily digest posted in the chat thread, device token, HTTP device API and one server-computed device state (nothing in the app reads it yet), server-drawn display frames
 - Caregiver app: Home timeline with mark done, Chat with task and calendar tools, About tab (life profile, hard questions, remembered facts, messages)
@@ -294,7 +294,7 @@ Remaining, in order:
 
 1. Device check on a real iPhone and iPad of what the simulator cannot show: Talk and a live conversation with the voice agent, the sound of the due cue, the offline queue, push, and the caregiver screens
 2. Backend foundation: device token and HTTP device API, the display rules moved into one server device state, senior undo, caregiver reopen (built; the app's screens move to the device state in step 3)
-3. Senior surfaces offline: day view kept across a restart, due transitions and the cue on the device's own clock, display Done through the durable queue, the phone's 30-second undo
+3. Senior surfaces offline: day view kept across a restart, due transitions and the cue on the device's own clock, display Done through the durable queue, the app's screens reading the device state (the phone's 30-second undo and the caregiver's Reopen button are built)
 4. Caregiver alerts: push with "I'm on it", text as fallback, digest posted in the chat thread (built; still to check on a real phone: time-sensitive delivery, the action on the lock screen, a tap that starts the app)
 5. iOS extension: home screen widget, lock screen widget, Live Activity, iOS 17.2 floor, Assistive Access check (runs alongside 3 and 4)
 6. Frame renderer: server-drawn frames sized per device (built; not yet run inside Convex or shown on a panel); still to build: prompt audio clips, the iPad switched to frames, a frame for each step of a multi-step task
