@@ -1,29 +1,3 @@
-// agentSetupTools.test.ts
-// Purpose: Tests for the household agent's setup tools (lib/agentSetupTools.ts) and the chat's
-// wording cards (agentRequests.transcript), with convex-test and frozen clocks. Knowledge:
-// add_knowledge for each kind stores through the About tab's cores (same rows, same cleaning,
-// same error text, same limits, audit rows under the requesting caregiver with the request id),
-// reports added, already_stored, already_stored_differently and confirmed, and returns the item
-// as stored; update_knowledge corrects, clears, confirms and refuses bad changes;
-// remove_knowledge names what it removed; get_knowledge lists all three kinds or one. The
-// memory rule: a fact the senior said never overwrites one a caregiver stored by chat, and a
-// correction by chat keeps the senior source while verifying it. Settings: get_settings shape;
-// update_settings for the digest time (a bad time is refused with households.update's error),
-// no on-call setting (the field is refused), sharing, the weather place (set and cleared, the
-// clearing audited as null) and its audit row, and no audit row for a change that changes
-// nothing; updateHouseholdCore returns the row read back (a timezone change clears
-// lastDigestDate); set_digest_delivery changes only the requester's own delivery, takes no name,
-// and writes nothing when already so. Scoping: every tool acts on the request's household only
-// (another household's knowledge_id is not found, a model-supplied household id is an unknown
-// field), and through the runtime a viewer's request runs no tool. Wording cards: a request's
-// add_task and update_task calls are recorded on the request row (changedTaskIds: each task once,
-// in order of first change, at most MAX_CHANGED_TASKS) and give one card per task with the live
-// label, the display's time, every time and the sentence the display speaks; a written prompt is
-// used as is; an anytime task has no sentence; a stopped task, a failed call and a task of another
-// household (put on the row directly) have no card; viewers get no requests and so no cards.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -39,17 +13,14 @@ import {
   type TestConvex,
 } from "./testing.helpers";
 
-/** Monday 2027-03-01, 07:00 in New York (EST). */
 const NOW = Date.parse("2027-03-01T12:00:00Z");
 
-/** A household (Pat primary, Max member, Val viewer) and another one (Ben). */
 interface World {
   t: TestConvex;
   home: Id<"households">;
   other: Id<"households">;
 }
 
-/** Result of a tool call. */
 interface ToolResult {
   text: string;
   isError: boolean;
@@ -64,10 +35,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Create the two households through the real mutations.
- * @return: (Promise<World>) Harness and household ids.
- */
 async function makeWorld(): Promise<World> {
   const t = makeBackend();
   const home = await createHousehold(t, {
@@ -81,16 +48,6 @@ async function makeWorld(): Promise<World> {
   return { t, home, other };
 }
 
-/**
- * purpose: Run a tool as the runtime does: the household agent acting for a caregiver.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) The request's household.
- * @param name: (string) Tool name.
- * @param input: (Record<string, unknown>) Tool input.
- * @param requestedBy: (string) The requesting caregiver (default pat).
- * @param requestId: (Id<"agentRequests">, optional) The request, recorded on audit rows.
- * @return: (Promise<ToolResult>) The result.
- */
 async function tool(
   t: TestConvex,
   householdId: Id<"households">,
@@ -105,15 +62,6 @@ async function tool(
   );
 }
 
-/**
- * purpose: Run a tool and parse its successful result.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param name: (string) Tool name.
- * @param input: (Record<string, unknown>) Tool input.
- * @return: (Promise<any>) The parsed result.
- * @raises when the tool returned an error.
- */
 async function ok(
   t: TestConvex,
   householdId: Id<"households">,
@@ -125,12 +73,6 @@ async function ok(
   return JSON.parse(result.text);
 }
 
-/**
- * purpose: Read every row of a table.
- * @param t: (TestConvex) Harness.
- * @param table: (T) The table.
- * @return: (Promise<Doc<T>[]>) The rows.
- */
 async function rows<
   T extends
     | "lifeProfileEntries"
@@ -143,12 +85,6 @@ async function rows<
   return (await t.run(async (ctx) => await ctx.db.query(table).collect())) as Doc<T>[];
 }
 
-/**
- * purpose: The household row.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<"households">>) The row.
- */
 async function household(t: TestConvex, householdId: Id<"households">): Promise<Doc<"households">> {
   return (await t.run(async (ctx) => await ctx.db.get(householdId)))!;
 }
@@ -581,7 +517,6 @@ describe("settings", () => {
 
   test("set_digest_delivery turns the requester's own digest off and on, no one else's", async () => {
     const { t, home } = await makeWorld();
-    // Pat is not the first caregiver by user id (Max is), so "the first member" cannot pass.
     const off = await tool(t, home, "set_digest_delivery", { receives: false }, "pat");
     expect(JSON.parse(off.text)).toEqual({
       name: "Pat",
@@ -676,14 +611,6 @@ describe("household scoping", () => {
 });
 
 describe("wording cards", () => {
-  /**
-   * purpose: Run tool calls for a new running request, through the runtime step.
-   * @param t: (TestConvex) Harness.
-   * @param home: (Id<"households">) Household.
-   * @param calls: (Array<[string, object]>) Tool names and inputs.
-   * @param requestedBy: (string) The requesting caregiver (default pat).
-   * @return: (Promise<Id<"agentRequests">>) The request (left succeeded, with a reply).
-   */
   async function runRequest(
     t: TestConvex,
     home: Id<"households">,
@@ -705,14 +632,6 @@ describe("wording cards", () => {
     return requestId;
   }
 
-  /**
-   * purpose: The wording of one request in the transcript, as a caregiver reads it.
-   * @param t: (TestConvex) Harness.
-   * @param home: (Id<"households">) Household.
-   * @param requestId: (Id<"agentRequests">) The request.
-   * @param subject: (string) Who reads it (default pat).
-   * @return: (Promise<unknown[] | undefined>) Its cards; undefined when the request is not there.
-   */
   async function wordingOf(
     t: TestConvex,
     home: Id<"households">,

@@ -1,17 +1,3 @@
-// migrations.test.ts
-// Purpose: Tests for migrations.removeOnCall with convex-test: a household on the old default
-// medication ladder (prompt 0, prompt 15, on call 30, all caregivers 45 unless claimed) ends on
-// exactly the new default (prompt 0, prompt 15, all caregivers 30), keeping the step ids, and its
-// onCallUserId is cleared; a second run changes nothing; a custom ladder keeps its other steps
-// and a ladder with no legacy step is left alone; a household with an open instance that has
-// already fired a legacy on-call step is deferred (onCallUserId cleared, ladder untouched) and
-// migrated by a later run once that instance has closed; a non-finite batch size falls back to
-// the default; and the mutation works through every household in batches by scheduling itself.
-// Also withoutOnCallSteps as a pure function: several legacy steps (the earliest one decides
-// what is "later") and an all-caregivers step at exactly the legacy offset (kept).
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -19,7 +5,6 @@ import type { EscalationStep } from "./lib/validators";
 import { withoutOnCallSteps } from "./migrations";
 import { addInstance, createHousehold, makeBackend, type TestConvex } from "./testing.helpers";
 
-/** The medication ladder every household was seeded with before 2026-11-14. */
 const OLD_DEFAULT: EscalationStep[] = [
   { id: "p0", offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
   { id: "p15", offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
@@ -27,7 +12,6 @@ const OLD_DEFAULT: EscalationStep[] = [
   { id: "a45", offsetMinutes: 45, action: "alert_all_caregivers", skipIfClaimed: true },
 ];
 
-/** The new default medication ladder, with the old ladder's ids. */
 const NEW_DEFAULT: EscalationStep[] = [
   { id: "p0", offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
   { id: "p15", offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
@@ -42,13 +26,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Create a household as it was stored before the change: an on-call caregiver and the
- *          old default medication ladder.
- * @param t: (TestConvex) Harness.
- * @param subject: (string) The creating caregiver.
- * @return: (Promise<Id<"households">>) The household.
- */
 async function legacyHousehold(t: TestConvex, subject: string): Promise<Id<"households">> {
   const householdId = await createHousehold(t, { subject });
   await t.run(async (ctx) => {
@@ -61,12 +38,6 @@ async function legacyHousehold(t: TestConvex, subject: string): Promise<Id<"hous
   return householdId;
 }
 
-/**
- * purpose: A household's escalation policies.
- * @param db: (object) A database reader.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<"escalationPolicies">[]>) The policies.
- */
 async function policies(
   db: Parameters<Parameters<TestConvex["run"]>[0]>[0]["db"],
   householdId: Id<"households">,
@@ -77,12 +48,6 @@ async function policies(
     .collect();
 }
 
-/**
- * purpose: Read a household and its medication policy's steps.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<{ household, medication }>) The row and the steps.
- */
 async function state(t: TestConvex, householdId: Id<"households">) {
   return await t.run(async (ctx) => ({
     household: (await ctx.db.get(householdId))!,

@@ -1,33 +1,8 @@
-// lib/policies.ts
-// Purpose: Seeds the default escalation policies every new household starts with (the
-// SPEC defaults, ported from private.seed_default_policies). They carry a systemKey so
-// code finds them without depending on the editable name; they may be renamed and tuned
-// but not deleted (enforced by the policy mutations). Also assigns the stable step ids
-// (assignStepIds) that firedSteps on instances refer to. The medication default (2026-11-14):
-// prompt the senior when the window opens and again at +15 minutes, then at +30 alert every
-// caregiver at once (anyone who may claim can claim it); the window closing marks it missed.
-// When the window closes before +30 (a short window, or a task added late in its window), the
-// scheduler sends that caregiver alert as it marks the task missed (scheduler.ts closeWindows).
-// There is no on-call caregiver and no separate +45 step. The alert's skipIfClaimed is false:
-// a caregiver may claim a due task from Home before +30, and the alert still goes to everyone,
-// which is the intended safe behaviour (a claim is not a dose).
-//
-// Last modified: 2026-11-14
-
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { appError } from "./errors";
 import type { EscalationStep, EscalationStepInput } from "./validators";
 
-/**
- * purpose: Give a list of steps their stable ids. A step keeps the id it was sent with only
- *          when that id belongs to the policy being edited (knownIds); every other step gets
- *          a new random id. Ids are generated here, never trusted from a client.
- * @param steps: (EscalationStepInput[]) Steps in order, each with an optional id.
- * @param knownIds: (ReadonlySet<string>) Ids of the policy's current steps; empty for a new policy.
- * @return: (EscalationStep[]) The steps with ids.
- * @raises invalid when the same known id is used by two steps.
- */
 export function assignStepIds(
   steps: EscalationStepInput[],
   knownIds: ReadonlySet<string> = new Set(),
@@ -46,12 +21,6 @@ export function assignStepIds(
   });
 }
 
-/**
- * purpose: Insert the "Medication" and "Prompt only" policies for a household.
- * @param ctx: (MutationCtx) Mutation context.
- * @param householdId: (Id<"households">) The new household.
- * @return: (Promise<void>) Resolves when both policies are written.
- */
 export async function seedDefaultPolicies(
   ctx: MutationCtx,
   householdId: Id<"households">,

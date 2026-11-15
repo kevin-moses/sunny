@@ -1,23 +1,3 @@
-// convex/profile.test.ts
-// Purpose: Tests for profile.ts and lib/access.requireCaregiverReader with convex-test and a fake
-// clock. Covers, for every public function: access by role (primary and member write; viewers
-// only read; the paired device, identified by the real sunny_kind "device" claim, can neither
-// read nor write; signed-out callers and caregivers of another household are refused), household
-// isolation (a row id from household A is not found through household B), text cleaning (one
-// paragraph for every field but message bodies) and length caps on add and update, count caps,
-// duplicate handling (adds return the existing row with whether the stored text is the same and
-// change nothing; renames onto a taken key are refused), case-insensitive name order, one audit
-// row per change and none for a no-op, the memory rule (caregiver facts are verified at once; a
-// senior-stated fact is verified only by an editor; the first verifier is kept; a correction
-// verifies and keeps the source; adding a fact the senior already stated confirms it), the
-// bounded memory list (newest unverified facts and a count of older ones; a verified duplicate is
-// found behind many newer facts) and the message list (newest first, senior messages, mine
-// instead of member ids, seen state, local time, limit). Also checks that what is written is
-// what agent.getContext gives the voice agent, including that with 40 verified facts the
-// senior's newest facts still fill the rest of its 50-fact window.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -38,18 +18,11 @@ import { requireCaregiverReader } from "./lib/access";
 import { createFamilyHousehold, createHousehold, makeBackend } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
-/** Wednesday 2027-03-10 10:00 in New York (EST). */
 const NOW = Date.parse("2027-03-10T15:00:00Z");
 const AGENT_KEY = "profile-test-agent-key";
 
-/** A caller: the harness with an identity. */
 type Caller = ReturnType<TestConvex["withIdentity"]>;
 
-/**
- * The family household (Pat primary, Max member, Val viewer, a paired phone) and an outsider.
- * The convex-test clock moves on by about a millisecond per call, so instants written by a
- * call are compared with expect.any or a range rather than exactly.
- */
 interface World {
   t: TestConvex;
   householdId: Id<"households">;
@@ -76,10 +49,6 @@ afterEach(() => {
   else process.env.SUNNY_AGENT_KEY = savedKey;
 });
 
-/**
- * purpose: Build the family household and a second household owned by the outsider.
- * @return: (Promise<World>) The world.
- */
 async function setup(): Promise<World> {
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
@@ -103,12 +72,6 @@ async function setup(): Promise<World> {
   };
 }
 
-/**
- * purpose: The audit rows of a household for one entity type, oldest first.
- * @param w: (World) The world.
- * @param entity: (string) Entity name, for example "lifeProfileEntry".
- * @return: (Promise<Doc<"auditLog">[]>) The rows.
- */
 async function auditRows(w: World, entity: string): Promise<Doc<"auditLog">[]> {
   return await w.t.run(async (ctx) =>
     (
@@ -120,13 +83,6 @@ async function auditRows(w: World, entity: string): Promise<Doc<"auditLog">[]> {
   );
 }
 
-/**
- * purpose: Insert a memory fact directly, as the voice agent or a test fixture would.
- * @param w: (World) The world.
- * @param fact: (string) The text.
- * @param fields: (Partial<Doc<"agentMemory">>) Overrides; default an unverified senior fact.
- * @return: (Promise<Id<"agentMemory">>) The fact.
- */
 async function insertFact(
   w: World,
   fact: string,
@@ -143,11 +99,6 @@ async function insertFact(
   );
 }
 
-/**
- * purpose: Read the voice agent's context for the family household.
- * @param w: (World) The world.
- * @return: The getContext result.
- */
 async function agentContext(w: World) {
   return await w.t.query(api.agent.getContext, {
     agentKey: AGENT_KEY,
@@ -156,12 +107,6 @@ async function agentContext(w: World) {
   });
 }
 
-/**
- * purpose: Rows of a table directly, for counting.
- * @param w: (World) The world.
- * @param table: (string) Table name.
- * @return: (Promise<number>) How many rows the family household has in it.
- */
 async function countRows(
   w: World,
   table: "lifeProfileEntries" | "sensitiveTopics" | "agentMemory" | "familyMessages",
@@ -254,10 +199,6 @@ describe("access", () => {
     });
   });
 
-  /**
-   * purpose: Every write, as a function of the world (rows it needs are created by Pat first).
-   * @return: Pairs of name and a function calling the write as the given caller.
-   */
   const writes: Array<[string, (w: World, caller: Caller) => Promise<unknown>]> = [
     [
       "addEntry",

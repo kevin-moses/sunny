@@ -1,16 +1,4 @@
 "use node";
-// apns.ts
-// Purpose: Apple Push Notification sender. APNs only accepts HTTP/2, which fetch does not speak
-// in Convex, so this "use node" file uses node:http2: one session per send call, reused for all
-// tokens, closed at the end, with a 10 second timeout per request. Payload, headers, provider
-// token and outcome mapping live in lib/apnsPayload.ts. Nothing is thrown for a push: per-token
-// failures and a missing or invalid configuration (configError, message starts with "APNs is
-// not configured") are returned. The companion deleteTokens mutation is in apnsTokens.ts
-// because a "use node" file may only hold actions. The caller passes the push's interruption
-// level and category (lib/apnsPayload pushStyle), which go into the aps dictionary.
-// Exports: send (internalAction).
-//
-// Last modified: 2026-11-14
 
 import { connect } from "node:http2";
 import type { ClientHttp2Session } from "node:http2";
@@ -38,16 +26,6 @@ function apnsReason(responseBody: string): string | null {
   return typeof reason === "string" ? reason : null;
 }
 
-/**
- * purpose: Send one push on an open session and map the response.
- * @param session: (ClientHttp2Session) Open session.
- * @param config: (ApnsConfig) Configuration.
- * @param providerToken: (string) Provider JWT.
- * @param token: (string) Device token.
- * @param body: (string) Serialized payload.
- * @param data: (Record<string, string> | undefined) Custom keys, for the collapse id.
- * @return: (Promise<ApnsResult>) Result; never rejects.
- */
 function sendOne(
   session: ClientHttp2Session,
   config: ApnsConfig,
@@ -62,11 +40,6 @@ function sendOne(
       return;
     }
     let settled = false;
-    /**
-     * purpose: Settle this request's promise once, with the first result.
-     * @param result: (ApnsResult) The outcome.
-     * @return: (void)
-     */
     const finish = (result: ApnsResult): void => {
       if (settled) return;
       settled = true;
@@ -96,7 +69,6 @@ function sendOne(
         finish(mapOutcome(token, status, apnsReason(text)));
       });
       req.on("error", (e: Error) => finish(failureResult(token, e.message)));
-      // A stream closed without a response or an error (session torn down) must not hang.
       req.on("close", () => finish(failureResult(token, "Closed")));
       req.end(body);
     } catch (e) {
@@ -105,18 +77,6 @@ function sendOne(
   });
 }
 
-/**
- * purpose: Send an alert push to device tokens over one HTTP/2 session.
- * @param tokens: (string[]) Raw APNs device tokens.
- * @param title: (string) Alert title.
- * @param body: (string) Alert body.
- * @param data: (Record<string, string>) Optional custom keys (snake_case), e.g. task_instance_id.
- * @param interruptionLevel: ("time-sensitive", optional) aps interruption-level; absent is the
- *        default level.
- * @param category: (string, optional) aps category (the caregiver alert's action category).
- * @return: (ApnsSendResult) One result per token, in order, or configError when the key, team id
- *          or key text is missing or invalid.
- */
 export const send = internalAction({
   args: {
     tokens: v.array(v.string()),
@@ -142,7 +102,6 @@ export const send = internalAction({
       category: args.category,
     });
     const session = connect(`https://${apnsHost(config.environment)}`);
-    // A session-level error also surfaces on each pending request's own error event.
     session.on("error", () => {});
     const connectTimer = setTimeout(
       () => session.destroy(new Error("connect timeout")),
@@ -162,8 +121,6 @@ export const send = internalAction({
       return { results };
     } finally {
       clearTimeout(connectTimer);
-      // After a timeout or connection error the session is not trusted; otherwise close it
-      // gracefully.
       if (broken) session.destroy();
       else session.close();
     }

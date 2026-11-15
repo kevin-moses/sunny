@@ -1,19 +1,3 @@
-// tasks.test.ts
-// Purpose: Tests for tasks.ts: task create, update, list and hard delete with the validation
-// the SQL CHECK constraints performed, the default spoken prompt, null-clearing of optional
-// fields, audit rows, and escalation policy list, create, rename, step edits and delete
-// (seeded policies protected, deleting a custom policy clears it from tasks). One access test
-// per public function: outsiders forbidden, viewers read but cannot write, devices read only.
-// Also: policy step ids (assigned on create, kept or renewed on update), policy size and name
-// limits, and background purging of a deleted task's rows.
-// Default policy on create (medication vs prompt_only, explicit wins, missing seed), the policy
-// switch on a type change across the medication boundary (seeded policies move, custom ones
-// stay), size caps that apply only to written values (a legacy long label stays editable), and
-// the backfillDefaultPolicies maintenance mutation. No policy writer accepts the legacy
-// "alert_on_call" action (2026-11-14).
-//
-// Last modified: 2026-11-14
-
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -29,31 +13,20 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   return convexTest(schema, modules);
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** Household with Pat (primary), Max (member), Val (viewer) and a paired device. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
   medication: Id<"escalationPolicies">;
 }
 
-/**
- * purpose: Build the standard fixture.
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const pat = t.withIdentity({ subject: "pat" });
@@ -78,7 +51,6 @@ async function setup(): Promise<Fixture> {
   return { t, householdId, medication: policies.find((p) => p.systemKey === "medication")!._id };
 }
 
-/** Minimal valid arguments for tasks.create. */
 function base(f: Fixture) {
   return {
     householdId: f.householdId,
@@ -506,7 +478,6 @@ describe("escalation policies", () => {
       (await pat.query(api.tasks.listPolicies, { householdId: f.householdId })).find(
         (p) => p._id === f.medication,
       )!;
-    // The seeded steps hold only the actions a client may send (no legacy on-call step).
     const [s0, s1, s2] = (await read()).steps as EscalationStepInput[];
     await pat.mutation(api.tasks.updatePolicy, {
       householdId: f.householdId,
@@ -641,11 +612,6 @@ describe("escalation policies", () => {
 });
 
 describe("default escalation policy", () => {
-  /**
-   * purpose: The prompt_only policy id of the fixture's household.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<Id<"escalationPolicies">>) The policy.
-   */
   async function promptOnlyId(f: Fixture): Promise<Id<"escalationPolicies">> {
     const rows = await f.t
       .withIdentity({ subject: "pat" })
@@ -653,12 +619,6 @@ describe("default escalation policy", () => {
     return rows.find((p) => p.systemKey === "prompt_only")!._id;
   }
 
-  /**
-   * purpose: Read a task's policy.
-   * @param f: (Fixture) Fixture.
-   * @param id: (Id<"tasks">) Task.
-   * @return: (Promise<Id<"escalationPolicies"> | undefined>) Its policy.
-   */
   async function policyOf(f: Fixture, id: Id<"tasks">) {
     return (await f.t.run(async (ctx) => await ctx.db.get(id)))!.escalationPolicyId;
   }
@@ -770,11 +730,6 @@ describe("default escalation policy", () => {
 });
 
 describe("size caps apply to written values only", () => {
-  /**
-   * purpose: Insert a task directly with a label longer than today's cap, as older data has.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<Id<"tasks">>) The task.
-   */
   async function legacyTask(f: Fixture): Promise<Id<"tasks">> {
     const id = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, base(f));
     await f.t.run(async (ctx) => {
@@ -872,13 +827,6 @@ describe("size caps apply to written values only", () => {
 });
 
 describe("tasks.backfillDefaultPolicies", () => {
-  /**
-   * purpose: Insert a task row directly, as old data has (optionally without a policy).
-   * @param f: (Fixture) Fixture.
-   * @param type: The task type.
-   * @param policy: (Id<"escalationPolicies">, optional) Policy to set.
-   * @return: (Promise<Id<"tasks">>) The task.
-   */
   async function legacyTask(
     f: Fixture,
     type: "medication" | "routine",
@@ -903,31 +851,15 @@ describe("tasks.backfillDefaultPolicies", () => {
     );
   }
 
-  /**
-   * purpose: Run the backfill and every function it schedules.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<void>)
-   */
   async function runBackfill(f: Fixture): Promise<void> {
     await f.t.mutation(internal.tasks.backfillDefaultPolicies, {});
     await f.t.finishAllScheduledFunctions(vi.runAllTimers);
   }
 
-  /**
-   * purpose: Read a task's policy.
-   * @param f: (Fixture) Fixture.
-   * @param id: (Id<"tasks">) Task.
-   * @return: (Promise<Id<"escalationPolicies"> | undefined>) Its policy.
-   */
   async function policyOf(f: Fixture, id: Id<"tasks">) {
     return (await f.t.run(async (ctx) => await ctx.db.get(id)))!.escalationPolicyId;
   }
 
-  /**
-   * purpose: Count audit rows.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<number>) The number of rows.
-   */
   async function auditCount(f: Fixture): Promise<number> {
     return (await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect())).length;
   }

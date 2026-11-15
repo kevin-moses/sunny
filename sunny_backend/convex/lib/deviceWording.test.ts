@@ -1,12 +1,3 @@
-// lib/deviceWording.test.ts
-// Purpose: Unit tests for the senior-surface wording ported from the app
-// (lib/deviceWording.ts), with the app's own cases (sunny_app/src/day/__tests__/format.test.ts
-// clockTime and relativeDayName, sunny_app/src/display/__tests__/cue.test.ts spokenTime,
-// cueSpeech and hasWrittenPrompt, display/__tests__/model.test.ts fullDate) plus the Done
-// question and the task icons.
-//
-// Last modified: 2026-11-13
-
 import { describe, expect, it } from "vitest";
 import {
   clockTime,
@@ -20,11 +11,6 @@ import {
 } from "./deviceWording";
 import type { SpeechTask } from "./deviceWording";
 
-/**
- * purpose: Build a task for the cue sentence.
- * @param overrides: (Partial<SpeechTask>) Fields to set.
- * @return: (SpeechTask) An 08:00 medication with the backend's default prompt unless overridden.
- */
 function speechTask(overrides: Partial<SpeechTask> = {}): SpeechTask {
   return {
     type: "medication",

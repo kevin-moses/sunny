@@ -1,33 +1,3 @@
-// undoReopen.test.ts
-// Purpose: Tests for the two ways back out of a confirm: undoPressedTask (a senior device takes
-// back its own Done press for 60 seconds) and reopenTaskInstance (an editor caregiver reopens a
-// task confirmed or resolved earlier today). The pure rules in lib/confirmRule.ts (seniorCanUndo,
-// caregiverCanReopen, reopenedState) are tested directly, then through the mutations.
-// Undo: restores the exact prior state (due, escalated, an early upcoming confirm, a snooze),
-// allows an offline replayed press by the time the server recorded it, returns too_late
-// (leaving the instance unchanged and writing an undo_not_applied row) for a late tap, another device's confirm, a voice-agent
-// confirm, a caregiver's resolve and an instance that is gone, throws forbidden for another
-// household, a caregiver or a viewer, falls back to the clock when no prior state was recorded,
-// and audits the change with undo: true. Also: the caregiver's undoResolve still refuses a
-// device's confirm. Reopen: from confirmed and from resolved, the three clock outcomes
-// (before the window, inside it, at or after its end), the recorded prior state, anytime
-// instances, confirmed yesterday refused, not-done refused, viewers, devices and other
-// households forbidden, note and claim kept, the audit detail, the ladder continuing without
-// repeating fired steps, and the day view's `reopenable` flag agreeing with the mutation.
-// The clock is faked; the scheduler is driven through tickHousehold with an explicit now.
-//
-// Take-back stamp: a press made before an undo or reopen that a device's queue replays is
-// rejected and audited, a fresh press confirms, a caregiver's Mark done still resolves. Also:
-// undo twice, undo then reopen, a signed-out caller, a new confirm after a reopen, undo of a
-// late confirm of a missed task, the clock fallback before and after the window, a slow
-// press already past the undo window, a task confirmed the evening before reopened after
-// midnight, and a deactivated, anytime, moved or deleted task (timed or anytime instance)
-// refused by reopen and undo inside the undo window. Also: an Undo tapped offline (undoneAgoMs:
-// judged at the tap time; Done, Undo, Done delivered in order ends confirmed), a reopen that
-// stamps only a device confirm, and the exact pressWasTakenBack boundary.
-//
-// Last modified: 2026-11-14
-
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -51,13 +21,10 @@ import {
 } from "./lib/confirmRule";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./**/*.helpers.ts"]);
 
-/** The voice agent: acts for no caregiver, so its confirms have no confirmedBy. */
 const AGENT = { kind: "agent" } as const;
 
-/** The 08:00 task on 2027-03-14 (New York, daylight time): window 12:00Z to 13:00Z. */
 const WINDOW_START = Date.parse("2027-03-14T12:00:00Z");
 const WINDOW_END = Date.parse("2027-03-14T13:00:00Z");
 const MINUTE = 60_000;
@@ -70,30 +37,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Set the faked clock.
- * @param iso: (string) UTC instant.
- * @return: (number) The same instant in epoch ms.
- */
 function at(iso: string): number {
   vi.setSystemTime(new Date(iso));
   return Date.parse(iso);
 }
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   const t = convexTest(schema, modules);
   workpoolTest.register(t, "deliveryPool");
   return t;
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** Household with Pat (primary), Max (member), Val (viewer), a phone and a display. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
@@ -101,15 +57,6 @@ interface Fixture {
   instanceId: Id<"taskInstances">;
 }
 
-/**
- * purpose: Pair a device through a join code.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param owner: (string) Subject of a primary caregiver of that household.
- * @param userId: (string) Device user id.
- * @param grants: ("senior_phone" | "home_display") Device kind.
- * @return: (Promise<void>)
- */
 async function pair(
   t: TestConvex,
   householdId: Id<"households">,
@@ -123,12 +70,6 @@ async function pair(
   await t.mutation(internal.households.pairDevice, { code, userId });
 }
 
-/**
- * purpose: Build the household with the 08:00 medication task at a faked time.
- * @param iso: (string) UTC instant to start the clock at.
- * @param times: (string[]) The task's times; empty makes an anytime reminder instead.
- * @return: (Promise<Fixture>) The fixture; instanceId is the day's only instance.
- */
 async function setup(iso = "2027-03-14T11:00:00Z", times: string[] = ["08:00"]): Promise<Fixture> {
   at(iso);
   const t = makeBackend();
@@ -161,12 +102,6 @@ async function setup(iso = "2027-03-14T11:00:00Z", times: string[] = ["08:00"]):
   return { t, householdId, medication, instanceId: rows[0]!._id };
 }
 
-/**
- * purpose: Run the scheduler for the fixture's household at an instant.
- * @param f: (Fixture) Fixture.
- * @param iso: (string) UTC instant.
- * @return: (Promise<void>)
- */
 async function tick(f: Fixture, iso: string): Promise<void> {
   await f.t.mutation(internal.scheduler.tickHousehold, {
     householdId: f.householdId,
@@ -174,22 +109,10 @@ async function tick(f: Fixture, iso: string): Promise<void> {
   });
 }
 
-/**
- * purpose: Read the fixture's instance.
- * @param f: (Fixture) Fixture.
- * @return: (Promise<Doc<"taskInstances">>) The row.
- */
 async function row(f: Fixture): Promise<Doc<"taskInstances">> {
   return (await f.t.run(async (ctx) => await ctx.db.get(f.instanceId)))!;
 }
 
-/**
- * purpose: Confirm the instance as an identity at an instant.
- * @param f: (Fixture) Fixture.
- * @param subject: (string) Identity ("phone", "display" or a caregiver).
- * @param iso: (string) UTC instant.
- * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- */
 async function confirmAs(f: Fixture, subject: string, iso: string): Promise<Doc<"taskInstances">> {
   at(iso);
   return await f.t.withIdentity({ subject }).mutation(api.instances.confirmTaskInstance, {
@@ -198,13 +121,6 @@ async function confirmAs(f: Fixture, subject: string, iso: string): Promise<Doc<
   });
 }
 
-/**
- * purpose: Undo the instance as an identity at an instant.
- * @param f: (Fixture) Fixture.
- * @param subject: (string) Identity.
- * @param iso: (string | number) UTC instant, or epoch ms.
- * @return: (Promise<object>) The mutation result.
- */
 async function undoAs(f: Fixture, subject: string, iso: string | number) {
   vi.setSystemTime(typeof iso === "number" ? iso : new Date(iso));
   return await f.t
@@ -212,13 +128,6 @@ async function undoAs(f: Fixture, subject: string, iso: string | number) {
     .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId });
 }
 
-/**
- * purpose: Reopen the instance as an identity at an instant.
- * @param f: (Fixture) Fixture.
- * @param subject: (string) Identity.
- * @param iso: (string) UTC instant.
- * @return: (Promise<Doc<"taskInstances">>) The instance after the call.
- */
 async function reopenAs(f: Fixture, subject: string, iso: string): Promise<Doc<"taskInstances">> {
   at(iso);
   return await f.t
@@ -226,11 +135,6 @@ async function reopenAs(f: Fixture, subject: string, iso: string): Promise<Doc<"
     .mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId });
 }
 
-/**
- * purpose: All audit rows of the instance, oldest first.
- * @param f: (Fixture) Fixture.
- * @return: (Promise<Doc<"auditLog">[]>) The rows.
- */
 async function audits(f: Fixture): Promise<Doc<"auditLog">[]> {
   const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
   return rows.filter((r) => r.entityId === f.instanceId);
@@ -406,8 +310,6 @@ describe("undoPressedTask", () => {
     });
   });
 
-  // The harness advances the function clock a few ms per call, so these stay clear of the exact
-  // edge (the pure rule test above covers it).
   test("works just inside SENIOR_UNDO_MS after the server recorded the confirm", async () => {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
@@ -739,7 +641,6 @@ describe("reopenTaskInstance", () => {
     expect(afterReopen.firedSteps.map((s) => s.stepId)).toEqual([first!.id, second!.id, third!.id]);
     expect(afterReopen.state).toBe("escalated");
 
-    // The default ladder has one caregiver alert (every caregiver at +30); nothing follows it.
     await tick(f, "2027-03-14T12:36:00Z");
     expect((await row(f)).firedSteps).toHaveLength(3);
     await tick(f, "2027-03-14T12:45:00Z");
@@ -752,12 +653,6 @@ describe("reopenTaskInstance", () => {
 });
 
 describe("the day view's reopenable flag agrees with the mutation", () => {
-  /**
-   * purpose: Read the flag for the fixture's instance and try the reopen, both at the current
-   *          faked time.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<object>) The flag and whether the mutation was accepted.
-   */
   async function flagAndReopen(f: Fixture): Promise<{ flag: boolean; accepted: boolean }> {
     const pat = f.t.withIdentity({ subject: "pat" });
     const day = await pat.query(api.calendar.dayView, { householdId: f.householdId });
@@ -948,14 +843,6 @@ describe("more undo and reopen cases", () => {
 });
 
 describe("a press made before a take-back does not confirm again", () => {
-  /**
-   * purpose: Send a held press through confirmPressedTask as an identity at an instant.
-   * @param f: (Fixture) Fixture.
-   * @param subject: (string) Device identity.
-   * @param iso: (string) UTC instant the press arrives.
-   * @param ageMs: (number) The press age.
-   * @return: (Promise<object>) The PressResult.
-   */
   async function press(f: Fixture, subject: string, iso: string, ageMs: number) {
     at(iso);
     return await f.t.withIdentity({ subject }).mutation(api.instances.confirmPressedTask, {
@@ -965,11 +852,6 @@ describe("a press made before a take-back does not confirm again", () => {
     });
   }
 
-  /**
-   * purpose: The press_not_applied audit rows of the instance.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<Doc<"auditLog">[]>) The rows.
-   */
   async function notApplied(f: Fixture): Promise<Doc<"auditLog">[]> {
     return (await audits(f)).filter((r) => r.action === "press_not_applied");
   }
@@ -1035,12 +917,6 @@ describe("a press made before a take-back does not confirm again", () => {
 });
 
 describe("a task that no longer runs is not reopened", () => {
-  /**
-   * purpose: Change the fixture's task as Pat through the real tasks.update.
-   * @param f: (Fixture) Fixture.
-   * @param changes: (object) The fields to change.
-   * @return: (Promise<void>)
-   */
   async function updateTask(f: Fixture, changes: Record<string, unknown>): Promise<void> {
     const instance = await row(f);
     await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.update, {
@@ -1111,13 +987,6 @@ describe("a task that no longer runs is not reopened", () => {
 });
 
 describe("an Undo tapped offline", () => {
-  /**
-   * purpose: Send an Undo with the age of the tap, as the phone's queue would.
-   * @param f: (Fixture) Fixture.
-   * @param iso: (string) UTC instant it arrives.
-   * @param agoMs: (number) How long before arrival it was tapped.
-   * @return: (Promise<object>) The UndoPressResult.
-   */
   async function undoAgo(f: Fixture, iso: string, agoMs: number) {
     at(iso);
     return await f.t
@@ -1125,13 +994,6 @@ describe("an Undo tapped offline", () => {
       .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId, undoneAgoMs: agoMs });
   }
 
-  /**
-   * purpose: Send a held Done press with its age, as the phone's queue would.
-   * @param f: (Fixture) Fixture.
-   * @param iso: (string) UTC instant it arrives.
-   * @param agoMs: (number) How long before arrival it was pressed.
-   * @return: (Promise<object>) The PressResult.
-   */
   async function pressAgo(f: Fixture, iso: string, agoMs: number) {
     at(iso);
     return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, {
@@ -1246,18 +1108,9 @@ describe("pressWasTakenBack", () => {
 });
 
 describe("press ids", () => {
-  /** Well-formed press ids (16 or more URL-safe characters). */
   const A = "pressAAAAAAAAAAAAAAA";
   const B = "pressBBBBBBBBBBBBBBB";
 
-  /**
-   * purpose: Send a queued press from the phone, as its queue would.
-   * @param f: (Fixture) Fixture.
-   * @param iso: (string) UTC instant it arrives.
-   * @param agoMs: (number) Press age sent with it.
-   * @param pressId: (string | undefined) Its id, or none (an entry stored before ids).
-   * @return: (Promise<object>) The PressResult.
-   */
   async function press(f: Fixture, iso: string, agoMs: number, pressId?: string) {
     at(iso);
     return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, {
@@ -1268,14 +1121,6 @@ describe("press ids", () => {
     });
   }
 
-  /**
-   * purpose: Send a queued Undo from the phone, as its queue would.
-   * @param f: (Fixture) Fixture.
-   * @param iso: (string) UTC instant it arrives.
-   * @param agoMs: (number) Tap age sent with it.
-   * @param pressId: (string | undefined) The id of the press it takes back, or none.
-   * @return: (Promise<object>) The UndoPressResult.
-   */
   async function undo(f: Fixture, iso: string, agoMs: number, pressId?: string) {
     at(iso);
     return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.undoPressedTask, {
@@ -1285,23 +1130,12 @@ describe("press ids", () => {
     });
   }
 
-  /**
-   * purpose: A fixture whose instance is due (the scheduler ran at 12:00Z).
-   * @return: (Promise<Fixture>) The fixture.
-   */
   async function dueFixture(): Promise<Fixture> {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
     return f;
   }
 
-  /**
-   * purpose: Scenario (a): press A was held by the client on a dead socket and resent on
-   *          reconnect at 12:20 with its original age 0; the queued Undo (tapped 12:10) stamps
-   *          the take-back at 12:20; the second Done (pressed 12:15, offline) arrives last.
-   * @param ids: (boolean) Whether the entries carry press ids.
-   * @return: (Promise<object>) The fixture and the result of the second press.
-   */
   async function resentPressScenario(ids: boolean) {
     const f = await dueFixture();
     expect(await press(f, "2027-03-14T12:20:00Z", 0, ids ? A : undefined)).toMatchObject({
@@ -1349,7 +1183,6 @@ describe("press ids", () => {
   test("(c) on a slow network a Done just after Undo is applied with ids", async () => {
     const f = await dueFixture();
     await press(f, "2027-03-14T12:05:00Z", 0, A);
-    // The Undo was tapped at 12:05:10 and took 3 s to arrive; Done was tapped at 12:05:11.
     await undo(f, "2027-03-14T12:05:13Z", 0, A);
     expect(await press(f, "2027-03-14T12:05:14Z", 3000, B)).toMatchObject({
       status: "confirmed",
@@ -1480,17 +1313,8 @@ describe("press ids", () => {
     expect(refused.detail).toMatchObject({ pressId: A, reason: PRESS_TAKEN_BACK });
   });
 
-  /** A third well-formed press id. */
   const C = "pressCCCCCCCCCCCCCCC";
 
-  /**
-   * purpose: Send a queued press from a given device identity.
-   * @param f: (Fixture) Fixture.
-   * @param subject: (string) "phone" or "display".
-   * @param iso: (string) UTC instant it arrives.
-   * @param pressId: (string) Its id.
-   * @return: (Promise<object>) The PressResult.
-   */
   async function pressFrom(f: Fixture, subject: string, iso: string, pressId: string) {
     at(iso);
     return await f.t.withIdentity({ subject }).mutation(api.instances.confirmPressedTask, {
@@ -1674,11 +1498,6 @@ describe("press ids", () => {
 
   test("the day entry carries confirmPressIds: the confirm, a same-device no-op, then [] after undo", async () => {
     const f = await dueFixture();
-    /**
-     * purpose: The fixture's entry as the phone reads it (calendar.dayView) and as the voice
-     *          agent's context reads it (agent.today), which share lib/today's builder.
-     * @return: (Promise<string[][]>) confirmPressIds from both, in that order.
-     */
     const ids = async (): Promise<string[][]> => {
       const day = await f.t
         .withIdentity({ subject: "phone" })
@@ -1741,14 +1560,6 @@ describe("press ids", () => {
 describe("queuedPressTakenBack", () => {
   const stamped = { confirmTakenBackAt: 1000, confirmTakenBackBy: "phone" };
 
-  /**
-   * purpose: Ask the rule about one press.
-   * @param pressedAt: (number) When it was pressed.
-   * @param pressId: (string | undefined) Its id.
-   * @param userId: (string) The device sending it.
-   * @param instance: (object) The take-back fields.
-   * @return: (boolean) Whether it is refused (the rule gives a reason).
-   */
   const refused = (
     pressedAt: number,
     pressId: string | undefined,

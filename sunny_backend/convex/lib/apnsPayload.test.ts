@@ -1,15 +1,3 @@
-// lib/apnsPayload.test.ts
-// Purpose: Tests for the pure APNs helpers: configuration loading and errors, host selection,
-// payload and header building, ES256 provider token header, claims and signature (verified with
-// the matching public key), PEM handling (literal "\n" escapes, bad PEM), the 30 minute iat
-// bucket, device token validation, the 4 KB payload cap, and outcome mapping for each status
-// and reason (only 410 means unregistered). Also the push style per kind and recipient
-// (time-sensitive caregiver_alert and agent_flag to caregivers and senior_prompt to devices;
-// the caregiver_alert category only for a caregiver who may claim), the style's keys inside aps,
-// and one collapse id for two alerts about the same task.
-//
-// Last modified: 2026-11-14
-
 import { beforeEach, describe, expect, test } from "vitest";
 import { fromBase64Url } from "./base64";
 import {
@@ -28,10 +16,6 @@ import {
 } from "./apnsPayload";
 import type { ApnsConfig } from "./apnsPayload";
 
-/**
- * purpose: Generate a P-256 key pair and the private key as PKCS8 PEM.
- * @return: (Promise<{ pem: string; publicKey: CryptoKey }>) PEM and verification key.
- */
 async function makeKey(): Promise<{ pem: string; publicKey: CryptoKey }> {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
     "sign",
@@ -53,10 +37,6 @@ beforeEach(async () => {
   if (!pem) ({ pem, publicKey } = await makeKey());
 });
 
-/**
- * purpose: A valid configuration using the generated key.
- * @return: (ApnsConfig) Config.
- */
 function config(): ApnsConfig {
   return {
     keyId: "KID123",
@@ -255,12 +235,6 @@ describe("buildHeaders", () => {
   });
 
   test("two caregiver alerts about one task share a collapse id; other tasks do not", () => {
-    /**
-     * purpose: The collapse id of a caregiver alert push's data.
-     * @param id: (string) Notification row id.
-     * @param instance: (string) Task instance id.
-     * @return: (string | undefined) The header.
-     */
     const collapse = (id: string, instance: string): string | undefined =>
       buildHeaders(
         config(),

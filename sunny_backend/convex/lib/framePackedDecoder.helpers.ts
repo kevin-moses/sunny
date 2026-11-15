@@ -1,12 +1,3 @@
-// lib/framePackedDecoder.helpers.ts
-// Purpose: A reference decoder of the packed frame format (lib/framePacked.ts, whose header
-// comment is the specification), used by the tests for round trips and as the model a
-// firmware decoder ports: decodePayload is the streaming PackBits loop, readPackedHeader the
-// checks a decoder must make. Test helper only (the ".helpers" name keeps it out of the
-// deployed bundle).
-//
-// Last modified: 2026-11-14
-
 import {
   PACKBITS_NO_OP,
   PACKED_ENCODING,
@@ -18,7 +9,6 @@ import {
 } from "./framePacked";
 import type { Frame } from "./frameRaster";
 
-/** The fields of a packed header. */
 export interface PackedHeader {
   version: number;
   bitsPerPixel: number;
@@ -29,12 +19,6 @@ export interface PackedHeader {
   payloadBytes: number;
 }
 
-/**
- * purpose: Read and check a packed header.
- * @param bytes: (Uint8Array) The file.
- * @return: (PackedHeader) The fields.
- * @raises Error for a wrong magic, an unknown version, a bad depth or a wrong length.
- */
 export function readPackedHeader(bytes: Uint8Array): PackedHeader {
   if (bytes.length < PACKED_HEADER_BYTES || PACKED_MAGIC.some((m, i) => bytes[i] !== m)) {
     throw new Error("not a packed frame");
@@ -57,14 +41,6 @@ export function readPackedHeader(bytes: Uint8Array): PackedHeader {
   return header;
 }
 
-/**
- * purpose: Decode a payload into pixel bytes, as a streaming firmware decoder would.
- * @param payload: (Uint8Array) The payload.
- * @param encoding: (number) PACKED_ENCODING value.
- * @param expected: (number) Pixel bytes the header promises (height times bytes per row).
- * @return: (Uint8Array) The pixel bytes.
- * @raises Error when the payload does not decode to exactly `expected` bytes.
- */
 export function decodePayload(payload: Uint8Array, encoding: number, expected: number): Uint8Array {
   if (encoding === PACKED_ENCODING.raw) {
     if (payload.length !== expected) throw new Error("bad raw payload length");
@@ -94,12 +70,6 @@ export function decodePayload(payload: Uint8Array, encoding: number, expected: n
   return out;
 }
 
-/**
- * purpose: Decode a packed frame (the round trip of encodePacked).
- * @param bytes: (Uint8Array) The file.
- * @return: (Frame) The frame.
- * @raises Error for a malformed file.
- */
 export function decodePacked(bytes: Uint8Array): Frame {
   const header = readPackedHeader(bytes);
   const { width, height, greys } = header;

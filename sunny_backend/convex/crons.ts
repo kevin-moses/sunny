@@ -1,16 +1,3 @@
-// crons.ts
-// Purpose: Recurring jobs. The scheduler tick runs every minute: it schedules one
-// tickHousehold per household, each of which expands task instances, opens and closes
-// confirmation windows and fires escalation steps (scheduler.ts). Replaces the former Supabase pg_cron job
-// `sunny-scheduler-tick`; a history cleanup is not needed because Convex does not keep per-run
-// rows. Every 10 minutes: sweepStuckSyncs re-enqueues Google sync rows idle for 15 minutes
-// (calendarFanOut.ts) and sweepStuck re-enqueues notification deliveries and daily digests
-// left pending for 15 minutes (delivery.ts). Hourly: sweepOauthStates deletes expired OAuth
-// nonces (googleCalendar.ts), phone.sweepExpired deletes expired phone verifications and
-// sms.sweepInbound deletes handled-text records past their expiry.
-//
-// Last modified: 2026-10-29
-
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 

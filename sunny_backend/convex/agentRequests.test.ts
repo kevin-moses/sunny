@@ -1,18 +1,3 @@
-// agentRequests.test.ts
-// Purpose: Tests for agentRequests.ts, the caregiver-facing API, with convex-test and the
-// workflow component registered (timers are faked so no workflow step runs). Covers the rules
-// ported from request_agent_chat: editor caregivers only (viewers, outsiders, devices and
-// signed-out callers are refused for request, get, list and cancel), message trimmed and
-// limited to 1 to 4000 characters, at most 5 queued or running requests per household, and
-// continuing only a succeeded request of the same household that has a session, and
-// continueLatest (newest succeeded conversation, fresh when none, busy limit, exclusive with
-// continueRequestId), and the agent config fingerprint (stored fresh, copied by a
-// continuation, a differing or missing one starts a new carryOver session). Also the
-// inserted row, the stored workflow id, the audit entry, the view shape of get and list
-// (null for absent fields, newest first, limit clamping) and cancel.
-//
-// Last modified: 2026-11-01
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -33,11 +18,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Create a household owned by user_a with a member and a viewer.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Id<"households">>) The household.
- */
 async function createTeam(t: TestConvex): Promise<Id<"households">> {
   const householdId = await createHousehold(t);
   await addMember(t, householdId, "user_member", "member");
@@ -45,11 +25,6 @@ async function createTeam(t: TestConvex): Promise<Id<"households">> {
   return householdId;
 }
 
-/**
- * purpose: Create a second household owned by another caregiver, for cross-household checks.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Id<"households">>) The other household.
- */
 async function createOtherHousehold(t: TestConvex): Promise<Id<"households">> {
   return await createHousehold(t, { subject: "user_z", seniorName: "Bob" });
 }
@@ -222,7 +197,6 @@ describe("request", () => {
     });
 
     describe("continueLatest", () => {
-      /** Send a message with continueLatest as user_a. */
       const sendLatest = (t: TestConvex, householdId: Id<"households">) =>
         t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
           householdId,

@@ -1,22 +1,10 @@
-// apns.test.ts
-// Purpose: Tests for the APNs sender with node:http2 mocked (Apple is never called): one session
-// reused across tokens and closed afterwards, host and request headers, payload body, per-token
-// outcomes (sent, unregistered, retryable and permanent failures), timeouts and connection
-// errors as retryable failures, empty token list, and configuration errors. Also covers the
-// deleteTokens mutation from apnsTokens.ts with convex-test. The interruption level and category
-// arguments end up inside aps.
-//
-// Last modified: 2026-11-14
-
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import { makeBackend } from "./testing.helpers";
 import { resetProviderTokenCache } from "./lib/apnsPayload";
 
-/** A valid device token: 64 hex characters ending in the given suffix. */
 const tok = (suffix: string): string => suffix.padStart(64, "0");
 
-/** One scripted response for a fake request. */
 type Script = {
   status?: number;
   body?: string;
@@ -81,11 +69,6 @@ vi.mock("node:http2", async () => {
   };
 });
 
-/**
- * purpose: Set the APNs environment variables with a freshly generated key.
- * @param overrides: (Record<string, string | undefined>) Variables to override or unset.
- * @return: (Promise<void>)
- */
 async function setEnv(overrides: Record<string, string | undefined> = {}): Promise<void> {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
     "sign",
@@ -113,23 +96,11 @@ beforeEach(async () => {
   await setEnv();
 });
 
-/**
- * purpose: Run internal.apns.send and return the whole result.
- * @param tokens: (string[]) Device tokens.
- * @param data: (Record<string, string>) Optional custom keys.
- * @return: The action result: per-token results and an optional configError.
- */
 async function runFull(tokens: string[], data?: Record<string, string>) {
   const t = makeBackend();
   return await t.action(internal.apns.send, { tokens, title: "Title", body: "Body", data });
 }
 
-/**
- * purpose: Run internal.apns.send and return the per-token results.
- * @param tokens: (string[]) Device tokens.
- * @param data: (Record<string, string>) Optional custom keys.
- * @return: (Promise<ApnsResult[]>) One result per token.
- */
 async function run(tokens: string[], data?: Record<string, string>) {
   return (await runFull(tokens, data)).results;
 }

@@ -1,19 +1,3 @@
-// convex/sms.test.ts
-// Purpose: Tests for the inbound SMS webhook (sms.ts) with convex-test and a stubbed global
-// fetch (Twilio is never called). The webhook: signature valid, invalid, missing (checked before
-// the body is read), signed for a different URL or token, 503 without the auth token or without
-// TWILIO_WEBHOOK_URL (no default), STOP/HELP and unknown numbers get an empty response, a
-// repeated MessageSid replays the stored reply and claims nothing twice, and the handled-text
-// sweep. Claiming by reply: only the single newest alert actually texted (state sent, channel
-// sms) in the last 24 hours is used, never an older one; open tasks are claimed (with the sms
-// audit row), claimed ones say who is on it, closed ones say so; other kinds, unsent rows,
-// other recipients, unverified numbers, viewers, a number shared across households, and many
-// other rows after the alert; TwiML escaping of names. A voice agent flag or family message
-// texted after the alert (or with no alert) means a "1" claims nothing and gets
-// MESSAGE_REPLY; one that was never texted does not count.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -41,7 +25,6 @@ const PAT_PHONE = "+15551110001";
 const MAX_PHONE = "+15551110002";
 const WEBHOOK_URL = "https://example.test/twilio/sms";
 
-/** Counter so every post gets its own MessageSid unless a test reuses one. */
 let sidCounter = 0;
 
 beforeEach(() => {
@@ -79,16 +62,11 @@ describe("parseCommand", () => {
   });
 });
 
-/** The household fixture: Pat (primary) and Max (member) with verified numbers, Val viewer. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
 }
 
-/**
- * purpose: Build the family household with Pat and Max's numbers verified.
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
@@ -97,16 +75,6 @@ async function setup(): Promise<Fixture> {
   return { t, householdId };
 }
 
-/**
- * purpose: Queue an outbox row for a recipient at the current faked time.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param recipientUserId: (string) Recipient.
- * @param instanceId: (Id<"taskInstances">) Instance the alert is about.
- * @param kind: (Doc<"notificationOutbox">["kind"]) Row kind.
- * @param delivery: (object) State and channel; defaults to texted (sent by sms).
- * @return: (Promise<void>)
- */
 async function addAlert(
   t: TestConvex,
   householdId: Id<"households">,
@@ -132,16 +100,6 @@ async function addAlert(
   });
 }
 
-/**
- * purpose: POST to /twilio/sms as Twilio would.
- * @param t: (TestConvex) Harness.
- * @param from: (string) Sender number.
- * @param body: (string) Message text.
- * @param options: ({sign, signedUrl, signature, sid}) sign false omits the header; signedUrl is
- *        the URL the signature covers; signature overrides the computed value; sid is the
- *        MessageSid (a fresh one per post by default).
- * @return: (Promise<Response>) The response.
- */
 async function post(
   t: TestConvex,
   from: string,
@@ -165,22 +123,11 @@ async function post(
   return await t.fetch("/twilio/sms", { method: "POST", headers, body: params.toString() });
 }
 
-/**
- * purpose: The text of the single <Message> in a TwiML response.
- * @param response: (Response) The webhook response.
- * @return: (Promise<string | null>) The raw (still escaped) message text, or null if none.
- */
 async function messageOf(response: Response): Promise<string | null> {
   const xml = await response.text();
   return /<Message>(.*)<\/Message>/.exec(xml)?.[1] ?? null;
 }
 
-/**
- * purpose: Who has claimed an instance.
- * @param t: (TestConvex) Harness.
- * @param id: (Id<"taskInstances">) Instance.
- * @return: (Promise<string | undefined>) The claimant's user id.
- */
 async function claimedBy(t: TestConvex, id: Id<"taskInstances">): Promise<string | undefined> {
   return (await t.run(async (ctx) => (await ctx.db.get(id))?.claimedBy ?? null)) ?? undefined;
 }
@@ -342,7 +289,6 @@ describe("claiming by reply", () => {
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("Evening pills");
     expect(await claimedBy(t, newer)).toBe("pat");
     expect(await claimedBy(t, older)).toBeUndefined();
-    // A second reply is about the same newest alert; the older one is never used instead.
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toContain("already on it, Pat");
     expect(await claimedBy(t, older)).toBeUndefined();
   });
@@ -589,7 +535,6 @@ describe("claiming by reply", () => {
     );
     expect(await claimedBy(t, inSecond)).toBe("zed");
     expect(await claimedBy(t, inFirst)).toBeUndefined();
-    // The older alert in the other household is not used once the newest is taken.
     expect(await messageOf(await post(t, PAT_PHONE, "1"))).toBe(
       "You&apos;re already on it, Zed: Insulin for Dad.",
     );

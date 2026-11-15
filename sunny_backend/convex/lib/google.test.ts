@@ -1,13 +1,3 @@
-// lib/google.test.ts
-// Purpose: Tests for the Google OAuth and Calendar client with global fetch mocked (no
-// network): consent URL, signed OAuth state (round trip with nonce, tampered, expired, wrong secret), revoking a token,
-// error mapping (401, 403 forbidden vs rate limit, 404/410 gone, 429/5xx retryable,
-// invalid_grant to GoogleAccessRevoked), code exchange parsing, token refresh, calendar
-// creation and existence, event upsert (replace vs create vs concurrent create), delete of a
-// missing event, request timeouts and missing environment variables.
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   CALENDAR_SCOPE,
@@ -34,12 +24,6 @@ const ENV_NAMES = [
 const saved: Record<string, string | undefined> = {};
 const fetchMock = vi.fn();
 
-/**
- * purpose: A JSON Response for the fetch mock.
- * @param status: (number) HTTP status.
- * @param body: (unknown) JSON body.
- * @return: (Response) The response.
- */
 function json(status: number, body: unknown = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -47,11 +31,6 @@ function json(status: number, body: unknown = {}): Response {
   });
 }
 
-/**
- * purpose: An unsigned JWT carrying the given claims, like an ID token.
- * @param claims: (Record<string, unknown>) Payload claims.
- * @return: (string) "header.payload.signature".
- */
 function idToken(claims: Record<string, unknown>): string {
   const payload = btoa(JSON.stringify(claims))
     .replace(/\+/g, "-")
@@ -60,11 +39,6 @@ function idToken(claims: Record<string, unknown>): string {
   return `e30.${payload}.sig`;
 }
 
-/**
- * purpose: The error thrown by a promise expected to reject.
- * @param promise: (Promise<unknown>) The call under test.
- * @return: (Promise<unknown>) The rejection reason.
- */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;

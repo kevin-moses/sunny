@@ -1,24 +1,3 @@
-// convex/deviceFrame.test.ts
-// Purpose: Tests for GET /device/frame (deviceFrame.ts getFrame) and the hardware Done rule of
-// POST /device/confirm (deviceApi.ts), with convex-test and a frozen clock. Frames: a PNG of the
-// default 960 x 680 x 4 screen until the device reports one, then the reported size and grey
-// count (PNG and packed headers), and always the token's own device's screen, not another
-// device's of the same household; no-store on every answer; the ETag and the 304, answered
-// without drawing (lib/frame drawFrame is wrapped to count calls), an ETag that differs by page
-// and format and changes with what is drawn; Sunny-Done-Instance on 200 and 304 naming the due
-// task, absent while the task is only inside its early hour; the frame comes only from the
-// token's own device state (another household's device gets its own household's bytes, which
-// differ); 400 for an unknown, missing or repeated page or format, an extra parameter, or a
-// reported screen frames are not drawn for; 401 without a valid token; the device's request
-// bucket is shared with the other routes. Done: a button press on a task not due yet is refused
-// ("This task is not due yet"), audited and budgeted, and leaves the task alone; 5 minutes of
-// grace for the device's clock (4 minutes early counts, 6 is refused); a queued press made
-// before the window is refused even after the task came due; a button press after the window
-// opened confirms even before the scheduler marks it due; the phone's surfaces keep their early
-// hour.
-//
-// Last modified: 2026-11-14
-
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -38,10 +17,8 @@ vi.mock("./lib/frame", async (importOriginal) => {
   return { ...original, drawFrame: vi.fn(original.drawFrame) };
 });
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/** Friday 2026-11-13 at 08:10 in New York (UTC-5). */
 const START = "2026-11-13T13:10:00Z";
 
 beforeEach(() => {
@@ -53,10 +30,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: A fresh backend with the rate limiter and delivery pool registered.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   const t = convexTest(schema, modules);
   rateLimiterTest.register(t);
@@ -64,18 +37,8 @@ function makeBackend() {
   return t;
 }
 
-/** The harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/**
- * purpose: Create a household with a caregiver, a paired display and phone, and one 08:00
- *          medication, and issue both devices' tokens.
- * @param t: (TestConvex) Harness.
- * @param prefix: (string) Prefix for user ids, so two households can share a backend.
- * @param label: (string) The task's label.
- * @return: (Promise<{ householdId; instanceId; token; phoneToken }>) The household, today's
- *          instance, the display's token and the phone's.
- */
 async function household(
   t: TestConvex,
   prefix: string,
@@ -117,11 +80,6 @@ async function household(
       )
       .first(),
   );
-  /**
-   * purpose: Issue a device token as a paired device.
-   * @param subject: (string) The device's Clerk user id.
-   * @return: (Promise<string>) The token.
-   */
   const issue = async (subject: string): Promise<string> =>
     (await t.withIdentity({ subject }).action(api.deviceApi.issueToken, {})).deviceToken;
   return {
@@ -132,13 +90,6 @@ async function household(
   };
 }
 
-/**
- * purpose: POST /device/confirm.
- * @param t: (TestConvex) Harness.
- * @param token: (string) The token.
- * @param body: (Record<string, unknown>) The press.
- * @return: (Promise<{ status: string; reason: string | null }>) The answer's status and reason.
- */
 async function confirm(
   t: TestConvex,
   token: string,
@@ -152,12 +103,6 @@ async function confirm(
   return (await res.json()) as { status: string; reason: string | null };
 }
 
-/**
- * purpose: The task's state now.
- * @param t: (TestConvex) Harness.
- * @param instanceId: (Id<"taskInstances">) The instance.
- * @return: (Promise<string | undefined>) Its state.
- */
 async function stateOf(
   t: TestConvex,
   instanceId: Id<"taskInstances">,
@@ -165,14 +110,6 @@ async function stateOf(
   return (await t.run(async (ctx) => await ctx.db.get(instanceId)))?.state;
 }
 
-/**
- * purpose: GET /device/frame with a query string.
- * @param t: (TestConvex) Harness.
- * @param token: (string | null) The token (null sends none).
- * @param query: (string) The query string without "?".
- * @param headers: (Record<string, string>, optional) Extra headers.
- * @return: (Promise<Response>) The response.
- */
 async function getFrame(
   t: TestConvex,
   token: string | null,
@@ -184,13 +121,6 @@ async function getFrame(
   return await t.fetch(`/device/frame?${query}`, { method: "GET", headers: all });
 }
 
-/**
- * purpose: Report a screen for the token's device.
- * @param t: (TestConvex) Harness.
- * @param token: (string) The token.
- * @param screen: (Screen) The screen.
- * @return: (Promise<void>)
- */
 async function reportScreen(t: TestConvex, token: string, screen: Screen): Promise<void> {
   const res = await t.fetch("/device/info", {
     method: "PUT",
@@ -200,29 +130,17 @@ async function reportScreen(t: TestConvex, token: string, screen: Screen): Promi
   expect(res.status).toBe(204);
 }
 
-/**
- * purpose: The width, height and bit depth in a PNG's IHDR.
- * @param png: (Uint8Array) The file.
- * @return: ([number, number, number]) Width, height, depth.
- */
 function pngSize(png: Uint8Array): [number, number, number] {
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
   return [view.getUint32(16), view.getUint32(20), png[24]!];
 }
 
-/**
- * purpose: A response body's bytes.
- * @param res: (Response) The response.
- * @return: (Promise<Uint8Array>) The bytes.
- */
 async function bytesOf(res: Response): Promise<Uint8Array> {
   return new Uint8Array(await res.arrayBuffer());
 }
 
-/** 07:40 in New York, inside the 08:00 task's early hour. */
 const EARLY_HOUR = Date.parse("2026-11-13T12:40:00Z");
 
-/** A well-formed token no device holds. */
 const UNKNOWN_TOKEN = `sunny_dev_${"Q".repeat(43)}`;
 
 describe("GET /device/frame", () => {
@@ -411,7 +329,6 @@ describe("GET /device/frame", () => {
 describe("the hardware Done key (POST /device/confirm via button)", () => {
   test("refuses a task that is not due yet, audited, and leaves it alone", async () => {
     const t = makeBackend();
-    // Before the household is made: convex-test's clock only moves forward.
     vi.setSystemTime(new Date(EARLY_HOUR));
     const { token, instanceId } = await household(t, "", "Morning pills");
     const answer = await confirm(t, token, { instanceId, pressedAgoMs: 0, via: "button" });
@@ -459,7 +376,6 @@ describe("the hardware Done key (POST /device/confirm via button)", () => {
   test("allows 5 minutes for the device's clock: 4 minutes early counts, 6 is refused", async () => {
     const t = makeBackend();
     const { token, instanceId } = await household(t, "", "Morning pills");
-    // Now is 08:10 and the window opened at 08:00: 16 minutes ago is 07:54, 6 minutes early.
     const sixEarly = await confirm(t, token, {
       instanceId,
       pressedAgoMs: 16 * 60_000,
@@ -467,7 +383,6 @@ describe("the hardware Done key (POST /device/confirm via button)", () => {
     });
     expect(sixEarly).toMatchObject({ status: "rejected", reason: "This task is not due yet" });
     expect(await stateOf(t, instanceId)).toBe("upcoming");
-    // 14 minutes ago is 07:56, 4 minutes early: inside the grace.
     const fourEarly = await confirm(t, token, {
       instanceId,
       pressedAgoMs: 14 * 60_000,

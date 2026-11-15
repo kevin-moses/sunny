@@ -1,16 +1,3 @@
-// convex/lists.ts
-// Purpose: The household list for the apps (the voice agent's functions are in agent.ts; both
-// write through lib/householdList.ts, which audits every change). Access (lib/access.ts):
-// - get: any caregiver of the household sees the open items and those ticked in the last 7
-//   days; the household's paired devices see the open items only.
-// - add, untick, remove: editor caregivers (primary, member).
-// - tick: editor caregivers, and the household's paired devices (so a display or phone can
-//   show the list and tick an item); viewers cannot.
-// Functions taking an item id load the item first and check access against the item's own
-// household, so an id from another household is forbidden.
-//
-// Last modified: 2026-11-09
-
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
@@ -29,31 +16,17 @@ import {
 } from "./lib/householdList";
 import type { ListItemView } from "./lib/householdList";
 
-/** The list as the apps read it. */
 export interface ListView {
   open: ListItemView[];
-  /** Ticked in the last 7 days, newest first; always empty for a device. */
   done: ListItemView[];
 }
 
-/**
- * purpose: Load a list item.
- * @param ctx: (QueryCtx) Context.
- * @param itemId: (Id<"listItems">) The item.
- * @return: (Promise<Doc<"listItems">>) The row.
- * @raises not_found when it does not exist.
- */
 async function loadItem(ctx: QueryCtx, itemId: Id<"listItems">): Promise<Doc<"listItems">> {
   const item = await ctx.db.get(itemId);
   if (!item) throw appError("not_found", "List item not found");
   return item;
 }
 
-/**
- * purpose: The household's list. Caregivers of any role; devices see open items only.
- * @param householdId: (Id<"households">) Household.
- * @return: (ListView) Open items in the order added, and recently ticked ones.
- */
 export const get = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<ListView> => {
@@ -66,13 +39,6 @@ export const get = query({
   },
 });
 
-/**
- * purpose: Add one item. Editor caregivers only.
- * @param householdId: (Id<"households">) Household.
- * @param text: (string) The item; one line of at most 80 characters.
- * @return: ({status, itemId}) added, or already_on_list with the open item's id.
- * @raises invalid for blank or over-long text; limit when the list has 50 open items.
- */
 export const add = mutation({
   args: { householdId: v.id("households"), text: v.string() },
   handler: async (
@@ -87,12 +53,6 @@ export const add = mutation({
   },
 });
 
-/**
- * purpose: Tick an item. Editor caregivers and the household's paired devices.
- * @param itemId: (Id<"listItems">) The item.
- * @return: (ListItemView) The item after the call (unchanged when already ticked).
- * @raises forbidden for viewers and anyone outside the item's household.
- */
 export const tick = mutation({
   args: { itemId: v.id("listItems") },
   handler: async (ctx, args): Promise<ListItemView> => {
@@ -106,12 +66,6 @@ export const tick = mutation({
   },
 });
 
-/**
- * purpose: Reopen a ticked item. Editor caregivers only.
- * @param itemId: (Id<"listItems">) The item.
- * @return: (ListItemView) The item after the call.
- * @raises forbidden for anyone else; limit or invalid when it cannot go back on the list.
- */
 export const untick = mutation({
   args: { itemId: v.id("listItems") },
   handler: async (ctx, args): Promise<ListItemView> => {
@@ -122,12 +76,6 @@ export const untick = mutation({
   },
 });
 
-/**
- * purpose: Delete an item. Editor caregivers only.
- * @param itemId: (Id<"listItems">) The item.
- * @return: (null)
- * @raises forbidden for anyone else.
- */
 export const remove = mutation({
   args: { itemId: v.id("listItems") },
   handler: async (ctx, args): Promise<null> => {

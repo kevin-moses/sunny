@@ -1,11 +1,3 @@
-// lib/deviceToken.test.ts
-// Purpose: Unit tests for the device token helpers (lib/deviceToken.ts): the token's format and
-// randomness, the SHA-256 hex digest (a known vector, and that it never equals the token), and
-// the Bearer header parser (accepts only a well-formed token in a Bearer header; missing,
-// other schemes, extra parts, short, long, wrong prefix and bad characters are refused).
-//
-// Last modified: 2026-11-13
-
 import { describe, expect, test } from "vitest";
 import {
   DEVICE_TOKEN_PREFIX,

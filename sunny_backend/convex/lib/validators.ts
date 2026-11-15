@@ -1,43 +1,18 @@
-// lib/validators.ts
-// Purpose: Shared value validators (enums and formatted strings) used by the schema and
-// by function arguments, so a type such as a task state or a local date has one
-// definition. Mirrors the Postgres enums from the Supabase schema. LIFE_CATEGORIES lists the
-// life categories in order for code that sorts or checks them (profile.ts, the profile loader).
-// deviceScreen and deviceVia are the device API's reported panel and confirm surfaces.
-// Escalation actions: a stored step (escalationAction) may still hold the legacy
-// "alert_on_call", which the scheduler treats exactly as "alert_all_caregivers" (there is no
-// on-call caregiver since 2026-11-14); a step a client sends (escalationStepInput) can only be
-// "prompt_senior" or "alert_all_caregivers", so nothing writes the legacy value again. The
-// migration migrations.removeOnCall rewrites stored steps; once it has run on every deployment
-// the legacy literal can be deleted.
-//
-// Last modified: 2026-11-14
-
 import { v, type Infer } from "convex/values";
 
-/** Role of a caregiver in a household. */
 export const memberRole = v.union(v.literal("primary"), v.literal("member"), v.literal("viewer"));
-/** Type of memberRole. */
 export type MemberRole = Infer<typeof memberRole>;
 
-/** Kind of paired senior device. */
 export const deviceKind = v.union(v.literal("senior_phone"), v.literal("home_display"));
-/** Type of deviceKind. */
 export type DeviceKind = Infer<typeof deviceKind>;
 
-/** A device's panel as it reports it (PUT /device/info): pixels per side and grey levels. */
 export const deviceScreen = v.object({ width: v.number(), height: v.number(), greys: v.number() });
-/** Type of deviceScreen. */
 export type DeviceScreen = Infer<typeof deviceScreen>;
 
-/** The surfaces a device token may confirm from (a subset of confirmVia). */
 export const DEVICE_VIAS = ["button", "widget", "live_activity", "phone_app"] as const;
-/** Validator for a surface a device token may confirm from. */
 export const deviceVia = v.union(...DEVICE_VIAS.map((via) => v.literal(via)));
-/** Type of deviceVia. */
 export type DeviceVia = Infer<typeof deviceVia>;
 
-/** What a join code grants: a device kind or a caregiver role. */
 export const joinGrant = v.union(
   v.literal("senior_phone"),
   v.literal("home_display"),
@@ -45,10 +20,8 @@ export const joinGrant = v.union(
   v.literal("caregiver_member"),
   v.literal("caregiver_viewer"),
 );
-/** Type of joinGrant. */
 export type JoinGrant = Infer<typeof joinGrant>;
 
-/** Kind of task a caregiver can schedule. */
 export const taskType = v.union(
   v.literal("medication"),
   v.literal("appointment"),
@@ -56,13 +29,10 @@ export const taskType = v.union(
   v.literal("checklist"),
   v.literal("reminder"),
 );
-/** Type of taskType. */
 export type TaskType = Infer<typeof taskType>;
 
-/** Who created a task. */
 export const taskCreator = v.union(v.literal("caregiver"), v.literal("senior"));
 
-/** Lifecycle state of a task instance. */
 export const instanceState = v.union(
   v.literal("upcoming"),
   v.literal("due"),
@@ -71,10 +41,8 @@ export const instanceState = v.union(
   v.literal("missed"),
   v.literal("resolved"),
 );
-/** Type of instanceState. */
 export type InstanceState = Infer<typeof instanceState>;
 
-/** How a task instance was confirmed. */
 export const confirmVia = v.union(
   v.literal("button"),
   v.literal("widget"),
@@ -83,125 +51,80 @@ export const confirmVia = v.union(
   v.literal("voice"),
   v.literal("caregiver"),
 );
-/** Type of confirmVia. */
 export type ConfirmVia = Infer<typeof confirmVia>;
 
-/** What an escalation step a client sends may do: prompt the senior or alert every caregiver. */
 export const escalationActionInput = v.union(
   v.literal("prompt_senior"),
   v.literal("alert_all_caregivers"),
 );
 
-/**
- * What a stored escalation step does. "alert_on_call" is legacy (deprecated 2026-11-14): never
- * written, read exactly as "alert_all_caregivers"; delete it once migrations.removeOnCall has
- * run everywhere.
- */
 export const escalationAction = v.union(
   v.literal("prompt_senior"),
   v.literal("alert_all_caregivers"),
   v.literal("alert_on_call"),
 );
-/** Type of escalationAction. */
 export type EscalationAction = Infer<typeof escalationAction>;
 
-/**
- * purpose: Whether a step alerts caregivers (every caregiver of the household; the legacy
- *          "alert_on_call" means the same) rather than prompting the senior.
- * @param action: (EscalationAction) The step's action.
- * @return: (boolean) True for a caregiver alert.
- */
 export function isCaregiverAlert(action: EscalationAction): boolean {
   return action !== "prompt_senior";
 }
 
-/** The fields of an escalation step other than its id and action. */
 const escalationStepTiming = {
   offsetMinutes: v.number(),
-  // When true the step is skipped once a caregiver has claimed the instance.
   skipIfClaimed: v.boolean(),
 };
 
-/**
- * One stored step of an escalation policy, at an offset from the due time. The id is assigned
- * by the server and stays with the step when a policy is edited, so a step already fired on an
- * instance is recognised even when steps before it are added, removed or reordered.
- */
 export const escalationStep = v.object({
   id: v.string(),
   action: escalationAction,
   ...escalationStepTiming,
 });
-/** Type of escalationStep. */
 export type EscalationStep = Infer<typeof escalationStep>;
 
-/**
- * A step as a client sends it. An id is optional: a step passed back with the id it was read
- * with keeps it (updatePolicy); a step without one, or with an id the policy does not have,
- * gets a new id.
- */
 export const escalationStepInput = v.object({
   id: v.optional(v.string()),
   action: escalationActionInput,
   ...escalationStepTiming,
 });
-/** Type of escalationStepInput. */
 export type EscalationStepInput = Infer<typeof escalationStepInput>;
 
-/** Who performed a change, for audit rows. */
 export const actorKind = v.union(
   v.literal("caregiver"),
   v.literal("senior_device"),
   v.literal("agent"),
   v.literal("system"),
 );
-/** Type of actorKind. */
 export type ActorKind = Infer<typeof actorKind>;
 
-/** Purpose of a notification. */
 export const notificationKind = v.union(
   v.literal("senior_prompt"),
   v.literal("caregiver_alert"),
   v.literal("event_notice"),
   v.literal("digest"),
-  // The voice agent asking a caregiver to look in (past a medication limit, a symptom, money or
-  // a scam, distress). Not tied to a task, so it never carries the reply-to-claim hint.
   v.literal("agent_flag"),
-  // A message the senior asked the voice agent to send to family ("Tell Sarah I'm home").
   v.literal("family_message"),
 );
-/** Type of notificationKind. */
 export type NotificationKind = Infer<typeof notificationKind>;
 
-/** Where an outbox row stands: waiting, delivered, finished without a reachable address, or given up. */
 export const outboxState = v.union(
   v.literal("pending"),
   v.literal("sent"),
   v.literal("skipped"),
   v.literal("failed"),
 );
-/** Type of outboxState. */
 export type OutboxState = Infer<typeof outboxState>;
 
-/** The channel a notification was sent on. */
 export const deliveryChannel = v.union(v.literal("apns"), v.literal("sms"));
-/** Type of deliveryChannel. */
 export type DeliveryChannel = Infer<typeof deliveryChannel>;
 
-/** Where a household's daily digest for one local date stands (see digest.ts). */
 export const digestStatus = v.union(v.literal("pending"), v.literal("done"), v.literal("failed"));
-/** Type of digestStatus. */
 export type DigestStatus = Infer<typeof digestStatus>;
 
-/** Which path produced a digest's text: the model, or the deterministic template. */
 export const digestSource = v.union(v.literal("claude"), v.literal("template"));
-/** Type of digestSource. */
 export type DigestSource = Infer<typeof digestSource>;
 
-/** Who sent a message. */
 export const messageSender = v.union(v.literal("caregiver"), v.literal("senior"));
 
-/** Category of a life-story memory. */
 export const lifeCategory = v.union(
   v.literal("person"),
   v.literal("place"),
@@ -212,27 +135,20 @@ export const lifeCategory = v.union(
   v.literal("other"),
 );
 
-/** The life categories in declaration order (the order the agent groups the profile by). */
 export const LIFE_CATEGORIES: readonly string[] = lifeCategory.members.map((m) => m.value);
 
-/** Who contributed a life-story memory. */
 export const memorySource = v.union(v.literal("caregiver"), v.literal("senior"));
 
-/** How the agent resolved a senior's question. */
 export const questionOutcome = v.union(
   v.literal("answered"),
   v.literal("routed"),
   v.literal("unsure"),
 );
-/** Type of questionOutcome. */
 export type QuestionOutcome = Infer<typeof questionOutcome>;
 
-/** Who added or ticked a household list item: the senior (by voice or a device) or a caregiver. */
 export const listActorKind = v.union(v.literal("senior"), v.literal("caregiver"));
-/** Type of listActorKind. */
 export type ListActorKind = Infer<typeof listActorKind>;
 
-/** Where a caregiver's request to the household agent stands. */
 export const agentRequestStatus = v.union(
   v.literal("queued"),
   v.literal("running"),
@@ -240,31 +156,22 @@ export const agentRequestStatus = v.union(
   v.literal("failed"),
   v.literal("cancelled"),
 );
-/** Type of agentRequestStatus. */
 export type AgentRequestStatus = Infer<typeof agentRequestStatus>;
 
-/**
- * One custom tool call the agent made: the Managed Agents event id, tool name and input. The
- * input is JSON text, not a Convex object, so model-chosen keys can never fail validation.
- */
 export const toolCall = v.object({
   toolUseId: v.string(),
   name: v.string(),
   input: v.string(),
 });
-/** Type of toolCall. */
 export type ToolCall = Infer<typeof toolCall>;
 
-/** Health of a caregiver's Google Calendar connection. */
 export const calendarConnectionStatus = v.union(
   v.literal("active"),
   v.literal("revoked"),
   v.literal("error"),
 );
-/** Type of calendarConnectionStatus. */
 export type CalendarConnectionStatus = Infer<typeof calendarConnectionStatus>;
 
-/** Where a pending Google push is (see lib/calendarSync.ts for the transitions). */
 export const calendarSyncState = v.union(
   v.literal("queued"),
   v.literal("running"),

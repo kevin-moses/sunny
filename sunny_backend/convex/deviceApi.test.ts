@@ -1,45 +1,3 @@
-// convex/deviceApi.test.ts
-// Purpose: Tests for the device API (deviceApi.ts) and the caregiver's token revoke
-// (households.revokeDeviceToken) with convex-test and a frozen clock (Date only, so the rate
-// limiter's buckets never refill mid-test).
-// Token: issue (format, only the hash stored, audited without the token), rotation (the old token
-// gets 401), at most 10 issues an hour, removal revokes at once, a caregiver revoke (editor only;
-// a viewer, a device and another household's editor refused; the device stays paired), the hash
-// in no listDevices or response and the token in no log or audit row, a caregiver or signed-out
-// caller cannot issue.
-// Authentication: one identical 401 for missing, malformed and unknown tokens; the failed-attempt
-// buckets (global and per-IP, the per-IP one untouched while the global one is empty) turn 401
-// into 429 while a valid token keeps working; the per-device bucket; no-store on 401, 400, 429
-// and an unexpected 500 on every route.
-// State: ETag and 304 (weak, list and "*" forms), the Clerk query and the HTTP route return the
-// same object, the query refuses caregivers and signed-out callers, cue prompt instants match
-// the real scheduler's ticks, tomorrow's instance inside the 24 hours.
-// Confirm: success (device's via, confirmedBy and audit actor; fresh state and ETag), a press
-// that stands when the state cannot be read afterwards (state null), missed and anytime
-// instances by id, replayed presses (late sync at the press time, too early, too late), a
-// deleted instance (rejected, audited), another household's instance (same answer as a deleted
-// one, left alone, audited without its id), 400 for a pressId key (the phone app's queue must
-// stay the only sender of press ids, see lib/confirmRule), 400 for bad bodies, ids and press
-// ages (each audited, nothing raw stored), the 20-an-hour cap on refusal rows (the core's refusals, such as
-// a press before the early window or on a deleted task, count and stop being written too), and a
-// body over 4096 characters. (Presses before the window here come from the widget surface,
-// whose early hour is the core's rule; the hardware button refuses them itself, tested in
-// deviceFrame.test.ts.) A device-API confirm is a device confirm: its audit rows say
-// transport device_api (the app's say app), a caregiver's reopen stamps it so an older queued
-// press is refused, the phone app's Undo takes back a press the same device made, and there is
-// no /device/undo route. Isolation: another household's instance in any state (confirmed,
-// resolved, upcoming hours ahead, missed) is answered exactly like a deleted one, left unchanged,
-// and leaves no row in its household and no trace of its id in the device's. The refused-press
-// budget: successful confirms do not spend it, a valid press still confirms once it is spent,
-// and a foreign press writes no row then. An error the core does not turn into a rejection (a
-// negative press age, raised through the internal confirm mutation since the route validates
-// it) propagates. The core's own refusal row carries the press's transport (device_api, app).
-// Info: stored and trimmed, 204, validation, no other field writable. A device removed between
-// the gate and the effect: every by-token function finds nothing and writes nothing.
-// lastSeenAt: written at most every 5 minutes, not for a failed authentication.
-//
-// Last modified: 2026-11-14
-
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -49,28 +7,15 @@ import type { Id } from "./_generated/dataModel";
 import { hashDeviceToken } from "./lib/deviceToken";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const MIN = 60_000;
-/** Friday 2026-11-13 at 07:00 in New York (UTC-5). */
 const START = "2026-11-13T12:00:00Z";
 
-/**
- * purpose: The instant of a New York wall time (UTC-5 in November).
- * @param hhmm: (string) Local "HH:MM".
- * @param date: (string, optional) Local date; default 2026-11-13.
- * @return: (number) Epoch ms.
- */
 function local(hhmm: string, date = "2026-11-13"): number {
   return Date.parse(`${date}T${hhmm}:00-05:00`);
 }
 
-/**
- * purpose: Set the frozen clock.
- * @param ms: (number) Epoch ms.
- * @return: (void)
- */
 function setNow(ms: number): void {
   vi.setSystemTime(new Date(ms));
 }
@@ -85,10 +30,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/**
- * purpose: A fresh backend with the rate limiter and delivery pool registered.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   const t = convexTest(schema, modules);
   rateLimiterTest.register(t);
@@ -96,10 +37,8 @@ function makeBackend() {
   return t;
 }
 
-/** The harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** A household with Pat (primary), a paired phone and display, and an 08:00 medication. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
@@ -107,12 +46,6 @@ interface Fixture {
   phoneId: Id<"devices">;
 }
 
-/**
- * purpose: Create a household with a caregiver, paired devices and a medication task.
- * @param t: (TestConvex) Harness.
- * @param prefix: (string) Prefix for the user ids, so two households can share a backend.
- * @return: (Promise<Fixture>) The fixture; instanceId is today's 08:00 instance.
- */
 async function household(t: TestConvex, prefix = ""): Promise<Fixture> {
   const pat = t.withIdentity({ subject: `${prefix}pat` });
   const householdId = await pat.mutation(api.households.create, {
@@ -152,26 +85,11 @@ async function household(t: TestConvex, prefix = ""): Promise<Fixture> {
   return { t, householdId, instanceId, phoneId };
 }
 
-/**
- * purpose: Issue a device token as a signed-in user.
- * @param t: (TestConvex) Harness.
- * @param subject: (string) The Clerk user id.
- * @return: (Promise<string>) The token.
- */
 async function issue(t: TestConvex, subject = "phone"): Promise<string> {
   const { deviceToken } = await t.withIdentity({ subject }).action(api.deviceApi.issueToken, {});
   return deviceToken;
 }
 
-/**
- * purpose: Call the device API.
- * @param t: (TestConvex) Harness.
- * @param method: (string) HTTP method.
- * @param path: (string) Route.
- * @param options: ({ token, body, headers }) A token (null sends no Authorization), a JSON body
- *        or raw string, extra headers.
- * @return: (Promise<Response>) The response.
- */
 async function call(
   t: TestConvex,
   method: string,
@@ -193,13 +111,6 @@ async function call(
   });
 }
 
-/**
- * purpose: GET /device/state.
- * @param t: (TestConvex) Harness.
- * @param token: (string | null) The token.
- * @param headers: (Record<string, string>, optional) Extra headers.
- * @return: (Promise<Response>) The response.
- */
 async function getState(
   t: TestConvex,
   token: string | null,
@@ -208,69 +119,30 @@ async function getState(
   return await call(t, "GET", "/device/state", { token, headers });
 }
 
-/**
- * purpose: POST /device/confirm.
- * @param t: (TestConvex) Harness.
- * @param token: (string) The token.
- * @param body: (unknown) The body.
- * @return: (Promise<Response>) The response.
- */
 async function postConfirm(t: TestConvex, token: string, body: unknown): Promise<Response> {
   return await call(t, "POST", "/device/confirm", { token, body });
 }
 
-/**
- * purpose: PUT /device/info.
- * @param t: (TestConvex) Harness.
- * @param token: (string) The token.
- * @param body: (unknown) The body.
- * @return: (Promise<Response>) The response.
- */
 async function putInfo(t: TestConvex, token: string, body: unknown): Promise<Response> {
   return await call(t, "PUT", "/device/info", { token, body });
 }
 
-/**
- * purpose: Read a device row.
- * @param t: (TestConvex) Harness.
- * @param deviceId: (Id<"devices">) The device.
- * @return: The row, or null.
- */
 async function deviceRow(t: TestConvex, deviceId: Id<"devices">) {
   return await t.run(async (ctx) => await ctx.db.get(deviceId));
 }
 
-/**
- * purpose: Every audit row, oldest first.
- * @param t: (TestConvex) Harness.
- * @return: The rows.
- */
 async function audits(t: TestConvex) {
   return await t.run(async (ctx) => await ctx.db.query("auditLog").collect());
 }
 
-/**
- * purpose: Force an instance's fields (the scheduler is not run unless a test runs it).
- * @param f: (Fixture) Fixture.
- * @param patch: (Record<string, unknown>) Fields to set.
- * @return: (Promise<void>)
- */
 async function force(f: Fixture, patch: Record<string, unknown>): Promise<void> {
   await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, patch));
 }
 
-/**
- * purpose: Whether a stored instant is the expected one (convex-test may advance the clock a
- *          few milliseconds inside a function).
- * @param actual: (number | undefined) The stored instant.
- * @param expected: (number) The expected instant.
- * @return: (boolean) True within 100 ms.
- */
 function near(actual: number | undefined, expected: number): boolean {
   return actual !== undefined && Math.abs(actual - expected) < 100;
 }
 
-/** A well-formed token no device holds. */
 const UNKNOWN_TOKEN = `sunny_dev_${"Q".repeat(43)}`;
 
 describe("issueToken", () => {
@@ -394,7 +266,6 @@ describe("issueToken", () => {
       expect(text).not.toContain(hash);
       expect(text).not.toContain(token);
     }
-    // Refused presses and failures are audited or logged; none of it carries the token either.
     const theirs = await household(t, "z_");
     await postConfirm(t, token, { instanceId: theirs.instanceId, pressedAgoMs: 0, via: "widget" });
     await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "widget" });
@@ -461,8 +332,6 @@ describe("authentication", () => {
     for (let i = 0; i < 10; i++) {
       expect((await getState(t, UNKNOWN_TOKEN, ipA)).status).toBe(429);
     }
-    // 30 s refill the global bucket by 30; had IP A's bucket been spent above, it would hold
-    // only 5 and the sixth request below would be 429.
     setNow(Date.parse(START) + 30_000);
     for (let i = 0; i < 10; i++) {
       expect((await getState(t, UNKNOWN_TOKEN, ipA)).status).toBe(401);
@@ -557,11 +426,6 @@ describe("GET /device/state", () => {
     const cue = before.cues.find((c) => c.instanceId === f.instanceId)!;
     expect(cue.cueableNow).toBe(false);
     expect(cue.promptTimes).toEqual([local("08:00"), local("08:15")]);
-    /**
-     * purpose: Run the household's tick and read how many prompts the instance has had.
-     * @param now: (number) Epoch ms.
-     * @return: (Promise<number>) seniorPrompts after the tick.
-     */
     const tickAt = async (now: number): Promise<number> => {
       setNow(now);
       await t.mutation(internal.scheduler.tickHousehold, { householdId: f.householdId, now });
@@ -598,9 +462,6 @@ describe("GET /device/state", () => {
 
 describe("POST /device/confirm", () => {
   test("refuses a pressId key: the phone app's queue must stay the only sender of press ids", async () => {
-    // lib/confirmRule.queuedPressTakenBack skips the time rule after a device user's own undo,
-    // which is safe only while one queue per device user sends press ids. If this route ever
-    // accepts pressId, re-key that skip per queue first.
     const t = makeBackend();
     const f = await household(t);
     await force(f, { state: "due" });
@@ -653,10 +514,9 @@ describe("POST /device/confirm", () => {
   test("a press stands when the state cannot be read afterwards: state is null", async () => {
     const t = makeBackend();
     const f = await household(t);
-    await force(f, { state: "due", windowStart: local("06:50") }); // due: its window has opened
+    await force(f, { state: "due", windowStart: local("06:50") });
     const token = await issue(t);
     vi.spyOn(console, "error").mockImplementation(() => {});
-    // With the household row gone the press still applies but the state load throws.
     await t.run(async (ctx) => await ctx.db.delete(f.householdId));
     const res = await postConfirm(t, token, {
       instanceId: f.instanceId,
@@ -717,7 +577,6 @@ describe("POST /device/confirm", () => {
     const f = await household(t);
     const token = await issue(t);
     setNow(local("07:30"));
-    // A phone surface (the hardware button refuses any press before the window itself).
     const res = await postConfirm(t, token, {
       instanceId: f.instanceId,
       pressedAgoMs: 40 * MIN,
@@ -830,7 +689,6 @@ describe("POST /device/confirm", () => {
     }
     const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
     expect(row!.state).toBe("upcoming");
-    // Every refused press is audited, with only the safe parts of what was sent.
     const refused = (await audits(t)).filter((a) => a.action === "press_not_applied");
     expect(refused).toHaveLength(bad.length);
     const details = refused.map((a) => a.detail as Record<string, unknown>);
@@ -854,16 +712,11 @@ describe("POST /device/confirm", () => {
     const f = await household(t);
     const token = await issue(t);
     const malformed = { instanceId: "abc", pressedAgoMs: 0, via: "button" };
-    /**
-     * purpose: How many press_not_applied rows exist.
-     * @return: (Promise<number>) The count.
-     */
     const refusedRows = async (): Promise<number> =>
       (await audits(t)).filter((a) => a.action === "press_not_applied").length;
     for (let i = 0; i < 20; i++) expect((await postConfirm(t, token, malformed)).status).toBe(400);
     expect(await refusedRows()).toBe(20);
     expect((await postConfirm(t, token, malformed)).status).toBe(400);
-    // A refusal by the core (pressed before the early window) is answered but not written either.
     const early = await postConfirm(t, token, {
       instanceId: f.instanceId,
       pressedAgoMs: 10 * MIN,
@@ -874,7 +727,6 @@ describe("POST /device/confirm", () => {
       reason: "This task was not due yet when it was pressed",
     });
     expect(await refusedRows()).toBe(20);
-    // The budget only limits refusal rows: with it spent, a valid press still confirms.
     const valid = await postConfirm(t, token, {
       instanceId: f.instanceId,
       pressedAgoMs: 0,
@@ -906,10 +758,6 @@ describe("the refused-press budget", () => {
     await t.run(async (ctx) => await ctx.db.delete(f.instanceId));
     const deleted = { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" };
     for (let i = 0; i < 20; i++) await postConfirm(t, token, deleted);
-    /**
-     * purpose: How many press_not_applied rows exist.
-     * @return: (Promise<number>) The count.
-     */
     const refusedRows = async (): Promise<number> =>
       (await audits(t)).filter((a) => a.action === "press_not_applied").length;
     expect(await refusedRows()).toBe(20);
@@ -922,7 +770,7 @@ describe("the refused-press budget", () => {
   test("successful confirms do not spend it", async () => {
     const t = makeBackend();
     const f = await household(t);
-    await force(f, { state: "due", windowStart: local("06:50") }); // due: its window has opened
+    await force(f, { state: "due", windowStart: local("06:50") });
     const token = await issue(t);
     const press = { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" };
     for (let i = 0; i < 25; i++) {
@@ -941,10 +789,6 @@ describe("the refused-press budget", () => {
     const token = await issue(t);
     const malformed = { instanceId: "abc", pressedAgoMs: 0, via: "button" };
     for (let i = 0; i < 20; i++) await postConfirm(t, token, malformed);
-    /**
-     * purpose: How many press_not_applied rows exist.
-     * @return: (Promise<number>) The count.
-     */
     const refusedRows = async (): Promise<number> =>
       (await audits(t)).filter((a) => a.action === "press_not_applied").length;
     expect(await refusedRows()).toBe(20);
@@ -962,9 +806,6 @@ describe("the refused-press budget", () => {
 });
 
 describe("errors the core does not turn into a rejection", () => {
-  // The HTTP route validates the press age, so a negative age cannot arrive through it; the
-  // core's age check (invalid, thrown before it decides anything) is reached here through the
-  // route's own internal mutation, the level at which it can honestly be raised.
   test("propagate from the confirm mutation instead of reading as a missing task", async () => {
     const t = makeBackend();
     const f = await household(t);
@@ -994,8 +835,6 @@ describe("isolation from another household", () => {
     const reference = await postConfirm(t, token, { instanceId: mine.instanceId, ...press });
     const { state: _ref, ...referenceBody } = (await reference.json()) as Record<string, unknown>;
     expect(referenceBody).toEqual({ status: "rejected", reason: "The task no longer exists" });
-    // "Far ahead" moves the window later; moving the clock back would not reach Date.now()
-    // inside the functions in this harness.
     const farAhead = Date.parse(START) + 4 * 60 * MIN;
     const cases: Record<string, unknown>[] = [
       {
@@ -1013,10 +852,6 @@ describe("isolation from another household", () => {
       { state: "upcoming", windowStart: farAhead, windowEnd: farAhead + 60 * MIN },
       { state: "missed" },
     ];
-    /**
-     * purpose: The audit rows of the other household.
-     * @return: (Promise<number>) How many there are.
-     */
     const theirRows = async (): Promise<number> =>
       (await audits(t)).filter((a) => a.householdId === theirs.householdId).length;
     for (const patch of cases) {
@@ -1043,7 +878,6 @@ describe("the core's refusal row", () => {
     const t = makeBackend();
     const f = await household(t);
     const token = await issue(t, "display");
-    // Pressed 10 minutes before the early window opened: only the core refuses this.
     const early = { instanceId: f.instanceId, pressedAgoMs: 10 * MIN, via: "widget" as const };
     await postConfirm(t, token, early);
     await t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, early);
@@ -1064,7 +898,7 @@ describe("a confirm through the device API is a device confirm", () => {
   test("every confirm and refusal records how it arrived (transport)", async () => {
     const t = makeBackend();
     const f = await household(t);
-    await force(f, { state: "due", windowStart: local("06:50") }); // due: its window has opened
+    await force(f, { state: "due", windowStart: local("06:50") });
     const token = await issue(t, "display");
     await postConfirm(t, token, { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" });
     await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "button" });
@@ -1076,12 +910,6 @@ describe("a confirm through the device API is a device confirm", () => {
       pressedAgoMs: 0,
     });
     const rows = await audits(t);
-    /**
-     * purpose: The transport of a household's audit row with an action.
-     * @param householdId: (Id<"households">) The household.
-     * @param action: (string) The action.
-     * @return: (unknown) detail.transport.
-     */
     const transportOf = (householdId: Id<"households">, action: string): unknown =>
       (
         rows.find((a) => a.householdId === householdId && a.action === action)?.detail as {

@@ -1,151 +1,53 @@
-// lib/confirmRule.ts
-// Purpose: The rule for when the senior's devices may confirm a task instance, in one place so
-// the confirm mutation (instances.confirmInstance) and the day view's per-task `confirmable`
-// flag (lib/today.ts) cannot drift. A senior device may confirm an open instance in any state
-// except that an upcoming one must start within EARLY_CONFIRM_MS: the distance is measured from
-// the instance's windowStart (local midnight for an anytime instance, which is never upcoming
-// in practice). Snoozing does not change it (a snoozed instance is still due), and due,
-// escalated and missed instances can always be confirmed (missed ones late). Done instances are
-// not confirmable (confirming them changes nothing).
-//
-// The two ways back out of a confirm live here too, for the same reason. seniorCanUndo: a senior
-// device may take back its own confirm for SENIOR_UNDO_MS after the server recorded it (the app
-// offers Undo for 30 s; the server allows 60 s so a slow network never refuses a press the
-// senior was still offered), measured from confirmReceivedAt when there is one because an
-// offline press is recorded with an earlier confirmedAt (a press that took 1 to 5 minutes to
-// arrive has no confirmReceivedAt and lands already past the window; accepted, the phone's own
-// Undo has expired by then). caregiverCanReopen: an editor caregiver may reopen a confirmed or
-// resolved instance whose confirmedAt falls on the household-local date of `now`, or that is
-// one of today's tasks (a 00:30 task confirmed at 23:45 the evening before); the home display
-// has no undo. reopenedState says which state a reopened (or an unrecorded undone) instance
-// gets from the clock alone. taskStillRuns (shared by reopen, senior undo and the day view's
-// `reopenable`) says whether the instance's task still runs the way the instance was made.
-// isDoneState is the one confirmed-or-resolved test. pressWasTakenBack is the boundary of the
-// take-back stamp: a queued press made at or before the instance's confirmTakenBackAt is
-// refused, so a stale press cannot re-confirm what a senior undo or a caregiver reopen took
-// back. A press without an age (a live confirm, voice, a caregiver's Mark done) is made now
-// and is never checked against the stamp. Press ids (the phone's queue gives each press a
-// random id, isPressId) replace the estimated times where both sides come from one device:
-// queuedPressTakenBack gives the reason a queued press is refused (a taken-back press id, undone
-// or reopened by a caregiver: PRESS_TAKEN_BACK; the time rule: PRESS_BEFORE_TAKE_BACK) and
-// skips the time rule after this device user's own undo (see the comment at the skip: only
-// one queue may send ids per device user); withConfirmPressId keeps a confirmation's press ids
-// (the confirming press first, then the newest others of the same device, at most
-// MAX_CONFIRM_PRESS_IDS); withTakenBackPressIds keeps the last MAX_TAKEN_BACK_PRESS_IDS
-// taken-back ids.
-//
-// Last modified: 2026-11-14
-
 import type { Doc } from "../_generated/dataModel";
 import { isAnytimeInstance, isAnytimeTask } from "./anytime";
 import { localDate, minutes } from "./time";
 import type { InstanceState } from "./validators";
 
-/** How long (ms) before its window starts an upcoming instance may already be confirmed. */
 export const EARLY_CONFIRM_MS = minutes(60);
 
-/** A confirm recorded this much (ms) before the server received it counts as late-synced. */
 export const LATE_SYNC_MS = minutes(5);
 
-/**
- * How long (ms) after its window ended a replayed press may still be recorded for the instance.
- * Generous enough for a task done a little late, short enough that a stale card pressed the
- * next morning is not recorded as last night's dose.
- */
 export const REPLAY_GRACE_MS = minutes(180);
 
-/** The instance fields the rule reads. */
 export interface ConfirmRuleInput {
   state: InstanceState;
   windowStart: number;
 }
 
-/**
- * purpose: Whether the instance is not too early for a senior device to confirm at `now`
- *          (the check the confirm mutation applies; done instances pass here and are handled
- *          by the caller).
- * @param instance: (ConfirmRuleInput) The instance's state and window start.
- * @param now: (number) Epoch ms.
- * @return: (boolean) False only for an upcoming instance whose window starts more than
- *          EARLY_CONFIRM_MS from now.
- */
 export function notTooEarly(instance: ConfirmRuleInput, now: number): boolean {
   return !(instance.state === "upcoming" && instance.windowStart - now > EARLY_CONFIRM_MS);
 }
 
-/**
- * purpose: Whether confirming the instance now would change it: it is open and not too early.
- * @param instance: (ConfirmRuleInput) The instance's state and window start.
- * @param now: (number) Epoch ms.
- * @return: (boolean) True for an open instance a senior device may confirm.
- */
 export function seniorCanConfirm(instance: ConfirmRuleInput, now: number): boolean {
   return !isDoneState(instance.state) && notTooEarly(instance, now);
 }
 
-/**
- * purpose: Whether a queued press was made at or before the instance's take-back stamp and so
- *          must be refused (the senior undid, or a caregiver reopened, after that press).
- * @param pressedAt: (number) Epoch ms the press was made (server now minus the press age).
- * @param takenBackAt: (number | undefined) The instance's confirmTakenBackAt.
- * @return: (boolean) True when the press must be refused; never for an instance never taken back.
- */
 export function pressWasTakenBack(pressedAt: number, takenBackAt: number | undefined): boolean {
   return takenBackAt !== undefined && pressedAt <= takenBackAt;
 }
 
-/** A press id the phone's queue makes for each press: 16 to 64 URL-safe characters. */
 const PRESS_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
-/** How many taken-back press ids an instance keeps (newest last). */
 export const MAX_TAKEN_BACK_PRESS_IDS = 8;
 
-/** How many press ids a confirmation keeps: the confirming press, then the newest others. */
 export const MAX_CONFIRM_PRESS_IDS = 4;
 
-/** Why a press id is refused (and the reason recorded for a press refused for it). */
 export const PRESS_ID_NOT_VALID = "The press id is not valid";
 
-/** Refusal reason for a press whose id was taken back (the list check). */
 export const PRESS_TAKEN_BACK = "This press was taken back";
 
-/** Refusal reason for a press made at or before the take-back stamp (the time rule). */
 export const PRESS_BEFORE_TAKE_BACK = "This press was made before the confirmation was taken back";
 
-/**
- * purpose: Whether a value is a well-formed press id.
- * @param value: (string) The id the device sent.
- * @return: (boolean) True for 16 to 64 characters of letters, digits, "-" and "_".
- */
 export function isPressId(value: string): boolean {
   return PRESS_ID_PATTERN.test(value);
 }
 
-/** What the take-back check reads from a queued press. */
 export interface QueuedPress {
-  /** Epoch ms the press was made (server now minus the press age). */
   pressedAt: number;
-  /** The press's id, when the device's queue gave it one. */
   pressId: string | undefined;
-  /** The device account sending it. */
   userId: string;
 }
 
-/**
- * purpose: Why a senior device's queued press must be refused because the confirmation was
- *          taken back after it, or null when it may apply. A press with an id is refused when
- *          that id was taken back before (a resend of a press that was undone, or whose confirm
- *          a caregiver reopened): PRESS_TAKEN_BACK. Otherwise, when the last take-back was this
- *          same device user's own undo, it is accepted without the time rule, because the
- *          phone's queue sends a task's entries strictly in order, so a different press
- *          arriving after its own undo was made after it. Every other case (no id, a
- *          caregiver's reopen, another device's undo, an instance taken back before ids
- *          existed) uses pressWasTakenBack: PRESS_BEFORE_TAKE_BACK.
- * @param press: (QueuedPress) The press.
- * @param instance: (Pick<Doc<"taskInstances">, "confirmTakenBackAt" | "confirmTakenBackBy" |
- *        "takenBackPressIds">) The instance's take-back fields.
- * @return: (string | null) The refusal reason, or null.
- */
 export function queuedPressTakenBack(
   press: QueuedPress,
   instance: Pick<
@@ -155,16 +57,6 @@ export function queuedPressTakenBack(
 ): string | null {
   if (press.pressId !== undefined) {
     if (instance.takenBackPressIds?.includes(press.pressId)) return PRESS_TAKEN_BACK;
-    // The skip below is keyed on the device user, but the ordering it relies on belongs to ONE
-    // queue: the phone app's pendingConfirms queue, the only sender of press ids today (the HTTP
-    // device API refuses a pressId key). No second sender of press ids may share a device user
-    // with the phone's queue unless this skip is re-keyed per queue (or replaced with per-queue
-    // sequence numbers). Known limits: each take-back appends up to MAX_CONFIRM_PRESS_IDS ids
-    // and the list keeps MAX_TAKEN_BACK_PRESS_IDS, so after more than 8 taken-back ids on one
-    // instance (as few as 3 take-backs) the oldest id falls out and a resend of that press
-    // would pass here; and an id dropped from confirmPressIds by its cap of 4 never reaches
-    // takenBackPressIds at all. One phone's queue cannot produce either: it never sends two
-    // presses in a row for one task and never resends an acknowledged entry.
     if (instance.confirmTakenBackBy === press.userId) return null;
   }
   return pressWasTakenBack(press.pressedAt, instance.confirmTakenBackAt)
@@ -172,13 +64,6 @@ export function queuedPressTakenBack(
     : null;
 }
 
-/**
- * purpose: The taken-back press ids after a take-back: the confirmation's press ids appended,
- *          newest last, at most MAX_TAKEN_BACK_PRESS_IDS (the oldest fall out).
- * @param ids: (string[] | undefined) The instance's takenBackPressIds.
- * @param added: (string[] | undefined) The confirmation's confirmPressIds; none adds nothing.
- * @return: (string[] | undefined) The new list (undefined when there never was an id).
- */
 export function withTakenBackPressIds(
   ids: string[] | undefined,
   added: string[] | undefined,
@@ -187,14 +72,6 @@ export function withTakenBackPressIds(
   return [...(ids ?? []), ...added].slice(-MAX_TAKEN_BACK_PRESS_IDS);
 }
 
-/**
- * purpose: The confirmation's press ids after one more press of the same device landed on it
- *          as a no-op: the confirming press stays first, then the newest others, at most
- *          MAX_CONFIRM_PRESS_IDS in all. An id already there changes nothing.
- * @param ids: (string[] | undefined) The instance's confirmPressIds.
- * @param pressId: (string) The no-op press's id.
- * @return: (string[]) The new list.
- */
 export function withConfirmPressId(ids: string[] | undefined, pressId: string): string[] {
   const list = ids ?? [];
   if (list.includes(pressId)) return list;
@@ -203,33 +80,12 @@ export function withConfirmPressId(ids: string[] | undefined, pressId: string): 
   return [list[0]!, ...others];
 }
 
-/** How long (ms) after the server recorded a senior device's confirm that device may undo it. */
 export const SENIOR_UNDO_MS = 60_000;
 
-/**
- * purpose: Whether a state is a done one (confirmed by a device or the agent, or resolved by a
- *          caregiver).
- * @param state: (InstanceState) The instance's state.
- * @return: (boolean) True for confirmed and resolved.
- */
 export function isDoneState(state: InstanceState): boolean {
   return state === "confirmed" || state === "resolved";
 }
 
-/**
- * purpose: Whether a senior device may take back its own confirm now: the instance is confirmed
- *          (not resolved by a caregiver), the confirm is this device's own, and the server
- *          recorded it at most SENIOR_UNDO_MS ago. Recorded means confirmReceivedAt when set (a
- *          press held offline for more than LATE_SYNC_MS), else confirmedAt. A press that took
- *          between one and LATE_SYNC_MS to arrive has no confirmReceivedAt, so it is already
- *          past the window when it lands; that is accepted, because the phone's own 30 second
- *          Undo has expired by then.
- * @param instance: (Pick<Doc<"taskInstances">, "state" | "confirmedBy" | "confirmedAt" |
- *        "confirmReceivedAt">) The instance's state, confirmer and confirm times.
- * @param userId: (string) The device account asking.
- * @param now: (number) Epoch ms.
- * @return: (boolean) True when the undo is allowed.
- */
 export function seniorCanUndo(
   instance: Pick<
     Doc<"taskInstances">,
@@ -247,18 +103,6 @@ export function seniorCanUndo(
   );
 }
 
-/**
- * purpose: Whether an editor caregiver may reopen the instance now (the role is checked by the
- *          caller): it is confirmed or resolved, by anyone, and it belongs to today's list: its
- *          confirmedAt is on the household-local date of `now`, or the instance's own local date
- *          is (a task confirmed up to 60 minutes early, or a press replayed after midnight, for a
- *          task of today).
- * @param instance: (Pick<Doc<"taskInstances">, "state" | "confirmedAt" | "localDate">) The
- *        instance's state, confirmedAt and own local date.
- * @param now: (number) Epoch ms.
- * @param timezone: (string) The household's IANA zone.
- * @return: (boolean) True when the instance may be reopened.
- */
 export function caregiverCanReopen(
   instance: Pick<Doc<"taskInstances">, "state" | "confirmedAt" | "localDate">,
   now: number,
@@ -272,22 +116,6 @@ export function caregiverCanReopen(
   );
 }
 
-/**
- * purpose: Whether the instance's task still runs the way the instance was made: the task
- *          exists, is active, and is still timed with the instance's time among its times, or
- *          still anytime to match an anytime instance. Deactivating a task, or switching it
- *          between timed and anytime or to other times, removes only its open instances, so a
- *          confirmed or resolved instance of such a task survives as history; putting it back
- *          to open would prompt for a task that no longer runs, or sit next to the row that
- *          replaced it. Used by the reopen and senior undo mutations and by the day view's
- *          `reopenable` flag so they agree. Deliberately not checked: days of week, startsOn,
- *          endsOn and onceOn. An open instance on a day the task no longer occurs is also left
- *          open by resyncTask, so a reopened one behaves like one that was never confirmed.
- * @param task: (Pick<Doc<"tasks">, "active" | "type" | "times"> | null) The instance's task, or
- *        null when it is gone.
- * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime">) The instance.
- * @return: (boolean) True when reopening the instance would match the schedule.
- */
 export function taskStillRuns(
   task: Pick<Doc<"tasks">, "active" | "type" | "times"> | null,
   instance: Pick<Doc<"taskInstances">, "scheduledTime">,
@@ -297,17 +125,6 @@ export function taskStillRuns(
   return task.times.includes(instance.scheduledTime);
 }
 
-/**
- * purpose: The open state an instance gets when its confirmation is taken away, by the clock:
- *          before windowStart it is upcoming; at or after windowEnd it is missed; inside the
- *          window it is the recorded prior state when that was due or escalated, else due.
- *          An anytime instance (lib/anytime.ts) never escalates, so inside its window it is
- *          always due.
- * @param instance: (Pick<Doc<"taskInstances">, "scheduledTime" | "windowStart" | "windowEnd" |
- *        "resolvedFromState">) Window, scheduledTime and the recorded prior state.
- * @param now: (number) Epoch ms.
- * @return: (InstanceState) upcoming, due, escalated or missed.
- */
 export function reopenedState(
   instance: Pick<
     Doc<"taskInstances">,

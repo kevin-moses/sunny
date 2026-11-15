@@ -1,23 +1,3 @@
-// lib/digestFacts.ts
-// Purpose: Gather the facts of one household-local day for the daily digest, from logged data
-// only (see notes/SPEC.md "Daily digest"): task instances of that local date in every state
-// (confirmed with time and how, resolved by a caregiver, missed, escalated with who claimed
-// them, and still open because due or upcoming), as-needed doses taken that day (a dose she
-// took back, undoneAt, is not one), and the senior's questions asked that day (unanswered,
-// routed to family, repeat counts by topic). Whether a task alerted the caregivers is
-// lib/escalation.ts caregiverAlerted, the same test the scheduler uses.
-// "That day" is the household's local day, from local midnight to the next local midnight, so a
-// DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
-// Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
-// no alerts and the digest never reports them as not done. Nothing from other days is read.
-// Lists are capped so a busy day stays within one query. A confirm pressed offline and synced
-// late carries sentAt, when the server received it.
-// Privacy: unanswered and routed questions are given in the senior's words only when the
-// household shares transcripts (households.shareTranscripts); otherwise by their topic.
-// List: the household list items the senior added that day (listAdded).
-//
-// Last modified: 2026-11-14
-
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { isAsNeededTask } from "../tasks";
@@ -28,46 +8,33 @@ import { dayRange, formatTime12, localTime } from "./time";
 import { receivedDaysLater } from "./today";
 import type { ConfirmVia } from "./validators";
 
-/** The most task instances, questions and doses read for one day. */
 const DAY_READ_CAP = 200;
 
-/** How a task instance stands at digest time ("open" is due or upcoming). */
 export type TaskOutcome = "confirmed" | "resolved" | "missed" | "escalated" | "open";
 
-/** One task instance of the day. */
 export interface TaskFact {
   label: string;
-  /** 12-hour scheduled time. */
   scheduledAt: string;
   outcome: TaskOutcome;
-  /** 12-hour time it was confirmed or resolved. */
   doneAt?: string;
   via?: ConfirmVia;
-  /** 12-hour time the server received a confirm that was pressed offline and sent late. */
   sentAt?: string;
-  /** Local days from the confirmation to sentAt (0 same day); set with sentAt. */
   sentDaysLater?: number;
-  /** Caregiver who resolved it on the senior's behalf. */
   resolvedBy?: string;
   claimedBy?: string;
-  /** A caregiver alert was sent for it. */
   alerted: boolean;
 }
 
-/** As-needed doses of one task taken that day. */
 export interface DoseFact {
   label: string;
-  /** 12-hour times, in order. */
   times: string[];
 }
 
-/** A topic the senior asked about more than once. */
 export interface RepeatFact {
   topic: string;
   count: number;
 }
 
-/** Everything the digest says about one day. */
 export interface DigestFacts {
   seniorName: string;
   localDate: string;
@@ -77,29 +44,13 @@ export interface DigestFacts {
   unanswered: string[];
   routed: string[];
   repeats: RepeatFact[];
-  /** Household list items the senior added that day (absent in facts built before the list). */
   listAdded: string[];
 }
 
-/**
- * purpose: Map a user id to a caregiver's display name.
- * @param names: (Map<string, string>) Member names by user id.
- * @param userId: (string | undefined) The user id.
- * @return: (string | undefined) The name, "a caregiver" for an unknown user, or undefined.
- */
 function nameOf(names: Map<string, string>, userId: string | undefined): string | undefined {
   return userId === undefined ? undefined : (names.get(userId) ?? "a caregiver");
 }
 
-/**
- * purpose: The task facts of the local day, one per timed instance: confirmed, resolved,
- *          missed, escalated, or open (due or upcoming). Anytime instances are left out.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param localDate: (string) The local day.
- * @param names: (Map<string, string>) Member names by user id.
- * @return: (Promise<TaskFact[]>) Facts ordered by scheduled time.
- */
 async function taskFacts(
   ctx: QueryCtx,
   household: Doc<"households">,
@@ -152,13 +103,6 @@ async function taskFacts(
   return facts;
 }
 
-/**
- * purpose: The as-needed doses taken in the day, grouped by task.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param range: ({ start: number; end: number }) The day's instants.
- * @return: (Promise<DoseFact[]>) One fact per task with doses that day.
- */
 async function doseFacts(
   ctx: QueryCtx,
   household: Doc<"households">,
@@ -193,15 +137,6 @@ async function doseFacts(
   return perTask.filter((d) => d.times.length > 0);
 }
 
-/**
- * purpose: The question facts of the day: how many were asked, which went unanswered
- *          ("unsure") or were routed to family, and topics asked more than once. The senior's
- *          own words are used only when the household shares transcripts; otherwise unanswered
- *          and routed questions are given by topic.
- * @param questions: (Doc<"agentQuestions">[]) The day's questions.
- * @param shareTranscripts: (boolean) households.shareTranscripts.
- * @return: (Pick<DigestFacts, "questionCount" | "unanswered" | "routed" | "repeats">) Facts.
- */
 function questionFacts(
   questions: Doc<"agentQuestions">[],
   shareTranscripts: boolean,
@@ -215,12 +150,6 @@ function questionFacts(
     .filter(([, count]) => count > 1)
     .map(([topic, count]) => ({ topic, count }))
     .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic));
-  /**
-   * purpose: The distinct questions with one outcome, trailing punctuation removed: the
-   *          question text when transcripts are shared, else the topic.
-   * @param outcome: (string) The outcome to select.
-   * @return: (string[]) Question texts or topics.
-   */
   const topicsWith = (outcome: string): string[] => [
     ...new Set(
       questions
@@ -240,13 +169,6 @@ function questionFacts(
   };
 }
 
-/**
- * purpose: Gather every fact for a household's local day.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param localDate: (string) The local day, "YYYY-MM-DD".
- * @return: (Promise<DigestFacts>) The facts.
- */
 export async function gatherDigestFacts(
   ctx: QueryCtx,
   household: Doc<"households">,

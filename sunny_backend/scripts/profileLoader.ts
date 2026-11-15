@@ -1,59 +1,17 @@
-// scripts/profileLoader.ts
-// Purpose: The bulk life-profile loader behind `scripts/caregiver.ts profile-load <file.json>`,
-// kept apart from the command line so it can be tested against the real mutations
-// (convex/profileLoader.test.ts). parseProfileFile checks the file's shape; loadProfile sends
-// every item through the public profile mutations (profile:addEntry, profile:addTopic,
-// profile:addFact), which trim, cap and de-duplicate, so loading the same file twice adds
-// nothing the second time. Each item is reported as:
-//   added      inserted;
-//   unchanged  already stored with the same text;
-//   confirmed  a fact the senior had said, now confirmed by the load;
-//   differs    already stored with different text and NOT updated. The server compares exactly,
-//              so a name that differs only in case counts as different; details count only
-//              when the item has a "details" key;
-//   updated    already stored with different text, and replaced because of --update (through
-//              profile:updateEntry or profile:updateTopic; the server's audit row keeps the
-//              previous text). An entry's details are sent only when the item has a "details"
-//              key, and cleared only for an explicit null or empty string, which the report
-//              marks "(details cleared)";
-//   failed     the server refused it (the rest still load); a refused update is prefixed
-//              "update:".
-// cliError turns the stderr of a failed `npx convex run` into an Error carrying the server's
-// message (the ConvexError's message when there is one).
-//
-// File format (see scripts/profile.example.json; keep real data in scripts/*.local.json, which
-// git ignores):
-//   {
-//     "lifeProfile": [{ "category": "person", "name": "Sarah", "details": "Daughter" }, ...],
-//     "sensitiveTopics": [{ "topic": "her husband Robert", "guidance": "..." }, ...],
-//     "facts": ["Her cat is called Biscuit", ...]
-//   }
-// Every section is optional. category is one of person, place, doctor, habit, interest,
-// preference, other; details is optional (text, or null to clear with --update). Top-level keys
-// starting with "_" are notes and are ignored; any other unknown key, at the top or inside an
-// item, is an error (it is most likely a misspelling, such as "detials", that would otherwise
-// load the item without it).
-//
-// Last modified: 2026-11-09
-
 import type { AddResult } from "../convex/profile";
 import { parseJsonObject } from "../convex/lib/http";
 import { LIFE_CATEGORIES } from "../convex/lib/validators";
 
-/** The sections a profile file may have. */
 const SECTIONS = ["lifeProfile", "sensitiveTopics", "facts"] as const;
 
-/** A parsed profile file. A "details" key is kept only when the item has one. */
 export interface ProfileFile {
   lifeProfile: { category: string; name: string; details?: string | null }[];
   sensitiveTopics: { topic: string; guidance: string }[];
   facts: string[];
 }
 
-/** Calls a public mutation by name ("profile:addEntry") as the caregiver; returns its result. */
 export type MutationCaller = (fn: string, args: Record<string, unknown>) => unknown;
 
-/** What loading did with each item, by its label (for example "person: Sarah"). */
 export interface LoadReport {
   added: string[];
   unchanged: string[];
@@ -63,32 +21,17 @@ export interface LoadReport {
   failed: { item: string; error: string }[];
 }
 
-/** One item to load: its label, add mutation and arguments, and how to update it. */
 interface LoadItem {
   label: string;
   fn: string;
   args: Record<string, unknown>;
-  /** The update mutation, its arguments for an existing row id and a note; absent for facts. */
   update?: (id: string) => { fn: string; args: Record<string, unknown>; note: string };
 }
 
-/**
- * purpose: Whether a value is a plain object (not null, not an array).
- * @param value: (unknown) Candidate.
- * @return: (boolean) True for a plain object.
- */
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * purpose: Check an item is an object with only the allowed keys.
- * @param item: (unknown) The item.
- * @param where: (string) Its position, for the error message.
- * @param allowed: (readonly string[]) The keys it may have.
- * @return: (Record<string, unknown>) The item.
- * @raises Error when it is not an object or has another key.
- */
 function itemObject(
   item: unknown,
   where: string,
@@ -103,40 +46,18 @@ function itemObject(
   return item;
 }
 
-/**
- * purpose: Read one required string field of an item.
- * @param item: (Record<string, unknown>) The item.
- * @param key: (string) Field name.
- * @param where: (string) The item's position, for the error message.
- * @return: (string) The value.
- * @raises Error when the field is missing or not a string.
- */
 function stringField(item: Record<string, unknown>, key: string, where: string): string {
   const value = item[key];
   if (typeof value !== "string") throw new Error(`${where}: "${key}" must be text`);
   return value;
 }
 
-/**
- * purpose: Read one section as an array (an absent section is empty).
- * @param raw: (Record<string, unknown>) The file.
- * @param key: (string) Section name.
- * @return: (unknown[]) The section's items.
- * @raises Error when the section is present but not an array.
- */
 function section(raw: Record<string, unknown>, key: string): unknown[] {
   const value = raw[key] ?? [];
   if (!Array.isArray(value)) throw new Error(`"${key}" must be a list`);
   return value;
 }
 
-/**
- * purpose: Read one life profile item.
- * @param value: (unknown) The item.
- * @param where: (string) Its position, for error messages.
- * @return: (ProfileFile["lifeProfile"][number]) The entry; details only when the item has the key.
- * @raises Error for an unknown key, an unknown category, a missing name or non-text details.
- */
 function parseEntry(value: unknown, where: string): ProfileFile["lifeProfile"][number] {
   const item = itemObject(value, where, ["category", "name", "details"]);
   const category = stringField(item, "category", where);
@@ -152,15 +73,6 @@ function parseEntry(value: unknown, where: string): ProfileFile["lifeProfile"][n
   return { ...entry, details };
 }
 
-/**
- * purpose: Check a profile file's shape and return its items. Text is not trimmed or capped
- *          here; the server does that (and refuses what is too long).
- * @param raw: (unknown) The parsed JSON.
- * @return: (ProfileFile) The items, with absent sections empty.
- * @raises Error naming the first problem: not an object, an unknown key (top level or in an
- *         item), a section that is not a list, an item that is not an object, a missing or
- *         non-text field, an unknown category.
- */
 export function parseProfileFile(raw: unknown): ProfileFile {
   if (!isObject(raw)) throw new Error("The file must hold a JSON object");
   for (const key of Object.keys(raw)) {
@@ -186,11 +98,6 @@ export function parseProfileFile(raw: unknown): ProfileFile {
   return { lifeProfile, sensitiveTopics, facts };
 }
 
-/**
- * purpose: The message of a thrown value.
- * @param e: (unknown) Thrown value.
- * @return: (string) Its message (the server's message for an application error).
- */
 function errorText(e: unknown): string {
   const data = (e as { data?: { message?: unknown } } | null)?.data;
   if (typeof data?.message === "string") return data.message;
@@ -200,15 +107,6 @@ function errorText(e: unknown): string {
 const ANSI_ESCAPE = String.fromCharCode(0x1b);
 const ANSI_COLOR_SEQUENCE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, "g");
 
-/**
- * purpose: Turn the stderr of a failed `npx convex run` into an Error with a readable message.
- *          The CLI prints `Failed to run function "<fn>":`, then `ConvexError: [Request ID: ...]
- *          Server Error`, then `Uncaught ConvexError: {"code":...,"message":...}` and a stack;
- *          the message of that JSON is used when present, else the text after the header line.
- * @param stderr: (string) What the CLI wrote to stderr (colors are stripped).
- * @param fallback: (string) Message when stderr holds nothing useful.
- * @return: (Error) The error to throw.
- */
 export function cliError(stderr: string, fallback: string): Error {
   const text = stderr.replace(ANSI_COLOR_SEQUENCE, "");
   const json = /Uncaught ConvexError: (\{.*\})/.exec(text)?.[1];
@@ -221,13 +119,6 @@ export function cliError(stderr: string, fallback: string): Error {
   return new Error(lines.join(" ") || fallback);
 }
 
-/**
- * purpose: The load item of a life profile entry. The add sends details only when they are
- *          text (null asks for none); the update sends details only when the file has the key,
- *          and an explicit null or empty string clears them.
- * @param entry: (ProfileFile["lifeProfile"][number]) The entry.
- * @return: (LoadItem) Its label, add and update.
- */
 function entryItem(entry: ProfileFile["lifeProfile"][number]): LoadItem {
   const { category, name, details } = entry;
   const hasDetails = "details" in entry;
@@ -244,11 +135,6 @@ function entryItem(entry: ProfileFile["lifeProfile"][number]): LoadItem {
   };
 }
 
-/**
- * purpose: The items of a profile file in load order, with their add and update mutations.
- * @param file: (ProfileFile) Parsed file.
- * @return: (LoadItem[]) Entries, then topics, then facts.
- */
 function loadItems(file: ProfileFile): LoadItem[] {
   return [
     ...file.lifeProfile.map(entryItem),
@@ -270,15 +156,6 @@ function loadItems(file: ProfileFile): LoadItem[] {
   ];
 }
 
-/**
- * purpose: Load every item of a profile file through the public mutations, one at a time.
- * @param file: (ProfileFile) Parsed file.
- * @param householdId: (string) The household to load into.
- * @param call: (MutationCaller) Runs a mutation as the caregiver.
- * @param options: ({ update?: boolean }) With update, an item stored with different text is
- *        replaced by the file's text (see the header for how details are handled).
- * @return: (Promise<LoadReport>) What happened to each item.
- */
 export async function loadProfile(
   file: ProfileFile,
   householdId: string,

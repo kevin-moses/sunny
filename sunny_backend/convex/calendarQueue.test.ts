@@ -1,16 +1,3 @@
-// calendarQueue.test.ts
-// Purpose: Tests for queueing Google Calendar pushes (lib/calendarSync.ts and the hooks in
-// calendar.ts and households.ts). Google is mocked (googleMocks.helpers.ts) and the clock is
-// faked, so a queued push runs only when a test drives it. Covers: one push per active
-// connection, no push without one, revoked/error/other-household connections ignored, repeat
-// edits merging while queued, an edit while running going dirty, no-change updates, cancels,
-// the completion handler (dirty -> queued again, clean -> deleted), a push running end to end
-// through the workpool, the household resync (only the timezone, event notice time and
-// senior's name, plus resuming from pause, and including still-linked cancelled events), and
-// member removal dropping connections, links and syncs.
-//
-// Last modified: 2026-10-29
-
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -146,7 +133,6 @@ describe("queueing and dedupe", () => {
     await t.mutation(internal.calendarPush.onPushComplete, args);
     expect(await syncRows(t)).toHaveLength(0);
 
-    // A completion for a row that is already gone is ignored.
     await t.mutation(internal.calendarPush.onPushComplete, args);
   });
 
@@ -167,7 +153,6 @@ describe("queueing and dedupe", () => {
       "Some events could not be synced to Google; Sunny will retry.",
     );
 
-    // Failing again after the extra attempt drops the row.
     await t.mutation(internal.calendarPush.onPushComplete, failed);
     expect(await syncRows(t)).toHaveLength(0);
     expect(errorSpy).toHaveBeenCalled();
@@ -324,7 +309,6 @@ describe("chunked fan-out", () => {
     expect(queued).toContain(cancelledLinked);
     expect(queued).not.toContain(repeatEnded);
     expect(queued).not.toContain(pastOneOff);
-    // The setup event plus the three above; the unlinked cancelled event is left out.
     expect(queued).toHaveLength(4);
   });
 

@@ -1,25 +1,3 @@
-// lib/deviceState.test.ts
-// Purpose: Unit tests for the device state rules (lib/deviceState.ts), driven through the pure
-// buildDeviceState with a fixed clock (Saturday 2026-11-07, 09:30 in New York). Ported from the
-// app: the Now card (display/__tests__/model.test.ts nowCard: first due timed task, overdue,
-// steps, clear and all done, and PR 14's rule that a missed task keeps the day from being all
-// done), Next up, the Today rows (marks, PR 14's missed mark, and overflow), the Done target
-// (day/__tests__/useDoneAction.test.tsx doneTarget) and which tasks may cue
-// (display/__tests__/cue.test.ts isCueable and the cue cases that do not depend on the device's
-// memory of played cues). Added: an early target is shown on the Now card and in done, anytime
-// and missed tasks are never targeted, a carried-over task is overdue, promptTimes against a
-// policy with prompts at 0 and 15 minutes, a snoozed instance, a task created after its window
-// opened, tomorrow's instance inside the 24 hours (and one outside), the header and date lines,
-// the null convention, the tuning values, an allowlist of the state's keys at every level, and
-// that version changes when and only when the content changes (generatedAt excluded) while
-// displayVersion changes only with what is drawn (rows, the hidden count; not a passing prompt
-// time), with the FNV-1a and canonical JSON helpers. For the wall display: nextUpAfterDue (an
-// early Now task is itself next, an event before it stays next, two rows sharing a label and a
-// clock time do not confuse it), past events (after the end, or an hour after the start without
-// one; the Now card and the all-done rule unchanged) and every row's and Next up item's type.
-//
-// Last modified: 2026-11-14
-
 import { describe, expect, it } from "vitest";
 import {
   CUE_HORIZON_MS,
@@ -35,25 +13,12 @@ import type { EscalationStep } from "./validators";
 
 const TZ = "America/New_York";
 const MIN = 60_000;
-/** Saturday 2026-11-07 at 09:30 in New York (UTC-5). */
 const NOW = Date.parse("2026-11-07T14:30:00Z");
 
-/**
- * purpose: The instant of a New York wall time on the fixture day (UTC-5).
- * @param hhmm: (string) Local "HH:MM".
- * @param date: (string, optional) Local date; default 2026-11-07.
- * @return: (number) Epoch ms.
- */
 function local(hhmm: string, date = "2026-11-07"): number {
   return Date.parse(`${date}T${hhmm}:00-05:00`);
 }
 
-/**
- * purpose: Build a task entry.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set; ids may be plain
- *        strings.
- * @return: (DayTask) An upcoming 08:00 medication, not confirmable, unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: "t1",
@@ -73,20 +38,10 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/**
- * purpose: Build a task as the phone's doneTarget tests do: due and confirmable by default.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) A due, confirmable 08:00 task unless overridden.
- */
 function doneTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return makeTask({ instanceId: "inst1", state: "due", confirmable: true, ...overrides });
 }
 
-/**
- * purpose: Build an event occurrence on the fixture day.
- * @param overrides: (Partial<Record<keyof DayEvent, unknown>>) Fields to set.
- * @return: (DayEvent) A 14:00 visit by Sarah unless overridden.
- */
 function makeEvent(overrides: Partial<Record<keyof DayEvent, unknown>> = {}): DayEvent {
   return {
     eventId: "e1",
@@ -98,11 +53,6 @@ function makeEvent(overrides: Partial<Record<keyof DayEvent, unknown>> = {}): Da
   } as DayEvent;
 }
 
-/**
- * purpose: Build the household's day.
- * @param overrides: (Partial<DeviceStateInput>) Fields to set.
- * @return: (DeviceStateInput) An empty day for Margaret in New York unless overridden.
- */
 function makeInput(overrides: Partial<DeviceStateInput> = {}): DeviceStateInput {
   return {
     seniorPreferredName: "Margaret",
@@ -115,7 +65,6 @@ function makeInput(overrides: Partial<DeviceStateInput> = {}): DeviceStateInput 
   };
 }
 
-/** The seeded medication ladder: prompts at 0 and 15 minutes, alerts at 30 and 45. */
 const MEDICATION: EscalationStep[] = [
   { id: "p0", offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
   { id: "p15", offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
@@ -123,14 +72,6 @@ const MEDICATION: EscalationStep[] = [
   { id: "a45", offsetMinutes: 45, action: "alert_all_caregivers", skipIfClaimed: true },
 ];
 
-/**
- * purpose: Build a cue input: an entry with the matching instance timing and policy steps.
- * @param entry: (Partial<Record<keyof DayTask, unknown>>) Entry fields.
- * @param timing: (object) Timing overrides (windowStart, windowEnd, createdAt, snoozedUntil,
- *        claimedBy, firedSteps); the window defaults to the entry's time with 60 minutes.
- * @param steps: (EscalationStep[]) Policy steps; default the medication ladder.
- * @return: (CueInput) The input.
- */
 function cueInput(
   entry: Partial<Record<keyof DayTask, unknown>>,
   timing: Partial<CueInput["timing"]> = {},
@@ -155,12 +96,6 @@ function cueInput(
   };
 }
 
-/**
- * purpose: Build the state at NOW (or another instant).
- * @param overrides: (Partial<DeviceStateInput>) Input fields.
- * @param now: (number, optional) Epoch ms; default NOW.
- * @return: The device state.
- */
 function stateOf(overrides: Partial<DeviceStateInput> = {}, now = NOW) {
   return buildDeviceState(makeInput(overrides), now);
 }
@@ -328,8 +263,6 @@ describe("now (the Now card)", () => {
     });
   });
 
-  // The second task was "missed" here before PR 14; a missed task now keeps the day from being
-  // all done (see the next tests), so, as in the app's own test of the same name, it is resolved.
   it("is all done when every task is finished and no event is ahead", () => {
     const state = stateOf({
       tasks: [makeTask({ state: "confirmed" }), makeTask({ instanceId: "t2", state: "resolved" })],
@@ -338,10 +271,6 @@ describe("now (the Now card)", () => {
     expect(state.now).toEqual({ kind: "clear", task: null, allDone: true });
   });
 
-  // The following four mirror sunny_app/src/display/__tests__/model.test.ts nowCard ("is all
-  // done with no tasks and no events", "is not all done while a task is missed, even with the
-  // rest done", "is all done again once the missed task is confirmed or resolved", "still shows a
-  // due task over a missed one"); change both together.
   it("is all done with no tasks and no events", () => {
     expect(stateOf().now).toEqual({ kind: "clear", task: null, allDone: true });
   });
@@ -471,15 +400,7 @@ describe("rows (the Today page)", () => {
     expect(agenda.map((a) => a.id)).toEqual(["task-nine", "event-e9-2026-11-07", "task-any"]);
   });
 
-  // The next two mirror sunny_app/src/display/__tests__/model.test.ts todayRows ("marks a
-  // missed task missed, and done once it is confirmed or resolved", "leaves due, escalated and
-  // upcoming tasks unmarked and the Now task now"); change both together.
   it("marks a missed task missed, and done once it is confirmed or resolved", () => {
-    /**
-     * purpose: The row marks of a day with one task in a state.
-     * @param state: (string) The task's state.
-     * @return: (string[]) The marks.
-     */
     const marks = (state: string): string[] =>
       todayRows(buildAgenda([makeTask({ state })], []), null).rows.map((r) => r.mark);
     expect(marks("missed")).toEqual(["missed"]);
@@ -693,11 +614,6 @@ describe("the state's shape", () => {
       upcoming: [makeEvent({ localDate: "2026-11-08" })],
       cueInputs: [cueInput({ state: "due" })],
     });
-    /**
-     * purpose: The sorted keys of an object.
-     * @param value: (unknown) An object.
-     * @return: (string[]) Its keys.
-     */
     const keys = (value: unknown): string[] => Object.keys(value as object).sort();
     expect(keys(state)).toEqual(
       [
@@ -820,11 +736,6 @@ describe("version", () => {
   });
 
   it("changes displayVersion when only the count of hidden rows changes", () => {
-    /**
-     * purpose: The state for a number of upcoming hourly tasks from 10:00.
-     * @param count: (number) How many tasks.
-     * @return: The device state.
-     */
     const withTasks = (count: number) =>
       stateOf({
         tasks: Array.from({ length: count }, (_, i) =>
@@ -849,14 +760,6 @@ describe("version", () => {
 });
 
 describe("for the wall display", () => {
-  /**
-   * purpose: An event occurrence with its instants on the fixture day.
-   * @param id: (string) Event id.
-   * @param hhmm: (string) Local start time.
-   * @param label: (string) Label.
-   * @param minutes: (number | null) Duration, or null for none.
-   * @return: (DayEvent) The occurrence.
-   */
   const timedEvent = (id: string, hhmm: string, label: string, minutes: number | null): DayEvent =>
     makeEvent({
       eventId: id,

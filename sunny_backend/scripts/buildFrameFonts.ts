@@ -1,35 +1,7 @@
-// scripts/buildFrameFonts.ts
-// Purpose: Generates convex/lib/fonts/frameFontData.ts, the glyph outlines the server-side
-// frame renderer (convex/lib/frameText.ts) draws text with. It reads the TrueType files of the
-// two OFL families the home display already uses (Atkinson Hyperlegible Next and Literata, from
-// the @expo-google-fonts packages installed in sunny_app/node_modules; versions recorded in the
-// output) and keeps, for a fixed character set, each glyph's quadratic outline in font units,
-// its advance width, the face's ascender and descender and the GPOS pair kerning between kept
-// glyphs.
-// Composite glyphs (accented letters) are flattened into plain contours. No hinting is kept: the
-// renderer draws large text with exact area coverage, so outlines are all it needs.
-//
-// Run from sunny_backend after `npm ci` in sunny_app:
-//   npx tsx scripts/buildFrameFonts.ts
-// then commit the regenerated file. The output is deterministic: the same font files always
-// give the same bytes.
-//
-// Encoding of one face (little-endian int16 values, then base64):
-//   [unitsPerEm, ascender, descender (hhea), glyphCount]
-//   glyphCount glyph records: [codepoint, advance, contourCount,
-//     per contour: pointCount, then per point (x * 2 + onCurve), y]
-//   [pairCount, then pairCount triples (leftGlyphIndex, rightGlyphIndex, xAdvanceAdjust)]
-//   Glyph indexes count the records from 0. Only pairs of printable ASCII and curly quotes are
-//   kerned, to keep the module small. A character the face does not have has no record (the
-//   renderer leaves it out).
-//
-// Last modified: 2026-11-14
-
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Where the font packages live (installed by `npm ci` in sunny_app). */
 const FONT_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
   "../../sunny_app/node_modules/@expo-google-fonts",
@@ -37,13 +9,11 @@ const FONT_ROOT = join(
 
 const MAX_COMPOSITE_DEPTH = 8;
 
-/** Where the generated module goes. */
 const OUTPUT = join(
   dirname(fileURLToPath(import.meta.url)),
   "../convex/lib/fonts/frameFontData.ts",
 );
 
-/** The faces the renderer uses, named as sunny_app/src/display/theme.ts names them. */
 const FACES: Record<string, { pkg: string; file: string }> = {
   serifBold: { pkg: "literata", file: "700Bold/Literata_700Bold.ttf" },
   serifMedium: { pkg: "literata", file: "500Medium/Literata_500Medium.ttf" },
@@ -69,25 +39,6 @@ const FACES: Record<string, { pkg: string; file: string }> = {
   },
 };
 
-/**
- * purpose: The characters requested: printable ASCII, Latin-1, Latin Extended-A (names), and
- *          the punctuation the screens or caregiver wording use (quotes, dashes, the ellipsis,
- *          the middle dot of the going-out strip, the bullet, the euro sign).
- *          Requested characters the faces lack (checked against the fonts listed above):
- *          - Atkinson Hyperlegible Next, every weight (37): U+00AD soft hyphen, U+00B5 micro
- *            sign, U+0108 U+0109 (C, c circumflex), U+0114 U+0115 (E, e breve), U+011C U+011D
- *            (G, g circumflex), U+0124 U+0125 (H, h circumflex), U+0128 U+0129 (I, i tilde),
- *            U+012C U+012D (I, i breve), U+0134 U+0135 (J, j circumflex), U+0138 kra, U+013F
- *            U+0140 (L, l middle dot), U+0149 n preceded by apostrophe, U+014A U+014B (eng),
- *            U+014C U+014D (O, o macron), U+014E U+014F (O, o breve), U+0156 U+0157 (R, r
- *            cedilla), U+015C U+015D (S, s circumflex), U+0166 U+0167 (T, t stroke), U+0168
- *            U+0169 (U, u tilde), U+016C U+016D (U, u breve), U+017F long s.
- *          - Literata, both weights (1): U+017F long s.
- *          The renderer (convex/lib/frameText.ts cleanText) writes the meaningful ones out (the
- *          micro sign as "mc"), drops the accents of the letters (decomposition) and maps the
- *          rest to plain letters, so none is lost silently.
- * @return: (number[]) Codepoints, ascending.
- */
 function charset(): number[] {
   const codes: number[] = [];
   for (let c = 0x20; c <= 0x7e; c += 1) codes.push(c);
@@ -96,34 +47,21 @@ function charset(): number[] {
   return codes;
 }
 
-/**
- * purpose: Whether pairs with this character are kerned: printable ASCII and the curly quotes
- *          (other kept characters are drawn unkerned, which keeps the module small).
- * @param code: (number) Codepoint.
- * @return: (boolean) True when kerned.
- */
 function isKerned(code: number): boolean {
   return (code >= 0x20 && code <= 0x7e) || (code >= 0x2018 && code <= 0x201d);
 }
 
-/** A point of a TrueType contour in font units. */
 interface Point {
   x: number;
   y: number;
   on: boolean;
 }
 
-/** A parsed font: table offsets and the bytes. */
 interface Font {
   data: Buffer;
   tables: Map<string, number>;
 }
 
-/**
- * purpose: Read a font's table directory.
- * @param data: (Buffer) The .ttf bytes.
- * @return: (Font) The font.
- */
 function openFont(data: Buffer): Font {
   const tables = new Map<string, number>();
   const count = data.readUInt16BE(4);
@@ -134,24 +72,12 @@ function openFont(data: Buffer): Font {
   return { data, tables };
 }
 
-/**
- * purpose: A table's offset.
- * @param font: (Font) The font.
- * @param tag: (string) The table tag.
- * @return: (number) Its byte offset.
- * @raises Error when the font has no such table.
- */
 function table(font: Font, tag: string): number {
   const at = font.tables.get(tag);
   if (at === undefined) throw new Error(`missing table ${tag}`);
   return at;
 }
 
-/**
- * purpose: The codepoint to glyph id map, from a cmap subtable of format 4 or 12 (Unicode).
- * @param font: (Font) The font.
- * @return: (Map<number, number>) Codepoint to glyph id.
- */
 function readCmap(font: Font): Map<number, number> {
   const d = font.data;
   const base = table(font, "cmap");
@@ -199,11 +125,6 @@ function readCmap(font: Font): Map<number, number> {
   return map;
 }
 
-/**
- * purpose: Byte offsets of every glyph in glyf, from loca.
- * @param font: (Font) The font.
- * @return: (number[]) numGlyphs + 1 offsets relative to glyf.
- */
 function readLoca(font: Font): number[] {
   const d = font.data;
   const longFormat = d.readInt16BE(table(font, "head") + 50) === 1;
@@ -216,15 +137,6 @@ function readLoca(font: Font): number[] {
   return offsets;
 }
 
-/**
- * purpose: A glyph's contours, composites resolved.
- * @param font: (Font) The font.
- * @param loca: (number[]) Glyph offsets.
- * @param glyph: (number) Glyph id.
- * @param depth: (number) Composite nesting depth (guards against loops).
- * @return: (Point[][]) The contours.
- * @raises Error for point-matched composites, which these fonts do not use.
- */
 function readGlyph(font: Font, loca: number[], glyph: number, depth = 0): Point[][] {
   const d = font.data;
   const start = loca[glyph]!;
@@ -280,13 +192,6 @@ function readGlyph(font: Font, loca: number[], glyph: number, depth = 0): Point[
   return contours;
 }
 
-/**
- * purpose: The contours of a simple (non-composite) glyph.
- * @param d: (Buffer) Font bytes.
- * @param at: (number) The glyph's offset.
- * @param contourCount: (number) Its contour count.
- * @return: (Point[][]) The contours.
- */
 function readSimpleGlyph(d: Buffer, at: number, contourCount: number): Point[][] {
   const ends: number[] = [];
   for (let i = 0; i < contourCount; i += 1) ends.push(d.readUInt16BE(at + 10 + 2 * i));
@@ -302,12 +207,6 @@ function readSimpleGlyph(d: Buffer, at: number, contourCount: number): Point[][]
       for (let r = 0; r < repeat; r += 1) flags.push(flag);
     }
   }
-  /**
-   * purpose: Read one coordinate axis (deltas accumulated).
-   * @param shortBit: (number) The flag bit for a one-byte delta.
-   * @param sameBit: (number) The flag bit for "same" or "positive".
-   * @return: (number[]) Absolute coordinates.
-   */
   const axis = (shortBit: number, sameBit: number): number[] => {
     const values: number[] = [];
     let value = 0;
@@ -338,12 +237,6 @@ function readSimpleGlyph(d: Buffer, at: number, contourCount: number): Point[][]
   return contours;
 }
 
-/**
- * purpose: A glyph's advance width from hmtx.
- * @param font: (Font) The font.
- * @param glyph: (number) Glyph id.
- * @return: (number) Advance in font units.
- */
 function advanceOf(font: Font, glyph: number): number {
   const d = font.data;
   const metrics = d.readUInt16BE(table(font, "hhea") + 34);
@@ -351,15 +244,8 @@ function advanceOf(font: Font, glyph: number): number {
   return d.readUInt16BE(table(font, "hmtx") + 4 * index);
 }
 
-/** Coverage tables already read, by offset (with the font they belong to). */
 const coverageCache = new Map<number, { data: Buffer; map: Map<number, number> }>();
 
-/**
- * purpose: The glyph ids a Coverage table lists, by coverage index (read once per table).
- * @param d: (Buffer) Font bytes.
- * @param at: (number) The table's offset.
- * @return: (Map<number, number>) Glyph id to coverage index.
- */
 function readCoverage(d: Buffer, at: number): Map<number, number> {
   const cached = coverageCache.get(at);
   if (cached !== undefined && cached.data === d) return cached.map;
@@ -380,13 +266,6 @@ function readCoverage(d: Buffer, at: number): Map<number, number> {
   return map;
 }
 
-/**
- * purpose: The class of a glyph in a ClassDef table (0 when unlisted).
- * @param d: (Buffer) Font bytes.
- * @param at: (number) The table's offset.
- * @param glyph: (number) Glyph id.
- * @return: (number) The class.
- */
 function classOf(d: Buffer, at: number, glyph: number): number {
   const format = d.readUInt16BE(at);
   if (format === 1) {
@@ -404,35 +283,17 @@ function classOf(d: Buffer, at: number, glyph: number): number {
   return 0;
 }
 
-/**
- * purpose: Number of set bits in a ValueFormat.
- * @param format: (number) The ValueFormat.
- * @return: (number) Set bits.
- */
 function bits(format: number): number {
   let n = 0;
   for (let f = format; f !== 0; f >>= 1) n += f & 1;
   return n;
 }
 
-/**
- * purpose: The XAdvance of a ValueRecord (0 when the format has none).
- * @param d: (Buffer) Font bytes.
- * @param at: (number) The record's offset.
- * @param format: (number) Its ValueFormat.
- * @return: (number) The x advance adjustment in font units.
- */
 function xAdvance(d: Buffer, at: number, format: number): number {
   if (!(format & 0x4)) return 0;
   return d.readInt16BE(at + 2 * bits(format & 0x3));
 }
 
-/**
- * purpose: The offsets of every PairPos subtable that the GPOS 'kern' feature uses, in lookup
- *          order (Extension lookups unwrapped).
- * @param font: (Font) The font.
- * @return: (number[][]) Per lookup, its PairPos subtable offsets.
- */
 function kernSubtables(font: Font): number[][] {
   const d = font.data;
   const gpos = font.tables.get("GPOS");
@@ -465,15 +326,6 @@ function kernSubtables(font: Font): number[][] {
   return result;
 }
 
-/**
- * purpose: The kerning between two glyphs from one PairPos subtable, or null when the subtable
- *          does not apply to the first glyph.
- * @param d: (Buffer) Font bytes.
- * @param sub: (number) The subtable's offset.
- * @param left: (number) First glyph id.
- * @param right: (number) Second glyph id.
- * @return: (number | null) The adjustment, or null.
- */
 function pairValue(d: Buffer, sub: number, left: number, right: number): number | null {
   const format = d.readUInt16BE(sub);
   const coverage = readCoverage(d, sub + d.readUInt16BE(sub + 2));
@@ -498,11 +350,6 @@ function pairValue(d: Buffer, sub: number, left: number, right: number): number 
   return xAdvance(d, rec, format1);
 }
 
-/**
- * purpose: Encode one face.
- * @param path: (string) The .ttf path.
- * @return: ({ base64: string; glyphs: number; pairs: number }) The encoded face and counts.
- */
 function encodeFace(path: string): string {
   const font = openFont(readFileSync(path));
   const d = font.data;
@@ -557,10 +404,6 @@ function encodeFace(path: string): string {
   return bytes.toString("base64");
 }
 
-/**
- * purpose: Build every face and write the generated module.
- * @return: (void)
- */
 function main(): void {
   const data = Object.entries(FACES).map(([name, { pkg, file }]) => {
     return `  ${name}:\n    "${encodeFace(join(FONT_ROOT, pkg, file))}",`;

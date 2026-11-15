@@ -1,34 +1,3 @@
-// convex/agent.test.ts
-// Purpose: Tests for agent.ts, the API the Python voice agent calls. Every function rejects a
-// wrong, empty or missing agent key and a deployment without SUNNY_AGENT_KEY. getContext is
-// checked against the rules ported from get_agent_context: the exact result shape, as-needed
-// doses since local midnight, the 7-day window of events that have not ended, the latest
-// caregiver message with the sender's name, life profile ordering, the 50-fact memory cap
-// with verified facts first, and the five newest conversation summaries. Also confirmDueTask
-// ("voice"), reminders created and cancelled for the senior, and conversation logging
-// including the household checks on device and task instance. The agent clock is driven by
-// the `now` argument. Also the logTurn length cap, today for an unknown household, and the
-// accepted trust model (a valid key may log to or finish any conversation).
-// Voice tools (2026-11-09): the context's weather location, caregivers and recent question
-// topics; medicationStatus; snoozeDueTask ("not yet"); logAsNeededDose (label limits, the
-// caregiver flag past a limit, never a dose without a rule); rememberFact (unverified, never
-// overwriting a verified fact); flagCaregiver (every reachable caregiver at once, no on-call
-// caregiver; repeat window, audit); sendFamilyMessage; readLatestMessage (seenAt);
-// logQuestions and the digest facts that read those rows; and households.update's weatherLocation.
-// Each is scoped to the household it is given. The system clock is frozen at NOW (the outbox
-// enqueues delivery). Review round 3: only an identical flag repeats (a fall after dizziness is
-// sent), every decision is audited, distress reaches every caregiver, exactly 12 capped flags an
-// hour with exempt reasons still sent; the dose repeat guard (asks, `another` logs, a silent
-// repeated call, a caregiver's dose), scheduled_due first, newest dose rows kept, a DST day; undo
-// only in the same conversation within 30 minutes, kept as undoneAt and left out of every count,
-// with a correction to the flagged caregivers; a repeated message's earlier outcome; whole-word
-// list ticking and items past the tenth; askedAt within the conversation; and every agent function
-// in the agent-key checks. Caregiver push (2026-11-14): a caregiver is reachable with a push token
-// only, a verified phone only, or both, and not with neither; nobody is named as told without a
-// queued row.
-//
-// Last modified: 2026-11-14
-
 import type { FunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -46,7 +15,6 @@ import { addMember, makeBackend, setPhone, withUncheckedArgs } from "./testing.h
 import type { TestConvex } from "./testing.helpers";
 
 const KEY = "agent-secret-key";
-/** Wednesday 2027-03-10 10:00 in New York (EST); local midnight is 05:00Z. */
 const NOW = Date.parse("2027-03-10T15:00:00Z");
 const MIDNIGHT = Date.parse("2027-03-10T05:00:00Z");
 const HOUR = 3_600_000;
@@ -67,21 +35,14 @@ afterEach(() => {
   else process.env.SUNNY_AGENT_KEY = savedKey;
 });
 
-/** A household created through the public API (so the default policies exist). */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
   conversationId: Id<"conversations">;
 }
 
-/** The harness and household, which is all the insert helpers need. */
 type World = Pick<Fixture, "t" | "householdId">;
 
-/**
- * purpose: Create a household for Margaret in New York with caregiver Anna (user_a, with a
- *          verified phone so she can be texted).
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const householdId = await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
@@ -97,12 +58,6 @@ async function setup(): Promise<Fixture> {
   return { t, householdId, conversationId };
 }
 
-/**
- * purpose: Insert a task directly.
- * @param f: (World) Harness and household.
- * @param fields: (object) Overrides for the task row.
- * @return: (Promise<Id<"tasks">>) The task.
- */
 async function insertTask(
   f: World,
   fields: Partial<{
@@ -134,12 +89,6 @@ async function insertTask(
   );
 }
 
-/**
- * purpose: Insert a due instance of a task on today's local date.
- * @param f: (Fixture) Fixture.
- * @param taskId: (Id<"tasks">) Task.
- * @return: (Promise<Id<"taskInstances">>) The instance.
- */
 async function insertDueInstance(f: World, taskId: Id<"tasks">): Promise<Id<"taskInstances">> {
   return await f.t.run(
     async (ctx) =>
@@ -157,12 +106,6 @@ async function insertDueInstance(f: World, taskId: Id<"tasks">): Promise<Id<"tas
   );
 }
 
-/**
- * purpose: Insert an event.
- * @param f: (Fixture) Fixture.
- * @param fields: (object) Event fields; startsOn and startTime are local.
- * @return: (Promise<Id<"events">>) The event.
- */
 async function insertEvent(
   f: World,
   fields: {
@@ -186,17 +129,12 @@ async function insertEvent(
   );
 }
 
-/** One agent function under test with valid arguments, for the access tests. */
 interface AgentCall {
   name: string;
   kind: "query" | "mutation";
   run: (f: Fixture, extra: Record<string, unknown>) => Promise<unknown>;
 }
 
-/**
- * purpose: Every agent entry point with valid arguments for a fixture.
- * @return: (AgentCall[]) The calls.
- */
 function allCalls(): AgentCall[] {
   type Args = (f: Fixture) => Record<string, unknown>;
   const q = (name: string, ref: FunctionReference<"query">, args: Args): AgentCall => ({
@@ -447,7 +385,6 @@ describe("getContext", () => {
         maxPerDay: 3,
         minHoursBetween: 4,
         takenToday: [MIDNIGHT, MIDNIGHT + 3 * HOUR],
-        // The dose just before midnight is within the trailing 24 hours: 3 of 3.
         takenLast24h: [MIDNIGHT - 1, MIDNIGHT, MIDNIGHT + 3 * HOUR],
         lastTakenAt: MIDNIGHT + 3 * HOUR,
         remainingToday: 0,
@@ -472,7 +409,6 @@ describe("getContext", () => {
 
   test("events cover the next 7 days and drop those that have ended or are cancelled", async () => {
     const f = await setup();
-    // Local 2027-03-10: ended 09:30, ongoing 09:30-10:30, later today.
     await insertEvent(f, {
       title: "Ended",
       startsOn: "2027-03-10",
@@ -493,7 +429,6 @@ describe("getContext", () => {
       startsOn: "2027-03-11",
       startTime: "14:00",
     });
-    // Exactly 7 days ahead: 09:00 is inside the window (14:00Z < 15:00Z), 11:00 is outside.
     await insertEvent(f, { title: "Edge in", startsOn: "2027-03-17", startTime: "09:00" });
     await insertEvent(f, { title: "Edge out", startsOn: "2027-03-17", startTime: "11:00" });
     await insertEvent(f, {
@@ -530,13 +465,11 @@ describe("getContext", () => {
       startsAt: Date.parse("2027-03-11T19:00:00Z"),
       endsAt: null,
     });
-    // 2027-03-12 is a Friday; 16:00 EST.
     expect(events[2]!.startsAt).toBe(Date.parse("2027-03-12T21:00:00Z"));
   });
 
   test("events use the DST offset of their own day", async () => {
     const f = await setup();
-    // DST starts 2027-03-14 at 02:00; 09:00 that day is EDT (13:00Z).
     await insertEvent(f, { title: "After DST", startsOn: "2027-03-14", startTime: "09:00" });
     const { events } = await f.t.query(api.agent.getContext, {
       agentKey: KEY,
@@ -659,7 +592,6 @@ describe("getContext", () => {
           householdId: f.householdId,
           fact: `fact ${i}`,
           source: "senior",
-          // Facts 3 and 1 are verified.
           verifiedAt: i === 1 || i === 3 ? NOW : undefined,
           verifiedBy: i === 1 || i === 3 ? "user_a" : undefined,
         });
@@ -678,7 +610,6 @@ describe("getContext", () => {
     expect(memory[2]).toMatchObject({ fact: "fact 54", source: "senior", verified: false });
     expect(memory[3]!.fact).toBe("fact 53");
     expect(typeof memory[0]!.notedAt).toBe("number");
-    // 55 facts, 2 verified: the 48 newest unverified ones (7..54) fit; the older ones drop.
     expect(memory.map((m) => m.fact)).not.toContain("fact 0");
     expect(memory.map((m) => m.fact)).not.toContain("fact 6");
     expect(memory.map((m) => m.fact)).toContain("fact 7");
@@ -896,11 +827,6 @@ describe("reminders", () => {
 });
 
 describe("conversation logging", () => {
-  /**
-   * purpose: Insert a device and a due instance for a household.
-   * @param f: (World) Harness and household.
-   * @return: (Promise<{deviceId, instanceId}>) The ids.
-   */
   async function deviceAndInstance(f: World) {
     const deviceId = await f.t.run(
       async (ctx) =>
@@ -1140,7 +1066,6 @@ describe("logTurn length cap and accepted trust model", () => {
 
   test("a valid key is the only gate: any conversation can be logged to and finished", async () => {
     const f = await setup();
-    // A conversation belonging to a different household than the fixture's.
     const other = await f.t.withIdentity({ subject: "user_b" }).mutation(api.households.create, {
       seniorPreferredName: "Walter",
       timezone: "America/New_York",
@@ -1173,17 +1098,6 @@ describe("logTurn length cap and accepted trust model", () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// Voice tools (2026-11-09)
-// ---------------------------------------------------------------------------------------------
-
-/**
- * purpose: Insert an instance of a task on today's local date in any state.
- * @param f: (World) Harness and household.
- * @param taskId: (Id<"tasks">) Task.
- * @param fields: (object) state (default due), scheduledTime (default "09:30"), confirmedAt.
- * @return: (Promise<Id<"taskInstances">>) The instance.
- */
 async function insertInstance(
   f: World,
   taskId: Id<"tasks">,
@@ -1206,11 +1120,6 @@ async function insertInstance(
   );
 }
 
-/**
- * purpose: A second household (Walter, caregiver Bea as user_z), for scoping tests.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Id<"households">>) The household.
- */
 async function otherHousehold(t: TestConvex): Promise<Id<"households">> {
   return await t.withIdentity({ subject: "user_z" }).mutation(api.households.create, {
     seniorPreferredName: "Walter",
@@ -1219,11 +1128,6 @@ async function otherHousehold(t: TestConvex): Promise<Id<"households">> {
   });
 }
 
-/**
- * purpose: A conversation row in another household.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Id<"conversations">>) The conversation.
- */
 async function foreignConversation(t: TestConvex): Promise<Id<"conversations">> {
   const other = await otherHousehold(t);
   return await t.run(
@@ -1232,14 +1136,6 @@ async function foreignConversation(t: TestConvex): Promise<Id<"conversations">> 
   );
 }
 
-/**
- * purpose: Insert a dose row directly, written down when it was taken (loggedAt = takenAt), as
- *          the button or a caregiver would have logged it.
- * @param f: (World) Harness and household.
- * @param taskId: (Id<"tasks">) The as-needed task.
- * @param takenAt: (number) Epoch ms.
- * @return: (Promise<void>) Resolves when inserted.
- */
 async function insertDose(f: World, taskId: Id<"tasks">, takenAt: number): Promise<void> {
   await f.t.run(async (ctx) => {
     await ctx.db.insert("doseLog", {
@@ -1252,13 +1148,6 @@ async function insertDose(f: World, taskId: Id<"tasks">, takenAt: number): Promi
   });
 }
 
-/**
- * purpose: Report a dose by voice through agent:logAsNeededDose in the fixture's conversation.
- * @param f: (Fixture) Fixture.
- * @param now: (number) Epoch ms.
- * @param extra: (object) label, minutesAgo, another, conversationId.
- * @return: (Promise<object>) The result.
- */
 async function reportDose(
   f: Fixture,
   now: number,
@@ -1278,13 +1167,6 @@ async function reportDose(
   });
 }
 
-/**
- * purpose: Take back a dose by voice through agent:undoLastDose.
- * @param f: (Fixture) Fixture.
- * @param now: (number) Epoch ms.
- * @param conversationId: (Id<"conversations"> | null) The conversation (default the fixture's).
- * @return: (Promise<object>) The result.
- */
 async function undoDose(
   f: Fixture,
   now: number,
@@ -1298,22 +1180,11 @@ async function undoDose(
   });
 }
 
-/**
- * purpose: The household's dose rows, oldest first.
- * @param f: (World) Harness and household.
- * @return: (Promise<Doc<"doseLog">[]>) Rows.
- */
 async function doseRows(f: World): Promise<Doc<"doseLog">[]> {
   const rows = await f.t.run(async (ctx) => await ctx.db.query("doseLog").collect());
   return rows.filter((r) => r.householdId === f.householdId);
 }
 
-/**
- * purpose: The household's outbox rows of one kind, oldest first.
- * @param f: (World) Harness and household.
- * @param kind: (Doc<"notificationOutbox">["kind"]) The kind.
- * @return: (Promise<Doc<"notificationOutbox">[]>) Rows.
- */
 async function outbox(
   f: World,
   kind: Doc<"notificationOutbox">["kind"],
@@ -1322,23 +1193,11 @@ async function outbox(
   return rows.filter((r) => r.kind === kind && r.householdId === f.householdId);
 }
 
-/**
- * purpose: The household's audit rows with one action.
- * @param f: (World) Harness and household.
- * @param action: (string) The action.
- * @return: (Promise<Doc<"auditLog">[]>) Rows.
- */
 async function auditRows(f: World, action: string): Promise<Doc<"auditLog">[]> {
   const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
   return rows.filter((r) => r.action === action && r.householdId === f.householdId);
 }
 
-/**
- * purpose: Add Bob (member, user_b) and Sarah Lee (member, user_c) to the household, both
- *          with verified phones.
- * @param f: (World) Harness and household.
- * @return: (Promise<void>) Resolves when added.
- */
 async function addFamily(f: World): Promise<void> {
   await addMember(f.t, f.householdId, "user_b", "member", "Bob");
   await addMember(f.t, f.householdId, "user_c", "member", "Sarah Lee");
@@ -1346,13 +1205,6 @@ async function addFamily(f: World): Promise<void> {
   await setPhone(f.t, f.householdId, "user_c", "+15555550103");
 }
 
-/**
- * purpose: A question row argument for logQuestions.
- * @param question: (string) The question.
- * @param topic: (string) Its topic.
- * @param extra: (object) outcome (default answered), toolsUsed (default none), askedAt.
- * @return: (object) The argument.
- */
 function asked(
   question: string,
   topic: string,
@@ -1369,10 +1221,6 @@ describe("context additions", () => {
   test("weatherLocation is set, trimmed and cleared through households.update", async () => {
     const f = await setup();
     const anna = f.t.withIdentity({ subject: "user_a" });
-    /**
-     * purpose: The weather location getContext reports.
-     * @return: (Promise<string | null>) The location.
-     */
     const read = async (): Promise<string | null> =>
       (
         await f.t.query(api.agent.getContext, {
@@ -1400,7 +1248,6 @@ describe("context additions", () => {
   test("caregivers are named with no one on call; recent topics are distinct, newest first", async () => {
     const f = await setup();
     await addFamily(f);
-    // A long conversation, so its questions can span the last 8 days.
     await f.t.run(
       async (ctx) => await ctx.db.patch(f.conversationId, { startedAt: NOW - 9 * 24 * HOUR }),
     );
@@ -1457,7 +1304,6 @@ describe("medicationStatus", () => {
       asNeededMaxPerDay: 3,
       asNeededMinHours: 6,
     });
-    // 11:00 PM yesterday and 9:00 AM today.
     await insertDose(f, relief, MIDNIGHT - HOUR);
     await insertDose(f, relief, NOW - HOUR);
 
@@ -1474,7 +1320,6 @@ describe("medicationStatus", () => {
         takenToday: [NOW - HOUR],
         takenLast24h: [MIDNIGHT - HOUR, NOW - HOUR],
         lastTakenAt: NOW - HOUR,
-        // Two in the trailing 24 hours count against the 3, though only one is today.
         remainingToday: 1,
         nextWithinLabelAt: NOW + 5 * HOUR,
         daysUsedLast7: 2,
@@ -1510,11 +1355,6 @@ describe("snoozeDueTask", () => {
 
   test("nothing due, unknown label, already done, not due yet and ambiguous", async () => {
     const f = await setup();
-    /**
-     * purpose: Snooze with an optional label.
-     * @param label: (string, optional) Label words.
-     * @return: (Promise<object>) The result.
-     */
     const call = (label?: string) =>
       f.t.mutation(api.agent.snoozeDueTask, {
         agentKey: KEY,
@@ -1663,11 +1503,6 @@ describe("logAsNeededDose", () => {
 
   test("never logs without a matching as-needed rule", async () => {
     const f = await setup();
-    /**
-     * purpose: Log a dose by label.
-     * @param label: (string | null) Label words.
-     * @return: (Promise<object>) The result.
-     */
     const call = (label: string | null) =>
       f.t.mutation(api.agent.logAsNeededDose, {
         agentKey: KEY,
@@ -1765,11 +1600,6 @@ describe("rememberFact", () => {
         }),
     );
     const before = await f.t.run(async (ctx) => await ctx.db.get(verified));
-    /**
-     * purpose: Remember a fact.
-     * @param fact: (string) The fact.
-     * @return: (Promise<object>) The result.
-     */
     const remember = (fact: string) =>
       f.t.mutation(api.agent.rememberFact, { agentKey: KEY, householdId: f.householdId, fact });
     expect(await remember("Sarah visits on Sundays")).toEqual({ status: "saved" });
@@ -1784,12 +1614,6 @@ describe("rememberFact", () => {
 
   test("a blank fact is invalid; another household's conversation is not_found", async () => {
     const f = await setup();
-    /**
-     * purpose: Remember a fact in an optional conversation.
-     * @param fact: (string) The fact.
-     * @param conversationId: (Id<"conversations">, optional) The conversation.
-     * @return: (Promise<object>) The result.
-     */
     const call = (fact: string, conversationId?: Id<"conversations">) =>
       f.t.mutation(api.agent.rememberFact, {
         agentKey: KEY,
@@ -1806,11 +1630,6 @@ describe("rememberFact", () => {
 
   test("stores one line capped at 300 and skips a duplicate differing in case or spacing", async () => {
     const f = await setup();
-    /**
-     * purpose: Remember a fact.
-     * @param fact: (string) The fact.
-     * @return: (Promise<object>) The result.
-     */
     const remember = (fact: string) =>
       f.t.mutation(api.agent.rememberFact, { agentKey: KEY, householdId: f.householdId, fact });
     expect(await remember("  Keys are\n\n on the   hook ")).toEqual({ status: "saved" });
@@ -1936,12 +1755,6 @@ describe("flagCaregiver", () => {
 
   test("the same reason within 10 minutes is not sent again; later it is", async () => {
     const f = await setup();
-    /**
-     * purpose: Flag at an instant.
-     * @param now: (number) Epoch ms.
-     * @param reason: ("symptom" | "money_request") The reason.
-     * @return: (Promise<object>) The result.
-     */
     const flag = (now: number, reason: "symptom" | "money_request" = "symptom") =>
       f.t.mutation(api.agent.flagCaregiver, {
         agentKey: KEY,
@@ -2060,11 +1873,6 @@ describe("sendFamilyMessage", () => {
 describe("readLatestMessage", () => {
   test("returns the newest caregiver message and marks it seen once", async () => {
     const f = await setup();
-    /**
-     * purpose: Read the latest message at an instant.
-     * @param now: (number) Epoch ms.
-     * @return: (Promise<object | null>) The message.
-     */
     const read = (now: number) =>
       f.t.mutation(api.agent.readLatestMessage, { agentKey: KEY, householdId: f.householdId, now });
     expect(await read(NOW)).toBeNull();
@@ -2085,7 +1893,6 @@ describe("readLatestMessage", () => {
           body: "ok",
         }),
     );
-    // Loading the context (the message is in it) is not reading it aloud.
     const context = await f.t.query(api.agent.getContext, {
       agentKey: KEY,
       householdId: f.householdId,
@@ -2152,7 +1959,6 @@ describe("logQuestions", () => {
     expect(facts).toMatchObject({
       questionCount: 3,
       repeats: [{ topic: "sarah visit", count: 2 }],
-      // Transcripts are not shared in this household, so the topic, not the words.
       unanswered: ["pension"],
     });
   });
@@ -2179,10 +1985,6 @@ describe("logQuestions", () => {
 
   test("is idempotent per conversation", async () => {
     const f = await setup();
-    /**
-     * purpose: Log one question for the fixture's conversation.
-     * @return: (Promise<number>) Rows inserted.
-     */
     const log = () =>
       f.t.mutation(api.agent.logQuestions, {
         agentKey: KEY,
@@ -2197,28 +1999,10 @@ describe("logQuestions", () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// Review fixes (2026-11-09): reachability, dose repeats and undo, as-needed scope, caps
-// ---------------------------------------------------------------------------------------------
-
-/**
- * purpose: Make a member's phone unverified, so they cannot be texted.
- * @param f: (World) Harness and household.
- * @param userId: (string) The member.
- * @return: (Promise<void>) Resolves when written.
- */
 async function unreachable(f: World, userId: string): Promise<void> {
   await setPhone(f.t, f.householdId, userId, "+15555550199", false);
 }
 
-/**
- * purpose: Flag a caregiver at an instant.
- * @param f: (World) Harness and household.
- * @param reason: (string) The model-facing reason.
- * @param now: (number) Epoch ms.
- * @param detail: (string) The detail.
- * @return: (Promise<FlagResult-shaped object>) The result.
- */
 async function flagAt(
   f: World,
   reason: "symptom" | "money_request" | "scam" | "distress" | "help_requested",
@@ -2255,7 +2039,6 @@ describe("reachability: nobody is named as told without a queued text", () => {
     expect(await outbox(f, "agent_flag")).toEqual([]);
     const [row] = await auditRows(f, "flag_caregiver");
     expect(row!.detail).toMatchObject({ status: "unreachable", recipients: [] });
-    // An unreachable flag does not suppress the next one.
     await setPhone(f.t, f.householdId, "user_a", "+15555550101");
     expect((await flagAt(f, "distress", NOW + MINUTE)).status).toBe("flagged");
   });
@@ -2295,7 +2078,6 @@ describe("reachability: nobody is named as told without a queued text", () => {
     await addMember(f.t, f.householdId, "user_b", "member", "Bob");
     await addMember(f.t, f.householdId, "user_c", "member", "Sarah Lee");
     await addMember(f.t, f.householdId, "user_d", "viewer", "Dee");
-    // Anna (user_a): phone only. Bob: token only. Sarah: both. Dee: neither.
     await setPhone(f.t, f.householdId, "user_c", "+15555550103");
     await f.t.run(async (ctx) => {
       await ctx.db.insert("pushTokens", { userId: "user_b", token: "tok-bob" });
@@ -2400,14 +2182,12 @@ describe("flag keys, caps and detail", () => {
     }
     expect(statuses.slice(0, 12)).toEqual(Array(12).fill("flagged"));
     expect(statuses[12]).toBe("rate_limited");
-    // Many held decisions never push the sent ones out of the count.
     for (let i = 0; i < 30; i++) {
       expect((await flagAt(f, "scam", NOW + 13 * MINUTE, `Held ${i}.`)).status).toBe(
         "rate_limited",
       );
     }
     expect((await flagAt(f, "symptom", NOW + 14 * MINUTE, "Another.")).status).toBe("rate_limited");
-    // Exempt reasons go out past the cap and are not counted.
     expect((await flagAt(f, "distress", NOW + 15 * MINUTE, "She is scared.")).status).toBe(
       "flagged",
     );
@@ -2418,7 +2198,6 @@ describe("flag keys, caps and detail", () => {
     await insertDose(f, relief, MIDNIGHT + HOUR);
     expect(await reportDose(f, NOW + 17 * MINUTE)).toMatchObject({ flagStatus: "flagged" });
     expect(await outbox(f, "agent_flag")).toHaveLength(15);
-    // An hour after the first, capped flags go out again.
     expect((await flagAt(f, "scam", NOW + HOUR + MINUTE, "New one.")).status).toBe("flagged");
     const audits = await auditRows(f, "flag_caregiver");
     expect(audits.filter((a) => a.detail.status === "rate_limited")).toHaveLength(32);
@@ -2435,10 +2214,6 @@ describe("flag keys, caps and detail", () => {
 describe("family message caps", () => {
   test("an identical message within 2 minutes is not sent twice", async () => {
     const f = await setup();
-    /**
-     * purpose: Send "I'm home".
-     * @return: (Promise<object>) The result.
-     */
     const send = () =>
       f.t.mutation(api.agent.sendFamilyMessage, {
         agentKey: KEY,
@@ -2493,11 +2268,6 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
   test("the same dose told again within 30 minutes is not logged twice", async () => {
     const f = await setup();
     const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 1 });
-    /**
-     * purpose: Report a dose at an instant.
-     * @param now: (number) Epoch ms.
-     * @return: (Promise<object>) The result.
-     */
     const report = (now: number) =>
       f.t.mutation(api.agent.logAsNeededDose, { agentKey: KEY, householdId: f.householdId, now });
     expect((await report(NOW)).status).toBe("logged");
@@ -2543,7 +2313,6 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
       ],
       ["user_a", "Margaret said that dose was a mistake; it has been removed."],
     ]);
-    // The morning's button dose is not hers to take back.
     expect(await undoDose(f, NOW + 2 * MINUTE)).toMatchObject({ status: "nothing_to_undo" });
   });
 
@@ -2580,7 +2349,6 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     });
     expect(result).toEqual({ status: "scheduled_due", options: ["Morning pills"] });
     expect(await f.t.run(async (ctx) => await ctx.db.query("doseLog").collect())).toEqual([]);
-    // Naming the as-needed one still logs it.
     expect(
       (
         await f.t.mutation(api.agent.logAsNeededDose, {
@@ -2600,7 +2368,6 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
       asNeededMaxPerDay: 4,
       asNeededMinHours: 1,
     });
-    // 6, 8, 10 and 11 PM on March 9 (New York, EST).
     const evening = [18, 20, 22, 23].map((h) => MIDNIGHT - 24 * HOUR + h * HOUR);
     for (const t of evening) await insertDose(f, relief, t);
     const justAfterMidnight = MIDNIGHT + 5 * MINUTE;
@@ -2644,10 +2411,6 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     expect(await outbox(f, "agent_flag")).toHaveLength(1);
   });
 });
-
-// ---------------------------------------------------------------------------------------------
-// The voice agent and the caregiver path (profile.ts) agree
-// ---------------------------------------------------------------------------------------------
 
 describe("agent and profile.ts agree", () => {
   test("a caregiver message read aloud shows as seen, and the senior's reply is listed", async () => {
@@ -2745,11 +2508,6 @@ describe("agent and profile.ts agree", () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// Review round 3: only identical flags repeat, urgent flags are never capped, the dose repeat
-// guard asks instead of guessing, undo is scoped to the conversation and never deletes
-// ---------------------------------------------------------------------------------------------
-
 describe("flags: only an identical event is a repeat", () => {
   test("a different, more serious event within the window is sent", async () => {
     const f = await setup();
@@ -2795,10 +2553,6 @@ describe("family messages: a repeat says how the first one went", () => {
   test("a repeated unreachable message is not reported as sent", async () => {
     const f = await setup();
     await unreachable(f, "user_a");
-    /**
-     * purpose: Send "I'm home".
-     * @return: (Promise<object>) The result.
-     */
     const send = () =>
       f.t.mutation(api.agent.sendFamilyMessage, {
         agentKey: KEY,
@@ -2848,7 +2602,6 @@ describe("doses: the repeat guard asks, another always logs", () => {
       status: "already_logged",
       repeatCall: true,
     });
-    // Without the same conversation it is a new report to ask about.
     expect(await reportDose(f, NOW + 5_000, { conversationId: null })).toMatchObject({
       status: "already_logged",
       repeatCall: false,
@@ -2916,10 +2669,8 @@ describe("doses: the repeat guard asks, another always logs", () => {
   test("the daily maximum holds on the day clocks spring forward", async () => {
     const f = await setup();
     const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 2 });
-    // Sunday 2027-03-14 in New York: midnight is 05:00Z (EST), the next midnight 04:00Z (EDT).
     const dayStart = Date.parse("2027-03-14T05:00:00Z");
     const now = Date.parse("2027-03-14T14:00:00Z");
-    // A dose at 11:30 PM Saturday is the day before, though within 24 hours.
     await insertDose(f, relief, dayStart - 30 * MINUTE);
     await insertDose(f, relief, dayStart + 30 * MINUTE);
     await insertDose(f, relief, dayStart + 150 * MINUTE);
@@ -2930,11 +2681,9 @@ describe("doses: the repeat guard asks, another always logs", () => {
       householdId: f.householdId,
       now,
     });
-    // Local midnight was 00:00 EST, so the 00:30 dose is today's and the 11:30 PM one is not.
     expect(status.asNeeded[0]).toMatchObject({
       takenToday: [dayStart + 30 * MINUTE, dayStart + 150 * MINUTE, now],
       remainingToday: 0,
-      // Two of the four in the trailing 24 hours must leave it: the 3:30 AM dose, a day later.
       nextWithinLabelAt: dayStart + 150 * MINUTE + 24 * HOUR,
     });
   });
@@ -2986,7 +2735,6 @@ describe("undo: only this conversation's recent dose, never deleted", () => {
       now: NOW + 2 * MINUTE,
     });
     expect(context.asNeeded[0]!.takenToday).toEqual([]);
-    // A new dose is within the label: the undone one does not count toward the limit.
     expect(await reportDose(f, NOW + 3 * MINUTE, { another: true })).toMatchObject({
       status: "logged",
       overDailyMax: false,
@@ -3009,12 +2757,6 @@ describe("undo: only this conversation's recent dose, never deleted", () => {
 });
 
 describe("list: whole words, and nothing dropped silently", () => {
-  /**
-   * purpose: Tick by spoken words.
-   * @param f: (Fixture) Fixture.
-   * @param item: (string) The words.
-   * @return: (Promise<object>) The result.
-   */
   const tick = (f: Fixture, item: string) =>
     f.t.mutation(api.agent.tickListItem, { agentKey: KEY, householdId: f.householdId, item });
 

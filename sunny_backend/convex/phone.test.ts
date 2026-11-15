@@ -1,18 +1,3 @@
-// convex/phone.test.ts
-// Purpose: Tests for phone verification (phone.ts, exported as households.setMyPhone,
-// confirmMyPhone and clearMyPhone) with convex-test and a stubbed global fetch (Twilio is never
-// called). The code text is made and sent by the scheduled sendCode action, so tests run the
-// scheduled functions and read the text from the Twilio request. Covers: number normalization,
-// allowed countries (SMS_ALLOWED_COUNTRY_CODES), pending state, only the verification id in the
-// scheduled arguments, the code stored as an HMAC, the correct code, wrong codes and the fifth
-// locking, expiry, resend, a failed send and a still-sending status, code length cap, the send
-// rate limits (burst, per caregiver and number without one caregiver spending another's budget,
-// per caregiver and household per day, with the fixed window start pinned), member-only access, texting not configured,
-// clearMyPhone, myPhoneStatus (none, sending, sent, send_failed with safe messages only, expired, members only),
-// the hourly sweep, and the verified phone in listMembers and the phone index.
-//
-// Last modified: 2026-11-04
-
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
@@ -27,20 +12,10 @@ interface Fixture {
   householdId: Id<"households">;
 }
 
-/** The stubbed fetch, whose calls are the texts Twilio was asked to send. */
 let fetchMock: ReturnType<typeof vi.fn>;
 
-/** The Math.random spy installed by pinWindowStart, restored after each test. */
 let randomSpy: { mockRestore: () => void } | undefined;
 
-/**
- * purpose: Make the rate limiter's fixed windows start at the first send. The component starts
- *          each key's window at `now - random * period` when no start is configured, so with
- *          real randomness a window boundary can fall inside a test that advances the clock
- *          through many sends and reset the budget (about 1% of runs). Math.random() of 0 also
- *          still gives the component two distinct shards.
- * @return: (void)
- */
 function pinWindowStart(): void {
   randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
 }
@@ -65,23 +40,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/**
- * purpose: A family household (Pat primary, Max member, Val viewer, one device) with the rate
- *          limiter component registered.
- * @return: (Promise<Fixture>) Harness and household.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   rateLimiterTest.register(t);
   return { t, householdId: await createFamilyHousehold(t) };
 }
 
-/**
- * purpose: Run the scheduled functions (the sendCode actions) and return every text sent to
- *          Twilio so far, oldest first.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<{to, body}[]>) Destination and body of each text.
- */
 async function queuedTexts(t: TestConvex): Promise<{ to: string; body: string }[]> {
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   return fetchMock.mock.calls.map((call) => {
@@ -90,11 +54,6 @@ async function queuedTexts(t: TestConvex): Promise<{ to: string; body: string }[
   });
 }
 
-/**
- * purpose: The code in the most recent text.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<string>) Six digits.
- */
 async function lastCode(t: TestConvex): Promise<string> {
   const texts = await queuedTexts(t);
   return /Sunny code: (\d{6})\./.exec(texts.at(-1)!.body)![1]!;
@@ -254,7 +213,6 @@ describe("setMyPhone", () => {
     ).rejects.toThrow(/limit/);
     vi.advanceTimersByTime(61_000);
     await max.mutation(api.households.setMyPhone, { householdId, phone: "5551230005" });
-    // Each send replaces the caregiver's verification, so only the latest one is texted.
     expect(await queuedTexts(t)).toHaveLength(1);
   });
 
@@ -278,7 +236,6 @@ describe("setMyPhone", () => {
     for (let i = 0; i < 3; i++) {
       await pat.mutation(api.households.setMyPhone, { householdId, phone: "5559990000" });
     }
-    // Pat has used the number up; Max's own attempts for it are unaffected.
     await t
       .withIdentity({ subject: "max" })
       .mutation(api.households.setMyPhone, { householdId, phone: "5559990000" });
@@ -503,7 +460,6 @@ describe("clearMyPhone and the sweep", () => {
 });
 
 describe("confirmMyPhone", () => {
-  /** Start verification for Pat and return the fixture and the code. */
   async function started(): Promise<Fixture & { code: string }> {
     const f = await setup();
     await f.t

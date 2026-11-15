@@ -1,21 +1,3 @@
-// convex/pairing.test.ts
-// Purpose: Tests for the /pair HTTP action (pairing.ts) with convex-test and a stubbed global
-// fetch standing in for Clerk's Backend API: the success path (ticket, device row, Clerk
-// calls and fields incl. the random device username and the taken-username retry), codes that cannot be redeemed (unknown, used, expired, caregiver) which
-// give 404 without ever calling Clerk, cleanup when pairDevice fails (Clerk user deleted),
-// rollback when the sign-in token fails (including a rollback that itself throws), Clerk
-// network errors (502, nothing left behind), request validation, the overall bucket and the
-// failed-attempt buckets (global and per-IP, 429 with Retry-After), the lost-response retry
-// with pairingNonce (same Clerk user, username patched on when missing, wrong nonce and late retry give 404), no-store
-// caching, a missing CLERK_SECRET_KEY (500), clientIp header parsing (now in
-// lib/httpResponse.ts, shared with the device API), and the best-effort deleteClerkUser
-// action. No real network calls are made.
-//
-// The clock is frozen (Date only) for every test so the rate limiter's token buckets never refill
-// mid-test, which made the 300 request test flaky under load.
-//
-// Last modified: 2026-11-13
-
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -24,10 +6,8 @@ import type { Id } from "./_generated/dataModel";
 import { clientIp } from "./lib/httpResponse";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/** One recorded request to the fake Clerk API. */
 interface ClerkCall {
   method: string;
   path: string;
@@ -35,21 +15,15 @@ interface ClerkCall {
   body: Record<string, unknown> | null;
 }
 
-/** What the fake Clerk API does; each field is a status override, 200 when unset. */
 interface ClerkBehavior {
   userId: string;
   createUserStatus?: number;
   signInTokenStatus?: number;
   deleteStatus?: number;
-  /** Reject the create-user fetch as a network error. */
   createUserNetworkError?: boolean;
-  /** Statuses for successive create-user calls (422 bodies carry form_identifier_exists). */
   createUserStatuses?: number[];
-  /** The username the existing user has on GET /users/{id}; unset means none. */
   existingUsername?: string;
-  /** Status for PATCH /users/{id}. */
   patchStatus?: number;
-  /** Runs when a sign-in token is requested, before the reply. */
   onSignInToken?: () => Promise<void>;
 }
 
@@ -57,10 +31,6 @@ let calls: ClerkCall[] = [];
 let behavior: ClerkBehavior = { userId: "user_clerk_1" };
 const savedEnv: Record<string, string | undefined> = {};
 
-/**
- * purpose: Install a fake global fetch that records Clerk calls and answers per `behavior`.
- * @return: (void)
- */
 function stubClerk(): void {
   vi.stubGlobal(
     "fetch",
@@ -116,25 +86,14 @@ afterEach(() => {
   else process.env.CLERK_SECRET_KEY = savedEnv.CLERK_SECRET_KEY;
 });
 
-/**
- * purpose: A fresh in-memory backend with the rate limiter component registered.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   const t = convexTest(schema, modules);
   rateLimiterTest.register(t);
   return t;
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/**
- * purpose: Create a household owned by user_a and a join code for it.
- * @param t: (TestConvex) Harness.
- * @param grants: (string) What the code grants.
- * @return: (Promise<{householdId, code}>) The household and the code.
- */
 async function householdWithCode(
   t: TestConvex,
   grants: "senior_phone" | "home_display" | "caregiver_member" = "senior_phone",
@@ -149,13 +108,6 @@ async function householdWithCode(
   return { householdId, code };
 }
 
-/**
- * purpose: POST to /pair.
- * @param t: (TestConvex) Harness.
- * @param body: (unknown) JSON body, or a raw string sent as is.
- * @param headers: (Record<string, string>, optional) Extra request headers.
- * @return: (Promise<Response>) The response.
- */
 async function postPair(
   t: TestConvex,
   body: unknown,
@@ -168,11 +120,6 @@ async function postPair(
   });
 }
 
-/**
- * purpose: Device rows in the backend.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Array<{userId, name}>>) Rows.
- */
 async function devices(t: TestConvex) {
   return await t.run(async (ctx) => await ctx.db.query("devices").collect());
 }
@@ -258,7 +205,6 @@ describe("POST /pair failures after the Clerk user exists", () => {
   test("a pairDevice failure deletes the Clerk user and leaves the code redeemable", async () => {
     const t = makeBackend();
     const { householdId, code } = await householdWithCode(t);
-    // The Clerk id is already a paired device, so pairDevice refuses it.
     await t.mutation(internal.households.pairDevice, { code, userId: "user_clerk_1" });
     const next = await t
       .withIdentity({ subject: "user_a" })
@@ -339,7 +285,6 @@ describe("POST /pair failures after the Clerk user exists", () => {
     const t = makeBackend();
     const { code } = await householdWithCode(t);
     behavior.signInTokenStatus = 500;
-    // Remove the device row mid-flight so rollbackPairing's delete fails.
     behavior.onSignInToken = async () => {
       await t.run(async (ctx) => {
         const [device] = await ctx.db.query("devices").collect();
@@ -652,11 +597,6 @@ describe("POST /pair response headers", () => {
 });
 
 describe("clientIp", () => {
-  /**
-   * purpose: A request carrying the given headers.
-   * @param headers: (Record<string, string>) Headers.
-   * @return: (Request) The request.
-   */
   const req = (headers: Record<string, string>): Request =>
     new Request("https://x.convex.site/pair", { method: "POST", headers });
 

@@ -1,9 +1,3 @@
-// lib/agentFingerprint.test.ts
-// Purpose: Tests for lib/agentFingerprint.ts: the FNV-1a hash (known values, fixed width), and
-// that the config fingerprint is stable and changes with the model, prompt or tools.
-//
-// Last modified: 2026-11-01
-
 import { describe, expect, test } from "vitest";
 import { AGENT_CONFIG_FINGERPRINT, fingerprintAgentConfig, fnv1a } from "./agentFingerprint";
 

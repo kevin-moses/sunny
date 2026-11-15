@@ -1,18 +1,3 @@
-// lib/google.ts
-// Purpose: Google OAuth and Calendar API client for Sunny's calendar sync, using fetch and
-// WebCrypto only (Convex default runtime). Sunny asks for the calendar.app.created scope,
-// creates its own secondary calendar in each caregiver's Google account ("Mom (Sunny)") and
-// pushes events into it. Covers the consent URL, code exchange, access-token refresh,
-// calendar creation, event upsert/delete, error mapping (retryable, gone, revoked), and an
-// HMAC-signed OAuth state so the public callback can trust who started the flow. Every
-// request has a 15 second timeout. Environment variables are read at call time:
-// GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, GOOGLE_OAUTH_STATE_SECRET.
-// Exports: CALENDAR_SCOPE, GoogleApiError, GoogleAccessRevoked, consentUrl, exchangeCode,
-// refreshAccessToken, createSunnyCalendar, calendarExists, upsertEvent, deleteEvent,
-// signState, verifyState, revokeRefreshToken.
-//
-// Last modified: 2026-10-29
-
 import { fromBase64Url, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
 import { parseJsonObject, timedFetch } from "./http";
@@ -31,75 +16,38 @@ const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
 
-/**
- * purpose: A failed Google API response. `retryable` for rate limits and server errors,
- *          `gone` when the calendar or event no longer exists (404 or 410).
- * @param status: (number) HTTP status from Google.
- * @param message: (string) Response body or summary.
- */
 export class GoogleApiError extends Error {
   status: number;
   retryable: boolean;
   gone: boolean;
 
-  /**
-   * purpose: Wrap a failed Google API response.
-   * @param status: (number) HTTP status from Google.
-   * @param message: (string) Response body or summary.
-   */
   constructor(status: number, message: string) {
     super(`Google API ${status}: ${message}`);
     this.name = "GoogleApiError";
     this.status = status;
-    // 403 is a permission failure unless Google says it is a rate limit or quota.
     this.retryable =
       status === 429 || status >= 500 || (status === 403 && RATE_LIMIT_REASONS.test(message));
     this.gone = status === 404 || status === 410;
   }
 }
 
-/**
- * purpose: The caregiver revoked Sunny's access, or the refresh token expired.
- * @param message: (string) Google's error description.
- */
 export class GoogleAccessRevoked extends Error {
-  /**
-   * purpose: Signal that Google no longer honors the stored refresh token.
-   * @param message: (string) Google's error description.
-   */
   constructor(message: string) {
     super(message);
     this.name = "GoogleAccessRevoked";
   }
 }
 
-/**
- * purpose: Read a required environment variable at call time.
- * @param name: (string) Variable name.
- * @return: (string) Its value.
- * @raises ConfigError when unset or empty.
- */
 function env(name: string): string {
   const value = process.env[name];
   if (!value) throw new ConfigError(`Missing env var ${name}`);
   return value;
 }
 
-/**
- * purpose: fetch with Google's request timeout.
- * @param url: (string) Request URL.
- * @param init: (RequestInit) fetch options.
- * @return: (Promise<TimedResponse>) The response with its body read.
- */
 function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse> {
   return timedFetch(url, init, REQUEST_TIMEOUT_MS);
 }
 
-/**
- * purpose: Google consent URL asking for offline access to calendars Sunny creates.
- * @param state: (string) Signed state from signState.
- * @return: (string) URL to open in the caregiver's browser.
- */
 export function consentUrl(state: string): string {
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
@@ -114,12 +62,6 @@ export function consentUrl(state: string): string {
   return `${AUTH_URL}?${params}`;
 }
 
-/**
- * purpose: POST a form to Google's token endpoint.
- * @param form: (Record<string, string>) Form fields besides the client credentials.
- * @return: (Promise<Record<string, unknown>>) Parsed JSON response.
- * @raises GoogleAccessRevoked on invalid_grant; GoogleApiError on other failures.
- */
 async function tokenRequest(form: Record<string, string>): Promise<Record<string, unknown>> {
   const res = await googleFetch(TOKEN_URL, {
     method: "POST",
@@ -140,12 +82,6 @@ async function tokenRequest(form: Record<string, string>): Promise<Record<string
   return body;
 }
 
-/**
- * purpose: Read the email claim from an ID token received directly from Google's token
- *          endpoint over TLS (so the signature does not need re-checking here).
- * @param idToken: (string | null) JWT from the token response.
- * @return: (string | null) Email, or null when absent or unreadable.
- */
 function emailFromIdToken(idToken: string | null): string | null {
   if (!idToken) return null;
   try {
@@ -158,11 +94,6 @@ function emailFromIdToken(idToken: string | null): string | null {
   }
 }
 
-/**
- * purpose: Fetch the account email from the userinfo endpoint; null on any failure.
- * @param accessToken: (string) OAuth access token with the email scope.
- * @return: (Promise<string | null>) Email, or null.
- */
 async function emailFromUserinfo(accessToken: string): Promise<string | null> {
   try {
     const res = await googleFetch(USERINFO_URL, {
@@ -176,14 +107,6 @@ async function emailFromUserinfo(accessToken: string): Promise<string | null> {
   }
 }
 
-/**
- * purpose: Exchange an authorization code for tokens and the account email.
- * @param code: (string) Code from the OAuth callback.
- * @return: (Promise<{accessToken, refreshToken, scopes, email}>) Tokens, the scopes
- *          actually granted, and the Google account email (from the ID token, else the
- *          userinfo endpoint, else null).
- * @raises GoogleApiError when Google returns no refresh or access token.
- */
 export async function exchangeCode(
   code: string,
 ): Promise<{ accessToken: string; refreshToken: string; scopes: string[]; email: string | null }> {
@@ -212,12 +135,6 @@ export async function exchangeCode(
   };
 }
 
-/**
- * purpose: Get a fresh access token from a stored refresh token.
- * @param refreshToken: (string) The caregiver's refresh token.
- * @return: (Promise<{accessToken, expiresAt}>) Access token and when it expires (epoch ms).
- * @raises GoogleAccessRevoked when the caregiver revoked access.
- */
 export async function refreshAccessToken(
   refreshToken: string,
 ): Promise<{ accessToken: string; expiresAt: number }> {
@@ -231,12 +148,6 @@ export async function refreshAccessToken(
   };
 }
 
-/**
- * purpose: Revoke a refresh token at Google (the grant ends and its access tokens stop
- *          working). Best effort: failures are logged, never thrown.
- * @param refreshToken: (string) The plain refresh token.
- * @return: (Promise<boolean>) Whether Google accepted the revocation.
- */
 export async function revokeRefreshToken(refreshToken: string): Promise<boolean> {
   try {
     const res = await googleFetch(REVOKE_URL, {
@@ -252,15 +163,6 @@ export async function revokeRefreshToken(refreshToken: string): Promise<boolean>
   }
 }
 
-/**
- * purpose: Call the Calendar API with JSON in and out.
- * @param accessToken: (string) OAuth access token.
- * @param method: (string) HTTP method.
- * @param path: (string) Path under /calendar/v3.
- * @param body: (unknown) JSON body, if any.
- * @return: (Promise<Record<string, unknown> | null>) Parsed response, null for 204.
- * @raises GoogleApiError on a non-2xx response.
- */
 async function calendarRequest(
   accessToken: string,
   method: string,
@@ -279,13 +181,6 @@ async function calendarRequest(
   return res.status === 204 ? null : (res.json() as Record<string, unknown>);
 }
 
-/**
- * purpose: Create Sunny's secondary calendar in the caregiver's account.
- * @param accessToken: (string) OAuth access token.
- * @param seniorName: (string) The senior's preferred name, used in the calendar title.
- * @param timeZone: (string) Household IANA timezone.
- * @return: (Promise<string>) The new calendar's id.
- */
 export async function createSunnyCalendar(
   accessToken: string,
   seniorName: string,
@@ -299,12 +194,6 @@ export async function createSunnyCalendar(
   return String(created?.id);
 }
 
-/**
- * purpose: Check that a calendar Sunny created earlier still exists and is reachable.
- * @param accessToken: (string) OAuth access token.
- * @param calendarId: (string) Calendar id.
- * @return: (Promise<boolean>) False when Google answers 404 or 410.
- */
 export async function calendarExists(accessToken: string, calendarId: string): Promise<boolean> {
   try {
     await calendarRequest(accessToken, "GET", `/calendars/${encodeURIComponent(calendarId)}`);
@@ -315,18 +204,6 @@ export async function calendarExists(accessToken: string, calendarId: string): P
   }
 }
 
-/**
- * purpose: Create or replace an event in Sunny's calendar under a fixed id: replace it, or
- *          create it with that id when Google does not have it (409 on create means a
- *          concurrent create won, so replace it). Safe to repeat, so a retried create
- *          never duplicates.
- * @param accessToken: (string) OAuth access token.
- * @param calendarId: (string) Sunny calendar id.
- * @param googleId: (string) Google event id (googleEventId of the Sunny event).
- * @param event: (GoogleEvent) Body from buildGoogleEvent.
- * @return: (Promise<{id, etag, created}>) Google event id, etag, and whether newly created.
- * @raises GoogleApiError with gone = true when the calendar itself no longer exists.
- */
 export async function upsertEvent(
   accessToken: string,
   calendarId: string,
@@ -357,14 +234,6 @@ export async function upsertEvent(
   };
 }
 
-/**
- * purpose: Delete an event from Sunny's calendar; already-gone events (404 or 410) count
- *          as deleted.
- * @param accessToken: (string) OAuth access token.
- * @param calendarId: (string) Sunny calendar id.
- * @param googleId: (string) Google event id.
- * @return: (Promise<void>) Resolves when the event no longer exists.
- */
 export async function deleteEvent(
   accessToken: string,
   calendarId: string,
@@ -381,15 +250,6 @@ export async function deleteEvent(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Signed OAuth state
-// ---------------------------------------------------------------------------
-
-/**
- * purpose: HMAC-SHA256 of a message with GOOGLE_OAUTH_STATE_SECRET.
- * @param message: (string) Text to sign.
- * @return: (Promise<string>) Base64url signature.
- */
 async function hmac(message: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -402,15 +262,6 @@ async function hmac(message: string): Promise<string> {
   return toBase64Url(new Uint8Array(sig));
 }
 
-/**
- * purpose: Sign the caregiver, household and a single-use nonce into a short-lived OAuth
- *          state. The caller stores the nonce so the callback can consume it once.
- * @param userId: (string) Caregiver's user id.
- * @param householdId: (string) Household id.
- * @param nonce: (string) Random single-use value.
- * @param now: (number) Current time in ms (tests pass a fixed clock).
- * @return: (Promise<string>) "payload.signature", valid for 10 minutes.
- */
 export async function signState(
   userId: string,
   householdId: string,
@@ -430,13 +281,6 @@ export async function signState(
   return `${payload}.${await hmac(payload)}`;
 }
 
-/**
- * purpose: Verify a state from the OAuth callback.
- * @param state: (string) State parameter returned by Google.
- * @param now: (number) Current time in ms.
- * @return: (Promise<{userId, householdId, nonce} | null>) Decoded state, or null if forged,
- *          malformed or expired.
- */
 export async function verifyState(
   state: string,
   now: number = Date.now(),

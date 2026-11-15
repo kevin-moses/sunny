@@ -1,14 +1,3 @@
-// upcomingTasks.test.ts
-// Purpose: Tests for the future-day task projection (lib/upcomingTasks.ts) and for the
-// upcomingTasks field of calendar.dayView. The pure projection is tested with plain task
-// objects: weekday-only tasks, one-off tasks, starts/ends bounds, inactive tasks, as-needed
-// medications, anytime entries, several times, ordering (timed first, anytime last), and the
-// 6 day range across the March 2027 DST change. dayView is tested end to end: tasks created
-// through the public mutation appear on later days only, and a viewer can read the field; a
-// paired senior device gets an empty upcomingTasks while a caregiver gets the planned tasks.
-//
-// Last modified: 2026-11-04
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -16,16 +5,10 @@ import { projectTasks } from "./lib/upcomingTasks";
 import type { ProjectableTask } from "./lib/upcomingTasks";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 
-/** 2027-03-13 (a Saturday) 10:00 in New York; DST starts on the 14th. */
 const SATURDAY = "2027-03-13T15:00:00Z";
 
 let counter = 0;
 
-/**
- * purpose: A plain task with defaults: an active reminder at 09:00 every day.
- * @param overrides: (Partial<ProjectableTask>) Fields to set.
- * @return: (ProjectableTask) The task.
- */
 function makeTask(overrides: Partial<ProjectableTask> = {}): ProjectableTask {
   counter += 1;
   return {

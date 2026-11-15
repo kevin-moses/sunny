@@ -1,51 +1,3 @@
-// lib/deviceState.ts
-// Purpose: The device state: one server-computed object every senior surface renders (the
-// phone app, the home display, the iOS widget and Live Activity, the e-ink display's firmware),
-// so they all show the same thing and firmware only draws what it is given. buildDeviceState is
-// the pure rule, taking the household's day (the inputs calendar.dayView gives a senior device:
-// today's task entries from lib/today.ts, today's events and the coming week's) and `now`;
-// loadDeviceState reads the database and calls it. deviceApi.state (Convex query, Clerk) and
-// GET /device/state (HTTP, device token) both return loadDeviceState's object.
-//
-// Rules, ported from the app (sunny_app/src/display/model.ts, day/useDoneAction.ts,
-// display/cue.ts, day/format.ts) with one product change:
-// - done (the one task a Done press confirms) is the phone's rule, doneTarget: the first due or
-//   escalated timed task in the day's order; otherwise the first upcoming timed task that may be
-//   confirmed now (`confirmable`, lib/confirmRule.ts: up to 60 minutes early); never an anytime
-//   or missed task. The display used to offer only a due task.
-// - now (the Now card) shows that same task, so Done always confirms the task on screen: overdue
-//   once escalated or carried over from yesterday, early when it is not due yet, and its steps
-//   (two or more checklist items stand in for steps). Without one it is a clear card, all done
-//   only when no task is open, no event is still ahead today and no task is missed (a missed
-//   task keeps it at "nothing to do right now"; PR 14's rule, mirrored from the app's nowCard).
-// - nextUp skips the Now task; rows (the Today page) mark it "now", done tasks "done" (by
-//   lib/confirmRule.ts isDoneState), missed tasks "missed" (dimmed, no check, no tag; mirrored
-//   from the app's taskMark), and drop the earliest done rows first when there are more than
-//   MAX_TODAY_ROWS, then the latest (rowsHidden counts those). The tests that pin these mirror
-//   sunny_app/src/display/__tests__/model.test.ts; change both together.
-// - For the wall display (server-drawn frames, lib/frame.ts), which offers Done only for a
-//   task that is due: nextUpAfterDue is Next up when an early Now task is not treated as Now;
-//   an event row is marked "past" once it is over (after its end, or EVENT_DEFAULT_MS after its
-//   start without one; the Now card and the all-done rule ignore this); rows and Next up items
-//   carry their type (a task's type, or "event") so a surface can name an item whose label it
-//   cannot draw.
-// - cues: what to chime and say. Every timed due or escalated task is listed (cueableNow says
-//   whether it may cue right now: not snoozed), and every other open timed task, tomorrow's
-//   included, that the escalation policy will prompt within CUE_HORIZON_MS. promptTimes are those
-//   prompt instants, from lib/escalation.ts, the code the scheduler fires steps with, so an
-//   offline device can chime on its own clock. The sentence is cueSpeech, word for word the
-//   display's. The loader builds each cue from the instance and its task (prompt count, snooze
-//   and the task's firing steps from lib/escalation.ts), for today's entries and tomorrow's
-//   instances.
-// - tuning: timings the server can change without new firmware (deviceTuning).
-// Absent optional values are null, never a missing key. Times shown to the senior are
-// household-local strings in the app's formats; instants are epoch ms. version is a short hash
-// (FNV-1a 64 over canonical JSON) of everything except generatedAt: a change detector for ETag,
-// not a secret. displayVersion hashes only what a panel draws, so a battery display repaints
-// only when that changes, not when a cue time passes.
-//
-// Last modified: 2026-11-14
-
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
@@ -86,27 +38,17 @@ import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
 import type { EscalationStep } from "./validators";
 
-/** How many rows fit on the Today page. */
 export const MAX_TODAY_ROWS = 7;
 
-/** How far ahead (ms) cues list the policy's prompt instants. */
 export const CUE_HORIZON_MS = DAY_MS;
 
-/** The pages a carousel shows, in order. */
 export type CarouselPage = "now" | "today";
 
-/** Timings the server sends so they can change without new firmware. */
 export interface DeviceTuning {
-  /** How long (ms) a device waits before checking for a new state, by power source. */
   checkAfterMs: { powered: number; battery: number };
-  /** The pages a display rotates through and how long (ms) each stays. */
   carousel: { pages: CarouselPage[]; intervalMs: number };
 }
 
-/**
- * purpose: The device tuning values, the one place they are kept (a fresh object per state).
- * @return: (DeviceTuning) The values.
- */
 function deviceTuning(): DeviceTuning {
   return {
     checkAfterMs: { powered: 20_000, battery: 120_000 },
@@ -114,7 +56,6 @@ function deviceTuning(): DeviceTuning {
   };
 }
 
-/** The task entry fields the rules read (a TodayEntry has them all). */
 export type DayTask = Pick<
   TodayEntry,
   | "instanceId"
@@ -132,19 +73,15 @@ export type DayTask = Pick<
   | "snoozedUntil"
 >;
 
-/** The event occurrence fields the rules read (an OccurrenceJson has them all). */
 export type DayEvent = Pick<
   OccurrenceJson,
   "eventId" | "label" | "startTime" | "visitorName" | "localDate" | "startsAt" | "endsAt"
 >;
 
-/** How long (ms) an event without an end counts as still on after its start. */
 export const EVENT_DEFAULT_MS = 60 * MINUTE_MS;
 
-/** What a row or a Next up item is: a task's type, or an event. */
 export type ItemType = TodayEntry["type"] | "event";
 
-/** The instance and task fields a cue reads. */
 export type CueEntry = Pick<
   DayTask,
   | "instanceId"
@@ -158,199 +95,111 @@ export type CueEntry = Pick<
   | "snoozedUntil"
 >;
 
-/** One instance the cue rules consider: its entry, its timing and its policy's steps. */
 export interface CueInput {
   entry: CueEntry;
-  /** The instance's own window, creation, snooze, claim and fired steps. */
   timing: PromptTiming;
-  /** The task's policy steps; empty when the task is inactive or has no policy. */
   steps: readonly EscalationStep[];
 }
 
-/** What buildDeviceState reads. */
 export interface DeviceStateInput {
   seniorPreferredName: string;
   timezone: string;
-  /** Today's entries in day order, yesterday's still-open ones first (lib/today.ts). */
   tasks: DayTask[];
-  /** Today's event occurrences. */
   eventsToday: DayEvent[];
-  /** Occurrences on later days of the coming week, earliest first. */
   upcoming: DayEvent[];
-  /** Today's and tomorrow's instances, in day order, for the cues. */
   cueInputs: CueInput[];
 }
 
-/** The task on the Now card. */
 export interface NowTask {
   instanceId: Id<"taskInstances">;
   type: TodayEntry["type"];
   label: string;
-  /** "8:00" (the display's clock form). */
   time: string;
   icon: DeviceIcon;
-  /** "Taken them?" or "Finished?". */
   question: string;
   pillDescription: string | null;
-  /** The family has been alerted, or the task is still open from yesterday. */
   overdue: boolean;
-  /** Not due yet: Done would confirm it early. */
   early: boolean;
-  /** The task's steps, or null for a one-step task. */
   steps: string[] | null;
 }
 
-/** What the Now card shows: a task, or a calm clear state. */
 export interface NowCard {
   kind: "task" | "clear";
-  /** The task; null exactly when kind is "clear". */
   task: NowTask | null;
-  /**
-   * Clear and nothing is left today: no open task, no later event and no missed task (a missed
-   * task keeps the card at "nothing to do right now"); false for a task.
-   */
   allDone: boolean;
 }
 
-/** The task a Done press confirms. */
 export interface DoneTarget {
   instanceId: Id<"taskInstances">;
-  /** Not due yet (upcoming, within the early-confirm hour). */
   early: boolean;
 }
 
-/** The Next up card. */
 export interface NextItem {
   title: string;
-  /** "10:00", or "Tomorrow, 9:00" for a later day. */
   when: string;
   icon: DeviceIcon;
-  /** The visitor's initial, drawn instead of the icon; null when nobody visits. */
   initial: string | null;
-  /** The task's type, or "event". */
   type: ItemType;
 }
 
-/** One row of the Today page. */
 export interface TodayRow {
   key: string;
   time: string;
   label: string;
-  /** The task's type, or "event". */
   type: ItemType;
-  /**
-   * done: checked and grey; now: the Now task, boxed and tagged; missed: grey with no check and
-   * no tag (its window closed unconfirmed); past: an event that is over (after its end, or an
-   * hour after its start when it has none), grey with no check; none: plain.
-   */
   mark: "done" | "now" | "missed" | "past" | "none";
 }
 
-/** A task to chime for and the sentence to say. */
 export interface Cue {
   instanceId: Id<"taskInstances">;
-  /** The instance's local date (tomorrow's for a cue on the next day). */
   localDate: string;
-  /** Spoken after the chime. */
   speech: string;
-  /** Due or escalated and not snoozed: it may cue now. */
   cueableNow: boolean;
-  /** Senior prompts the policy has sent for it so far. */
   seniorPrompts: number;
-  /** A snooze ("not yet") holds its prompts now. */
   snoozed: boolean;
-  /** When the latest snooze ends or ended (epoch ms); null when never snoozed. */
   snoozedUntil: number | null;
-  /** Epoch ms instants within CUE_HORIZON_MS at which the policy will prompt, ascending. */
   promptTimes: number[];
 }
 
-/** Everything a senior surface renders. */
 export interface DeviceState {
-  /** Hash of every other field except generatedAt and displayVersion (the ETag). */
   version: string;
-  /**
-   * Hash of only what a panel draws (localDate, dateLabel, fullDate, header, now, done, nextUp,
-   * rows, rowsHidden): a display repaints only when this changes. New cue times change version
-   * but not this.
-   */
   displayVersion: string;
-  /** When the state was computed (epoch ms). */
   generatedAt: number;
   seniorPreferredName: string;
   timezone: string;
-  /** The household's offset from UTC now, in minutes (for a device's own clock). */
   utcOffsetMinutes: number;
-  /** "YYYY-MM-DD". */
   localDate: string;
-  /** "Saturday morning". */
   header: string;
-  /** "November 7". */
   dateLabel: string;
-  /** "November 7, 2026" (the display's date line). */
   fullDate: string;
   now: NowCard;
   done: DoneTarget | null;
   nextUp: NextItem | null;
-  /**
-   * Next up as the wall display shows it, where only a due task is Now: the same as nextUp
-   * unless the Now task is early, which is then next itself (or an event before it).
-   */
   nextUpAfterDue: NextItem | null;
   rows: TodayRow[];
-  /** Later rows left out because they do not fit. */
   rowsHidden: number;
   cues: Cue[];
   tuning: DeviceTuning;
 }
 
-/** A line of today's agenda: a task or an event, ordered by local time. */
 export type AgendaItem =
   | { kind: "task"; id: string; time: string; task: DayTask }
   | { kind: "event"; id: string; time: string; event: DayEvent };
 
-/**
- * purpose: Whether a task's window closed without a confirmation (mirrors isMissed in
- *          sunny_app/src/day/format.ts). Surfaces draw it dimmed, never as still to do and never
- *          as done; a later confirmation moves it to confirmed or resolved.
- * @param task: (Pick<DayTask, "state">) The task.
- * @return: (boolean) True while its state is missed.
- */
 function isMissed(task: Pick<DayTask, "state">): boolean {
   return task.state === "missed";
 }
 
-/**
- * purpose: The mark of a task's Today row (mirrors taskMark in sunny_app/src/display/model.ts):
- *          now for the Now task, done once confirmed or resolved (lib/confirmRule.ts
- *          isDoneState), missed when its window closed unconfirmed, otherwise none.
- * @param task: (DayTask) The task.
- * @param nowTaskId: (string | null) The Now task's instanceId.
- * @return: (TodayRow["mark"]) The mark.
- */
 function taskMark(task: DayTask, nowTaskId: string | null): TodayRow["mark"] {
   if (task.instanceId === nowTaskId) return "now";
   if (isDoneState(task.state)) return "done";
   return isMissed(task) ? "missed" : "none";
 }
 
-/**
- * purpose: Whether it is time to act on a task: due or escalated, and timed (an anytime task is
- *          never due).
- * @param task: (Pick<DayTask, "state" | "scheduledTime">) The task.
- * @return: (boolean) True for a timed due or escalated task.
- */
 export function isDue(task: Pick<DayTask, "state" | "scheduledTime">): boolean {
   return isDueEntry(task) && !isAnytimeInstance(task);
 }
 
-/**
- * purpose: The task a Done press confirms (the phone's rule): the first due or escalated timed
- *          task in the day's order; otherwise the first upcoming timed task that is
- *          confirmable now. Anytime and missed tasks are never the target.
- * @param tasks: (T[]) Today's tasks in the day's order.
- * @return: (T | null) The task, or null when there is nothing to confirm.
- */
 export function doneTarget<T extends DayTask>(tasks: T[]): T | null {
   const due = tasks.find(isDue);
   if (due !== undefined) return due;
@@ -359,13 +208,6 @@ export function doneTarget<T extends DayTask>(tasks: T[]): T | null {
   );
 }
 
-/**
- * purpose: Merge today's tasks and events into one list ordered by local time; anytime tasks
- *          come last. Ties keep tasks before events (the sort is stable).
- * @param tasks: (DayTask[]) Today's tasks.
- * @param events: (DayEvent[]) Today's events.
- * @return: (AgendaItem[]) The agenda.
- */
 export function buildAgenda(tasks: DayTask[], events: DayEvent[]): AgendaItem[] {
   const items: AgendaItem[] = [
     ...tasks.map((task): AgendaItem => ({
@@ -388,14 +230,6 @@ export function buildAgenda(tasks: DayTask[], events: DayEvent[]): AgendaItem[] 
   });
 }
 
-/**
- * purpose: The Now card for the Done target, or the clear state when there is none.
- * @param tasks: (DayTask[]) Today's tasks.
- * @param target: (DayTask | null) The Done target.
- * @param events: (DayEvent[]) Today's events.
- * @param time: (string) Household-local "HH:MM" now.
- * @return: (NowCard) The card.
- */
 export function nowCard(
   tasks: DayTask[],
   target: DayTask | null,
@@ -420,19 +254,12 @@ export function nowCard(
       allDone: false,
     };
   }
-  // A missed task (its window closed) is not waiting, but the day is not all done either.
   const openTask = tasks.some((t) => isOpenState(t.state));
   const laterEvent = events.some((e) => e.startTime > time);
   const anyMissed = tasks.some(isMissed);
   return { kind: "clear", task: null, allDone: !openTask && !laterEvent && !anyMissed };
 }
 
-/**
- * purpose: The Next up card for an event.
- * @param event: (DayEvent) The occurrence.
- * @param when: (string) Its when text.
- * @return: (NextItem) The card.
- */
 function eventNext(event: DayEvent, when: string): NextItem {
   const visitor = event.visitorName?.trim() ?? "";
   return {
@@ -444,27 +271,10 @@ function eventNext(event: DayEvent, when: string): NextItem {
   };
 }
 
-/**
- * purpose: Whether an event is over: at or after its end, or EVENT_DEFAULT_MS after its start
- *          when it has no end.
- * @param event: (Pick<DayEvent, "startsAt" | "endsAt">) The occurrence.
- * @param now: (number) Epoch ms.
- * @return: (boolean) True once it is over.
- */
 export function isPastEvent(event: Pick<DayEvent, "startsAt" | "endsAt">, now: number): boolean {
   return now >= (event.endsAt ?? event.startsAt + EVENT_DEFAULT_MS);
 }
 
-/**
- * purpose: The next thing after the Now task: the first later task or event today in agenda
- *          order, otherwise the next event on a later day ("Tomorrow, 9:00").
- * @param agenda: (AgendaItem[]) Today's agenda.
- * @param upcoming: (DayEvent[]) Occurrences on later days, earliest first.
- * @param today: (string) The household's local date.
- * @param time: (string) Household-local "HH:MM" now.
- * @param nowTaskId: (string | null) The Now task's instanceId, skipped here.
- * @return: (NextItem | null) The card, or null when nothing is coming.
- */
 export function nextItem(
   agenda: AgendaItem[],
   upcoming: DayEvent[],
@@ -497,16 +307,6 @@ export function nextItem(
   return eventNext(later, day === null ? clock : `${day}, ${clock}`);
 }
 
-/**
- * purpose: The rows of the Today page. When there are more than fit, the earliest finished rows
- *          are dropped first, then the latest rows, which `hidden` counts. An event that is over
- *          at `now` is marked "past" (it is not dropped as a finished task is).
- * @param agenda: (AgendaItem[]) Today's agenda.
- * @param nowTaskId: (string | null) The Now task's instanceId, marked "now".
- * @param maxRows: (number) How many rows fit, counting the "more" line when one is needed.
- * @param now: (number | null) Epoch ms for the past check; null marks no event past.
- * @return: ({ rows: TodayRow[]; hidden: number }) The rows and how many later ones were left out.
- */
 export function todayRows(
   agenda: AgendaItem[],
   nowTaskId: string | null,
@@ -543,13 +343,6 @@ export function todayRows(
   return { rows: rows.slice(0, shown), hidden: rows.length - shown };
 }
 
-/**
- * purpose: The cues: every timed due or escalated task, and every other open timed task the
- *          policy will prompt within CUE_HORIZON_MS, in the inputs' order.
- * @param inputs: (CueInput[]) Today's and tomorrow's instances in day order.
- * @param now: (number) Epoch ms.
- * @return: (Cue[]) The cues.
- */
 function cueList(inputs: CueInput[], now: number): Cue[] {
   const cues: Cue[] = [];
   for (const { entry, timing, steps } of inputs) {
@@ -571,22 +364,10 @@ function cueList(inputs: CueInput[], now: number): Cue[] {
   return cues;
 }
 
-/**
- * purpose: The household's offset from UTC at an instant.
- * @param now: (number) Epoch ms.
- * @param timezone: (string) IANA zone.
- * @return: (number) Minutes east of UTC (New York in winter: -300).
- */
 function utcOffsetMinutes(now: number, timezone: string): number {
   return Math.round(offsetAt(now, timezone) / MINUTE_MS);
 }
 
-/**
- * purpose: JSON with object keys sorted at every level, so equal content always serializes the
- *          same way.
- * @param value: (unknown) A JSON value.
- * @return: (string) The canonical JSON text.
- */
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
@@ -598,17 +379,11 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** FNV-1a 64-bit offset basis and prime. */
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK_64 = (1n << 64n) - 1n;
 const UTF8 = new TextEncoder();
 
-/**
- * purpose: FNV-1a 64-bit hash of a string's UTF-8 bytes.
- * @param text: (string) The text.
- * @return: (string) 16 lowercase hex characters.
- */
 export function fnv1a64(text: string): string {
   let hash = FNV_OFFSET;
   for (const byte of UTF8.encode(text)) {
@@ -617,12 +392,6 @@ export function fnv1a64(text: string): string {
   return hash.toString(16).padStart(16, "0");
 }
 
-/**
- * purpose: Turn the household's day into the device state at `now`. Pure.
- * @param input: (DeviceStateInput) The household's day.
- * @param now: (number) Epoch ms.
- * @return: (DeviceState) The state.
- */
 export function buildDeviceState(input: DeviceStateInput, now: number): DeviceState {
   const { timezone } = input;
   const today = localDate(now, timezone);
@@ -673,31 +442,14 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
   };
 }
 
-/** A task and the escalation steps it can fire. */
 type TaskSteps = { task: Doc<"tasks">; steps: EscalationStep[] };
 
-/**
- * purpose: A loader that reads each task, and the steps it can fire (lib/escalation.ts
- *          activePolicySteps, the scheduler's rule), once however many instances share it.
- * @param ctx: (QueryCtx) Context.
- * @return: ((taskId) => Promise<TaskSteps | null>) The loader; null for a task that is gone.
- */
 function taskStepsLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<TaskSteps | null> {
   const cache = new Map<Id<"tasks">, Promise<TaskSteps | null>>();
-  /**
-   * purpose: Read one task and the steps it can fire.
-   * @param taskId: (Id<"tasks">) The task.
-   * @return: (Promise<TaskSteps | null>) The task and its steps, or null when it is gone.
-   */
   const read = async (taskId: Id<"tasks">): Promise<TaskSteps | null> => {
     const task = await ctx.db.get(taskId);
     return task === null ? null : { task, steps: (await activePolicySteps(ctx, task)) ?? [] };
   };
-  /**
-   * purpose: The task and its steps, read on the first request for it and shared afterwards.
-   * @param taskId: (Id<"tasks">) The task.
-   * @return: (Promise<TaskSteps | null>) The task and its steps, or null when it is gone.
-   */
   return (taskId: Id<"tasks">): Promise<TaskSteps | null> => {
     let loaded = cache.get(taskId);
     if (loaded === undefined) {
@@ -708,14 +460,6 @@ function taskStepsLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<TaskSt
   };
 }
 
-/**
- * purpose: The cue input for one instance: what a cue says (from the instance and its task), the
- *          instance's timing, and the steps its task can fire. An instance whose task is gone is
- *          left out.
- * @param instance: (Doc<"taskInstances">) The instance.
- * @param loaded: (TaskSteps | null) Its task and steps, or null when the task is gone.
- * @return: (CueInput | null) The input, or null.
- */
 function cueInputFor(instance: Doc<"taskInstances">, loaded: TaskSteps | null): CueInput | null {
   if (loaded === null) return null;
   const { task, steps } = loaded;
@@ -736,15 +480,6 @@ function cueInputFor(instance: Doc<"taskInstances">, loaded: TaskSteps | null): 
   };
 }
 
-/**
- * purpose: Read the household's day and build its device state at `now`. The cues cover today's
- *          entries (yesterday's still-open ones included) and tomorrow's instances, in day order.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<DeviceState>) The state.
- * @raises not_found when the household does not exist.
- */
 export async function loadDeviceState(
   ctx: QueryCtx,
   householdId: Id<"households">,

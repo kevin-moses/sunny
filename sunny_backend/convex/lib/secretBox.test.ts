@@ -1,18 +1,6 @@
-// lib/secretBox.test.ts
-// Purpose: Tests for AES-256-GCM secret encryption: round trip, fresh IV per message, the
-// versioned format, tampering, a wrong key, and a missing or malformed key; and the constant-time
-// string compare.
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { constantTimeEqual, decryptSecret, encryptSecret, hmacHex } from "./secretBox";
 
-/**
- * purpose: Base64 of 32 bytes all set to one value, as a test key.
- * @param byte: (number) Byte value.
- * @return: (string) Base64 key.
- */
 function keyOf(byte: number): string {
   return btoa(String.fromCharCode(...new Uint8Array(32).fill(byte)));
 }

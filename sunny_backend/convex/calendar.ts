@@ -1,21 +1,3 @@
-// calendar.ts
-// Purpose: The shared calendar and day clock, ported from the Supabase calendar migration
-// (add_event, update_event, cancel_event, list_events, get_day_view). One write path serves
-// the caregiver app and, later, the agent: each operation's core is a plain helper taking
-// (ctx, actor, householdId, args, now) so the agent tools and runtime can reuse it with an
-// agent actor and an explicit clock. The public mutations resolve the actor from auth
-// (editor caregivers only) and use Date.now(). Events are scheduled in household-local
-// terms (see lib/occurrences.ts); cancelling is a soft delete (deletedAt). listEvents and
-// dayView are readable by caregivers of any role and by the household's paired device.
-// updateEvent takes `changes`: an absent key is unchanged, a key present as null clears the
-// field, and unknown keys are rejected by the validator. listOccurrencesCore and
-// householdWeek are shared helpers for the agent tools and briefing (lib/agentTools.ts,
-// lib/agentBriefing.ts). Every write core queues a Google push for the household's active
-// connections (lib/calendarSync.ts); an update that changes no stored field queues nothing.
-// dayView also carries upcomingTasks, the next 6 days' planned tasks, for the caregiver calendar.
-//
-// Last modified: 2026-11-04
-
 import { v } from "convex/values";
 import type { ObjectType } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -63,7 +45,6 @@ const MAX_LIST_RANGE_DAYS = 92;
 const WEEK_DAYS = 7;
 const DEFAULT_DURATION_MINUTES = 30;
 
-/** Stored event fields whose change is pushed to Google. */
 const EVENT_FIELD_KEYS = [
   "title",
   "label",
@@ -77,7 +58,6 @@ const EVENT_FIELD_KEYS = [
   "repeatUntil",
 ] as const;
 
-/** Fields a new event is created from (everything but the household). */
 const addEventFields = {
   title: v.string(),
   onDate: v.string(),
@@ -91,14 +71,8 @@ const addEventFields = {
   repeatUntil: v.optional(v.string()),
 };
 
-/** Arguments of addEventCore: the event's fields as a caller supplies them. */
 export type AddEventArgs = ObjectType<typeof addEventFields>;
 
-/**
- * Edits to an event. A key that is absent is unchanged; a clearable key given as null is
- * cleared (repeatDays null makes the event one-off). Title, onDate and startTime cannot be
- * null. Unknown keys are rejected by this validator.
- */
 export const eventChanges = v.object({
   title: v.optional(v.string()),
   label: v.optional(v.union(v.null(), v.string())),
@@ -112,10 +86,8 @@ export const eventChanges = v.object({
   repeatUntil: v.optional(v.union(v.null(), v.string())),
 });
 
-/** Type of the changes argument of updateEventCore. */
 export type EventChanges = ObjectType<typeof eventChanges.fields>;
 
-/** An event's stored, normalized fields. */
 interface EventFields {
   title: string;
   label: string | undefined;
@@ -129,13 +101,6 @@ interface EventFields {
   repeatUntil: string | undefined;
 }
 
-/**
- * purpose: Validate and normalize an event's fields as the whole stored row (the SQL check
- *          constraints applied to the final row).
- * @param raw: (EventFields) Fields as supplied or merged with an existing event.
- * @return: (EventFields) Trimmed, bounded, deduplicated fields.
- * @raises invalid for a blank title, bad date or time, bad duration, or a bad repeat.
- */
 function normalizeFields(raw: EventFields): EventFields {
   const title = requireNonBlank(raw.title, "Title");
   if (title.length > MAX_TITLE)
@@ -172,15 +137,6 @@ function normalizeFields(raw: EventFields): EventFields {
   };
 }
 
-/**
- * purpose: A live event of the given household (the port of private.lock_event: an event of
- *          another household, or a cancelled one, is not found).
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) The household the caller acts for.
- * @param eventId: (Id<"events">) Event.
- * @return: (Promise<Doc<"events">>) The event.
- * @raises not_found when missing, cancelled, or in another household.
- */
 async function loadLiveEvent(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -193,14 +149,6 @@ async function loadLiveEvent(
   return event;
 }
 
-/**
- * purpose: Write the audit row for an event change.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) Who changed it.
- * @param action: (string) "insert", "update" or "cancel".
- * @param event: (Doc<"events">) The event after the change.
- * @return: (Promise<void>) Resolves when written.
- */
 async function auditEvent(
   ctx: MutationCtx,
   actor: Actor,
@@ -222,16 +170,6 @@ async function auditEvent(
   });
 }
 
-/**
- * purpose: Core of addEvent, reusable by agent tools: validate, insert and audit an event.
- *          The caller has already checked that the actor may edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) Who adds the event; becomes createdVia and createdBy.
- * @param householdId: (Id<"households">) Household.
- * @param args: (AddEventArgs) The event's fields.
- * @param now: (number) Epoch ms the "not in the past" rules are checked against.
- * @return: (Promise<EventWithNext>) The event with its next occurrence.
- */
 export async function addEventCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -265,18 +203,6 @@ export async function addEventCore(
   return eventWithNext(event, household.timezone, now);
 }
 
-/**
- * purpose: Core of updateEvent, reusable by agent tools: apply changes to a live event of
- *          the household, validate the resulting event, patch and audit it.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) Who changes the event.
- * @param householdId: (Id<"households">) Household the caller acts for.
- * @param eventId: (Id<"events">) Event to change.
- * @param changes: (EventChanges) Absent key = unchanged, null = cleared.
- * @param now: (number) Epoch ms the "not in the past" rules are checked against.
- * @return: (Promise<EventWithNext>) The event with its next occurrence.
- * @raises not_found for a missing, cancelled or foreign event; invalid for bad values.
- */
 export async function updateEventCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -287,13 +213,6 @@ export async function updateEventCore(
 ): Promise<EventWithNext> {
   const household = await loadHousehold(ctx, householdId);
   const current = await loadLiveEvent(ctx, householdId, eventId);
-  // Merge: undefined keeps the current value, null clears it.
-  /**
-   * purpose: Merge a change with the existing value: undefined keeps it, null clears it.
-   * @param change: (T | null | undefined) The value from the changes argument.
-   * @param existing: (T | undefined) The event's current value.
-   * @return: (T | undefined) The value to write.
-   */
   const pick = <T>(change: T | null | undefined, existing: T | undefined): T | undefined =>
     change === undefined ? existing : (change ?? undefined);
   const fields = normalizeFields({
@@ -318,24 +237,12 @@ export async function updateEventCore(
   await ctx.db.patch(eventId, fields);
   const event = (await ctx.db.get(eventId))!;
   await auditEvent(ctx, actor, "update", event);
-  // An update that changes nothing is not pushed to Google (queue_event_sync's rule).
   if (EVENT_FIELD_KEYS.some((k) => JSON.stringify(current[k]) !== JSON.stringify(event[k]))) {
     await queueEventSync(ctx, eventId);
   }
   return eventWithNext(event, household.timezone, now);
 }
 
-/**
- * purpose: Core of cancelEvent, reusable by agent tools: soft delete a live event of the
- *          household and audit the cancellation.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) Who cancels the event.
- * @param householdId: (Id<"households">) Household the caller acts for.
- * @param eventId: (Id<"events">) Event to cancel.
- * @param now: (number) Epoch ms recorded as deletedAt.
- * @return: (Promise<EventJson>) The cancelled event's definition.
- * @raises not_found for a missing, already cancelled or foreign event.
- */
 export async function cancelEventCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -351,16 +258,6 @@ export async function cancelEventCore(
   return eventJson(event);
 }
 
-/**
- * purpose: Core of listEvents, reusable by agent tools: validate the range and return the
- *          household's occurrences. The caller has already checked read access.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param from: (string) First local date, "YYYY-MM-DD".
- * @param to: (string) Last local date (at most 92 days after from).
- * @return: (Promise<OccurrenceJson[]>) Occurrences with their event definitions, earliest first.
- * @raises invalid for malformed dates or a range that is reversed or longer than 92 days.
- */
 export async function listOccurrencesCore(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -376,7 +273,6 @@ export async function listOccurrencesCore(
   return occurrences.map(occurrenceJson);
 }
 
-/** A household with its local today and its occurrences from today through 7 days ahead. */
 export interface HouseholdWeek {
   household: Doc<"households">;
   today: string;
@@ -384,14 +280,6 @@ export interface HouseholdWeek {
   week: Occurrence[];
 }
 
-/**
- * purpose: Load a household and its occurrences from local today through today + 7 days
- *          (the shared basis of dayView and the agent briefing).
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<HouseholdWeek>) The household, local date, weekday name and occurrences.
- */
 export async function householdWeek(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -408,22 +296,6 @@ export async function householdWeek(
   return { household, today, weekday: weekdayName(today), week };
 }
 
-/**
- * purpose: Add an event: one-off on onDate, or weekly on repeatDays from onDate until
- *          repeatUntil. Times are household-local. Editor caregivers only.
- * @param householdId: (Id<"households">) Household.
- * @param title: (string) Required, 200 characters at most.
- * @param onDate: (string) First (or only) local date, "YYYY-MM-DD".
- * @param startTime: (string) Local "HH:MM".
- * @param durationMinutes: (number | undefined) 1 to 1440.
- * @param place: (string | undefined) Optional text; blank is absent.
- * @param notes: (string | undefined) Optional text; blank is absent.
- * @param visitorName: (string | undefined) Optional text; blank is absent.
- * @param label: (string | undefined) Optional shorter wording for the senior; blank is absent.
- * @param repeatDays: (number[] | undefined) ISO weekdays for a weekly repeat.
- * @param repeatUntil: (string | undefined) Last local date of the repeat; needs repeatDays.
- * @return: (EventWithNext) The event with its next occurrence.
- */
 export const addEvent = mutation({
   args: { householdId: v.id("households"), ...addEventFields },
   handler: async (ctx, { householdId, ...args }) => {
@@ -432,14 +304,6 @@ export const addEvent = mutation({
   },
 });
 
-/**
- * purpose: Change an event. Absent keys in `changes` are unchanged; a key given as null
- *          clears the field (repeatDays null makes the event one-off). Editor caregivers only.
- * @param householdId: (Id<"households">) Household the event belongs to.
- * @param eventId: (Id<"events">) Event.
- * @param changes: (object) Fields to change; see eventChanges.
- * @return: (EventWithNext) The event with its next occurrence.
- */
 export const updateEvent = mutation({
   args: { householdId: v.id("households"), eventId: v.id("events"), changes: eventChanges },
   handler: async (ctx, { householdId, eventId, changes }) => {
@@ -448,12 +312,6 @@ export const updateEvent = mutation({
   },
 });
 
-/**
- * purpose: Cancel an event (soft delete). Editor caregivers only.
- * @param householdId: (Id<"households">) Household the event belongs to.
- * @param eventId: (Id<"events">) Event.
- * @return: (EventJson) The cancelled event.
- */
 export const cancelEvent = mutation({
   args: { householdId: v.id("households"), eventId: v.id("events") },
   handler: async (ctx, { householdId, eventId }) => {
@@ -462,14 +320,6 @@ export const cancelEvent = mutation({
   },
 });
 
-/**
- * purpose: Occurrences between two local dates (inclusive, at most 92 days), earliest first.
- *          Caregivers of any role and the household's paired device can read.
- * @param householdId: (Id<"households">) Household.
- * @param from: (string) First local date, "YYYY-MM-DD".
- * @param to: (string) Last local date.
- * @return: (OccurrenceJson[]) Occurrences with their event definitions.
- */
 export const listEvents = query({
   args: { householdId: v.id("households"), from: v.string(), to: v.string() },
   handler: async (ctx, { householdId, from, to }) => {
@@ -478,24 +328,6 @@ export const listEvents = query({
   },
 });
 
-/**
- * purpose: The day clock every surface renders: local date and part of day, today's tasks
- *          and events, Next up (the first occurrence within 7 days that has not ended;
- *          events without a duration count as 30 minutes) and the coming week. Occurrences
- *          are expanded once. The server clock is read when the query runs, and Convex only
- *          re-runs a query when data it read changes, so `minute` exists to force a re-run:
- *          the client passes its current minute, a new value is a new cache entry, and the
- *          view is never staler than the client's minute clock. The handler ignores it. Any
- *          reader can pass arbitrary values and create extra cache entries; that is accepted
- *          because callers are authenticated household members.
- * @param householdId: (Id<"households">) Household.
- * @param minute: (number | undefined) Client minute counter; only varies the query key.
- * @return: (object) seniorPreferredName, timezone, localNow, localDate, weekday, dateLabel,
- *          header, tasks, upcomingTasks (for a caregiver, the tasks planned on each of the next 6
- *          local days, projected from the schedules; lib/upcomingTasks.ts; always [] for the
- *          paired senior device, which does not render it and skips the computation),
- *          eventsToday, nextUp and upcoming.
- */
 export const dayView = query({
   args: { householdId: v.id("households"), minute: v.optional(v.number()) },
   handler: async (ctx, { householdId }) => {

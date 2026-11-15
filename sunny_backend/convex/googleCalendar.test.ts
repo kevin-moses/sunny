@@ -1,13 +1,3 @@
-// googleCalendar.test.ts
-// Purpose: Tests for googleCalendar.ts: the OAuth callback (happy path with an encrypted token
-// and queued pushes, reusing or replacing the calendar, bad or expired state, a missing scope,
-// Google errors, a caregiver who left, escaped output, and a reconnect clearing the cached
-// access token), connectUrl permissions (devices, non-members, signed-out), myConnections
-// (own connections only, no token fields) and disconnect (own connection only, links and syncs
-// removed). Google is mocked (googleMocks.helpers.ts).
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -44,14 +34,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Store a single-use OAuth nonce as connectUrl would.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param nonce: (string) The nonce.
- * @param userId: (string) Caregiver it was issued to.
- * @return: (Promise<void>) Resolves when stored.
- */
 async function issueNonce(
   t: TestConvex,
   householdId: Id<"households">,
@@ -69,15 +51,8 @@ async function issueNonce(
 }
 
 describe("OAuth callback", () => {
-  /**
-   * purpose: Set up the mocks for a successful callback and return the household.
-   * @param t: (TestConvex) Harness.
-   * @param seniorName: (string) The household's senior name.
-   * @return: The household id.
-   */
   async function readyHousehold(t: TestConvex, seniorName = "Margaret") {
     const householdId = await createHousehold(t, { seniorName });
-    // States "good" and "good2" carry single-use nonces n1 and n2, both issued to user_a.
     const nonces: Record<string, string> = { good: "n1", good2: "n2" };
     googleMocks.verifyState.mockImplementation(async (state: string) =>
       nonces[state] ? { userId: "user_a", householdId, nonce: nonces[state] } : null,
@@ -123,14 +98,11 @@ describe("OAuth callback", () => {
       status: "active",
       refreshToken: "box:refresh-new",
     });
-    // The backfill is scheduled, not run inside the callback.
     expect(await syncRows(t)).toHaveLength(0);
     expect(await pendingScheduled(t)).toContain("calendarFanOut:chunk");
     await runFanOut(t, householdId, connection!._id);
-    // Both cancelled events are unlinked, so only the live one is queued.
     expect((await syncRows(t)).map((s) => s.eventId)).toEqual([live]);
 
-    // Link one cancelled event, then connect again: it is queued too.
     await t.run(async (ctx) =>
       ctx.db.insert("calendarEventLinks", {
         eventId: linkedCancelled,
@@ -277,7 +249,6 @@ describe("OAuth callback", () => {
     const res = await t.fetch("/google/callback?code=c&state=good");
     expect(res.status).toBe(403);
     expect(googleMocks.createSunnyCalendar).not.toHaveBeenCalled();
-    // Google issued a grant for this request; it is not kept, so it is revoked.
     expect(googleMocks.revokeRefreshToken).toHaveBeenCalledWith("refresh-new");
   });
 
@@ -376,7 +347,6 @@ describe("connectUrl, myConnections and disconnect", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ nonce, userId: "user_a", householdId });
     expect(rows[0]!.expiresAt).toBe(Date.now() + 10 * 60_000);
-    // Two flows get two different nonces.
     const second = await t
       .withIdentity({ subject: "user_a" })
       .action(api.googleCalendar.connectUrl, { householdId });

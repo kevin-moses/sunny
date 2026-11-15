@@ -1,29 +1,11 @@
-// lib/escalation.test.ts
-// Purpose: Unit tests for the shared escalation timing (lib/escalation.ts): stepDueAt counts
-// from the later of windowStart and createdAt; stepHeld holds a senior prompt while snoozed and
-// a skipIfClaimed step once claimed; upcomingPromptTimes lists unfired prompt steps only, waits
-// out a snooze (several held prompts collapse into one), drops claimed skipIfClaimed prompts,
-// steps at or after the window end, instants outside (from, to], fired steps, anytime and
-// closed instances.
-//
-// Last modified: 2026-11-13
-
 import { describe, expect, test } from "vitest";
 import { stepDueAt, stepHeld, upcomingPromptTimes } from "./escalation";
 import type { PromptTiming } from "./escalation";
 import type { EscalationStep } from "./validators";
 
 const MIN = 60_000;
-/** The window opens at t = 0 (an arbitrary epoch). */
 const START = 1_000_000_000_000;
 
-/**
- * purpose: Build a step.
- * @param id: (string) Step id.
- * @param offsetMinutes: (number) Offset.
- * @param overrides: (Partial<EscalationStep>) Other fields.
- * @return: (EscalationStep) A senior prompt unless overridden.
- */
 function step(id: string, offsetMinutes: number, overrides: Partial<EscalationStep> = {}) {
   return {
     id,
@@ -34,7 +16,6 @@ function step(id: string, offsetMinutes: number, overrides: Partial<EscalationSt
   } as const;
 }
 
-/** The seeded medication ladder: prompts at 0 and 15, alerts at 30 and 45. */
 const MEDICATION: EscalationStep[] = [
   step("p0", 0),
   step("p15", 15),
@@ -42,11 +23,6 @@ const MEDICATION: EscalationStep[] = [
   step("a45", 45, { action: "alert_all_caregivers", skipIfClaimed: true }),
 ];
 
-/**
- * purpose: Build an instance's timing.
- * @param overrides: (Partial<PromptTiming>) Fields to set.
- * @return: (PromptTiming) An upcoming 08:00 instance with a 60 minute window, created long before.
- */
 function timing(overrides: Partial<PromptTiming> = {}): PromptTiming {
   return {
     state: "upcoming",

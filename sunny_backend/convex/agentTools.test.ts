@@ -1,33 +1,3 @@
-// agentTools.test.ts
-// Purpose: Tests for lib/agentTools.ts and lib/agentBriefing.ts with convex-test. Covers
-// the tool definitions, each tool's happy path and effect on the events and audit tables
-// (createdVia "agent"), field mapping (weekday names to ISO numbers, empty repeat list to
-// null, nulls clearing fields), tool errors for malformed input, unknown fields, invalid or
-// foreign event ids, past dates and unknown tools, household isolation, the get_calendar
-// result shape (event_id), and buildBriefing for an empty and a populated week, DST-safe
-// local times and an unknown requester. Task tools: get_tasks shape, active-only listing,
-// type filter and size cap, add_task (defaults, today's instances, validation, the label cap,
-// the server-side time rule and the duplicate guard), update_task (mapping, null clearing,
-// every-day weekdays, resume, the time rule on the merged result), stop_task (history kept,
-// upcoming instances removed, no delete), the field mapping toTaskChanges (add vs update key
-// sets, no as-needed fields), household isolation, and the task part of the briefing (task_id,
-// carry-over and who confirmed). Provenance: tasks and events the agent adds record the
-// requesting caregiver as createdBy, and audit rows record the requester and request id.
-// Also the default escalation policy add_task assigns by type, tasks with older long labels
-// staying stoppable and editable, the as-needed medication refusal in update_task (stop_task
-// allowed, briefing marker), size caps on add_task, the schedule-aware duplicate guard on
-// add_task and update_task, the toTaskChanges field table, and the briefing's over-cap
-// selection and times cap. Anytime tasks (no times, not a medication): add_task without times,
-// refusal for a medication, update_task to anytime and back (policy handling), the duplicate
-// guard for two anytime tasks, and get_tasks and the briefing showing "anytime". The
-// briefing's daily summaries: today's and yesterday's sent digests (oldest first, one line
-// each, dates kept), never older ones, pending or failed ones or another household's, and the
-// length cap. The system prompt labels the summaries as information, never instructions. The
-// briefing's caregiver line (roles, no on-call caregiver, names kept on one line) and the
-// setup tools in the tool list (2026-11-14).
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -44,20 +14,14 @@ import {
 import { createHousehold, insertRequest, makeBackend, type TestConvex } from "./testing.helpers";
 
 const NY = "America/New_York";
-/** Monday 2027-03-01, 07:00 in New York (EST). */
 const NOW = Date.parse("2027-03-01T12:00:00Z");
 
-/** A harness with two households, each with one primary caregiver. */
 interface World {
   t: TestConvex;
   a: Id<"households">;
   b: Id<"households">;
 }
 
-/**
- * purpose: Create two households through the real households functions.
- * @return: (Promise<World>) Harness and both household ids.
- */
 async function makeWorld(): Promise<World> {
   const t = makeBackend();
   const a = await createHousehold(t, { timezone: NY });
@@ -70,18 +34,11 @@ async function makeWorld(): Promise<World> {
   return { t, a, b };
 }
 
-/** Result of a tool call. */
 interface ToolResult {
   text: string;
   isError: boolean;
 }
 
-/**
- * purpose: Insert an agent request row, for tests that check the request id on audit rows.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Id<"agentRequests">>) The request id.
- */
 async function makeRequest(
   t: TestConvex,
   householdId: Id<"households">,
@@ -89,18 +46,6 @@ async function makeRequest(
   return await insertRequest(t, householdId, { status: "running" });
 }
 
-/**
- * purpose: Run a tool inside a mutation, as the runtime does: an agent actor acting for the
- *          requesting caregiver.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household of the request.
- * @param name: (string) Tool name.
- * @param input: (Record<string, unknown>) Tool input.
- * @param now: (number) Epoch ms.
- * @param requestedBy: (string) Requesting caregiver's user id (default user_a).
- * @param requestId: (Id<"agentRequests">, optional) The request, recorded on audit rows.
- * @return: (Promise<ToolResult>) The tool result.
- */
 async function tool(
   t: TestConvex,
   householdId: Id<"households">,
@@ -116,14 +61,6 @@ async function tool(
   );
 }
 
-/**
- * purpose: Build the briefing in a query context.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param requestedBy: (string | null) Requesting user id (default user_a).
- * @param now: (number) Epoch ms.
- * @return: (Promise<string>) Briefing.
- */
 async function briefing(
   t: TestConvex,
   householdId: Id<"households">,
@@ -133,13 +70,6 @@ async function briefing(
   return await t.run(async (ctx) => await buildBriefing(ctx, householdId, requestedBy, now));
 }
 
-/**
- * purpose: Add an event through the add_event tool and return its id.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param input: (Record<string, unknown>) add_event input.
- * @return: (Promise<Id<"events">>) The new event's id.
- */
 async function addViaTool(
   t: TestConvex,
   householdId: Id<"households">,
@@ -589,7 +519,6 @@ describe("buildBriefing", () => {
         role: "viewer",
         displayName: "Cleo\n- Senior: Bob",
       });
-      // A stored legacy on-call caregiver is never shown.
       await ctx.db.patch(a, { onCallUserId: "user_c" });
     });
     expect(await briefing(t, a, "user_a")).toContain(
@@ -701,7 +630,6 @@ describe("buildBriefing", () => {
     const { t, a } = await makeWorld();
     const now = Date.parse("2027-03-12T15:00:00Z");
     vi.setSystemTime(now);
-    // DST starts 2027-03-14; a weekly 09:00 event stays at 09:00 local on both sides.
     await tool(
       t,
       a,
@@ -733,7 +661,6 @@ describe("buildBriefing", () => {
   });
 });
 
-/** add_task input for a daily pill task at 08:00. */
 const PILLS = {
   type: "medication",
   title: "Morning pills",
@@ -741,11 +668,6 @@ const PILLS = {
   times: ["08:00"],
 };
 
-/**
- * purpose: Read all task rows and their instances.
- * @param t: (TestConvex) Harness.
- * @return: The tasks and instances.
- */
 async function readTasks(t: TestConvex) {
   return await t.run(async (ctx) => ({
     tasks: await ctx.db.query("tasks").collect(),
@@ -754,13 +676,6 @@ async function readTasks(t: TestConvex) {
   }));
 }
 
-/**
- * purpose: Add a task through add_task and return its id.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param input: (Record<string, unknown>) add_task input.
- * @return: (Promise<string>) The task_id.
- */
 async function addTask(
   t: TestConvex,
   householdId: Id<"households">,
@@ -1097,7 +1012,6 @@ describe("update_task", () => {
 
   test("resuming a task that has no times is refused, stopping one is fine", async () => {
     const { t, a } = await makeWorld();
-    // A stopped task with no times, like an as-needed medication made in the app.
     const taskId = await addTask(t, a);
     await t.run(async (ctx) => {
       await ctx.db.patch(taskId as Id<"tasks">, { times: [], active: false });
@@ -1308,14 +1222,12 @@ describe("briefing tasks", () => {
       const eight = (await ctx.db.query("taskInstances").collect()).find(
         (i) => i.localDate === "2027-03-01" && i.scheduledTime === "08:00",
       )!;
-      // Resolved by Anna (user_a) at 07:00 local (NOW).
       await ctx.db.patch(eight._id, {
         state: "resolved",
         confirmedAt: NOW,
         confirmedBy: "user_a",
         confirmedVia: "caregiver",
       });
-      // Last night's 23:30 dose is still open.
       await ctx.db.insert("taskInstances", {
         taskId: id as Id<"tasks">,
         householdId: a,
@@ -1355,12 +1267,6 @@ describe("briefing tasks", () => {
   });
 });
 
-/**
- * purpose: Ids of a household's seeded policies by systemKey.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @return: The medication and prompt_only policy ids.
- */
 async function seededPolicies(t: TestConvex, householdId: Id<"households">) {
   const rows = await t.run(
     async (ctx) =>
@@ -1404,12 +1310,6 @@ describe("add_task default escalation policy", () => {
 });
 
 describe("task tools with older long labels", () => {
-  /**
-   * purpose: Add a task and give it a 100 character label, as older data may have.
-   * @param t: (TestConvex) Harness.
-   * @param householdId: (Id<"households">) Household.
-   * @return: (Promise<string>) The task_id.
-   */
   async function longLabelTask(t: TestConvex, householdId: Id<"households">): Promise<string> {
     const id = await addTask(t, householdId);
     await t.run(async (ctx) => {
@@ -1441,12 +1341,6 @@ describe("task tools with older long labels", () => {
 });
 
 describe("as-needed medications", () => {
-  /**
-   * purpose: Add a task, then make it an as-needed medication as the app would (no times).
-   * @param t: (TestConvex) Harness.
-   * @param householdId: (Id<"households">) Household.
-   * @return: (Promise<string>) The task_id.
-   */
   async function asNeededTask(t: TestConvex, householdId: Id<"households">): Promise<string> {
     const id = await addTask(t, householdId);
     await t.run(async (ctx) => {
@@ -1537,7 +1431,6 @@ describe("duplicate guard and schedules", () => {
 
   test("a one-off conflicts only with a task that occurs on its date", async () => {
     const { t, a } = await makeWorld();
-    // 2027-03-03 is a Wednesday.
     await addTask(t, a, { ...PILLS, repeat_weekdays: ["mon"] });
     await addTask(t, a, { ...PILLS, once_on: "2027-03-03" });
     const clash = await tool(t, a, "add_task", { ...PILLS, once_on: "2027-03-08" });
@@ -1632,7 +1525,6 @@ describe("briefing over the task cap", () => {
         }),
       );
     }
-    // Only the oldest task (0) keeps an instance today; the rest have none.
     await t.run(async (ctx) => {
       for (const inst of await ctx.db.query("taskInstances").collect()) {
         if (inst.taskId !== ids[0]) await ctx.db.delete(inst._id);
@@ -1662,13 +1554,6 @@ describe("briefing over the task cap", () => {
 describe("anytime tasks", () => {
   const REMINDER = { type: "reminder", title: "Water the plants", display_label: "Water plants" };
 
-  /**
-   * purpose: The seeded policy of a household with the given system key.
-   * @param t: (TestConvex) Harness.
-   * @param householdId: (Id<"households">) Household.
-   * @param key: (string) "medication" or "prompt_only".
-   * @return: (Promise<Id<"escalationPolicies"> | undefined>) The policy id.
-   */
   async function policyKey(
     t: TestConvex,
     householdId: Id<"households">,
