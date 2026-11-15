@@ -1,2 +1,5 @@
 convex/_generated/
 node_modules/
+# Display frame goldens (PNG) and the fonts' license texts: not code.
+convex/lib/frameGoldens/
+convex/lib/fonts/*.txt

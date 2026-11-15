@@ -6,7 +6,8 @@
 // - which tasks are open (any task in today's list that is not done: an editor can mark any of
 //   them done);
 // - the checkbox of a task row (checkboxState: open, alert, done or disabled, and whether it can
-//   be tapped);
+//   be tapped: an open one to mark it done, a done one an editor may reopen per the day view's
+//   `reopenable` flag);
 // - today's task rows (leftover and today, with the "who confirmed" detail line of done tasks);
 // - the event rows of any day (tasks and events are different row types; the week strip dots
 //   count events only);
@@ -314,6 +315,11 @@ export interface TaskRowData extends RowBase {
   instanceId: DayTask['instanceId'];
   /** The note on the task, open or done; null when it has none. */
   note: string | null;
+  /**
+   * A done task an editor may reopen now: the day view's `reopenable` flag, which holds every
+   * server rule but the caller's role; always false for an open task.
+   */
+  reopenable: boolean;
 }
 
 /** An event row: plain, with no actions. */
@@ -364,6 +370,7 @@ function taskRow(task: DayTask, options: { id: string; userId: string | null }):
     detail,
     instanceId: task.instanceId,
     note: task.resolutionNote,
+    reopenable: variant === 'done' && task.reopenable === true,
     accessibilityLabel: spokenLabel({
       time,
       label: task.displayLabel,
@@ -396,27 +403,34 @@ function eventRow(event: EventOccurrence, id: string): EventRowData {
 /** How a task row's checkbox looks. */
 export type CheckboxKind = 'open' | 'alert' | 'done' | 'disabled';
 
-/** A task row's checkbox: its look, and whether tapping it marks the task done. */
+/**
+ * A task row's checkbox: its look, and whether tapping it does something (marks an open task
+ * done; for a checked box, asks to reopen the task).
+ */
 export interface CheckboxState {
   kind: CheckboxKind;
   interactive: boolean;
 }
 
 /**
- * purpose: The checkbox of a task row. A done task, or one whose Mark done call is running
- *          (busy), shows checked and cannot be tapped. An open task is tappable for an editor
- *          (an open box, or the serious colors for an alert) and dulled for a viewer, so a tap
- *          is never silently ignored.
+ * purpose: The checkbox of a task row. A task whose Mark done or Reopen call is running (busy)
+ *          shows checked and cannot be tapped. A done task shows checked; an editor may tap it
+ *          only when the row is reopenable (the day view's flag), otherwise nobody can. An open
+ *          task is tappable for an editor (an open box, or the serious colors for an alert)
+ *          and dulled for a viewer, so a tap is never silently ignored.
  * @param row: (TaskRowData) The task row.
  * @param flags: ({ canEdit: boolean, busy: boolean }) Whether this caregiver may edit
- *        (everyone but viewers) and whether a Mark done call is running for the task.
+ *        (everyone but viewers) and whether a Mark done or Reopen call is running for the task.
  * @return: (CheckboxState) The look and whether it is interactive.
  */
 export function checkboxState(
   row: TaskRowData,
   flags: { canEdit: boolean; busy: boolean },
 ): CheckboxState {
-  if (row.variant === 'done' || flags.busy) return { kind: 'done', interactive: false };
+  if (flags.busy) return { kind: 'done', interactive: false };
+  if (row.variant === 'done') {
+    return { kind: 'done', interactive: flags.canEdit && row.reopenable };
+  }
   if (!flags.canEdit) return { kind: 'disabled', interactive: false };
   return { kind: row.variant, interactive: true };
 }

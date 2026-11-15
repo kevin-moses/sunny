@@ -396,6 +396,7 @@ describe("getContext", () => {
         confirmReceivedDaysLater: null,
         confirmable: true,
         reopenable: false,
+        confirmPressIds: [],
         seniorPrompts: 0,
         snoozed: false,
         snoozedUntil: null,

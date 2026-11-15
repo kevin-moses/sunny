@@ -24,9 +24,17 @@
 // take-back stamp: a queued press made at or before the instance's confirmTakenBackAt is
 // refused, so a stale press cannot re-confirm what a senior undo or a caregiver reopen took
 // back. A press without an age (a live confirm, voice, a caregiver's Mark done) is made now
-// and is never checked against the stamp.
+// and is never checked against the stamp. Press ids (the phone's queue gives each press a
+// random id, isPressId) replace the estimated times where both sides come from one device:
+// queuedPressTakenBack gives the reason a queued press is refused (a taken-back press id, undone
+// or reopened by a caregiver: PRESS_TAKEN_BACK; the time rule: PRESS_BEFORE_TAKE_BACK) and
+// skips the time rule after this device user's own undo (see the comment at the skip: only
+// one queue may send ids per device user); withConfirmPressId keeps a confirmation's press ids
+// (the confirming press first, then the newest others of the same device, at most
+// MAX_CONFIRM_PRESS_IDS); withTakenBackPressIds keeps the last MAX_TAKEN_BACK_PRESS_IDS
+// taken-back ids.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import type { Doc } from "../_generated/dataModel";
 import { isAnytimeInstance, isAnytimeTask } from "./anytime";
@@ -84,6 +92,115 @@ export function seniorCanConfirm(instance: ConfirmRuleInput, now: number): boole
  */
 export function pressWasTakenBack(pressedAt: number, takenBackAt: number | undefined): boolean {
   return takenBackAt !== undefined && pressedAt <= takenBackAt;
+}
+
+/** A press id the phone's queue makes for each press: 16 to 64 URL-safe characters. */
+const PRESS_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** How many taken-back press ids an instance keeps (newest last). */
+export const MAX_TAKEN_BACK_PRESS_IDS = 8;
+
+/** How many press ids a confirmation keeps: the confirming press, then the newest others. */
+export const MAX_CONFIRM_PRESS_IDS = 4;
+
+/** Why a press id is refused (and the reason recorded for a press refused for it). */
+export const PRESS_ID_NOT_VALID = "The press id is not valid";
+
+/** Refusal reason for a press whose id was taken back (the list check). */
+export const PRESS_TAKEN_BACK = "This press was taken back";
+
+/** Refusal reason for a press made at or before the take-back stamp (the time rule). */
+export const PRESS_BEFORE_TAKE_BACK = "This press was made before the confirmation was taken back";
+
+/**
+ * purpose: Whether a value is a well-formed press id.
+ * @param value: (string) The id the device sent.
+ * @return: (boolean) True for 16 to 64 characters of letters, digits, "-" and "_".
+ */
+export function isPressId(value: string): boolean {
+  return PRESS_ID_PATTERN.test(value);
+}
+
+/** What the take-back check reads from a queued press. */
+export interface QueuedPress {
+  /** Epoch ms the press was made (server now minus the press age). */
+  pressedAt: number;
+  /** The press's id, when the device's queue gave it one. */
+  pressId: string | undefined;
+  /** The device account sending it (undefined only for a caller without a user). */
+  userId: string | undefined;
+}
+
+/**
+ * purpose: Why a senior device's queued press must be refused because the confirmation was
+ *          taken back after it, or null when it may apply. A press with an id is refused when
+ *          that id was taken back before (a resend of a press that was undone, or whose confirm
+ *          a caregiver reopened): PRESS_TAKEN_BACK. Otherwise, when the last take-back was this
+ *          same device user's own undo, it is accepted without the time rule, because the
+ *          phone's queue sends a task's entries strictly in order, so a different press
+ *          arriving after its own undo was made after it. Every other case (no id, a
+ *          caregiver's reopen, another device's undo, an instance taken back before ids
+ *          existed) uses pressWasTakenBack: PRESS_BEFORE_TAKE_BACK.
+ * @param press: (QueuedPress) The press.
+ * @param instance: (Pick<Doc<"taskInstances">, "confirmTakenBackAt" | "confirmTakenBackBy" |
+ *        "takenBackPressIds">) The instance's take-back fields.
+ * @return: (string | null) The refusal reason, or null.
+ */
+export function queuedPressTakenBack(
+  press: QueuedPress,
+  instance: Pick<
+    Doc<"taskInstances">,
+    "confirmTakenBackAt" | "confirmTakenBackBy" | "takenBackPressIds"
+  >,
+): string | null {
+  if (press.pressId !== undefined) {
+    if (instance.takenBackPressIds?.includes(press.pressId)) return PRESS_TAKEN_BACK;
+    // The skip below is keyed on the device user, but the ordering it relies on belongs to ONE
+    // queue: the phone app's pendingConfirms queue, the only sender of press ids today (the HTTP
+    // device API refuses a pressId key). No second sender of press ids may share a device user
+    // with the phone's queue unless this skip is re-keyed per queue (or replaced with per-queue
+    // sequence numbers). Known limits: each take-back appends up to MAX_CONFIRM_PRESS_IDS ids
+    // and the list keeps MAX_TAKEN_BACK_PRESS_IDS, so after more than 8 taken-back ids on one
+    // instance (as few as 3 take-backs) the oldest id falls out and a resend of that press
+    // would pass here; and an id dropped from confirmPressIds by its cap of 4 never reaches
+    // takenBackPressIds at all. One phone's queue cannot produce either: it never sends two
+    // presses in a row for one task and never resends an acknowledged entry.
+    if (press.userId !== undefined && instance.confirmTakenBackBy === press.userId) return null;
+  }
+  return pressWasTakenBack(press.pressedAt, instance.confirmTakenBackAt)
+    ? PRESS_BEFORE_TAKE_BACK
+    : null;
+}
+
+/**
+ * purpose: The taken-back press ids after a take-back: the confirmation's press ids appended,
+ *          newest last, at most MAX_TAKEN_BACK_PRESS_IDS (the oldest fall out).
+ * @param ids: (string[] | undefined) The instance's takenBackPressIds.
+ * @param added: (string[] | undefined) The confirmation's confirmPressIds; none adds nothing.
+ * @return: (string[] | undefined) The new list (undefined when there never was an id).
+ */
+export function withTakenBackPressIds(
+  ids: string[] | undefined,
+  added: string[] | undefined,
+): string[] | undefined {
+  if (added === undefined || added.length === 0) return ids;
+  return [...(ids ?? []), ...added].slice(-MAX_TAKEN_BACK_PRESS_IDS);
+}
+
+/**
+ * purpose: The confirmation's press ids after one more press of the same device landed on it
+ *          as a no-op: the confirming press stays first, then the newest others, at most
+ *          MAX_CONFIRM_PRESS_IDS in all. An id already there changes nothing.
+ * @param ids: (string[] | undefined) The instance's confirmPressIds.
+ * @param pressId: (string) The no-op press's id.
+ * @return: (string[]) The new list.
+ */
+export function withConfirmPressId(ids: string[] | undefined, pressId: string): string[] {
+  const list = ids ?? [];
+  if (list.includes(pressId)) return list;
+  if (list.length === 0) return [pressId];
+  const others = [...list.slice(1), pressId].slice(-(MAX_CONFIRM_PRESS_IDS - 1));
+  return [list[0]!, ...others];
 }
 
 /** How long (ms) after the server recorded a senior device's confirm that device may undo it. */

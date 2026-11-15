@@ -23,6 +23,12 @@
 //   from the app's taskMark), and drop the earliest done rows first when there are more than
 //   MAX_TODAY_ROWS, then the latest (rowsHidden counts those). The tests that pin these mirror
 //   sunny_app/src/display/__tests__/model.test.ts; change both together.
+// - For the wall display (server-drawn frames, lib/frame.ts), which offers Done only for a
+//   task that is due: nextUpAfterDue is Next up when an early Now task is not treated as Now;
+//   an event row is marked "past" once it is over (after its end, or EVENT_DEFAULT_MS after its
+//   start without one; the Now card and the all-done rule ignore this); rows and Next up items
+//   carry their type (a task's type, or "event") so a surface can name an item whose label it
+//   cannot draw.
 // - cues: what to chime and say. Every timed due or escalated task is listed (cueableNow says
 //   whether it may cue right now: not snoozed), and every other open timed task, tomorrow's
 //   included, that the escalation policy will prompt within CUE_HORIZON_MS. promptTimes are those
@@ -129,8 +135,14 @@ export type DayTask = Pick<
 /** The event occurrence fields the rules read (an OccurrenceJson has them all). */
 export type DayEvent = Pick<
   OccurrenceJson,
-  "eventId" | "label" | "startTime" | "visitorName" | "localDate"
+  "eventId" | "label" | "startTime" | "visitorName" | "localDate" | "startsAt" | "endsAt"
 >;
+
+/** How long (ms) an event without an end counts as still on after its start. */
+export const EVENT_DEFAULT_MS = 60 * MINUTE_MS;
+
+/** What a row or a Next up item is: a task's type, or an event. */
+export type ItemType = TodayEntry["type"] | "event";
 
 /** The instance and task fields a cue reads. */
 export type CueEntry = Pick<
@@ -215,6 +227,8 @@ export interface NextItem {
   icon: DeviceIcon;
   /** The visitor's initial, drawn instead of the icon; null when nobody visits. */
   initial: string | null;
+  /** The task's type, or "event". */
+  type: ItemType;
 }
 
 /** One row of the Today page. */
@@ -222,11 +236,14 @@ export interface TodayRow {
   key: string;
   time: string;
   label: string;
+  /** The task's type, or "event". */
+  type: ItemType;
   /**
    * done: checked and grey; now: the Now task, boxed and tagged; missed: grey with no check and
-   * no tag (its window closed unconfirmed); none: plain.
+   * no tag (its window closed unconfirmed); past: an event that is over (after its end, or an
+   * hour after its start when it has none), grey with no check; none: plain.
    */
-  mark: "done" | "now" | "missed" | "none";
+  mark: "done" | "now" | "missed" | "past" | "none";
 }
 
 /** A task to chime for and the sentence to say. */
@@ -275,6 +292,11 @@ export interface DeviceState {
   now: NowCard;
   done: DoneTarget | null;
   nextUp: NextItem | null;
+  /**
+   * Next up as the wall display shows it, where only a due task is Now: the same as nextUp
+   * unless the Now task is early, which is then next itself (or an event before it).
+   */
+  nextUpAfterDue: NextItem | null;
   rows: TodayRow[];
   /** Later rows left out because they do not fit. */
   rowsHidden: number;
@@ -418,7 +440,19 @@ function eventNext(event: DayEvent, when: string): NextItem {
     when,
     icon: "calendar",
     initial: visitor === "" ? null : Array.from(visitor)[0]!.toUpperCase(),
+    type: "event",
   };
+}
+
+/**
+ * purpose: Whether an event is over: at or after its end, or EVENT_DEFAULT_MS after its start
+ *          when it has no end.
+ * @param event: (Pick<DayEvent, "startsAt" | "endsAt">) The occurrence.
+ * @param now: (number) Epoch ms.
+ * @return: (boolean) True once it is over.
+ */
+export function isPastEvent(event: Pick<DayEvent, "startsAt" | "endsAt">, now: number): boolean {
+  return now >= (event.endsAt ?? event.startsAt + EVENT_DEFAULT_MS);
 }
 
 /**
@@ -452,6 +486,7 @@ export function nextItem(
         when: clockTime(task.scheduledTime),
         icon: taskIcon(task.type),
         initial: null,
+        type: task.type,
       };
     }
   }
@@ -464,16 +499,19 @@ export function nextItem(
 
 /**
  * purpose: The rows of the Today page. When there are more than fit, the earliest finished rows
- *          are dropped first, then the latest rows, which `hidden` counts.
+ *          are dropped first, then the latest rows, which `hidden` counts. An event that is over
+ *          at `now` is marked "past" (it is not dropped as a finished task is).
  * @param agenda: (AgendaItem[]) Today's agenda.
  * @param nowTaskId: (string | null) The Now task's instanceId, marked "now".
  * @param maxRows: (number) How many rows fit, counting the "more" line when one is needed.
+ * @param now: (number | null) Epoch ms for the past check; null marks no event past.
  * @return: ({ rows: TodayRow[]; hidden: number }) The rows and how many later ones were left out.
  */
 export function todayRows(
   agenda: AgendaItem[],
   nowTaskId: string | null,
   maxRows: number = MAX_TODAY_ROWS,
+  now: number | null = null,
 ): { rows: TodayRow[]; hidden: number } {
   const all = agenda.map((item): TodayRow => {
     if (item.kind === "event") {
@@ -481,7 +519,8 @@ export function todayRows(
         key: item.id,
         time: clockTime(item.event.startTime),
         label: item.event.label,
-        mark: "none",
+        type: "event",
+        mark: now !== null && isPastEvent(item.event, now) ? "past" : "none",
       };
     }
     const { task } = item;
@@ -489,6 +528,7 @@ export function todayRows(
       key: item.id,
       time: clockTime(task.scheduledTime),
       label: task.displayLabel,
+      type: task.type,
       mark: taskMark(task, nowTaskId),
     };
   });
@@ -590,7 +630,8 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
   const target = doneTarget(input.tasks);
   const nowTaskId = target?.instanceId ?? null;
   const agenda = buildAgenda(input.tasks, input.eventsToday);
-  const { rows, hidden } = todayRows(agenda, nowTaskId);
+  const { rows, hidden } = todayRows(agenda, nowTaskId, MAX_TODAY_ROWS, now);
+  const dueTaskId = target !== null && isDue(target) ? target.instanceId : null;
   const label = dateLabel(today);
   const content = {
     seniorPreferredName: input.seniorPreferredName,
@@ -606,6 +647,7 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
         ? null
         : { instanceId: target.instanceId, early: target.state === "upcoming" },
     nextUp: nextItem(agenda, input.upcoming, today, time, nowTaskId),
+    nextUpAfterDue: nextItem(agenda, input.upcoming, today, time, dueTaskId),
     rows,
     rowsHidden: hidden,
     cues: cueList(input.cueInputs, now),
@@ -619,6 +661,7 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
     now: content.now,
     done: content.done,
     nextUp: content.nextUp,
+    nextUpAfterDue: content.nextUpAfterDue,
     rows: content.rows,
     rowsHidden: content.rowsHidden,
   };

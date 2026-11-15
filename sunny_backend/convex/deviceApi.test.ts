@@ -18,10 +18,13 @@
 // that stands when the state cannot be read afterwards (state null), missed and anytime
 // instances by id, replayed presses (late sync at the press time, too early, too late), a
 // deleted instance (rejected, audited), another household's instance (same answer as a deleted
-// one, left alone, audited without its id), 400 for bad bodies, ids and press ages (each
-// audited, nothing raw stored), the 20-an-hour cap on refusal rows (the core's refusals, such as
+// one, left alone, audited without its id), 400 for a pressId key (the phone app's queue must
+// stay the only sender of press ids, see lib/confirmRule), 400 for bad bodies, ids and press
+// ages (each audited, nothing raw stored), the 20-an-hour cap on refusal rows (the core's refusals, such as
 // a press before the early window or on a deleted task, count and stop being written too), and a
-// body over 4096 characters. A device-API confirm is a device confirm: its audit rows say
+// body over 4096 characters. (Presses before the window here come from the widget surface,
+// whose early hour is the core's rule; the hardware button refuses them itself, tested in
+// deviceFrame.test.ts.) A device-API confirm is a device confirm: its audit rows say
 // transport device_api (the app's say app), a caregiver's reopen stamps it so an older queued
 // press is refused, the phone app's Undo takes back a press the same device made, and there is
 // no /device/undo route. Isolation: another household's instance in any state (confirmed,
@@ -594,6 +597,26 @@ describe("GET /device/state", () => {
 });
 
 describe("POST /device/confirm", () => {
+  test("refuses a pressId key: the phone app's queue must stay the only sender of press ids", async () => {
+    // lib/confirmRule.queuedPressTakenBack skips the time rule after a device user's own undo,
+    // which is safe only while one queue per device user sends press ids. If this route ever
+    // accepts pressId, re-key that skip per queue first.
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    const res = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 0,
+      via: "widget",
+      pressId: "press-0000000000000001",
+    });
+    expect(res.status).toBe(400);
+    const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(row!.state).toBe("due");
+    expect(row!.confirmPressIds).toBeUndefined();
+  });
+
   test("confirms as the device and returns the fresh state with its ETag", async () => {
     const t = makeBackend();
     const f = await household(t);
@@ -630,7 +653,7 @@ describe("POST /device/confirm", () => {
   test("a press stands when the state cannot be read afterwards: state is null", async () => {
     const t = makeBackend();
     const f = await household(t);
-    await force(f, { state: "due" });
+    await force(f, { state: "due", windowStart: local("06:50") }); // due: its window has opened
     const token = await issue(t);
     vi.spyOn(console, "error").mockImplementation(() => {});
     // With the household row gone the press still applies but the state load throws.
@@ -694,10 +717,11 @@ describe("POST /device/confirm", () => {
     const f = await household(t);
     const token = await issue(t);
     setNow(local("07:30"));
+    // A phone surface (the hardware button refuses any press before the window itself).
     const res = await postConfirm(t, token, {
       instanceId: f.instanceId,
       pressedAgoMs: 40 * MIN,
-      via: "button",
+      via: "widget",
     });
     expect(await res.json()).toMatchObject({
       status: "rejected",
@@ -843,7 +867,7 @@ describe("POST /device/confirm", () => {
     const early = await postConfirm(t, token, {
       instanceId: f.instanceId,
       pressedAgoMs: 10 * MIN,
-      via: "button",
+      via: "widget",
     });
     expect(await early.json()).toMatchObject({
       status: "rejected",
@@ -854,7 +878,7 @@ describe("POST /device/confirm", () => {
     const valid = await postConfirm(t, token, {
       instanceId: f.instanceId,
       pressedAgoMs: 0,
-      via: "button",
+      via: "widget",
     });
     expect(((await valid.json()) as { status: string }).status).toBe("confirmed");
     await t.run(async (ctx) => await ctx.db.delete(f.instanceId));
@@ -898,7 +922,7 @@ describe("the refused-press budget", () => {
   test("successful confirms do not spend it", async () => {
     const t = makeBackend();
     const f = await household(t);
-    await force(f, { state: "due" });
+    await force(f, { state: "due", windowStart: local("06:50") }); // due: its window has opened
     const token = await issue(t);
     const press = { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" };
     for (let i = 0; i < 25; i++) {
@@ -1020,7 +1044,7 @@ describe("the core's refusal row", () => {
     const f = await household(t);
     const token = await issue(t, "display");
     // Pressed 10 minutes before the early window opened: only the core refuses this.
-    const early = { instanceId: f.instanceId, pressedAgoMs: 10 * MIN, via: "button" as const };
+    const early = { instanceId: f.instanceId, pressedAgoMs: 10 * MIN, via: "widget" as const };
     await postConfirm(t, token, early);
     await t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, early);
     const rows = (await audits(t)).filter(
@@ -1040,7 +1064,7 @@ describe("a confirm through the device API is a device confirm", () => {
   test("every confirm and refusal records how it arrived (transport)", async () => {
     const t = makeBackend();
     const f = await household(t);
-    await force(f, { state: "due" });
+    await force(f, { state: "due", windowStart: local("06:50") }); // due: its window has opened
     const token = await issue(t, "display");
     await postConfirm(t, token, { instanceId: f.instanceId, pressedAgoMs: 0, via: "button" });
     await postConfirm(t, token, { instanceId: "abc", pressedAgoMs: 0, via: "button" });

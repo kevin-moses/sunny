@@ -24,8 +24,10 @@
 // whether an editor caregiver may reopen it (confirmed or resolved, either marked done
 // today or one of today's tasks, and its task still runs that way: active, and still timed at
 // that time or anytime to match; the role is the mutation's check), so the app can show the
-// control without copying the rule. seniorPrompts counts the senior prompts the escalation
-// policy has sent for the instance (fired prompt_senior steps that were notified), so the
+// control without copying the rule. confirmPressIds lists the phone queue's press ids of the
+// confirmation (the instance's confirmPressIds, [] when none), so the phone can tell whether a
+// confirm is the one its own Undo takes back. seniorPrompts counts the senior prompts the
+// escalation policy has sent for the instance (fired prompt_senior steps that were notified), so the
 // home display can repeat its due cue on each reprompt; snoozed is true while a snooze
 // ("not yet") holds the senior prompts back at `now`, the scheduler's own test, so the
 // display holds its cue until the snooze ends; snoozedUntil is when the latest snooze ends
@@ -87,6 +89,12 @@ export interface TodayEntry {
    * today, and its task still runs (not deactivated, not switched to or from anytime, time kept).
    */
   reopenable: boolean;
+  /**
+   * The phone queue's ids of the presses that make up the confirmation (the confirming press
+   * first, then same-device presses that landed on it as no-ops); [] when there are none. The
+   * phone shows a task open after its own Undo only when the undo's press id is here.
+   */
+  confirmPressIds: string[];
   /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
   seniorPrompts: number;
   /** True while the instance is snoozed (now is before its snoozedUntil). */
@@ -191,6 +199,7 @@ export async function todayInstances(
       confirmable: seniorCanConfirm(instance, now),
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
+      confirmPressIds: instance.confirmPressIds ?? [],
       seniorPrompts: seniorPromptCount(instance.firedSteps),
       snoozed: isSnoozed(instance.snoozedUntil, now),
       snoozedUntil: instance.snoozedUntil ?? null,

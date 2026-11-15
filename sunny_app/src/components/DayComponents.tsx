@@ -2,11 +2,13 @@
 //
 // Purpose: The building blocks of the senior phone's day clock: the orientation header
 // ("Monday evening", date below, no minute clock), the Next up card, today's agenda and the
-// coming week, the Done card (the task's label above one large Done button, and the result
-// line of the last press; a task that is not due yet gets a "Coming up at ..." heading and an
-// outlined "Done early" button; a task whose window closed unconfirmed is drawn dimmed, with
-// the empty circle), plus the offline mark the caregiver home also uses. The home
-// display has its own parts in src/display. Calm, high contrast, no motion.
+// coming week, the Done card (the task's label above one large Done button, a result line such
+// as "press again", and for 30 seconds after a press the Undo line "<label> done." with an
+// outlined secondary Undo button, the one line confirming the press; a task that is not due
+// yet gets a "Coming up at ..." heading and an outlined "Done early" button; a task whose
+// window closed unconfirmed is drawn dimmed, with the empty circle), plus the offline mark the
+// caregiver home also uses. The home display has its own parts in src/display. Calm, high
+// contrast, no motion.
 //
 // Last modified: 2026-11-14
 
@@ -276,27 +278,67 @@ const DONE_PRESSED_COLOR = '#14582A';
 /** Background of the early Done button while pressed (a light tint of the success green). */
 const DONE_EARLY_PRESSED_COLOR = '#D9EBDD';
 
+/** Height (points) of the Undo button: a large target, smaller than Done. */
+const UNDO_BUTTON_HEIGHT = 64;
+
+/** The Undo line of the Done card: the task whose latest press may be taken back. */
+export interface UndoOffer {
+  /** The task's label. */
+  label: string;
+  /** The line: "<label> done.", with the offline note when the press was made offline. */
+  text: string;
+  /** Called when Undo is tapped. */
+  onPress: () => void;
+}
+
 /**
- * purpose: The Done card: the task's label above one large Done button, and the result of the
- *          last press below. A task that is not due yet (confirmed early) looks different on
- *          purpose: a heading "Coming up at 9:00 AM" above the label and an outlined button
- *          reading "Done early", so it is plain that this is not the task due now. With no
- *          task it shows only the result line, or nothing at all (never a button that does
- *          nothing).
- * @param props: ({ task, message, onPress }) The task Done confirms (null when there is none),
- *        the result line (null for none) and the press handler.
+ * purpose: The Undo line under the Done area, the one line confirming a press: its text
+ *          ("<label> done.", plus the offline note) and an outlined secondary Undo button (not
+ *          the filled Done style), at least 60 points high, labelled "Undo <label> done".
+ * @param props: ({ undo: UndoOffer }) The task's label, the line and the tap handler.
+ * @return: (JSX.Element) The line.
+ */
+export function UndoLine({ undo }: { undo: UndoOffer }) {
+  return (
+    <View style={styles.undoLine}>
+      <Text style={[styles.rounded, styles.undoLabel]}>{undo.text}</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Undo ${undo.label} done`}
+        onPress={undo.onPress}
+        style={({ pressed }) => [styles.undoButton, pressed && { backgroundColor: colors.card }]}
+      >
+        <Text style={[styles.rounded, styles.undoText]}>Undo</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/**
+ * purpose: The Done card: the task's label above one large Done button, the result of the last
+ *          press below, and under that the Undo line of the latest press while it may be taken
+ *          back (it never replaces a Done button for another task). A task that is not due yet
+ *          (confirmed early) looks different on purpose: a heading "Coming up at 9:00 AM" above
+ *          the label and an outlined button reading "Done early", so it is plain that this is
+ *          not the task due now. With no task it shows only the result line and the Undo line,
+ *          or nothing at all (never a button that does nothing).
+ * @param props: ({ task, message, onPress, undo }) The task Done confirms (null when there is
+ *        none), the result line (null for none), the press handler and the Undo offer (null or
+ *        absent for none; the phone only).
  * @return: (JSX.Element | null) The card.
  */
 export function DoneCard({
   task,
   message,
   onPress,
+  undo = null,
 }: {
   task: DayTask | null;
   message: string | null;
   onPress: () => void;
+  undo?: UndoOffer | null;
 }) {
-  if (task === null && message === null) return null;
+  if (task === null && message === null && undo === null) return null;
   const early = task !== null && task.state === 'upcoming';
   const comingUp = task === null ? '' : `Coming up at ${displayTime(task.scheduledTime)}`;
   return (
@@ -341,6 +383,7 @@ export function DoneCard({
       {message !== null && (
         <Text style={[styles.rounded, { fontSize: 22, fontWeight: '500' }]}>{message}</Text>
       )}
+      {undo !== null && <UndoLine undo={undo} />}
     </View>
   );
 }
@@ -372,4 +415,18 @@ const styles = StyleSheet.create({
   earlyText: { color: colors.success, fontSize: 34 },
   doneText: { fontFamily: ROUNDED_FONT, fontSize: 40, fontWeight: '700', color: colors.surface },
   offline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  undoLine: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 12 },
+  undoLabel: { flex: 1, fontSize: 24, fontWeight: '600' },
+  undoButton: {
+    minHeight: UNDO_BUTTON_HEIGHT,
+    minWidth: 120,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+    borderWidth: 3,
+    borderColor: colors.secondaryText,
+    backgroundColor: colors.surface,
+  },
+  undoText: { fontSize: 28, fontWeight: '700' },
 });
