@@ -1,17 +1,3 @@
-// sunny_app/src/caregiver/__tests__/useTaskActions.test.tsx
-//
-// Purpose: Tests for useTaskActions, rendering the real hook with react-test-renderer and a
-// mocked callMutation: claim and saveNote send their mutations, markDone resolves true only when
-// this caregiver's tick took effect ("Already marked done." otherwise), undoMarkDone sends
-// undoResolve and shows a refusal in the task's slot, a failed call sets the error state, a
-// success clears the state, a call that finishes after a newer one started leaves the newer
-// state alone (a note save ending during Mark done), error messages (including "Already marked
-// done.") clear themselves after 5 seconds or when the next action starts, the action
-// functions keep their identity between renders, and reopen sends reopenTaskInstance, shows
-// "reopening" while it runs and the server's refusal when it fails.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import React from 'react';
@@ -29,13 +15,8 @@ jest.mock('../../backend/api', () => ({
 
 const mockCall = callMutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const ID = 'inst1' as never;
-/** Renderers created by a test, unmounted afterwards so pending error timers are cleared. */
 const mounted: ReactTestRenderer[] = [];
 
-/**
- * purpose: Render the real hook and expose its latest return value.
- * @return: (object) A getter for the current TaskActions.
- */
 function renderActions(): { get: () => TaskActions } {
   let current!: TaskActions;
   const Probe = (): null => {

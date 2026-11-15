@@ -1,14 +1,3 @@
-// sunny_app/src/components/__tests__/AgendaList.test.tsx
-//
-// Purpose: Render tests for the phone's agenda (AgendaList), mainly how a missed task (its
-// confirmation window closed unconfirmed) is drawn: the label in the dimmed time color, no
-// strikethrough, no highlight, the empty circle, and the neutral screen reader value "Earlier
-// today, not marked done". Upcoming, due and done rows are checked to be unchanged, and a
-// missed task that was later confirmed is drawn as done. The real AgendaList renders; only the
-// native symbol view (it records the symbol name) and the theme hook are stubbed.
-//
-// Last modified: 2026-11-13
-
 import { describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { StyleSheet, Text, type TextStyle } from 'react-native';
@@ -27,11 +16,6 @@ jest.mock('expo-symbols', () => ({
 }));
 jest.mock('../../theme/ThemeProvider', () => ({ useTheme: () => ({ accentColor: '#FA8539' }) }));
 
-/**
- * purpose: Build a task.
- * @param state: (string) The task's state.
- * @return: (DayTask) An 08:00 "Breakfast pills" medication in that state.
- */
 function makeTask(state: string): DayTask {
   return {
     instanceId: 't1',
@@ -46,7 +30,6 @@ function makeTask(state: string): DayTask {
   } as unknown as DayTask;
 }
 
-/** What one rendered row exposes to the tests. */
 interface RowView {
   value: string | undefined;
   label: TextStyle;
@@ -55,11 +38,6 @@ interface RowView {
   rowBackground: unknown;
 }
 
-/**
- * purpose: Render the agenda for one task and read its row.
- * @param state: (string) The task's state.
- * @return: (RowView) The row's accessibility value, label and time styles, symbols and fill.
- */
 function renderRow(state: string): RowView {
   const day = { tasks: [makeTask(state)], eventsToday: [] } as unknown as DayViewData;
   let renderer!: ReactTestRenderer;

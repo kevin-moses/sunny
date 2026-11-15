@@ -1,17 +1,3 @@
-// sunny_app/src/caregiver/__tests__/useWordingPlayer.test.tsx
-//
-// Purpose: Tests for useWordingPlayer with react-test-renderer and expo-speech, expo-audio and
-// AppState mocked at the module boundary: a play speaks with the display's language and rate
-// after setting the audio session; a session that cannot be set is logged and the sentence is
-// spoken anyway; a speech engine that throws at once ends in the failed state with nothing
-// playing; a stop tapped during the audio setup means nothing is spoken; a second tap on the same card stops it; tapping another card stops
-// the first and plays the second, and the first's late "stopped" callback does not clear the
-// second; finishing clears the playing card; an
-// error marks the card failed; the tab becoming inactive, the app leaving the foreground and
-// unmounting each stop the speech.
-//
-// Last modified: 2026-11-14
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { SpeechOptions } from 'expo-speech';
 import React from 'react';
@@ -20,12 +6,10 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { useWordingPlayer, type WordingPlayer } from '../useWordingPlayer';
 
-/** Each speak call, with its options (callbacks included). */
 const mockSpoken: { text: string; options: SpeechOptions }[] = [];
 const mockStop = jest.fn();
 const mockSetAudioMode = jest.fn<(mode: unknown) => Promise<void>>();
 
-/** When set, the next speak call throws synchronously. */
 let mockSpeakError: Error | null = null;
 
 jest.mock('expo-speech', () => ({
@@ -44,21 +28,15 @@ jest.mock('../../logging/logger', () => ({
   logger: { info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
 
-/** The AppState listener the hook registered. */
 let appStateListener: ((state: string) => void) | null = null;
 const mockRemove = jest.fn();
 
-/** A rendered hook: the latest player, a re-render with another active flag, and the renderer. */
 interface Harness {
   get: () => WordingPlayer;
   setActive: (active: boolean) => void;
   renderer: ReactTestRenderer;
 }
 
-/**
- * purpose: Render the real hook and expose its latest return value.
- * @return: (Harness) The harness.
- */
 function renderPlayer(): Harness {
   let current!: WordingPlayer;
   const Probe = ({ active }: { active: boolean }): null => {
@@ -79,12 +57,6 @@ function renderPlayer(): Harness {
   };
 }
 
-/**
- * purpose: Tap a card's button and let the audio session promise settle.
- * @param h: (Harness) The harness.
- * @param id: (string) The card.
- * @return: (Promise<void>) Resolves after the tap's async work.
- */
 async function tap(h: Harness, id: string): Promise<void> {
   await act(async () => {
     h.get().toggle(id, `sentence ${id}`);

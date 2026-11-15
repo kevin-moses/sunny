@@ -1,30 +1,15 @@
-// sunny_app/src/components/Banner.tsx
-//
-// Purpose: A snackbar shown at the top of the screen for errors and warnings. The tone
-// picks the "serious" (error) or "moderate" (warning) status colors; an optional dismiss
-// button is shown when onDismiss is given. The tone colors live in theme/colors (statusTones).
-//
-// Last modified: 2026-10-31
-
 import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { GRID, statusTones } from '../theme/colors';
 
-/** Props for Banner. */
 interface BannerProps {
   tone: keyof typeof statusTones;
   title: string;
   message: string;
-  /** When given, a dismiss button is shown and calls this. */
   onDismiss?: () => void;
 }
 
-/**
- * purpose: Show a titled message in the colors of its tone, with an optional dismiss button.
- * @param props: (BannerProps) The tone, title, message and optional dismiss handler.
- * @return: (JSX.Element) The banner.
- */
 export function Banner({ tone, title, message, onDismiss }: BannerProps) {
   const { foreground, background, separator } = statusTones[tone];
   return (

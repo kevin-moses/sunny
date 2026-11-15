@@ -1,31 +1,3 @@
-// sunny_app/App.tsx
-//
-// Purpose: Root of the Sunny app. Without a Clerk publishable key it shows a configuration
-// error screen. Otherwise it wraps the app in ClerkProvider (session in the Keychain via
-// Clerk's token cache) and ConvexProviderWithClerk (one client, Clerk "convex" JWT template),
-// then follows useSession: a calm "Connecting..." view (with a one-line notice when the backend
-// cannot be reached) while Clerk, Convex auth and the household queries load and while a removed
-// device is being unpaired. Signed out shows SignedOutFlow (src/screens/SignedOutFlow.tsx):
-// WelcomeScreen, which leads to the caregiver email code sign-in (CaregiverSignInScreen) or to
-// PairingScreen for a senior's device. A paired senior device gets the paired home: TodayScreen
-// on the senior phone, or ConversationScreen while a voice conversation is live on the phone;
-// DisplayScreen on the home display, which shows its voice session on its own panel and status
-// line instead (no conversation screen and no voice banners). The paired home is keyed by
-// household and owns the day view so it survives a conversation. A signed-in caregiver gets
-// CaregiverApp (keyed by household) or, without a household, CaregiverOnboardingScreen (join
-// with an invite code or create one). Only devices get voice sessions (VoiceProvider is idle
-// without a paired device); CaregiverApp registers a caregiver's push itself. Nothing about the
-// pairing or the role is stored locally, so an offline cold start shows "Connecting..." until
-// Clerk and Convex answer. Notification taps are discarded while signed out (SignedOutFlow) and
-// during caregiver onboarding. Shows a "Trying to reconnect" warning and voice errors as
-// banners; __DEV__ builds add the DEV pill for developer settings (src/screens/DevTools.tsx; on
-// the home display it opens only on a long press, so the senior cannot open it by accident, and
-// the sheet then also shows the display's tunables).
-// Provider order: SafeAreaProvider > ThemeProvider > TuningProvider > ClerkProvider >
-// ConvexProviderWithClerk > VoiceProvider.
-//
-// Last modified: 2026-11-14
-
 import { ClerkProvider, useAuth } from '@clerk/expo';
 import { tokenCache } from '@clerk/expo/token-cache';
 import { ConvexProviderWithClerk } from 'convex/react-clerk';
@@ -52,14 +24,6 @@ import { ThemeProvider } from './src/theme/ThemeProvider';
 import { ConversationScreen } from './src/voice/ConversationScreen';
 import { useVoice, VoiceProvider } from './src/voice/VoiceProvider';
 
-/**
- * purpose: The home surface of a paired device. The display always shows DisplayScreen, which
- *          draws its own voice states; the phone shows the conversation while a voice session
- *          is live, otherwise Today. It owns the day view, so the day stays loaded while the
- *          conversation replaces the phone's home screen.
- * @param props: ({ paired: PairedDevice }) The device's pairing.
- * @return: (JSX.Element) The conversation or the home screen.
- */
 function PairedHome({ paired }: { paired: PairedDevice }) {
   const voice = useVoice();
   const dayView = useDayView(paired.householdId);
@@ -68,21 +32,10 @@ function PairedHome({ paired }: { paired: PairedDevice }) {
   return <TodayScreen dayView={dayView} />;
 }
 
-/**
- * purpose: Whether a session decision is the paired home display.
- * @param decision: (SessionDecision) The session decision.
- * @return: (boolean) True for a paired home display.
- */
 function isHomeDisplay(decision: SessionDecision): boolean {
   return decision.state === 'paired' && decision.device.kind === 'home_display';
 }
 
-/**
- * purpose: The warning and error banners stacked at the top of the screen. The home display
- *          shows voice problems on its own status line, so it gets no voice banners.
- * @param props: ({ voiceBanners: boolean }) Whether to show the voice banners.
- * @return: (JSX.Element) The banners.
- */
 function Banners({ voiceBanners }: { voiceBanners: boolean }) {
   const voice = useVoice();
   const insets = useSafeAreaInsets();
@@ -99,12 +52,6 @@ function Banners({ voiceBanners }: { voiceBanners: boolean }) {
   );
 }
 
-/**
- * purpose: The screen for a settled session decision: the welcome flow, the paired home, the
- *          caregiver app or caregiver onboarding.
- * @param props: ({ decision }) The session decision; loading and removed are handled by Root.
- * @return: (JSX.Element) The screen.
- */
 function SessionScreen({ decision }: { decision: SessionDecision }) {
   switch (decision.state) {
     case 'paired':
@@ -124,12 +71,6 @@ function SessionScreen({ decision }: { decision: SessionDecision }) {
   }
 }
 
-/**
- * purpose: The app shell inside the voice provider: the screen for the session, banners, dev
- *          tools.
- * @param props: ({ decision }) The session decision.
- * @return: (JSX.Element) The shell.
- */
 function Shell({ decision }: { decision: SessionDecision }) {
   return (
     <View style={styles.root}>
@@ -140,11 +81,6 @@ function Shell({ decision }: { decision: SessionDecision }) {
   );
 }
 
-/**
- * purpose: A calm placeholder while the connection or the pairing is being established.
- * @param props: ({ notice }) An optional one-line message shown under "Connecting...".
- * @return: (JSX.Element) The view.
- */
 function LoadingView({ notice }: { notice?: string }) {
   return (
     <View style={[styles.root, styles.loading]}>
@@ -154,11 +90,6 @@ function LoadingView({ notice }: { notice?: string }) {
   );
 }
 
-/**
- * purpose: Follow the signed-in account (useSession) and host the voice provider, which is only
- *          given a device for a paired senior device.
- * @return: (JSX.Element) The loading view, or the shell for every other state.
- */
 function Root() {
   const decision = useSession();
   if (decision.state === 'loading') return <LoadingView notice={decision.notice} />;
@@ -171,11 +102,6 @@ function Root() {
   );
 }
 
-/**
- * purpose: Provide Clerk and Convex to the app, wired together so Convex calls carry the
- *          signed-in Clerk session.
- * @return: (JSX.Element) The provider tree around Root.
- */
 function BackendProviders() {
   return (
     <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} tokenCache={tokenCache}>
@@ -186,10 +112,6 @@ function BackendProviders() {
   );
 }
 
-/**
- * purpose: The app root component registered by index.ts.
- * @return: (JSX.Element) The provider tree.
- */
 export default function App() {
   return (
     <SafeAreaProvider>

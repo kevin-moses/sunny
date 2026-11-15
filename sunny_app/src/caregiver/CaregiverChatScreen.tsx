@@ -1,27 +1,3 @@
-// sunny_app/src/caregiver/CaregiverChatScreen.tsx
-//
-// Purpose: The caregiver Chat tab: a conversation with the household's agent. The transcript is
-// the household's chat thread (agentRequests.transcript, newest first) shown oldest first: the
-// caregiver's message as a right-aligned accent bubble, Sunny's reply as plain text on the
-// left (the shared UserBubble and AgentMessage), a calm "working" line while a request is
-// queued or running, and the error when it failed. Sunny's own posts (the daily digest) show as
-// Sunny messages under a small "Daily summary" label with the day; a reply to one is an
-// ordinary message (the agent knows the recent digests). Sending calls agentRequests.request
-// with continueLatest, so the server keeps the one household conversation going. Sending waits
-// while any request is queued or running (the server allows one at a time per conversation).
-// Viewers cannot send (the server requires an editor), so they see a note instead of the input;
-// the thread they read holds the digest posts only. The draft text lives in the composer, so
-// typing does not re-render the transcript. The screen is keyboard-aware, sticks to the newest
-// message, and leaves room for the tab bar (useTabBarInset). The transcript is shared by every
-// editor: messages from other caregivers carry their name above the bubble (the signed-in
-// caregiver's id comes from CaregiverApp). Sends are guarded by a ref so two taps in one frame
-// cannot both send. Under Sunny's reply to a request that added or changed tasks, a wording card
-// per task shows the label the display shows and the sentence Sunny speaks, with a play button
-// (WordingCard, useWordingPlayer: one sentence at a time, stopped when the tab is hidden, the
-// app leaves the foreground or the screen unmounts; CaregiverApp passes whether the tab shows).
-//
-// Last modified: 2026-11-14
-
 import { useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -39,30 +15,18 @@ import { useTabBarInset } from './tabBarInset';
 import { useWordingPlayer, type WordingPlayer } from './useWordingPlayer';
 import { WordingCard } from './WordingCard';
 
-/** How many recent items (requests and posts) the transcript loads. */
 const TRANSCRIPT_LIMIT = 20;
 
-/** The transcript before the first load or for a viewer. */
 const EMPTY: TranscriptEntry[] = [];
 
-/** Props for CaregiverChatScreen. */
 interface CaregiverChatScreenProps {
   householdId: HouseholdId;
-  /** The senior's preferred name; null before the day view has loaded. */
   seniorName: string | null;
-  /** Whether this caregiver may message the agent (everyone but viewers). */
   canSend: boolean;
-  /** The signed-in caregiver's Clerk user id, to tell their messages from other caregivers'. */
   userId: string | null;
-  /** Whether the Chat tab is showing (it stays mounted when hidden); hiding stops playback. */
   active?: boolean;
 }
 
-/**
- * purpose: One line of the transcript.
- * @param props: ({ entry, player }) The line, and the wording card player.
- * @return: (JSX.Element) The bubble, reply, wording card or status line.
- */
 function TranscriptRow({ entry, player }: { entry: TranscriptEntry; player: WordingPlayer }) {
   const textStyle = [type.body, styles.ink];
   if (entry.wording !== null) {
@@ -100,13 +64,6 @@ function TranscriptRow({ entry, player }: { entry: TranscriptEntry; player: Word
   );
 }
 
-/**
- * purpose: The message field and send button, owning the draft text so typing re-renders only
- *          this component.
- * @param props: ({ placeholder, disabled, onSend }) The placeholder, whether sending is
- *        blocked, and the send function, which resolves true when the message was sent.
- * @return: (JSX.Element) The input row.
- */
 function ChatComposer({
   placeholder,
   disabled,
@@ -118,10 +75,6 @@ function ChatComposer({
 }) {
   const [text, setText] = useState('');
 
-  /**
-   * purpose: Send the trimmed draft and clear it once it was sent.
-   * @return: (Promise<void>) Resolves when the send settles.
-   */
   const submit = async (): Promise<void> => {
     const message = text.trim();
     if (message === '') return;
@@ -140,13 +93,6 @@ function ChatComposer({
   );
 }
 
-/**
- * purpose: Render the Chat tab.
- * @param props: (CaregiverChatScreenProps) The household, the senior's name, whether the
- *        caregiver may send, the signed-in caregiver's user id and whether the tab is showing
- *        (default true).
- * @return: (JSX.Element) The screen.
- */
 export function CaregiverChatScreen({
   householdId,
   seniorName,
@@ -159,8 +105,6 @@ export function CaregiverChatScreen({
   const tabBarInset = useTabBarInset();
   const scrollRef = useRef<ScrollView>(null);
   const [sending, setSending] = useState(false);
-  // Synchronous in-flight guard: state is stale until the next render, so two taps in one frame
-  // would both pass a state check.
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
@@ -175,12 +119,6 @@ export function CaregiverChatScreen({
   const busy = result.data !== undefined && hasInProgress(result.data);
   const listError = result.status === 'error' ? toBackendError(result.error).message : null;
 
-  /**
-   * purpose: Send a message to the agent, continuing the household's conversation. Only one
-   *          send runs at a time; an error is shown above the input on failure.
-   * @param message: (string) The trimmed, non-empty message.
-   * @return: (Promise<boolean>) True when the message was sent; never rejects.
-   */
   const send = async (message: string): Promise<boolean> => {
     if (sendingRef.current) return false;
     sendingRef.current = true;

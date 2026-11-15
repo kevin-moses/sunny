@@ -1,10 +1,3 @@
-// sunny_app/src/caregiver/__tests__/haptics.test.ts
-//
-// Purpose: Unit tests for the haptics wrapper: tapHaptic and undoHaptic call the right
-// expo-haptics functions, and a rejected call does not surface as an unhandled rejection.
-//
-// Last modified: 2026-11-01
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as Haptics from 'expo-haptics';
 

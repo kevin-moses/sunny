@@ -1,19 +1,3 @@
-// sunny_app/src/screens/CaregiverOnboardingScreen.tsx
-//
-// Purpose: Shown to a signed-in caregiver who is not in a household yet. A first choice leads to
-// one of two forms: join with an invite code from another caregiver (code and "Your name" ->
-// households.redeemJoinCode), or set up a new household (what the parent likes to be called,
-// "Your name" and an editable timezone defaulting to the phone's -> households.create). The
-// backend's message is shown inline when a call fails. After a call succeeds the screen does
-// nothing more: households.mine updates reactively and the app shell moves to the caregiver
-// home. A "Sign out" button (Clerk) lets the user leave with a different account; it first
-// unregisters a push token this phone may still hold from an earlier household
-// (signOutCaregiver). No notification permission is asked here: that waits for a household. A
-// notification tap while this screen shows (left from an earlier household) is discarded
-// (useDiscardNotificationTaps), so it cannot claim anything once a household is joined.
-//
-// Last modified: 2026-11-14
-
 import { useAuth } from '@clerk/expo';
 import { useState } from 'react';
 import { StyleSheet, Text, TextInput, type TextInputProps } from 'react-native';
@@ -31,25 +15,18 @@ import { useDiscardNotificationTaps } from '../notifications/push';
 import { colors, ROUNDED_FONT } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 
-/** Which part of onboarding is showing. */
 type Mode = 'choose' | 'join' | 'create';
 
-/** The header of each part of onboarding. */
 const TITLES: Record<Mode, string> = {
   choose: 'Your family',
   join: 'Join a household',
   create: 'Set up a household',
 };
 
-/**
- * purpose: The phone's IANA timezone, as the default for a new household.
- * @return: (string) For example "America/New_York"; empty when the phone does not report one.
- */
 function deviceTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
 }
 
-/** Props for Field. */
 interface FieldProps {
   label: string;
   value: string;
@@ -60,12 +37,6 @@ interface FieldProps {
   autoCorrect?: boolean;
 }
 
-/**
- * purpose: A labeled text field.
- * @param props: (FieldProps) The label, value, change handler, editable flag and text input
- *        options.
- * @return: (JSX.Element) The label above the input.
- */
 function Field({ label, ...input }: FieldProps) {
   const theme = useTheme();
   return (
@@ -81,10 +52,6 @@ function Field({ label, ...input }: FieldProps) {
   );
 }
 
-/**
- * purpose: Let a caregiver without a household join one with an invite code or create one.
- * @return: (JSX.Element) The screen.
- */
 export function CaregiverOnboardingScreen() {
   const { signOut } = useAuth();
   useDiscardNotificationTaps();
@@ -97,30 +64,17 @@ export function CaregiverOnboardingScreen() {
   const { busy, message, setMessage, run } = useBusyAction(errorMessage);
   const locked = busy || done;
 
-  /**
-   * purpose: Run one backend call; on success the screen stays locked until the shell replaces it.
-   * @param call: (() => Promise<unknown>) The call; may throw.
-   * @return: (Promise<void>) Resolves when the call finished and any failure is shown.
-   */
   const runCall = (call: () => Promise<unknown>): Promise<void> =>
     run(async () => {
       await call();
       setDone(true);
     });
 
-  /**
-   * purpose: Join the household the invite code belongs to.
-   * @return: (Promise<void>) Resolves when joined or the failure is shown.
-   */
   const handleJoin = (): Promise<void> =>
     runCall(() =>
       callMutation(api.households.redeemJoinCode, { code, displayName: myName.trim() }),
     );
 
-  /**
-   * purpose: Create a household with this caregiver as its primary caregiver.
-   * @return: (Promise<void>) Resolves when created or the failure is shown.
-   */
   const handleCreate = (): Promise<void> =>
     runCall(() =>
       callMutation(api.households.create, {
@@ -130,11 +84,6 @@ export function CaregiverOnboardingScreen() {
       }),
     );
 
-  /**
-   * purpose: Sign the account out of Clerk, first unregistering a push token this phone may
-   *          still hold from an earlier household; the shell then shows the welcome screen.
-   * @return: (Promise<void>) Resolves when signed out or the failure is shown.
-   */
   const handleSignOut = async (): Promise<void> => {
     setMessage(null);
     try {
@@ -145,10 +94,6 @@ export function CaregiverOnboardingScreen() {
     }
   };
 
-  /**
-   * purpose: Go back to the choice between joining and creating.
-   * @return: (void)
-   */
   const handleBack = (): void => {
     setMode('choose');
     setMessage(null);

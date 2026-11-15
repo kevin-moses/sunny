@@ -1,32 +1,3 @@
-// sunny_app/src/caregiver/AboutComponents.tsx
-//
-// Purpose: The building blocks of the caregiver About tab, in the Home tab's style (warm
-// translucent cards, rounded type, accent selection, serious red for errors, moderate amber for
-// facts that are not confirmed and for unsaved edits):
-// - AboutInput: a text field that reports its focus to the tab bar (hidden while a field has
-//   focus, since a hardware keyboard fires no keyboard events) and, on unmount, blur only if it
-//   had focus. Return means "done" (one paragraph: details, guidance, names, facts) unless the
-//   field asks for line breaks (the message field, which has its own Send button);
-// - EditableText: a text that editors tap (a 44pt target) to edit inline (autosaving, no Save or
-//   Cancel; see useInlineEditor); viewers see plain text;
-// - EntryRow, TopicRow, FactRow and MessageRow: one life profile entry (name and details), one
-//   hard question (topic and guidance), one memory fact (with who confirmed it, or a visible "not
-//   confirmed" mark and a one-tap Confirm for editors) and one family message. An editable row
-//   says "Unsaved edit" while it holds a draft that is not stored (a failed save, or an edit set
-//   aside by Remove). Confirm saves an open correction (which confirms the fact), reopens a held
-//   one, and confirms the stored text only when no other text is pending;
-// - RemoveButton: a 44pt trash button that asks for confirmation before removing (removals are
-//   not undoable, so they are confirmed instead); it sets the row's open edit aside first, and
-//   drops it only once the removal succeeded, so a cancelled or failed removal loses nothing;
-// - SlotStatus: a row's or form's running, failed or notice line;
-// - AddForm: the small form under each section (fields, optional category chips, an Add button
-//   that is dimmed and disabled until the required fields have text and while a call runs; the
-//   fields are locked while it runs, keep their text unless the item is stored as typed, and a
-//   message under the button goes away once a field is edited).
-// Field lengths match the server's caps (profile.ts) so typing stops where the server would refuse.
-//
-// Last modified: 2026-11-09
-
 import { SymbolView } from 'expo-symbols';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
@@ -60,33 +31,37 @@ import {
   type RowRef,
   type SensitiveTopic,
 } from './aboutFormat';
+import type {
+  MAX_DETAILS,
+  MAX_FACT,
+  MAX_GUIDANCE,
+  MAX_MESSAGE,
+  MAX_NAME,
+  MAX_TOPIC,
+} from '../../../sunny_backend/convex/profile';
 import { useReportNoteFocus } from './tabBarInset';
 import type { InlineEditor } from './useInlineEditor';
 import type { ProfileActionState } from './useProfileActions';
 
-/** Longest text of each field, matching the server's caps in profile.ts. */
-export const FIELD_MAX = {
+export const FIELD_MAX: {
+  name: typeof MAX_NAME;
+  details: typeof MAX_DETAILS;
+  topic: typeof MAX_TOPIC;
+  guidance: typeof MAX_GUIDANCE;
+  fact: typeof MAX_FACT;
+  message: typeof MAX_MESSAGE;
+} = {
   name: 120,
   details: 600,
   topic: 200,
   guidance: 1500,
   fact: 300,
   message: 1000,
-} as const;
+};
 
 const amber = statusTones.moderate;
 const red = statusTones.serious;
 
-/**
- * purpose: A text field in the About tab's style. Return means "done" (it closes the keyboard; a
- *          multiline field only wraps) unless returnAddsLine is set, when it inserts a line break.
- *          It reports focus and blur to the tab bar, and on unmount reports blur only if it still
- *          had focus, so a field that unmounts after focus moved to another field cannot bring
- *          the tab bar back over the focused one. Other props pass through to TextInput.
- * @param props: (TextInputProps & { returnAddsLine?: boolean }) TextInput props (onFocus and
- *        onBlur are still called) and whether Return inserts a line break.
- * @return: (JSX.Element) The field.
- */
 export function AboutInput({
   returnAddsLine = false,
   onFocus,
@@ -123,27 +98,14 @@ export function AboutInput({
   );
 }
 
-/** What every editable row needs: the permission, the shared editor, its state and removal. */
 interface RowProps {
   canEdit: boolean;
   editor: InlineEditor;
   state: ProfileActionState | undefined;
   onRemove: (target: RowRef) => Promise<boolean>;
-  /** Whether a divider separates it from the row above. */
   divided: boolean;
 }
 
-/**
- * purpose: A text an editor taps to edit inline. When its editor is open it shows an
- *          uncontrolled field starting with the current text (or a kept draft); every keystroke
- *          goes to the editor hook, and losing focus closes and saves it. Return means "done".
- *          With nothing to show and no editing, it renders nothing.
- * @param props: ({ row, target, text, placeholder, textStyle, multiline, maxLength, label }) The
- *        row's permission and editor, the text being edited, what to show (null when empty), the
- *        prompt shown to editors when empty, the text style, whether the field wraps, its length
- *        cap and its accessibility label.
- * @return: (JSX.Element | null) The text or its editor.
- */
 function EditableText({
   row,
   target,
@@ -200,12 +162,6 @@ function EditableText({
   );
 }
 
-/**
- * purpose: A row's or form's status line: a quiet "Saving..." while a call runs, the error in
- *          red, or a notice in grey. Nothing when the slot is empty.
- * @param props: ({ state: ProfileActionState | undefined }) The slot's state.
- * @return: (JSX.Element | null) The line.
- */
 function SlotStatus({ state }: { state: ProfileActionState | undefined }) {
   if (state === undefined) return null;
   if (state.status === 'working') {
@@ -221,17 +177,6 @@ function SlotStatus({ state }: { state: ProfileActionState | undefined }) {
   );
 }
 
-/**
- * purpose: A 44pt trash button that asks "Remove <what>?" and removes the row on confirmation.
- *          Before asking it sets the row's open edit aside without saving (the alert would
- *          otherwise blur the field and save it); the edit is dropped only once the removal
- *          succeeded, so after a cancel or a failure it is still there to reopen. Dimmed and
- *          disabled while the row has a call running.
- * @param props: ({ target, what, busy, editor, onRemove }) The row, how to name it in the
- *        question, whether a call is running, the shared inline editor, and the remove action
- *        (resolves true when removed).
- * @return: (JSX.Element) The button.
- */
 function RemoveButton({
   target,
   what,
@@ -247,11 +192,6 @@ function RemoveButton({
 }) {
   const key = rowKey(target);
 
-  /**
-   * purpose: Hold the row's open edit, ask for confirmation, then remove (and forget the edit
-   *          once the removal succeeded).
-   * @return: (void)
-   */
   const confirm = (): void => {
     editor.hold(key);
     Alert.alert(`Remove ${what}?`, 'Sunny will no longer know this.', [
@@ -286,15 +226,6 @@ function RemoveButton({
   );
 }
 
-/**
- * purpose: The shared frame of an editable row: the text column ending with an "Unsaved edit"
- *          hint while the row holds a draft that is not stored and the row's status line, the
- *          remove button for editors, and a hairline above every row but the first.
- * @param props: ({ children, row, removeTarget, what, style }) The text column, the row props,
- *        the row (for removal and its unsaved drafts) and how to name it in the confirmation,
- *        and an extra style (a tint).
- * @return: (JSX.Element) The row.
- */
 function RowFrame({
   children,
   row,
@@ -333,12 +264,6 @@ function RowFrame({
   );
 }
 
-/**
- * purpose: One life profile entry: its name, then its details (editors see "Add details" when
- *          there are none), each editable inline; the remove button for editors.
- * @param props: (RowProps & { entry: ProfileEntry }) The entry and the row props.
- * @return: (JSX.Element) The row.
- */
 export function EntryRow({ entry, ...row }: RowProps & { entry: ProfileEntry }) {
   return (
     <RowFrame row={row} removeTarget={{ kind: 'entry', id: entry.id }} what={entry.name}>
@@ -365,12 +290,6 @@ export function EntryRow({ entry, ...row }: RowProps & { entry: ProfileEntry }) 
   );
 }
 
-/**
- * purpose: One hard question: "If asked about <topic>" and the guidance, each editable inline;
- *          the remove button for editors.
- * @param props: (RowProps & { topic: SensitiveTopic }) The topic and the row props.
- * @return: (JSX.Element) The row.
- */
 export function TopicRow({ topic, ...row }: RowProps & { topic: SensitiveTopic }) {
   return (
     <RowFrame
@@ -402,17 +321,6 @@ export function TopicRow({ topic, ...row }: RowProps & { topic: SensitiveTopic }
   );
 }
 
-/**
- * purpose: One memory fact: its text (editable inline; an editor's correction also confirms
- *          it) and its status line. A fact that is not confirmed has an amber tint and status,
- *          and editors get a one-tap Confirm button. Confirm tapped while the text is open (the
- *          tap does not blur it) saves the edit, since a correction confirms the fact; with a
- *          held or failed correction it reopens that draft; only otherwise does it confirm the
- *          stored text. The remove button for editors.
- * @param props: (RowProps & { fact, seniorName, onVerify }) The fact, the senior's name for the
- *        status line, the Confirm action and the row props.
- * @return: (JSX.Element) The row.
- */
 export function FactRow({
   fact,
   seniorName,
@@ -425,11 +333,6 @@ export function FactRow({
 }) {
   const target: FieldTarget = { kind: 'fact', id: fact.id, current: fact.fact };
 
-  /**
-   * purpose: Settle a pending correction (save the open one, reopen a kept one), or else
-   *          confirm the fact.
-   * @return: (Promise<void>) Resolves when the confirm call settles.
-   */
   const confirm = async (): Promise<void> => {
     if (!row.editor.settle(target)) await onVerify(fact.id);
   };
@@ -467,13 +370,6 @@ export function FactRow({
   );
 }
 
-/**
- * purpose: One family message: who sent it and when (and whether a caregiver's message was
- *          seen), then the text (or a note that it is a photo or voice clip).
- * @param props: ({ message, divided }) The message (the caller's own say "You") and whether a
- *        divider separates it from the one above.
- * @return: (JSX.Element) The row.
- */
 export function MessageRow({ message, divided }: { message: FamilyMessage; divided: boolean }) {
   const media = message.hasPhoto ? 'A photo' : message.hasAudio ? 'A voice clip' : null;
   return (
@@ -485,12 +381,6 @@ export function MessageRow({ message, divided }: { message: FamilyMessage; divid
   );
 }
 
-/**
- * purpose: The category chips of the add-entry form, each a 44pt button; the selected one is
- *          tinted with the accent.
- * @param props: ({ value, onChange }) The selected category and the change handler.
- * @return: (JSX.Element) The chips.
- */
 export function CategoryChips({
   value,
   onChange,
@@ -523,31 +413,15 @@ export function CategoryChips({
   );
 }
 
-/** One field of an AddForm. */
 export interface AddField {
   key: string;
   placeholder: string;
   maxLength: number;
-  /** The field wraps over several lines. */
   multiline?: boolean;
-  /** Return inserts a line break instead of closing the keyboard (the message field). */
   returnAddsLine?: boolean;
-  /** The form cannot be sent while a required field is blank. */
   required: boolean;
 }
 
-/**
- * purpose: The small form under a section: optional extra controls (the category chips), the
- *          fields and a button. The button is dimmed and disabled until every required field
- *          has text and while the call runs; the fields cannot be edited while the call runs (so
- *          nothing typed then is erased when it clears). The fields clear only once the item is
- *          stored as typed; otherwise they keep the text. The slot's error or notice shows under
- *          the button until a field is edited.
- * @param props: ({ fields, header, buttonLabel, state, onSubmit }) The fields, the controls
- *        above them, the button label, the form's slot state and the submit action (resolves true
- *        when stored as typed, called with the trimmed values by field key).
- * @return: (JSX.Element) The form.
- */
 export function AddForm({
   fields,
   header,
@@ -562,26 +436,15 @@ export function AddForm({
   onSubmit: (values: Record<string, string>) => Promise<boolean>;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
-  /** The slot state the caregiver has edited past; it is not shown again. */
   const [dismissed, setDismissed] = useState<ProfileActionState | undefined>(undefined);
   const working = state?.status === 'working';
   const ready = fields.every((f) => !f.required || (values[f.key] ?? '').trim() !== '');
 
-  /**
-   * purpose: Send the trimmed values and clear the fields once the item is stored as typed.
-   * @return: (Promise<void>) Resolves when the call settles.
-   */
   const submit = async (): Promise<void> => {
     const trimmed = Object.fromEntries(fields.map((f) => [f.key, (values[f.key] ?? '').trim()]));
     if (await onSubmit(trimmed)) setValues({});
   };
 
-  /**
-   * purpose: Record an edit of one field and hide the message left by the last call.
-   * @param key: (string) The field.
-   * @param text: (string) Its new text.
-   * @return: (void)
-   */
   const edit = (key: string, text: string): void => {
     setValues((prev) => ({ ...prev, [key]: text }));
     setDismissed(state);

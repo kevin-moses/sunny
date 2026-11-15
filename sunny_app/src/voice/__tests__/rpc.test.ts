@@ -1,10 +1,3 @@
-// sunny_app/src/voice/__tests__/rpc.test.ts
-//
-// Purpose: Unit tests for the phone RPC logic in rpc.ts: payload parsing, contact matching,
-// and the findContact and sendMessage handlers with expo-contacts and expo-sms mocked.
-//
-// Last modified: 2026-10-28
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { RpcInvocationData } from 'livekit-client';
 
@@ -21,7 +14,6 @@ import {
   type RawContact,
 } from '../rpc';
 
-/** An async mock whose resolved value the tests choose per case. */
 type AsyncMock = (...args: unknown[]) => Promise<unknown>;
 
 const mockGetPermissions = jest.fn<AsyncMock>();
@@ -48,20 +40,10 @@ jest.mock('../../logging/logger', () => ({
 
 const GRANTED = { granted: true, canAskAgain: true, status: 'granted' };
 
-/**
- * purpose: Build an RPC invocation carrying a payload.
- * @param payload: (string) the raw payload
- * @return: (RpcInvocationData) the invocation
- */
 function invocation(payload: string): RpcInvocationData {
   return { requestId: 'r1', callerIdentity: 'agent', payload, responseTimeout: 10000 };
 }
 
-/**
- * purpose: Build a RawContact with defaults.
- * @param overrides: (Partial<RawContact>) fields to override
- * @return: (RawContact) the contact
- */
 function contact(overrides: Partial<RawContact> = {}): RawContact {
   return {
     id: 'c1',

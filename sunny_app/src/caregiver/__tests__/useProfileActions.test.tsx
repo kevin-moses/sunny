@@ -1,17 +1,3 @@
-// sunny_app/src/caregiver/__tests__/useProfileActions.test.tsx
-//
-// Purpose: Tests for useProfileActions, rendering the real hook with react-test-renderer and a
-// mocked callMutation (the network layer): every edited text goes to the right profile mutation
-// with the right arguments (null clears an entry's details), adds, confirm, removals and messages
-// call their mutations, a running call shows "working" in its slot, success clears the slot, an
-// add that finds the same text stored says "Already saved." and one that confirms a senior fact
-// says "Confirmed." (both resolve true), an add that finds other text stored resolves false and
-// says nothing was saved, a failure shows the server's message and resolves false, a call that
-// ends after a newer one in the same slot leaves the newer state alone, and the actions keep
-// their identity between renders.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import { ConvexError } from 'convex/values';
@@ -31,13 +17,8 @@ jest.mock('../../backend/api', () => ({
 
 const mockCall = callMutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const HOUSEHOLD = 'h1' as never;
-/** Renderers created by a test, unmounted afterwards. */
 const mounted: ReactTestRenderer[] = [];
 
-/**
- * purpose: Render the real hook and expose its latest return value.
- * @return: (object) A getter for the current ProfileActions.
- */
 function renderActions(): { get: () => ProfileActions } {
   let current!: ProfileActions;
   const Probe = (): null => {
@@ -50,11 +31,6 @@ function renderActions(): { get: () => ProfileActions } {
   return { get: () => current };
 }
 
-/**
- * purpose: The name and arguments of the nth callMutation call.
- * @param n: (number) Call index.
- * @return: ([string, unknown]) Function name ("module:function") and arguments.
- */
 function callAt(n: number): [string, unknown] {
   const [ref, args] = mockCall.mock.calls[n]!;
   return [getFunctionName(ref as never), args];

@@ -1,16 +1,3 @@
-// sunny_app/src/caregiver/__tests__/aboutFormat.test.ts
-//
-// Purpose: Unit tests for the About tab helpers: the tab label (named only when it fits), the
-// life profile grouped by category in the backend's order (empty categories left out), field and
-// row keys, what closing an inline editor saves (unchanged, blank required, cleared details,
-// trimmed text), short dates, the fact status line (confirmed with or without a name, said by the
-// senior and not confirmed), the message meta line (You for the caller's own as the server marks
-// it, or the sender; local time; seen state), what the add form does after an add (clear, say
-// Already saved or Confirmed, or keep the text and say it was not saved) and the line counting
-// older unverified facts.
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, it } from '@jest/globals';
 
 import {
@@ -32,22 +19,10 @@ import {
   type ProfileEntry,
 } from '../aboutFormat';
 
-/**
- * purpose: A life profile entry fixture.
- * @param id: (string) Id.
- * @param category: (ProfileEntry['category']) Category.
- * @param name: (string) Name.
- * @return: (ProfileEntry) The entry.
- */
 function entry(id: string, category: ProfileEntry['category'], name: string): ProfileEntry {
   return { id: id as ProfileEntry['id'], category, name, details: null };
 }
 
-/**
- * purpose: A memory fact fixture; confirmed by Pat on 2026-11-03 unless overridden.
- * @param fields: (Partial<MemoryFact>) Overrides.
- * @return: (MemoryFact) The fact.
- */
 function fact(fields: Partial<MemoryFact> = {}): MemoryFact {
   return {
     id: 'f1' as MemoryFact['id'],
@@ -61,11 +36,6 @@ function fact(fields: Partial<MemoryFact> = {}): MemoryFact {
   };
 }
 
-/**
- * purpose: A family message fixture from Pat, sent 2026-11-03 at 14:05, not seen.
- * @param fields: (Partial<FamilyMessage>) Overrides.
- * @return: (FamilyMessage) The message.
- */
 function message(fields: Partial<FamilyMessage> = {}): FamilyMessage {
   return {
     id: 'm1' as FamilyMessage['id'],

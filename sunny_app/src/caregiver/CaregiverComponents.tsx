@@ -1,28 +1,3 @@
-// sunny_app/src/caregiver/CaregiverComponents.tsx
-//
-// Purpose: The building blocks of the caregiver Home tab: the screen header (title, subtitle
-// and optional trailing control), the section title, the calendar card with its seven-day week
-// strip (tappable cells that select a day), the alert card with its "I'm on it" and "Mark done"
-// actions (or who is already on it), the tasks card (a "Leftover" group of yesterday's open
-// tasks above a "Today" group), the planned tasks card (a future selected day's tasks, read-only
-// rows with a dulled disabled checkbox, in their own card above that day's events), the events
-// card (the selected day's events as a plain list) and the later-days card grouping the rest of
-// the week's events by day. A task row has a rounded-square checkbox (editors tap an open one
-// to mark it done; a done or marking one is checked and greyed, with a detail line saying who
-// confirmed it; editors may tap a done one the day view marks reopenable, which asks first
-// with a native alert, one at a time per row, and then reopens it, showing "Reopening..."
-// meanwhile; an open one a viewer cannot tick is dulled) and tappable text that opens the
-// task's autosaving inline note editor (no Save or Cancel). A saved note shows as a "Note:"
-// subtitle. In task and event rows the time and the label share one text baseline (TitleLine)
-// and the subtitles line up under the label. Task rows
-// are separated by hairlines that start at the text; event rows keep their calendar icon. The
-// cards that sit on a screen that re-renders often (calendar, alert, task row, events, later
-// days) are memoized, so the screen passes them stable callbacks. They take plain data from
-// format.ts and render the Figma design: warm translucent cards, serious status colors for
-// alerts, accent-tinted selection. No motion.
-//
-// Last modified: 2026-11-14
-
 import { SymbolView } from 'expo-symbols';
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -52,25 +27,15 @@ import type { TaskActionState } from './useTaskActions';
 
 const alertTone = statusTones.serious;
 
-/** Opacity of the box of an open task that cannot be ticked. */
 const DISABLED_OPACITY = 0.4;
 
-/** Fill of a checked checkbox: the secondary text color, softened. */
 const DONE_FILL = 'rgba(77,77,77,0.55)';
 
-/** Width (points) of the time column and the gap after it; subtitles indent past both. */
 const TIME_WIDTH = 72;
 const LABEL_INDENT = TIME_WIDTH + 12;
 
-/** Line height (points) of the label text (type.body), which the event icon is centered on. */
 const BODY_LINE_HEIGHT = 24;
 
-/**
- * purpose: The top of a caregiver tab: a title with an optional trailing control, and a subtitle.
- * @param props: ({ title: string, subtitle: string, trailing?: ReactNode }) The texts and the
- *        control shown at the right of the title (for example the account button).
- * @return: (JSX.Element) The header.
- */
 export function ScreenHeader({
   title,
   subtitle,
@@ -93,11 +58,6 @@ export function ScreenHeader({
   );
 }
 
-/**
- * purpose: A small uppercase heading for a Home section.
- * @param props: ({ text: string }) The heading.
- * @return: (JSX.Element) The heading.
- */
 export function SectionTitle({ text }: { text: string }) {
   return (
     <Text accessibilityRole="header" style={type.section}>
@@ -106,14 +66,6 @@ export function SectionTitle({ text }: { text: string }) {
   );
 }
 
-/**
- * purpose: One cell of the week strip, a button that selects the day: weekday, date and a dot
- *          when the day has events. The selected day is filled with the accent color; today, when
- *          not selected, shows its date number in the accent color.
- * @param props: ({ day: WeekStripDay, selected: boolean, onSelect: (localDate: string) => void })
- *        The day, whether it is the selected one and the press handler.
- * @return: (JSX.Element) The cell.
- */
 function WeekStripCell({
   day,
   selected,
@@ -152,14 +104,6 @@ function WeekStripCell({
   );
 }
 
-/**
- * purpose: The calendar card: the month and year of today, then the seven-day week strip whose
- *          cells select the day the schedule shows. Memoized.
- * @param props: ({ todayLocalDate: string, days: WeekStripDay[], selectedDate: string,
- *        onSelect: (localDate: string) => void }) Today's date, the cells, the selected local
- *        date and the handler called with a tapped cell's date.
- * @return: (JSX.Element) The card.
- */
 export const CalendarCard = memo(function CalendarCard({
   todayLocalDate,
   days,
@@ -190,21 +134,6 @@ export const CalendarCard = memo(function CalendarCard({
   );
 });
 
-/**
- * purpose: One alert: a task that was not confirmed. When someone has claimed it the card says
- *          who is on it ("You're on it" for the signed-in caregiver); otherwise editors get the
- *          "I'm on it" button. Editors also get "Mark done", which marks the task done at
- *          once (no note is asked for). Each shows a spinner while its call runs, and a failed
- *          call shows the error in the card and keeps the buttons. The message (from
- *          alertMessage) says when a task is left over from yesterday. Memoized.
- * @param props: ({ task: DayTask, message: string, action: TaskActionState | undefined,
- *        canEdit: boolean, userId: string | null, onClaim: (id: TaskInstanceId) => Promise<void>,
- *        onMarkDone: (id: TaskInstanceId) => void }) The task, the text under its title, its
- *        in-flight or failed action, whether this caregiver may act (editors only), their Clerk
- *        user id, and the handlers for "I'm on it" and "Mark done" (called with the task's
- *        instance id).
- * @return: (JSX.Element) The card.
- */
 export const AlertCard = memo(function AlertCard({
   task,
   message,
@@ -275,15 +204,8 @@ export const AlertCard = memo(function AlertCard({
   );
 });
 
-/** How a title line is drawn: plain, an unconfirmed alert (serious time, strong label) or done (greyed). */
 type TitleTone = 'plain' | 'alert' | 'done';
 
-/**
- * purpose: The first line of a task or event row: the time and the label on one text baseline.
- * @param props: ({ time: string, label: string, tone: TitleTone }) The time text, the label
- *        text and how to draw them.
- * @return: (JSX.Element) The line.
- */
 function TitleLine({ time, label, tone }: { time: string; label: string; tone: TitleTone }) {
   return (
     <View style={styles.titleLine}>
@@ -309,12 +231,6 @@ function TitleLine({ time, label, tone }: { time: string; label: string; tone: T
   );
 }
 
-/**
- * purpose: One line of the schedule for an event: calendar icon, then time and label on one
- *          text baseline. The icon is centered on that first line. Not pressable.
- * @param props: ({ row: EventRowData }) The row.
- * @return: (JSX.Element) The row.
- */
 function ScheduleRow({ row }: { row: EventRowData }) {
   return (
     <View accessible accessibilityLabel={row.accessibilityLabel} style={styles.row}>
@@ -326,13 +242,6 @@ function ScheduleRow({ row }: { row: EventRowData }) {
   );
 }
 
-/**
- * purpose: The rounded-square box of a task row: empty with a grey border when open, a red border
- *          for an unconfirmed task, filled grey with a white check when done, and a light border
- *          at reduced opacity when it is open but cannot be ticked (disabled).
- * @param props: ({ kind: CheckboxKind }) The look.
- * @return: (JSX.Element) The 22pt box.
- */
 function CheckboxBox({ kind }: { kind: CheckboxKind }) {
   return (
     <View
@@ -350,19 +259,6 @@ function CheckboxBox({ kind }: { kind: CheckboxKind }) {
   );
 }
 
-/**
- * purpose: The inline note editor under a task row: an uncontrolled multiline field that starts
- *          with the current note (or a draft that failed to save). It has no buttons: every
- *          edit is reported to the note editor hook, which saves when the editor closes. The
- *          field losing focus closes it (the keyboard's Done and dragging the screen both blur
- *          it), reporting its row id so a late blur cannot close another row's editor. It also
- *          reports focus and blur to the tab bar (hidden while a note has focus, since a
- *          hardware keyboard fires no keyboard events), and blur when it unmounts.
- * @param props: ({ rowId: string, initial: string, onChange: (text: string) => void,
- *        onClose: (rowId: string) => void }) The row, the starting text, the handler for every
- *        edit and the handler for losing focus.
- * @return: (JSX.Element) The editor.
- */
 function NoteEditorField({
   rowId,
   initial,
@@ -400,21 +296,9 @@ function NoteEditorField({
   );
 }
 
-/** The question asked before a task is reopened. */
 export const REOPEN_MESSAGE =
   'It goes back on the list as not done. Reminders and family alerts that are already overdue will go out right away.';
 
-/**
- * purpose: Ask before reopening a task, with a native alert: "Reopen <label>?", Cancel (cancel
- *          style) and Reopen (default style). Reopening cannot be undone and can send family
- *          alerts at once, which is why this one action asks first.
- * @param label: (string) The task's label.
- * @param onReopen: (() => void) Called when the caregiver chooses Reopen.
- * @param onClose: (() => void) Called first whenever the alert goes away. On iOS (this app's
- *        only platform) an alert cannot be dismissed without a button, so the Cancel and Reopen
- *        buttons are what call it; onDismiss is Android-only and kept for completeness.
- * @return: (void)
- */
 export function confirmReopen(label: string, onReopen: () => void, onClose: () => void): void {
   Alert.alert(
     `Reopen ${label}?`,
@@ -434,25 +318,6 @@ export function confirmReopen(label: string, onReopen: () => void, onClose: () =
   );
 }
 
-/**
- * purpose: One task row. The first line has the checkbox, then time and label on one text
- *          baseline; the who-confirmed detail, the "Note: ..." subtitle and any running or
- *          failed action sit under the label. Editors tick an open task's checkbox to mark it
- *          done (it shows checked while the call runs and stays checked once the day view says
- *          done), tick a reopenable done task's checked box to reopen it after confirming
- *          (confirmReopen, one alert at a time per row; "Reopening..." while the call runs,
- *          the box stays checked, is not interactive and keeps its "Reopen <label>" label with
- *          busy set; a failure shows in the row and the box stays checked) and tap the text to
- *          open the autosaving note editor. Viewers can tap a truncated note to read all of it.
- *          A hairline above the text column separates it from the row before. Memoized: it
- *          re-renders only when its own props change.
- * @param props: ({ row, first, canEdit, action, onMarkDone, onReopen, noteEditor }) The task
- *        row, whether it is the first in its list (no divider), whether this caregiver may
- *        edit, its running or failed action, the checkbox handlers for an open and for a
- *        reopenable done task (called with the task instance) and the note editor shared by
- *        all rows.
- * @return: (JSX.Element) The row.
- */
 export const TaskRow = memo(function TaskRow({
   row,
   first,
@@ -479,11 +344,6 @@ export const TaskRow = memo(function TaskRow({
   const done = kind === 'done';
   const reopens = reopening || (done && interactive);
 
-  /**
-   * purpose: Ask before reopening, unless this row's alert is already up (a second tap opens
-   *          no second alert).
-   * @return: (void)
-   */
   const askReopen = (): void => {
     if (asking.current) return;
     asking.current = true;
@@ -577,29 +437,12 @@ export const TaskRow = memo(function TaskRow({
   );
 });
 
-/** What the task rows need to act: their running or failed actions, and the checkbox handlers. */
 export interface TaskRowActions {
-  /** Running or failed actions by task instance id. */
   states: Partial<Record<string, TaskActionState>>;
-  /** Mark the task done (the checkbox of an open task). */
   markDone: (instanceId: TaskInstanceId) => void;
-  /**
-   * Reopen the task (the checked box of a reopenable done task), called once the caregiver
-   * chose Reopen in the confirm alert.
-   */
   reopen: (instanceId: TaskInstanceId) => void;
 }
 
-/**
- * purpose: The tasks card: an optional "Leftover" group (yesterday's open tasks), then today's
- *          tasks. When the Leftover group is present today's tasks get a "Today" group header;
- *          otherwise they are a plain list. With nothing to show, one calm line. Only one
- *          task's note is open at a time.
- * @param props: ({ leftover, today, canEdit, rowActions, noteEditor }) The leftover rows (may
- *        be empty), today's rows, whether this caregiver may edit, the rows' actions and the
- *        shared note editor.
- * @return: (JSX.Element) The card.
- */
 export function TasksCard({
   leftover,
   today,
@@ -613,12 +456,6 @@ export function TasksCard({
   rowActions: TaskRowActions;
   noteEditor: NoteEditor;
 }) {
-  /**
-   * purpose: Render one task row of a list.
-   * @param row: (TaskRowData) The row.
-   * @param index: (number) Its position in its list (the first has no divider).
-   * @return: (JSX.Element) The row.
-   */
   const renderRow = (row: TaskRowData, index: number) => (
     <TaskRow
       key={row.id}
@@ -658,14 +495,6 @@ export function TasksCard({
   );
 }
 
-/**
- * purpose: One planned task of a future day: the same row look as a task row (time column,
- *          label) with a dulled disabled checkbox. Read-only: the box is not pressable, it has
- *          no note and no actions, and the row's screen reader label says it is planned.
- * @param props: ({ row: PlannedTaskRowData, first: boolean }) The row and whether it is the
- *        first in its list (no divider).
- * @return: (JSX.Element) The row.
- */
 function PlannedTaskRow({ row, first }: { row: PlannedTaskRowData; first: boolean }) {
   return (
     <View accessible accessibilityLabel={row.accessibilityLabel} style={styles.taskRow}>
@@ -679,14 +508,6 @@ function PlannedTaskRow({ row, first }: { row: PlannedTaskRowData; first: boolea
   );
 }
 
-/**
- * purpose: A card listing the tasks planned on the selected future day, read-only, or one calm
- *          line when there are none. Memoized.
- * @param props: ({ rows: PlannedTaskRowData[], emptyText: string, dayTitle: string }) The rows,
- *        the line shown when there are none and the day's title, for the card's screen reader
- *        label ("Tasks for <day>").
- * @return: (JSX.Element) The card.
- */
 export const PlannedTasksCard = memo(function PlannedTasksCard({
   rows,
   emptyText,
@@ -715,11 +536,6 @@ export const PlannedTasksCard = memo(function PlannedTasksCard({
   );
 });
 
-/**
- * purpose: The plain list of event rows shared by the events card and the later-days card.
- * @param props: ({ rows: EventRowData[] }) The rows.
- * @return: (JSX.Element) The rows.
- */
 function EventRows({ rows }: { rows: EventRowData[] }) {
   return (
     <>
@@ -730,13 +546,6 @@ function EventRows({ rows }: { rows: EventRowData[] }) {
   );
 }
 
-/**
- * purpose: A card listing the selected day's events as a plain list, or one calm line when
- *          there are none. Memoized.
- * @param props: ({ rows: EventRowData[], emptyText: string }) The rows and the line shown when
- *        there are none.
- * @return: (JSX.Element) The card.
- */
 export const EventsCard = memo(function EventsCard({
   rows,
   emptyText,
@@ -757,12 +566,6 @@ export const EventsCard = memo(function EventsCard({
   );
 });
 
-/**
- * purpose: The "Later this week" card: one group per later day with events, each with its
- *          weekday and date as a heading above that day's rows. Memoized.
- * @param props: ({ groups: LaterDayGroup[] }) The groups from laterThisWeek.
- * @return: (JSX.Element) The card.
- */
 export const LaterWeekCard = memo(function LaterWeekCard({ groups }: { groups: LaterDayGroup[] }) {
   return (
     <View style={styles.scheduleCard}>

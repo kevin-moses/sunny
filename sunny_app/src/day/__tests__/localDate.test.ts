@@ -1,11 +1,3 @@
-// sunny_app/src/day/__tests__/localDate.test.ts
-//
-// Purpose: Unit tests for the local date helpers: parsing and validation, formatting, day
-// shifting across month, year and leap boundaries, day differences, and weekday, month, day of
-// month and year names. 2026-10-29 is a Thursday.
-//
-// Last modified: 2026-10-31
-
 import { describe, expect, it } from '@jest/globals';
 
 import {
@@ -20,11 +12,6 @@ import {
   yearOf,
 } from '../localDate';
 
-/**
- * purpose: Parse a date that must be valid.
- * @param localDate: (string) "YYYY-MM-DD".
- * @return: (number) The day counter.
- */
 function parsed(localDate: string): number {
   const time = parseLocalDate(localDate);
   if (time === null) throw new Error(`invalid test date ${localDate}`);

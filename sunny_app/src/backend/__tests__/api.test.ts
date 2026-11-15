@@ -1,12 +1,3 @@
-// sunny_app/src/backend/__tests__/api.test.ts
-//
-// Purpose: Unit tests for api.ts: the mapping from ConvexError codes to BackendError statuses
-// (forbidden 403, unauthenticated 401, not_found 404, invalid 400, limit 429), the fallbacks
-// for unknown codes, malformed payloads, network failures and unexpected errors, and that
-// callMutation / callAction wrap failures of the Convex client.
-//
-// Last modified: 2026-10-29
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 

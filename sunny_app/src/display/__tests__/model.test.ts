@@ -1,22 +1,9 @@
-// sunny_app/src/display/__tests__/model.test.ts
-//
-// Purpose: Unit tests for the home display's rules: the date wording, which task the Now card
-// shows and when it reads as overdue or multi-step, the Next up pick, and the Today rows
-// (marks and overflow). Fixtures fill only what the rules read.
-//
-// Last modified: 2026-11-14
-
 import { describe, expect, it } from '@jest/globals';
 
 import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import { fullDate, nextItem, nowCard, todayRows } from '../model';
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) An upcoming 08:00 medication unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
@@ -32,11 +19,6 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/**
- * purpose: Build an event occurrence on the fixture day.
- * @param overrides: (Partial<Record<keyof EventOccurrence, unknown>>) Fields to set.
- * @return: (EventOccurrence) A 14:00 visit by Sarah unless overridden.
- */
 function makeEvent(
   overrides: Partial<Record<keyof EventOccurrence, unknown>> = {},
 ): EventOccurrence {
@@ -50,11 +32,6 @@ function makeEvent(
   } as EventOccurrence;
 }
 
-/**
- * purpose: Build a day view for Saturday 2026-11-07 at 09:30.
- * @param overrides: (Partial<DayViewData>) Fields to set.
- * @return: (DayViewData) An empty day unless overridden.
- */
 function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   return {
     localNow: '2026-11-07T09:30:00',

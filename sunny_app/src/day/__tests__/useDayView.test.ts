@@ -1,10 +1,3 @@
-// sunny_app/src/day/__tests__/useDayView.test.ts
-//
-// Purpose: Unit tests for isOfflineFrom, which turns the Convex connection state into the
-// offline flag the day screens use.
-//
-// Last modified: 2026-10-29
-
 import { describe, expect, it, jest } from '@jest/globals';
 
 import { isOfflineFrom } from '../useDayView';

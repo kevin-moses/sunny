@@ -1,14 +1,3 @@
-// sunny_app/src/display/__tests__/useDisplayKeys.test.tsx
-//
-// Purpose: Tests for the display's keys, rendering the real useDisplayKeys with
-// react-test-renderer and fake timers; the backend call is the mocked boundary and the
-// tuning values are injected through TuningContext. Covers Talk handing each press to the
-// voice layer with a second press inside pressGapMs ignored (also across keys, and with a
-// tuned gap), and Done confirming the task on the screen on its own, whatever the voice layer
-// is doing.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create } from 'react-test-renderer';
@@ -42,12 +31,6 @@ const CARD = {
   steps: null,
 } as unknown as TaskCard;
 
-/**
- * purpose: Render the real hook with a press gap.
- * @param card: (TaskCard | null) The Now task.
- * @param pressGapMs: (number) The tuned press gap.
- * @return: (() => DisplayKeys) A getter for the latest result.
- */
 function renderKeys(
   card: TaskCard | null,
   pressGapMs: number = DEFAULT_TUNING.pressGapMs,

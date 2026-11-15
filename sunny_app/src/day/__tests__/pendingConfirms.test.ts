@@ -1,34 +1,3 @@
-// sunny_app/src/day/__tests__/pendingConfirms.test.ts
-//
-// Purpose: Tests for the durable pending-confirm queue. AsyncStorage is mocked at its boundary
-// with an in-memory map; the real queue, sendConfirm, callMutation and toBackendError run, with
-// only convex.mutation stubbed where the network is involved. Covers: the press is persisted
-// before enqueue resolves, an instance is queued once, a write failure rolls back only the new
-// entry, a failed read is retried and never overwrites stored presses; replay sends oldest first
-// one at a time with via phone_app and pressedAgoMs (an age that ignores clock skew) and empties
-// storage; a restart still has and sends the entries; no answer (network error, 429, 401, a
-// timeout) keeps the entry and ends the pass while a server error moves on to the next entry;
-// a permanent rejection (not found, forbidden, refused) removes the entry and is logged as an
-// error with its details; a held send is awaited again instead of being called again and removes
-// its entry when it lands; nothing is sent while offline; a press made during a pass is sent in
-// it; an entry failing online for over ten minutes is logged loudly; clear() drops everything
-// and ignores in-flight results; entries older than the maximum age are dropped as expired;
-// classifyFailure; applyPending (presses, undos, press again); toPending; toUndo. Undo entries:
-// press, undo and a second press of one task are three entries, a second undo is not queued, an
-// undo goes through undoPressedTask with the tap's age, order is kept per task through a server
-// error and a backoff while other tasks are sent, a press dropped for good lets its undo go,
-// stored undos survive a restart (malformed ones are ignored), an undo expires by its tap time,
-// and too_late removes the undo with a log. applyPending after an undo: own press delivered
-// shows open, own press still queued while another surface confirmed shows done, both queued
-// and the server open shows open. Press ids (expo-crypto mocked): sent with the press and the
-// same id with its undo, kept across a restart, old stored entries sent without one; stored
-// items that are not entries (an unknown restore state, a prototype key, a non-text id) are
-// dropped with a warning that gives only their count. clear() logs presses and undos. enqueue
-// resolves with the stored entry, or with the queued one a duplicate was skipped for; an undo
-// with an id restores only a confirm whose confirmPressIds hold that id.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
@@ -109,58 +78,40 @@ const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) =
 const NOW = Date.parse('2026-11-09T12:00:00Z');
 const NETWORK_DOWN = (): Error => new Error('Network request failed');
 
-/**
- * purpose: Build a queued press as stored before press ids existed (no id), the shape most
- *          tests use; pass an id for a current press.
- * @param id: (string) Instance id.
- * @param pressedAt: (number) Epoch ms of the press.
- * @param pressId: (string | undefined) The press id, or none.
- * @return: (PendingConfirm) The entry.
- */
-function entry(id: string, pressedAt = NOW, pressId?: string): PendingConfirm {
-  const base = { instanceId: id as PendingConfirm['instanceId'], label: `Task ${id}`, pressedAt };
-  return pressId === undefined ? base : { ...base, pressId };
+function pressIdOf(id: string, pressedAt: number): string {
+  return `pid-${id}-${pressedAt}`;
 }
 
-/**
- * purpose: Build a queued Undo.
- * @param id: (string) Instance id.
- * @param undoneAt: (number) Epoch ms of the tap.
- * @param state: (DayTask['state']) The task's state before the press.
- * @param label: (string) The task's label.
- * @param pressId: (string | undefined) The id of the press it takes back, or none.
- * @return: (PendingUndo) The entry.
- */
+function entry(id: string, pressedAt = NOW, pressId = pressIdOf(id, pressedAt)): PendingConfirm {
+  return {
+    instanceId: id as PendingConfirm['instanceId'],
+    label: `Task ${id}`,
+    pressedAt,
+    pressId,
+  };
+}
+
 function undo(
   id: string,
   undoneAt = NOW,
   state: DayTask['state'] = 'due',
   label = `Task ${id}`,
-  pressId?: string,
+  pressId = pressIdOf(id, NOW),
 ): PendingUndo {
-  const base: PendingUndo = {
+  return {
     kind: 'undo',
     instanceId: id as PendingUndo['instanceId'],
     label,
     undoneAt,
     restore: { state, confirmable: true },
+    pressId,
   };
-  return pressId === undefined ? base : { ...base, pressId };
 }
 
-/**
- * purpose: A queue over the real send with the faked clock.
- * @return: (ConfirmQueue) The queue.
- */
 function makeQueue(connection?: ConnectionSource): ConfirmQueue {
   return createConfirmQueue({ send: sendConfirm, now: () => Date.now(), connection });
 }
 
-/**
- * purpose: A connection source the test can drive.
- * @param initial: (ConnectionState) The state at the start.
- * @return: (object) The source and a function that announces a new state to the queue.
- */
 function fakeConnection(initial: ConnectionState): {
   source: ConnectionSource;
   emit: (state: ConnectionState) => void;
@@ -183,18 +134,10 @@ function fakeConnection(initial: ConnectionState): {
   };
 }
 
-/**
- * purpose: The ids sent to the backend so far, in order.
- * @return: (string[]) Instance ids.
- */
 function sentIds(): string[] {
   return mockMutation.mock.calls.map((c) => (c[1] as { instanceId: string }).instanceId);
 }
 
-/**
- * purpose: What storage currently holds.
- * @return: (PendingConfirm[]) The persisted entries.
- */
 function stored(): PendingConfirm[] {
   const raw = mockStore.get(STORAGE_KEY);
   return raw === undefined ? [] : (JSON.parse(raw) as PendingConfirm[]);
@@ -292,7 +235,12 @@ describe('replay', () => {
     expect(maxInFlight).toBe(1);
     const [ref, args] = mockMutation.mock.calls[0];
     expect(getFunctionName(ref as never)).toBe('instances:confirmPressedTask');
-    expect(args).toEqual({ instanceId: 'a', via: 'phone_app', pressedAgoMs: 2000 });
+    expect(args).toEqual({
+      instanceId: 'a',
+      via: 'phone_app',
+      pressedAgoMs: 2000,
+      pressId: pressIdOf('a', NOW - 2000),
+    });
     expect(stored()).toEqual([]);
     expect(queue.getEntries()).toEqual([]);
   });
@@ -900,11 +848,8 @@ describe('applyPending', () => {
     { instanceId: 'd', state: 'resolved', confirmable: false },
   ] as unknown as DayTask[];
 
-  /**
-   * purpose: A queue list, for readability.
-   * @param list: (PendingEntry[]) Entries, oldest first.
-   * @return: (PendingEntry[]) The same entries.
-   */
+  const own = { ...tasks[2], confirmPressIds: [pressIdOf('c', NOW)] } as DayTask;
+
   const queued = (...list: PendingEntry[]): PendingEntry[] => list;
 
   it('marks queued tasks confirmed and not confirmable', () => {
@@ -922,8 +867,8 @@ describe('applyPending', () => {
   });
 
   it('own press delivered, undo queued: the server says confirmed and the task shows open', () => {
-    const out = applyPending(tasks, queued(undo('c', NOW + 1, 'upcoming')));
-    expect(out[2]).toMatchObject({ state: 'upcoming', confirmable: true });
+    const out = applyPending([own], queued(undo('c', NOW + 1, 'upcoming')));
+    expect(out[0]).toMatchObject({ state: 'upcoming', confirmable: true });
   });
 
   it('an undo with an id restores only a confirm whose confirmPressIds hold that id', () => {
@@ -955,6 +900,50 @@ describe('applyPending', () => {
     const out = applyPending(tasks, queued(entry('a'), undo('a', NOW + 1), entry('a', NOW + 2)));
     expect(out[0]).toMatchObject({ state: 'confirmed', confirmable: false });
   });
+
+  it('offline after a delivered Done, then Undo, Done, Undo: shows open as the senior last asked', () => {
+    const second = pressIdOf('c', NOW + 2);
+    const out = applyPending(
+      [own],
+      queued(
+        undo('c', NOW + 1, 'due'),
+        entry('c', NOW + 2),
+        undo('c', NOW + 3, 'due', 'Task c', second),
+      ),
+    );
+    expect(out[0]).toMatchObject({ state: 'due', confirmable: true });
+  });
+
+  it('an undo of a local press shows the task as the server shows it now', () => {
+    const escalated = { ...tasks[0], state: 'escalated' } as DayTask;
+    const out = applyPending([escalated], queued(entry('a'), undo('a', NOW + 1, 'due')));
+    expect(out[0]).toBe(escalated);
+  });
+
+  it('a press landing on its own delivered confirm can be undone', () => {
+    const later = pressIdOf('c', NOW + 1);
+    const out = applyPending(
+      [own],
+      queued(entry('c', NOW + 1), undo('c', NOW + 2, 'upcoming', 'Task c', later)),
+    );
+    expect(out[0]).toMatchObject({ state: 'upcoming', confirmable: true });
+  });
+
+  it('a press landing on another surface confirm cannot be undone', () => {
+    const later = pressIdOf('c', NOW + 1);
+    const out = applyPending(
+      tasks,
+      queued(entry('c', NOW + 1), undo('c', NOW + 2, 'upcoming', 'Task c', later)),
+    );
+    expect(out[2]).toBe(tasks[2]);
+  });
+
+  it('an undo naming a press that is no longer the confirmation changes nothing', () => {
+    const out = applyPending([own], queued(undo('c', NOW + 1), undo('c', NOW + 2)));
+    expect(out[0]).toMatchObject({ state: 'due', confirmable: true });
+    const stale = applyPending(tasks, queued(undo('c', NOW + 1, 'due', 'Task c', 'pid-gone')));
+    expect(stale[2]).toBe(tasks[2]);
+  });
 });
 
 describe('undo entries in the queue', () => {
@@ -980,7 +969,7 @@ describe('undo entries in the queue', () => {
     await queue.replay();
     const [ref, args] = mockMutation.mock.calls[0];
     expect(getFunctionName(ref as never)).toBe('instances:undoPressedTask');
-    expect(args).toEqual({ instanceId: 'a', undoneAgoMs: 4000 });
+    expect(args).toEqual({ instanceId: 'a', undoneAgoMs: 4000, pressId: pressIdOf('a', NOW) });
     expect(stored()).toEqual([]);
   });
 
@@ -1079,13 +1068,8 @@ describe('toPending', () => {
 });
 
 describe('press ids', () => {
-  /** A press id in the server's accepted form. */
   const PID = 'pid-0000000000000001';
 
-  /**
-   * purpose: The arguments of the sent calls, in order.
-   * @return: (unknown[]) Arguments.
-   */
   const sentArgs = (): unknown[] => mockMutation.mock.calls.map((c) => c[1]);
 
   it('newPressId comes from the platform CSPRNG', () => {
@@ -1118,13 +1102,19 @@ describe('press ids', () => {
     expect(sentArgs().map((a) => (a as { pressId?: string }).pressId)).toEqual([PID, PID]);
   });
 
-  it('sends an old stored press and undo (no id) without one', async () => {
-    mockStore.set(STORAGE_KEY, JSON.stringify([entry('a'), undo('a', NOW + 1)]));
-    await makeQueue().replay();
-    expect(sentArgs()).toEqual([
-      { instanceId: 'a', via: 'phone_app', pressedAgoMs: 0 },
-      { instanceId: 'a', undoneAgoMs: 0 },
-    ]);
+  it('ignores stored entries without a press id, or with a kind a press never has', async () => {
+    const { pressId: _press, ...noIdPress } = entry('x');
+    const { pressId: _undo, ...noIdUndo } = undo('y');
+    const pressKind = { ...entry('z'), kind: 'press' };
+    mockStore.set(STORAGE_KEY, JSON.stringify([noIdPress, noIdUndo, pressKind, entry('a')]));
+    const queue = makeQueue();
+    await queue.load();
+    expect(queue.getEntries()).toEqual([entry('a')]);
+    expect(logger.warning).toHaveBeenCalledWith(
+      'PendingConfirms',
+      'Ignored stored items that are not entries',
+      { count: 3 },
+    );
   });
 
   it('ignores a stored undo whose saved state is not a known state, or whose id is not text', async () => {

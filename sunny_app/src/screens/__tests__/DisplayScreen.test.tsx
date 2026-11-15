@@ -1,13 +1,3 @@
-// sunny_app/src/screens/__tests__/DisplayScreen.test.tsx
-//
-// Purpose: Wiring tests for DisplayScreen: the screen is rendered for real with its voice and
-// cue hooks replaced by recorders (they have their own tests), plus the native pieces jest
-// cannot run (keep awake, safe area, fonts) and the backend call. Checks that a live voice
-// session blocks the due cue, that a cue starting takes a lingering answer off the panel, and
-// that a newly due task does the same.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
@@ -49,11 +39,6 @@ jest.mock('../../backend/api', () => ({
   toBackendError: (error: unknown) => ({ message: String(error) }),
 }));
 
-/**
- * purpose: Build a due task.
- * @param instanceId: (string) Its instance id.
- * @return: (DayTask) A due 08:00 medication.
- */
 function dueTask(instanceId: string): DayTask {
   return {
     instanceId,
@@ -70,11 +55,6 @@ function dueTask(instanceId: string): DayTask {
   } as unknown as DayTask;
 }
 
-/**
- * purpose: The day view state the app shell would pass.
- * @param tasks: (DayTask[]) Today's tasks.
- * @return: (DayViewState) A loaded, online day.
- */
 function dayView(tasks: DayTask[]): DayViewState {
   const day = {
     localNow: '2026-11-09T08:05:00',
@@ -89,11 +69,6 @@ function dayView(tasks: DayTask[]): DayViewState {
   return { day, agenda: buildAgenda(day), errorMessage: null, isOffline: false };
 }
 
-/**
- * purpose: Render the screen and give a function to re-render it.
- * @param first: (DayViewState) The first day view.
- * @return: ((next: DayViewState) => void) Re-renders with another day view.
- */
 function renderScreen(first: DayViewState): (next: DayViewState) => void {
   let renderer!: ReactTestRenderer;
   act(() => {
@@ -118,7 +93,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Unmounting clears the screen's carousel timer, so no handle outlives the test.
   act(() => renderers.splice(0).forEach((r) => r.unmount()));
 });
 

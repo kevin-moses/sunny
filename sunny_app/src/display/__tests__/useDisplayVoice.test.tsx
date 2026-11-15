@@ -1,22 +1,3 @@
-// sunny_app/src/display/__tests__/useDisplayVoice.test.tsx
-//
-// Purpose: Tests for the display's voice layer, rendering the real useDisplayVoice with
-// react-test-renderer and fake timers. The boundary is mocked: the voice session comes from
-// VoiceContext and ConversationContext values the test controls (what VoiceProvider would
-// provide from LiveKit), the tuning values from TuningContext, and expo-audio's microphone
-// permission. Covers what Talk does in each state (start; cancel while connecting; stop
-// during a session; refused when offline or the microphone is off), the start timeout, the
-// voice card through listening, thinking and speaking (ignoring the previous session's
-// lines), an agent that speaks first (an opening, not an answer: no follow-up window, no
-// lingering), the idle end before a question and after an answer (none before the agent
-// joins; the start timeout only before the agent first joined), the cap on continuous speaking, the absolute session ceiling (letting an answer
-// being spoken finish, within the grace), the start timeout counted from the press however
-// the session state churns (also above 20 s), injected tuning values, the answer lingering after the
-// session (also when the transcript is cleared) and leaving when dismissed, the sample answer
-// from the developer sheet, the failure lines and the standing status line.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { AgentState } from '@livekit/components-react';
 import React from 'react';
@@ -61,19 +42,16 @@ const connect = jest.fn(async () => undefined);
 const disconnect = jest.fn(async () => undefined);
 const show = jest.fn((_text: string) => undefined);
 
-/** The session and surroundings as the test sets them. */
 interface Session {
   connection: VoiceConnectionState;
   agent: AgentState;
   messages: ConversationMessage[];
-  /** Defaults to true while connected or reconnecting. */
   agentJoined?: boolean;
   userSpeaking?: boolean;
   error?: string | null;
   offline?: boolean;
   tuning?: Partial<DisplayTuning>;
   sample?: SampleAnswer | null;
-  /** A disconnect function with its own identity (LiveKit changes it on state changes). */
   disconnectFn?: () => Promise<void>;
 }
 
@@ -81,13 +59,6 @@ const OFF: Session = { connection: 'disconnected', agent: 'disconnected', messag
 const LISTENING: Session = { connection: 'connected', agent: 'listening', messages: [] };
 const T = DEFAULT_TUNING;
 
-/**
- * purpose: A transcript line.
- * @param id: (string) Its id.
- * @param type: ('userTranscript' | 'agentTranscript') Who said it.
- * @param message: (string) The words.
- * @return: (ConversationMessage) The line.
- */
 function line(
   id: string,
   type: 'userTranscript' | 'agentTranscript',
@@ -96,14 +67,8 @@ function line(
   return { id, type, message, timestamp: 0 } as ConversationMessage;
 }
 
-/** A question and its answer. */
 const QA = [line('q', 'userTranscript', 'When?'), line('a', 'agentTranscript', 'At 2.')];
 
-/**
- * purpose: Render the real hook inside the voice and tuning contexts.
- * @param first: (Session) The first state.
- * @return: (Promise<{ get, set }>) The hook's latest result and a function to change the state.
- */
 async function renderVoice(first: Session): Promise<{
   get: () => DisplayVoice;
   set: (next: Session) => Promise<void>;
@@ -113,11 +78,6 @@ async function renderVoice(first: Session): Promise<{
     current = useDisplayVoice('10:42', offline, show);
     return null;
   };
-  /**
-   * purpose: The tree for a state.
-   * @param s: (Session) The state.
-   * @return: (JSX.Element) The providers around the probe.
-   */
   const tree = (s: Session) => {
     const voice: VoiceApi = {
       isInteractive: s.connection !== 'disconnected',
@@ -162,11 +122,6 @@ async function renderVoice(first: Session): Promise<{
   };
 }
 
-/**
- * purpose: Advance fake time inside act.
- * @param ms: (number) Milliseconds.
- * @return: (Promise<void>) Resolves after the timers ran.
- */
 async function advance(ms: number): Promise<void> {
   await act(async () => {
     await jest.advanceTimersByTimeAsync(ms);
@@ -227,7 +182,6 @@ describe('Talk', () => {
 describe('start timeout', () => {
   it('gives up when the agent has not joined within startTimeoutMs', async () => {
     const h = await renderVoice({ ...OFF, connection: 'connecting' });
-    // The microphone opened (pre-connect buffer) but the agent never comes.
     await h.set({ connection: 'connecting', agent: 'pre-connect-buffering', messages: [] });
     await advance(T.startTimeoutMs - 1);
     expect(disconnect).not.toHaveBeenCalled();
@@ -253,7 +207,6 @@ describe('start timeout', () => {
     ];
     for (const state of states) {
       await advance(3_000);
-      // A new disconnect identity on every change, as LiveKit's session gives.
       await h.set({ ...state, disconnectFn: () => disconnect() });
     }
     await advance(T.startTimeoutMs - 12_000 - 1);
@@ -265,7 +218,6 @@ describe('start timeout', () => {
 
   it('does not apply once the agent has joined, even if the agent then leaves', async () => {
     const h = await renderVoice({ ...LISTENING, messages: QA });
-    // The agent drops out while the session is still live; the provider reports it.
     await h.set({ ...LISTENING, messages: QA, agentJoined: false });
     await h.set({ ...LISTENING, messages: QA, agentJoined: false, error: 'Agent left' });
     await advance(T.startTimeoutMs + 1000);
@@ -408,13 +360,6 @@ describe('idle end', () => {
 });
 
 describe('session ceiling', () => {
-  /**
-   * purpose: Keep a session busy: new transcript lines every few seconds and the senior
-   *          "speaking" throughout (a TV in the room), so no idle timer can fire.
-   * @param h: ({ set }) The rendered hook.
-   * @param ms: (number) How long to keep it busy.
-   * @return: (Promise<void>) Resolves after that time.
-   */
   async function keepBusy(h: { set: (next: Session) => Promise<void> }, ms: number): Promise<void> {
     const lines: ConversationMessage[] = [];
     for (let t = 0; t < ms; t += 5_000) {
@@ -433,7 +378,6 @@ describe('session ceiling', () => {
     expect(show).toHaveBeenCalledWith(CEILING_MESSAGE);
   });
 
-  // A long stuck limit, so only the ceiling can end these sessions.
   const SLOW = { stuckMs: 180_000, sessionMaxMs: 120_000 };
 
   it('lets an answer being spoken finish before ending', async () => {

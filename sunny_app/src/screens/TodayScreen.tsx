@@ -1,20 +1,3 @@
-// sunny_app/src/screens/TodayScreen.tsx
-//
-// Purpose: The senior phone's home screen: the day clock (orientation header, Next up,
-// today's tasks and events, the coming week) from calendar.dayView, with the Talk button at
-// the bottom. The day view state comes from the app shell (see useDayView), so it survives
-// a conversation. When a task is due (or may be confirmed early, up to an hour ahead), a Done
-// card sits under the header (the task's label, its due time if early, and one large Done
-// button, see useDoneAction). Done presses go through a durable queue (pendingConfirms), so they
-// work offline; queued tasks show as checked at once. For 30 seconds after a press the card
-// ends with "<label> done." and an Undo button (phone only); an Undo goes through the same
-// queue and the task shows open again at once. Offline across midnight the cached day is
-// yesterday's: then no Done card is offered and a calm line says today's list is loading; an
-// early task is only offered while the socket is connected. Talk stays fixed at the bottom, far
-// from it.
-//
-// Last modified: 2026-11-14
-
 import { useConvexConnectionState } from 'convex/react';
 import { useMemo } from 'react';
 import {
@@ -45,21 +28,10 @@ import { useTick } from '../day/useTick';
 import { colors, GRID } from '../theme/colors';
 import { TalkButton } from '../voice/TalkButton';
 
-/** How often (ms) the screen re-checks whether the cached day is still today's. */
 const TICK_MS = 30_000;
 
-/** Width (points) from which the phone layout uses the wide, tablet-style margins. */
 const REGULAR_WIDTH = 768;
 
-/**
- * purpose: Today screen for a paired senior phone: the day clock, the Done card for the task
- *          to confirm (the due one, else one that may be confirmed early; hidden when there is
- *          none or just after a press), the Undo line of the latest press for 30 seconds, and
- *          the Talk button. Tasks with a queued Done press show as checked at once, and tasks
- *          with a queued Undo as open again, also offline and after a restart.
- * @param props: ({ dayView: DayViewState }) The household's day view, loaded by the app shell.
- * @return: (JSX.Element) The screen.
- */
 export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const { day, errorMessage, isOffline } = dayView;
   const { width } = useWindowDimensions();

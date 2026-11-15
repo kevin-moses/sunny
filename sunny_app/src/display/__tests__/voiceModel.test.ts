@@ -1,13 +1,3 @@
-// sunny_app/src/display/__tests__/voiceModel.test.ts
-//
-// Purpose: Unit tests for the display's voice rules (voiceModel.ts): the phase from LiveKit's
-// states (a failed agent is off, not "One moment"), the latest question and answer from the
-// transcript (old lines ignored; the agent speaking first is an opening, never an answer),
-// the idle timeouts (none before the agent joins), what the voice card shows in each phase
-// and after the session, and the failure wording.
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, it } from '@jest/globals';
 
 import { DEFAULT_TUNING } from '../tuning';
