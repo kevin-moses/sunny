@@ -1,8 +1,9 @@
 // lib/agentBriefing.ts
 // Purpose: The household briefing the agent receives at the start of each request, ported
 // from the Supabase agent runtime: the senior's preferred name, the timezone, the local
-// weekday and date/time now, the requesting caregiver's display name, and the calendar for
-// today and the next 7 days (one line per occurrence with its event_id so the model can
+// weekday and date/time now, the requesting caregiver's display name, the household's
+// caregivers with their roles (so the agent knows who is in the family chat), and the calendar
+// for today and the next 7 days (one line per occurrence with its event_id so the model can
 // change or cancel it), and the household's active tasks, one terse line each with its
 // task_id, type, times, weekdays and today's state per time (so the agent can answer "did she
 // take her pills" and change or stop a task without a lookup). Built on the calendar's
@@ -28,7 +29,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
 import { isAsNeededTask, listTasksCore } from "../tasks";
-import { findMember } from "./access";
+import { findMember, householdCaregivers } from "./access";
 import { isAnytimeTask } from "./anytime";
 import { joinLines } from "./text";
 import { addDays, localDate, localDateTime, weekdayCodes } from "./time";
@@ -165,6 +166,20 @@ async function digestLines(
 }
 
 /**
+ * purpose: The briefing's caregiver line: each caregiver's display name (on one line, so a name
+ *          cannot pose as a briefing line) with their role, e.g. "Anna (primary), Ben
+ *          (member)".
+ * @param ctx: (QueryCtx) Context.
+ * @param household: (Doc<"households">) The household.
+ * @return: (Promise<string>) The text; "(none)" when there are none.
+ */
+async function caregiversText(ctx: QueryCtx, household: Doc<"households">): Promise<string> {
+  const members = await householdCaregivers(ctx, household._id);
+  const text = members.map((m) => `${joinLines(m.displayName)} (${m.role})`).join(", ");
+  return text || "(none)";
+}
+
+/**
  * purpose: Build the household briefing text for an agent request.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
@@ -189,6 +204,7 @@ export async function buildBriefing(
     `- Timezone: ${household.timezone}`,
     `- Now: ${weekday}, ${localDateTime(now, household.timezone)} local`,
     `- Requested by: ${member?.displayName ?? "a caregiver"}`,
+    `- Caregivers: ${await caregiversText(ctx, household)}`,
     "- Calendar, today and the next 7 days:",
     ...(events.length ? events : ["  (nothing scheduled)"]),
     "- Active tasks, with today's status:",

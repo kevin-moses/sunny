@@ -6,7 +6,7 @@
 # is phrased for voice (the selection rules themselves are tested in the Convex backend).
 # Updated 2026-11-09 for the context block's trust labels and unread-message line.
 #
-# Last modified: 2026-11-09
+# Last modified: 2026-11-14
 
 import pytest
 
@@ -162,16 +162,14 @@ def test_format_user_context_sections() -> None:
 
 
 def test_format_user_context_caregivers_and_weather() -> None:
-    """purpose: Caregivers are listed with the on-call one marked; the weather location shows."""
+    """purpose: Caregivers are listed by name (no one is on call); the weather location shows."""
     ctx = _context()
     ctx["household"]["weatherLocation"] = "Brooklyn, NY"
-    ctx["caregivers"] = [
-        {"name": "Anna", "onCall": True},
-        {"name": "Bob", "onCall": False},
-    ]
+    ctx["caregivers"] = [{"name": "Anna"}, {"name": "Bob"}]
     block = format_user_context(ctx)
     assert "Weather location: Brooklyn, NY" in block
-    assert "Family caregivers in Sunny: Anna (on call), Bob" in block
+    assert "Family caregivers in Sunny: Anna, Bob" in block
+    assert "on call" not in block
 
 
 def test_format_user_context_empty() -> None:

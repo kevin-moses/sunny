@@ -16,10 +16,11 @@
 // requireSenior stays keyed on the devices row.
 //
 // Membership helpers: hasMembership (any household), insertMembership (the only place a
-// householdMembers row is inserted; it enforces one household per caregiver) and memberNames
-// (display names of a household in one query).
+// householdMembers row is inserted; it enforces one household per caregiver), householdCaregivers
+// (a household's members in one query, shared by the digest, the agent briefing and the agent's
+// settings tools) and memberNames (their display names by user id).
 //
-// Last modified: 2026-11-09 (requireCaregiver also refuses a devices row)
+// Last modified: 2026-11-14
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { UserIdentity } from "convex/server";
@@ -194,6 +195,23 @@ export async function insertMembership(
 }
 
 /**
+ * purpose: A household's caregivers (householdMembers rows; devices are never members), in user
+ *          id order.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<Doc<"householdMembers">[]>) The members.
+ */
+export async function householdCaregivers(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Doc<"householdMembers">[]> {
+  return await ctx.db
+    .query("householdMembers")
+    .withIndex("by_household_user", (q) => q.eq("householdId", householdId))
+    .collect();
+}
+
+/**
  * purpose: Display names of a household's members, from a single query.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
@@ -203,10 +221,7 @@ export async function memberNames(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<Map<string, string>> {
-  const members = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) => q.eq("householdId", householdId))
-    .collect();
+  const members = await householdCaregivers(ctx, householdId);
   return new Map(members.map((m) => [m.userId, m.displayName]));
 }
 

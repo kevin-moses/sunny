@@ -22,7 +22,8 @@
 // <name>'s day"; agentRequests.transcript merges requests and posts newest first with the limit
 // on the merged list; a viewer reads posts but not requests; a senior device, another
 // household's caregiver, a stranger and a signed-out caller cannot read it; another
-// household's posts never appear.
+// household's posts never appear. A caregiver who turned the digest off
+// (householdMembers.digestOptOut) gets no push or text row but still reads the post.
 //
 // Last modified: 2026-11-14
 
@@ -744,6 +745,23 @@ describe("chat thread", () => {
     await tick(f, DIGEST_TIME + 10 * 60_000);
     await tick(f, DIGEST_TIME + 60 * 60_000);
     expect((await posts(f)).map((p) => p.localDate)).toEqual(["2026-11-02"]);
+  });
+
+  test("a caregiver who turned the digest off gets no push or text but still sees the post", async () => {
+    const f = await setup();
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "val", token: "val-1" });
+      for (const m of await ctx.db.query("householdMembers").collect()) {
+        if (m.userId === "max" || m.userId === "val") {
+          await ctx.db.patch(m._id, { digestOptOut: true });
+        }
+      }
+    });
+    await composeDay(f);
+    expect((await digestRows(f)).map((r) => r.recipientUserId)).toEqual(["pat"]);
+    expect(await posts(f)).toHaveLength(1);
+    const items = await transcriptAs(f, "max");
+    expect(items).toEqual([expect.objectContaining({ type: "post", body: GOOD_REPLY })]);
   });
 
   test("the digest is posted even when no caregiver can be reached", async () => {

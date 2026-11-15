@@ -8,9 +8,8 @@
 //
 // Reachability: a member is reachable when they have a verified phone (texted) or at least one
 // push token (the caregiver app; lib/delivery isReachableMember), and only reachable members
-// get an outbox row and are named as told. A flag goes to the on-call caregiver when
-// reachable, else to every reachable caregiver; a distress flag always goes to every reachable
-// caregiver.
+// get an outbox row and are named as told. A flag goes to every reachable caregiver at once
+// (there is no on-call caregiver since 2026-11-14), distress included.
 // A family message goes to the reachable caregivers whose display name matches the name the
 // senior used (whole name or first name, case-insensitive), else to every reachable caregiver.
 // When nobody is reachable the status is "unreachable": the flag is still audited and the
@@ -52,6 +51,7 @@
 import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
 import { insertNotification, reachableMembers } from "./delivery";
@@ -138,40 +138,6 @@ export interface FamilyMessageResult {
 }
 
 /**
- * purpose: The household's caregivers.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<"householdMembers">[]>) Every member row.
- */
-export async function householdCaregivers(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<Doc<"householdMembers">[]> {
-  return await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) => q.eq("householdId", householdId))
-    .collect();
-}
-
-/**
- * purpose: Who a flag goes to: every reachable caregiver for distress; otherwise the on-call
- *          caregiver when reachable, else every reachable one.
- * @param reachable: (Doc<"householdMembers">[]) The household's reachable caregivers.
- * @param household: (Doc<"households">) The household.
- * @param reason: (FlagReason) Why.
- * @return: (Doc<"householdMembers">[]) The recipients; empty when nobody is reachable.
- */
-function flagRecipients(
-  reachable: Doc<"householdMembers">[],
-  household: Doc<"households">,
-  reason: FlagReason,
-): Doc<"householdMembers">[] {
-  if (reason === "distress") return reachable;
-  const onCall = reachable.find((m) => m.userId === household.onCallUserId);
-  return onCall ? [onCall] : reachable;
-}
-
-/**
  * purpose: The caregivers a spoken name refers to: whole display name or first name, ignoring
  *          case.
  * @param members: (Doc<"householdMembers">[]) The household's caregivers.
@@ -252,11 +218,11 @@ async function capReached(
 }
 
 /**
- * purpose: Ask a caregiver to look in: queue an agent_flag notification (see flagRecipients)
- *          and audit the decision, unless the same event (same key) reached family within the
- *          repeat window or, for a capped reason, the hourly cap is reached. Every decision is
- *          audited with its detail. Nobody is named as told unless a row was queued for them
- *          (already_flagged names who the earlier identical flag reached).
+ * purpose: Ask the caregivers to look in: queue an agent_flag notification for every reachable
+ *          caregiver and audit the decision, unless the same event (same key) reached family
+ *          within the repeat window or, for a capped reason, the hourly cap is reached. Every
+ *          decision is audited with its detail. Nobody is named as told unless a row was queued for
+ *          them (already_flagged names who the earlier identical flag reached).
  * @param ctx: (MutationCtx) Context.
  * @param args: ({household, reason, detail, key, repeatWindowMs, subject, doseId,
  *        conversationId, now}) The household, why, a short description for the caregiver
@@ -290,11 +256,7 @@ export async function flagCaregiverCore(
   const recipients =
     earlier || rateLimited
       ? []
-      : flagRecipients(
-          await reachableMembers(ctx, await householdCaregivers(ctx, household._id)),
-          household,
-          reason,
-        );
+      : await reachableMembers(ctx, await householdCaregivers(ctx, household._id));
   const status: FlagResult["status"] = earlier
     ? "already_flagged"
     : rateLimited

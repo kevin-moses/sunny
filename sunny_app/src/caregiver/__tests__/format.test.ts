@@ -12,7 +12,9 @@
 // in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise. Also
 // digest posts in the transcript (time order, the "Daily summary" label with the day) and
-// posts never counting as in progress.
+// posts never counting as in progress. Wording cards: one per task after a finished request's
+// reply or error and for a cancelled request, none while it runs, the "Also at" caption of a
+// task with more than one time, and what VoiceOver reads for one.
 //
 // Last modified: 2026-11-14
 
@@ -46,9 +48,13 @@ import {
   weekMonthLabel,
   weekRangeLabel,
   DIGEST_LABEL,
+  NOT_SPOKEN,
+  otherTimesCaption,
   postLabel,
+  wordingSpeech,
   type AgentRequest,
   type ChatPost,
+  type TaskWording,
   type EventRowData,
   type TaskRowData,
 } from '../format';
@@ -183,9 +189,19 @@ function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {
     status: 'succeeded',
     reply: 'Going well.',
     error: null,
+    wording: [],
     ...overrides,
   } as AgentRequest;
 }
+
+/** A wording card's data as the transcript returns it. */
+const PILLS_WORDING: TaskWording = {
+  taskId: 't1' as TaskWording['taskId'],
+  label: 'Morning pills',
+  time: '8:00',
+  times: ['08:00'],
+  sentence: "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.",
+};
 
 describe('labels', () => {
   it('formats the month and year of a week inside one month', () => {
@@ -719,6 +735,66 @@ describe('buildTranscript', () => {
       ['sunny', 'She slept in.', null],
     ]);
     expect(new Set(entries.map((e) => e.id)).size).toBe(entries.length);
+  });
+
+  it('follows a finished request with a wording card per task, after the reply or error', () => {
+    const watering = {
+      ...PILLS_WORDING,
+      taskId: 't2',
+      label: 'Water',
+      time: 'Anytime',
+      times: [],
+      sentence: null,
+    };
+    const done = buildTranscript([makeRequest({ wording: [PILLS_WORDING, watering] })], 'user_a');
+    expect(done.map((e) => e.kind)).toEqual(['caregiver', 'sunny', 'wording', 'wording']);
+    expect(done[2]).toMatchObject({
+      id: 'r1-wording-t1',
+      wording: PILLS_WORDING,
+      text: `On the display: 8:00 Morning pills. Sunny says: ${PILLS_WORDING.sentence}`,
+    });
+    expect(done[3]?.text).toBe(`On the display: Anytime Water. Sunny says: ${NOT_SPOKEN}`);
+    const failed = buildTranscript(
+      [makeRequest({ status: 'failed', reply: null, error: 'Oops', wording: [PILLS_WORDING] })],
+      'user_a',
+    );
+    expect(failed.map((e) => e.kind)).toEqual(['caregiver', 'error', 'wording']);
+  });
+
+  it('shows no wording card while a request is queued or running', () => {
+    for (const status of ['queued', 'running']) {
+      const entries = buildTranscript(
+        [makeRequest({ status, reply: null, wording: [PILLS_WORDING] })],
+        'user_a',
+      );
+      expect(entries.some((e) => e.kind === 'wording')).toBe(false);
+    }
+  });
+
+  it('shows the cards of a cancelled request, with no reply above them', () => {
+    const entries = buildTranscript(
+      [makeRequest({ status: 'cancelled', reply: null, wording: [PILLS_WORDING] })],
+      'user_a',
+    );
+    expect(entries.map((e) => e.kind)).toEqual(['caregiver', 'wording']);
+  });
+
+  it('captions and reads the other times of a task with more than one', () => {
+    const twice = { ...PILLS_WORDING, times: ['08:00', '20:00'] };
+    expect(otherTimesCaption(twice)).toBe('Also at 8:00 PM');
+    expect(otherTimesCaption({ ...twice, times: ['08:00', '12:30', '20:00'] })).toBe(
+      'Also at 12:30 PM, 8:00 PM',
+    );
+    expect(otherTimesCaption(PILLS_WORDING)).toBeNull();
+    expect(wordingSpeech(twice)).toBe(
+      `On the display: 8:00 Morning pills. Sunny says: ${PILLS_WORDING.sentence} Also at 8:00 PM.`,
+    );
+  });
+
+  it('reads a wording card in one sentence pair', () => {
+    expect(wordingSpeech(PILLS_WORDING)).toBe(
+      `On the display: 8:00 Morning pills. Sunny says: ${PILLS_WORDING.sentence}`,
+    );
   });
 
   it('labels a post with a bad date plainly', () => {

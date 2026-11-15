@@ -4,7 +4,8 @@
 // (confirmed with time and how, resolved by a caregiver, missed, escalated with who claimed
 // them, and still open because due or upcoming), as-needed doses taken that day (a dose she
 // took back, undoneAt, is not one), and the senior's questions asked that day (unanswered,
-// routed to family, repeat counts by topic).
+// routed to family, repeat counts by topic). Whether a task alerted the caregivers is
+// lib/escalation.ts caregiverAlerted, the same test the scheduler uses.
 // "That day" is the household's local day, from local midnight to the next local midnight, so a
 // DST day is 23 or 25 hours long and a zone far from UTC still gets its own calendar day.
 // Anytime instances (tasks without a time, lib/anytime.ts) are left out entirely: they carry
@@ -15,13 +16,14 @@
 // household shares transcripts (households.shareTranscripts); otherwise by their topic.
 // List: the household list items the senior added that day (listAdded).
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { isAsNeededTask } from "../tasks";
 import { memberNames } from "./access";
 import { isAnytimeInstance } from "./anytime";
+import { caregiverAlerted } from "./escalation";
 import { dayRange, formatTime12, localTime } from "./time";
 import { receivedDaysLater } from "./today";
 import type { ConfirmVia } from "./validators";
@@ -132,7 +134,7 @@ async function taskFacts(
       label,
       scheduledAt: formatTime12(instance.scheduledTime),
       outcome: state,
-      alerted: instance.firedSteps.some((f) => f.notified && f.action !== "prompt_senior"),
+      alerted: caregiverAlerted(instance.firedSteps),
     };
     if (instance.confirmedAt !== undefined) {
       fact.doneAt = formatTime12(localTime(instance.confirmedAt, household.timezone));

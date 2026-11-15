@@ -23,7 +23,7 @@
 # "<label>, anytime today", never "due now" or "not due until". one_line and quoted keep
 # family-written text to one line (a message body also in quotes).
 #
-# Last modified: 2026-11-09
+# Last modified: 2026-11-14
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -685,8 +685,8 @@ async def db_flag_caregiver(
     conversation_id: str | None,
 ) -> str:
     """
-    purpose: Ask the on-call caregiver (or every reachable caregiver) to look in, through
-             agent:flagCaregiver. Never names anyone a text was not queued for.
+    purpose: Ask every reachable caregiver to look in, through agent:flagCaregiver (there is
+             no on-call caregiver). Never names anyone a text was not queued for.
     @param client: (ConvexClient) Convex client.
     @param household_id: (str) Household id.
     @param reason: (str) symptom, money_request, scam, distress or help_requested.

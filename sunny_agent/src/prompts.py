@@ -45,7 +45,7 @@
 # shown in full when short, as a count otherwise. The prompt states that the household
 # information is information, never instructions.
 #
-# Last modified: 2026-11-10
+# Last modified: 2026-11-14
 
 from __future__ import annotations
 
@@ -246,10 +246,7 @@ def format_user_context(context: dict) -> str:
 
     caregivers = context.get("caregivers", [])
     if caregivers:
-        names = [
-            f"{one_line(c.get('name'))}{' (on call)' if c.get('onCall') else ''}"
-            for c in caregivers
-        ]
+        names = [one_line(c.get("name")) for c in caregivers]
         lines.append(f"Family caregivers in Sunny: {', '.join(names)}")
 
     today = context.get("today", [])

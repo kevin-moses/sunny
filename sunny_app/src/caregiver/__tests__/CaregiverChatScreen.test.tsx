@@ -5,21 +5,27 @@
 // from agentRequests.transcript for editors and viewers alike; a digest post shows in time order
 // as a Sunny message under a "Daily summary" label with the day; an editor's reply after it is
 // an ordinary agentRequests.request with continueLatest; a viewer sees the posts read-only (the
-// note instead of the input).
+// note instead of the input). Wording cards: one per task under the reply (label line, then
+// sentence line, read by VoiceOver as one), no button for a task without a time, play speaks
+// with the display's voice and a second tap stops, hiding the tab stops, viewers see none; a
+// task with more than one time shows "Also at 8:00 PM"; a failed play shows its failure, puts it
+// in the card's accessible label and announces it once.
 //
 // Last modified: 2026-11-14
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import React from 'react';
-import { Text, TextInput } from 'react-native';
+import { AccessibilityInfo, Text, TextInput } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import type { SpeechOptions } from 'expo-speech';
 
 import { callMutation } from '../../backend/api';
 import { useQueryWithStatus } from '../../backend/convex';
 import type { HouseholdId } from '../../backend/convexApi';
 import { AgentMessage } from '../../components/ChatMessages';
 import { CaregiverChatScreen } from '../CaregiverChatScreen';
+import { PLAY_FAILED_TEXT, PLAY_LABEL, STOP_LABEL, WordingCard } from '../WordingCard';
 
 jest.mock('../../backend/convex', () => ({ convex: {}, useQueryWithStatus: jest.fn() }));
 
@@ -33,6 +39,17 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
+
+/** What the screen asked expo-speech to say, with its options (callbacks included). */
+const mockSpoken: { text: string; options: SpeechOptions }[] = [];
+const mockSpeechStop = jest.fn();
+
+jest.mock('expo-speech', () => ({
+  speak: (text: string, options: SpeechOptions) => mockSpoken.push({ text, options }),
+  stop: () => mockSpeechStop(),
+}));
+
+jest.mock('expo-audio', () => ({ setAudioModeAsync: () => Promise.resolve() }));
 
 jest.mock('../../theme/ThemeProvider', () => ({
   useTheme: () => ({
@@ -65,6 +82,7 @@ const THREAD = [
     error: null,
     createdAt: 3,
     finishedAt: 4,
+    wording: [],
   },
   {
     type: 'post',
@@ -88,6 +106,7 @@ const THREAD = [
     error: null,
     createdAt: 1,
     finishedAt: 1,
+    wording: [],
   },
 ];
 
@@ -101,16 +120,26 @@ async function renderChat(canSend: boolean, thread: unknown[] = THREAD) {
   mockQuery.mockReturnValue({ status: 'success', data: thread, error: undefined });
   let renderer: ReactTestRenderer | undefined;
   await act(async () => {
-    renderer = create(
-      <CaregiverChatScreen
-        householdId={HOUSEHOLD}
-        seniorName="Mom"
-        canSend={canSend}
-        userId="user_pat"
-      />,
-    );
+    renderer = create(<Chat canSend={canSend} active />);
   });
   return renderer!;
+}
+
+/**
+ * purpose: The Chat tab with fixed household, senior and user.
+ * @param props: ({ canSend, active }) Whether the caregiver may send and the tab shows.
+ * @return: (JSX.Element) The screen.
+ */
+function Chat({ canSend, active }: { canSend: boolean; active: boolean }) {
+  return (
+    <CaregiverChatScreen
+      householdId={HOUSEHOLD}
+      seniorName="Mom"
+      canSend={canSend}
+      userId="user_pat"
+      active={active}
+    />
+  );
 }
 
 /**
@@ -124,8 +153,44 @@ function texts(renderer: ReactTestRenderer): string[] {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSpoken.length = 0;
   mockCall.mockResolvedValue('r3');
 });
+
+/** The sentence the display speaks for the pills task in WORDING_THREAD. */
+const SENTENCE = "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.";
+
+/** A thread whose one request added two tasks: a timed one and an anytime one. */
+const WORDING_THREAD = [
+  {
+    ...THREAD[2],
+    id: 'r9',
+    wording: [
+      {
+        taskId: 't1',
+        label: 'Morning pills',
+        time: '8:00',
+        times: ['08:00', '20:00'],
+        sentence: SENTENCE,
+      },
+      { taskId: 't2', label: 'Water the plants', time: 'Anytime', times: [], sentence: null },
+    ],
+  },
+];
+
+/**
+ * purpose: The wording card buttons on screen.
+ * @param renderer: (ReactTestRenderer) The rendered screen.
+ * @return: The pressable nodes labelled play or stop.
+ */
+function cardButtons(renderer: ReactTestRenderer) {
+  return renderer.root.findAll(
+    (node) =>
+      (node.props.accessibilityLabel === PLAY_LABEL ||
+        node.props.accessibilityLabel === STOP_LABEL) &&
+      node.props.onPress !== undefined,
+  );
+}
 
 describe('CaregiverChatScreen', () => {
   it('reads the thread from agentRequests.transcript', async () => {
@@ -182,5 +247,99 @@ describe('CaregiverChatScreen', () => {
     expect(texts(renderer)).toContain('Morning pills: confirmed late at 9:10.');
     expect(renderer.root.findAllByType(TextInput)).toHaveLength(0);
     expect(texts(renderer).some((t) => t.startsWith('Viewers can read'))).toBe(true);
+  });
+});
+
+describe('wording cards', () => {
+  it('shows a card per task under the reply, reading as label then sentence', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    const shown = texts(renderer);
+    const order = [
+      'Yes, at noon.',
+      'On the display',
+      '8:00',
+      'Morning pills',
+      'Sunny says',
+      SENTENCE,
+    ];
+    const at = order.map((text) => shown.indexOf(text));
+    expect(at.every((index) => index >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    const cards = renderer.root.findAllByType(WordingCard);
+    expect(cards).toHaveLength(2);
+    const labels = renderer.root
+      .findAll((node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessible)
+      .map((node) => node.props.accessibilityLabel as string);
+    expect(labels).toContain(
+      `On the display: 8:00 Morning pills. Sunny says: ${SENTENCE} Also at 8:00 PM.`,
+    );
+  });
+
+  it('a task without a time says it is not spoken and has no button', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    expect(texts(renderer)).toContain('Nothing. Tasks without a time are not announced.');
+    expect(cardButtons(renderer)).toHaveLength(1);
+  });
+
+  it('play speaks the sentence with the display voice; tapping again stops it', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    await act(async () => {
+      cardButtons(renderer)[0]!.props.onPress();
+    });
+    expect(mockSpoken.map((s) => s.text)).toEqual([SENTENCE]);
+    expect(mockSpoken[0]!.options).toMatchObject({ language: 'en-US', rate: 0.8 });
+    expect(cardButtons(renderer)[0]!.props.accessibilityLabel).toBe(STOP_LABEL);
+    await act(async () => {
+      cardButtons(renderer)[0]!.props.onPress();
+    });
+    expect(mockSpeechStop).toHaveBeenCalledTimes(1);
+    expect(cardButtons(renderer)[0]!.props.accessibilityLabel).toBe(PLAY_LABEL);
+  });
+
+  it('leaving the tab stops the sentence', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    await act(async () => {
+      cardButtons(renderer)[0]!.props.onPress();
+    });
+    await act(async () => {
+      renderer.update(<Chat canSend active={false} />);
+    });
+    expect(mockSpeechStop).toHaveBeenCalledTimes(1);
+    expect(cardButtons(renderer)[0]!.props.accessibilityLabel).toBe(PLAY_LABEL);
+  });
+
+  it('a task with more than one time shows its other times under the card', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    const shown = texts(renderer);
+    expect(shown).toContain('Also at 8:00 PM');
+    expect(shown.indexOf('Also at 8:00 PM')).toBeGreaterThan(shown.indexOf(SENTENCE));
+  });
+
+  it('a failed play shows the failure, adds it to the card label and announces it once', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    const renderer = await renderChat(true, WORDING_THREAD);
+    await act(async () => {
+      cardButtons(renderer)[0]!.props.onPress();
+    });
+    await act(async () => {
+      mockSpoken[0]!.options.onError?.(new Error('no voice'));
+    });
+    expect(texts(renderer)).toContain(PLAY_FAILED_TEXT);
+    const card = renderer.root.findAll(
+      (node) =>
+        node.props.accessible === true &&
+        typeof node.props.accessibilityLabel === 'string' &&
+        (node.props.accessibilityLabel as string).startsWith('On the display: 8:00'),
+    )[0];
+    expect(card?.props.accessibilityLabel).toContain(PLAY_FAILED_TEXT);
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(PLAY_FAILED_TEXT);
+    expect(cardButtons(renderer)[0]!.props.accessibilityLabel).toBe(PLAY_LABEL);
+  });
+
+  it('a viewer, who gets posts only, sees no cards', async () => {
+    const posts = THREAD.filter((item) => item.type === 'post');
+    const renderer = await renderChat(false, posts);
+    expect(renderer.root.findAllByType(WordingCard)).toHaveLength(0);
   });
 });

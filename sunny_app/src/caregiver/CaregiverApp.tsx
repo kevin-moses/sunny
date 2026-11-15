@@ -5,7 +5,8 @@
 // About), follows the household's day view once (useDayView) for the Home tab and the senior's
 // name in the Chat and About headers, and signs the caregiver out from the account button
 // (Clerk) after a confirmation. The Chat and About tabs mount on their first visit and then stay
-// mounted so half-typed text survives a tab switch; the inactive tabs are hidden. It also owns
+// mounted so half-typed text survives a tab switch; the inactive tabs are hidden (the Chat tab
+// is told whether it shows, so a wording sentence playing there stops on a switch). It also owns
 // the floating tab bar's geometry: the bar is hidden while the keyboard is up or a text field
 // has focus (a hardware keyboard fires no keyboard events, so the field reports its focus
 // through NoteFocusContext), and the room screens must leave for it is provided through
@@ -108,6 +109,7 @@ export function CaregiverApp({ householdId, role }: CaregiverHome) {
                 seniorName={seniorName}
                 canSend={isEditor}
                 userId={userId ?? null}
+                active={tab === 'chat'}
               />
             </View>
           )}

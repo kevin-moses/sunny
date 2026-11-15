@@ -4,14 +4,15 @@
 // single-use and 24 hour expiry of codes (an expired or redeemed device code gives a caregiver
 // the generic not_found error), caregiver and device redemption, the one-household-per-caregiver
 // rule (create and redeem reject a caregiver who already belongs to a household, leave the code
-// unredeemed, and allow a removed caregiver to join another), member removal
-// and the on-call rule, push token ownership (a paired device's token is protected, a device
-// cannot take a live caregiver's, a caregiver takes over another caregiver's, an orphaned
-// owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
-// the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
-// and RLS checks of the Supabase test suite.
+// unredeemed, and allow a removed caregiver to join another), member removal (no on-call
+// caregiver: create sets none and update refuses the old field), push token ownership (a paired
+// device's token is protected, a device cannot take a live caregiver's, a caregiver takes over
+// another caregiver's, an orphaned owner's is taken over), device removal (push tokens dropped,
+// Clerk user deletion scheduled), the device identity claim, and the last-primary guard. These
+// stand in for the former Supabase pgTAP grant and RLS checks of the Supabase test suite.
 //
-// mine's accountKind is covered for signed out, device (claim or device row) and caregiver accounts.
+// mine's accountKind is covered for signed out, device (claim or device row) and caregiver
+// accounts.
 //
 // Last modified: 2026-11-14
 
@@ -128,7 +129,7 @@ const ONE_HOUSEHOLD =
   "You already belong to a household. Ask its primary caregiver to remove you before joining another.";
 
 describe("create", () => {
-  test("seeds defaults, the primary member and the on-call contact", async () => {
+  test("seeds defaults and the primary member, with no on-call caregiver", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const asA = t.withIdentity({ subject: "user_a" });
@@ -137,12 +138,12 @@ describe("create", () => {
     expect(household).toMatchObject({
       seniorPreferredName: "Margaret",
       timezone: NY,
-      onCallUserId: "user_a",
       digestTime: "19:00",
       eventNoticeTime: "08:00",
       shareTranscripts: false,
       backgroundPaused: false,
     });
+    expect(household.onCallUserId).toBeUndefined();
     const members = await asA.query(api.households.listMembers, { householdId });
     expect(members).toHaveLength(1);
     expect(members[0]).toMatchObject({ userId: "user_a", role: "primary", displayName: "Anna" });
@@ -165,15 +166,14 @@ describe("create", () => {
     expect(medication?.steps).toEqual([
       { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
       { id: expect.any(String), offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-      { id: expect.any(String), offsetMinutes: 30, action: "alert_on_call", skipIfClaimed: false },
       {
         id: expect.any(String),
-        offsetMinutes: 45,
+        offsetMinutes: 30,
         action: "alert_all_caregivers",
-        skipIfClaimed: true,
+        skipIfClaimed: false,
       },
     ]);
-    expect(new Set(medication?.steps.map((s) => s.id)).size).toBe(4);
+    expect(new Set(medication?.steps.map((s) => s.id)).size).toBe(3);
     expect(promptOnly?.name).toBe("Prompt only");
     expect(promptOnly?.steps).toEqual([
       { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
@@ -476,7 +476,6 @@ describe("update", () => {
       eventNoticeTime: "07:15",
       shareTranscripts: true,
       backgroundPaused: true,
-      onCallUserId: "user_a",
     });
   });
 
@@ -496,17 +495,17 @@ describe("update", () => {
     ).rejects.toMatchObject({ data: { code: "invalid" } });
   });
 
-  test("onCallUserId must be a member of the household", async () => {
+  test("update no longer accepts an on-call caregiver", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const asA = t.withIdentity({ subject: "user_a" });
     await expect(
-      asA.mutation(api.households.update, { householdId, onCallUserId: "user_x" }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
-
-    await addCaregiver(t, householdId, "user_m", "caregiver_member");
-    await asA.mutation(api.households.update, { householdId, onCallUserId: "user_m" });
-    expect((await asA.query(api.households.get, { householdId })).onCallUserId).toBe("user_m");
+      asA.mutation(api.households.update, {
+        householdId,
+        ...({ onCallUserId: "user_a" } as unknown as Record<string, never>),
+      }),
+    ).rejects.toThrow();
+    expect((await asA.query(api.households.get, { householdId })).onCallUserId).toBeUndefined();
   });
 });
 
@@ -572,27 +571,15 @@ describe("members", () => {
     expect(members.map((m) => m.userId).sort()).toEqual(["user_a", "user_p3"]);
   });
 
-  test("removing the on-call member clears onCallUserId", async () => {
+  test("removing a member leaves the household otherwise unchanged", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     await addCaregiver(t, householdId, "user_m", "caregiver_member");
     const asA = t.withIdentity({ subject: "user_a" });
-    await asA.mutation(api.households.update, { householdId, onCallUserId: "user_m" });
-
+    const before = await asA.query(api.households.get, { householdId });
     await asA.mutation(api.households.removeMember, { householdId, userId: "user_m" });
-
-    const household = await asA.query(api.households.get, { householdId });
-    expect(household.onCallUserId).toBeUndefined();
+    expect(await asA.query(api.households.get, { householdId })).toEqual(before);
     expect(await asA.query(api.households.listMembers, { householdId })).toHaveLength(1);
-  });
-
-  test("removing a member who is not on call leaves onCallUserId alone", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    await addCaregiver(t, householdId, "user_m", "caregiver_member");
-    const asA = t.withIdentity({ subject: "user_a" });
-    await asA.mutation(api.households.removeMember, { householdId, userId: "user_m" });
-    expect((await asA.query(api.households.get, { householdId })).onCallUserId).toBe("user_a");
   });
 
   test("a member can remove themselves and then loses access", async () => {

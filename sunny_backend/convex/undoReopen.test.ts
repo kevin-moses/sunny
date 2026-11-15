@@ -26,26 +26,6 @@
 // judged at the tap time; Done, Undo, Done delivered in order ends confirmed), a reopen that
 // stamps only a device confirm, and the exact pressWasTakenBack boundary.
 //
-// Press ids: the three lost-Done scenarios (a press resent at reconnect then Undo then Done; a
-// resent undo after a later press; Done just after Undo on a slow network) end confirmed with
-// ids and behave as before without them; a resend of an undone id is refused; an undo of
-// another id is too_late; the last 8 taken-back ids are kept; after a caregiver reopen the time
-// rule still refuses an older press with an id; a reopen of a device confirm records its id, so
-// a resend of that press (age 0) is refused, also after a later undo by the device, while a
-// reopen of a confirm without an id or of a caregiver's resolve leaves the list as it was; the
-// confirm stores and the undo clears the id; a same-device no-op press joins confirmPressIds
-// (not audited) and its Undo applies, while a no-op from another device, on another device's
-// confirm or on a caregiver's resolve adds nothing; the cap of 4 keeps the confirming press;
-// after a take-back a resend of any id of the confirmation is refused ("This press was taken
-// back"); a reopen takes back and audits every id; an old-format undo audits the ids it took
-// back; an invalid id on a no-op is never stored; a too_late undo writes undo_not_applied; a
-// 100,000-character id leaves a small row without the id (missing and existing instance);
-// confirmInstance refuses a press id from a caregiver actor; an invalid id for another
-// household's instance is forbidden with no audit row and no raw id; the day entry (dayView and
-// agent.today) carries confirmPressIds through confirm, a same-device no-op and an undo;
-// invalid ids are refused; the id is audited on the confirm, the undo and a refused press; and
-// queuedPressTakenBack and withTakenBackPressIds directly.
-//
 // Last modified: 2026-11-14
 
 import workpoolTest from "@convex-dev/workpool/test";
@@ -744,7 +724,7 @@ describe("reopenTaskInstance", () => {
     await tick(f, "2027-03-14T12:00:00Z");
     await tick(f, "2027-03-14T12:15:00Z");
     const policy = (await f.t.run(async (ctx) => await ctx.db.get(f.medication)))!;
-    const [first, second, third, fourth] = policy.steps;
+    const [first, second, third] = policy.steps;
     const firedBefore = (await row(f)).firedSteps;
     expect(firedBefore.map((s) => s.stepId)).toEqual([first!.id, second!.id]);
 
@@ -759,6 +739,7 @@ describe("reopenTaskInstance", () => {
     expect(afterReopen.firedSteps.map((s) => s.stepId)).toEqual([first!.id, second!.id, third!.id]);
     expect(afterReopen.state).toBe("escalated");
 
+    // The default ladder has one caregiver alert (every caregiver at +30); nothing follows it.
     await tick(f, "2027-03-14T12:36:00Z");
     expect((await row(f)).firedSteps).toHaveLength(3);
     await tick(f, "2027-03-14T12:45:00Z");
@@ -766,7 +747,6 @@ describe("reopenTaskInstance", () => {
       first!.id,
       second!.id,
       third!.id,
-      fourth!.id,
     ]);
   });
 });

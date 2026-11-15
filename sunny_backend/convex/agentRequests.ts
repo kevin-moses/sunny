@@ -27,6 +27,17 @@
 // since viewers cannot send requests and request replies stay editor-only as before. The app's
 // Chat tab reads `transcript`; `list` and `get` keep serving the dev script and existing callers.
 //
+// Wording cards: each request item of the transcript carries `wording`, one entry per task its
+// successful add_task or update_task calls created or changed (the request row's
+// changedTaskIds, each task once in order of first change, at most 20), read from the task as
+// it is now: the label the display shows, the display's clock time of its first time, the
+// sentence the display speaks then (lib/deviceWording.ts cueSpeech; null for a task with no
+// time, which is never prompted), and every time of the task ("HH:MM"). A stopped, deleted or
+// other-household task has no card. This reads only the request rows the transcript already
+// loaded and their tasks (each task once per query), never the tool call rows, and builds no
+// cards for a request still queued or running.
+// Since viewers get no requests, they never get wording either.
+//
 // Last modified: 2026-11-14
 
 import { v } from "convex/values";
@@ -45,7 +56,9 @@ import {
 } from "./lib/access";
 import { isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { audit } from "./lib/audit";
+import { ANYTIME } from "./lib/anytime";
 import { recentPosts, type ChatPostView } from "./lib/chatPosts";
+import { clockTime, cueSpeech } from "./lib/deviceWording";
 import { appError } from "./lib/errors";
 import { requireMaxLength, requireNonBlank } from "./lib/text";
 import type { AgentRequestStatus } from "./lib/validators";
@@ -309,7 +322,7 @@ export const list = query({
   args: { householdId: v.id("households"), limit: v.optional(v.number()) },
   handler: async (ctx, { householdId, limit }): Promise<AgentRequestView[]> => {
     await requireEditor(ctx, householdId);
-    return await recentRequests(ctx, householdId, listCount(limit));
+    return (await recentRequests(ctx, householdId, listCount(limit))).map((r) => r.view);
   },
 });
 
@@ -329,35 +342,116 @@ function listCount(limit: number | undefined): number {
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param count: (number) How many at most.
- * @return: (Promise<AgentRequestView[]>) The requests, newest first.
+ * @return: (Promise<{ row, view }[]>) The requests, newest first, each as its row (for what
+ *          only the server reads, such as changedTaskIds) and its view.
  */
 async function recentRequests(
   ctx: QueryCtx,
   householdId: Id<"households">,
   count: number,
-): Promise<AgentRequestView[]> {
+): Promise<{ row: Doc<"agentRequests">; view: AgentRequestView }[]> {
   const rows = await ctx.db
     .query("agentRequests")
     .withIndex("by_household", (q) => q.eq("householdId", householdId))
     .order("desc")
     .take(count);
   const names = new Map<string, string | null>();
-  const views: AgentRequestView[] = [];
+  const out: { row: Doc<"agentRequests">; view: AgentRequestView }[] = [];
   for (const row of rows) {
-    views.push(toView(row, await requesterName(ctx, householdId, row.requestedBy, names)));
+    out.push({
+      row,
+      view: toView(row, await requesterName(ctx, householdId, row.requestedBy, names)),
+    });
   }
-  return views;
+  return out;
+}
+
+/**
+ * The senior-facing wording of one task a request created or changed (the chat's wording card),
+ * read from the task as it is now.
+ */
+export interface TaskWording {
+  taskId: Id<"tasks">;
+  /** The short label the display shows. */
+  label: string;
+  /** The task's first time of day as the display writes it ("8:00"), or "Anytime". */
+  time: string;
+  /**
+   * Every time of the task, household-local "HH:MM", earliest first (the first is `time`);
+   * empty for a task with no time. The app lists the others under the card.
+   */
+  times: string[];
+  /**
+   * The sentence the display speaks at that time (lib/deviceWording.ts cueSpeech: the written
+   * prompt, or the template with the time); null for a task with no time, which is never
+   * prompted.
+   */
+  sentence: string | null;
 }
 
 /** One item of the household's chat thread: a caregiver's request or a post from Sunny. */
 export type TranscriptItem =
-  ({ type: "request" } & AgentRequestView) | ({ type: "post" } & ChatPostView);
+  | ({ type: "request"; wording: TaskWording[] } & AgentRequestView)
+  | ({ type: "post" } & ChatPostView);
+
+/**
+ * purpose: A task's wording as the senior's surfaces use it now: its label, its first time and
+ *          the sentence spoken then, and all its times.
+ * @param task: (Doc<"tasks">) The task.
+ * @return: (TaskWording) The card's data.
+ */
+function taskWording(task: Doc<"tasks">): TaskWording {
+  const first = task.times[0];
+  return {
+    taskId: task._id,
+    label: task.displayLabel,
+    time: clockTime(first ?? ANYTIME),
+    times: task.times,
+    sentence:
+      first === undefined
+        ? null
+        : cueSpeech({
+            type: task.type,
+            displayLabel: task.displayLabel,
+            spokenPrompt: task.spokenPrompt,
+            scheduledTime: first,
+          }),
+  };
+}
+
+/**
+ * purpose: The wording cards of a request: one per task in its changedTaskIds (the tasks its
+ *          successful add_task and update_task calls created or changed, each once, in order of
+ *          first change), read live. A task that was stopped, deleted or is not of the request's
+ *          household gets no card.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) The request's household.
+ * @param taskIds: (readonly Id<"tasks">[]) The request row's changedTaskIds.
+ * @param loaded: (Map<Id<"tasks">, Doc<"tasks"> | null>) Tasks already read in this query
+ *        (updated), so a task several requests changed is read once.
+ * @return: (Promise<TaskWording[]>) The cards.
+ */
+async function requestWording(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  taskIds: readonly Id<"tasks">[],
+  loaded: Map<Id<"tasks">, Doc<"tasks"> | null>,
+): Promise<TaskWording[]> {
+  const cards: TaskWording[] = [];
+  for (const taskId of taskIds) {
+    if (!loaded.has(taskId)) loaded.set(taskId, await ctx.db.get(taskId));
+    const task = loaded.get(taskId);
+    if (task && task.householdId === householdId && task.active) cards.push(taskWording(task));
+  }
+  return cards;
+}
 
 /**
  * purpose: The household's caregiver chat thread: the agent requests and Sunny's own posts (the
  *          daily digest) merged by creation time, newest first. Any caregiver of the household
  *          may read it, a senior device never: an editor gets requests and posts; a viewer, who
- *          cannot send requests, gets the posts only.
+ *          cannot send requests, gets the posts only. Each request carries the wording cards of
+ *          the tasks it created or changed (requestWording), so only editors ever see them.
  * @param householdId: (Id<"households">) Household.
  * @param limit: (number, optional) How many items to return; default 20, at most 100.
  * @return: (TranscriptItem[]) The items, newest first.
@@ -368,16 +462,32 @@ export const transcript = query({
   handler: async (ctx, { householdId, limit }): Promise<TranscriptItem[]> => {
     const actor = await requireCaregiverReader(ctx, householdId);
     const count = listCount(limit);
-    const items: TranscriptItem[] = (await recentPosts(ctx, householdId, count)).map((post) => ({
+    const posts = (await recentPosts(ctx, householdId, count)).map((post) => ({
       type: "post" as const,
       ...post,
     }));
-    if (EDITOR_ROLES.includes(actor.role)) {
-      for (const request of await recentRequests(ctx, householdId, count)) {
-        items.push({ type: "request", ...request });
+    const loadedRequests = EDITOR_ROLES.includes(actor.role)
+      ? await recentRequests(ctx, householdId, count)
+      : [];
+    const changed = new Map(loadedRequests.map(({ row }) => [row._id, row.changedTaskIds ?? []]));
+    const requests = loadedRequests.map(({ view }) => ({ type: "request" as const, ...view }));
+    const newest = [...posts, ...requests]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, count);
+    const tasks = new Map<Id<"tasks">, Doc<"tasks"> | null>();
+    const items: TranscriptItem[] = [];
+    for (const item of newest) {
+      if (item.type === "post") {
+        items.push(item);
+        continue;
       }
+      // The app shows no cards while a request is queued or running, so none are built.
+      const wording = isInProgress(item.status)
+        ? []
+        : await requestWording(ctx, householdId, changed.get(item.id) ?? [], tasks);
+      items.push({ ...item, wording });
     }
-    return items.sort((a, b) => b.createdAt - a.createdAt).slice(0, count);
+    return items;
   },
 });
 

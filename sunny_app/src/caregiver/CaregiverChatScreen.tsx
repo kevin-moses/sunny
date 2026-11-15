@@ -15,7 +15,10 @@
 // message, and leaves room for the tab bar (useTabBarInset). The transcript is shared by every
 // editor: messages from other caregivers carry their name above the bubble (the signed-in
 // caregiver's id comes from CaregiverApp). Sends are guarded by a ref so two taps in one frame
-// cannot both send.
+// cannot both send. Under Sunny's reply to a request that added or changed tasks, a wording card
+// per task shows the label the display shows and the sentence Sunny speaks, with a play button
+// (WordingCard, useWordingPlayer: one sentence at a time, stopped when the tab is hidden, the
+// app leaves the foreground or the screen unmounts; CaregiverApp passes whether the tab shows).
 //
 // Last modified: 2026-11-14
 
@@ -33,6 +36,8 @@ import { type } from '../theme/typography';
 import { ScreenHeader } from './CaregiverComponents';
 import { buildTranscript, hasInProgress, type TranscriptEntry } from './format';
 import { useTabBarInset } from './tabBarInset';
+import { useWordingPlayer, type WordingPlayer } from './useWordingPlayer';
+import { WordingCard } from './WordingCard';
 
 /** How many recent items (requests and posts) the transcript loads. */
 const TRANSCRIPT_LIMIT = 20;
@@ -49,15 +54,30 @@ interface CaregiverChatScreenProps {
   canSend: boolean;
   /** The signed-in caregiver's Clerk user id, to tell their messages from other caregivers'. */
   userId: string | null;
+  /** Whether the Chat tab is showing (it stays mounted when hidden); hiding stops playback. */
+  active?: boolean;
 }
 
 /**
  * purpose: One line of the transcript.
- * @param props: ({ entry: TranscriptEntry }) The line.
- * @return: (JSX.Element) The bubble, reply or status line.
+ * @param props: ({ entry, player }) The line, and the wording card player.
+ * @return: (JSX.Element) The bubble, reply, wording card or status line.
  */
-function TranscriptRow({ entry }: { entry: TranscriptEntry }) {
+function TranscriptRow({ entry, player }: { entry: TranscriptEntry; player: WordingPlayer }) {
   const textStyle = [type.body, styles.ink];
+  if (entry.wording !== null) {
+    const { sentence } = entry.wording;
+    return (
+      <WordingCard
+        wording={entry.wording}
+        playing={player.playingId === entry.id}
+        failed={player.failedId === entry.id}
+        onToggle={() => {
+          if (sentence !== null) player.toggle(entry.id, sentence);
+        }}
+      />
+    );
+  }
   if (entry.kind === 'caregiver') {
     return (
       <UserBubble text={entry.text} textStyle={textStyle} inset={48} speaker={entry.speaker} />
@@ -123,7 +143,8 @@ function ChatComposer({
 /**
  * purpose: Render the Chat tab.
  * @param props: (CaregiverChatScreenProps) The household, the senior's name, whether the
- *        caregiver may send and the signed-in caregiver's user id.
+ *        caregiver may send, the signed-in caregiver's user id and whether the tab is showing
+ *        (default true).
  * @return: (JSX.Element) The screen.
  */
 export function CaregiverChatScreen({
@@ -131,7 +152,9 @@ export function CaregiverChatScreen({
   seniorName,
   canSend,
   userId,
+  active = true,
 }: CaregiverChatScreenProps) {
+  const player = useWordingPlayer(active);
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const scrollRef = useRef<ScrollView>(null);
@@ -208,7 +231,7 @@ export function CaregiverChatScreen({
           </Text>
         )}
         {entries.map((entry) => (
-          <TranscriptRow key={entry.id} entry={entry} />
+          <TranscriptRow key={entry.id} entry={entry} player={player} />
         ))}
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(tabBarInset, 8) }]}>

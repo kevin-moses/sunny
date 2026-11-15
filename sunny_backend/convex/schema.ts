@@ -31,6 +31,13 @@
 // Caregiver chat (2026-11-14): chatPosts, Sunny's own posts in the caregiver chat thread (the
 // daily digest), merged with agentRequests into the transcript; notificationOutbox.pushState,
 // which lets a caregiver's push whose retries ran out be texted.
+// Caregiver setup by chat (2026-11-14): householdMembers.digestOptOut (a caregiver who does
+// not want the digest pushed or texted) and agentRequests.changedTaskIds (the tasks a request's
+// add_task and update_task calls changed, for the wording cards in the chat).
+// No on-call caregiver (2026-11-14): every caregiver is alerted at once. Two legacy items stay
+// valid only so stored rows still match: households.onCallUserId (never read or written) and the
+// escalation action "alert_on_call" (read exactly as "alert_all_caregivers", never written;
+// lib/validators.ts). Delete both once migrations.removeOnCall has run on every deployment.
 //
 // Last modified: 2026-11-14
 
@@ -70,7 +77,9 @@ export default defineSchema({
     seniorFullName: v.optional(v.string()),
     // IANA region zone ("America/New_York"); validated by lib/time.isValidTimezone.
     timezone: v.string(),
-    // Caregiver who gets the first alerts; must be a member of this household.
+    // Deprecated (2026-11-14): there is no on-call caregiver; never read or written. Kept so
+    // stored rows still match the schema until migrations.removeOnCall has cleared it on every
+    // deployment; then delete this field.
     onCallUserId: v.optional(v.string()),
     digestTime: v.string(),
     eventNoticeTime: v.string(),
@@ -95,6 +104,10 @@ export default defineSchema({
     phoneVerifiedAt: v.optional(v.number()),
     // A number awaiting its texted code; becomes phone on confirmMyPhone.
     pendingPhone: v.optional(v.string()),
+    // True when this caregiver does not want the daily digest by push or text (set through the
+    // household agent, lib/digestRecipients.ts); absent means they receive it. The digest is
+    // still posted in the chat thread for everyone.
+    digestOptOut: v.optional(v.boolean()),
   })
     .index("by_household_user", ["householdId", "userId"])
     .index("by_user", ["userId"])
@@ -266,8 +279,8 @@ export default defineSchema({
     // windowStart). Explicit rather than _creationTime so tests can drive the clock.
     createdAt: v.number(),
     // Escalation steps already handled, each once, by the step's stable id. action is a
-    // snapshot of the step as fired; notified is false for a step superseded by a later step of the same kind in
-    // the same tick.
+    // snapshot of the step as fired; notified is false for a step superseded by a later step of
+    // the same kind in the same tick.
     firedSteps: v.array(
       v.object({
         stepId: v.string(),
@@ -613,6 +626,11 @@ export default defineSchema({
     // Raw failure detail (SDK errors, env var names, ids). Never returned by agentRequests.
     errorDetail: v.optional(v.string()),
     finishedAt: v.optional(v.number()),
+    // Tasks this request's successful add_task and update_task calls created or changed, each
+    // once, in order of first change, at most MAX_CHANGED_TASKS (agentRuntime.ts). Written in
+    // the same transaction as the tool's effect; agentRequests.transcript reads the tasks live
+    // for the chat's wording cards.
+    changedTaskIds: v.optional(v.array(v.id("tasks"))),
   })
     // Newest first (creation time is the implicit last index field).
     .index("by_household", ["householdId"])
