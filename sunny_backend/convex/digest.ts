@@ -5,10 +5,11 @@
 // from the template, asks Claude Haiku for the rest (lib/digestText.ts), and falls back to the
 // whole template on any failure, invalid reply or quiet day; `complete` then stores the text and
 // the path that wrote it, posts the text as a message from Sunny in the household's caregiver
-// chat thread (lib/chatPosts.ts, once per digest), and inserts one "digest" outbox row per
-// reachable member (a verified phone or a push token): a push previews it ("<name>'s day" over
-// the text) and opens the chat; a caregiver without the app gets the full text by SMS as
-// before. Rules: a paused household gets no digest until resumed; a household created after
+// chat thread (lib/chatPosts.ts, once per digest, for every caregiver), and inserts one
+// "digest" outbox row per reachable member (a verified phone or a push token) who has not
+// turned the digest off (lib/digestRecipients.ts receivesDigest): a push previews it ("<name>'s
+// day" over the text) and opens the chat; a caregiver without the app gets the full text by SMS
+// as before. Rules: a paused household gets no digest until resumed; a household created after
 // that day's digest time gets none that day.
 //
 // Last modified: 2026-11-14
@@ -28,6 +29,7 @@ import {
   SWEEP_BATCH,
 } from "./lib/delivery";
 import { gatherDigestFacts } from "./lib/digestFacts";
+import { receivesDigest } from "./lib/digestRecipients";
 import {
   composeWithClaude,
   factsForPrompt,
@@ -154,8 +156,8 @@ export const load = internalQuery({
 /**
  * purpose: Store the digest text, post it in the household's caregiver chat thread (once: only
  *          a pending digest gets here, and this marks it done), and queue one outbox row per
- *          reachable member (a verified phone or a push token, read now, so a change since
- *          loading is honored). A push shows "<name>'s day" (payload.pushTitle) over the text;
+ *          reachable member who receives the digest (a verified phone or a push token, and not
+ *          opted out; read now, so a change since loading is honored). A push shows "<name>'s day" (payload.pushTitle) over the text;
  *          an SMS keeps "Sunny: <name>'s day". Does nothing unless the digest is still pending.
  * @param digestId: (Id<"digests">) The digest.
  * @param text: (string) The digest text.
@@ -174,7 +176,7 @@ export const complete = internalMutation({
       .query("householdMembers")
       .withIndex("by_household_user", (q) => q.eq("householdId", household._id))
       .collect();
-    const recipients = await reachableMembers(ctx, members);
+    const recipients = await reachableMembers(ctx, members.filter(receivesDigest));
     for (const member of recipients) {
       await insertNotification(ctx, {
         householdId: household._id,

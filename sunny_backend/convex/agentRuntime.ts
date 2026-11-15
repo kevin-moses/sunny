@@ -10,6 +10,8 @@
 //   that does not include a newer user message, so a lagging event list cannot return a stale reply.
 // - A tool call runs once: its agentToolCalls row is inserted in the same transaction as its
 //   effect, a repeat reuses the row, and sent results are marked so a lagging event list is ignored.
+//   The row also keeps the task a successful add_task or update_task changed (taskId), which the
+//   chat's wording card reads.
 //   Tools run as an agent actor { kind: "agent", onBehalfOf: requestedBy, requestId } built from
 //   the request row, so what the agent creates and audits records the requesting caregiver.
 //   executeToolCalls re-checks that the requester is still an editor member (primary or member)
@@ -24,7 +26,7 @@
 //   message (lib/agentHistory.ts), so the caregiver's chat reads as one continuing conversation.
 // - The workflow body must stay stable while runs are in flight (notes/CONVEX_MIGRATION.md).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { vResultValidator, WorkflowManager, type WorkflowCtx } from "@convex-dev/workflow";
 import { v } from "convex/values";
@@ -43,7 +45,7 @@ import { buildBriefing } from "./lib/agentBriefing";
 import { buildCarryOver } from "./lib/agentHistory";
 import { errorText, GENERIC_ERROR, isInProgress, transitionRequest } from "./lib/agentRequestState";
 import { executeAgentTool } from "./lib/agentTools";
-import type { ToolContext } from "./lib/agentTools";
+import type { ToolContext } from "./lib/toolInput";
 import {
   countUserMessages,
   createSession,

@@ -31,6 +31,9 @@
 // Caregiver chat (2026-11-14): chatPosts, Sunny's own posts in the caregiver chat thread (the
 // daily digest), merged with agentRequests into the transcript; notificationOutbox.pushState,
 // which lets a caregiver's push whose retries ran out be texted.
+// Caregiver setup by chat (2026-11-14): householdMembers.digestOptOut (a caregiver who does
+// not want the digest pushed or texted) and agentToolCalls.taskId (the task an add_task or
+// update_task call changed, for the wording card in the chat).
 //
 // Last modified: 2026-11-14
 
@@ -95,6 +98,10 @@ export default defineSchema({
     phoneVerifiedAt: v.optional(v.number()),
     // A number awaiting its texted code; becomes phone on confirmMyPhone.
     pendingPhone: v.optional(v.string()),
+    // True when this caregiver does not want the daily digest by push or text (set through the
+    // household agent, lib/digestRecipients.ts); absent means they receive it. The digest is
+    // still posted in the chat thread for everyone.
+    digestOptOut: v.optional(v.boolean()),
   })
     .index("by_household_user", ["householdId", "userId"])
     .index("by_user", ["userId"])
@@ -615,6 +622,9 @@ export default defineSchema({
     text: v.string(),
     isError: v.boolean(),
     sentAt: v.optional(v.number()),
+    // The task a successful add_task or update_task created or changed, for the wording card in
+    // the caregiver chat (agentRequests.transcript reads the task live).
+    taskId: v.optional(v.id("tasks")),
   })
     .index("by_request_tool", ["requestId", "toolUseId"])
     // Calls whose result was sent: sentAt is absent until then, so gt(0) selects the sent ones.

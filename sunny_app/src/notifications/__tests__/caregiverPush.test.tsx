@@ -3,7 +3,8 @@
 // Purpose: Tests for caregiver push (caregiverPush.ts) through the real CaregiverApp, rendered
 // with react-test-renderer. Only the boundaries are mocked: expo-notifications (the native
 // module), the network (callMutation, the Convex query hook and connection state), Clerk's
-// useAuth, AsyncStorage, and the native symbol and safe-area views. Covers: the "I'm on it"
+// useAuth, AsyncStorage, the native symbol and safe-area views, and the audio and speech modules
+// the Chat tab's wording player loads. Covers: the "I'm on it"
 // category registered with a foreground action; permission asked only while undetermined, the
 // APNs token registered when granted and again when the OS rotates it; nothing registered and no
 // error when permission is denied; notifications turned off in Settings unregister the token
@@ -103,6 +104,10 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
+
+// The Chat tab's wording player (useWordingPlayer) loads the native audio and speech modules.
+jest.mock('expo-audio', () => ({ setAudioModeAsync: () => Promise.resolve() }));
+jest.mock('expo-speech', () => ({ speak: jest.fn(), stop: jest.fn() }));
 
 jest.mock('@clerk/expo/legacy', () => ({
   useSignIn: () => ({ isLoaded: false }),

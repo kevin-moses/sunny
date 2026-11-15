@@ -2,7 +2,10 @@
 // Purpose: The household agent's custom tools: their definitions (sent with every new Managed
 // Agents session as overrides by lib/managedAgents.ts createSession, so a deploy is enough after
 // changing them; scripts/setup_managed_agent.ts only keeps the console's copy in sync) and their
-// execution inside a Convex mutation. Calendar tools
+// execution inside a Convex mutation. The knowledge and settings tools (get_knowledge,
+// add_knowledge, update_knowledge, remove_knowledge, get_settings, update_settings,
+// set_digest_delivery) are defined in lib/agentSetupTools.ts and joined into the list and the
+// dispatch table here. The shared input readers and ToolContext are in lib/toolInput.ts. Calendar tools
 // (get_calendar, add_event, update_event, cancel_event) are thin wrappers over the calendar
 // cores (addEventCore, updateEventCore, cancelEventCore, listOccurrencesCore); task tools
 // (get_tasks, add_task, update_task, stop_task) wrap the task cores in tasks.ts
@@ -47,7 +50,12 @@
 //   checklist_items, active }; stopped tasks only with include_stopped; optionally only one
 //   type. add_task, update_task and stop_task return the task in that shape.
 //
-// Last modified: 2026-11-01
+// Wording card: a successful add_task or update_task also reports its task id
+// (ToolOutcome.taskId), which the runtime stores on the call's agentToolCalls row so the
+// caregiver's chat can show the task's current label and spoken sentence under Sunny's reply
+// (agentRequests.transcript).
+//
+// Last modified: 2026-11-14
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { ConvexError } from "convex/values";
@@ -57,11 +65,13 @@ import { addEventCore, cancelEventCore, listOccurrencesCore, updateEventCore } f
 import type { AddEventArgs, EventChanges } from "../calendar";
 import { createTaskCore, isAsNeededTask, listTasksCore, updateTaskCore } from "../tasks";
 import type { CreateTaskArgs, TaskChanges } from "../tasks";
-import type { AgentActor } from "./access";
+import { SETUP_TOOL_HANDLERS, SETUP_TOOLS } from "./agentSetupTools";
+import type { SetupToolName } from "./agentSetupTools";
 import { isAnytimeTask } from "./anytime";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
-import { requireNonBlank } from "./text";
+import { booleanField, changesOf, idField, stringField } from "./toolInput";
+import type { ToolContext, ToolHandler } from "./toolInput";
 import { isoWeekday, WEEKDAY_CODES, weekdayCodes } from "./time";
 import { taskType } from "./validators";
 import type { TaskType } from "./validators";
@@ -74,16 +84,6 @@ const AS_NEEDED_REFUSAL = "As-needed medications are managed in the app.";
 
 /** Task types, as the model writes them. */
 const TASK_TYPES: readonly TaskType[] = taskType.members.map((m) => m.value);
-
-/** Everything a tool needs besides the model's input; built from the request row. */
-export interface ToolContext {
-  /** Household of the request (never from the model). */
-  householdId: Id<"households">;
-  /** The agent actor, carrying the requesting caregiver (onBehalfOf) and the request. */
-  actor: AgentActor;
-  /** Epoch ms the calendar's "not in the past" rules and instance expansion use. */
-  now: number;
-}
 
 /** One tool call: its name and the model's input. */
 export interface ToolCall {
@@ -307,29 +307,8 @@ export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
       required: ["event_id"],
     },
   },
+  ...SETUP_TOOLS,
 ];
-
-/**
- * purpose: Read a string field of tool input. Required fields must be non-blank strings;
- *          optional fields may also be null (null means clear on update) or blank.
- * @param value: (unknown) The field's value.
- * @param key: (string) Field name, for the error message.
- * @param optional: (boolean) Whether null is allowed (and blank is kept as is).
- * @return: (string | null) The string (trimmed when required), or null.
- * @raises invalid (an application error the model can read) for anything else.
- */
-function stringField(value: unknown, key: string, optional: true): string | null;
-function stringField(value: unknown, key: string, optional?: false): string;
-function stringField(value: unknown, key: string, optional = false): string | null {
-  if (optional && value === null) return null;
-  if (typeof value !== "string") {
-    throw appError(
-      "invalid",
-      optional ? `${key} must be a string` : `${key} is missing or malformed`,
-    );
-  }
-  return optional ? value : requireNonBlank(value, key);
-}
 
 /**
  * purpose: Read a list-of-strings field of tool input.
@@ -405,20 +384,6 @@ function withoutNulls<T extends object>(fields: T): { [K in keyof T]?: Exclude<T
   ) as { [K in keyof T]?: Exclude<T[K], null> };
 }
 
-/**
- * purpose: Read the `changes` object of update_event or update_task input.
- * @param input: (Record<string, unknown>) Tool input.
- * @return: (Record<string, unknown>) The changes.
- * @raises invalid when it is not an object.
- */
-function changesOf(input: Record<string, unknown>): Record<string, unknown> {
-  const changes = input.changes;
-  if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
-    throw appError("invalid", "changes must be an object");
-  }
-  return changes as Record<string, unknown>;
-}
-
 /** Where an id in tool input comes from: its input key and the tool that lists it. */
 const ID_SOURCES = {
   events: { key: "event_id", tool: "get_calendar" },
@@ -439,14 +404,7 @@ function idOf<T extends keyof typeof ID_SOURCES>(
   input: Record<string, unknown>,
 ): Id<T> {
   const { key, tool } = ID_SOURCES[table];
-  const id = ctx.db.normalizeId(table, stringField(input[key], key));
-  if (id === null) {
-    throw appError(
-      "invalid",
-      `${key} is not a valid ${key.replace("_id", "")} id; use a ${key} from the briefing or ${tool}`,
-    );
-  }
-  return id;
+  return idField(ctx, table, input[key], key, `the briefing or ${tool}`);
 }
 
 /**
@@ -557,9 +515,8 @@ const TASK_FIELD_READERS: Record<string, (out: TaskChanges, value: unknown, key:
       if (minutes === null) throw appError("invalid", "window_minutes cannot be cleared");
       out.windowMinutes = minutes;
     },
-    active: (out, value) => {
-      if (typeof value !== "boolean") throw appError("invalid", "active must be true or false");
-      out.active = value;
+    active: (out, value, key) => {
+      out.active = booleanField(value, key);
     },
   };
 
@@ -798,15 +755,9 @@ function occurrenceForModel(o: OccurrenceJson): Record<string, unknown> {
   };
 }
 
-/** A tool: runs with the context and the model's input, returns the raw result. */
-type ToolHandler = (
-  ctx: MutationCtx,
-  toolCtx: ToolContext,
-  input: Record<string, unknown>,
-) => Promise<unknown>;
-
 /** The tools, by name (the names of AGENT_TOOLS). */
 type ToolName =
+  | SetupToolName
   | "get_tasks"
   | "add_task"
   | "update_task"
@@ -820,11 +771,10 @@ type ToolName =
 const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   get_tasks: async (ctx, { householdId }, input) => {
     const { include_stopped: includeStopped, type } = input;
-    if (includeStopped !== undefined && typeof includeStopped !== "boolean") {
-      throw appError("invalid", "include_stopped must be true or false");
-    }
+    const withStopped =
+      includeStopped === undefined ? false : booleanField(includeStopped, "include_stopped");
     const only = type === undefined ? undefined : taskTypeField(type);
-    const tasks = await listTasksCore(ctx, householdId, includeStopped !== true);
+    const tasks = await listTasksCore(ctx, householdId, !withStopped);
     return tasks.filter((t) => only === undefined || t.type === only).map(taskForModel);
   },
   add_task: async (ctx, { householdId, actor, now }, input) => {
@@ -867,22 +817,35 @@ const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   },
   cancel_event: async (ctx, { householdId, actor, now }, input) =>
     await cancelEventCore(ctx, actor, householdId, idOf(ctx, "events", input), now),
+  ...SETUP_TOOL_HANDLERS,
 };
+
+/** The tools whose successful result is a task the caregiver's chat shows a wording card for. */
+const WORDING_TOOLS: ReadonlySet<string> = new Set(["add_task", "update_task"]);
+
+/** What a tool call produced: the text for the model and, for a wording tool, its task. */
+export interface ToolOutcome {
+  text: string;
+  isError: boolean;
+  /** The task a successful add_task or update_task created or changed. */
+  taskId?: Id<"tasks">;
+}
 
 /**
  * purpose: Run one custom tool call for a household.
  * @param ctx: (MutationCtx) Context.
  * @param toolCtx: (ToolContext) Household, agent actor and clock, from the request row.
  * @param call: (ToolCall) Tool name and the model's input.
- * @return: (Promise<{text: string, isError: boolean}>) Result text for the model. Bad input,
- *          application errors and unknown tools give isError true ("Error: <message>" for
- *          errors); other errors are rethrown.
+ * @return: (Promise<ToolOutcome>) Result text for the model, and for a successful add_task or
+ *          update_task the task's id (stored with the call for the chat's wording card). Bad
+ *          input, application errors and unknown tools give isError true ("Error: <message>"
+ *          for errors); other errors are rethrown.
  */
 export async function executeAgentTool(
   ctx: MutationCtx,
   toolCtx: ToolContext,
   call: ToolCall,
-): Promise<{ text: string; isError: boolean }> {
+): Promise<ToolOutcome> {
   if (!Object.hasOwn(TOOL_HANDLERS, call.name)) {
     return { text: `Unknown tool ${call.name}`, isError: true };
   }
@@ -891,9 +854,12 @@ export async function executeAgentTool(
     const text = JSON.stringify(result);
     if (text.length > MAX_TOOL_RESULT_CHARS) {
       return {
-        text: `Error: The result is too large (${text.length} characters). Ask for something narrower: get_calendar a shorter date range; get_tasks without include_stopped, or with a type.`,
+        text: `Error: The result is too large (${text.length} characters). Ask for something narrower: get_calendar a shorter date range; get_tasks without include_stopped, or with a type; get_knowledge with a kind.`,
         isError: true,
       };
+    }
+    if (WORDING_TOOLS.has(call.name)) {
+      return { text, isError: false, taskId: (result as { task_id: Id<"tasks"> }).task_id };
     }
     return { text, isError: false };
   } catch (e) {

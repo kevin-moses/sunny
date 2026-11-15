@@ -16,7 +16,8 @@
 //   day;
 // - the chat transcript built from the household's chat thread (agentRequests.transcript:
 //   agent requests and Sunny's posts such as the daily digest, labelled "Daily summary" and the
-//   day; oldest first).
+//   day; oldest first), with a wording card after a finished request for each task it created
+//   or changed (the label the display shows, its time, and the sentence Sunny speaks).
 // Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date arithmetic comes
 // from day/localDate (parsed once, then counted as days). No timezone conversion happens here:
 // the server sends each confirmation as a household-local "HH:MM" (confirmedLocalTime) and marks
@@ -589,11 +590,27 @@ export function resolveSelectedDate(
   return todayDate;
 }
 
+/** The senior-facing wording of a task a request created or changed (the wording card). */
+export type TaskWording = AgentRequest['wording'][number];
+
+/** Heading of the card's label line. */
+export const ON_DISPLAY = 'On the display';
+
+/** Heading of the card's sentence line. */
+export const SUNNY_SAYS = 'Sunny says';
+
+/** The card's sentence line for a task with no time, which is never spoken. */
+export const NOT_SPOKEN = 'Nothing. Tasks without a time are not announced.';
+
 /** One line of the chat transcript. */
 export interface TranscriptEntry {
   id: string;
-  /** caregiver: right bubble; sunny: left text; working and error: status lines. */
-  kind: 'caregiver' | 'sunny' | 'working' | 'error';
+  /**
+   * caregiver: right bubble; sunny: left text; working and error: status lines; wording: the
+   * card of one task under Sunny's reply.
+   */
+  kind: 'caregiver' | 'sunny' | 'working' | 'error' | 'wording';
+  /** The words shown, or for a wording card what VoiceOver reads (wordingSpeech). */
   text: string;
   /**
    * Caregiver lines only: who said it when it was not the signed-in caregiver (their name, or
@@ -605,6 +622,18 @@ export interface TranscriptEntry {
    * 13"); null for a reply and other kinds.
    */
   label: string | null;
+  /** Wording lines only: the task's label, time and sentence; null for other kinds. */
+  wording: TaskWording | null;
+}
+
+/**
+ * purpose: What VoiceOver reads for a wording card: "On the display: 8:00 Morning pills. Sunny
+ *          says: <sentence>".
+ * @param wording: (TaskWording) The card's data.
+ * @return: (string) The accessibility label.
+ */
+export function wordingSpeech(wording: TaskWording): string {
+  return `${ON_DISPLAY}: ${wording.time} ${wording.label}. ${SUNNY_SAYS}: ${wording.sentence ?? NOT_SPOKEN}`;
 }
 
 /**
@@ -642,10 +671,11 @@ export function messageSpeaker(
 /**
  * purpose: The chat lines of one request: the caregiver's message, then Sunny's reply, a
  *          "working" line while it is queued or running, or the error when it failed. A
- *          cancelled request shows only the message.
+ *          cancelled request shows only the message. A finished request (succeeded or failed)
+ *          is followed by a wording card for each task it created or changed that still runs.
  * @param request: (AgentRequest) The request.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id.
- * @return: (TranscriptEntry[]) One or two lines.
+ * @return: (TranscriptEntry[]) The message, its outcome and its wording cards.
  */
 function requestEntries(request: AgentRequest, userId: string | null): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [
@@ -655,9 +685,10 @@ function requestEntries(request: AgentRequest, userId: string | null): Transcrip
       text: request.message,
       speaker: messageSpeaker(request.requestedBy, request.requestedByName, userId),
       label: null,
+      wording: null,
     },
   ];
-  const line = { id: `${request.id}-status`, speaker: null, label: null };
+  const line = { id: `${request.id}-status`, speaker: null, label: null, wording: null };
   if (request.status === 'queued' || request.status === 'running') {
     entries.push({ ...line, kind: 'working', text: WORKING_TEXT });
   } else if (request.status === 'failed') {
@@ -668,6 +699,17 @@ function requestEntries(request: AgentRequest, userId: string | null): Transcrip
     });
   } else if (request.status === 'succeeded' && request.reply?.trim()) {
     entries.push({ ...line, id: `${request.id}-reply`, kind: 'sunny', text: request.reply });
+  }
+  if (request.status === 'succeeded' || request.status === 'failed') {
+    for (const wording of request.wording) {
+      entries.push({
+        ...line,
+        id: `${request.id}-wording-${wording.taskId}`,
+        kind: 'wording',
+        text: wordingSpeech(wording),
+        wording,
+      });
+    }
   }
   return entries;
 }
@@ -692,6 +734,7 @@ export function buildTranscript(items: ChatItem[], userId: string | null): Trans
             text: item.body,
             speaker: null,
             label: postLabel(item.localDate),
+            wording: null,
           },
         ],
   );

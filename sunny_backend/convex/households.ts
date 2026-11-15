@@ -30,7 +30,9 @@
 // removed by removeMember can then join or create another household.
 //
 // update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
-// clears it).
+// clears it). Its rules live in lib/householdSettings.ts updateHouseholdCore, which the household
+// agent's settings tools (lib/agentSetupTools.ts) call too, so a setting changed in chat passes the same checks; a
+// change that alters something is audited (update_settings) under the caregiver who made it.
 //
 // Last modified: 2026-11-14
 
@@ -55,13 +57,16 @@ import {
   requireUserId,
 } from "./lib/access";
 import { audit } from "./lib/audit";
-import { dropMemberConnections, resyncHouseholdCalendars } from "./lib/calendarSync";
+import { dropMemberConnections } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import { seedDefaultPolicies } from "./lib/policies";
-import { resyncHouseholdTimezone } from "./lib/schedule";
+import {
+  householdSettingsFields,
+  requireTimezone,
+  updateHouseholdCore,
+} from "./lib/householdSettings";
 import { isValidDeviceToken } from "./lib/apnsPayload";
-import { cleanOptional, requireNonBlank } from "./lib/text";
-import { canonicalTimezone, isLocalTime } from "./lib/time";
+import { requireNonBlank } from "./lib/text";
 import { joinGrant, memberRole } from "./lib/validators";
 import type { DeviceKind, JoinGrant, MemberRole } from "./lib/validators";
 
@@ -70,7 +75,6 @@ const CODE_LENGTH = 8;
 const CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const CODE_ATTEMPTS = 10;
 const DEFAULT_CAREGIVER_NAME = "Caregiver";
-const MAX_WEATHER_LOCATION_LENGTH = 100;
 /** How long after pairing a retry with the same nonce is answered with a fresh ticket. */
 export const PAIRING_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
@@ -82,28 +86,6 @@ export type MemberView = Omit<
   Partial<Pick<Doc<"householdMembers">, "phone" | "phoneVerifiedAt" | "pendingPhone">> & {
     phoneVerified: boolean;
   };
-
-/**
- * purpose: Validate an IANA timezone and return its canonical spelling.
- * @param timezone: (string) Candidate zone.
- * @return: (string) Canonical zone, e.g. "America/New_York" for "america/new_york".
- * @raises invalid when the zone is not a usable region zone.
- */
-function requireTimezone(timezone: string): string {
-  const canonical = canonicalTimezone(timezone);
-  if (canonical === null) throw appError("invalid", `Unknown timezone ${timezone}`);
-  return canonical;
-}
-
-/**
- * purpose: Reject a malformed "HH:MM" time.
- * @param time: (string) Candidate time.
- * @param label: (string) Field name for the error message.
- * @return: (void)
- */
-function assertTime(time: string, label: string): void {
-  if (!isLocalTime(time)) throw appError("invalid", `${label} must be HH:MM`);
-}
 
 /**
  * purpose: Draw a random join code from the unambiguous alphabet.
@@ -260,7 +242,8 @@ export const get = query({
 });
 
 /**
- * purpose: Change household settings; fields left out are unchanged. Editors only.
+ * purpose: Change household settings; fields left out are unchanged. Editors only. See
+ *          updateHouseholdCore.
  * @param householdId: (Id<"households">) Household.
  * @param seniorPreferredName: (string, optional) Non-blank name.
  * @param seniorFullName: (string, optional) Full name.
@@ -275,75 +258,11 @@ export const get = query({
  * @return: (null)
  */
 export const update = mutation({
-  args: {
-    householdId: v.id("households"),
-    seniorPreferredName: v.optional(v.string()),
-    seniorFullName: v.optional(v.string()),
-    timezone: v.optional(v.string()),
-    onCallUserId: v.optional(v.string()),
-    digestTime: v.optional(v.string()),
-    eventNoticeTime: v.optional(v.string()),
-    shareTranscripts: v.optional(v.boolean()),
-    backgroundPaused: v.optional(v.boolean()),
-    weatherLocation: v.optional(v.string()),
-  },
+  args: { householdId: v.id("households"), ...householdSettingsFields },
   handler: async (ctx, args): Promise<null> => {
-    const actor = await requireEditor(ctx, args.householdId);
-    const household = await loadHousehold(ctx, args.householdId);
-
     const { householdId, ...fields } = args;
-    const patch: Partial<Omit<Doc<"households">, "_id" | "_creationTime">> = {};
-    if (fields.seniorPreferredName !== undefined) {
-      patch.seniorPreferredName = requireNonBlank(fields.seniorPreferredName, "Senior's name");
-    }
-    if (fields.seniorFullName !== undefined) patch.seniorFullName = fields.seniorFullName;
-    if (fields.timezone !== undefined) {
-      patch.timezone = requireTimezone(fields.timezone);
-      if (patch.timezone !== household.timezone) {
-        // Write the zone first: the resync's expansion reads it from the household.
-        // The digest's local date changes with the zone, so forget the remembered one.
-        await ctx.db.patch(householdId, { timezone: patch.timezone, lastDigestDate: undefined });
-        await resyncHouseholdTimezone(ctx, actor, householdId, patch.timezone, Date.now());
-      }
-    }
-    if (fields.onCallUserId !== undefined) {
-      if (!(await findMember(ctx, householdId, fields.onCallUserId))) {
-        throw appError("invalid", "The on-call caregiver must be a member of the household");
-      }
-      patch.onCallUserId = fields.onCallUserId;
-    }
-    if (fields.digestTime !== undefined) {
-      assertTime(fields.digestTime, "Digest time");
-      patch.digestTime = fields.digestTime;
-    }
-    if (fields.eventNoticeTime !== undefined) {
-      assertTime(fields.eventNoticeTime, "Event notice time");
-      patch.eventNoticeTime = fields.eventNoticeTime;
-    }
-    if (fields.shareTranscripts !== undefined) patch.shareTranscripts = fields.shareTranscripts;
-    if (fields.backgroundPaused !== undefined) patch.backgroundPaused = fields.backgroundPaused;
-    if (fields.weatherLocation !== undefined) {
-      patch.weatherLocation = cleanOptional(
-        fields.weatherLocation,
-        MAX_WEATHER_LOCATION_LENGTH,
-        "Weather location",
-      );
-    }
-
-    await ctx.db.patch(householdId, patch);
-    // These three shape every Google event (zone, reminder minutes, description); resuming from
-    // pause pushes everything the pause skipped.
-    const resumed = fields.backgroundPaused === false && household.backgroundPaused;
-    if (
-      resumed ||
-      (patch.timezone !== undefined && patch.timezone !== household.timezone) ||
-      (patch.eventNoticeTime !== undefined &&
-        patch.eventNoticeTime !== household.eventNoticeTime) ||
-      (patch.seniorPreferredName !== undefined &&
-        patch.seniorPreferredName !== household.seniorPreferredName)
-    ) {
-      await resyncHouseholdCalendars(ctx, householdId);
-    }
+    const actor = await requireEditor(ctx, householdId);
+    await updateHouseholdCore(ctx, actor, householdId, fields);
     return null;
   },
 });

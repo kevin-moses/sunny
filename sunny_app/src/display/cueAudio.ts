@@ -18,9 +18,10 @@
 // AbortSignal fired) or failed (the audio mode or the speech failed, or a line did not finish
 // within its time limit, after which the speech is stopped), with how many lines were done
 // before that, so a retry can start from the line that failed. A line can be skipped at the
-// moment it is due (its task was confirmed during the cue).
+// moment it is due (its task was confirmed during the cue). The speech language is
+// tuning.ts SPEECH_LANGUAGE, shared with the caregiver's wording card.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
@@ -28,10 +29,8 @@ import * as Speech from 'expo-speech';
 
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
+import { SPEECH_LANGUAGE } from './tuning';
 import type { DisplayTuning } from './tuning';
-
-/** Language of the spoken prompts. */
-const SPEECH_LANGUAGE = 'en-US';
 
 /**
  * Longest wait (ms) for the chime to report it finished. Tied to the asset (1.6 s long), not a
