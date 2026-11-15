@@ -11,6 +11,7 @@ import {
   refreshAccessToken,
   revokeRefreshToken,
   signState,
+  startUrl,
   upsertEvent,
   verifyState,
 } from "./google";
@@ -67,8 +68,8 @@ afterEach(() => {
 });
 
 describe("consentUrl", () => {
-  test("asks for offline access, consent, and the calendar scope", () => {
-    const url = new URL(consentUrl("the-state"));
+  test("asks for offline access, consent, the calendar scope and an S256 challenge", () => {
+    const url = new URL(consentUrl("the-state", "the-challenge"));
     expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     expect(url.searchParams.get("client_id")).toBe("client-id");
     expect(url.searchParams.get("redirect_uri")).toBe("https://example.test/google/callback");
@@ -77,59 +78,61 @@ describe("consentUrl", () => {
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("state")).toBe("the-state");
     expect(url.searchParams.get("scope")).toBe(`openid email ${CALENDAR_SCOPE}`);
+    expect(url.searchParams.get("code_challenge")).toBe("the-challenge");
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
   test("names the missing variable", () => {
     delete process.env.GOOGLE_CLIENT_ID;
-    expect(() => consentUrl("s")).toThrow("Missing env var GOOGLE_CLIENT_ID");
+    expect(() => consentUrl("s", "c")).toThrow("Missing env var GOOGLE_CLIENT_ID");
+  });
+});
+
+describe("startUrl", () => {
+  test("is the start route on the callback's host, carrying the ticket", () => {
+    expect(startUrl("t+/=")).toBe("https://example.test/google/start?ticket=t%2B%2F%3D");
+  });
+
+  test("names the missing variable", () => {
+    delete process.env.GOOGLE_REDIRECT_URI;
+    expect(() => startUrl("t")).toThrow("Missing env var GOOGLE_REDIRECT_URI");
   });
 });
 
 describe("signState and verifyState", () => {
-  const now = Date.UTC(2026, 9, 29, 12, 0, 0);
-
-  test("round trips the user and household", async () => {
-    const state = await signState("user_1", "house_1", "nonce_1", now);
-    expect(await verifyState(state, now + 1000)).toEqual({
-      userId: "user_1",
-      householdId: "house_1",
-      nonce: "nonce_1",
-    });
+  test("round trips the flow id", async () => {
+    const state = await signState("flow_1");
+    expect(state.startsWith("flow_1.")).toBe(true);
+    expect(await verifyState(state)).toBe("flow_1");
   });
 
-  test("is valid just under 10 minutes and expired after", async () => {
-    const state = await signState("u", "h", "n", now);
-    expect(await verifyState(state, now + 9 * 60_000 + 59_000)).not.toBeNull();
-    expect(await verifyState(state, now + 10 * 60_000 + 2000)).toBeNull();
-  });
-
-  test("a tampered payload is rejected", async () => {
-    const [, sig] = (await signState("u", "h", "n", now)).split(".");
-    const forgedPayload = btoa(JSON.stringify({ u: "evil", h: "h", n: "n", e: 9_999_999_999 }));
-    expect(await verifyState(`${forgedPayload}.${sig}`, now)).toBeNull();
+  test("a different flow id under the same signature is rejected", async () => {
+    const [, sig] = (await signState("flow_1")).split(".");
+    expect(await verifyState(`flow_2.${sig}`)).toBeNull();
   });
 
   test("a tampered signature is rejected", async () => {
-    const [payload, sig] = (await signState("u", "h", "n", now)).split(".");
+    const [flowId, sig] = (await signState("flow_1")).split(".");
     const flipped = (sig![0] === "A" ? "B" : "A") + sig!.slice(1);
-    expect(await verifyState(`${payload}.${flipped}`, now)).toBeNull();
+    expect(await verifyState(`${flowId}.${flipped}`)).toBeNull();
   });
 
   test("a different secret is rejected", async () => {
-    const state = await signState("u", "h", "n", now);
+    const state = await signState("flow_1");
     process.env.GOOGLE_OAUTH_STATE_SECRET = "another-secret";
-    expect(await verifyState(state, now)).toBeNull();
+    expect(await verifyState(state)).toBeNull();
   });
 
   test("malformed states are rejected", async () => {
-    expect(await verifyState("", now)).toBeNull();
-    expect(await verifyState("nodot", now)).toBeNull();
-    expect(await verifyState("a.b.c", now)).toBeNull();
+    expect(await verifyState("")).toBeNull();
+    expect(await verifyState("nodot")).toBeNull();
+    expect(await verifyState("a.b.c")).toBeNull();
+    expect(await verifyState(".sig")).toBeNull();
   });
 
   test("missing secret gives a clear error", async () => {
     delete process.env.GOOGLE_OAUTH_STATE_SECRET;
-    await expect(signState("u", "h", "n", now)).rejects.toThrow("GOOGLE_OAUTH_STATE_SECRET");
+    await expect(signState("flow_1")).rejects.toThrow("GOOGLE_OAUTH_STATE_SECRET");
   });
 });
 
@@ -171,7 +174,7 @@ describe("exchangeCode", () => {
         id_token: idToken({ email: "pat@gmail.com" }),
       }),
     );
-    expect(await exchangeCode("the-code")).toEqual({
+    expect(await exchangeCode("the-code", "the-verifier")).toEqual({
       accessToken: "at",
       refreshToken: "rt",
       scopes: ["openid", "email", CALENDAR_SCOPE],
@@ -181,6 +184,7 @@ describe("exchangeCode", () => {
     expect(url).toBe("https://oauth2.googleapis.com/token");
     const form = new URLSearchParams(String(init.body));
     expect(form.get("code")).toBe("the-code");
+    expect(form.get("code_verifier")).toBe("the-verifier");
     expect(form.get("grant_type")).toBe("authorization_code");
     expect(form.get("client_secret")).toBe("client-secret");
     expect(form.get("redirect_uri")).toBe("https://example.test/google/callback");
@@ -189,7 +193,7 @@ describe("exchangeCode", () => {
 
   test("a response without a string access_token is an error", async () => {
     fetchMock.mockResolvedValueOnce(json(200, { refresh_token: "rt" }));
-    const e = (await rejection(exchangeCode("c"))) as GoogleApiError;
+    const e = (await rejection(exchangeCode("c", "verifier"))) as GoogleApiError;
     expect(e.message).toContain("No access token");
   });
 
@@ -199,7 +203,7 @@ describe("exchangeCode", () => {
         json(200, { access_token: "at", refresh_token: "rt", scope: "openid", id_token: "x.y.z" }),
       )
       .mockResolvedValueOnce(json(200, { email: "kim@gmail.com" }));
-    expect((await exchangeCode("c")).email).toBe("kim@gmail.com");
+    expect((await exchangeCode("c", "verifier"))?.email).toBe("kim@gmail.com");
     expect(fetchMock.mock.calls[1]![0]).toBe("https://openidconnect.googleapis.com/v1/userinfo");
     expect(fetchMock.mock.calls[1]![1].headers.Authorization).toBe("Bearer at");
   });
@@ -208,28 +212,29 @@ describe("exchangeCode", () => {
     fetchMock
       .mockResolvedValueOnce(json(200, { access_token: "at", refresh_token: "rt" }))
       .mockResolvedValueOnce(json(401));
-    const result = await exchangeCode("c");
-    expect(result.email).toBeNull();
-    expect(result.scopes).toEqual([]);
+    expect(await exchangeCode("c", "verifier")).toMatchObject({ email: null, scopes: [] });
   });
 
   test("a response without a refresh token is an error", async () => {
     fetchMock.mockResolvedValueOnce(json(200, { access_token: "at" }));
-    const e = await rejection(exchangeCode("c"));
+    const e = await rejection(exchangeCode("c", "verifier"));
     expect(e).toBeInstanceOf(GoogleApiError);
     expect((e as GoogleApiError).status).toBe(400);
   });
 
-  test("invalid_grant means access revoked", async () => {
-    fetchMock.mockResolvedValueOnce(
-      json(400, { error: "invalid_grant", error_description: "Bad code" }),
-    );
-    expect(await rejection(exchangeCode("c"))).toBeInstanceOf(GoogleAccessRevoked);
-  });
+  test.each(["Invalid code verifier.", "Bad code"])(
+    "invalid_grant (%s) means the code was rejected: null",
+    async (description) => {
+      fetchMock.mockResolvedValueOnce(
+        json(400, { error: "invalid_grant", error_description: description }),
+      );
+      expect(await exchangeCode("c", "wrong-verifier")).toBeNull();
+    },
+  );
 
   test("other token errors are GoogleApiError", async () => {
     fetchMock.mockResolvedValueOnce(json(500, { error: "backend_error" }));
-    const e = (await rejection(exchangeCode("c"))) as GoogleApiError;
+    const e = (await rejection(exchangeCode("c", "verifier"))) as GoogleApiError;
     expect(e).toBeInstanceOf(GoogleApiError);
     expect(e.retryable).toBe(true);
   });

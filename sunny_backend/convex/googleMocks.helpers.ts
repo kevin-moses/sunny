@@ -7,17 +7,11 @@ export const googleMocks = {
   calendarExists: vi.fn(),
   upsertEvent: vi.fn(),
   deleteEvent: vi.fn(),
-  verifyState: vi.fn(),
-  signState: vi.fn(),
   revokeRefreshToken: vi.fn(),
 };
 
 export function googleMock<T extends object>(original: T): T {
-  return {
-    ...original,
-    ...googleMocks,
-    consentUrl: (state: string) => `https://consent.test/?state=${state}`,
-  };
+  return { ...original, ...googleMocks };
 }
 
 export const googleEventMock = {
@@ -50,9 +44,5 @@ export function resetGoogleMocks(): void {
   });
   googleMocks.upsertEvent.mockResolvedValue({ id: "gext1", etag: "etag-1", created: true });
   googleMocks.deleteEvent.mockResolvedValue(undefined);
-  googleMocks.signState.mockImplementation(
-    async (userId: string, householdId: string, nonce: string) =>
-      `${userId}~${householdId}~${nonce}`,
-  );
   googleMocks.revokeRefreshToken.mockResolvedValue(true);
 }

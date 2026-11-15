@@ -1,16 +1,13 @@
-import { toBase64Url } from "./base64";
+import { randomToken } from "./secretBox";
 
 export const DEVICE_TOKEN_PREFIX = "sunny_dev_";
-
-const TOKEN_BYTES = 32;
 
 const TOKEN_PATTERN = new RegExp(`^${DEVICE_TOKEN_PREFIX}[A-Za-z0-9_-]{43}$`);
 
 const BEARER_PATTERN = /^Bearer +(\S+)$/i;
 
 export function generateDeviceToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(TOKEN_BYTES));
-  return `${DEVICE_TOKEN_PREFIX}${toBase64Url(bytes)}`;
+  return `${DEVICE_TOKEN_PREFIX}${randomToken()}`;
 }
 
 export async function hashDeviceToken(token: string): Promise<string> {

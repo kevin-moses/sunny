@@ -1,9 +1,10 @@
-import { fromBase64, toBase64 } from "./base64";
+import { fromBase64, toBase64, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
 
 const VERSION = "v1";
 const IV_BYTES = 12;
 const KEY_BYTES = 32;
+const RANDOM_TOKEN_BYTES = 32;
 
 export class SecretUnreadable extends Error {
   constructor(message: string) {
@@ -77,6 +78,10 @@ export async function decryptSecret(box: string): Promise<string> {
   } catch {
     throw new SecretUnreadable("Could not decrypt secret");
   }
+}
+
+export function randomToken(): string {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(RANDOM_TOKEN_BYTES)));
 }
 
 export function constantTimeEqual(a: string, b: string): boolean {

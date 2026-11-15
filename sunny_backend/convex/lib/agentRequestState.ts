@@ -21,10 +21,6 @@ export function clipError(text: string, max: number = MAX_ERROR_LENGTH): string 
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
-export function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export async function transitionRequest(
   ctx: MutationCtx,
   requestId: Id<"agentRequests">,
