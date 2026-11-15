@@ -13,7 +13,8 @@ import {
 import { EDITOR_ROLES, findMember } from "./lib/access";
 import { buildBriefing } from "./lib/agentBriefing";
 import { buildCarryOver } from "./lib/agentHistory";
-import { errorText, GENERIC_ERROR, isInProgress, transitionRequest } from "./lib/agentRequestState";
+import { GENERIC_ERROR, isInProgress, transitionRequest } from "./lib/agentRequestState";
+import { errorText } from "./lib/errors";
 import { executeAgentTool } from "./lib/agentTools";
 import type { ToolContext } from "./lib/toolInput";
 import {

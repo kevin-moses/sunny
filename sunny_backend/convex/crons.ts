@@ -14,9 +14,9 @@ crons.interval("sweep stuck deliveries", { minutes: 10 }, internal.delivery.swee
 crons.interval("sweep expired phone verifications", { hours: 1 }, internal.phone.sweepExpired, {});
 crons.interval("sweep handled inbound texts", { hours: 1 }, internal.sms.sweepInbound, {});
 crons.interval(
-  "sweep expired oauth states",
+  "sweep expired oauth flows",
   { hours: 1 },
-  internal.googleCalendar.sweepOauthStates,
+  internal.googleCalendar.sweepOauthFlows,
   {},
 );
 

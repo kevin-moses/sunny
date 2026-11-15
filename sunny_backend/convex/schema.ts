@@ -289,13 +289,15 @@ export default defineSchema({
     .index("by_connection", ["connectionId"])
     .index("by_updated", ["updatedAt"]),
 
-  oauthStates: defineTable({
-    nonce: v.string(),
+  oauthFlows: defineTable({
+    ticketHash: v.string(),
     userId: v.string(),
     householdId: v.id("households"),
     expiresAt: v.number(),
+    started: v.optional(v.object({ browserHash: v.string(), codeVerifier: v.string() })),
+    consumedAt: v.optional(v.number()),
   })
-    .index("by_nonce", ["nonce"])
+    .index("by_ticket", ["ticketHash"])
     .index("by_expires", ["expiresAt"]),
 
   auditLog: defineTable({

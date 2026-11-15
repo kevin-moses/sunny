@@ -15,6 +15,10 @@ export function isAppError(e: unknown, code: AppErrorCode): boolean {
   return e instanceof ConvexError && (e.data as Partial<AppErrorData> | undefined)?.code === code;
 }
 
+export function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);

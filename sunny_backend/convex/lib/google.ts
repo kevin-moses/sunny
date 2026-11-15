@@ -1,17 +1,15 @@
 import { fromBase64Url, toBase64Url } from "./base64";
-import { ConfigError } from "./errors";
+import { ConfigError, errorText } from "./errors";
 import { parseJsonObject, timedFetch } from "./http";
 import type { TimedResponse } from "./http";
 import type { GoogleEvent } from "./googleEvent";
 import { constantTimeEqual } from "./secretBox";
-import { minutes } from "./time";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
-export const OAUTH_FLOW_TTL_MS = minutes(10);
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
@@ -48,7 +46,13 @@ function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse
   return timedFetch(url, init, REQUEST_TIMEOUT_MS);
 }
 
-export function consentUrl(state: string): string {
+export function startUrl(ticket: string): string {
+  const url = new URL("/google/start", env("GOOGLE_REDIRECT_URI"));
+  url.searchParams.set("ticket", ticket);
+  return url.toString();
+}
+
+export function consentUrl(state: string, codeChallenge: string): string {
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
     redirect_uri: env("GOOGLE_REDIRECT_URI"),
@@ -58,6 +62,8 @@ export function consentUrl(state: string): string {
     prompt: "consent",
     include_granted_scopes: "false",
     state,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
   });
   return `${AUTH_URL}?${params}`;
 }
@@ -109,12 +115,25 @@ async function emailFromUserinfo(accessToken: string): Promise<string | null> {
 
 export async function exchangeCode(
   code: string,
-): Promise<{ accessToken: string; refreshToken: string; scopes: string[]; email: string | null }> {
-  const body = await tokenRequest({
-    code,
-    grant_type: "authorization_code",
-    redirect_uri: env("GOOGLE_REDIRECT_URI"),
-  });
+  codeVerifier: string,
+): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  scopes: string[];
+  email: string | null;
+} | null> {
+  let body: Record<string, unknown>;
+  try {
+    body = await tokenRequest({
+      code,
+      code_verifier: codeVerifier,
+      grant_type: "authorization_code",
+      redirect_uri: env("GOOGLE_REDIRECT_URI"),
+    });
+  } catch (e) {
+    if (e instanceof GoogleAccessRevoked) return null;
+    throw e;
+  }
   if (typeof body.refresh_token !== "string") {
     throw new GoogleApiError(400, "No refresh token returned");
   }
@@ -158,7 +177,7 @@ export async function revokeRefreshToken(refreshToken: string): Promise<boolean>
     if (!res.ok) console.error(`Google token revoke answered ${res.status}`);
     return res.ok;
   } catch (e) {
-    console.error(`Google token revoke failed: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Google token revoke failed: ${errorText(e)}`);
     return false;
   }
 }
@@ -262,44 +281,12 @@ async function hmac(message: string): Promise<string> {
   return toBase64Url(new Uint8Array(sig));
 }
 
-export async function signState(
-  userId: string,
-  householdId: string,
-  nonce: string,
-  now: number = Date.now(),
-): Promise<string> {
-  const payload = toBase64Url(
-    new TextEncoder().encode(
-      JSON.stringify({
-        u: userId,
-        h: householdId,
-        n: nonce,
-        e: Math.floor((now + OAUTH_FLOW_TTL_MS) / 1000),
-      }),
-    ),
-  );
-  return `${payload}.${await hmac(payload)}`;
+export async function signState(flowId: string): Promise<string> {
+  return `${flowId}.${await hmac(flowId)}`;
 }
 
-export async function verifyState(
-  state: string,
-  now: number = Date.now(),
-): Promise<{ userId: string; householdId: string; nonce: string } | null> {
-  const [payload, signature, extra] = state.split(".");
-  if (!payload || !signature || extra !== undefined) return null;
-  if (!constantTimeEqual(await hmac(payload), signature)) return null;
-  try {
-    const data = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as {
-      u?: unknown;
-      h?: unknown;
-      n?: unknown;
-      e?: unknown;
-    };
-    if (typeof data.e !== "number" || data.e * 1000 < now) return null;
-    if (typeof data.u !== "string" || typeof data.h !== "string") return null;
-    if (typeof data.n !== "string") return null;
-    return { userId: data.u, householdId: data.h, nonce: data.n };
-  } catch {
-    return null;
-  }
+export async function verifyState(state: string): Promise<string | null> {
+  const [flowId, signature, extra] = state.split(".");
+  if (!flowId || !signature || extra !== undefined) return null;
+  return constantTimeEqual(await hmac(flowId), signature) ? flowId : null;
 }
