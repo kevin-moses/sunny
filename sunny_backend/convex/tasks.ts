@@ -7,7 +7,6 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { actorUserId, requireEditor, requireReader } from "./lib/access";
 import type { Actor } from "./lib/access";
 import { appError } from "./lib/errors";
-import { isHighPriority } from "./lib/escalation";
 import { deleteTask, insertTask, patchTask, purgeTaskBatch } from "./lib/schedule";
 import type { TaskFields } from "./lib/schedule";
 import { normalizeWeekdays, requireMaxLength, requireNonBlank } from "./lib/text";
@@ -65,7 +64,7 @@ export function isAsNeededTask(
   );
 }
 
-export const TASK_CAPS = {
+const TASK_CAPS = {
   title: 200,
   displayLabel: 60,
   spokenPrompt: 300,
@@ -244,7 +243,7 @@ export async function updateTaskCore(
     startsOn: orUndefined(changes.startsOn, task.startsOn),
     endsOn: orUndefined(changes.endsOn, task.endsOn),
     windowMinutes: changes.windowMinutes ?? task.windowMinutes,
-    highPriority: changes.highPriority ?? isHighPriority(task),
+    highPriority: changes.highPriority ?? task.highPriority,
     asNeededMaxPerDay: orUndefined(changes.asNeededMaxPerDay, task.asNeededMaxPerDay),
     asNeededMinHours: orUndefined(changes.asNeededMinHours, task.asNeededMinHours),
     active: changes.active ?? task.active,

@@ -815,6 +815,7 @@ describe("dayView", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       const base = {
         taskId,
@@ -857,6 +858,7 @@ describe("dayView", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       const base = {
         taskId,
@@ -908,6 +910,7 @@ describe("dayView", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       const base = {
         taskId,

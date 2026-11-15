@@ -9,7 +9,7 @@ import type { CreateTaskArgs, TaskChanges } from "../tasks";
 import { SETUP_TOOL_HANDLERS, SETUP_TOOLS } from "./agentSetupTools";
 import type { SetupToolName } from "./agentSetupTools";
 import { isAnytimeTask } from "./anytime";
-import { ALERT_MINUTES, alertsCaregivers, isHighPriority } from "./escalation";
+import { ALERT_MINUTES, alertsCaregivers } from "./escalation";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
 import { booleanField, changesOf, idField, stringField } from "./toolInput";
@@ -516,7 +516,7 @@ function taskForModel(task: Doc<"tasks">): Record<string, unknown> {
     window_minutes: task.windowMinutes,
     pill_description: task.pillDescription ?? null,
     checklist_items: task.checklistItems,
-    high_priority: isHighPriority(task),
+    high_priority: task.highPriority,
     alerts_caregivers: alertsCaregivers(task),
     active: task.active,
   };

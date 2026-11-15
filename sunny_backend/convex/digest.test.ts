@@ -307,18 +307,21 @@ describe("facts", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       await ctx.db.insert("doseLog", {
         householdId: f.householdId,
         taskId,
         takenAt: Date.parse("2026-11-02T19:00:00Z"),
         reportedVia: "voice",
+        loggedAt: Date.now(),
       });
       await ctx.db.insert("doseLog", {
         householdId: f.householdId,
         taskId,
         takenAt: Date.parse("2026-11-01T19:00:00Z"),
         reportedVia: "voice",
+        loggedAt: Date.now(),
       });
     });
     const at = Date.parse("2026-11-02T20:00:00Z");

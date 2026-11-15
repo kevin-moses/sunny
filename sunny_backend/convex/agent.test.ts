@@ -85,6 +85,7 @@ async function insertTask(
         asNeededMaxPerDay: fields.asNeededMaxPerDay,
         asNeededMinHours: fields.asNeededMinHours,
         pillDescription: fields.pillDescription,
+        highPriority: false,
       }),
   );
 }
@@ -365,6 +366,7 @@ describe("getContext", () => {
             taskId,
             takenAt,
             reportedVia: "voice",
+            loggedAt: Date.now(),
           }),
       );
     await dose(aspirin, MIDNIGHT - 1);
@@ -1297,6 +1299,7 @@ describe("medicationStatus", () => {
           createdByKind: "caregiver",
           active: true,
           scheduleChangedAt: 0,
+          highPriority: false,
         }),
     );
     await insertInstance(f, walk, { state: "upcoming", scheduledTime: "14:00" });

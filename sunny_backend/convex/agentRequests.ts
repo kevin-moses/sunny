@@ -97,7 +97,7 @@ async function requireContinuable(
   ctx: MutationCtx,
   householdId: Id<"households">,
   continueRequestId: Id<"agentRequests">,
-): Promise<{ sessionId: string; agentConfig: string | undefined }> {
+): Promise<{ sessionId: string; agentConfig: string }> {
   const earlier = await ctx.db.get(continueRequestId);
   if (
     !earlier ||
