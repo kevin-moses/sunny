@@ -14,6 +14,13 @@
 // response Cache-Control: no-store:
 //   GET  /device/state    200 the device state (lib/deviceState.ts) with ETag "<version>";
 //                         304 with no body when If-None-Match matches.
+//   GET  /device/frame    ?page=now|today&format=png|packed: the state drawn for the screen the
+//                         device reported (lib/frame.ts; 960 x 680 with 4 greys until it
+//                         reports one), image/png or the packed format (lib/framePacked.ts),
+//                         with an ETag over the page's model, the screen, the format and the
+//                         renderer version; 304 before drawing when If-None-Match matches. A
+//                         bad query, or a reported screen outside what frames are drawn for, is
+//                         400. Drawing takes milliseconds, so nothing is cached.
 //   POST /device/confirm  { instanceId, pressedAgoMs, via } with via button, widget,
 //                         live_activity or phone_app: instances.confirmPressedInstance as the
 //                         token's DeviceActor; 200 { status: "confirmed" | "rejected", reason
@@ -71,7 +78,19 @@ import { findDevice, requireUserId } from "./lib/access";
 import type { DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { loadDeviceState } from "./lib/deviceState";
-import type { DeviceState } from "./lib/deviceState";
+import type { CarouselPage, DeviceState } from "./lib/deviceState";
+import {
+  DEFAULT_SCREEN,
+  DRAWABLE_SCREEN,
+  FRAME_PAGES,
+  buildFrameModel,
+  drawFrame,
+  frameEtag,
+  isDrawableScreen,
+} from "./lib/frame";
+import type { FrameFormat } from "./lib/frame";
+import { encodePacked } from "./lib/framePacked";
+import { encodePng } from "./lib/framePng";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
 import { appError, isAppError } from "./lib/errors";
 import {
@@ -305,6 +324,25 @@ export const stateByToken = internalQuery({
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
     if (device === null) return null;
     return await loadDeviceState(ctx, device.householdId, Date.now());
+  },
+});
+
+/**
+ * purpose: What a frame is drawn from: the token's device state and the screen its device
+ *          reported (null when it has not). Internal.
+ * @param tokenHash: (string) SHA-256 hex of the token.
+ * @return: ({ state, screen } | null) The source, or null when the token no longer resolves.
+ */
+export const frameSourceByToken = internalQuery({
+  args: { tokenHash: v.string() },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ state: DeviceState; screen: DeviceScreen | null } | null> => {
+    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
+    if (device === null) return null;
+    const state = await loadDeviceState(ctx, device.householdId, Date.now());
+    return { state, screen: device.screen ?? null };
   },
 });
 
@@ -659,6 +697,17 @@ function etagMatches(header: string | null, etag: string): boolean {
 }
 
 /**
+ * purpose: The 304 answer when the request's If-None-Match already names this entity tag.
+ * @param request: (Request) The HTTP request.
+ * @param etag: (string) The quoted entity tag.
+ * @return: (Response | null) 304 with no body (no-store, the tag), or null to answer in full.
+ */
+function notModified(request: Request, etag: string): Response | null {
+  if (!etagMatches(request.headers.get("If-None-Match"), etag)) return null;
+  return new Response(null, { status: 304, headers: { ...NO_STORE, ETag: etag } });
+}
+
+/**
  * purpose: The quoted entity tag of a state.
  * @param state: (DeviceState) The state.
  * @return: (string) "\"<version>\"".
@@ -716,9 +765,8 @@ export const getState = deviceRoute("Could not load the device state", async (ct
   const state = await ctx.runQuery(internal.deviceApi.stateByToken, { tokenHash });
   if (state === null) return unauthorizedResponse();
   const etag = etagOf(state);
-  if (etagMatches(request.headers.get("If-None-Match"), etag)) {
-    return new Response(null, { status: 304, headers: { ...NO_STORE, ETag: etag } });
-  }
+  const cached = notModified(request, etag);
+  if (cached !== null) return cached;
   return jsonResponse(state, 200, { ETag: etag });
 });
 
@@ -753,6 +801,73 @@ export const confirm = deviceRoute("Could not confirm the task", async (ctx, req
   const state = await stateAfterPress(ctx, tokenHash);
   const { status, reason } = outcome;
   return jsonResponse({ status, reason, state }, 200, state ? { ETag: etagOf(state) } : {});
+});
+
+/** The Content-Type of each frame format. */
+const FRAME_CONTENT_TYPES: Record<FrameFormat, string> = {
+  png: "image/png",
+  packed: "application/octet-stream",
+};
+
+/**
+ * purpose: Read GET /device/frame's query: exactly one page (now or today) and one format (png
+ *          or packed), nothing else.
+ * @param url: (URL) The request URL.
+ * @return: ({ page, format } | string) The choice, or the 400 message.
+ */
+function parseFrameQuery(url: URL): { page: CarouselPage; format: FrameFormat } | string {
+  const params = url.searchParams;
+  const extra = [...params.keys()].find((k) => k !== "page" && k !== "format");
+  if (extra !== undefined) return "Only the page and format parameters are allowed";
+  const pages = params.getAll("page");
+  const formats = params.getAll("format");
+  const page = pages[0] as CarouselPage;
+  const format = formats[0] as FrameFormat;
+  if (pages.length !== 1 || !FRAME_PAGES.includes(page)) {
+    return `page must be one of ${FRAME_PAGES.join(", ")}`;
+  }
+  if (formats.length !== 1 || !Object.hasOwn(FRAME_CONTENT_TYPES, format)) {
+    return "format must be one of png, packed";
+  }
+  return { page, format };
+}
+
+/**
+ * purpose: GET /device/frame?page=now|today&format=png|packed: the token's device state drawn
+ *          for the screen its device reported (DEFAULT_SCREEN until it reports one), with an
+ *          ETag over everything the bytes depend on (lib/frame.ts frameEtag); 304 when
+ *          If-None-Match matches, before anything is drawn. 400 bad query or a reported screen
+ *          frames cannot be drawn for; 401 bad token; 429 rate limited. The frame comes only
+ *          from the token's own device (frameSourceByToken), so a device sees its own household.
+ * @param ctx: (ActionCtx) Action context.
+ * @param request: (Request) The HTTP request.
+ * @return: (Response) The response.
+ */
+export const getFrame = deviceRoute("Could not draw the frame", async (ctx, request) => {
+  const tokenHash = await gate(ctx, request);
+  if (tokenHash instanceof Response) return tokenHash;
+  const query = parseFrameQuery(new URL(request.url));
+  if (typeof query === "string") return errorResponse(400, "invalid", query);
+  const source = await ctx.runQuery(internal.deviceApi.frameSourceByToken, { tokenHash });
+  if (source === null) return unauthorizedResponse();
+  const screen = source.screen ?? DEFAULT_SCREEN;
+  if (!isDrawableScreen(screen)) {
+    return errorResponse(
+      400,
+      "invalid",
+      `Frames are drawn for screens of ${DRAWABLE_SCREEN.minWidth} x ${DRAWABLE_SCREEN.minHeight} to ${DRAWABLE_SCREEN.maxWidth} x ${DRAWABLE_SCREEN.maxHeight} pixels`,
+    );
+  }
+  const model = buildFrameModel(source.state, query.page);
+  const etag = `"${frameEtag(model, screen, query.format)}"`;
+  const cached = notModified(request, etag);
+  if (cached !== null) return cached;
+  const frame = drawFrame(model, screen);
+  const body = query.format === "png" ? encodePng(frame) : encodePacked(frame);
+  return new Response(body, {
+    status: 200,
+    headers: { ...NO_STORE, "Content-Type": FRAME_CONTENT_TYPES[query.format], ETag: etag },
+  });
 });
 
 /**
