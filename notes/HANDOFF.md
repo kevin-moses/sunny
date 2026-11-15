@@ -32,7 +32,7 @@ Entry points (all in `convex/`; each module's header describes its contracts):
 | Device state: the one server-computed object every senior surface renders (Now card, Done target, Next up, Today rows, cues with the policy's prompt instants, tuning); also `deviceApi.state` for the app | `lib/deviceState.ts`, `lib/deviceWording.ts` (wording ported from the app), `lib/escalation.ts` (when a step fires, shared with the scheduler) |
 | Tasks and escalation policies | `tasks.ts`, `lib/policies.ts` |
 | Task instances (confirm, snooze, claim, dose log, senior reminders); the rule for when a senior device may confirm (60 minutes early) and the day view's `confirmable` flag; senior undo (`undoPressedTask`, 60 s) and caregiver reopen (`reopenTaskInstance`, confirmed today) with the day view's `reopenable` flag, rules in `lib/confirmRule.ts` | `instances.ts`, `lib/confirmRule.ts` |
-| Scheduler tick (expand, open and close windows, escalation) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
+| Scheduler tick (expand, open and close windows, escalation; a window that closes before any caregiver was alerted alerts them as it closes) | `scheduler.ts`, `lib/schedule.ts`, `crons.ts` |
 | Calendar events, occurrences, day view (`calendar.dayView`) | `calendar.ts`, `lib/occurrences.ts`, `lib/today.ts`, `lib/eventNotices.ts` |
 | Time zones | `lib/time.ts` |
 | Google Calendar connect, push, sweepers | `googleCalendar.ts`, `calendarPush.ts`, `calendarFanOut.ts`, `lib/calendarSync.ts`, `lib/google.ts`, `lib/googleEvent.ts`, `lib/secretBox.ts` |

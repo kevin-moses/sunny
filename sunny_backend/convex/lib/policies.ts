@@ -6,6 +6,8 @@
 // (assignStepIds) that firedSteps on instances refer to. The medication default (2026-11-14):
 // prompt the senior when the window opens and again at +15 minutes, then at +30 alert every
 // caregiver at once (anyone who may claim can claim it); the window closing marks it missed.
+// When the window closes before +30 (a short window, or a task added late in its window), the
+// scheduler sends that caregiver alert as it marks the task missed (scheduler.ts closeWindows).
 // There is no on-call caregiver and no separate +45 step. The alert's skipIfClaimed is false:
 // a caregiver may claim a due task from Home before +30, and the alert still goes to everyone,
 // which is the intended safe behaviour (a claim is not a dose).
