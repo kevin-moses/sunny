@@ -20,9 +20,8 @@ import {
   nonceForCode,
   pair,
   pairErrorFromBody,
-  rememberHome,
+  homeOf,
   removalRetryDelay,
-  showHome,
   UNREACHABLE_NOTICE,
   unpair,
   type HomeDecision,
@@ -163,7 +162,12 @@ describe('pair', () => {
   });
 
   it('starts a new pairing with an empty queue of Done presses', async () => {
-    await confirmQueue.enqueue({ instanceId: 'inst_old' as never, label: 'Pills', pressedAt: 1 });
+    await confirmQueue.enqueue({
+      instanceId: 'inst_old' as never,
+      label: 'Pills',
+      pressedAt: 1,
+      pressId: 'pid-0000000000000001',
+    });
     expect(confirmQueue.getEntries()).toHaveLength(1);
     await pair('ABCD1234');
     expect(confirmQueue.getEntries()).toEqual([]);
@@ -510,38 +514,20 @@ describe('decideSession', () => {
   });
 });
 
-describe('rememberHome', () => {
-  it('remembers a paired device or a caregiver home', () => {
-    expect(rememberHome(PAIRED, null)).toBe(PAIRED);
-    expect(rememberHome(CAREGIVER, PAIRED)).toBe(CAREGIVER);
+describe('homeOf', () => {
+  it('is the decision for a paired device or a caregiver home', () => {
+    expect(homeOf(PAIRED)).toBe(PAIRED);
+    expect(homeOf(CAREGIVER)).toBe(CAREGIVER);
   });
 
-  it('keeps the home while loading', () => {
-    expect(rememberHome(LOADING, PAIRED)).toBe(PAIRED);
-    expect(rememberHome(UNREACHABLE, CAREGIVER)).toBe(CAREGIVER);
-    expect(rememberHome(LOADING, null)).toBeNull();
+  it('says nothing while loading', () => {
+    expect(homeOf(LOADING)).toBeUndefined();
+    expect(homeOf(UNREACHABLE)).toBeUndefined();
   });
 
-  it('forgets the home when signed out, removed or onboarding', () => {
-    expect(rememberHome({ state: 'signedOut' }, CAREGIVER)).toBeNull();
-    expect(rememberHome({ state: 'removed' }, PAIRED)).toBeNull();
-    expect(rememberHome({ state: 'caregiverOnboarding' }, CAREGIVER)).toBeNull();
-  });
-});
-
-describe('showHome', () => {
-  it('shows the remembered home while the decision is loading', () => {
-    expect(showHome(LOADING, PAIRED)).toEqual({ shown: PAIRED, remembered: PAIRED });
-    expect(showHome(UNREACHABLE, CAREGIVER)).toEqual({ shown: CAREGIVER, remembered: CAREGIVER });
-  });
-
-  it('shows the loading decision when no home is remembered', () => {
-    expect(showHome(UNREACHABLE, null)).toEqual({ shown: UNREACHABLE, remembered: null });
-  });
-
-  it('shows a settled decision and updates the remembered home', () => {
-    expect(showHome(CAREGIVER, PAIRED)).toEqual({ shown: CAREGIVER, remembered: CAREGIVER });
-    const signedOut: SessionDecision = { state: 'signedOut' };
-    expect(showHome(signedOut, PAIRED)).toEqual({ shown: signedOut, remembered: null });
+  it('is null when signed out, removed or onboarding', () => {
+    expect(homeOf({ state: 'signedOut' })).toBeNull();
+    expect(homeOf({ state: 'removed' })).toBeNull();
+    expect(homeOf({ state: 'caregiverOnboarding' })).toBeNull();
   });
 });

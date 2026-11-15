@@ -60,19 +60,34 @@ import {
   type RowRef,
   type SensitiveTopic,
 } from './aboutFormat';
+import type {
+  MAX_DETAILS,
+  MAX_FACT,
+  MAX_GUIDANCE,
+  MAX_MESSAGE,
+  MAX_NAME,
+  MAX_TOPIC,
+} from '../../../sunny_backend/convex/profile';
 import { useReportNoteFocus } from './tabBarInset';
 import type { InlineEditor } from './useInlineEditor';
 import type { ProfileActionState } from './useProfileActions';
 
 /** Longest text of each field, matching the server's caps in profile.ts. */
-export const FIELD_MAX = {
+export const FIELD_MAX: {
+  name: typeof MAX_NAME;
+  details: typeof MAX_DETAILS;
+  topic: typeof MAX_TOPIC;
+  guidance: typeof MAX_GUIDANCE;
+  fact: typeof MAX_FACT;
+  message: typeof MAX_MESSAGE;
+} = {
   name: 120,
   details: 600,
   topic: 200,
   guidance: 1500,
   fact: 300,
   message: 1000,
-} as const;
+};
 
 const amber = statusTones.moderate;
 const red = statusTones.serious;

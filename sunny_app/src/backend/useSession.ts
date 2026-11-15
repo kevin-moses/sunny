@@ -14,19 +14,14 @@
 
 import { useAuth } from '@clerk/expo';
 import { useConvexAuth } from 'convex/react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
+
+import { useLastDefined } from '../components/useLastDefined';
 
 import { logger } from '../logging/logger';
 import { useQueryWithStatus } from './convex';
 import { api } from './convexApi';
-import {
-  decideSession,
-  removalRetryDelay,
-  showHome,
-  unpair,
-  type HomeDecision,
-  type SessionDecision,
-} from './pairing';
+import { decideSession, homeOf, removalRetryDelay, unpair, type SessionDecision } from './pairing';
 
 /**
  * purpose: Follow the signed-in account: signed out, a paired senior device, a caregiver in a
@@ -62,12 +57,6 @@ export function useSession(): SessionDecision {
     ],
   );
 
-  const lastHome = useRef<HomeDecision | null>(null);
-  /* eslint-disable react-hooks/refs -- a render-time cache of the last home is the point */
-  const { shown, remembered } = showHome(decision, lastHome.current);
-  lastHome.current = remembered;
-  /* eslint-enable react-hooks/refs */
-
   useEffect(() => {
     if (queryFailed) logger.warning('Session', `households.mine failed: ${String(mine.error)}`);
   }, [queryFailed, mine.error]);
@@ -95,5 +84,5 @@ export function useSession(): SessionDecision {
     };
   }, [removed]);
 
-  return shown;
+  return useLastDefined(homeOf(decision)) ?? decision;
 }

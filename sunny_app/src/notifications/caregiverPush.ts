@@ -46,12 +46,13 @@ import { api, type HouseholdId, type TaskInstanceId } from '../backend/convexApi
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 import { registerPushToken, unregisterStoredPushToken } from './push';
+import type { CAREGIVER_ALERT_CATEGORY as BACKEND_CAREGIVER_ALERT_CATEGORY } from '../../../sunny_backend/convex/lib/apnsPayload';
 
 /**
  * The category of a claimable caregiver alert. It must equal CAREGIVER_ALERT_CATEGORY in
  * sunny_backend/convex/lib/apnsPayload.ts, which the backend sets in aps (pushStyle).
  */
-export const CAREGIVER_ALERT_CATEGORY = 'caregiver_alert';
+export const CAREGIVER_ALERT_CATEGORY: typeof BACKEND_CAREGIVER_ALERT_CATEGORY = 'caregiver_alert';
 
 /** The alert title shown when the "I'm on it" claim call fails. */
 export const CLAIM_FAILED_TITLE = 'Could not claim it';

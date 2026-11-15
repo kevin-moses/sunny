@@ -10,8 +10,6 @@
 //
 // Last modified: 2026-11-09
 
-/* global Buffer, __dirname */
-
 const fs = require('fs');
 const path = require('path');
 

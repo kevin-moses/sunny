@@ -12,12 +12,13 @@
 // Last modified: 2026-10-30
 
 import { useConvexConnectionState } from 'convex/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 import type { ConnectionState } from 'convex/browser';
 
 import { toBackendError } from '../backend/api';
 import { useQueryWithStatus } from '../backend/convex';
+import { useLastDefined } from '../components/useLastDefined';
 import { api, type HouseholdId } from '../backend/convexApi';
 import { buildAgenda } from './format';
 import type { AgendaItem, DayViewData } from './types';
@@ -99,12 +100,7 @@ export function useDayView(householdId: HouseholdId): DayViewState {
   const minute = useMinute();
   const connection = useConvexConnectionState();
   const result = useQueryWithStatus(api.calendar.dayView, { householdId, minute });
-  // The query returns nothing while a new minute's subscription loads; keep the last day.
-  const lastDay = useRef<DayViewData | null>(null);
-  /* eslint-disable react-hooks/refs -- a render-time cache of the last loaded value is the point */
-  if (result.data !== undefined) lastDay.current = result.data;
-  const day = result.data ?? lastDay.current;
-  /* eslint-enable react-hooks/refs */
+  const day = useLastDefined(result.data) ?? null;
 
   const agenda = useMemo(() => buildAgenda(day), [day]);
   return {

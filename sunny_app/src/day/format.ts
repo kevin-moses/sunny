@@ -13,12 +13,13 @@
 
 import { daysBetween, parseLocalDate, weekdayName } from './localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from './types';
+import type { ANYTIME as BACKEND_ANYTIME } from '../../../sunny_backend/convex/lib/anytime';
 
 /**
  * The scheduledTime of an anytime task's instance (a task with no time of day). Mirrors
  * ANYTIME in sunny_backend/convex/lib/anytime.ts; keep the two in sync.
  */
-export const ANYTIME = 'anytime';
+export const ANYTIME: typeof BACKEND_ANYTIME = 'anytime';
 
 /**
  * purpose: Whether a task is an anytime task (done anytime that day, no time of day).

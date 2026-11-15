@@ -17,30 +17,23 @@
 // back the confirmation the server shows, which for an undo with an id means its press id is in
 // the day entry's confirmPressIds).
 //
-// Known display limit (no replay): offline, after Done (acknowledged), then Undo, Done, Undo all
-// queued, the phone shows the task done until it reconnects, because a press of the task is
-// queued ahead of the latest undo, so applyPending keeps the server's "confirmed"; the server
-// ends with the task open, as the senior last asked. The offline work in build step 3 should
-// replace this rule with a local replay of the task's queued entries.
-//
 // Last modified: 2026-11-14
 
 import * as Crypto from 'expo-crypto';
 
+import { isOpen } from './format';
 import type { DayTask } from './types';
 
 /** One Done press waiting for the server. */
 export interface PendingConfirm {
-  /** Never written for a press; "press" is accepted when reading. */
-  kind?: 'press';
+  kind?: undefined;
   /** The task instance the senior confirmed. */
   instanceId: DayTask['instanceId'];
   /** The task's label, for logs. */
   label: string;
   /** When the senior pressed Done (epoch ms, this device's clock). */
   pressedAt: number;
-  /** The press's random id; absent on presses stored before ids existed. */
-  pressId?: string;
+  pressId: string;
 }
 
 /** What a task looked like before the press an undo takes back. */
@@ -60,8 +53,7 @@ export interface PendingUndo {
   undoneAt: number;
   /** The task's state before the press, shown while the undo waits. */
   restore: RestoreState;
-  /** The id of the press this undo takes back; absent when that press had none. */
-  pressId?: string;
+  pressId: string;
 }
 
 /** Anything the queue holds. */
@@ -137,7 +129,7 @@ export function describeEntry(entry: PendingEntry): Record<string, unknown> {
     instanceId: entry.instanceId,
     label: entry.label,
     ...time,
-    ...(entry.pressId === undefined ? {} : { pressId: entry.pressId }),
+    pressId: entry.pressId,
   };
 }
 
@@ -173,9 +165,9 @@ export function isEntry(value: unknown): value is PendingEntry {
   if (typeof value !== 'object' || value === null) return false;
   const entry = value as Partial<PendingConfirm> & Partial<Omit<PendingUndo, 'kind'>>;
   if (typeof entry.instanceId !== 'string' || typeof entry.label !== 'string') return false;
-  if (entry.pressId !== undefined && typeof entry.pressId !== 'string') return false;
+  if (typeof entry.pressId !== 'string') return false;
   const kind = (value as { kind?: unknown }).kind;
-  if (kind === undefined || kind === 'press') return isFiniteNumber(entry.pressedAt);
+  if (kind === undefined) return isFiniteNumber(entry.pressedAt);
   const restore = entry.restore as { state?: unknown; confirmable?: unknown } | undefined;
   return (
     kind === 'undo' &&
@@ -215,50 +207,40 @@ export function toPending(
 export function toUndo(
   task: Pick<DayTask, 'instanceId' | 'displayLabel' | 'state' | 'confirmable'>,
   undoneAt: number,
-  pressId: string | undefined,
+  pressId: string,
 ): PendingUndo {
-  const undo: PendingUndo = {
+  return {
     kind: 'undo',
     instanceId: task.instanceId,
     label: task.displayLabel,
     undoneAt,
     restore: { state: task.state, confirmable: task.confirmable },
+    pressId,
   };
-  return pressId === undefined ? undo : { ...undo, pressId };
 }
 
-/**
- * purpose: Whether an undo would take back the confirmation the server shows: the server shows
- *          the task confirmed, no press of the task is still queued ahead of the undo (so the
- *          confirm is not still the phone's own unsent press, and a "confirmed" seen then came
- *          from another surface), and, for an undo that names its press, that press id is one
- *          of the confirmation's confirmPressIds (otherwise the confirm is someone else's, for
- *          example the wall display's with the phone's Done landing on it as a no-op, and the
- *          server will answer too_late). An undo without an id (stored before ids existed)
- *          keeps the first two conditions only.
- * @param task: (DayTask) The task as the server shows it.
- * @param queued: (readonly PendingEntry[]) The task's queued entries, oldest first, ending with
- *        the undo.
- * @param undo: (PendingUndo) The task's latest entry.
- * @return: (boolean) True when the task should be shown as it was before the press.
- */
-function undoTakesBack(task: DayTask, queued: readonly PendingEntry[], undo: PendingUndo): boolean {
-  if (task.state !== 'confirmed') return false;
-  if (queued.some((e) => entryKind(e) === 'press')) return false;
-  return undo.pressId === undefined || (task.confirmPressIds ?? []).includes(undo.pressId);
+function replayQueued(task: DayTask, queued: readonly PendingEntry[]): DayTask {
+  let shown = task;
+  let confirmPressIds: readonly string[] =
+    task.state === 'confirmed' ? (task.confirmPressIds ?? []) : [];
+  let beforeLocalConfirm: DayTask | null = null;
+  for (const entry of queued) {
+    if (entry.kind === 'undo') {
+      if (!confirmPressIds.includes(entry.pressId)) continue;
+      shown = beforeLocalConfirm ?? { ...shown, ...entry.restore };
+      confirmPressIds = [];
+      beforeLocalConfirm = null;
+    } else if (isOpen(shown)) {
+      beforeLocalConfirm = shown;
+      shown = { ...shown, state: 'confirmed', confirmable: false };
+      confirmPressIds = [entry.pressId];
+    } else if (confirmPressIds.length > 0) {
+      confirmPressIds = [...confirmPressIds, entry.pressId];
+    }
+  }
+  return shown;
 }
 
-/**
- * purpose: Show each task as its queued entries say, until the server catches up. When the
- *          latest entry is a press, the task reads confirmed and the Done card does not offer
- *          it again. When it is an undo, the task gets back the state and confirmable flag it
- *          had before the press only when the undo takes back the confirmation the server
- *          shows (undoTakesBack); otherwise it is left as the server says, so a medication
- *          done on another surface is never shown open with a Done button.
- * @param tasks: (DayTask[]) The day view's tasks.
- * @param entries: (readonly PendingEntry[]) The queue, oldest first.
- * @return: (DayTask[]) The tasks as they should be shown (the same array when nothing is queued).
- */
 export function applyPending(tasks: DayTask[], entries: readonly PendingEntry[]): DayTask[] {
   if (entries.length === 0) return tasks;
   const byTask = new Map<string, PendingEntry[]>();
@@ -267,13 +249,6 @@ export function applyPending(tasks: DayTask[], entries: readonly PendingEntry[])
   }
   return tasks.map((task) => {
     const queued = byTask.get(task.instanceId);
-    const latest = queued?.at(-1);
-    if (queued === undefined || latest === undefined) return task;
-    if (latest.kind === 'undo') {
-      return undoTakesBack(task, queued, latest) ? { ...task, ...latest.restore } : task;
-    }
-    return task.state !== 'confirmed' && task.state !== 'resolved'
-      ? { ...task, state: 'confirmed', confirmable: false }
-      : task;
+    return queued === undefined ? task : replayQueued(task, queued);
   });
 }

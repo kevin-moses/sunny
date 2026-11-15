@@ -152,35 +152,9 @@ export function decideSession(inputs: SessionInputs): SessionDecision {
   return { state: 'caregiver', home: { householdId: member.household._id, role: member.role } };
 }
 
-/**
- * purpose: Update the remembered home after a decision: remember a paired device or caregiver
- *          household, keep it while loading, forget it on any other decision (signed out,
- *          removed, onboarding).
- * @param decision: (SessionDecision) The latest decision.
- * @param last: (HomeDecision | null) The home remembered so far.
- * @return: (HomeDecision | null) The home to remember.
- */
-export function rememberHome(
-  decision: SessionDecision,
-  last: HomeDecision | null,
-): HomeDecision | null {
+export function homeOf(decision: SessionDecision): HomeDecision | null | undefined {
   if (decision.state === 'paired' || decision.state === 'caregiver') return decision;
-  return decision.state === 'loading' ? last : null;
-}
-
-/**
- * purpose: Pick what to show: the remembered home while the decision is loading (a connection
- *          blip must not unmount a home screen), otherwise the decision itself.
- * @param decision: (SessionDecision) The latest decision.
- * @param last: (HomeDecision | null) The home remembered before this decision.
- * @return: ({shown, remembered}) The decision to show and the home to remember from now on.
- */
-export function showHome(
-  decision: SessionDecision,
-  last: HomeDecision | null,
-): { shown: SessionDecision; remembered: HomeDecision | null } {
-  const remembered = rememberHome(decision, last);
-  return { shown: decision.state === 'loading' && remembered ? remembered : decision, remembered };
+  return decision.state === 'loading' ? undefined : null;
 }
 
 /**

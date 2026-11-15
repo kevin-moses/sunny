@@ -25,6 +25,7 @@ import type { FunctionReturnType } from 'convex/server';
 import type { api, FactId, ProfileEntryId, TopicId } from '../backend/convexApi';
 import { displayTime } from '../day/format';
 import { dayOfMonth, monthName, parseLocalDate } from '../day/localDate';
+import type { OLDER_COUNT_LIMIT as BACKEND_OLDER_COUNT_LIMIT } from '../../../sunny_backend/convex/profile';
 
 /** One life profile entry as profile.listEntries returns it. */
 export type ProfileEntry = FunctionReturnType<typeof api.profile.listEntries>[number];
@@ -54,7 +55,7 @@ export type LifeCategory = ProfileEntry['category'];
 const TAB_NAME_MAX = 8;
 
 /** profile.listMemory counts older unverified facts up to this many (OLDER_COUNT_LIMIT there). */
-export const OLDER_COUNT_LIMIT = 500;
+export const OLDER_COUNT_LIMIT: typeof BACKEND_OLDER_COUNT_LIMIT = 500;
 
 /**
  * purpose: The line under the facts when older unverified facts are not listed.

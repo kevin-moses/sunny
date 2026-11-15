@@ -219,9 +219,8 @@ export function useDoneAction(
   const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   /** The latest stored press; an older press's undo outcome must not touch the screen. */
   const latestStored = useRef<Pressed | null>(null);
-  /** An undo just stored, whose "is not done" waits for the render that shows its task. */
-  const undoneRef = useRef<Pressed | null>(null);
-  const [undoneTick, setUndoneTick] = useState(0);
+  const [undone, setUndone] = useState<Pressed | null>(null);
+  const announcedUndone = useRef<Pressed | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -241,21 +240,14 @@ export function useDoneAction(
     if (offer !== null) announceQueued(offer.spoken);
   }, [offer]);
 
-  // "<label> is not done.", once per stored undo. The ref is cleared on the first run so later
-  // day-view re-renders (every minute in production) do not repeat it. undoneTick must stay in
-  // the dependencies: in production the queue's useSyncExternalStore render can run before the
-  // `.then` that sets the ref, and shownTasks is memoized, so without the tick this effect would
-  // not run again and the announcement would be missed. jest's act() batches the two updates
-  // into one render, so no test can catch the tick's removal.
   useEffect(() => {
-    const undone = undoneRef.current;
-    if (undone === null) return;
-    undoneRef.current = null;
+    if (undone === null || announcedUndone.current === undone) return;
+    announcedUndone.current = undone;
     const shown = shownTasks.find((t) => t.instanceId === undone.task.instanceId);
     if (shown !== undefined && isOpen(shown)) {
       announceQueued(`${undone.task.displayLabel} is not done.`);
     }
-  }, [undoneTick, shownTasks]);
+  }, [undone, shownTasks]);
 
   /**
    * purpose: Set the Undo offer (null withdraws it) and stop its expiry timer.
@@ -391,8 +383,7 @@ export function useDoneAction(
         if (!mounted.current || latestStored.current !== pressed) return;
         if (undoRef.current === pressed) setOffer(null);
         enter('none');
-        undoneRef.current = pressed;
-        setUndoneTick((n) => n + 1);
+        setUndone(pressed);
       },
       () => undefined,
     );

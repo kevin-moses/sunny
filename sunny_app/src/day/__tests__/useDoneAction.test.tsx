@@ -1125,7 +1125,12 @@ describe('usePendingConfirms', () => {
   }
 
   it('shows ids stored before the app was closed and replays them at launch', async () => {
-    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
+    await makeQueue().enqueue({
+      instanceId: 'inst1' as never,
+      label: 'Pills',
+      pressedAt: NOW,
+      pressId: 'pid-0000000000000001',
+    });
     mockMutation.mockReturnValue(new Promise(() => {}));
     const h = renderPending(makeQueue());
     await advance(0);

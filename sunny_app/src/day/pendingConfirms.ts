@@ -202,16 +202,6 @@ interface Failure {
 }
 
 /**
- * purpose: The press id argument of a call: the id when the entry has one, nothing otherwise
- *          (an entry stored before ids existed is sent exactly as before).
- * @param entry: (PendingEntry) The entry.
- * @return: ({ pressId?: string }) The argument to spread into the call.
- */
-function pressIdArg(entry: PendingEntry): { pressId?: string } {
-  return entry.pressId === undefined ? {} : { pressId: entry.pressId };
-}
-
-/**
  * purpose: Send one entry to the backend as a senior device. Refuses to call while the socket
  *          is down (see the header), and computes the age of the press or the Undo tap
  *          immediately before the call. The press id goes with both. An undo answered too_late
@@ -231,7 +221,7 @@ export async function sendConfirm(entry: PendingEntry): Promise<void> {
     const undone = await callMutation(api.instances.undoPressedTask, {
       instanceId: entry.instanceId,
       undoneAgoMs: Math.max(0, Date.now() - entry.undoneAt),
-      ...pressIdArg(entry),
+      pressId: entry.pressId,
     });
     if (undone.status === 'too_late') {
       logger.info(
@@ -246,7 +236,7 @@ export async function sendConfirm(entry: PendingEntry): Promise<void> {
     instanceId: entry.instanceId,
     via: 'phone_app',
     pressedAgoMs: Math.max(0, Date.now() - entry.pressedAt),
-    ...pressIdArg(entry),
+    pressId: entry.pressId,
   });
   if (result.status === 'rejected') throw new BackendError(result.reason, 400);
 }
