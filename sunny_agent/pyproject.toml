@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "agent-starter-python"
 version = "1.0.0"
 description = "Simple voice AI assistant built with LiveKit Agents for Python"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
 dependencies = [
     "livekit-agents[anthropic,turn-detector,silero,cartesia,deepgram]~=1.2",
@@ -37,28 +37,21 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "A", "C4", "UP", "SIM", "RUF"]
-ignore = ["E501"]  # Line too long (handled by formatter)
+ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-# Type-check at 3.10 since the codebase uses X | Y union syntax.
-# Strictness is intentionally relaxed for the existing codebase; tighten over time.
-python_version = "3.10"
+python_version = "3.11"
+mypy_path = "src"
 ignore_missing_imports = true
-disallow_untyped_defs = false
-warn_return_any = false
-warn_unused_ignores = false
-
-[[tool.mypy.overrides]]
-# These modules use dynamic Convex JSON payloads and third-party SDK union types that
-# mypy can't fully narrow. Ignored until the codebase adds explicit cast() or
-# isinstance() guards.
-module = ["src.memory", "src.tools", "src.agent"]
-ignore_errors = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+strict_equality = true
