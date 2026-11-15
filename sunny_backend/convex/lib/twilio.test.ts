@@ -237,6 +237,7 @@ describe("sendTwilioSms", () => {
       ok: false,
       retryable: false,
       error: "Twilio 400 (code 21211): The 'To' number [number] is not valid",
+      twilioCode: 21211,
     });
   });
 

@@ -27,10 +27,16 @@ import {
   mapOutcome,
 } from "./lib/apnsPayload";
 import { ConfigError } from "./lib/errors";
+import { parseJsonObject } from "./lib/http";
 import type { ApnsConfig, ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
+
+function apnsReason(responseBody: string): string | null {
+  const reason = parseJsonObject(responseBody)?.reason;
+  return typeof reason === "string" ? reason : null;
+}
 
 /**
  * purpose: Send one push on an open session and map the response.
@@ -87,13 +93,7 @@ function sendOne(
         text += chunk;
       });
       req.on("end", () => {
-        let reason: string | null = null;
-        try {
-          reason = (JSON.parse(text) as { reason?: string }).reason ?? null;
-        } catch {
-          // An empty body (200) or a non-JSON body leaves the reason null.
-        }
-        finish(mapOutcome(token, status, reason));
+        finish(mapOutcome(token, status, apnsReason(text)));
       });
       req.on("error", (e: Error) => finish(failureResult(token, e.message)));
       // A stream closed without a response or an error (session torn down) must not hang.

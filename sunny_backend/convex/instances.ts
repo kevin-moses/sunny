@@ -64,6 +64,7 @@ import {
   withConfirmPressId,
   withTakenBackPressIds,
 } from "./lib/confirmRule";
+import type { QueuedPress } from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
@@ -298,11 +299,17 @@ export async function confirmInstance(
   if (!asCaregiver && args.via === "caregiver") {
     throw appError("invalid", "Only a caregiver can confirm as a caregiver");
   }
+  let queuedPress: QueuedPress | null = null;
   if (args.pressedAgoMs !== undefined) {
     if (actor.kind !== "senior_device") {
       throw appError("invalid", "Only the senior's device can send a press age");
     }
     requirePressAge(args.pressedAgoMs);
+    queuedPress = {
+      pressedAt: now - args.pressedAgoMs,
+      pressId: args.pressId,
+      userId: actor.userId,
+    };
   }
   if (args.pressId !== undefined) {
     if (actor.kind !== "senior_device") {
@@ -313,13 +320,7 @@ export async function confirmInstance(
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
   if (isDoneState(instance.state)) return await recordNoOpPress(ctx, actor, instance, args.pressId);
-  const takenBack =
-    args.pressedAgoMs === undefined
-      ? null
-      : queuedPressTakenBack(
-          { pressedAt: now - args.pressedAgoMs, pressId: args.pressId, userId: actorUserId(actor) },
-          instance,
-        );
+  const takenBack = queuedPress === null ? null : queuedPressTakenBack(queuedPress, instance);
   if (takenBack !== null) throw appError("invalid", takenBack);
   if (asCaregiver) {
     const household = await loadHousehold(ctx, instance.householdId);

@@ -37,6 +37,7 @@
 // Last modified: 2026-11-09
 
 import type { AddResult } from "../convex/profile";
+import { parseJsonObject } from "../convex/lib/http";
 import { LIFE_CATEGORIES } from "../convex/lib/validators";
 
 /** The sections a profile file may have. */
@@ -196,6 +197,9 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+const ANSI_ESCAPE = String.fromCharCode(0x1b);
+const ANSI_COLOR_SEQUENCE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, "g");
+
 /**
  * purpose: Turn the stderr of a failed `npx convex run` into an Error with a readable message.
  *          The CLI prints `Failed to run function "<fn>":`, then `ConvexError: [Request ID: ...]
@@ -206,17 +210,10 @@ function errorText(e: unknown): string {
  * @return: (Error) The error to throw.
  */
 export function cliError(stderr: string, fallback: string): Error {
-  // eslint-disable-next-line no-control-regex
-  const text = stderr.replace(/\u001b\[[0-9;]*m/g, "");
+  const text = stderr.replace(ANSI_COLOR_SEQUENCE, "");
   const json = /Uncaught ConvexError: (\{.*\})/.exec(text)?.[1];
-  if (json !== undefined) {
-    try {
-      const data = JSON.parse(json) as { message?: unknown };
-      if (typeof data.message === "string") return new Error(data.message);
-    } catch {
-      // Not JSON after all; fall through to the raw text.
-    }
-  }
+  const message = json === undefined ? undefined : parseJsonObject(json)?.message;
+  if (typeof message === "string") return new Error(message);
   const lines = text
     .split("\n")
     .map((line) => line.trim())

@@ -85,7 +85,7 @@ function sanitize(facts: DigestFacts): DigestFacts {
     unanswered: facts.unanswered.map(clean),
     routed: facts.routed.map(clean),
     repeats: facts.repeats.map((r) => ({ ...r, topic: clean(r.topic) })),
-    listAdded: (facts.listAdded ?? []).map(clean),
+    listAdded: facts.listAdded.map(clean),
   };
 }
 
@@ -100,7 +100,7 @@ export function isQuietDay(facts: DigestFacts): boolean {
     facts.tasks.length === 0 &&
     facts.doses.length === 0 &&
     facts.questionCount === 0 &&
-    (facts.listAdded ?? []).length === 0
+    facts.listAdded.length === 0
   );
 }
 
@@ -213,8 +213,7 @@ function restLinesOf(facts: DigestFacts): string[] {
     lines.push(line);
   }
   // Last, so it is the line dropped when a busy day fills the digest.
-  const listAdded = facts.listAdded ?? [];
-  if (listAdded.length > 0) lines.push(listLine("Added to the list: ", listAdded));
+  if (facts.listAdded.length > 0) lines.push(listLine("Added to the list: ", facts.listAdded));
   return lines;
 }
 
@@ -291,7 +290,7 @@ export function factsForPrompt(facts: DigestFacts): string {
   for (const q of safe.unanswered) rows.push(`Unanswered question: ${q}`);
   for (const q of safe.routed) rows.push(`Question passed to family: ${q}`);
   for (const r of safe.repeats) rows.push(`Repeated topic: ${r.topic}, ${r.count} times`);
-  for (const item of safe.listAdded ?? []) rows.push(`Added to the household list: ${item}`);
+  for (const item of safe.listAdded) rows.push(`Added to the household list: ${item}`);
   return `<facts>\n${rows.join("\n")}\n</facts>`;
 }
 

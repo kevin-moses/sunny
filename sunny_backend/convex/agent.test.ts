@@ -29,6 +29,7 @@
 //
 // Last modified: 2026-11-14
 
+import type { FunctionReference } from "convex/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -41,7 +42,7 @@ import {
   MEMORY_UNVERIFIED_RESERVE,
 } from "./lib/memoryLimits";
 import { FLAG_REPEAT_WINDOW_MS, MAX_FLAG_DETAIL_LENGTH } from "./lib/voiceRouting";
-import { addMember, makeBackend, setPhone } from "./testing.helpers";
+import { addMember, makeBackend, setPhone, withUncheckedArgs } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
 const KEY = "agent-secret-key";
@@ -197,17 +198,16 @@ interface AgentCall {
  * @return: (AgentCall[]) The calls.
  */
 function allCalls(): AgentCall[] {
-  const q = (name: string, ref: unknown, args: (f: Fixture) => object): AgentCall => ({
+  type Args = (f: Fixture) => Record<string, unknown>;
+  const q = (name: string, ref: FunctionReference<"query">, args: Args): AgentCall => ({
     name,
     kind: "query",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    run: (f, extra) => f.t.query(ref as any, { ...args(f), ...extra } as any),
+    run: (f, extra) => f.t.query(withUncheckedArgs(ref), { ...args(f), ...extra }),
   });
-  const m = (name: string, ref: unknown, args: (f: Fixture) => object): AgentCall => ({
+  const m = (name: string, ref: FunctionReference<"mutation">, args: Args): AgentCall => ({
     name,
     kind: "mutation",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    run: (f, extra) => f.t.mutation(ref as any, { ...args(f), ...extra } as any),
+    run: (f, extra) => f.t.mutation(withUncheckedArgs(ref), { ...args(f), ...extra }),
   });
   return [
     q("getContext", api.agent.getContext, (f) => ({ householdId: f.householdId, now: NOW })),
@@ -1093,14 +1093,13 @@ describe("conversation logging", () => {
       trigger: "talk",
     });
     await expect(
-      f.t.mutation(api.agent.logTurn, {
+      f.t.mutation(withUncheckedArgs(api.agent.logTurn), {
         agentKey: KEY,
         conversationId,
-        // @ts-expect-error not a valid role
         role: "system",
         content: "hi",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Validator error/);
   });
 });
 
@@ -1962,15 +1961,14 @@ describe("flagCaregiver", () => {
     const f = await setup();
     const other = await otherHousehold(f.t);
     await expect(
-      f.t.mutation(api.agent.flagCaregiver, {
+      f.t.mutation(withUncheckedArgs(api.agent.flagCaregiver), {
         agentKey: KEY,
         householdId: f.householdId,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        reason: "bored" as any,
+        reason: "bored",
         detail: "x",
         now: NOW,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Validator error/);
     await f.t.mutation(api.agent.flagCaregiver, {
       agentKey: KEY,
       householdId: f.householdId,
@@ -2361,15 +2359,14 @@ describe("flag keys, caps and detail", () => {
   test("medication_limit is not a reason the model can use", async () => {
     const f = await setup();
     await expect(
-      f.t.mutation(api.agent.flagCaregiver, {
+      f.t.mutation(withUncheckedArgs(api.agent.flagCaregiver), {
         agentKey: KEY,
         householdId: f.householdId,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        reason: "medication_limit" as any,
+        reason: "medication_limit",
         detail: "x",
         now: NOW,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Validator error/);
   });
 
   test("two medications past a limit both reach family within minutes", async () => {

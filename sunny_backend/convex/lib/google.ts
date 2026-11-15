@@ -15,17 +15,18 @@
 
 import { fromBase64Url, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
-import { timedFetch } from "./http";
+import { parseJsonObject, timedFetch } from "./http";
 import type { TimedResponse } from "./http";
 import type { GoogleEvent } from "./googleEvent";
 import { constantTimeEqual } from "./secretBox";
+import { minutes } from "./time";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
-const STATE_TTL_SECONDS = 10 * 60;
+export const OAUTH_FLOW_TTL_MS = minutes(10);
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
@@ -129,17 +130,12 @@ async function tokenRequest(form: Record<string, string>): Promise<Record<string
       ...form,
     }),
   });
-  let body: Record<string, unknown> = {};
-  try {
-    body = res.json() as Record<string, unknown>;
-  } catch {
-    // A non-JSON error page leaves the body empty.
-  }
+  const body = parseJsonObject(res.text) ?? {};
   if (!res.ok) {
     if (body.error === "invalid_grant") {
       throw new GoogleAccessRevoked(String(body.error_description ?? "invalid_grant"));
     }
-    throw new GoogleApiError(res.status, JSON.stringify(body));
+    throw new GoogleApiError(res.status, res.text);
   }
   return body;
 }
@@ -427,7 +423,7 @@ export async function signState(
         u: userId,
         h: householdId,
         n: nonce,
-        e: Math.floor(now / 1000) + STATE_TTL_SECONDS,
+        e: Math.floor((now + OAUTH_FLOW_TTL_MS) / 1000),
       }),
     ),
   );

@@ -12,6 +12,8 @@
 import workpoolTest from "@convex-dev/workpool/test";
 import workflowTest from "@convex-dev/workflow/test";
 import { convexTest } from "convex-test";
+import { getFunctionName, makeFunctionReference } from "convex/server";
+import type { FunctionReference, FunctionType } from "convex/server";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -35,6 +37,14 @@ export function makeBackend() {
 
 /** The convex-test harness type, with the schema's table types. */
 export type TestConvex = ReturnType<typeof makeBackend>;
+
+export function withUncheckedArgs<Ref extends FunctionReference<FunctionType>>(
+  ref: Ref,
+): FunctionReference<Ref["_type"], "public", Record<string, unknown>, Ref["_returnType"]> {
+  return makeFunctionReference<Ref["_type"], Record<string, unknown>, Ref["_returnType"]>(
+    getFunctionName(ref),
+  );
+}
 
 /**
  * purpose: Create a household through the real households.create.

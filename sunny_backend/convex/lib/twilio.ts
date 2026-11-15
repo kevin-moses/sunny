@@ -21,7 +21,7 @@
 
 import { toBase64 } from "./base64";
 import { ConfigError } from "./errors";
-import { isTimeoutError, timedFetch } from "./http";
+import { isTimeoutError, parseJsonObject, timedFetch } from "./http";
 import type { TimedResponse } from "./http";
 import { constantTimeEqual } from "./secretBox";
 
@@ -37,7 +37,14 @@ const SEND_TIMEOUT_MS = 10_000;
  */
 export type SmsResult =
   | { ok: true; sid: string }
-  | { ok: false; retryable: boolean; error: string; config?: true; timedOut?: true };
+  | {
+      ok: false;
+      retryable: boolean;
+      error: string;
+      twilioCode?: number;
+      config?: true;
+      timedOut?: true;
+    };
 
 /** The Twilio credentials and sender number. */
 export interface TwilioConfig {
@@ -144,17 +151,13 @@ function redactNumbers(text: string): string {
  * @param response: (TimedResponse) The non-2xx response.
  * @return: (string) For example "Twilio 400 (code 21211): The 'To' number [number] ...".
  */
-function describeFailure(response: TimedResponse): string {
-  let detail = "";
-  try {
-    const body = response.json() as { code?: unknown; message?: unknown };
-    const code = typeof body.code === "number" ? ` (code ${body.code})` : "";
-    const message = typeof body.message === "string" ? `: ${redactNumbers(body.message)}` : "";
-    detail = `${code}${message}`;
-  } catch {
-    detail = "";
-  }
-  return `Twilio ${response.status}${detail}`;
+function describeFailure(response: TimedResponse): { error: string; twilioCode?: number } {
+  const body = parseJsonObject(response.text) ?? {};
+  const twilioCode = typeof body.code === "number" ? body.code : undefined;
+  const code = twilioCode === undefined ? "" : ` (code ${twilioCode})`;
+  const message = typeof body.message === "string" ? `: ${redactNumbers(body.message)}` : "";
+  const error = `Twilio ${response.status}${code}${message}`;
+  return twilioCode === undefined ? { error } : { error, twilioCode };
 }
 
 /**
@@ -196,7 +199,7 @@ export async function sendTwilioSms(
     );
     if (!response.ok) {
       const retryable = response.status === 429 || response.status >= 500;
-      return { ok: false, retryable, error: describeFailure(response) };
+      return { ok: false, retryable, ...describeFailure(response) };
     }
     const json = response.json() as { sid?: unknown };
     if (typeof json.sid !== "string") {

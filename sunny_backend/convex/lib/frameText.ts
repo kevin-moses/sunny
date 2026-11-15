@@ -24,6 +24,7 @@
 //
 // Last modified: 2026-11-14
 
+import { fromBase64 } from "./base64";
 import { FACE_DATA } from "./fonts/frameFontData";
 import { Path } from "./frameRaster";
 import type { Canvas, Paint } from "./frameRaster";
@@ -70,12 +71,7 @@ const faces = new Map<FaceName, Face>();
 function face(name: FaceName): Face {
   const cached = faces.get(name);
   if (cached !== undefined) return cached;
-  // A plain loop: Uint8Array.from with a mapping function (lib/base64.ts fromBase64) takes about
-  // 20 ms over the 530 KB of font data on a cold isolate, this under 1 ms.
-  const binary = atob(FACE_DATA[name]);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  const view = new DataView(bytes.buffer);
+  const view = new DataView(fromBase64(FACE_DATA[name]).buffer);
   let at = 0;
   /**
    * purpose: The next little-endian int16 of the stream.

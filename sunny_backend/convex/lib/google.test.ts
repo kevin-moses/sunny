@@ -292,6 +292,7 @@ describe("refreshAccessToken", () => {
     const e = (await rejection(refreshAccessToken("rt"))) as GoogleApiError;
     expect(e.status).toBe(502);
     expect(e.retryable).toBe(true);
+    expect(e.message).toBe("Google API 502: oops");
   });
 
   test("missing client secret names the variable", async () => {

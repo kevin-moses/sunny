@@ -74,8 +74,7 @@ export { MAX_TURN_CONTENT_LENGTH } from "./lib/conversationLog";
  * @param validator: (Validator) The value's validator.
  * @return: (Validator) Optional value-or-null.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function nullable<T extends Validator<any, "required", any>>(validator: T) {
+function nullable<T extends Validator<unknown, "required", string>>(validator: T) {
   return v.optional(v.union(validator, v.null()));
 }
 

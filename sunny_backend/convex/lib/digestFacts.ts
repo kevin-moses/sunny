@@ -78,7 +78,7 @@ export interface DigestFacts {
   routed: string[];
   repeats: RepeatFact[];
   /** Household list items the senior added that day (absent in facts built before the list). */
-  listAdded?: string[];
+  listAdded: string[];
 }
 
 /**

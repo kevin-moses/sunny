@@ -54,6 +54,7 @@ import {
   fixtureEvent,
   fixtureTask,
 } from "./frameFixtures.helpers";
+import { FACE_DATA } from "./fonts/frameFontData";
 import { PACKED_HEADER_BYTES, encodePacked, packBits, packPixels } from "./framePacked";
 import { decodePacked, readPackedHeader } from "./framePackedDecoder.helpers";
 import { encodePng } from "./framePng";
@@ -62,9 +63,6 @@ import { breakLines, cleanText, fitText, measure } from "./frameText";
 
 /** Where the goldens live. */
 const GOLDENS = new URL("./frameGoldens/", import.meta.url);
-
-/** The generated font data, hashed into the manifest. */
-const FONT_DATA = new URL("./fonts/frameFontData.ts", import.meta.url);
 
 /** Budget (ms) for drawing and encoding the largest drawable screen (measured: about 150). */
 const LARGEST_BUDGET_MS = 1500;
@@ -245,7 +243,7 @@ describe("goldens", () => {
     const now = {
       rendererVersion: FRAME_RENDERER_VERSION,
       goldens: await sha256(all),
-      fontData: await sha256(readFileSync(FONT_DATA)),
+      fontData: await sha256(Buffer.from(JSON.stringify(FACE_DATA))),
     };
     const manifest = new URL("MANIFEST.json", GOLDENS);
     let stored: typeof now | null = null;

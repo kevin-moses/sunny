@@ -335,6 +335,7 @@ export async function resyncHouseholdTimezone(
   timezone: string,
   now: number,
 ): Promise<void> {
+  await ctx.db.patch(householdId, { timezone });
   const lastDate = addDays(localDate(now, timezone), 1);
   const open = (
     await Promise.all(

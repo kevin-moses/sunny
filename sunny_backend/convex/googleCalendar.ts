@@ -54,6 +54,7 @@ import {
 import { appError, isAppError } from "./lib/errors";
 import {
   CALENDAR_SCOPE,
+  OAUTH_FLOW_TTL_MS,
   calendarExists,
   consentUrl,
   createSunnyCalendar,
@@ -125,9 +126,6 @@ export const connectUrl = action({
   },
 });
 
-/** How long a started connect flow stays valid. */
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-
 /** Expired oauthStates rows deleted per sweep. */
 const OAUTH_SWEEP_BATCH = 200;
 
@@ -141,7 +139,7 @@ const OAUTH_SWEEP_BATCH = 200;
 export const createOauthState = internalMutation({
   args: { nonce: v.string(), userId: v.string(), householdId: v.id("households") },
   handler: async (ctx, args): Promise<null> => {
-    await ctx.db.insert("oauthStates", { ...args, expiresAt: Date.now() + OAUTH_STATE_TTL_MS });
+    await ctx.db.insert("oauthStates", { ...args, expiresAt: Date.now() + OAUTH_FLOW_TTL_MS });
     return null;
   },
 });

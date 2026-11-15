@@ -964,6 +964,7 @@ describe("text", () => {
     unanswered: [],
     routed: [],
     repeats: [],
+    listAdded: [],
   };
   const FACTS_MESSAGE = "<facts>\nTask: Morning pills at 8:05 AM\nQuestions asked: 4\n</facts>";
 

@@ -42,6 +42,8 @@ const PRODUCTION_HOST = "api.push.apple.com";
 const DEFAULT_BUNDLE_ID = "com.kmsunny.sunny";
 const EXPIRATION_SECONDS = 3 * 60 * 60;
 const TOKEN_BUCKET_SECONDS = 30 * 60;
+
+const APNS_COLLAPSE_ID_MAX_BYTES = 64;
 const MAX_PAYLOAD_BYTES = 4096;
 
 /**
@@ -221,7 +223,7 @@ export function buildHeaders(
   };
   const taskId = data?.task_instance_id;
   // APNs limits the collapse id to 64 bytes.
-  if (taskId) headers["apns-collapse-id"] = taskId.slice(0, 64);
+  if (taskId) headers["apns-collapse-id"] = taskId.slice(0, APNS_COLLAPSE_ID_MAX_BYTES);
   return headers;
 }
 

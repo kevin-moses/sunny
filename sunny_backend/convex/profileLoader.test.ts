@@ -247,6 +247,22 @@ describe("cliError", () => {
     );
     expect(cliError("", "fallback").message).toBe("fallback");
   });
+
+  test("strips terminal color sequences and keeps any other escape", () => {
+    const escape = String.fromCharCode(0x1b);
+    const stderr = `${escape}[31mBoom${escape}[0m ${escape}[1;2mnow${escape}[q`;
+    expect(cliError(stderr, "fallback").message).toBe(`Boom now${escape}[q`);
+  });
+
+  test("uses the raw text when the ConvexError payload is not JSON", () => {
+    const stderr = "Uncaught ConvexError: {not json}";
+    expect(cliError(stderr, "fallback").message).toBe("Uncaught ConvexError: {not json}");
+  });
+
+  test("uses the raw text when the ConvexError payload has no message", () => {
+    const stderr = 'Uncaught ConvexError: {"code":"x"}';
+    expect(cliError(stderr, "fallback").message).toBe('Uncaught ConvexError: {"code":"x"}');
+  });
 });
 
 describe("parseProfileFile", () => {

@@ -18,6 +18,7 @@ import type { Id } from "./_generated/dataModel";
 import { addEventCore, cancelEventCore, updateEventCore } from "./calendar";
 import { isAppError } from "./lib/errors";
 import schema from "./schema";
+import { withUncheckedArgs } from "./testing.helpers";
 
 /** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -444,10 +445,10 @@ describe("updateEvent", () => {
   test("unknown keys are rejected", async () => {
     const w = await makeWorld();
     const { physio } = await seed(w);
-    const call = w.primary.mutation(api.calendar.updateEvent, {
+    const call = w.primary.mutation(withUncheckedArgs(api.calendar.updateEvent), {
       householdId: w.householdId,
       eventId: physio.eventId,
-      changes: { color: "red" } as never,
+      changes: { color: "red" },
     });
     expect(await errorCode(call)).toBe("other");
   });
@@ -455,10 +456,10 @@ describe("updateEvent", () => {
   test("a required field cannot be null", async () => {
     const w = await makeWorld();
     const { physio } = await seed(w);
-    const call = w.primary.mutation(api.calendar.updateEvent, {
+    const call = w.primary.mutation(withUncheckedArgs(api.calendar.updateEvent), {
       householdId: w.householdId,
       eventId: physio.eventId,
-      changes: { title: null } as never,
+      changes: { title: null },
     });
     expect(await errorCode(call)).toBe("other");
   });

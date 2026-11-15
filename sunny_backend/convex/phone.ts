@@ -72,7 +72,12 @@ export const SEND_FAILED_MESSAGE = "The code text could not be sent. Try again l
 /** Shown when Twilio rejects the destination number itself. */
 export const BAD_NUMBER_MESSAGE = "That number cannot receive texts.";
 /** Twilio error codes meaning the destination number is invalid or not a mobile number. */
-const BAD_NUMBER_PATTERN = /\(code (21211|21614)\)/;
+const TWILIO_INVALID_TO_NUMBER = 21211;
+const TWILIO_TO_NOT_MOBILE = 21614;
+const BAD_NUMBER_CODES: ReadonlySet<number> = new Set([
+  TWILIO_INVALID_TO_NUMBER,
+  TWILIO_TO_NOT_MOBILE,
+]);
 
 /** Result of myPhoneStatus. */
 export type MyPhoneStatus =
@@ -285,7 +290,9 @@ export const sendCode = internalAction({
     );
     if (result.ok) return null;
     return await fail(
-      BAD_NUMBER_PATTERN.test(result.error) ? BAD_NUMBER_MESSAGE : SEND_FAILED_MESSAGE,
+      result.twilioCode !== undefined && BAD_NUMBER_CODES.has(result.twilioCode)
+        ? BAD_NUMBER_MESSAGE
+        : SEND_FAILED_MESSAGE,
       result.error,
     );
   },

@@ -229,18 +229,22 @@ function deflate(data: Uint8Array): Uint8Array {
  * @param data: (Uint8Array) The bytes.
  * @return: (number) The checksum.
  */
+const ADLER_MODULUS = 65521;
+
+const ZLIB_ADLER_NMAX = 5552;
+
 function adler32(data: Uint8Array): number {
   let a = 1;
   let b = 0;
   // Reduce every 5552 bytes (zlib's NMAX), the most that cannot overflow before the modulo.
-  for (let start = 0; start < data.length; start += 5552) {
-    const end = Math.min(data.length, start + 5552);
+  for (let start = 0; start < data.length; start += ZLIB_ADLER_NMAX) {
+    const end = Math.min(data.length, start + ZLIB_ADLER_NMAX);
     for (let i = start; i < end; i += 1) {
       a += data[i]!;
       b += a;
     }
-    a %= 65521;
-    b %= 65521;
+    a %= ADLER_MODULUS;
+    b %= ADLER_MODULUS;
   }
   return ((b << 16) | a) >>> 0;
 }

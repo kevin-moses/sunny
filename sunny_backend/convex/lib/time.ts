@@ -17,7 +17,9 @@
 export const MINUTE_MS = 60_000;
 export const HOUR_MS = 60 * MINUTE_MS;
 export const DAY_MS = 24 * HOUR_MS;
-const PROBE_MS = 26 * 3_600_000;
+const MAX_UTC_OFFSET_HOURS = 14;
+const MIN_UTC_OFFSET_HOURS = -12;
+const PROBE_MS = (MAX_UTC_OFFSET_HOURS - MIN_UTC_OFFSET_HOURS) * HOUR_MS;
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 

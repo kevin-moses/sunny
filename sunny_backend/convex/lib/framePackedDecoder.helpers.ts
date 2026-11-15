@@ -7,7 +7,15 @@
 //
 // Last modified: 2026-11-14
 
-import { PACKED_ENCODING, PACKED_HEADER_BYTES, PACKED_MAGIC, PACKED_VERSION } from "./framePacked";
+import {
+  PACKBITS_NO_OP,
+  PACKED_ENCODING,
+  PACKED_HEADER_BYTES,
+  PACKED_HEADER_OFFSET,
+  PACKED_LITTLE_ENDIAN,
+  PACKED_MAGIC,
+  PACKED_VERSION,
+} from "./framePacked";
 import type { Frame } from "./frameRaster";
 
 /** The fields of a packed header. */
@@ -32,14 +40,15 @@ export function readPackedHeader(bytes: Uint8Array): PackedHeader {
     throw new Error("not a packed frame");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const at = PACKED_HEADER_OFFSET;
   const header = {
-    version: bytes[4]!,
-    bitsPerPixel: bytes[5]!,
-    encoding: bytes[6]!,
-    greys: bytes[7]! + 1,
-    width: view.getUint16(8, true),
-    height: view.getUint16(10, true),
-    payloadBytes: view.getUint32(12, true),
+    version: bytes[at.version]!,
+    bitsPerPixel: bytes[at.bitsPerPixel]!,
+    encoding: bytes[at.encoding]!,
+    greys: bytes[at.maxGreyLevel]! + 1,
+    width: view.getUint16(at.widthUint16, PACKED_LITTLE_ENDIAN),
+    height: view.getUint16(at.heightUint16, PACKED_LITTLE_ENDIAN),
+    payloadBytes: view.getUint32(at.payloadBytesUint32, PACKED_LITTLE_ENDIAN),
   };
   if (header.version !== PACKED_VERSION) throw new Error("unknown packed frame version");
   if (![1, 2, 4, 8].includes(header.bitsPerPixel)) throw new Error("bad bits per pixel");
@@ -67,12 +76,13 @@ export function decodePayload(payload: Uint8Array, encoding: number, expected: n
   let i = 0;
   while (i < payload.length) {
     const n = payload[i++]!;
-    if (n === 128) continue;
-    const count = n < 128 ? n + 1 : 257 - n;
-    if (o + count > expected || i + (n < 128 ? count : 1) > payload.length) {
+    if (n === PACKBITS_NO_OP) continue;
+    const literal = n < PACKBITS_NO_OP;
+    const count = literal ? n + 1 : 257 - n;
+    if (o + count > expected || i + (literal ? count : 1) > payload.length) {
       throw new Error("payload overruns the frame");
     }
-    if (n < 128) {
+    if (literal) {
       out.set(payload.subarray(i, i + count), o);
       i += count;
     } else {

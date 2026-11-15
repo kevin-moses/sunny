@@ -96,7 +96,7 @@ export async function updateHouseholdCore(
     if (patch.timezone !== household.timezone) {
       // Write the zone first: the resync's expansion reads it from the household.
       // The digest's local date changes with the zone, so forget the remembered one.
-      await ctx.db.patch(householdId, { timezone: patch.timezone, lastDigestDate: undefined });
+      await ctx.db.patch(householdId, { lastDigestDate: undefined });
       await resyncHouseholdTimezone(ctx, actor, householdId, patch.timezone, Date.now());
     }
   }

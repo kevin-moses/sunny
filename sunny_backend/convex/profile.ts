@@ -293,29 +293,9 @@ async function loadOwned<T extends ProfileTable>(
   id: Id<T>,
   label: string,
 ): Promise<Doc<T>> {
-  const row = (await ctx.db.get(id)) as Doc<T> | null;
+  const row = await ctx.db.get(id);
   if (!row || row.householdId !== householdId) throw appError("not_found", `${label} not found`);
   return row;
-}
-
-/**
- * purpose: Every entry or topic of a household (each table is capped by its add mutation).
- * @param ctx: (QueryCtx) Context.
- * @param table: ("lifeProfileEntries" | "sensitiveTopics") The table.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<T>[]>) The rows, in creation order (the agent's order for topics).
- */
-async function householdRows<T extends "lifeProfileEntries" | "sensitiveTopics">(
-  ctx: QueryCtx,
-  table: T,
-  householdId: Id<"households">,
-): Promise<Doc<T>[]> {
-  // Both tables have the same by_household index on householdId; TypeScript cannot resolve the
-  // index field through the generic table name, hence the cast on the value.
-  return (await ctx.db
-    .query(table)
-    .withIndex("by_household", (q) => q.eq("householdId", householdId as never))
-    .collect()) as Doc<T>[];
 }
 
 /**
@@ -451,7 +431,7 @@ export async function addEntryCore(
 ): Promise<AddOutcome<"lifeProfileEntries">> {
   const name = singleLine(args.name, MAX_NAME, "Name");
   const details = optionalLine(args.details, MAX_DETAILS, "Details");
-  const rows = await householdRows(ctx, "lifeProfileEntries", householdId);
+  const rows = await entriesInOrder(ctx, householdId);
   const wanted = entryKey({ category: args.category, name });
   const existing = rows.find((r) => entryKey(r) === wanted);
   if (existing) {
@@ -535,7 +515,7 @@ export async function updateEntryCore(
     return entry;
   }
   rejectDuplicate(
-    await householdRows(ctx, "lifeProfileEntries", householdId),
+    await entriesInOrder(ctx, householdId),
     entryKey,
     next,
     entry._id,
@@ -639,7 +619,10 @@ export async function listTopicsCore(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<Doc<"sensitiveTopics">[]> {
-  return await householdRows(ctx, "sensitiveTopics", householdId);
+  return await ctx.db
+    .query("sensitiveTopics")
+    .withIndex("by_household", (q) => q.eq("householdId", householdId))
+    .collect();
 }
 
 /**

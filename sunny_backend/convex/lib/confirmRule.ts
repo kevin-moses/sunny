@@ -127,8 +127,8 @@ export interface QueuedPress {
   pressedAt: number;
   /** The press's id, when the device's queue gave it one. */
   pressId: string | undefined;
-  /** The device account sending it (undefined only for a caller without a user). */
-  userId: string | undefined;
+  /** The device account sending it. */
+  userId: string;
 }
 
 /**
@@ -165,7 +165,7 @@ export function queuedPressTakenBack(
     // would pass here; and an id dropped from confirmPressIds by its cap of 4 never reaches
     // takenBackPressIds at all. One phone's queue cannot produce either: it never sends two
     // presses in a row for one task and never resends an acknowledged entry.
-    if (press.userId !== undefined && instance.confirmTakenBackBy === press.userId) return null;
+    if (instance.confirmTakenBackBy === press.userId) return null;
   }
   return pressWasTakenBack(press.pressedAt, instance.confirmTakenBackAt)
     ? PRESS_BEFORE_TAKE_BACK

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { withUncheckedArgs } from "./testing.helpers";
 
 /** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -186,9 +187,8 @@ describe("livekitToken", () => {
     await expect(
       f.t
         .withIdentity({ subject: "phone" })
-        // @ts-expect-error not a valid trigger
-        .action(api.voice.livekitToken, { trigger: "shout" }),
-    ).rejects.toThrow();
+        .action(withUncheckedArgs(api.voice.livekitToken), { trigger: "shout" }),
+    ).rejects.toThrow(/Validator error/);
   });
 });
 

@@ -24,6 +24,8 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { gatherDigestFacts } from "./lib/digestFacts";
 import { anytimeWindow, compareDayOrder, isAnytimeTask } from "./lib/anytime";
+import { SYSTEM_ACTOR } from "./lib/access";
+import { resyncHouseholdTimezone } from "./lib/schedule";
 import { isAsNeededTask } from "./tasks";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
@@ -350,6 +352,27 @@ describe("household timezone change", () => {
       ["2027-03-14", "due"],
       ["2027-03-15", "upcoming"],
     ]);
+  });
+
+  test("the resync stores the new zone itself and expands in it", async () => {
+    const f = await setup();
+    const taskId = await makeTask(f);
+    await tick(f, "2027-03-13T15:01:00Z");
+    await f.t.run(
+      async (ctx) =>
+        await resyncHouseholdTimezone(
+          ctx,
+          SYSTEM_ACTOR,
+          f.householdId,
+          "Pacific/Auckland",
+          Date.parse("2027-03-13T15:01:00Z"),
+        ),
+    );
+    const rows = await instancesOf(f, taskId);
+    expect(rows.map((r) => r.localDate)).toEqual(["2027-03-13", "2027-03-14", "2027-03-15"]);
+    expect(rows[2]!.windowStart).toBe(Date.parse("2027-03-14T11:00:00Z"));
+    const household = await f.t.run(async (ctx) => await ctx.db.get(f.householdId));
+    expect(household!.timezone).toBe("Pacific/Auckland");
   });
 
   test("moving west before the window opens sends a due instance back to upcoming", async () => {

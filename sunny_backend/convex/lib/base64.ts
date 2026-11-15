@@ -21,7 +21,10 @@ export function toBase64(bytes: Uint8Array): string {
  * @raises Error when the text is not valid base64.
  */
 export function fromBase64(text: string): Uint8Array<ArrayBuffer> {
-  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 /**
