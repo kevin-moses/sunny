@@ -28,10 +28,13 @@
 // Chat tab reads `transcript`; `list` and `get` keep serving the dev script and existing callers.
 //
 // Wording cards: each request item of the transcript carries `wording`, one entry per task its
-// successful add_task or update_task calls created or changed (agentToolCalls.taskId), read
-// from the task as it is now: the label the display shows, the display's clock time of its
-// first time, and the sentence the display speaks then (lib/deviceWording.ts cueSpeech; null
-// for a task with no time, which is never prompted). A stopped or deleted task has no card.
+// successful add_task or update_task calls created or changed (the request row's
+// changedTaskIds, each task once in order of first change, at most 20), read from the task as
+// it is now: the label the display shows, the display's clock time of its first time, the
+// sentence the display speaks then (lib/deviceWording.ts cueSpeech; null for a task with no
+// time, which is never prompted), and every time of the task ("HH:MM"). A stopped, deleted or
+// other-household task has no card. This reads only the request row and its tasks, never the
+// tool call rows.
 // Since viewers get no requests, they never get wording either.
 //
 // Last modified: 2026-11-14
@@ -68,8 +71,6 @@ const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
 /** Most succeeded requests scanned for one with a session when continuing the latest thread. */
 const MAX_CONTINUABLE_SCAN = 20;
-/** Most tool calls of one request read for its wording cards. */
-const MAX_WORDING_CALLS = 100;
 
 /** A request as the caregiver app sees it (absent fields are null). */
 export interface AgentRequestView {
@@ -371,6 +372,11 @@ export interface TaskWording {
   /** The task's first time of day as the display writes it ("8:00"), or "Anytime". */
   time: string;
   /**
+   * Every time of the task, household-local "HH:MM", earliest first (the first is `time`);
+   * empty for a task with no time. The app lists the others under the card.
+   */
+  times: string[];
+  /**
    * The sentence the display speaks at that time (lib/deviceWording.ts cueSpeech: the written
    * prompt, or the template with the time); null for a task with no time, which is never
    * prompted.
@@ -385,7 +391,7 @@ export type TranscriptItem =
 
 /**
  * purpose: A task's wording as the senior's surfaces use it now: its label, its first time and
- *          the sentence spoken then.
+ *          the sentence spoken then, and all its times.
  * @param task: (Doc<"tasks">) The task.
  * @return: (TaskWording) The card's data.
  */
@@ -395,6 +401,7 @@ function taskWording(task: Doc<"tasks">): TaskWording {
     taskId: task._id,
     label: task.displayLabel,
     time: clockTime(first ?? ANYTIME),
+    times: task.times,
     sentence:
       first === undefined
         ? null
@@ -408,9 +415,9 @@ function taskWording(task: Doc<"tasks">): TaskWording {
 }
 
 /**
- * purpose: The wording cards of a request: one per task its successful add_task and
- *          update_task calls created or changed (agentToolCalls.taskId), in the order of the
- *          calls, each task once, read live. A task that was stopped, deleted or is not of the
+ * purpose: The wording cards of a request: one per task in its changedTaskIds (the tasks its
+ *          successful add_task and update_task calls created or changed, each once, in order of
+ *          first change), read live. A task that was stopped, deleted or is not of the request's
  *          household gets no card.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) The request's household.
@@ -422,19 +429,9 @@ async function requestWording(
   householdId: Id<"households">,
   requestId: Id<"agentRequests">,
 ): Promise<TaskWording[]> {
-  const calls = await ctx.db
-    .query("agentToolCalls")
-    .withIndex("by_request_tool", (q) => q.eq("requestId", requestId))
-    .take(MAX_WORDING_CALLS);
-  const taskIds = [
-    ...new Set(
-      calls
-        .sort((a, b) => a._creationTime - b._creationTime)
-        .flatMap((call) => (call.taskId === undefined ? [] : [call.taskId])),
-    ),
-  ];
+  const request = await ctx.db.get(requestId);
   const cards: TaskWording[] = [];
-  for (const taskId of taskIds) {
+  for (const taskId of request?.changedTaskIds ?? []) {
     const task = await ctx.db.get(taskId);
     if (task && task.householdId === householdId && task.active) cards.push(taskWording(task));
   }

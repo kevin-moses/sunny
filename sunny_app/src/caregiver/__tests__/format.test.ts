@@ -12,7 +12,8 @@
 // fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise. Also
 // digest posts in the transcript (time order, the "Daily summary" label with the day) and
 // posts never counting as in progress. Wording cards: one per task after a finished request's
-// reply or error, none while it runs or once cancelled, and what VoiceOver reads for one.
+// reply or error and for a cancelled request, none while it runs, the "Also at" caption of a
+// task with more than one time, and what VoiceOver reads for one.
 //
 // Last modified: 2026-11-14
 
@@ -47,6 +48,7 @@ import {
   weekRangeLabel,
   DIGEST_LABEL,
   NOT_SPOKEN,
+  otherTimesCaption,
   postLabel,
   wordingSpeech,
   type AgentRequest,
@@ -196,6 +198,7 @@ const PILLS_WORDING: TaskWording = {
   taskId: 't1' as TaskWording['taskId'],
   label: 'Morning pills',
   time: '8:00',
+  times: ['08:00'],
   sentence: "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.",
 };
 
@@ -739,6 +742,7 @@ describe('buildTranscript', () => {
       taskId: 't2',
       label: 'Water',
       time: 'Anytime',
+      times: [],
       sentence: null,
     };
     const done = buildTranscript([makeRequest({ wording: [PILLS_WORDING, watering] })], 'user_a');
@@ -756,14 +760,34 @@ describe('buildTranscript', () => {
     expect(failed.map((e) => e.kind)).toEqual(['caregiver', 'error', 'wording']);
   });
 
-  it('shows no wording card while a request runs or once it was cancelled', () => {
-    for (const status of ['queued', 'running', 'cancelled']) {
+  it('shows no wording card while a request is queued or running', () => {
+    for (const status of ['queued', 'running']) {
       const entries = buildTranscript(
         [makeRequest({ status, reply: null, wording: [PILLS_WORDING] })],
         'user_a',
       );
       expect(entries.some((e) => e.kind === 'wording')).toBe(false);
     }
+  });
+
+  it('shows the cards of a cancelled request, with no reply above them', () => {
+    const entries = buildTranscript(
+      [makeRequest({ status: 'cancelled', reply: null, wording: [PILLS_WORDING] })],
+      'user_a',
+    );
+    expect(entries.map((e) => e.kind)).toEqual(['caregiver', 'wording']);
+  });
+
+  it('captions and reads the other times of a task with more than one', () => {
+    const twice = { ...PILLS_WORDING, times: ['08:00', '20:00'] };
+    expect(otherTimesCaption(twice)).toBe('Also at 8:00 PM');
+    expect(otherTimesCaption({ ...twice, times: ['08:00', '12:30', '20:00'] })).toBe(
+      'Also at 12:30 PM, 8:00 PM',
+    );
+    expect(otherTimesCaption(PILLS_WORDING)).toBeNull();
+    expect(wordingSpeech(twice)).toBe(
+      `On the display: 8:00 Morning pills. Sunny says: ${PILLS_WORDING.sentence} Also at 8:00 PM.`,
+    );
   });
 
   it('reads a wording card in one sentence pair', () => {

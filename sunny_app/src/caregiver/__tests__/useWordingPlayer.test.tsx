@@ -2,9 +2,11 @@
 //
 // Purpose: Tests for useWordingPlayer with react-test-renderer and expo-speech, expo-audio and
 // AppState mocked at the module boundary: a play speaks with the display's language and rate
-// after setting the audio session (and still speaks when that fails); a second tap on the same
-// card stops it; tapping another card stops the first and plays the second, and the first's
-// late "stopped" callback does not clear the second; finishing clears the playing card; an
+// after setting the audio session; a session that cannot be set, or a speech engine that throws
+// at once, ends in the failed state with nothing playing; a stop tapped during the audio setup
+// means nothing is spoken; a second tap on the same card stops it; tapping another card stops
+// the first and plays the second, and the first's late "stopped" callback does not clear the
+// second; finishing clears the playing card; an
 // error marks the card failed; the tab becoming inactive, the app leaving the foreground and
 // unmounting each stop the speech.
 //
@@ -23,8 +25,14 @@ const mockSpoken: { text: string; options: SpeechOptions }[] = [];
 const mockStop = jest.fn();
 const mockSetAudioMode = jest.fn<(mode: unknown) => Promise<void>>();
 
+/** When set, the next speak call throws synchronously. */
+let mockSpeakError: Error | null = null;
+
 jest.mock('expo-speech', () => ({
-  speak: (text: string, options: SpeechOptions) => mockSpoken.push({ text, options }),
+  speak: (text: string, options: SpeechOptions) => {
+    if (mockSpeakError !== null) throw mockSpeakError;
+    mockSpoken.push({ text, options });
+  },
   stop: () => mockStop(),
 }));
 
@@ -86,6 +94,7 @@ async function tap(h: Harness, id: string): Promise<void> {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSpoken.length = 0;
+  mockSpeakError = null;
   mockSetAudioMode.mockResolvedValue(undefined);
   appStateListener = null;
   jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
@@ -109,11 +118,41 @@ describe('useWordingPlayer', () => {
     expect(h.get().playingId).toBe('a');
   });
 
-  it('still speaks when the audio session cannot be set', async () => {
+  it('an audio session that cannot be set ends in the failed state, nothing playing', async () => {
     mockSetAudioMode.mockRejectedValue(new Error('busy'));
     const h = renderPlayer();
     await tap(h, 'a');
-    expect(mockSpoken).toHaveLength(1);
+    expect(mockSpoken).toHaveLength(0);
+    expect(h.get()).toMatchObject({ playingId: null, failedId: 'a' });
+  });
+
+  it('a synchronous throw from the speech engine ends in the failed state', async () => {
+    mockSpeakError = new Error('engine gone');
+    const h = renderPlayer();
+    await tap(h, 'a');
+    expect(h.get()).toMatchObject({ playingId: null, failedId: 'a' });
+    mockSpeakError = null;
+    await tap(h, 'a');
+    expect(h.get()).toMatchObject({ playingId: 'a', failedId: null });
+  });
+
+  it('a stop tapped while the audio session is being set means nothing is spoken', async () => {
+    let release!: () => void;
+    mockSetAudioMode.mockReturnValue(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const h = renderPlayer();
+    act(() => h.get().toggle('a', 'sentence a'));
+    expect(h.get().playingId).toBe('a');
+    act(() => h.get().toggle('a', 'sentence a'));
+    expect(h.get().playingId).toBeNull();
+    await act(async () => {
+      release();
+    });
+    expect(mockSpoken).toHaveLength(0);
+    expect(h.get()).toMatchObject({ playingId: null, failedId: null });
   });
 
   it('a second tap on the playing card stops it', async () => {
@@ -125,7 +164,7 @@ describe('useWordingPlayer', () => {
     expect(mockSpoken).toHaveLength(1);
   });
 
-  it('another card stops the first and plays; the first one’s late callback is ignored', async () => {
+  it("another card stops the first and plays; the first one's late callback is ignored", async () => {
     const h = renderPlayer();
     await tap(h, 'a');
     await tap(h, 'b');

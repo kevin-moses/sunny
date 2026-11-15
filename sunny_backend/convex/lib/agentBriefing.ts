@@ -30,7 +30,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
 import { isAsNeededTask, listTasksCore } from "../tasks";
-import { findMember } from "./access";
+import { findMember, householdCaregivers } from "./access";
 import { isAnytimeTask } from "./anytime";
 import { joinLines } from "./text";
 import { addDays, localDate, localDateTime, weekdayCodes } from "./time";
@@ -175,10 +175,7 @@ async function digestLines(
  * @return: (Promise<string>) The text; "(none)" when there are none.
  */
 async function caregiversText(ctx: QueryCtx, household: Doc<"households">): Promise<string> {
-  const members = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) => q.eq("householdId", household._id))
-    .collect();
+  const members = await householdCaregivers(ctx, household._id);
   const text = members
     .map((m) => {
       const onCall = m.userId === household.onCallUserId ? ", on call" : "";

@@ -16,8 +16,9 @@
 //   day;
 // - the chat transcript built from the household's chat thread (agentRequests.transcript:
 //   agent requests and Sunny's posts such as the daily digest, labelled "Daily summary" and the
-//   day; oldest first), with a wording card after a finished request for each task it created
-//   or changed (the label the display shows, its time, and the sentence Sunny speaks).
+//   day; oldest first), with a wording card after a request that is no longer running
+//   (succeeded, failed or cancelled) for each task it created or changed (the label the display
+//   shows, its time, the sentence Sunny speaks, and its other times as "Also at 8:00 PM").
 // Dates are household-local "YYYY-MM-DD" strings from calendar.dayView; date arithmetic comes
 // from day/localDate (parsed once, then counted as days). No timezone conversion happens here:
 // the server sends each confirmation as a household-local "HH:MM" (confirmedLocalTime) and marks
@@ -627,13 +628,28 @@ export interface TranscriptEntry {
 }
 
 /**
+ * purpose: The caption under a wording card for a task with more than one time: its other times
+ *          in the caregiver app's form, "Also at 8:00 PM" or "Also at 12:00 PM, 8:00 PM".
+ * @param wording: (TaskWording) The card's data; times are household-local "HH:MM", earliest
+ *        first, and the first is the one the card shows.
+ * @return: (string | null) The caption, or null for a task with one time or none.
+ */
+export function otherTimesCaption(wording: TaskWording): string | null {
+  const others = wording.times.slice(1);
+  return others.length === 0 ? null : `Also at ${others.map(displayTime).join(', ')}`;
+}
+
+/**
  * purpose: What VoiceOver reads for a wording card: "On the display: 8:00 Morning pills. Sunny
- *          says: <sentence>".
+ *          says: <sentence>", then "Also at 8:00 PM." when the task has more times.
  * @param wording: (TaskWording) The card's data.
  * @return: (string) The accessibility label.
  */
 export function wordingSpeech(wording: TaskWording): string {
-  return `${ON_DISPLAY}: ${wording.time} ${wording.label}. ${SUNNY_SAYS}: ${wording.sentence ?? NOT_SPOKEN}`;
+  const display = `${ON_DISPLAY}: ${wording.time} ${wording.label}.`;
+  const says = `${SUNNY_SAYS}: ${wording.sentence ?? NOT_SPOKEN}`;
+  const others = otherTimesCaption(wording);
+  return others === null ? `${display} ${says}` : `${display} ${says} ${others}.`;
 }
 
 /**
@@ -671,8 +687,9 @@ export function messageSpeaker(
 /**
  * purpose: The chat lines of one request: the caregiver's message, then Sunny's reply, a
  *          "working" line while it is queued or running, or the error when it failed. A
- *          cancelled request shows only the message. A finished request (succeeded or failed)
- *          is followed by a wording card for each task it created or changed that still runs.
+ *          cancelled request shows no outcome line. Once a request is no longer queued or
+ *          running (succeeded, failed or cancelled), a wording card follows for each task it
+ *          created or changed that still runs, so a task changed before a cancel is shown too.
  * @param request: (AgentRequest) The request.
  * @param userId: (string | null) The signed-in caregiver's Clerk user id.
  * @return: (TranscriptEntry[]) The message, its outcome and its wording cards.
@@ -700,7 +717,7 @@ function requestEntries(request: AgentRequest, userId: string | null): Transcrip
   } else if (request.status === 'succeeded' && request.reply?.trim()) {
     entries.push({ ...line, id: `${request.id}-reply`, kind: 'sunny', text: request.reply });
   }
-  if (request.status === 'succeeded' || request.status === 'failed') {
+  if (request.status !== 'queued' && request.status !== 'running') {
     for (const wording of request.wording) {
       entries.push({
         ...line,

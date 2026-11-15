@@ -10,14 +10,19 @@
 // correction by chat keeps the senior source while verifying it. Settings: get_settings shape;
 // update_settings for the digest time (a bad time is refused with households.update's error),
 // on-call by name (whole name, first name, case; unknown and ambiguous names refused listing the
-// choices, nothing changed), sharing, the weather place (set and cleared) and its audit row;
-// set_digest_delivery names the caregiver and the new setting. Scoping: every tool acts on the
+// choices, nothing changed),
+// sharing, the weather place (set and cleared, the clearing audited as null) and its audit row,
+// and no audit row for a change that changes nothing; updateHouseholdCore returns the row read
+// back (a timezone change clears lastDigestDate); set_digest_delivery changes only the
+// requester's own delivery, takes no name, and writes nothing when already so. Scoping: every tool acts on the
 // request's household only (another household's knowledge_id is not found, another
 // household's caregiver name is unknown, a model-supplied household id is an unknown field), and
 // through the runtime a viewer's request runs no tool. Wording cards: a request's add_task and
-// update_task calls give one card per task with the live label, the display's time and the
-// sentence the display speaks; a written prompt is used as is; an anytime task has no sentence;
-// a stopped task and a failed call have no card; viewers get no requests and so no cards.
+// update_task calls are recorded on the request row (changedTaskIds: each task once, in order
+// of first change, at most MAX_CHANGED_TASKS) and give one card per task with the live label,
+// the display's time, every time and the sentence the display speaks; a written prompt is used
+// as is; an anytime task has no sentence; a stopped task, a failed call and a task of another
+// household (put on the row directly) have no card; viewers get no requests and so no cards.
 //
 // Last modified: 2026-11-14
 
@@ -25,7 +30,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { AGENT_TOOLS, executeAgentTool } from "./lib/agentTools";
+import { MAX_CHANGED_TASKS } from "./agentRuntime";
 import { resolveCaregiver } from "./lib/agentSetupTools";
+import { updateHouseholdCore } from "./lib/householdSettings";
 import { rememberFactCore } from "./lib/seniorMemory";
 import {
   addMember,
@@ -235,6 +242,13 @@ describe("add_knowledge", () => {
       status: "already_stored_differently",
       stored: { name: "Sarah", details: "Daughter" },
     });
+    const nullDetails = await ok(t, home, "add_knowledge", {
+      kind: "profile",
+      category: "person",
+      name: "Sarah",
+      details: null,
+    });
+    expect(nullDetails.status).toBe("already_stored");
     expect(await rows(t, "lifeProfileEntries")).toHaveLength(1);
   });
 
@@ -551,13 +565,33 @@ describe("settings", () => {
     expect((await tool(t, home, "update_settings", { on_call: "Sam" })).text).toBe(
       'Error: More than one caregiver could be "Sam": Sam Rivera, Sam Okafor. Ask which one they mean.',
     );
-    expect(
-      (await tool(t, home, "set_digest_delivery", { caregiver: "Sam", receives: false })).isError,
-    ).toBe(true);
     expect((await household(t, home)).onCallUserId).toBe("pat");
-    expect((await rows(t, "householdMembers")).every((m) => m.digestOptOut === undefined)).toBe(
-      true,
+  });
+
+  test("a change that changes nothing writes no audit row; a cleared place is audited as null", async () => {
+    const { t, home } = await makeWorld();
+    await ok(t, home, "update_settings", { digest_time: "19:00", share_transcripts: false });
+    expect((await rows(t, "auditLog")).some((r) => r.action === "update_settings")).toBe(false);
+    await ok(t, home, "update_settings", { weather_location: "Queens" });
+    await ok(t, home, "update_settings", { weather_location: "" });
+    const audits = (await rows(t, "auditLog")).filter((r) => r.action === "update_settings");
+    expect(audits.map((r) => r.detail)).toEqual([
+      { weatherLocation: "Queens" },
+      { weatherLocation: null },
+    ]);
+  });
+
+  test("updateHouseholdCore returns the row as stored after a timezone change", async () => {
+    const { t, home } = await makeWorld();
+    await t.run(async (ctx) => await ctx.db.patch(home, { lastDigestDate: "2027-02-28" }));
+    const after = await t.run(
+      async (ctx) =>
+        await updateHouseholdCore(ctx, { kind: "agent", onBehalfOf: "pat" }, home, {
+          timezone: "America/Chicago",
+        }),
     );
+    expect(after.timezone).toBe("America/Chicago");
+    expect(after.lastDigestDate).toBeUndefined();
   });
 
   test("update_settings refuses unknown fields, wrong types and an empty change", async () => {
@@ -571,28 +605,36 @@ describe("settings", () => {
     expect((await tool(t, home, "update_settings", {})).text).toBe("Error: Nothing to change");
   });
 
-  test("set_digest_delivery turns the digest off and on for a named caregiver", async () => {
+  test("set_digest_delivery turns the requester's own digest off and on, no one else's", async () => {
     const { t, home } = await makeWorld();
-    expect(await ok(t, home, "set_digest_delivery", { caregiver: "Val", receives: false })).toEqual(
-      {
-        name: "Val",
-        role: "viewer",
-        on_call: false,
-        receives_digest: false,
-        reachable: false,
-      },
-    );
-    const val = (await rows(t, "householdMembers")).find((m) => m.userId === "val")!;
-    expect(val.digestOptOut).toBe(true);
+    const off = await tool(t, home, "set_digest_delivery", { receives: false }, "max");
+    expect(JSON.parse(off.text)).toEqual({
+      name: "Max",
+      role: "member",
+      on_call: false,
+      receives_digest: false,
+      reachable: false,
+    });
+    const optedOut = (await rows(t, "householdMembers")).filter((m) => m.digestOptOut === true);
+    expect(optedOut.map((m) => m.userId)).toEqual(["max"]);
     const audit = (await rows(t, "auditLog")).find((r) => r.action === "digest_delivery")!;
-    expect(audit).toMatchObject({ actorUserId: "pat", detail: { userId: "val", receives: false } });
+    expect(audit).toMatchObject({ actorUserId: "max", detail: { userId: "max", receives: false } });
     expect(
-      (await ok(t, home, "set_digest_delivery", { caregiver: "val", receives: true }))
-        .receives_digest,
-    ).toBe(true);
-    expect(
-      (await rows(t, "householdMembers")).find((m) => m.userId === "val")!.digestOptOut,
-    ).toBeUndefined();
+      (await tool(t, home, "set_digest_delivery", { caregiver: "Val", receives: false })).text,
+    ).toBe("Error: Unknown field caregiver");
+    const on = await tool(t, home, "set_digest_delivery", { receives: true }, "max");
+    expect(JSON.parse(on.text).receives_digest).toBe(true);
+    expect((await rows(t, "householdMembers")).every((m) => m.digestOptOut === undefined)).toBe(
+      true,
+    );
+  });
+
+  test("set_digest_delivery writes and audits nothing when the setting is already so", async () => {
+    const { t, home } = await makeWorld();
+    expect((await ok(t, home, "set_digest_delivery", { receives: true })).receives_digest).toBe(
+      true,
+    );
+    expect((await rows(t, "auditLog")).some((r) => r.action === "digest_delivery")).toBe(false);
   });
 
   test("resolveCaregiver prefers the whole name over a first-name match", () => {
@@ -677,18 +719,20 @@ describe("household scoping", () => {
 
 describe("wording cards", () => {
   /**
-   * purpose: Run tool calls for a new running request of pat's, through the runtime step.
+   * purpose: Run tool calls for a new running request, through the runtime step.
    * @param t: (TestConvex) Harness.
    * @param home: (Id<"households">) Household.
    * @param calls: (Array<[string, object]>) Tool names and inputs.
+   * @param requestedBy: (string) The requesting caregiver (default pat).
    * @return: (Promise<Id<"agentRequests">>) The request (left succeeded, with a reply).
    */
   async function runRequest(
     t: TestConvex,
     home: Id<"households">,
     calls: Array<[string, object]>,
+    requestedBy = "pat",
   ): Promise<Id<"agentRequests">> {
-    const requestId = await insertRequest(t, home, { requestedBy: "pat", status: "running" });
+    const requestId = await insertRequest(t, home, { requestedBy, status: "running" });
     await t.mutation(internal.agentRuntime.executeToolCalls, {
       requestId,
       calls: calls.map(([name, input], i) => ({
@@ -740,9 +784,51 @@ describe("wording cards", () => {
         taskId: task!._id,
         label: "Morning pills",
         time: "8:00",
+        times: ["08:00", "20:00"],
         sentence: "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.",
       },
     ]);
+    const request = await t.run(async (ctx) => await ctx.db.get(requestId));
+    expect(request?.changedTaskIds).toEqual([task!._id]);
+  });
+
+  test("two tasks changed in one request give two cards, in order of first change", async () => {
+    const { t, home } = await makeWorld();
+    const WALK = { type: "routine", title: "Walk", display_label: "Walk", times: ["15:00"] };
+    await runRequest(t, home, [["add_task", PILLS]]);
+    await runRequest(t, home, [["add_task", WALK]]);
+    const [pills, walk] = await rows(t, "tasks");
+    const requestId = await runRequest(t, home, [
+      ["update_task", { task_id: walk!._id, changes: { display_label: "Afternoon walk" } }],
+      ["update_task", { task_id: pills!._id, changes: { display_label: "Pills" } }],
+      ["update_task", { task_id: walk!._id, changes: { title: "Walk outside" } }],
+    ]);
+    const cards = (await wordingOf(t, home, requestId)) as { taskId: string; label: string }[];
+    expect(cards.map((c) => [c.taskId, c.label])).toEqual([
+      [walk!._id, "Afternoon walk"],
+      [pills!._id, "Pills"],
+    ]);
+  });
+
+  test("a request records at most MAX_CHANGED_TASKS tasks", async () => {
+    const { t, home } = await makeWorld();
+    const calls = Array.from({ length: MAX_CHANGED_TASKS + 1 }, (_, i): [string, object] => [
+      "add_task",
+      { type: "routine", title: `Task ${i}`, display_label: `Task ${i}`, times: ["09:00"] },
+    ]);
+    const requestId = await runRequest(t, home, calls);
+    expect(await rows(t, "tasks")).toHaveLength(MAX_CHANGED_TASKS + 1);
+    expect(await wordingOf(t, home, requestId)).toHaveLength(MAX_CHANGED_TASKS);
+  });
+
+  test("a task of another household on the request row gets no card", async () => {
+    const { t, home, other } = await makeWorld();
+    const foreign = await runRequest(t, other, [["add_task", PILLS]], "ben");
+    const [task] = await rows(t, "tasks");
+    expect(await wordingOf(t, other, foreign, "ben")).toHaveLength(1);
+    const requestId = await insertRequest(t, home, { requestedBy: "pat", status: "succeeded" });
+    await t.run(async (ctx) => await ctx.db.patch(requestId, { changedTaskIds: [task!._id] }));
+    expect(await wordingOf(t, home, requestId)).toEqual([]);
   });
 
   test("the card is live: a later change shows, a written prompt is used as is", async () => {
@@ -763,6 +849,7 @@ describe("wording cards", () => {
       taskId: task!._id,
       label: "Pills",
       time: "8:00",
+      times: ["08:00", "20:00"],
       sentence: "Pills now, please.",
     };
     expect(await wordingOf(t, home, first)).toEqual([card]);
@@ -775,7 +862,12 @@ describe("wording cards", () => {
       ["add_task", { type: "routine", title: "Water plants", display_label: "Water the plants" }],
     ]);
     expect(await wordingOf(t, home, requestId)).toEqual([
-      expect.objectContaining({ label: "Water the plants", time: "Anytime", sentence: null }),
+      expect.objectContaining({
+        label: "Water the plants",
+        time: "Anytime",
+        times: [],
+        sentence: null,
+      }),
     ]);
   });
 

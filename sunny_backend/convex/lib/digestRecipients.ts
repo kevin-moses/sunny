@@ -4,17 +4,20 @@
 // digestOptOut set (receivesDigest); digest.complete still posts the digest in the chat thread
 // for everyone, opted out or not, and only skips their push and text.
 //
-// Who may change it (the product owner's rule as of 2026-11-14, kept here so a change of rule
-// is one edit): any editor of the household may turn the digest on or off for any caregiver of
-// that household, themselves or someone else, viewers included. Today the only caller is the
-// household agent's set_digest_delivery tool (lib/agentSetupTools.ts), whose runtime has already
-// checked that the requesting caregiver is an editor (agentRuntime.executeToolCalls); the change
-// is audited (digest_delivery) under that caregiver.
+// Who may change it: a provisional rule (2026-11-14), not yet confirmed by the product owner,
+// kept in this one place so changing it is one edit: a caregiver changes only their own digest
+// delivery. The only caller is the household agent's set_digest_delivery tool
+// (lib/agentSetupTools.ts), which takes no name: setDigestDelivery changes the acting
+// caregiver's own row (actorUserId); the runtime has already checked that
+// the requester is an editor (agentRuntime.executeToolCalls). The change is audited
+// (digest_delivery) under that caregiver. A viewer cannot chat, so a viewer cannot opt out
+// until the settings screen exists.
 //
 // Last modified: 2026-11-14
 
-import type { Doc } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { actorUserId, requireCaregiverMember } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
 
@@ -28,21 +31,23 @@ export function receivesDigest(member: Pick<Doc<"householdMembers">, "digestOptO
 }
 
 /**
- * purpose: Turn the daily digest's push and text on or off for one caregiver (see the header for
- *          who may). Setting it to what it already is writes nothing.
+ * purpose: Turn the daily digest's push and text on or off for the acting caregiver (the
+ *          header's rule: only their own; for the household agent, the caregiver it acts for).
+ *          Setting it to what it already is writes nothing.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param member: (Doc<"householdMembers">) The caregiver, a member of the household the caller
- *        acts in (the caller resolved them within it).
+ * @param householdId: (Id<"households">) The household the actor acts in.
  * @param receives: (boolean) True to receive it, false to stop it.
  * @return: (Promise<Doc<"householdMembers">>) The caregiver after the change.
+ * @raises forbidden when the actor is not a caregiver of the household.
  */
 export async function setDigestDelivery(
   ctx: MutationCtx,
   actor: Actor,
-  member: Doc<"householdMembers">,
+  householdId: Id<"households">,
   receives: boolean,
 ): Promise<Doc<"householdMembers">> {
+  const member = await requireCaregiverMember(ctx, householdId, actorUserId(actor) ?? "");
   if (receivesDigest(member) === receives) return member;
   const digestOptOut = receives ? undefined : true;
   await ctx.db.patch(member._id, { digestOptOut });

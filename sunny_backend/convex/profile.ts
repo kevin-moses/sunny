@@ -11,7 +11,9 @@
 // themselves call (addEntryCore, updateEntryCore, removeEntryCore, listTopicsCore, addTopicCore,
 // updateTopicCore, removeTopicCore, listMemoryCore, addFactCore, verifyFactCore,
 // correctFactCore, removeFactCore). So validation, limits, duplicates, the audit log and the
-// memory rule are identical whichever way a caregiver changes them. A core takes the actor and
+// memory rule are identical whichever way a caregiver changes them. Every write core returns the
+// row as stored (an add core with its AddResult, as AddOutcome; a remove core the row as it was),
+// so the chat can show exactly what was stored. A core takes the actor and
 // the household and assumes the caller has already checked that the actor may edit it: the
 // mutations use requireEditor, the agent runtime re-checks that the requesting caregiver is
 // still an editor before any tool runs (agentRuntime.executeToolCalls). The household agent's
@@ -196,6 +198,23 @@ export interface AddResult<T extends ProfileTable> {
   same: boolean;
   /** True when the add verified an existing unverified fact (addFact only). */
   confirmed: boolean;
+}
+
+/** What an add core returns: the AddResult plus the row as it is now stored. */
+export interface AddOutcome<T extends ProfileTable> extends AddResult<T> {
+  /** The new row, or the existing one with the same key, as stored after the call. */
+  row: Doc<T>;
+}
+
+/**
+ * purpose: The public mutations' result of an add: the outcome without its row (the app reads
+ *          the lists for rows).
+ * @param outcome: (AddOutcome<T>) What the add core returned.
+ * @return: (AddResult<T>) id, created, same and confirmed.
+ */
+function addResult<T extends ProfileTable>(outcome: AddOutcome<T>): AddResult<T> {
+  const { id, created, same, confirmed } = outcome;
+  return { id, created, same, confirmed };
 }
 
 /** The fields of a new life profile entry. */
@@ -420,8 +439,8 @@ export const listEntries = query({
  * @param householdId: (Id<"households">) Household.
  * @param args: (EntryFields) Category, name (at most 120 characters) and optional details
  *        (at most 600).
- * @return: (Promise<AddResult<"lifeProfileEntries">>) The entry, created, same and confirmed
- *          (false).
+ * @return: (Promise<AddOutcome<"lifeProfileEntries">>) The entry's id, created, same,
+ *          confirmed (false) and the entry as stored.
  * @raises invalid for blank or too long text; limit when the household has 150 entries.
  */
 export async function addEntryCore(
@@ -429,7 +448,7 @@ export async function addEntryCore(
   actor: Actor,
   householdId: Id<"households">,
   args: EntryFields,
-): Promise<AddResult<"lifeProfileEntries">> {
+): Promise<AddOutcome<"lifeProfileEntries">> {
   const name = singleLine(args.name, MAX_NAME, "Name");
   const details = optionalLine(args.details, MAX_DETAILS, "Details");
   const rows = await householdRows(ctx, "lifeProfileEntries", householdId);
@@ -438,7 +457,7 @@ export async function addEntryCore(
   if (existing) {
     const same =
       existing.name === name && (args.details === undefined || existing.details === details);
-    return { id: existing._id, created: false, same, confirmed: false };
+    return { id: existing._id, created: false, same, confirmed: false, row: existing };
   }
   if (rows.length >= MAX_ENTRIES) {
     throw appError("limit", `The life profile holds at most ${MAX_ENTRIES} entries`);
@@ -450,7 +469,8 @@ export async function addEntryCore(
     createdBy: actorUserId(actor),
   });
   await record(ctx, actor, householdId, "insert", "lifeProfileEntry", id, entryDetail(entry));
-  return { id, created: true, same: true, confirmed: false };
+  const row = await loadOwned(ctx, householdId, id, "Entry");
+  return { id, created: true, same: true, confirmed: false, row };
 }
 
 /**
@@ -472,7 +492,7 @@ export const addEntry = mutation({
   handler: async (ctx, args): Promise<AddResult<"lifeProfileEntries">> => {
     const { householdId, ...fields } = args;
     const actor = await requireEditor(ctx, householdId);
-    return await addEntryCore(ctx, actor, householdId, fields);
+    return addResult(await addEntryCore(ctx, actor, householdId, fields));
   },
 });
 
@@ -648,7 +668,8 @@ export const listTopics = query({
  * @param householdId: (Id<"households">) Household.
  * @param args: ({ topic, guidance }) The wording (at most 200 characters; the agent reads it as
  *        "If asked about <topic>: <guidance>") and how to answer (at most 1500).
- * @return: (Promise<AddResult<"sensitiveTopics">>) The topic, created, same and confirmed (false).
+ * @return: (Promise<AddOutcome<"sensitiveTopics">>) The topic's id, created, same, confirmed
+ *          (false) and the topic as stored.
  * @raises invalid for blank or too long text; limit when the household has 30 topics.
  */
 export async function addTopicCore(
@@ -656,7 +677,7 @@ export async function addTopicCore(
   actor: Actor,
   householdId: Id<"households">,
   args: { topic: string; guidance: string },
-): Promise<AddResult<"sensitiveTopics">> {
+): Promise<AddOutcome<"sensitiveTopics">> {
   const topic = singleLine(args.topic, MAX_TOPIC, "Topic");
   const guidance = singleLine(args.guidance, MAX_GUIDANCE, "Guidance");
   const rows = await listTopicsCore(ctx, householdId);
@@ -664,7 +685,7 @@ export async function addTopicCore(
   const existing = rows.find((r) => topicKey(r) === wanted);
   if (existing) {
     const same = existing.topic === topic && existing.guidance === guidance;
-    return { id: existing._id, created: false, same, confirmed: false };
+    return { id: existing._id, created: false, same, confirmed: false, row: existing };
   }
   if (rows.length >= MAX_TOPICS) {
     throw appError("limit", `The playbook holds at most ${MAX_TOPICS} topics`);
@@ -676,7 +697,8 @@ export async function addTopicCore(
     createdBy: actorUserId(actor),
   });
   await record(ctx, actor, householdId, "insert", "sensitiveTopic", id, { topic });
-  return { id, created: true, same: true, confirmed: false };
+  const row = await loadOwned(ctx, householdId, id, "Topic");
+  return { id, created: true, same: true, confirmed: false, row };
 }
 
 /**
@@ -693,7 +715,7 @@ export const addTopic = mutation({
   handler: async (ctx, args): Promise<AddResult<"sensitiveTopics">> => {
     const { householdId, ...fields } = args;
     const actor = await requireEditor(ctx, householdId);
-    return await addTopicCore(ctx, actor, householdId, fields);
+    return addResult(await addTopicCore(ctx, actor, householdId, fields));
   },
 });
 
@@ -912,7 +934,8 @@ export const listMemory = query({
  * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
  * @param householdId: (Id<"households">) Household.
  * @param text: (string) For example "Her cat is called Biscuit"; at most 300 characters.
- * @return: (Promise<AddResult<"agentMemory">>) The fact, created, same and confirmed.
+ * @return: (Promise<AddOutcome<"agentMemory">>) The fact's id, created, same, confirmed and
+ *          the fact as stored.
  * @raises invalid for blank or too long text; limit at 40 verified facts.
  */
 export async function addFactCore(
@@ -920,17 +943,17 @@ export async function addFactCore(
   actor: Actor,
   householdId: Id<"households">,
   text: string,
-): Promise<AddResult<"agentMemory">> {
+): Promise<AddOutcome<"agentMemory">> {
   const fact = singleLine(text, MAX_FACT, "Fact");
   const { verified, candidates } = await factCandidates(ctx, householdId);
   const existing = findFactDuplicate(candidates, fact, null);
   if (existing && existing.verifiedAt !== undefined) {
-    return { id: existing._id, created: false, same: true, confirmed: false };
+    return { id: existing._id, created: false, same: true, confirmed: false, row: existing };
   }
   requireVerifiedRoom(verified);
   if (existing) {
-    await markVerified(ctx, actor, existing);
-    return { id: existing._id, created: false, same: true, confirmed: true };
+    const row = await markVerified(ctx, actor, existing);
+    return { id: existing._id, created: false, same: true, confirmed: true, row };
   }
   const id = await ctx.db.insert("agentMemory", {
     householdId,
@@ -943,7 +966,8 @@ export async function addFactCore(
     fact,
     source: "caregiver",
   });
-  return { id, created: true, same: true, confirmed: false };
+  const row = await loadOwned(ctx, householdId, id, "Fact");
+  return { id, created: true, same: true, confirmed: false, row };
 }
 
 /**
@@ -957,7 +981,7 @@ export const addFact = mutation({
   args: { householdId: v.id("households"), fact: v.string() },
   handler: async (ctx, args): Promise<AddResult<"agentMemory">> => {
     const actor = await requireEditor(ctx, args.householdId);
-    return await addFactCore(ctx, actor, args.householdId, args.fact);
+    return addResult(await addFactCore(ctx, actor, args.householdId, args.fact));
   },
 });
 

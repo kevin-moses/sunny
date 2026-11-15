@@ -7,14 +7,16 @@
 // an ordinary agentRequests.request with continueLatest; a viewer sees the posts read-only (the
 // note instead of the input). Wording cards: one per task under the reply (label line, then
 // sentence line, read by VoiceOver as one), no button for a task without a time, play speaks
-// with the display's voice and a second tap stops, hiding the tab stops, viewers see none.
+// with the display's voice and a second tap stops, hiding the tab stops, viewers see none; a
+// task with more than one time shows "Also at 8:00 PM"; a failed play shows its failure, puts it
+// in the card's accessible label and announces it once.
 //
 // Last modified: 2026-11-14
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import React from 'react';
-import { Text, TextInput } from 'react-native';
+import { AccessibilityInfo, Text, TextInput } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { SpeechOptions } from 'expo-speech';
 
@@ -23,7 +25,7 @@ import { useQueryWithStatus } from '../../backend/convex';
 import type { HouseholdId } from '../../backend/convexApi';
 import { AgentMessage } from '../../components/ChatMessages';
 import { CaregiverChatScreen } from '../CaregiverChatScreen';
-import { PLAY_LABEL, STOP_LABEL, WordingCard } from '../WordingCard';
+import { PLAY_FAILED_TEXT, PLAY_LABEL, STOP_LABEL, WordingCard } from '../WordingCard';
 
 jest.mock('../../backend/convex', () => ({ convex: {}, useQueryWithStatus: jest.fn() }));
 
@@ -164,8 +166,14 @@ const WORDING_THREAD = [
     ...THREAD[2],
     id: 'r9',
     wording: [
-      { taskId: 't1', label: 'Morning pills', time: '8:00', sentence: SENTENCE },
-      { taskId: 't2', label: 'Water the plants', time: 'Anytime', sentence: null },
+      {
+        taskId: 't1',
+        label: 'Morning pills',
+        time: '8:00',
+        times: ['08:00', '20:00'],
+        sentence: SENTENCE,
+      },
+      { taskId: 't2', label: 'Water the plants', time: 'Anytime', times: [], sentence: null },
     ],
   },
 ];
@@ -262,7 +270,9 @@ describe('wording cards', () => {
     const labels = renderer.root
       .findAll((node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessible)
       .map((node) => node.props.accessibilityLabel as string);
-    expect(labels).toContain(`On the display: 8:00 Morning pills. Sunny says: ${SENTENCE}`);
+    expect(labels).toContain(
+      `On the display: 8:00 Morning pills. Sunny says: ${SENTENCE} Also at 8:00 PM.`,
+    );
   });
 
   it('a task without a time says it is not spoken and has no button', async () => {
@@ -295,6 +305,35 @@ describe('wording cards', () => {
       renderer.update(<Chat canSend active={false} />);
     });
     expect(mockSpeechStop).toHaveBeenCalledTimes(1);
+    expect(cardButtons(renderer)[0]!.props.accessibilityLabel).toBe(PLAY_LABEL);
+  });
+
+  it('a task with more than one time shows its other times under the card', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    const shown = texts(renderer);
+    expect(shown).toContain('Also at 8:00 PM');
+    expect(shown.indexOf('Also at 8:00 PM')).toBeGreaterThan(shown.indexOf(SENTENCE));
+  });
+
+  it('a failed play shows the failure, adds it to the card label and announces it once', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    const renderer = await renderChat(true, WORDING_THREAD);
+    await act(async () => {
+      cardButtons(renderer)[0]!.props.onPress();
+    });
+    await act(async () => {
+      mockSpoken[0]!.options.onError?.(new Error('no voice'));
+    });
+    expect(texts(renderer)).toContain(PLAY_FAILED_TEXT);
+    const card = renderer.root.findAll(
+      (node) =>
+        node.props.accessible === true &&
+        typeof node.props.accessibilityLabel === 'string' &&
+        (node.props.accessibilityLabel as string).startsWith('On the display: 8:00'),
+    )[0];
+    expect(card?.props.accessibilityLabel).toContain(PLAY_FAILED_TEXT);
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(PLAY_FAILED_TEXT);
     expect(cardButtons(renderer)[0]!.props.accessibilityLabel).toBe(PLAY_LABEL);
   });
 

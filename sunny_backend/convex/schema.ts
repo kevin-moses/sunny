@@ -32,8 +32,8 @@
 // daily digest), merged with agentRequests into the transcript; notificationOutbox.pushState,
 // which lets a caregiver's push whose retries ran out be texted.
 // Caregiver setup by chat (2026-11-14): householdMembers.digestOptOut (a caregiver who does
-// not want the digest pushed or texted) and agentToolCalls.taskId (the task an add_task or
-// update_task call changed, for the wording card in the chat).
+// not want the digest pushed or texted) and agentRequests.changedTaskIds (the tasks a request's
+// add_task and update_task calls changed, for the wording cards in the chat).
 //
 // Last modified: 2026-11-14
 
@@ -607,6 +607,11 @@ export default defineSchema({
     // Raw failure detail (SDK errors, env var names, ids). Never returned by agentRequests.
     errorDetail: v.optional(v.string()),
     finishedAt: v.optional(v.number()),
+    // Tasks this request's successful add_task and update_task calls created or changed, each
+    // once, in order of first change, at most MAX_CHANGED_TASKS (agentRuntime.ts). Written in
+    // the same transaction as the tool's effect; agentRequests.transcript reads the tasks live
+    // for the chat's wording cards.
+    changedTaskIds: v.optional(v.array(v.id("tasks"))),
   })
     // Newest first (creation time is the implicit last index field).
     .index("by_household", ["householdId"])
@@ -622,9 +627,6 @@ export default defineSchema({
     text: v.string(),
     isError: v.boolean(),
     sentAt: v.optional(v.number()),
-    // The task a successful add_task or update_task created or changed, for the wording card in
-    // the caregiver chat (agentRequests.transcript reads the task live).
-    taskId: v.optional(v.id("tasks")),
   })
     .index("by_request_tool", ["requestId", "toolUseId"])
     // Calls whose result was sent: sentAt is absent until then, so gt(0) selects the sent ones.

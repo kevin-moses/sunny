@@ -4,22 +4,33 @@
 // added or changed a task, a quiet warm translucent card showing what the senior will see and
 // hear for that task, read live from the task. Two labelled lines: "On the display" (the task's
 // first time and its label on one baseline, as the display's row draws them) and "Sunny says"
-// (the exact sentence the display speaks), with a small play button that speaks the sentence on
-// this phone (useWordingPlayer) and turns into a stop button while it plays. A task with no
-// time is never spoken, so its card says so and has no button. The card has no edit control:
-// the caregiver changes the wording by telling Sunny. VoiceOver reads the card as "On the
-// display: <time> <label>. Sunny says: <sentence>"; the button is "Play what Sunny says" or
-// "Stop". When the sentence could not be played, the card says so.
+// (the exact sentence the display speaks at that time), with a small play button that speaks
+// the sentence on this phone (useWordingPlayer) and turns into a stop button while it plays.
+// A task with more than one time gets a caption under them, "Also at 8:00 PM", in the caregiver
+// app's time form. A task with no time is never spoken, so its card says so and has no button.
+// The card has no edit control: the caregiver changes the wording by telling Sunny. VoiceOver
+// reads the card as "On the display: <time> <label>. Sunny says: <sentence>", then the other
+// times; the button is "Play what Sunny says" or "Stop". When the sentence could not be played,
+// the card says so, the failure is part of what VoiceOver reads for the card, and it is
+// announced once when it happens.
 //
 // Last modified: 2026-11-14
 
 import { SymbolView } from 'expo-symbols';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect } from 'react';
+import { AccessibilityInfo, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 import { type } from '../theme/typography';
-import { NOT_SPOKEN, ON_DISPLAY, SUNNY_SAYS, wordingSpeech, type TaskWording } from './format';
+import {
+  NOT_SPOKEN,
+  ON_DISPLAY,
+  otherTimesCaption,
+  SUNNY_SAYS,
+  wordingSpeech,
+  type TaskWording,
+} from './format';
 
 /** Accessibility label of the button while nothing plays. */
 export const PLAY_LABEL = 'Play what Sunny says';
@@ -51,17 +62,24 @@ interface WordingCardProps {
 }
 
 /**
- * purpose: Render one wording card (see the file header).
+ * purpose: Render one wording card (see the file header); announces a failed play once.
  * @param props: (WordingCardProps) The task's wording, whether it plays or failed, and the
  *        button's action.
  * @return: (JSX.Element) The card.
  */
 export function WordingCard({ wording, playing, failed, onToggle }: WordingCardProps) {
   const { accentColor } = useTheme();
+  const others = otherTimesCaption(wording);
+  const label = failed ? `${wordingSpeech(wording)} ${PLAY_FAILED_TEXT}` : wordingSpeech(wording);
+
+  useEffect(() => {
+    if (failed) AccessibilityInfo.announceForAccessibility(PLAY_FAILED_TEXT);
+  }, [failed]);
+
   return (
     <View style={styles.row}>
       <View style={styles.card}>
-        <View style={styles.text} accessible accessibilityLabel={wordingSpeech(wording)}>
+        <View style={styles.text} accessible accessibilityLabel={label}>
           <Text style={[type.caption, styles.heading]}>{ON_DISPLAY}</Text>
           <View style={styles.displayLine}>
             <Text style={[type.bodyStrong, styles.ink]}>{wording.time}</Text>
@@ -71,11 +89,10 @@ export function WordingCard({ wording, playing, failed, onToggle }: WordingCardP
           <Text style={[type.callout, wording.sentence === null ? styles.muted : styles.ink]}>
             {wording.sentence ?? NOT_SPOKEN}
           </Text>
-          {failed && (
-            <Text accessibilityRole="alert" style={[type.caption, styles.failed]}>
-              {PLAY_FAILED_TEXT}
-            </Text>
+          {others !== null && (
+            <Text style={[type.caption, styles.heading, styles.secondHeading]}>{others}</Text>
           )}
+          {failed && <Text style={[type.caption, styles.failed]}>{PLAY_FAILED_TEXT}</Text>}
         </View>
         {wording.sentence !== null && (
           <Pressable

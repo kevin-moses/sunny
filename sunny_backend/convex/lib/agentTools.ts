@@ -5,9 +5,9 @@
 // execution inside a Convex mutation. The knowledge and settings tools (get_knowledge,
 // add_knowledge, update_knowledge, remove_knowledge, get_settings, update_settings,
 // set_digest_delivery) are defined in lib/agentSetupTools.ts and joined into the list and the
-// dispatch table here. The shared input readers and ToolContext are in lib/toolInput.ts. Calendar tools
-// (get_calendar, add_event, update_event, cancel_event) are thin wrappers over the calendar
-// cores (addEventCore, updateEventCore, cancelEventCore, listOccurrencesCore); task tools
+// dispatch table here. The shared input readers and ToolContext are in lib/toolInput.ts.
+// Calendar tools (get_calendar, add_event, update_event, cancel_event) are thin wrappers over the
+// calendar cores (addEventCore, updateEventCore, cancelEventCore, listOccurrencesCore); task tools
 // (get_tasks, add_task, update_task, stop_task) wrap the task cores in tasks.ts
 // (listTasksCore, createTaskCore, updateTaskCore). These are the cores the caregiver app also
 // uses, so every write goes through the same validation, audit and resync rules.
@@ -51,7 +51,7 @@
 //   type. add_task, update_task and stop_task return the task in that shape.
 //
 // Wording card: a successful add_task or update_task also reports its task id
-// (ToolOutcome.taskId), which the runtime stores on the call's agentToolCalls row so the
+// (ToolOutcome.taskId), which the runtime appends to the request's changedTaskIds so the
 // caregiver's chat can show the task's current label and spoken sentence under Sunny's reply
 // (agentRequests.transcript).
 //
@@ -837,7 +837,7 @@ export interface ToolOutcome {
  * @param toolCtx: (ToolContext) Household, agent actor and clock, from the request row.
  * @param call: (ToolCall) Tool name and the model's input.
  * @return: (Promise<ToolOutcome>) Result text for the model, and for a successful add_task or
- *          update_task the task's id (stored with the call for the chat's wording card). Bad
+ *          update_task the task's id (recorded on the request for the chat's wording card). Bad
  *          input, application errors and unknown tools give isError true ("Error: <message>"
  *          for errors); other errors are rethrown.
  */

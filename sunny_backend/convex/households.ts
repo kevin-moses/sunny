@@ -30,9 +30,10 @@
 // removed by removeMember can then join or create another household.
 //
 // update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
-// clears it). Its rules live in lib/householdSettings.ts updateHouseholdCore, which the household
-// agent's settings tools (lib/agentSetupTools.ts) call too, so a setting changed in chat passes the same checks; a
-// change that alters something is audited (update_settings) under the caregiver who made it.
+// clears it). Its rules live in lib/householdSettings.ts updateHouseholdCore, which the
+// household agent's settings tools (lib/agentSetupTools.ts) call too, so a setting changed in
+// chat passes the same checks; a change that alters something is audited (update_settings)
+// under the caregiver who made it.
 //
 // Last modified: 2026-11-14
 

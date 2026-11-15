@@ -10,8 +10,9 @@
 //   that does not include a newer user message, so a lagging event list cannot return a stale reply.
 // - A tool call runs once: its agentToolCalls row is inserted in the same transaction as its
 //   effect, a repeat reuses the row, and sent results are marked so a lagging event list is ignored.
-//   The row also keeps the task a successful add_task or update_task changed (taskId), which the
-//   chat's wording card reads.
+//   A successful add_task or update_task also appends its task to the request's changedTaskIds
+//   in that transaction (each task once, at most MAX_CHANGED_TASKS), which the chat's wording
+//   cards read.
 //   Tools run as an agent actor { kind: "agent", onBehalfOf: requestedBy, requestId } built from
 //   the request row, so what the agent creates and audits records the requesting caregiver.
 //   executeToolCalls re-checks that the requester is still an editor member (primary or member)
@@ -81,6 +82,11 @@ const POLL_MAX_DELAY_MS = 5_000;
  * check). The 30 minute cap ends a run long before this many.
  */
 const MAX_LOOP_ROUNDS = 200;
+/**
+ * Most tasks one request records in changedTaskIds (and so most wording cards under one reply).
+ * A request that changes more still runs; the cards show the first ones.
+ */
+export const MAX_CHANGED_TASKS = 20;
 /** Most sent tool calls read back per poll; more than this fails the request. */
 const MAX_SENT_LOOKUP = 500;
 
@@ -477,7 +483,8 @@ export const executeToolCalls = internalMutation({
 });
 
 /**
- * purpose: Run one tool call unless its result is already recorded.
+ * purpose: Run one tool call unless its result is already recorded; a call that created or
+ *          changed a task also records the task on the request (recordChangedTask).
  * @param ctx: (MutationCtx) Mutation context; the tool's writes share this transaction.
  * @param toolCtx: (ToolContext) Household, agent actor (requester and request) and clock, all
  *        taken from the request row.
@@ -492,8 +499,31 @@ async function runToolOnce(
 ): Promise<void> {
   if (await findToolCall(ctx, requestId, call.toolUseId)) return;
   const input = JSON.parse(call.input) as Record<string, unknown>;
-  const result = await executeAgentTool(ctx, toolCtx, { name: call.name, input });
-  await ctx.db.insert("agentToolCalls", { requestId, ...call, ...result });
+  const { text, isError, taskId } = await executeAgentTool(ctx, toolCtx, {
+    name: call.name,
+    input,
+  });
+  await ctx.db.insert("agentToolCalls", { requestId, ...call, text, isError });
+  if (taskId !== undefined) await recordChangedTask(ctx, requestId, taskId);
+}
+
+/**
+ * purpose: Append a task to the request's changedTaskIds, for the chat's wording cards: each
+ *          task once, in order of first change, at most MAX_CHANGED_TASKS.
+ * @param ctx: (MutationCtx) Mutation context (the tool's own transaction).
+ * @param requestId: (Id<"agentRequests">) The request.
+ * @param taskId: (Id<"tasks">) The task a successful add_task or update_task changed.
+ * @return: (Promise<void>) Resolves when recorded (or when there was nothing to record).
+ */
+async function recordChangedTask(
+  ctx: MutationCtx,
+  requestId: Id<"agentRequests">,
+  taskId: Id<"tasks">,
+): Promise<void> {
+  const request = await ctx.db.get(requestId);
+  const changed = request?.changedTaskIds ?? [];
+  if (!request || changed.includes(taskId) || changed.length >= MAX_CHANGED_TASKS) return;
+  await ctx.db.patch(requestId, { changedTaskIds: [...changed, taskId] });
 }
 
 /**

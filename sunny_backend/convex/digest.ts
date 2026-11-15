@@ -20,6 +20,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { householdCaregivers } from "./lib/access";
 import { postDigest } from "./lib/chatPosts";
 import {
   deliveryPool,
@@ -157,8 +158,9 @@ export const load = internalQuery({
  * purpose: Store the digest text, post it in the household's caregiver chat thread (once: only
  *          a pending digest gets here, and this marks it done), and queue one outbox row per
  *          reachable member who receives the digest (a verified phone or a push token, and not
- *          opted out; read now, so a change since loading is honored). A push shows "<name>'s day" (payload.pushTitle) over the text;
- *          an SMS keeps "Sunny: <name>'s day". Does nothing unless the digest is still pending.
+ *          opted out; read now, so a change since loading is honored). A push shows
+ *          "<name>'s day" (payload.pushTitle) over the text; an SMS keeps "Sunny: <name>'s day".
+ *          Does nothing unless the digest is still pending.
  * @param digestId: (Id<"digests">) The digest.
  * @param text: (string) The digest text.
  * @param source: ("claude" | "template") Which path produced it.
@@ -172,10 +174,7 @@ export const complete = internalMutation({
     const household = await ctx.db.get(digest.householdId);
     if (!household) return 0;
     await postDigest(ctx, digest, text);
-    const members = await ctx.db
-      .query("householdMembers")
-      .withIndex("by_household_user", (q) => q.eq("householdId", household._id))
-      .collect();
+    const members = await householdCaregivers(ctx, household._id);
     const recipients = await reachableMembers(ctx, members.filter(receivesDigest));
     for (const member of recipients) {
       await insertNotification(ctx, {

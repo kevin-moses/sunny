@@ -77,7 +77,8 @@ export type HouseholdSettingsChanges = ObjectType<typeof householdSettingsFields
  * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
  * @param householdId: (Id<"households">) Household.
  * @param fields: (HouseholdSettingsChanges) The changes.
- * @return: (Promise<Doc<"households">>) The household after the change.
+ * @return: (Promise<Doc<"households">>) The household after the change, read back from the
+ *          database.
  * @raises not_found for a missing household; invalid for any rule above.
  */
 export async function updateHouseholdCore(
@@ -152,5 +153,6 @@ export async function updateHouseholdCore(
   ) {
     await resyncHouseholdCalendars(ctx, householdId);
   }
-  return { ...household, ...patch };
+  // Read back: a timezone change also cleared lastDigestDate, which the patch does not show.
+  return await loadHousehold(ctx, householdId);
 }
