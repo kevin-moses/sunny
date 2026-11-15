@@ -53,40 +53,11 @@ export const confirmVia = v.union(
 );
 export type ConfirmVia = Infer<typeof confirmVia>;
 
-export const escalationActionInput = v.union(
-  v.literal("prompt_senior"),
-  v.literal("alert_all_caregivers"),
-);
-
 export const escalationAction = v.union(
   v.literal("prompt_senior"),
   v.literal("alert_all_caregivers"),
-  v.literal("alert_on_call"),
 );
 export type EscalationAction = Infer<typeof escalationAction>;
-
-export function isCaregiverAlert(action: EscalationAction): boolean {
-  return action !== "prompt_senior";
-}
-
-const escalationStepTiming = {
-  offsetMinutes: v.number(),
-  skipIfClaimed: v.boolean(),
-};
-
-export const escalationStep = v.object({
-  id: v.string(),
-  action: escalationAction,
-  ...escalationStepTiming,
-});
-export type EscalationStep = Infer<typeof escalationStep>;
-
-export const escalationStepInput = v.object({
-  id: v.optional(v.string()),
-  action: escalationActionInput,
-  ...escalationStepTiming,
-});
-export type EscalationStepInput = Infer<typeof escalationStepInput>;
 
 export const actorKind = v.union(
   v.literal("caregiver"),

@@ -74,7 +74,7 @@ const ONE_HOUSEHOLD =
   "You already belong to a household. Ask its primary caregiver to remove you before joining another.";
 
 describe("create", () => {
-  test("seeds defaults and the primary member, with no on-call caregiver", async () => {
+  test("seeds defaults and the primary member", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const asA = t.withIdentity({ subject: "user_a" });
@@ -88,41 +88,9 @@ describe("create", () => {
       shareTranscripts: false,
       backgroundPaused: false,
     });
-    expect(household.onCallUserId).toBeUndefined();
     const members = await asA.query(api.households.listMembers, { householdId });
     expect(members).toHaveLength(1);
     expect(members[0]).toMatchObject({ userId: "user_a", role: "primary", displayName: "Anna" });
-  });
-
-  test("seeds the Medication and Prompt only policies with the SPEC steps", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const policies = await t.run(
-      async (ctx) =>
-        await ctx.db
-          .query("escalationPolicies")
-          .withIndex("by_household", (q) => q.eq("householdId", householdId))
-          .collect(),
-    );
-    expect(policies).toHaveLength(2);
-    const medication = policies.find((p) => p.systemKey === "medication");
-    const promptOnly = policies.find((p) => p.systemKey === "prompt_only");
-    expect(medication?.name).toBe("Medication");
-    expect(medication?.steps).toEqual([
-      { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-      { id: expect.any(String), offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-      {
-        id: expect.any(String),
-        offsetMinutes: 30,
-        action: "alert_all_caregivers",
-        skipIfClaimed: false,
-      },
-    ]);
-    expect(new Set(medication?.steps.map((s) => s.id)).size).toBe(3);
-    expect(promptOnly?.name).toBe("Prompt only");
-    expect(promptOnly?.steps).toEqual([
-      { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-    ]);
   });
 
   test("a paired device cannot create a household", async () => {
@@ -438,19 +406,6 @@ describe("update", () => {
         ...fields,
       }),
     ).rejects.toMatchObject({ data: { code: "invalid" } });
-  });
-
-  test("update no longer accepts an on-call caregiver", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const asA = t.withIdentity({ subject: "user_a" });
-    await expect(
-      asA.mutation(api.households.update, {
-        householdId,
-        ...({ onCallUserId: "user_a" } as unknown as Record<string, never>),
-      }),
-    ).rejects.toThrow();
-    expect((await asA.query(api.households.get, { householdId })).onCallUserId).toBeUndefined();
   });
 });
 

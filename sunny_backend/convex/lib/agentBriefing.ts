@@ -4,6 +4,7 @@ import { householdWeek } from "../calendar";
 import { isAsNeededTask, listTasksCore } from "../tasks";
 import { findMember, householdCaregivers } from "./access";
 import { isAnytimeTask } from "./anytime";
+import { isHighPriority } from "./escalation";
 import { joinLines } from "./text";
 import { addDays, localDate, localDateTime, weekdayCodes } from "./time";
 import { todayInstances } from "./today";
@@ -42,7 +43,8 @@ function taskLine(task: Doc<"tasks">, todays: TodayEntry[]): string {
       : "every day";
   const times = timesText(task);
   const today = todays.length ? `today: ${todays.map(instanceText).join(", ")}` : "nothing today";
-  return `- ${task.displayLabel} (${task.type}, task_id ${task._id}) ${times} ${when}; ${today}`;
+  const priority = isHighPriority(task) ? ", high priority" : "";
+  return `- ${task.displayLabel} (${task.type}${priority}, task_id ${task._id}) ${times} ${when}; ${today}`;
 }
 
 async function taskLines(

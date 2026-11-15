@@ -27,8 +27,6 @@ type TestConvex = ReturnType<typeof makeBackend>;
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
-  medication: Id<"escalationPolicies">;
-  promptOnly: Id<"escalationPolicies">;
   phone: Id<"devices">;
   display: Id<"devices">;
 }
@@ -75,30 +73,16 @@ async function setup(iso: string): Promise<Fixture> {
   }
   const phone = await pair(t, householdId, pat, "phone", "senior_phone");
   const display = await pair(t, householdId, pat, "display", "home_display");
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
-  return {
-    t,
-    householdId,
-    medication: policies.find((p) => p.systemKey === "medication")!._id,
-    promptOnly: policies.find((p) => p.systemKey === "prompt_only")!._id,
-    phone,
-    display,
-  };
+  return { t, householdId, phone, display };
 }
 
-async function makeTask(
-  f: Fixture,
-  title: string,
-  times: string[],
-  policy?: Id<"escalationPolicies">,
-): Promise<Id<"tasks">> {
+async function makeTask(f: Fixture, title: string, times: string[]): Promise<Id<"tasks">> {
   return await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
     householdId: f.householdId,
     type: "medication",
     title,
     displayLabel: title,
     times,
-    escalationPolicyId: policy ?? f.medication,
   });
 }
 
@@ -1218,16 +1202,10 @@ describe("confirmDueTask", () => {
 
 describe("senior reminders", () => {
   async function reminderFixture(): Promise<Fixture> {
-    const f = await setup("2027-03-20T12:00:00Z");
-    await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.updatePolicy, {
-      householdId: f.householdId,
-      policyId: f.promptOnly,
-      name: "Gentle nudge",
-    });
-    return f;
+    return await setup("2027-03-20T12:00:00Z");
   }
 
-  test("the device creates a one-off reminder on the prompt-only policy, even after a rename", async () => {
+  test("the device creates a one-off reminder that is not high priority", async () => {
     const f = await reminderFixture();
     const task = await f.t
       .withIdentity({ subject: "phone" })
@@ -1245,7 +1223,7 @@ describe("senior reminders", () => {
       createdBy: "phone",
       onceOn: "2027-03-22",
       windowMinutes: 30,
-      escalationPolicyId: f.promptOnly,
+      highPriority: false,
       active: true,
     });
     expect(task.daysOfWeek).toBeUndefined();

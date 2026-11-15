@@ -320,6 +320,7 @@ describe("getContext", () => {
         pillDescription: "white pill",
         checklistItems: [],
         step: null,
+        highPriority: false,
         scheduledTime: "09:30",
         state: "due",
         confirmedAt: null,
@@ -1734,25 +1735,6 @@ describe("flagCaregiver", () => {
     expect(flag!.body).toBe("She says she feels dizzy. It started after lunch.");
     const [audited] = await auditRows(f, "flag_caregiver");
     expect(audited!.detail.detail).toBe(flag!.body);
-  });
-
-  test("a stored legacy on-call caregiver changes nothing: every caregiver is flagged", async () => {
-    const f = await setup();
-    await addFamily(f);
-    await f.t.run(async (ctx) => await ctx.db.patch(f.householdId, { onCallUserId: "user_b" }));
-    const result = await f.t.mutation(api.agent.flagCaregiver, {
-      agentKey: KEY,
-      householdId: f.householdId,
-      reason: "symptom",
-      detail: "She said her chest hurts.",
-      now: NOW,
-    });
-    expect(result.notified.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
-    expect((await outbox(f, "agent_flag")).map((r) => r.recipientUserId).sort()).toEqual([
-      "user_a",
-      "user_b",
-      "user_c",
-    ]);
   });
 
   test("the same reason within 10 minutes is not sent again; later it is", async () => {

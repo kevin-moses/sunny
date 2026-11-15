@@ -70,7 +70,6 @@ async function setup(steps: string[] = STEPS): Promise<Fixture> {
     const { code } = await pat.mutation(api.households.createJoinCode, { householdId, grants });
     await t.mutation(internal.households.pairDevice, { code, userId });
   }
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
   await pat.mutation(api.tasks.create, {
     householdId,
     type: "checklist",
@@ -78,7 +77,7 @@ async function setup(steps: string[] = STEPS): Promise<Fixture> {
     displayLabel: "Getting ready to go out",
     checklistItems: steps,
     times: ["08:00"],
-    escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
+    highPriority: true,
   });
   const rows = await t.run(async (ctx) => await ctx.db.query("taskInstances").collect());
   const f = { t, householdId, instanceId: rows[0]!._id };

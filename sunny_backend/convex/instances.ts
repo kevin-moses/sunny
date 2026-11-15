@@ -353,14 +353,14 @@ async function undoRefusal(
   ctx: QueryCtx,
   instance: Doc<"taskInstances">,
   userId: string,
-  pressId: string | undefined,
+  pressId: string,
   tappedAt: number,
 ): Promise<string | null> {
   if (isOpenState(instance.state)) {
     if (!seniorCanUndoStep(instance, userId, pressId, tappedAt)) {
       return "The task has no step done by this device within the undo window";
     }
-  } else if (pressId !== undefined && !(instance.confirmPressIds ?? []).includes(pressId)) {
+  } else if (!(instance.confirmPressIds ?? []).includes(pressId)) {
     return "This press is not part of the task's confirmation";
   } else if (!seniorCanUndo(instance, userId, tappedAt)) {
     return "The task is not confirmed by this device within the undo window";
@@ -372,7 +372,7 @@ async function undoRefusal(
 export async function undoPressedInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; undoneAgoMs?: number; pressId?: string },
+  args: { instanceId: Id<"taskInstances">; undoneAgoMs?: number; pressId: string },
   now: number,
 ): Promise<UndoPressResult> {
   if (actor.kind !== "senior_device") {
@@ -402,7 +402,7 @@ export async function undoPressedInstance(
         undoneAgoMs: args.undoneAgoMs ?? 0,
         tappedAt,
         receivedAt: now,
-        ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
+        pressId: args.pressId,
       },
     });
     return { status: "too_late" };
@@ -445,7 +445,7 @@ export async function undoPressedInstance(
     },
     {
       undo: true,
-      ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
+      pressId: args.pressId,
       takenBackPressIds: instance.confirmPressIds ?? [],
     },
   );
@@ -568,12 +568,6 @@ export async function createSeniorReminderCore(
     throw appError("invalid", "That date has already passed");
   }
   const days = normalizeWeekdays(args.days ?? [], "Days must be 1 (Monday) to 7 (Sunday)");
-  const policy = await ctx.db
-    .query("escalationPolicies")
-    .withIndex("by_household_system_key", (q) =>
-      q.eq("householdId", args.householdId).eq("systemKey", "prompt_only"),
-    )
-    .unique();
   const taskId = await insertTask(
     ctx,
     actor,
@@ -589,7 +583,7 @@ export async function createSeniorReminderCore(
       daysOfWeek:
         args.onDate === undefined && days.length >= 1 && days.length <= 6 ? days : undefined,
       windowMinutes: REMINDER_WINDOW_MINUTES,
-      escalationPolicyId: policy?._id,
+      highPriority: false,
       createdByKind: "senior",
       createdBy: actorUserId(actor),
       active: true,
@@ -742,7 +736,7 @@ export const confirmPressedTask = mutation({
     instanceId: v.id("taskInstances"),
     via: confirmVia,
     pressedAgoMs: v.number(),
-    pressId: v.optional(v.string()),
+    pressId: v.string(),
   },
   handler: async (ctx, args): Promise<PressResult> => {
     const actor = await requireDeviceActor(ctx);
@@ -754,7 +748,7 @@ export const undoPressedTask = mutation({
   args: {
     instanceId: v.id("taskInstances"),
     undoneAgoMs: v.optional(v.number()),
-    pressId: v.optional(v.string()),
+    pressId: v.string(),
   },
   handler: async (ctx, args): Promise<UndoPressResult> => {
     const actor = await requireDeviceActor(ctx);

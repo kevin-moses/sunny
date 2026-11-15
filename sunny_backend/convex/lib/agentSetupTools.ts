@@ -18,7 +18,6 @@ import {
 import type { AddResult, EntryChanges, LifeCategory } from "../profile";
 import { householdCaregivers, loadHousehold } from "./access";
 import { isReachableMember } from "./delivery";
-import { receivesDigest, setDigestDelivery } from "./digestRecipients";
 import { appError } from "./errors";
 import { updateHouseholdCore } from "./householdSettings";
 import type { HouseholdSettingsChanges } from "./householdSettings";
@@ -161,7 +160,7 @@ export const SETUP_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
     type: "custom",
     name: "get_settings",
     description:
-      "Read the household's settings: digest_time (when the daily summary is sent, local HH:MM), share_transcripts (whether caregivers may read the senior's full conversations, as agreed with the senior), weather_location (the place Sunny checks the weather for), and caregivers: each one's name, role, whether they receive the daily summary by push or text (receives_digest) and whether Sunny can reach them at all (reachable: the app with notifications, or a verified phone). Every caregiver is alerted at once when a task is not confirmed; there is no on-call caregiver.",
+      "Read the household's settings: digest_time (when the daily summary is sent, local HH:MM), share_transcripts (whether caregivers may read the senior's full conversations, as agreed with the senior), weather_location (the place Sunny checks the weather for), and caregivers: each one's name, role and whether Sunny can reach them at all (reachable: the app with notifications, or a verified phone). Every caregiver receives the daily summary by push or text and is alerted at once when a medication or high priority task is not confirmed; there is no on-call caregiver.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -176,19 +175,6 @@ export const SETUP_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
         share_transcripts: { type: "boolean" },
         weather_location: { type: "string", description: 'e.g. "Brooklyn, NY"; "" clears.' },
       },
-    },
-  },
-  {
-    type: "custom",
-    name: "set_digest_delivery",
-    description:
-      "Turn the daily summary's push and text on or off for the caregiver asking, and only for them: each caregiver sets their own. Use it only when the caregiver's current message asks for it. The summary is still posted in this chat for everyone. The result names the caregiver and their setting now.",
-    input_schema: {
-      type: "object",
-      properties: {
-        receives: { type: "boolean", description: "true to receive it, false to stop it." },
-      },
-      required: ["receives"],
     },
   },
 ];
@@ -339,7 +325,6 @@ async function caregiverForModel(
   return {
     name: member.displayName,
     role: member.role,
-    receives_digest: receivesDigest(member),
     reachable: await isReachableMember(ctx, member),
   };
 }
@@ -377,8 +362,7 @@ export type SetupToolName =
   | "update_knowledge"
   | "remove_knowledge"
   | "get_settings"
-  | "update_settings"
-  | "set_digest_delivery";
+  | "update_settings";
 
 export const SETUP_TOOL_HANDLERS: Record<SetupToolName, ToolHandler> = {
   get_knowledge: async (ctx, { householdId }, input) => {
@@ -417,10 +401,5 @@ export const SETUP_TOOL_HANDLERS: Record<SetupToolName, ToolHandler> = {
   update_settings: async (ctx, { householdId, actor }, input) => {
     const changes = settingsChanges(input);
     return await settingsForModel(ctx, await updateHouseholdCore(ctx, actor, householdId, changes));
-  },
-  set_digest_delivery: async (ctx, { householdId, actor }, input) => {
-    rejectUnknownKeys(input, ["receives"]);
-    const receives = booleanField(input.receives, "receives");
-    return await caregiverForModel(ctx, await setDigestDelivery(ctx, actor, householdId, receives));
   },
 };

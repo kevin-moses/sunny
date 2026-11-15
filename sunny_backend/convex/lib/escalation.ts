@@ -1,17 +1,56 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { isAnytimeInstance } from "./anytime";
+import { isAnytimeInstance, isAnytimeTask } from "./anytime";
 import { minutes } from "./time";
-import { isCaregiverAlert } from "./validators";
-import type { EscalationAction, EscalationStep, InstanceState } from "./validators";
+import type { EscalationAction, InstanceState } from "./validators";
 
 export type FiredStep = Doc<"taskInstances">["firedSteps"][number];
+
+export interface EscalationStep {
+  id: string;
+  offsetMinutes: number;
+  action: EscalationAction;
+}
+
+export const PROMPT_AGAIN_MINUTES = 15;
+
+export const ALERT_MINUTES = 30;
+
+const PROMPT_STEP: EscalationStep = { id: "prompt", offsetMinutes: 0, action: "prompt_senior" };
+
+export const ESCALATION_LADDER: readonly EscalationStep[] = [
+  PROMPT_STEP,
+  { id: "prompt_again", offsetMinutes: PROMPT_AGAIN_MINUTES, action: "prompt_senior" },
+  { id: "alert", offsetMinutes: ALERT_MINUTES, action: "alert_all_caregivers" },
+];
+
+export const PROMPT_ONLY_LADDER: readonly EscalationStep[] = [PROMPT_STEP];
+
+type LadderTask = Pick<Doc<"tasks">, "type" | "times" | "highPriority">;
+
+export function isCaregiverAlert(action: FiredStep["action"]): boolean {
+  return action !== "prompt_senior";
+}
+
+export function isHighPriority(task: Pick<Doc<"tasks">, "highPriority">): boolean {
+  return task.highPriority === true;
+}
+
+export function alertsCaregivers(task: LadderTask): boolean {
+  return !isAnytimeTask(task) && (task.type === "medication" || isHighPriority(task));
+}
+
+export function escalationSteps(
+  task: (LadderTask & Pick<Doc<"tasks">, "active">) | null,
+): readonly EscalationStep[] {
+  if (!task || !task.active || isAnytimeTask(task)) return [];
+  return alertsCaregivers(task) ? ESCALATION_LADDER : PROMPT_ONLY_LADDER;
+}
 
 export interface StepTiming {
   windowStart: number;
   createdAt: number;
   snoozedUntil?: number | null;
-  claimedBy?: string | null;
 }
 
 export interface PromptTiming extends StepTiming {
@@ -30,7 +69,7 @@ export function isSnoozed(snoozedUntil: number | null | undefined, now: number):
 }
 
 export function caregiverAlerted(
-  firedSteps: readonly { action: EscalationAction; notified: boolean }[],
+  firedSteps: readonly Pick<FiredStep, "action" | "notified">[],
 ): boolean {
   return firedSteps.some((s) => isCaregiverAlert(s.action) && s.notified);
 }
@@ -56,17 +95,9 @@ export async function dueOrEscalatedInstances(
 }
 
 export function seniorPromptCount(
-  firedSteps: readonly { action: EscalationAction; notified: boolean }[],
+  firedSteps: readonly Pick<FiredStep, "action" | "notified">[],
 ): number {
   return firedSteps.filter((s) => s.action === "prompt_senior" && s.notified).length;
-}
-
-export async function activePolicySteps(
-  ctx: QueryCtx,
-  task: Doc<"tasks"> | null,
-): Promise<EscalationStep[] | null> {
-  if (!task || !task.active || task.escalationPolicyId === undefined) return null;
-  return (await ctx.db.get(task.escalationPolicyId))?.steps ?? null;
 }
 
 export function stepDueAt(
@@ -78,11 +109,10 @@ export function stepDueAt(
 
 export function stepHeld(
   instance: StepTiming,
-  step: Pick<EscalationStep, "action" | "skipIfClaimed">,
+  step: Pick<EscalationStep, "action">,
   now: number,
 ): boolean {
-  if (step.action === "prompt_senior" && isSnoozed(instance.snoozedUntil, now)) return true;
-  return step.skipIfClaimed && instance.claimedBy != null;
+  return step.action === "prompt_senior" && isSnoozed(instance.snoozedUntil, now);
 }
 
 function firstFireAt(instance: StepTiming, step: EscalationStep): number | null {

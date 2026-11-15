@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { confirmInstance } from "./instances";
+import { ESCALATION_LADDER } from "./lib/escalation";
 import {
   MAX_CONFIRM_PRESS_IDS,
   MAX_TAKEN_BACK_PRESS_IDS,
@@ -53,7 +54,6 @@ type TestConvex = ReturnType<typeof makeBackend>;
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
-  medication: Id<"escalationPolicies">;
   instanceId: Id<"taskInstances">;
 }
 
@@ -88,18 +88,15 @@ async function setup(iso = "2027-03-14T11:00:00Z", times: string[] = ["08:00"]):
   }
   await pair(t, householdId, "pat", "phone", "senior_phone");
   await pair(t, householdId, "pat", "display", "home_display");
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
-  const medication = policies.find((p) => p.systemKey === "medication")!._id;
   await pat.mutation(api.tasks.create, {
     householdId,
     type: times.length > 0 ? "medication" : "reminder",
     title: "Morning pills",
     displayLabel: "Morning pills",
     times,
-    escalationPolicyId: times.length > 0 ? medication : undefined,
   });
   const rows = await t.run(async (ctx) => await ctx.db.query("taskInstances").collect());
-  return { t, householdId, medication, instanceId: rows[0]!._id };
+  return { t, householdId, instanceId: rows[0]!._id };
 }
 
 async function tick(f: Fixture, iso: string): Promise<void> {
@@ -113,19 +110,43 @@ async function row(f: Fixture): Promise<Doc<"taskInstances">> {
   return (await f.t.run(async (ctx) => await ctx.db.get(f.instanceId)))!;
 }
 
+let pressCount = 0;
+
+function newPressId(): string {
+  pressCount += 1;
+  return `press${String(pressCount).padStart(12, "0")}`;
+}
+
 async function confirmAs(f: Fixture, subject: string, iso: string): Promise<Doc<"taskInstances">> {
   at(iso);
-  return await f.t.withIdentity({ subject }).mutation(api.instances.confirmTaskInstance, {
+  const as = f.t.withIdentity({ subject });
+  if (subject !== "phone") {
+    return await as.mutation(api.instances.confirmTaskInstance, {
+      instanceId: f.instanceId,
+      via: subject === "display" ? "button" : "caregiver",
+    });
+  }
+  const result = await as.mutation(api.instances.confirmPressedTask, {
     instanceId: f.instanceId,
-    via: subject === "phone" || subject === "display" ? "button" : "caregiver",
+    via: "button",
+    pressedAgoMs: 0,
+    pressId: newPressId(),
   });
+  if (result.status === "rejected") throw new Error(result.reason);
+  return result.instance;
+}
+
+async function confirmingPressId(f: Fixture): Promise<string> {
+  const instance = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
+  return instance?.confirmPressIds?.[0] ?? newPressId();
 }
 
 async function undoAs(f: Fixture, subject: string, iso: string | number) {
+  const pressId = await confirmingPressId(f);
   vi.setSystemTime(typeof iso === "number" ? iso : new Date(iso));
   return await f.t
     .withIdentity({ subject })
-    .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId });
+    .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId, pressId });
 }
 
 async function reopenAs(f: Fixture, subject: string, iso: string): Promise<Doc<"taskInstances">> {
@@ -300,6 +321,7 @@ describe("undoPressedTask", () => {
       instanceId: f.instanceId,
       via: "button",
       pressedAgoMs: 20 * MINUTE,
+      pressId: newPressId(),
     });
     const held = await row(f);
     expect(held.confirmedAt).toBe(Date.parse("2027-03-14T12:10:00Z"));
@@ -625,8 +647,7 @@ describe("reopenTaskInstance", () => {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
     await tick(f, "2027-03-14T12:15:00Z");
-    const policy = (await f.t.run(async (ctx) => await ctx.db.get(f.medication)))!;
-    const [first, second, third] = policy.steps;
+    const [first, second, third] = ESCALATION_LADDER;
     const firedBefore = (await row(f)).firedSteps;
     expect(firedBefore.map((s) => s.stepId)).toEqual([first!.id, second!.id]);
 
@@ -736,7 +757,10 @@ describe("more undo and reopen cases", () => {
     await confirmAs(f, "phone", "2027-03-14T12:05:00Z");
     at("2027-03-14T12:05:10Z");
     await expect(
-      f.t.mutation(api.instances.undoPressedTask, { instanceId: f.instanceId }),
+      f.t.mutation(api.instances.undoPressedTask, {
+        instanceId: f.instanceId,
+        pressId: newPressId(),
+      }),
     ).rejects.toMatchObject({ data: { code: "unauthenticated" } });
     await expect(
       f.t.mutation(api.instances.reopenTaskInstance, { instanceId: f.instanceId }),
@@ -824,6 +848,7 @@ describe("more undo and reopen cases", () => {
       instanceId: f.instanceId,
       via: "button",
       pressedAgoMs: 2 * MINUTE,
+      pressId: newPressId(),
     });
     expect((await row(f)).confirmReceivedAt).toBeUndefined();
     expect(await undoAs(f, "phone", "2027-03-14T12:10:01Z")).toEqual({ status: "too_late" });
@@ -843,12 +868,19 @@ describe("more undo and reopen cases", () => {
 });
 
 describe("a press made before a take-back does not confirm again", () => {
-  async function press(f: Fixture, subject: string, iso: string, ageMs: number) {
+  async function press(
+    f: Fixture,
+    subject: string,
+    iso: string,
+    ageMs: number,
+    pressId = newPressId(),
+  ) {
     at(iso);
     return await f.t.withIdentity({ subject }).mutation(api.instances.confirmPressedTask, {
       instanceId: f.instanceId,
       via: "button",
       pressedAgoMs: ageMs,
+      pressId,
     });
   }
 
@@ -859,11 +891,12 @@ describe("a press made before a take-back does not confirm again", () => {
   test("after the senior's undo, the same press replayed is rejected, audited, and the task stays open", async () => {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
-    expect(await press(f, "phone", "2027-03-14T12:05:00Z", 1000)).toMatchObject({
+    const first = newPressId();
+    expect(await press(f, "phone", "2027-03-14T12:05:00Z", 1000, first)).toMatchObject({
       status: "confirmed",
     });
     await undoAs(f, "phone", "2027-03-14T12:05:20Z");
-    const replay = await press(f, "phone", "2027-03-14T12:06:00Z", 61_000);
+    const replay = await press(f, "phone", "2027-03-14T12:06:00Z", 61_000, first);
     expect(replay).toMatchObject({
       status: "rejected",
       reason: expect.stringContaining("taken back"),
@@ -988,18 +1021,22 @@ describe("a task that no longer runs is not reopened", () => {
 
 describe("an Undo tapped offline", () => {
   async function undoAgo(f: Fixture, iso: string, agoMs: number) {
+    const pressId = await confirmingPressId(f);
     at(iso);
-    return await f.t
-      .withIdentity({ subject: "phone" })
-      .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId, undoneAgoMs: agoMs });
+    return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.undoPressedTask, {
+      instanceId: f.instanceId,
+      undoneAgoMs: agoMs,
+      pressId,
+    });
   }
 
-  async function pressAgo(f: Fixture, iso: string, agoMs: number) {
+  async function pressAgo(f: Fixture, iso: string, agoMs: number, pressId = newPressId()) {
     at(iso);
     return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, {
       instanceId: f.instanceId,
       via: "button",
       pressedAgoMs: agoMs,
+      pressId,
     });
   }
 
@@ -1047,11 +1084,12 @@ describe("an Undo tapped offline", () => {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
     const arrive = "2027-03-14T12:20:00Z";
-    await pressAgo(f, arrive, 900_000);
+    const first = newPressId();
+    await pressAgo(f, arrive, 900_000, first);
     await undoAgo(f, arrive, 890_000);
     await pressAgo(f, arrive, 880_000);
     const second = await row(f);
-    await pressAgo(f, arrive, 900_100);
+    await pressAgo(f, arrive, 900_100, first);
     expect(await row(f)).toEqual(second);
   });
 
@@ -1059,9 +1097,10 @@ describe("an Undo tapped offline", () => {
     const f = await setup();
     await tick(f, "2027-03-14T12:00:00Z");
     const arrive = "2027-03-14T12:20:00Z";
-    await pressAgo(f, arrive, 900_000);
+    const first = newPressId();
+    await pressAgo(f, arrive, 900_000, first);
     await undoAgo(f, arrive, 890_000);
-    expect(await pressAgo(f, arrive, 900_100)).toMatchObject({ status: "rejected" });
+    expect(await pressAgo(f, arrive, 900_100, first)).toMatchObject({ status: "rejected" });
     expect((await row(f)).state).toBe("due");
   });
 });
@@ -1081,6 +1120,7 @@ describe("reopen stamps only a device's confirm", () => {
         instanceId: f.instanceId,
         via: "button",
         pressedAgoMs: 330_000,
+        pressId: newPressId(),
       });
     expect(result).toMatchObject({ status: "confirmed" });
     expect((await row(f)).state).toBe("confirmed");
@@ -1111,7 +1151,7 @@ describe("press ids", () => {
   const A = "pressAAAAAAAAAAAAAAA";
   const B = "pressBBBBBBBBBBBBBBB";
 
-  async function press(f: Fixture, iso: string, agoMs: number, pressId?: string) {
+  async function press(f: Fixture, iso: string, agoMs: number, pressId: string) {
     at(iso);
     return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, {
       instanceId: f.instanceId,
@@ -1121,7 +1161,7 @@ describe("press ids", () => {
     });
   }
 
-  async function undo(f: Fixture, iso: string, agoMs: number, pressId?: string) {
+  async function undo(f: Fixture, iso: string, agoMs: number, pressId: string) {
     at(iso);
     return await f.t.withIdentity({ subject: "phone" }).mutation(api.instances.undoPressedTask, {
       instanceId: f.instanceId,
@@ -1136,29 +1176,14 @@ describe("press ids", () => {
     return f;
   }
 
-  async function resentPressScenario(ids: boolean) {
+  test("(a) a press resent at reconnect, then Undo, then Done ends confirmed", async () => {
     const f = await dueFixture();
-    expect(await press(f, "2027-03-14T12:20:00Z", 0, ids ? A : undefined)).toMatchObject({
-      status: "confirmed",
-    });
-    expect(await undo(f, "2027-03-14T12:20:01Z", 601_000, ids ? A : undefined)).toMatchObject({
-      status: "undone",
-    });
-    const result = await press(f, "2027-03-14T12:20:02Z", 302_000, ids ? B : undefined);
-    return { f, result };
-  }
-
-  test("(a) a press resent at reconnect, then Undo, then Done ends confirmed with ids", async () => {
-    const { f, result } = await resentPressScenario(true);
+    expect(await press(f, "2027-03-14T12:20:00Z", 0, A)).toMatchObject({ status: "confirmed" });
+    expect(await undo(f, "2027-03-14T12:20:01Z", 601_000, A)).toMatchObject({ status: "undone" });
+    const result = await press(f, "2027-03-14T12:20:02Z", 302_000, B);
     expect(result).toMatchObject({ status: "confirmed" });
     expect((await row(f)).state).toBe("confirmed");
     expect((await row(f)).confirmPressIds).toEqual([B]);
-  });
-
-  test("(a) without ids the time rule still refuses that second press, as before", async () => {
-    const { f, result } = await resentPressScenario(false);
-    expect(result).toMatchObject({ status: "rejected" });
-    expect((await row(f)).state).toBe("due");
   });
 
   test("(b) a resent undo answers too_late and leaves the later press confirmed", async () => {
@@ -1172,15 +1197,7 @@ describe("press ids", () => {
     expect(after.confirmPressIds).toEqual([B]);
   });
 
-  test("(b) without ids the resent undo still takes the later press back, as before", async () => {
-    const f = await dueFixture();
-    await press(f, "2027-03-14T12:05:00Z", 0);
-    await undo(f, "2027-03-14T12:05:10Z", 0);
-    await press(f, "2027-03-14T12:05:20Z", 0);
-    expect(await undo(f, "2027-03-14T12:05:30Z", 20_000)).toMatchObject({ status: "undone" });
-  });
-
-  test("(c) on a slow network a Done just after Undo is applied with ids", async () => {
+  test("(c) on a slow network a Done just after Undo is applied", async () => {
     const f = await dueFixture();
     await press(f, "2027-03-14T12:05:00Z", 0, A);
     await undo(f, "2027-03-14T12:05:13Z", 0, A);
@@ -1188,13 +1205,6 @@ describe("press ids", () => {
       status: "confirmed",
     });
     expect((await row(f)).state).toBe("confirmed");
-  });
-
-  test("(c) without ids that Done is refused, as before", async () => {
-    const f = await dueFixture();
-    await press(f, "2027-03-14T12:05:00Z", 0);
-    await undo(f, "2027-03-14T12:05:13Z", 0);
-    expect(await press(f, "2027-03-14T12:05:14Z", 3000)).toMatchObject({ status: "rejected" });
   });
 
   test("a resend of an undone press id is refused, even after the device's own undo", async () => {
@@ -1257,11 +1267,11 @@ describe("press ids", () => {
     expect((await row(f)).state).toBe("due");
   });
 
-  test("a reopen of a confirm without an id leaves takenBackPressIds as it was", async () => {
+  test("a reopen of a display's confirm, which has no id, leaves takenBackPressIds as it was", async () => {
     const f = await dueFixture();
     await press(f, "2027-03-14T12:05:00Z", 0, A);
     await undo(f, "2027-03-14T12:05:10Z", 0, A);
-    await press(f, "2027-03-14T12:05:20Z", 0);
+    await confirmAs(f, "display", "2027-03-14T12:05:20Z");
     const reopened = await reopenAs(f, "pat", "2027-03-14T12:06:00Z");
     expect(reopened.takenBackPressIds).toEqual([A]);
   });
@@ -1415,15 +1425,6 @@ describe("press ids", () => {
     const last = (await audits(f)).filter((r) => r.action === "state_change").at(-1)!;
     expect(last.detail).toMatchObject({ reopen: true, takenBackPressIds: [A, B] });
     expect(await press(f, "2027-03-14T12:06:10Z", 0, B)).toMatchObject({ status: "rejected" });
-  });
-
-  test("an old-format undo (no id) audits the ids it actually took back", async () => {
-    const f = await dueFixture();
-    await press(f, "2027-03-14T12:05:00Z", 0, A);
-    await undo(f, "2027-03-14T12:05:10Z", 0);
-    const last = (await audits(f)).filter((r) => r.action === "state_change").at(-1)!;
-    expect(last.detail).toMatchObject({ undo: true, takenBackPressIds: [A] });
-    expect(last.detail).not.toHaveProperty("pressId");
   });
 
   test("an invalid id on a no-op press is refused and never stored", async () => {

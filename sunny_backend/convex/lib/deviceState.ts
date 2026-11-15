@@ -14,13 +14,13 @@ import {
 import type { DeviceIcon } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
 import {
-  activePolicySteps,
+  escalationSteps,
   isOpenState,
   isSnoozed,
   seniorPromptCount,
   upcomingPromptTimes,
 } from "./escalation";
-import type { PromptTiming } from "./escalation";
+import type { EscalationStep, PromptTiming } from "./escalation";
 import { occurrenceJson } from "./occurrences";
 import type { OccurrenceJson } from "./occurrences";
 import {
@@ -38,7 +38,6 @@ import { taskStep } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
 import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
-import type { EscalationStep } from "./validators";
 
 export const MAX_TODAY_ROWS = 7;
 
@@ -448,27 +447,20 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
   };
 }
 
-type TaskSteps = { task: Doc<"tasks">; steps: EscalationStep[] };
-
-function taskStepsLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<TaskSteps | null> {
-  const cache = new Map<Id<"tasks">, Promise<TaskSteps | null>>();
-  const read = async (taskId: Id<"tasks">): Promise<TaskSteps | null> => {
-    const task = await ctx.db.get(taskId);
-    return task === null ? null : { task, steps: (await activePolicySteps(ctx, task)) ?? [] };
-  };
-  return (taskId: Id<"tasks">): Promise<TaskSteps | null> => {
+function taskLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<Doc<"tasks"> | null> {
+  const cache = new Map<Id<"tasks">, Promise<Doc<"tasks"> | null>>();
+  return (taskId: Id<"tasks">): Promise<Doc<"tasks"> | null> => {
     let loaded = cache.get(taskId);
     if (loaded === undefined) {
-      loaded = read(taskId);
+      loaded = ctx.db.get(taskId);
       cache.set(taskId, loaded);
     }
     return loaded;
   };
 }
 
-function cueInputFor(instance: Doc<"taskInstances">, loaded: TaskSteps | null): CueInput | null {
-  if (loaded === null) return null;
-  const { task, steps } = loaded;
+function cueInputFor(instance: Doc<"taskInstances">, task: Doc<"tasks"> | null): CueInput | null {
+  if (task === null) return null;
   return {
     entry: {
       instanceId: instance._id,
@@ -483,7 +475,7 @@ function cueInputFor(instance: Doc<"taskInstances">, loaded: TaskSteps | null): 
       snoozedUntil: instance.snoozedUntil ?? null,
     },
     timing: instance,
-    steps,
+    steps: escalationSteps(task),
   };
 }
 
@@ -506,7 +498,7 @@ export async function loadDeviceState(
   ).sort(compareDayOrder);
   const todays = await Promise.all(tasks.map((e) => ctx.db.get(e.instanceId)));
   const instances = [...todays, ...tomorrow].filter((i) => i !== null);
-  const loadTask = taskStepsLoader(ctx);
+  const loadTask = taskLoader(ctx);
   const loaded = await Promise.all(instances.map((i) => loadTask(i.taskId)));
   const cueInputs = instances
     .map((i, n) => cueInputFor(i, loaded[n] ?? null))

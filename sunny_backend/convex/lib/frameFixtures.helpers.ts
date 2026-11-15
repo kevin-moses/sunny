@@ -68,7 +68,6 @@ function cue(entry: DayTask): CueInput {
       windowEnd: windowStart + 60 * MINUTE_MS,
       createdAt: windowStart - 600 * MINUTE_MS,
       snoozedUntil: entry.snoozedUntil,
-      claimedBy: null,
       firedSteps: [],
     },
     steps: [],

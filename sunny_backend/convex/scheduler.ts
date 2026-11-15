@@ -11,18 +11,18 @@ import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
 import { announceEvents } from "./lib/eventNotices";
 import {
-  activePolicySteps,
   caregiverAlerted,
   dueOrEscalatedInstances,
+  escalationSteps,
   firedStep,
+  isCaregiverAlert,
   stepDueAt,
   stepHeld,
 } from "./lib/escalation";
+import type { EscalationStep } from "./lib/escalation";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { taskStep } from "./lib/taskSteps";
 import { formatTime12 } from "./lib/time";
-import { isCaregiverAlert } from "./lib/validators";
-import type { EscalationStep } from "./lib/validators";
 
 const TICK_PAGE_SIZE = 500;
 
@@ -58,7 +58,11 @@ async function openWindows(
   return starting.length;
 }
 
-function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: number): DueStep[] {
+function dueSteps(
+  instance: Doc<"taskInstances">,
+  steps: readonly EscalationStep[],
+  now: number,
+): DueStep[] {
   const fired = new Set(instance.firedSteps.map((f) => f.stepId));
   const due: DueStep[] = [];
   for (const step of steps) {
@@ -83,12 +87,7 @@ async function queueNotifications(
   if (!task || !household) return;
   const isPrompt = step.action === "prompt_senior";
   const dueAt = `Due at ${formatTime12(instance.scheduledTime)}.`;
-  const note =
-    instance.state === "missed"
-      ? " Its time has now passed."
-      : step.skipIfClaimed
-        ? " No one has claimed it yet."
-        : "";
+  const note = instance.state === "missed" ? " Its time has now passed." : "";
   const row = {
     householdId: instance.householdId,
     kind: isPrompt ? ("senior_prompt" as const) : ("caregiver_alert" as const),
@@ -129,8 +128,7 @@ async function fireSteps(
   let notified = 0;
   for (const instance of await dueOrEscalatedInstances(ctx, householdId)) {
     if (instance.windowEnd <= now || isAnytimeInstance(instance)) continue;
-    const steps = await activePolicySteps(ctx, await ctx.db.get(instance.taskId));
-    if (steps === null) continue;
+    const steps = escalationSteps(await ctx.db.get(instance.taskId));
     const due = dueSteps(instance, steps, now);
     if (due.length === 0) continue;
     await ctx.db.patch(instance._id, {
@@ -165,8 +163,7 @@ async function alertOwedAtClose(
   if (isAnytimeInstance(instance) || instance.createdAt >= instance.windowEnd) return null;
   if (now - instance.windowEnd > CLOSE_ALERT_MAX_LATE_MS) return null;
   if (caregiverAlerted(instance.firedSteps)) return null;
-  const steps = await activePolicySteps(ctx, await ctx.db.get(instance.taskId));
-  if (steps === null) return null;
+  const steps = escalationSteps(await ctx.db.get(instance.taskId));
   const fired = new Set(instance.firedSteps.map((f) => f.stepId));
   return (
     steps.find(

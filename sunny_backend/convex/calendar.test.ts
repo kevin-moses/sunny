@@ -874,7 +874,7 @@ describe("dayView", () => {
           { stepId: "a", action: "prompt_senior", firedAt: 0, notified: true },
           { stepId: "b", action: "prompt_senior", firedAt: 1, notified: false },
           { stepId: "c", action: "prompt_senior", firedAt: 1, notified: true },
-          { stepId: "d", action: "alert_on_call", firedAt: 2, notified: true },
+          { stepId: "d", action: "alert_all_caregivers", firedAt: 2, notified: true },
         ],
       });
       await ctx.db.insert("taskInstances", {

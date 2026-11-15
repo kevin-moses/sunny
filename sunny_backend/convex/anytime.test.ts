@@ -22,23 +22,13 @@ afterEach(() => {
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
-  medication: Id<"escalationPolicies">;
-  promptOnly: Id<"escalationPolicies">;
 }
 
 async function setup(iso: string = DAY_ONE): Promise<Fixture> {
   vi.setSystemTime(new Date(iso));
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
-  const policies = await t.withIdentity({ subject: "pat" }).query(api.tasks.listPolicies, {
-    householdId,
-  });
-  return {
-    t,
-    householdId,
-    medication: policies.find((p) => p.systemKey === "medication")!._id,
-    promptOnly: policies.find((p) => p.systemKey === "prompt_only")!._id,
-  };
+  return { t, householdId };
 }
 
 async function makeTask(
@@ -47,7 +37,7 @@ async function makeTask(
     type: "medication" | "reminder" | "routine";
     title: string;
     times: string[];
-    escalationPolicyId: Id<"escalationPolicies">;
+    highPriority: boolean;
     asNeededMaxPerDay: number;
     onceOn: string;
     daysOfWeek: number[];
@@ -184,9 +174,9 @@ describe("expansion", () => {
 });
 
 describe("scheduler", () => {
-  test("opening an anytime instance sends nothing and fires no step, even with a policy", async () => {
+  test("opening an anytime instance sends nothing and fires no step, even when high priority", async () => {
     const f = await setup();
-    const taskId = await makeTask(f, { escalationPolicyId: f.promptOnly });
+    const taskId = await makeTask(f, { highPriority: true });
     const first = await tick(f, "2027-03-13T15:01:00Z");
     expect(first).toMatchObject({ opened: 1, stepsFired: 0 });
     for (const iso of [
@@ -203,11 +193,9 @@ describe("scheduler", () => {
     expect(await taskNotifications(f)).toBe(0);
   });
 
-  test("a task created without a policy has none, and the tick still sends nothing", async () => {
+  test("a plain anytime task sends nothing on the tick", async () => {
     const f = await setup();
-    const taskId = await makeTask(f);
-    const task = await f.t.run(async (ctx) => await ctx.db.get(taskId));
-    expect(task!.escalationPolicyId).toBeUndefined();
+    await makeTask(f);
     await tick(f, "2027-03-13T16:00:00Z");
     expect(await taskNotifications(f)).toBe(0);
   });
@@ -562,7 +550,7 @@ describe("daily digest", () => {
   });
 });
 
-describe("task validation and policies", () => {
+describe("task validation", () => {
   async function row(f: Fixture, id: Id<"tasks">): Promise<Doc<"tasks">> {
     return (await f.t.run(async (ctx) => await ctx.db.get(id)))!;
   }
@@ -606,61 +594,15 @@ describe("task validation and policies", () => {
       title: "Pain relief",
       asNeededMaxPerDay: 3,
     });
-    expect((await row(f, id)).escalationPolicyId).toBe(f.medication);
     expect(await instancesOf(f, id)).toHaveLength(0);
   });
 
-  test("a timed non-medication task keeps the prompt-only default, a medication the medication one", async () => {
-    const f = await setup();
-    const reminder = await makeTask(f, { times: ["09:00"] });
-    const pills = await makeTask(f, { type: "medication", title: "Pills", times: ["08:00"] });
-    expect((await row(f, reminder)).escalationPolicyId).toBe(f.promptOnly);
-    expect((await row(f, pills)).escalationPolicyId).toBe(f.medication);
-  });
-
-  test("an anytime task gets no policy", async () => {
-    const f = await setup();
-    expect((await row(f, await makeTask(f))).escalationPolicyId).toBeUndefined();
-  });
-
-  test("emptying a task's times makes it anytime and drops its seeded policy", async () => {
+  test("emptying a task's times makes it anytime", async () => {
     const f = await setup();
     const id = await makeTask(f, { times: ["09:00"] });
-    const after = await update(f, id, { times: [] });
-    expect(after.escalationPolicyId).toBeUndefined();
+    await update(f, id, { times: [] });
     const rows = await instancesOf(f, id);
     expect(rows.some((r) => r.scheduledTime === "anytime")).toBe(true);
-  });
-
-  test("giving an anytime task times restores its type's default policy", async () => {
-    const f = await setup();
-    const id = await makeTask(f);
-    expect((await update(f, id, { times: ["09:00"] })).escalationPolicyId).toBe(f.promptOnly);
-  });
-
-  test("an anytime task changed to a medication with times gets the medication policy", async () => {
-    const f = await setup();
-    const id = await makeTask(f);
-    const after = await update(f, id, { type: "medication", times: ["08:00"] });
-    expect(after.escalationPolicyId).toBe(f.medication);
-  });
-
-  test("a custom policy survives becoming anytime", async () => {
-    const f = await setup();
-    const custom = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: "Custom",
-      steps: [{ action: "prompt_senior", offsetMinutes: 0, skipIfClaimed: false }],
-    });
-    const id = await makeTask(f, { times: ["09:00"], escalationPolicyId: custom });
-    expect((await update(f, id, { times: [] })).escalationPolicyId).toBe(custom);
-  });
-
-  test("an explicit policy in the same update wins", async () => {
-    const f = await setup();
-    const id = await makeTask(f, { times: ["09:00"] });
-    const after = await update(f, id, { times: [], escalationPolicyId: f.medication });
-    expect(after.escalationPolicyId).toBe(f.medication);
   });
 
   test("clearing the limits of an untimed medication is rejected", async () => {
@@ -684,7 +626,6 @@ describe("task validation and policies", () => {
     const after = await update(f, id, { type: "reminder" });
     expect(isAsNeededTask(after)).toBe(false);
     expect(isAnytimeTask(after)).toBe(true);
-    expect(after.escalationPolicyId).toBeUndefined();
   });
 
   test("a medication cannot be made untimed unless it is as-needed", async () => {
@@ -699,10 +640,10 @@ describe("task validation and policies", () => {
     const f = await setup();
     const id = await makeTask(f, { type: "medication", title: "Pills", times: ["08:00"] });
     const after = await update(f, id, { type: "reminder", times: [] });
-    expect(after.escalationPolicyId).toBeUndefined();
+    expect(isAnytimeTask(after)).toBe(true);
   });
 
-  test("an older untimed medication stays editable for unrelated fields but not reactivation", async () => {
+  test("a stopped untimed medication stays editable but cannot be resumed without a time", async () => {
     const f = await setup();
     const id = await makeTask(f, { type: "medication", title: "Pills", times: ["08:00"] });
     await f.t.run(async (ctx) => {
@@ -782,75 +723,6 @@ describe("turning a task anytime or timed", () => {
     expect(rows.filter((r) => r.scheduledTime === "anytime").map((r) => r.state)).toEqual([
       "resolved",
     ]);
-  });
-});
-
-describe("policy transitions on update", () => {
-  type Expect = "none" | "promptOnly" | "medication" | "custom";
-  const cases: Array<
-    [string, Parameters<typeof makeTask>[1], Record<string, unknown>, Expect, boolean]
-  > = [
-    [
-      "timed to anytime clears the seeded policy",
-      { times: ["09:00"] },
-      { times: [] },
-      "none",
-      false,
-    ],
-    ["anytime to timed restores the default", {}, { times: ["09:00"] }, "promptOnly", false],
-    ["reminder to medication", { times: ["09:00"] }, { type: "medication" }, "medication", false],
-    [
-      "medication to reminder",
-      { type: "medication", times: ["09:00"] },
-      { type: "reminder" },
-      "promptOnly",
-      false,
-    ],
-    ["custom policy kept becoming anytime", { times: ["09:00"] }, { times: [] }, "custom", true],
-    [
-      "custom policy kept across the medication boundary",
-      { times: ["09:00"] },
-      { type: "medication" },
-      "custom",
-      true,
-    ],
-    [
-      "explicit policy wins over the anytime rule",
-      { times: ["09:00"] },
-      { times: [], escalationPolicyId: "medication" },
-      "medication",
-      false,
-    ],
-    [
-      "medication to anytime routine",
-      { type: "medication", times: ["09:00"] },
-      { type: "routine", times: [] },
-      "none",
-      false,
-    ],
-  ];
-
-  test.each(cases)("%s", async (_name, create, changes, expected, withCustom) => {
-    const f = await setup();
-    let custom: Id<"escalationPolicies"> | undefined;
-    if (withCustom) {
-      custom = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.createPolicy, {
-        householdId: f.householdId,
-        name: "Custom",
-        steps: [{ action: "prompt_senior", offsetMinutes: 0, skipIfClaimed: false }],
-      });
-    }
-    const id = await makeTask(f, { ...create, ...(custom ? { escalationPolicyId: custom } : {}) });
-    const patch = { ...changes };
-    if (patch.escalationPolicyId === "medication") patch.escalationPolicyId = f.medication;
-    const after = await updateTask(f, id, patch);
-    const want = {
-      none: undefined,
-      promptOnly: f.promptOnly,
-      medication: f.medication,
-      custom,
-    }[expected];
-    expect(after.escalationPolicyId).toBe(want);
   });
 });
 

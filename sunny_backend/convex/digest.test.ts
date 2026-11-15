@@ -285,7 +285,7 @@ describe("facts", () => {
       scheduledTime: "18:00",
       windowStart: 3,
       state: "missed",
-      firedSteps: [{ stepId: "s2", action: "alert_on_call", firedAt: 1, notified: true }],
+      firedSteps: [{ stepId: "s2", action: "alert_all_caregivers", firedAt: 1, notified: true }],
       claimedBy: "pat",
     });
     await addDayInstance(f, "Walk", {
@@ -631,18 +631,17 @@ describe("chat thread", () => {
     expect((await posts(f)).map((p) => p.localDate)).toEqual(["2026-11-02"]);
   });
 
-  test("a caregiver who turned the digest off gets no push or text but still sees the post", async () => {
+  test("every reachable caregiver, a viewer too, gets the push or text and sees the post", async () => {
     const f = await setup();
     await f.t.run(async (ctx) => {
       await ctx.db.insert("pushTokens", { userId: "val", token: "val-1" });
-      for (const m of await ctx.db.query("householdMembers").collect()) {
-        if (m.userId === "max" || m.userId === "val") {
-          await ctx.db.patch(m._id, { digestOptOut: true });
-        }
-      }
     });
     await composeDay(f);
-    expect((await digestRows(f)).map((r) => r.recipientUserId)).toEqual(["pat"]);
+    expect((await digestRows(f)).map((r) => r.recipientUserId).sort()).toEqual([
+      "max",
+      "pat",
+      "val",
+    ]);
     expect(await posts(f)).toHaveLength(1);
     const items = await transcriptAs(f, "max");
     expect(items).toEqual([expect.objectContaining({ type: "post", body: GOOD_REPLY })]);
