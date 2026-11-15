@@ -179,10 +179,6 @@ function limitFlagDetail(
   );
 }
 
-function loggedAt(row: Doc<"doseLog">): number {
-  return row.loggedAt ?? row._creationTime;
-}
-
 function possibleRepeat(
   rows: Doc<"doseLog">[],
   takenAt: number,
@@ -190,11 +186,11 @@ function possibleRepeat(
 ): Doc<"doseLog"> | null {
   const near = rows.filter(
     (r) =>
-      loggedAt(r) >= now - DOSE_REPEAT_WINDOW_MS ||
+      r.loggedAt >= now - DOSE_REPEAT_WINDOW_MS ||
       Math.abs(r.takenAt - takenAt) < DOSE_REPEAT_WINDOW_MS,
   );
   return near.reduce<Doc<"doseLog"> | null>(
-    (a, b) => (a === null || loggedAt(b) > loggedAt(a) ? b : a),
+    (a, b) => (a === null || b.loggedAt > a.loggedAt ? b : a),
     null,
   );
 }
@@ -208,7 +204,7 @@ function isRepeatCall(
   return (
     conversationId !== undefined &&
     row.conversationId === conversationId &&
-    loggedAt(row) >= now - REPEAT_CALL_MS &&
+    row.loggedAt >= now - REPEAT_CALL_MS &&
     Math.abs(row.takenAt - takenAt) <= REPEAT_CALL_MS
   );
 }
@@ -314,7 +310,7 @@ export async function undoLastDoseCore(
           conversationId !== undefined &&
           r.conversationId === conversationId &&
           r.reportedVia === "voice" &&
-          loggedAt(r) >= now - UNDO_WINDOW_MS,
+          r.loggedAt >= now - UNDO_WINDOW_MS,
       )
       .map((row) => ({ med: m, row })),
   );
@@ -326,7 +322,7 @@ export async function undoLastDoseCore(
       options: candidates.filter((m) => withDoses.has(m.task._id)).map((m) => m.task.displayLabel),
     };
   }
-  const latest = undoable.reduce((a, b) => (loggedAt(b.row) > loggedAt(a.row) ? b : a));
+  const latest = undoable.reduce((a, b) => (b.row.loggedAt > a.row.loggedAt ? b : a));
   await ctx.db.patch(latest.row._id, { undoneAt: now });
   await audit(ctx, {
     householdId: household._id,

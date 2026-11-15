@@ -303,19 +303,6 @@ describe("request", () => {
         expect(row?.carryOver).toBe(true);
       });
 
-      test("starts fresh when the stored agent config is missing", async () => {
-        const t = makeBackend();
-        const householdId = await createTeam(t);
-        await insertRequest(t, householdId, {
-          status: "succeeded",
-          sessionId: "old",
-          agentConfig: undefined,
-        });
-        const id = await sendLatest(t, householdId);
-        const row = await t.run(async (ctx) => await ctx.db.get(id));
-        expect(row?.continueRequestId).toBeUndefined();
-      });
-
       test("a fresh request stores the current fingerprint", async () => {
         const t = makeBackend();
         const householdId = await createTeam(t);

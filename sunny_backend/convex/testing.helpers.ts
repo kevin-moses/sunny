@@ -245,6 +245,7 @@ export async function addInstance(
       createdByKind: "caregiver",
       active: true,
       scheduleChangedAt: 0,
+      highPriority: false,
     });
     return await ctx.db.insert("taskInstances", {
       localDate: "2026-10-29",

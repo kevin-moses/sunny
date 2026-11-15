@@ -836,6 +836,7 @@ describe("bounded task deletion", () => {
           taskId,
           takenAt: i,
           reportedVia: "phone_app",
+          loggedAt: Date.now(),
         });
       }
     });

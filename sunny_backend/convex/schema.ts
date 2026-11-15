@@ -27,14 +27,11 @@ import {
   toolCall,
 } from "./lib/validators";
 
-const legacyFiredAction = v.union(escalationAction, v.literal("alert_on_call"));
-
 export default defineSchema({
   households: defineTable({
     seniorPreferredName: v.string(),
     seniorFullName: v.optional(v.string()),
     timezone: v.string(),
-    onCallUserId: v.optional(v.string()),
     digestTime: v.string(),
     eventNoticeTime: v.string(),
     shareTranscripts: v.boolean(),
@@ -51,7 +48,6 @@ export default defineSchema({
     phone: v.optional(v.string()),
     phoneVerifiedAt: v.optional(v.number()),
     pendingPhone: v.optional(v.string()),
-    digestOptOut: v.optional(v.boolean()),
   })
     .index("by_household_user", ["householdId", "userId"])
     .index("by_user", ["userId"])
@@ -114,20 +110,6 @@ export default defineSchema({
     .index("by_code", ["code"])
     .index("by_household", ["householdId"]),
 
-  escalationPolicies: defineTable({
-    householdId: v.id("households"),
-    name: v.string(),
-    systemKey: v.optional(v.union(v.literal("medication"), v.literal("prompt_only"))),
-    steps: v.array(
-      v.object({
-        id: v.string(),
-        action: legacyFiredAction,
-        offsetMinutes: v.number(),
-        skipIfClaimed: v.boolean(),
-      }),
-    ),
-  }).index("by_household", ["householdId"]),
-
   tasks: defineTable({
     householdId: v.id("households"),
     type: taskType,
@@ -142,8 +124,7 @@ export default defineSchema({
     startsOn: v.optional(v.string()),
     endsOn: v.optional(v.string()),
     windowMinutes: v.number(),
-    escalationPolicyId: v.optional(v.id("escalationPolicies")),
-    highPriority: v.optional(v.boolean()),
+    highPriority: v.boolean(),
     asNeededMaxPerDay: v.optional(v.number()),
     asNeededMinHours: v.optional(v.number()),
     createdByKind: taskCreator,
@@ -152,8 +133,7 @@ export default defineSchema({
     scheduleChangedAt: v.number(),
   })
     .index("by_household", ["householdId"])
-    .index("by_household_active", ["householdId", "active"])
-    .index("by_household_policy", ["householdId", "escalationPolicyId"]),
+    .index("by_household_active", ["householdId", "active"]),
 
   taskInstances: defineTable({
     taskId: v.id("tasks"),
@@ -192,7 +172,7 @@ export default defineSchema({
     firedSteps: v.array(
       v.object({
         stepId: v.string(),
-        action: legacyFiredAction,
+        action: escalationAction,
         firedAt: v.number(),
         notified: v.boolean(),
       }),
@@ -210,7 +190,7 @@ export default defineSchema({
     reportedVia: confirmVia,
     reportedBy: v.optional(v.string()),
     note: v.optional(v.string()),
-    loggedAt: v.optional(v.number()),
+    loggedAt: v.number(),
     conversationId: v.optional(v.id("conversations")),
     undoneAt: v.optional(v.number()),
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
@@ -439,7 +419,7 @@ export default defineSchema({
     status: agentRequestStatus,
     workflowId: v.optional(v.string()),
     sessionId: v.optional(v.string()),
-    agentConfig: v.optional(v.string()),
+    agentConfig: v.string(),
     carryOver: v.optional(v.boolean()),
     baselineUserMessages: v.optional(v.number()),
     reply: v.optional(v.string()),

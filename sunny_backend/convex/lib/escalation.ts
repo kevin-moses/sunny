@@ -32,12 +32,8 @@ export function isCaregiverAlert(action: FiredStep["action"]): boolean {
   return action !== "prompt_senior";
 }
 
-export function isHighPriority(task: Pick<Doc<"tasks">, "highPriority">): boolean {
-  return task.highPriority === true;
-}
-
 export function alertsCaregivers(task: LadderTask): boolean {
-  return !isAnytimeTask(task) && (task.type === "medication" || isHighPriority(task));
+  return !isAnytimeTask(task) && (task.type === "medication" || task.highPriority);
 }
 
 export function escalationSteps(

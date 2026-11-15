@@ -3,7 +3,7 @@ import type { QueryCtx } from "../_generated/server";
 import { type Actor, memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
-import { isHighPriority, isSnoozed, seniorPromptCount } from "./escalation";
+import { isSnoozed, seniorPromptCount } from "./escalation";
 import { taskStep, visibleStepPressIds } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
 import { addDays, daysBetween, localDate, localTime } from "./time";
@@ -113,7 +113,7 @@ export async function todayInstances(
       pillDescription: task.pillDescription ?? null,
       checklistItems: task.checklistItems,
       step: taskStep(task.checklistItems, instance.currentStep),
-      highPriority: isHighPriority(task),
+      highPriority: task.highPriority,
       scheduledTime: instance.scheduledTime,
       state: instance.state,
       confirmedAt,

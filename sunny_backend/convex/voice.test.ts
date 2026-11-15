@@ -61,6 +61,7 @@ async function seedHousehold(
       createdByKind: "caregiver",
       active: true,
       scheduleChangedAt: 0,
+      highPriority: false,
     });
     const instanceId = await ctx.db.insert("taskInstances", {
       taskId,
