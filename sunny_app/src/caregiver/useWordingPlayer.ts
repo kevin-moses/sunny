@@ -3,16 +3,16 @@
 // Purpose: Plays the sentence of a wording card in the caregiver's Chat tab, so the caregiver
 // hears what the senior will hear: on-device speech (expo-speech) with the home display's voice
 // settings (tuning.ts SPEECH_LANGUAGE and the default speech rate, DEFAULT_TUNING.speechRate).
-// The audio session plays even with the ring/silent switch on, ducking other audio, as the
-// display's cue does. If the audio session cannot be set, that is logged and the sentence is
-// spoken anyway; if the speech itself fails (the engine throws or reports an error), the play
-// ends in the failed state with nothing playing (never a stuck Stop button).
+// The audio session is the display cue's (tuning.ts SPEECH_AUDIO_MODE): it plays even with the
+// ring/silent switch on, ducking other audio. If the audio session cannot be set, that is logged
+// and the sentence is spoken anyway; if the speech itself fails (the engine throws or reports an
+// error), the play ends in the failed state with nothing playing (never a stuck Stop button).
 // Rules: one sentence plays at a time; tapping the playing card's button stops it, and tapping
-// another card's button stops the first and plays the second. Leaving the screen stops it: the
-// tab becoming inactive (the Chat tab stays mounted but hidden), the app leaving the foreground,
-// or the screen unmounting. A sentence that cannot be spoken is reported for that card
-// (failedId), so a tap is never silently ignored. Callbacks of a sentence that was already
-// replaced or stopped are ignored (each play has its own token).
+// another card's button stops the first and plays the second. Leaving the screen stops it: the tab
+// becoming inactive (the Chat tab stays mounted but hidden), the app leaving the foreground, or the
+// screen unmounting. A sentence that cannot be spoken is reported for that card (failedId), so a
+// tap is never silently ignored. Callbacks of a sentence that was already replaced or stopped are
+// ignored (each play has its own token).
 //
 // Last modified: 2026-11-14
 
@@ -21,7 +21,7 @@ import * as Speech from 'expo-speech';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { DEFAULT_TUNING, SPEECH_LANGUAGE } from '../display/tuning';
+import { DEFAULT_TUNING, SPEECH_AUDIO_MODE, SPEECH_LANGUAGE } from '../display/tuning';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 
@@ -34,14 +34,6 @@ export interface WordingPlayer {
   /** Play a card's sentence, or stop it when it is the one playing. */
   toggle: (id: string, sentence: string) => void;
 }
-
-/** The audio session for a sentence: plays with the silent switch on, ducking other audio. */
-const AUDIO_MODE = {
-  playsInSilentMode: true,
-  interruptionMode: 'duckOthers',
-  allowsRecording: false,
-  shouldPlayInBackground: false,
-} as const;
 
 /**
  * purpose: Play wording card sentences one at a time (see the file header for the rules).
@@ -98,7 +90,7 @@ export function useWordingPlayer(active: boolean): WordingPlayer {
         if (failed) setFailedId(id);
       };
       try {
-        await setAudioModeAsync(AUDIO_MODE);
+        await setAudioModeAsync(SPEECH_AUDIO_MODE);
       } catch (error) {
         logger.warning('Wording', `Audio mode failed; speaking anyway: ${errorMessage(error)}`);
       }

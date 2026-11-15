@@ -64,7 +64,14 @@ import { appError } from "./errors";
 import { updateHouseholdCore } from "./householdSettings";
 import type { HouseholdSettingsChanges } from "./householdSettings";
 import { entriesInOrder } from "./profileReads";
-import { booleanField, changesOf, idField, rejectUnknownKeys, stringField } from "./toolInput";
+import {
+  booleanField,
+  changesOf,
+  idField,
+  optionalString,
+  rejectUnknownKeys,
+  stringField,
+} from "./toolInput";
 import type { ToolContext, ToolHandler } from "./toolInput";
 import { LIFE_CATEGORIES } from "./validators";
 
@@ -355,7 +362,7 @@ async function addKnowledge(
     const result = await addEntryCore(ctx, actor, householdId, {
       category: categoryField(fields.category),
       name: stringField(fields.name, "name"),
-      details: details === undefined ? undefined : stringField(details, "details"),
+      details: optionalString(details, "details"),
     });
     return { status: addStatus(result), stored: entryForModel(result.row) };
   }
@@ -393,7 +400,7 @@ async function updateKnowledge(
   if (kind === "profile") {
     const mapped: EntryChanges = {};
     if (changes.category !== undefined) mapped.category = categoryField(changes.category);
-    if (changes.name !== undefined) mapped.name = stringField(changes.name, "name");
+    mapped.name = optionalString(changes.name, "name");
     if (changes.details !== undefined) {
       mapped.details = stringField(changes.details, "details", true);
     }
@@ -403,9 +410,8 @@ async function updateKnowledge(
   if (kind === "topic") {
     const id = knowledgeId(ctx, "topic", input);
     const topic = await updateTopicCore(ctx, actor, householdId, id, {
-      topic: changes.topic === undefined ? undefined : stringField(changes.topic, "topic"),
-      guidance:
-        changes.guidance === undefined ? undefined : stringField(changes.guidance, "guidance"),
+      topic: optionalString(changes.topic, "topic"),
+      guidance: optionalString(changes.guidance, "guidance"),
     });
     return topicForModel(topic);
   }
@@ -496,9 +502,7 @@ function settingsChanges(input: Record<string, unknown>): HouseholdSettingsChang
   rejectUnknownKeys(input, SETTINGS_KEYS);
   if (Object.keys(input).length === 0) throw appError("invalid", "Nothing to change");
   const changes: HouseholdSettingsChanges = {};
-  if (input.digest_time !== undefined) {
-    changes.digestTime = stringField(input.digest_time, "digest_time");
-  }
+  changes.digestTime = optionalString(input.digest_time, "digest_time");
   if (input.share_transcripts !== undefined) {
     changes.shareTranscripts = booleanField(input.share_transcripts, "share_transcripts");
   }

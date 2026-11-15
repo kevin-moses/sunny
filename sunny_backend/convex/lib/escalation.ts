@@ -6,7 +6,11 @@
 // createdAt, plus the step's offset (stepDueAt). A due step is held back while a snooze holds
 // senior prompts (isSnoozed), and a skipIfClaimed step for as long as the instance is claimed
 // (stepHeld). Only an active task with a policy has steps (activePolicySteps). Open states are
-// upcoming, due and escalated (isOpenState); seniorPromptCount counts the prompts already sent.
+// upcoming, due and escalated (isOpenState); seniorPromptCount counts the prompts already sent,
+// caregiverAlerted says whether a caregiver alert went out (the scheduler, the digest facts and
+// the on-call migration share it), firedStep builds the record of a fired step, and
+// dueOrEscalatedInstances reads a household's instances the scheduler fires and closes (due
+// first, then escalated).
 // upcomingPromptTimes projects those rules forward: the instants at which the scheduler will
 // send a senior prompt for an instance that stays unconfirmed, assuming nothing else changes
 // (no new snooze, no claim, no policy edit). Like the scheduler, only open timed instances
@@ -17,11 +21,15 @@
 //
 // Last modified: 2026-11-14
 
-import type { Doc } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { isAnytimeInstance } from "./anytime";
 import { minutes } from "./time";
+import { isCaregiverAlert } from "./validators";
 import type { EscalationAction, EscalationStep, InstanceState } from "./validators";
+
+/** One fired-step record on an instance. */
+export type FiredStep = Doc<"taskInstances">["firedSteps"][number];
 
 /** The instance fields that decide when a step is due and whether it is held back. */
 export interface StepTiming {
@@ -58,6 +66,52 @@ export function isOpenState(state: InstanceState): boolean {
  */
 export function isSnoozed(snoozedUntil: number | null | undefined, now: number): boolean {
   return snoozedUntil != null && now < snoozedUntil;
+}
+
+/**
+ * purpose: Whether a caregiver alert went out for an instance: a fired caregiver-alert step
+ *          (the legacy "alert_on_call" counts) that was notified.
+ * @param firedSteps: (readonly { action, notified }[]) The instance's fired steps.
+ * @return: (boolean) True when caregivers were alerted.
+ */
+export function caregiverAlerted(
+  firedSteps: readonly { action: EscalationAction; notified: boolean }[],
+): boolean {
+  return firedSteps.some((s) => isCaregiverAlert(s.action) && s.notified);
+}
+
+/**
+ * purpose: The record of a step fired at an instant.
+ * @param step: (EscalationStep) The step.
+ * @param now: (number) Epoch ms it fired.
+ * @param notified: (boolean) Whether it sent anything (false when superseded in the same tick).
+ * @return: (FiredStep) The record for the instance's firedSteps.
+ */
+export function firedStep(step: EscalationStep, now: number, notified: boolean): FiredStep {
+  return { stepId: step.id, action: step.action, firedAt: now, notified };
+}
+
+/**
+ * purpose: A household's instances whose window the scheduler fires steps on or closes: those
+ *          due, then those escalated, through the by_household_state index.
+ * @param ctx: (QueryCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<Doc<"taskInstances">[]>) The due instances, then the escalated ones.
+ */
+export async function dueOrEscalatedInstances(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Doc<"taskInstances">[]> {
+  const rows: Doc<"taskInstances">[] = [];
+  for (const state of ["due", "escalated"] as const) {
+    rows.push(
+      ...(await ctx.db
+        .query("taskInstances")
+        .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
+        .collect()),
+    );
+  }
+  return rows;
 }
 
 /**

@@ -2,7 +2,8 @@
 // Purpose: What every household agent tool shares, used by the schedule tools
 // (lib/agentTools.ts) and the setup tools (lib/agentSetupTools.ts): the ToolContext a tool runs
 // with (household, agent actor and clock, all from the request row, never from the model), the
-// handler type, and the readers that type the model's input. A reader that finds a wrong type
+// handler type, and the readers that type the model's input (stringField, optionalString,
+// booleanField, changesOf, rejectUnknownKeys, idField). A reader that finds a wrong type
 // throws an "invalid" application error whose message the model reads and can act on
 // (executeAgentTool turns it into "Error: <message>").
 //
@@ -51,6 +52,18 @@ export function stringField(value: unknown, key: string, optional = false): stri
     );
   }
   return optional ? value : requireNonBlank(value, key);
+}
+
+/**
+ * purpose: Read a field that may be left out: absent stays absent, anything else must be a
+ *          non-blank string (stringField's rule and message).
+ * @param value: (unknown) The field's value.
+ * @param key: (string) Field name, for the error message.
+ * @return: (string | undefined) The trimmed string, or undefined when the field is absent.
+ * @raises invalid when it is present but not a non-blank string.
+ */
+export function optionalString(value: unknown, key: string): string | undefined {
+  return value === undefined ? undefined : stringField(value, key);
 }
 
 /**

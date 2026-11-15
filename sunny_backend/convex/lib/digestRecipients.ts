@@ -20,6 +20,7 @@ import type { MutationCtx } from "../_generated/server";
 import { actorUserId, requireCaregiverMember } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
+import { appError } from "./errors";
 
 /**
  * purpose: Whether a caregiver receives the daily digest by push or text.
@@ -39,7 +40,8 @@ export function receivesDigest(member: Pick<Doc<"householdMembers">, "digestOptO
  * @param householdId: (Id<"households">) The household the actor acts in.
  * @param receives: (boolean) True to receive it, false to stop it.
  * @return: (Promise<Doc<"householdMembers">>) The caregiver after the change.
- * @raises forbidden when the actor is not a caregiver of the household.
+ * @raises forbidden when the actor has no caregiver behind it (the system, the voice agent)
+ *         or is not a caregiver of the household.
  */
 export async function setDigestDelivery(
   ctx: MutationCtx,
@@ -47,7 +49,9 @@ export async function setDigestDelivery(
   householdId: Id<"households">,
   receives: boolean,
 ): Promise<Doc<"householdMembers">> {
-  const member = await requireCaregiverMember(ctx, householdId, actorUserId(actor) ?? "");
+  const userId = actorUserId(actor);
+  if (userId === undefined) throw appError("forbidden", "Only a caregiver can do this");
+  const member = await requireCaregiverMember(ctx, householdId, userId);
   if (receivesDigest(member) === receives) return member;
   const digestOptOut = receives ? undefined : true;
   await ctx.db.patch(member._id, { digestOptOut });

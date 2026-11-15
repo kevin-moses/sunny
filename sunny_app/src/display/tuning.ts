@@ -7,7 +7,8 @@
 // closes) and that turn stored data back into valid values (sanitizeTuning). Defaults are the
 // product owner's starting values. TuningProvider holds the live values (persisted in debug
 // builds, adjustable from the developer sheet); hooks read them with useTuning(). Also the
-// language of the spoken prompts (SPEECH_LANGUAGE), which the caregiver's wording card shares.
+// language of the spoken prompts (SPEECH_LANGUAGE) and the audio session they play in
+// (SPEECH_AUDIO_MODE), which the caregiver's wording card shares.
 //
 // Last modified: 2026-11-14
 
@@ -223,6 +224,17 @@ export const DEFAULT_TUNING: Readonly<DisplayTuning> = tuningFrom(
  * caregiver's wording card (caregiver/useWordingPlayer.ts) speaks with the display's voice.
  */
 export const SPEECH_LANGUAGE = 'en-US';
+
+/**
+ * The audio session the display's cue and the caregiver's wording card play in: audible with
+ * the ring/silent switch (or the iPad's mute) on, ducking other audio rather than stopping it.
+ */
+export const SPEECH_AUDIO_MODE = {
+  playsInSilentMode: true,
+  interruptionMode: 'duckOthers',
+  allowsRecording: false,
+  shouldPlayInBackground: false,
+} as const;
 
 /**
  * purpose: Make a candidate value safe: round it to the tunable's step and keep it inside its

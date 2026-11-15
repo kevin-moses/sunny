@@ -18,8 +18,9 @@
 // AbortSignal fired) or failed (the audio mode or the speech failed, or a line did not finish
 // within its time limit, after which the speech is stopped), with how many lines were done
 // before that, so a retry can start from the line that failed. A line can be skipped at the
-// moment it is due (its task was confirmed during the cue). The speech language is
-// tuning.ts SPEECH_LANGUAGE, shared with the caregiver's wording card.
+// moment it is due (its task was confirmed during the cue). The speech language and the audio
+// session are tuning.ts SPEECH_LANGUAGE and SPEECH_AUDIO_MODE, shared with the caregiver's
+// wording card.
 //
 // Last modified: 2026-11-14
 
@@ -29,7 +30,7 @@ import * as Speech from 'expo-speech';
 
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
-import { SPEECH_LANGUAGE } from './tuning';
+import { SPEECH_AUDIO_MODE, SPEECH_LANGUAGE } from './tuning';
 import type { DisplayTuning } from './tuning';
 
 /**
@@ -245,12 +246,7 @@ export async function playCue(
    */
   const end = (status: CueStatus): CueResult => ({ status, done });
   try {
-    await setAudioModeAsync({
-      playsInSilentMode: true,
-      interruptionMode: 'duckOthers',
-      allowsRecording: false,
-      shouldPlayInBackground: false,
-    });
+    await setAudioModeAsync(SPEECH_AUDIO_MODE);
     if (signal.aborted) return end('stopped');
     await chimeIfPossible(signal);
     await wait(tuning.afterChimeMs, signal);

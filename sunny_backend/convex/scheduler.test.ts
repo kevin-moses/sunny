@@ -12,8 +12,9 @@
 // late, a window as long as the alert offset, a downtime) alerts every caregiver once as it is
 // marked missed ("Its time has now passed."), the alert can be claimed and is not stale for
 // delivery; nothing is sent when caregivers were already alerted, a claim holds the only alert,
-// the ladder is digest-only, the instance is anytime, the task is inactive, or the instance
-// was created after its window ended. Also: the tick fans out one tickHousehold per household (with
+// the ladder is digest-only, the instance is anytime, the task is inactive, the instance was
+// created after its window ended, or the window ended more than an hour before the tick (59
+// minutes alerts, 61 does not). Also: the tick fans out one tickHousehold per household (with
 // paging), editing a policy mid-ladder neither re-fires nor skips steps (stable step ids), windows
 // that cross midnight stay listed and confirmable, and deleting a task purges its rows in bounded
 // batches while orphaned instances are harmless. The clock is driven by passing `now` to the
@@ -172,7 +173,6 @@ async function tick(t: TestConvex, iso: string): Promise<TickResult> {
     stepsFired: 0,
     escalated: 0,
     missed: 0,
-    alertedAtClose: 0,
     noticed: 0,
   };
   for (const householdId of ids) {
@@ -736,7 +736,7 @@ describe("escalation ladder", () => {
     const taskId = await makeTask(f);
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     const result = await tick(f.t, "2027-03-13T14:00:00Z");
-    expect(result).toMatchObject({ opened: 1, stepsFired: 0, missed: 1, alertedAtClose: 1 });
+    expect(result).toMatchObject({ opened: 1, stepsFired: 0, missed: 1 });
     const rows = await outbox(f.t, i1);
     expect(rows.every((r) => r.kind === "caregiver_alert")).toBe(true);
     expect(rows.map((r) => r.recipientUserId).sort()).toEqual(["max", "pat", "val"]);
@@ -1200,7 +1200,7 @@ describe("a window that closes before the caregivers were alerted", () => {
     await tick(f.t, "2027-03-13T13:15:00Z");
     expect(await alerts(f, i1)).toEqual([]);
     const closing = await tick(f.t, "2027-03-13T13:20:00Z");
-    expect(closing).toMatchObject({ missed: 1, alertedAtClose: 1, stepsFired: 0 });
+    expect(closing).toMatchObject({ missed: 1, stepsFired: 0 });
     const ids = await stepIds(f.t, f.medication);
     expect(await alerts(f, i1)).toEqual(["max", "pat", "val"].map((u) => [ids[2], u, PASSED]));
     const rows = (await outbox(f.t, i1)).filter((o) => o.kind === "caregiver_alert");
@@ -1244,7 +1244,7 @@ describe("a window that closes before the caregivers were alerted", () => {
     await tick(f.t, "2027-03-13T13:00:00Z");
     await tick(f.t, "2027-03-13T13:15:00Z");
     const closing = await tick(f.t, "2027-03-13T13:30:00Z");
-    expect(closing).toMatchObject({ stepsFired: 0, alertedAtClose: 1, missed: 1 });
+    expect(closing).toMatchObject({ stepsFired: 0, missed: 1 });
     expect((await alerts(f, i1)).map((r) => r[2])).toEqual([PASSED, PASSED, PASSED]);
   });
 
@@ -1254,7 +1254,7 @@ describe("a window that closes before the caregivers were alerted", () => {
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:30:00Z");
     const closing = await tick(f.t, "2027-03-13T14:00:00Z");
-    expect(closing).toMatchObject({ missed: 1, alertedAtClose: 0 });
+    expect(closing).toMatchObject({ missed: 1 });
     expect((await alerts(f, i1)).map((r) => r[2])).toEqual(Array(3).fill("Due at 8:00 AM."));
   });
 
@@ -1274,7 +1274,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     await tick(f.t, "2027-03-13T13:30:00Z");
     expect(await tick(f.t, "2027-03-13T13:40:00Z")).toMatchObject({
       missed: 1,
-      alertedAtClose: 0,
     });
     expect((await alerts(f, i1)).map((r) => r[2])).toEqual(Array(3).fill("Due at 8:00 AM."));
   });
@@ -1293,7 +1292,7 @@ describe("a window that closes before the caregivers were alerted", () => {
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:00:00Z");
     await claim(f, i1, "2027-03-13T13:05:00Z");
-    expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({ alertedAtClose: 0 });
+    expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({ missed: 1 });
     expect(await alerts(f, i1)).toEqual([]);
     expect((await reload(f.t, i1)).state).toBe("missed");
   });
@@ -1319,7 +1318,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     await tick(f.t, "2027-03-13T13:00:00Z");
     expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({
       missed: 1,
-      alertedAtClose: 0,
     });
     expect(await alerts(f, i1)).toEqual([]);
   });
@@ -1346,7 +1344,7 @@ describe("a window that closes before the caregivers were alerted", () => {
     await tick(f.t, "2027-03-13T13:00:00Z");
     // Stopped without the resync that would remove the open instance.
     await f.t.run(async (ctx) => await ctx.db.patch(taskId, { active: false }));
-    expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({ alertedAtClose: 0 });
+    expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({ missed: 1 });
     expect(await alerts(f, i1)).toEqual([]);
   });
 
@@ -1357,11 +1355,33 @@ describe("a window that closes before the caregivers were alerted", () => {
     // As after an outage: today's instance did not exist until the next tick, at 9:30 local.
     await f.t.run(async (ctx) => await ctx.db.delete(first._id));
     const result = await tick(f.t, "2027-03-13T14:30:00Z");
-    expect(result).toMatchObject({ created: 1, opened: 1, missed: 1, alertedAtClose: 0 });
+    expect(result).toMatchObject({ created: 1, opened: 1, missed: 1 });
     const late = await instanceOn(f.t, taskId, "2027-03-13");
     expect(late.createdAt).toBe(Date.parse("2027-03-13T14:30:00Z"));
     expect((await reload(f.t, late._id)).state).toBe("missed");
     expect(await outbox(f.t, late._id)).toEqual([]);
+  });
+
+  test("a window that ended 59 minutes before the tick still alerts as it closes", async () => {
+    const f = await setup("2027-03-13T11:00:00Z");
+    const taskId = await makeTask(f, { windowMinutes: 20 });
+    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
+    await tick(f.t, "2027-03-13T13:00:00Z");
+    // The window ended at 13:20; the scheduler next runs at 14:19.
+    await tick(f.t, "2027-03-13T14:19:00Z");
+    expect((await alerts(f, i1)).map((r) => r[2])).toEqual([PASSED, PASSED, PASSED]);
+    expect((await reload(f.t, i1)).state).toBe("missed");
+  });
+
+  test("a window that ended 61 minutes before the tick is missed without an alert", async () => {
+    const f = await setup("2027-03-13T11:00:00Z");
+    const taskId = await makeTask(f, { windowMinutes: 20 });
+    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
+    await tick(f.t, "2027-03-13T13:00:00Z");
+    // The scheduler was down: it next runs at 14:21, 61 minutes after the window ended.
+    expect(await tick(f.t, "2027-03-13T14:21:00Z")).toMatchObject({ missed: 1 });
+    expect(await alerts(f, i1)).toEqual([]);
+    expect((await reload(f.t, i1)).state).toBe("missed");
   });
 
   test("a caregiver can claim it, and delivery does not drop it as stale", async () => {

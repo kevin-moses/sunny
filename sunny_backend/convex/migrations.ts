@@ -21,9 +21,8 @@
 // is not zero, run the command again later, once those windows have closed (at most a day).
 // It is idempotent (a second run finds nothing to change) and works in batches: it reads one
 // page of households and schedules itself for the next page until all are done; each page logs
-// its counts. Once it has
-// run on every deployment, the deprecated onCallUserId field and the "alert_on_call" literal can
-// be deleted from schema.ts and lib/validators.ts.
+// its counts. Once it has run on every deployment, the deprecated onCallUserId field and the
+// "alert_on_call" literal can be deleted from schema.ts and lib/validators.ts.
 //
 // Run: npx convex run migrations:removeOnCall
 //
@@ -34,6 +33,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { dueOrEscalatedInstances } from "./lib/escalation";
 import type { EscalationStep } from "./lib/validators";
 
 /** Households migrated per transaction. */
@@ -91,14 +91,8 @@ async function hasOpenLegacyAlert(
   ctx: MutationCtx,
   householdId: Id<"households">,
 ): Promise<boolean> {
-  for (const state of ["due", "escalated"] as const) {
-    const open = await ctx.db
-      .query("taskInstances")
-      .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
-      .collect();
-    if (open.some((i) => i.firedSteps.some((f) => f.action === "alert_on_call"))) return true;
-  }
-  return false;
+  const open = await dueOrEscalatedInstances(ctx, householdId);
+  return open.some((i) => i.firedSteps.some((f) => f.action === "alert_on_call"));
 }
 
 /**

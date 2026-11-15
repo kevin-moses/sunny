@@ -33,8 +33,9 @@
 // it is now: the label the display shows, the display's clock time of its first time, the
 // sentence the display speaks then (lib/deviceWording.ts cueSpeech; null for a task with no
 // time, which is never prompted), and every time of the task ("HH:MM"). A stopped, deleted or
-// other-household task has no card. This reads only the request row and its tasks, never the
-// tool call rows.
+// other-household task has no card. This reads only the request rows the transcript already
+// loaded and their tasks (each task once per query), never the tool call rows, and builds no
+// cards for a request still queued or running.
 // Since viewers get no requests, they never get wording either.
 //
 // Last modified: 2026-11-14
@@ -321,7 +322,7 @@ export const list = query({
   args: { householdId: v.id("households"), limit: v.optional(v.number()) },
   handler: async (ctx, { householdId, limit }): Promise<AgentRequestView[]> => {
     await requireEditor(ctx, householdId);
-    return await recentRequests(ctx, householdId, listCount(limit));
+    return (await recentRequests(ctx, householdId, listCount(limit))).map((r) => r.view);
   },
 });
 
@@ -341,24 +342,28 @@ function listCount(limit: number | undefined): number {
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) Household.
  * @param count: (number) How many at most.
- * @return: (Promise<AgentRequestView[]>) The requests, newest first.
+ * @return: (Promise<{ row, view }[]>) The requests, newest first, each as its row (for what
+ *          only the server reads, such as changedTaskIds) and its view.
  */
 async function recentRequests(
   ctx: QueryCtx,
   householdId: Id<"households">,
   count: number,
-): Promise<AgentRequestView[]> {
+): Promise<{ row: Doc<"agentRequests">; view: AgentRequestView }[]> {
   const rows = await ctx.db
     .query("agentRequests")
     .withIndex("by_household", (q) => q.eq("householdId", householdId))
     .order("desc")
     .take(count);
   const names = new Map<string, string | null>();
-  const views: AgentRequestView[] = [];
+  const out: { row: Doc<"agentRequests">; view: AgentRequestView }[] = [];
   for (const row of rows) {
-    views.push(toView(row, await requesterName(ctx, householdId, row.requestedBy, names)));
+    out.push({
+      row,
+      view: toView(row, await requesterName(ctx, householdId, row.requestedBy, names)),
+    });
   }
-  return views;
+  return out;
 }
 
 /**
@@ -421,18 +426,21 @@ function taskWording(task: Doc<"tasks">): TaskWording {
  *          household gets no card.
  * @param ctx: (QueryCtx) Context.
  * @param householdId: (Id<"households">) The request's household.
- * @param requestId: (Id<"agentRequests">) The request.
+ * @param taskIds: (readonly Id<"tasks">[]) The request row's changedTaskIds.
+ * @param loaded: (Map<Id<"tasks">, Doc<"tasks"> | null>) Tasks already read in this query
+ *        (updated), so a task several requests changed is read once.
  * @return: (Promise<TaskWording[]>) The cards.
  */
 async function requestWording(
   ctx: QueryCtx,
   householdId: Id<"households">,
-  requestId: Id<"agentRequests">,
+  taskIds: readonly Id<"tasks">[],
+  loaded: Map<Id<"tasks">, Doc<"tasks"> | null>,
 ): Promise<TaskWording[]> {
-  const request = await ctx.db.get(requestId);
   const cards: TaskWording[] = [];
-  for (const taskId of request?.changedTaskIds ?? []) {
-    const task = await ctx.db.get(taskId);
+  for (const taskId of taskIds) {
+    if (!loaded.has(taskId)) loaded.set(taskId, await ctx.db.get(taskId));
+    const task = loaded.get(taskId);
     if (task && task.householdId === householdId && task.active) cards.push(taskWording(task));
   }
   return cards;
@@ -458,22 +466,28 @@ export const transcript = query({
       type: "post" as const,
       ...post,
     }));
-    const requests = EDITOR_ROLES.includes(actor.role)
-      ? (await recentRequests(ctx, householdId, count)).map((request) => ({
-          type: "request" as const,
-          ...request,
-        }))
+    const loadedRequests = EDITOR_ROLES.includes(actor.role)
+      ? await recentRequests(ctx, householdId, count)
       : [];
+    const changed = new Map(loadedRequests.map(({ row }) => [row._id, row.changedTaskIds ?? []]));
+    const requests = loadedRequests.map(({ view }) => ({ type: "request" as const, ...view }));
     const newest = [...posts, ...requests]
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, count);
-    return await Promise.all(
-      newest.map(async (item): Promise<TranscriptItem> =>
-        item.type === "post"
-          ? item
-          : { ...item, wording: await requestWording(ctx, householdId, item.id) },
-      ),
-    );
+    const tasks = new Map<Id<"tasks">, Doc<"tasks"> | null>();
+    const items: TranscriptItem[] = [];
+    for (const item of newest) {
+      if (item.type === "post") {
+        items.push(item);
+        continue;
+      }
+      // The app shows no cards while a request is queued or running, so none are built.
+      const wording = isInProgress(item.status)
+        ? []
+        : await requestWording(ctx, householdId, changed.get(item.id) ?? [], tasks);
+      items.push({ ...item, wording });
+    }
+    return items;
   },
 });
 

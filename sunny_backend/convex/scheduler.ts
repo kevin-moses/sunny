@@ -11,8 +11,11 @@
 // any caregiver was alerted (the alert step falls due at or after the window's end: a short
 // window, or a task added late in its window) still alerts every caregiver as it is marked
 // missed, with "Its time has now passed." in the text, unless the ladder has no caregiver alert,
-// the only unfired caregiver alerts are held by a claim, or the instance was created at or
-// after its window's end (the senior never had a chance at it: expansion after an outage).
+// the only unfired caregiver alerts are held by a claim, the instance was created at or after
+// its window's end (the senior never had a chance at it: expansion after an outage), or the
+// window ended more than CLOSE_ALERT_MAX_LATE_MS ago (the scheduler was down; presses queued
+// offline may be about to arrive, so no batch of stale alerts is sent; the task is still marked
+// missed and still in the digest).
 // fireSteps runs first, so a closing window only covers alerts it skipped; one tick never sends
 // two caregiver alerts for one instance. Offsets count from the
 // later of window start and creation; senior prompts wait while snoozed; skipIfClaimed steps
@@ -49,7 +52,14 @@ import { isAnytimeInstance } from "./lib/anytime";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
 import { announceEvents } from "./lib/eventNotices";
-import { activePolicySteps, stepDueAt, stepHeld } from "./lib/escalation";
+import {
+  activePolicySteps,
+  caregiverAlerted,
+  dueOrEscalatedInstances,
+  firedStep,
+  stepDueAt,
+  stepHeld,
+} from "./lib/escalation";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12 } from "./lib/time";
 import { isCaregiverAlert } from "./lib/validators";
@@ -58,6 +68,14 @@ import type { EscalationStep } from "./lib/validators";
 /** Households a tick page schedules; the next page is scheduled as a follow-up. */
 const TICK_PAGE_SIZE = 500;
 
+/**
+ * The latest, after a window's end, that closing it may still alert the caregivers. A tick
+ * normally closes a window within a minute of its end; a longer gap means the scheduler was
+ * down, and when it comes back it must not send a batch of alerts for windows that ended hours
+ * ago, while presses the devices queued offline may be about to arrive.
+ */
+const CLOSE_ALERT_MAX_LATE_MS = 60 * 60_000;
+
 /** Counts returned by a tick, for logging. */
 export interface TickResult {
   created: number;
@@ -65,8 +83,6 @@ export interface TickResult {
   stepsFired: number;
   escalated: number;
   missed: number;
-  /** Instances among the missed whose closing window alerted the caregivers. */
-  alertedAtClose: number;
   noticed: number;
 }
 
@@ -105,10 +121,9 @@ async function openWindows(
  *          due once now reaches max(windowStart, createdAt) plus its offset; prompts wait
  *          while snoozed; skipIfClaimed steps are skipped once claimed (lib/escalation.ts
  *          stepDueAt and stepHeld, shared with the device state's promptTimes). Within each kind
- *          (prompt, caregiver alert; the legacy "alert_on_call" counts as a caregiver alert)
- *          only the latest due step, by current position in the policy, is marked to notify.
- *          Fired steps are matched by step id, so editing the policy does not change which
- *          steps count as fired.
+ *          (prompt, caregiver alert) only the latest due step, by current position in the policy,
+ *          is marked to notify. Fired steps are matched by step id, so editing the policy does not
+ *          change which steps count as fired.
  * @param instance: (Doc<"taskInstances">) An open instance.
  * @param steps: (EscalationStep[]) The task's policy steps in order.
  * @param now: (number) Epoch ms.
@@ -131,28 +146,32 @@ function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: 
 
 /**
  * purpose: Queue the outbox rows for one fired step: senior prompts go to every device of the
- *          household, a caregiver alert (the legacy "alert_on_call" included) to every
- *          caregiver; delivery skips anyone it cannot reach at send time. A caregiver alert's
- *          body is the due line, plus "No one has claimed it yet." for a skipIfClaimed step,
- *          which only fires while nobody has claimed, or "Its time has now passed." for an alert
- *          sent as the window closes (nobody can prompt the senior any more).
+ *          household, a caregiver alert to every caregiver; delivery skips anyone it cannot
+ *          reach at send time. A caregiver alert's body is the due line plus a note: "Its time
+ *          has now passed." when the instance is already missed (the alert closeWindows sends;
+ *          nobody can prompt the senior any more), else "No one has claimed it yet." for a
+ *          skipIfClaimed step (it only fires while nobody has claimed), else nothing.
  * @param ctx: (MutationCtx) Mutation context.
  * @param instance: (Doc<"taskInstances">) The instance.
  * @param step: (EscalationStep) The step; its id is the payload's `step`.
- * @param windowClosed: (boolean) Whether the alert is sent as the window closes.
  * @return: (Promise<void>)
  */
 async function queueNotifications(
   ctx: MutationCtx,
   instance: Doc<"taskInstances">,
   step: EscalationStep,
-  windowClosed = false,
 ): Promise<void> {
   const task = await ctx.db.get(instance.taskId);
   const household = await ctx.db.get(instance.householdId);
   if (!task || !household) return;
   const isPrompt = step.action === "prompt_senior";
   const dueAt = `Due at ${formatTime12(instance.scheduledTime)}.`;
+  const note =
+    instance.state === "missed"
+      ? " Its time has now passed."
+      : step.skipIfClaimed
+        ? " No one has claimed it yet."
+        : "";
   const row = {
     householdId: instance.householdId,
     kind: isPrompt ? ("senior_prompt" as const) : ("caregiver_alert" as const),
@@ -160,13 +179,7 @@ async function queueNotifications(
     title: isPrompt
       ? task.displayLabel
       : `${household.seniorPreferredName} hasn't confirmed ${task.displayLabel}`,
-    body: isPrompt
-      ? task.spokenPrompt
-      : windowClosed
-        ? `${dueAt} Its time has now passed.`
-        : step.skipIfClaimed
-          ? `${dueAt} No one has claimed it yet.`
-          : dueAt,
+    body: isPrompt ? task.spokenPrompt : `${dueAt}${note}`,
     payload: {
       taskId: task._id,
       localDate: instance.localDate,
@@ -205,41 +218,27 @@ async function fireSteps(
   now: number,
 ): Promise<number> {
   let notified = 0;
-  for (const state of ["due", "escalated"] as const) {
-    const open = await ctx.db
-      .query("taskInstances")
-      .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
-      .collect();
-    for (const instance of open) {
-      if (instance.windowEnd <= now || isAnytimeInstance(instance)) continue;
-      const steps = await activePolicySteps(ctx, await ctx.db.get(instance.taskId));
-      if (steps === null) continue;
-      const due = dueSteps(instance, steps, now);
-      if (due.length === 0) continue;
-      await ctx.db.patch(instance._id, {
-        firedSteps: [
-          ...instance.firedSteps,
-          ...due.map((d) => ({
-            stepId: d.step.id,
-            action: d.step.action,
-            firedAt: now,
-            notified: d.notify,
-          })),
-        ],
-      });
-      for (const d of due) {
-        if (!d.notify) continue;
-        notified += 1;
-        await queueNotifications(ctx, instance, d.step);
-      }
+  for (const instance of await dueOrEscalatedInstances(ctx, householdId)) {
+    if (instance.windowEnd <= now || isAnytimeInstance(instance)) continue;
+    const steps = await activePolicySteps(ctx, await ctx.db.get(instance.taskId));
+    if (steps === null) continue;
+    const due = dueSteps(instance, steps, now);
+    if (due.length === 0) continue;
+    await ctx.db.patch(instance._id, {
+      firedSteps: [...instance.firedSteps, ...due.map((d) => firedStep(d.step, now, d.notify))],
+    });
+    for (const d of due) {
+      if (!d.notify) continue;
+      notified += 1;
+      await queueNotifications(ctx, instance, d.step);
     }
   }
   return notified;
 }
 
 /**
- * purpose: Mark the household's due instances escalated once a caregiver alert step has
- *          fired for them.
+ * purpose: Mark the household's due instances escalated once a caregiver alert went out for
+ *          them (caregiverAlerted).
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household.
  * @return: (Promise<number>) Instances escalated.
@@ -249,7 +248,7 @@ async function markEscalated(ctx: MutationCtx, householdId: Id<"households">): P
     .query("taskInstances")
     .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", "due"))
     .collect();
-  const alerted = due.filter((i) => i.firedSteps.some((f) => isCaregiverAlert(f.action)));
+  const alerted = due.filter((i) => caregiverAlerted(i.firedSteps));
   for (const instance of alerted) {
     await changeInstance(ctx, SYSTEM_ACTOR, instance, { state: "escalated" });
   }
@@ -261,8 +260,9 @@ async function markEscalated(ctx: MutationCtx, householdId: Id<"households">): P
  *          caregiver-alert step that a claim does not hold (lib/escalation.ts stepHeld), when no
  *          caregiver alert has been notified for the instance yet. Nothing is owed for an
  *          anytime instance, a task that is inactive or has no policy (activePolicySteps null),
- *          a ladder without a caregiver alert, or an instance created at or after its window's
- *          end (the senior never had a chance at it).
+ *          a ladder without a caregiver alert, an instance created at or after its window's end
+ *          (the senior never had a chance at it), or a window that ended more than
+ *          CLOSE_ALERT_MAX_LATE_MS before now (the scheduler was down).
  * @param ctx: (MutationCtx) Mutation context.
  * @param instance: (Doc<"taskInstances">) An open instance whose window has ended.
  * @param now: (number) Epoch ms.
@@ -274,7 +274,8 @@ async function alertOwedAtClose(
   now: number,
 ): Promise<EscalationStep | null> {
   if (isAnytimeInstance(instance) || instance.createdAt >= instance.windowEnd) return null;
-  if (instance.firedSteps.some((f) => isCaregiverAlert(f.action) && f.notified)) return null;
+  if (now - instance.windowEnd > CLOSE_ALERT_MAX_LATE_MS) return null;
+  if (caregiverAlerted(instance.firedSteps)) return null;
   const steps = await activePolicySteps(ctx, await ctx.db.get(instance.taskId));
   if (steps === null) return null;
   const fired = new Set(instance.firedSteps.map((f) => f.stepId));
@@ -295,39 +296,24 @@ async function alertOwedAtClose(
  * @param ctx: (MutationCtx) Mutation context.
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms.
- * @return: (Promise<{ missed: number; alerted: number }>) Instances marked missed, and how many
- *          of them alerted the caregivers as they closed.
+ * @return: (Promise<number>) Instances marked missed.
  */
 async function closeWindows(
   ctx: MutationCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<{ missed: number; alerted: number }> {
-  let missed = 0;
-  let alerted = 0;
-  for (const state of ["due", "escalated"] as const) {
-    const open = await ctx.db
-      .query("taskInstances")
-      .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
-      .collect();
-    const ended = open.filter((i) => i.windowEnd <= now);
-    for (const instance of ended) {
-      const step = await alertOwedAtClose(ctx, instance, now);
-      if (step === null) {
-        await changeInstance(ctx, SYSTEM_ACTOR, instance, { state: "missed" });
-        continue;
-      }
-      const fired = { stepId: step.id, action: step.action, firedAt: now, notified: true };
-      const after = await changeInstance(ctx, SYSTEM_ACTOR, instance, {
-        state: "missed",
-        firedSteps: [...instance.firedSteps, fired],
-      });
-      await queueNotifications(ctx, after, step, true);
-      alerted += 1;
-    }
-    missed += ended.length;
+): Promise<number> {
+  const ended = (await dueOrEscalatedInstances(ctx, householdId)).filter((i) => i.windowEnd <= now);
+  for (const instance of ended) {
+    const step = await alertOwedAtClose(ctx, instance, now);
+    const firedSteps = step ? [...instance.firedSteps, firedStep(step, now, true)] : undefined;
+    const after = await changeInstance(ctx, SYSTEM_ACTOR, instance, {
+      state: "missed",
+      ...(firedSteps ? { firedSteps } : {}),
+    });
+    if (step) await queueNotifications(ctx, after, step);
   }
-  return { missed, alerted };
+  return ended.length;
 }
 
 /**
@@ -340,7 +326,7 @@ async function closeWindows(
  * @param householdId: (Id<"households">) Household.
  * @param now: (number) Epoch ms.
  * @return: (Promise<TickResult>) Counts of created, opened, fired (notified), escalated,
- *          missed, alerted at close and noticed (event occurrences announced).
+ *          missed and noticed (event occurrences announced).
  */
 export async function tickHouseholdCore(
   ctx: MutationCtx,
@@ -351,13 +337,12 @@ export async function tickHouseholdCore(
   const opened = await openWindows(ctx, householdId, now);
   const stepsFired = await fireSteps(ctx, householdId, now);
   const escalated = await markEscalated(ctx, householdId);
-  const { missed, alerted: alertedAtClose } = await closeWindows(ctx, householdId, now);
-  const counts = { created, opened, stepsFired, escalated, missed, alertedAtClose };
+  const missed = await closeWindows(ctx, householdId, now);
   const household = await ctx.db.get(householdId);
-  if (!household) return { ...counts, noticed: 0 };
+  if (!household) return { created, opened, stepsFired, escalated, missed, noticed: 0 };
   const noticed = await announceEvents(ctx, household, now);
   await queueDigestIfDue(ctx, household, now);
-  return { ...counts, noticed };
+  return { created, opened, stepsFired, escalated, missed, noticed };
 }
 
 /**
