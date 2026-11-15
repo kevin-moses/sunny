@@ -1,3 +1,4 @@
+import type { JSONValue } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -62,15 +63,37 @@ async function tool(
   );
 }
 
+type JsonObject = { [key: string]: JSONValue };
+
+function objectOf(value: JSONValue | undefined): JsonObject {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Expected a JSON object, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function listOf(value: JSONValue | undefined): JSONValue[] {
+  if (!Array.isArray(value)) throw new Error(`Expected a JSON array, got ${JSON.stringify(value)}`);
+  return value;
+}
+
 async function ok(
   t: TestConvex,
   householdId: Id<"households">,
   name: string,
-  input: object,
-): Promise<any> {
-  const result = await tool(t, householdId, name, input as Record<string, unknown>);
+  input: Record<string, unknown>,
+): Promise<JsonObject> {
+  const result = await tool(t, householdId, name, input);
   if (result.isError) throw new Error(result.text);
-  return JSON.parse(result.text);
+  return objectOf(JSON.parse(result.text));
+}
+
+async function added(
+  t: TestConvex,
+  householdId: Id<"households">,
+  input: Record<string, unknown>,
+): Promise<JsonObject> {
+  return objectOf((await ok(t, householdId, "add_knowledge", input)).stored);
 }
 
 async function rows<
@@ -278,7 +301,7 @@ describe("add_knowledge", () => {
 describe("update_knowledge and remove_knowledge", () => {
   test("an entry is corrected, its details cleared, and the change audited with the previous text", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", {
+    const stored = await added(t, home, {
       kind: "profile",
       category: "doctor",
       name: "Dr. Patel",
@@ -334,7 +357,7 @@ describe("update_knowledge and remove_knowledge", () => {
 
   test("remove_knowledge deletes the item and names what it removed", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", {
+    const stored = await added(t, home, {
       kind: "topic",
       topic: "money",
       guidance: "Say Pat handles it.",
@@ -352,7 +375,7 @@ describe("update_knowledge and remove_knowledge", () => {
 
   test("an id of the wrong kind is refused", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", { kind: "fact", fact: "Likes jazz" });
+    const stored = await added(t, home, { kind: "fact", fact: "Likes jazz" });
     expect(
       (
         await tool(t, home, "remove_knowledge", {
@@ -374,9 +397,9 @@ describe("get_knowledge", () => {
     });
     await ok(t, home, "add_knowledge", { kind: "fact", fact: "Likes jazz" });
     const all = await ok(t, home, "get_knowledge", {});
-    expect(all.profile.map((e: { name: string }) => e.name)).toEqual(["Riverside Park"]);
+    expect(listOf(all.profile).map((e) => objectOf(e).name)).toEqual(["Riverside Park"]);
     expect(all.topics).toEqual([]);
-    expect(all.facts.map((f: { fact: string }) => f.fact)).toEqual(["Likes jazz"]);
+    expect(listOf(all.facts).map((f) => objectOf(f).fact)).toEqual(["Likes jazz"]);
     expect(all.older_unverified_facts).toBe(0);
     expect(Object.keys(await ok(t, home, "get_knowledge", { kind: "topic" }))).toEqual(["topics"]);
   });
@@ -385,7 +408,7 @@ describe("get_knowledge", () => {
 describe("memory rule", () => {
   test("what the senior says never overwrites a fact a caregiver stored by chat", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", {
+    const stored = await added(t, home, {
       kind: "fact",
       fact: "Her cat is called Biscuit",
     });
@@ -550,7 +573,7 @@ describe("settings", () => {
 describe("household scoping", () => {
   test("a knowledge_id of another household is not found and nothing changes", async () => {
     const { t, home, other } = await makeWorld();
-    const { stored } = await ok(t, other, "add_knowledge", {
+    const stored = await added(t, other, {
       kind: "fact",
       fact: "Walter likes chess",
     });

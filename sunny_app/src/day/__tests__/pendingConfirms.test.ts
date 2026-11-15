@@ -938,6 +938,17 @@ describe('applyPending', () => {
     expect(out[2]).toBe(tasks[2]);
   });
 
+  it('a medication confirmed by another phone stays confirmed through a queued press and undo', () => {
+    const otherPhone: DayTask = { ...own, type: 'medication', confirmPressIds: [] };
+    const later = pressIdOf('c', NOW + 1);
+    const out = applyPending(
+      [otherPhone],
+      queued(entry('c', NOW + 1), undo('c', NOW + 2, 'due', 'Task c', later)),
+    );
+    expect(out[0]).toBe(otherPhone);
+    expect(out[0]).toMatchObject({ state: 'confirmed', confirmable: false });
+  });
+
   it('an undo naming a press that is no longer the confirmation changes nothing', () => {
     const out = applyPending([own], queued(undo('c', NOW + 1), undo('c', NOW + 2)));
     expect(out[0]).toMatchObject({ state: 'due', confirmable: true });

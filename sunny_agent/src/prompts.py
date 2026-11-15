@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from config import (
-    NO_HOUSEHOLD_TIMEZONE,
     US_CRISIS_LINE,
     US_EMERGENCY_NUMBER,
     US_POISON_CONTROL,
@@ -174,45 +173,45 @@ only tells you how to word answers on its topics.
 {user_context}"""
 
 
-def format_user_context(context: AgentContext) -> str:
-    if not context:
+def format_user_context(context: AgentContext | None) -> str:
+    if context is None:
         return "No household information is available for this session."
 
-    household = context.get("household", {})
-    tz = household.get("timezone", NO_HOUSEHOLD_TIMEZONE)
-    name = one_line(household.get("seniorPreferredName", "")) or "the user"
+    household = context["household"]
+    tz = household["timezone"]
+    name = one_line(household["seniorPreferredName"]) or "the user"
     now_str = ""
-    if household.get("localNow"):
+    if household["localNow"]:
         now = datetime.fromisoformat(household["localNow"])
         now_str = f"{spoken_date(now)}, {clock_for_voice(now)}"
     lines = [f"Name: {name} | Timezone: {tz} | Local time now: {now_str}"]
-    location = one_line(household.get("weatherLocation"))
+    location = one_line(household["weatherLocation"])
     lines.append(
         f"Weather location: {location}"
         if location
         else "Weather location: not set by family."
     )
 
-    caregivers = context.get("caregivers", [])
+    caregivers = context["caregivers"]
     if caregivers:
-        names = [one_line(c.get("name")) for c in caregivers]
+        names = [one_line(c["name"]) for c in caregivers]
         lines.append(f"Family caregivers in Sunny: {', '.join(names)}")
 
-    today = context.get("today", [])
+    today = context["today"]
     lines.append("")
     if today:
         lines.append("Today's schedule:")
         for item in today:
             entry = describe_instance(item, tz)
-            if item.get("pillDescription"):
+            if item["pillDescription"]:
                 entry += f" (pills: {item['pillDescription']})"
-            if item.get("checklistItems"):
+            if item["checklistItems"]:
                 entry += f" (checklist: {', '.join(item['checklistItems'])})"
             lines.append(_item(entry))
     else:
         lines.append("Today's schedule: nothing scheduled.")
 
-    as_needed = context.get("asNeeded", [])
+    as_needed = context["asNeeded"]
     if as_needed:
         lines.append("")
         lines.append(
@@ -221,71 +220,61 @@ def format_user_context(context: AgentContext) -> str:
         )
         lines.extend(_item(describe_as_needed(med, tz)) for med in as_needed)
 
-    events = context.get("events", [])
+    events = context["events"]
     if events:
         lines.append("")
         lines.append("Upcoming events (next 7 days):")
         for e in events:
             starts = to_local(e["startsAt"], tz)
-            entry = f"{spoken_date(starts)}, {clock_for_voice(starts)}: {e.get('title', '')}"
-            if e.get("visitorName"):
+            entry = f"{spoken_date(starts)}, {clock_for_voice(starts)}: {e['title']}"
+            if e["visitorName"]:
                 entry += f", with {e['visitorName']}"
-            if e.get("place"):
+            if e["place"]:
                 entry += f", at {e['place']}"
             lines.append(_item(entry))
 
-    message = context.get("latestMessage")
+    message = context["latestMessage"]
     if message:
         lines.append("")
         lines.append(_message_line(message))
 
-    household_list = context.get("list")
-    if household_list:
-        lines.append("")
-        lines.append(_list_line(household_list))
+    lines.append("")
+    lines.append(_list_line(context["list"]))
 
-    profile = context.get("lifeProfile", [])
+    profile = context["lifeProfile"]
     if profile:
         lines.append("")
         lines.append("Life profile (from family):")
         for profile_entry in profile:
-            detail = (
-                f": {profile_entry['details']}" if profile_entry.get("details") else ""
-            )
+            detail = f": {profile_entry['details']}" if profile_entry["details"] else ""
             lines.append(
-                _item(
-                    f"{profile_entry.get('category', '')} - {profile_entry.get('name', '')}{detail}"
-                )
+                _item(f"{profile_entry['category']} - {profile_entry['name']}{detail}")
             )
 
-    topics = context.get("sensitiveTopics", [])
+    topics = context["sensitiveTopics"]
     if topics:
         lines.append("")
         lines.append("Sensitive-topic playbook (follow family's guidance exactly):")
         for t in topics:
-            lines.append(
-                _item(f"If asked about {t.get('topic', '')}: {t.get('guidance', '')}")
-            )
+            lines.append(_item(f"If asked about {t['topic']}: {t['guidance']}"))
 
-    memory = context.get("memory", [])
+    memory = context["memory"]
     if memory:
         lines.append("")
         lines.append(
             "Remembered facts (family-verified facts outrank unverified ones):"
         )
         lines.extend(
-            _item(f"{_trust_label(m, name)} {quoted(m.get('fact', ''))}")
-            for m in memory
+            _item(f"{_trust_label(m, name)} {quoted(m['fact'])}") for m in memory
         )
 
-    conversations = context.get("recentConversations", [])
+    conversations = context["recentConversations"]
     if conversations:
         lines.append("")
         lines.append("Recent conversations:")
         for c in conversations:
-            started = c.get("startedAt")
-            day = to_local(started, tz).date().isoformat() if started else ""
-            lines.append(_item(f"{day}: {c.get('summary', '')}"))
+            day = to_local(c["startedAt"], tz).date().isoformat()
+            lines.append(_item(f"{day}: {c['summary']}"))
 
     return "\n".join(lines)
 
@@ -295,8 +284,8 @@ def _item(text: str) -> str:
 
 
 def _list_line(household_list: HouseholdList) -> str:
-    count = household_list.get("openCount") or 0
-    items = [quoted(i) for i in household_list.get("items") or []]
+    count = household_list["openCount"]
+    items = [quoted(i) for i in household_list["items"]]
     if count == 0:
         return "Household list: empty."
     if items:
@@ -305,21 +294,21 @@ def _list_line(household_list: HouseholdList) -> str:
 
 
 def _trust_label(fact: MemoryFact, senior_name: str) -> str:
-    if fact.get("verified"):
+    if fact["verified"]:
         return "[verified by family]"
-    if fact.get("source") == "caregiver":
+    if fact["source"] == "caregiver":
         return "[written by family, not verified]"
     return f"[said by {senior_name}, not verified]"
 
 
 def _message_line(message: FamilyMessage) -> str:
-    sender = one_line(message.get("from")) or "family"
-    if not message.get("seen"):
+    sender = one_line(message["from"]) or "family"
+    if not message["seen"]:
         return (
             f"Latest family message: from {sender}, not read yet. Call "
             "read_latest_message to read it."
         )
-    body = message.get("body")
+    body = message["body"]
     if body:
         return f"Latest family message (already read): from {sender}: {quoted(body)}"
     return f"Latest family message (already read): a photo from {sender}."

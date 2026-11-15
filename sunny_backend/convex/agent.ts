@@ -85,7 +85,7 @@ export const today = agentQuery({
   args: { householdId: v.id("households"), now: v.optional(v.number()) },
   handler: async (ctx, args): Promise<TodayEntry[]> => {
     const household = await loadHousehold(ctx, args.householdId);
-    return await todayInstances(ctx, household._id, clock(args.now));
+    return await todayInstances(ctx, household._id, clock(args.now), null);
   },
 });
 

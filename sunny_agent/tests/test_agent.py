@@ -50,6 +50,8 @@ def _instance(
         "state": state,
         "confirmedAt": _ms(confirmed_at) if confirmed_at else None,
         "type": "medication" if "pills" in label.lower() else "routine",
+        "pillDescription": None,
+        "checklistItems": [],
     }
 
 
@@ -72,7 +74,11 @@ CONTEXT: AgentContext = {
             "pillDescription": "small white",
             "maxPerDay": 3,
             "minHoursBetween": 6,
+            "takenToday": [_ms("2027-03-13T11:00")],
             "takenLast24h": [_ms("2027-03-13T11:00")],
+            "remainingToday": 2,
+            "nextWithinLabelAt": _ms("2027-03-13T17:00"),
+            "daysUsedLast7": 0,
         }
     ],
     "events": [
@@ -98,6 +104,9 @@ CONTEXT: AgentContext = {
     ],
     "memory": [],
     "recentConversations": [],
+    "latestMessage": None,
+    "recentQuestionTopics": [],
+    "list": {"openCount": 0, "items": []},
 }
 
 MEDICATION_FACTS = (
@@ -834,11 +843,13 @@ class FakeBackend:
             "pillDescription": "small white",
             "maxPerDay": 3,
             "minHoursBetween": 6,
+            "takenToday": list(self.doses),
             "takenLast24h": list(self.doses),
             "remainingToday": 3 - len(self.doses),
             "nextWithinLabelAt": (self.doses[-1] + 6 * 3_600_000)
             if self.doses
             else None,
+            "daysUsedLast7": 0,
         }
 
     async def query(self, path: str, args: ConvexArgs) -> object:
@@ -1008,6 +1019,7 @@ async def test_unread_message_is_offered_not_read_when_it_does_not_answer() -> N
             "from": "Bob",
             "body": None,
             "hasPhoto": False,
+            "sentAt": _ms("2027-03-13T12:00"),
             "seen": False,
         },
     }

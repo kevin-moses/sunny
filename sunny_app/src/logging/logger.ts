@@ -35,7 +35,7 @@ function buildLogPayload(
   const payload: LogPayload = {
     ts: new Date().toISOString(),
     level,
-    component: `ios.${component}`,
+    component,
     message,
   };
   if (metadata && Object.keys(metadata).length > 0) {

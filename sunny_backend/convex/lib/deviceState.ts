@@ -487,7 +487,7 @@ export async function loadDeviceState(
 ): Promise<DeviceState> {
   const [{ household, today, week }, tasks] = await Promise.all([
     householdWeek(ctx, householdId, now),
-    todayInstances(ctx, householdId, now),
+    todayInstances(ctx, householdId, now, null),
   ]);
   const tomorrow = (
     await ctx.db

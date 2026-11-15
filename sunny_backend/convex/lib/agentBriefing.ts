@@ -53,7 +53,7 @@ async function taskLines(
   const tasks = await listTasksCore(ctx, householdId, true);
   if (tasks.length === 0) return ["  (none)"];
   const byTask = new Map<Id<"tasks">, TodayEntry[]>();
-  for (const entry of await todayInstances(ctx, householdId, now)) {
+  for (const entry of await todayInstances(ctx, householdId, now, null)) {
     byTask.set(entry.taskId, [...(byTask.get(entry.taskId) ?? []), entry]);
   }
   const ranked = [...tasks].sort(

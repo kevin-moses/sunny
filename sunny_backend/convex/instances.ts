@@ -455,7 +455,7 @@ export async function confirmDueTaskCore(
   if (!actsForSenior(actor, args.householdId)) {
     throw appError("forbidden", "Only the senior's devices can do this");
   }
-  const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now), args.label);
+  const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now, actor), args.label);
   if (!("entry" in picked)) return picked;
   const { entry } = picked;
   let row: Doc<"taskInstances">;
@@ -742,8 +742,8 @@ export const undoResolve = mutation({
 export const today = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<TodayEntry[]> => {
-    await requireReader(ctx, args.householdId);
-    return await todayInstances(ctx, args.householdId, Date.now());
+    const actor = await requireReader(ctx, args.householdId);
+    return await todayInstances(ctx, args.householdId, Date.now(), actor);
   },
 });
 

@@ -1,4 +1,4 @@
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 InstanceState = Literal[
     "upcoming", "due", "escalated", "confirmed", "missed", "resolved"
@@ -7,7 +7,7 @@ TaskType = Literal["medication", "appointment", "routine", "checklist", "reminde
 FlagStatus = Literal["flagged", "already_flagged", "unreachable", "rate_limited"]
 
 
-class TodayEntry(TypedDict, total=False):
+class TodayEntry(TypedDict):
     instanceId: str
     type: TaskType
     displayLabel: str
@@ -19,7 +19,7 @@ class TodayEntry(TypedDict, total=False):
     confirmedAt: float | None
 
 
-class AsNeededEntry(TypedDict, total=False):
+class AsNeededEntry(TypedDict):
     displayLabel: str
     pillDescription: str | None
     maxPerDay: int | None
@@ -31,18 +31,18 @@ class AsNeededEntry(TypedDict, total=False):
     daysUsedLast7: int
 
 
-class Household(TypedDict, total=False):
+class Household(TypedDict):
     seniorPreferredName: str
     timezone: str
     localNow: str
     weatherLocation: str | None
 
 
-class Caregiver(TypedDict, total=False):
+class Caregiver(TypedDict):
     name: str
 
 
-class UpcomingEvent(TypedDict, total=False):
+class UpcomingEvent(TypedDict):
     title: str
     startsAt: float
     place: str | None
@@ -52,38 +52,37 @@ class UpcomingEvent(TypedDict, total=False):
 FamilyMessage = TypedDict(
     "FamilyMessage",
     {"from": str, "body": str | None, "hasPhoto": bool, "sentAt": float, "seen": bool},
-    total=False,
 )
 
 
-class LifeProfileEntry(TypedDict, total=False):
+class LifeProfileEntry(TypedDict):
     category: str
     name: str
     details: str | None
 
 
-class SensitiveTopic(TypedDict, total=False):
+class SensitiveTopic(TypedDict):
     topic: str
     guidance: str
 
 
-class MemoryFact(TypedDict, total=False):
+class MemoryFact(TypedDict):
     fact: str
     source: str
     verified: bool
 
 
-class RecentConversation(TypedDict, total=False):
+class RecentConversation(TypedDict):
     startedAt: float
     summary: str
 
 
-class HouseholdList(TypedDict, total=False):
+class HouseholdList(TypedDict):
     openCount: int
     items: list[str]
 
 
-class AgentContext(TypedDict, total=False):
+class AgentContext(TypedDict):
     household: Household
     caregivers: list[Caregiver]
     today: list[TodayEntry]
@@ -98,73 +97,96 @@ class AgentContext(TypedDict, total=False):
     list: HouseholdList
 
 
-class TaskOutcome(TypedDict, total=False):
+class ConfirmResult(TypedDict):
     status: Literal[
         "confirmed",
-        "snoozed",
         "already_done",
         "nothing_due",
         "not_found",
         "ambiguous",
         "not_due_yet",
     ]
+    displayLabel: NotRequired[str]
+    scheduledTime: NotRequired[str]
+    confirmedAt: NotRequired[float | None]
+    options: NotRequired[list[TodayEntry]]
+
+
+SnoozeStatus = Literal[
+    "snoozed",
+    "nothing_due",
+    "not_found",
+    "ambiguous",
+    "already_done",
+    "not_due_yet",
+]
+
+
+class SnoozeResult(TypedDict):
+    status: SnoozeStatus
     displayLabel: str | None
-    scheduledTime: str
-    confirmedAt: float
-
-
-class ConfirmResult(TaskOutcome, total=False):
-    options: list[TodayEntry]
-
-
-class SnoozeResult(TaskOutcome, total=False):
-    snoozedUntil: float
+    scheduledTime: str | None
+    snoozedUntil: float | None
+    confirmedAt: float | None
     options: list[str]
 
 
-class CancelReminderResult(TypedDict, total=False):
+class CancelReminderResult(TypedDict):
     status: Literal["cancelled", "not_found", "ambiguous"]
     titles: list[str]
 
 
-class MedicationStatus(TypedDict, total=False):
+class MedicationStatus(TypedDict):
     scheduled: list[TodayEntry]
     asNeeded: list[AsNeededEntry]
 
 
-class LogDoseResult(TypedDict, total=False):
-    status: Literal[
-        "logged",
-        "already_logged",
-        "no_rule",
-        "not_found",
-        "ambiguous",
-        "scheduled_due",
-    ]
+class LoggedDose(TypedDict):
+    status: Literal["logged"]
     medication: AsNeededEntry
     takenAt: float
-    repeatCall: bool
     overDailyMax: bool
     tooSoon: bool
     count: int
     flagStatus: FlagStatus | None
     flagged: list[str]
+
+
+class AlreadyLoggedDose(TypedDict):
+    status: Literal["already_logged"]
+    medication: AsNeededEntry
+    takenAt: float
+    repeatCall: bool
+
+
+class DoseNotLogged(TypedDict):
+    status: Literal["no_rule", "not_found", "ambiguous", "scheduled_due"]
     options: list[str]
 
 
-class UndoDoseResult(TypedDict, total=False):
-    status: Literal["removed", "nothing_to_undo", "no_rule", "not_found", "ambiguous"]
+LogDoseResult = LoggedDose | AlreadyLoggedDose | DoseNotLogged
+
+
+class RemovedDose(TypedDict):
+    status: Literal["removed"]
     displayLabel: str
     takenAt: float
     corrected: list[str]
+
+
+class DoseNotRemoved(TypedDict):
+    status: Literal["nothing_to_undo", "no_rule", "not_found", "ambiguous"]
     options: list[str]
 
 
-class RememberFactResult(TypedDict, total=False):
+UndoDoseResult = RemovedDose | DoseNotRemoved
+
+
+class RememberFactResult(TypedDict):
     status: Literal["saved", "already_known"]
 
 
-class FlagResult(TypedDict, total=False):
+class FlagResult(TypedDict):
     status: FlagStatus
     notified: list[str]
 
@@ -172,13 +194,13 @@ class FlagResult(TypedDict, total=False):
 SendStatus = Literal["sent", "sent_to_family", "unreachable"]
 
 
-class FamilyMessageResult(TypedDict, total=False):
+class FamilyMessageResult(TypedDict):
     status: SendStatus | Literal["already_sent", "rate_limited"]
     recipients: list[str]
     earlierStatus: SendStatus | None
 
 
-class SpokenListItem(TypedDict, total=False):
+class SpokenListItem(TypedDict):
     text: str
     status: Literal["added", "already_on_list", "list_full", "too_many"]
 
@@ -191,7 +213,7 @@ class QuestionRow(TypedDict):
     askedAt: int | None
 
 
-class TickListItemResult(TypedDict, total=False):
+class TickListItemResult(TypedDict):
     status: Literal["ticked", "not_found", "ambiguous"]
     text: str | None
     options: list[str]

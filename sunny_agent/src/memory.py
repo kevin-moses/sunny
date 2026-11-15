@@ -158,16 +158,16 @@ def resolve_session(room: rtc.Room) -> SessionInfo:
 
 async def load_agent_context(
     client: ConvexQuery, household_id: str | None
-) -> AgentContext:
+) -> AgentContext | None:
     if not household_id:
-        return {}
+        return None
     try:
         context: AgentContext = await client.query(
             "agent:getContext", {"householdId": household_id}
         )
     except Exception as e:
         logger.warning(f"Failed to load agent context for {household_id}: {e}")
-        return {}
+        return None
     logger.info(f"Loaded agent context for household {household_id}")
     return context
 

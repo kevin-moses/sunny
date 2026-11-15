@@ -1,6 +1,6 @@
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { memberNames } from "./access";
+import { type Actor, memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
 import { isSnoozed, seniorPromptCount } from "./escalation";
@@ -49,10 +49,20 @@ export function receivedDaysLater(
   );
 }
 
+function visibleConfirmPressIds(
+  instance: Pick<Doc<"taskInstances">, "confirmedBy" | "confirmPressIds">,
+  reader: Actor | null,
+): string[] {
+  return reader?.kind === "senior_device" && instance.confirmedBy === reader.userId
+    ? (instance.confirmPressIds ?? [])
+    : [];
+}
+
 export async function todayInstances(
   ctx: QueryCtx,
   householdId: Id<"households">,
   now: number,
+  reader: Actor | null,
 ): Promise<TodayEntry[]> {
   const household = await ctx.db.get(householdId);
   if (!household) return [];
@@ -113,7 +123,7 @@ export async function todayInstances(
       confirmable: seniorCanConfirm(instance, now),
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
-      confirmPressIds: instance.confirmPressIds ?? [],
+      confirmPressIds: visibleConfirmPressIds(instance, reader),
       seniorPrompts: seniorPromptCount(instance.firedSteps),
       snoozed: isSnoozed(instance.snoozedUntil, now),
       snoozedUntil: instance.snoozedUntil ?? null,

@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from config import US_CRISIS_LINE, US_EMERGENCY_NUMBER
 from convex_client import ConvexMutation, ConvexQuery
 from convex_types import (
+    AlreadyLoggedDose,
     AsNeededEntry,
     CancelReminderResult,
     ConfirmResult,
@@ -12,10 +13,10 @@ from convex_types import (
     FlagResult,
     FlagStatus,
     LogDoseResult,
+    LoggedDose,
     MedicationStatus,
     RememberFactResult,
     SnoozeResult,
-    TaskOutcome,
     TodayEntry,
     UndoDoseResult,
 )
@@ -117,10 +118,10 @@ async def db_confirm_task(
         "agent:confirmDueTask",
         {"householdId": household_id, "label": task_name or None},
     )
-    status = r.get("status")
+    status = r["status"]
     label = r.get("displayLabel") or task_name
     if status == "confirmed":
-        return f"Confirmed: {label} at {local_clock(r['confirmedAt'], tz)}."
+        return f"Confirmed: {label}{_at_clock(r.get('confirmedAt'), tz)}."
     shared = _task_outcome(r, label, task_name, tz)
     if shared is not None:
         return shared
@@ -134,12 +135,21 @@ async def db_confirm_task(
     return f"I don't see {task_name} on today's schedule."
 
 
-def _task_outcome(r: TaskOutcome, label: str, task_name: str, tz: str) -> str | None:
-    status = r.get("status")
+def _at_clock(epoch_ms: float | None, tz: str) -> str:
+    return "" if epoch_ms is None else f" at {local_clock(epoch_ms, tz)}"
+
+
+def _task_outcome(
+    r: ConfirmResult | SnoozeResult, label: str, task_name: str, tz: str
+) -> str | None:
+    status = r["status"]
+    scheduled = r.get("scheduledTime")
     if status == "already_done":
-        return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
-    if status == "not_due_yet" and r.get("scheduledTime") != ANYTIME:
-        return f"{label} is not due until {format_time_for_voice(r['scheduledTime'])}."
+        return (
+            f"Already done: {label} was confirmed{_at_clock(r.get('confirmedAt'), tz)}."
+        )
+    if status == "not_due_yet" and scheduled is not None and scheduled != ANYTIME:
+        return f"{label} is not due until {format_time_for_voice(scheduled)}."
     if status == "not_found":
         return f"I don't see {task_name} on today's schedule."
     return None
@@ -273,17 +283,20 @@ async def db_snooze_task(
         "agent:snoozeDueTask",
         {"householdId": household_id, "label": task_name or None},
     )
-    status = r.get("status")
-    label = r.get("displayLabel") or task_name
+    status = r["status"]
+    label = r["displayLabel"] or task_name
     if status == "snoozed":
-        return f"Snoozed {label}; the next reminder is at {local_clock(r['snoozedUntil'], tz)}."
+        until = r["snoozedUntil"]
+        if until is None:
+            return f"Snoozed {label}."
+        return f"Snoozed {label}; the next reminder is at {local_clock(until, tz)}."
     shared = _task_outcome(r, label, task_name, tz)
     if shared is not None:
         return shared
     if status == "not_due_yet":
         return f"{label} can be done anytime today; there is no reminder to snooze."
     if status == "ambiguous":
-        return f"Several tasks are due: {', '.join(r.get('options') or [])}. Ask which one."
+        return f"Several tasks are due: {', '.join(r['options'])}. Ask which one."
     return "Nothing is due right now."
 
 
@@ -335,55 +348,62 @@ async def db_log_dose(
             "conversationId": conversation_id or None,
         },
     )
-    status = r.get("status")
-    options = ", ".join(r.get("options") or [])
-    if status == "no_rule":
+    if r["status"] == "logged":
+        return _logged_text(r, tz)
+    if r["status"] == "already_logged":
+        return _already_logged_text(r, tz)
+    options = ", ".join(r["options"])
+    if r["status"] == "no_rule":
         return (
             "Nothing was logged: family has not set up an as-needed medication with label "
             "limits. Say what was taken today if asked, and offer to let family know or "
             "suggest asking the pharmacy."
         )
-    if status == "not_found":
+    if r["status"] == "not_found":
         return (
             f"Nothing was logged: no as-needed medication matches. On file: {options}."
         )
-    if status == "ambiguous":
+    if r["status"] == "ambiguous":
         return f"Nothing was logged yet: ask which one they took: {options}."
-    if status == "scheduled_due":
-        return (
-            f"Nothing was logged: {options} is a scheduled medication that is due now. If "
-            "that is what they took, use confirm_task."
-        )
-    med = r["medication"]
-    label = one_line(med.get("displayLabel"))
-    now_ms = now_epoch_ms()
-    if status == "already_logged":
-        if r.get("repeatCall"):
-            return (
-                f"Logged {label} at {local_clock(r['takenAt'], tz)}. "
-                f"{describe_as_needed(med, tz, now_ms)}"
-            )
-        return (
-            f'{SAME_OR_ANOTHER}. Say exactly: "I have one {label} written down at '
-            f"{local_clock(r['takenAt'], tz)}. Is that the same one, or did you take "
-            'another?" Do not say anything was logged and do not say they already told '
-            "you. If they answer that it is another one, call log_dose again with another "
-            "set to true."
-        )
-    text = (
-        f"Logged {label} at {local_clock(r['takenAt'], tz)}. "
-        f"{describe_as_needed(med, tz, now_ms)}"
+    return (
+        f"Nothing was logged: {options} is a scheduled medication that is due now. If "
+        "that is what they took, use confirm_task."
     )
+
+
+def _logged_line(med: AsNeededEntry, taken_at: float, tz: str) -> str:
+    return (
+        f"Logged {one_line(med['displayLabel'])} at {local_clock(taken_at, tz)}. "
+        f"{describe_as_needed(med, tz, now_epoch_ms())}"
+    )
+
+
+def _already_logged_text(r: AlreadyLoggedDose, tz: str) -> str:
+    med = r["medication"]
+    if r["repeatCall"]:
+        return _logged_line(med, r["takenAt"], tz)
+    return (
+        f'{SAME_OR_ANOTHER}. Say exactly: "I have one {one_line(med["displayLabel"])} '
+        f"written down at {local_clock(r['takenAt'], tz)}. Is that the same one, or did "
+        'you take another?" Do not say anything was logged and do not say they already '
+        "told you. If they answer that it is another one, call log_dose again with "
+        "another set to true."
+    )
+
+
+def _logged_text(r: LoggedDose, tz: str) -> str:
+    med = r["medication"]
+    text = _logged_line(med, r["takenAt"], tz)
     breaches = []
-    if r.get("overDailyMax"):
-        breaches.append(f"{r.get('count')} in 24 hours, more than the label allows")
-    if r.get("tooSoon"):
-        min_hours = med.get("minHoursBetween")
+    if r["overDailyMax"]:
+        breaches.append(f"{r['count']} in 24 hours, more than the label allows")
+    if r["tooSoon"]:
+        min_hours = med["minHoursBetween"]
         hours = f"{float(min_hours):g} " if min_hours else ""
         breaches.append(f"sooner than the label's {hours}hours apart")
     if breaches:
         text += f" This dose is {' and '.join(breaches)}. " + _told(
-            r.get("flagStatus"), r.get("flagged") or []
+            r["flagStatus"], r["flagged"]
         )
     return text
 
@@ -413,18 +433,16 @@ async def db_undo_last_dose(
             "conversationId": conversation_id or None,
         },
     )
-    status = r.get("status")
-    if status == "removed":
+    if r["status"] == "removed":
         text = (
-            f"Removed the {one_line(r.get('displayLabel'))} written down at "
+            f"Removed the {one_line(r['displayLabel'])} written down at "
             f"{local_clock(r['takenAt'], tz)}."
         )
-        corrected = r.get("corrected")
-        if corrected:
-            text += f" {join_names(corrected)} has been told it was a mistake."
+        if r["corrected"]:
+            text += f" {join_names(r['corrected'])} has been told it was a mistake."
         return text
-    if status == "ambiguous":
-        return f"Ask which one to take back: {', '.join(r.get('options') or [])}."
+    if r["status"] == "ambiguous":
+        return f"Ask which one to take back: {', '.join(r['options'])}."
     return (
         "Nothing was changed: only a dose written down in this conversation can be taken "
         "back. Say plainly that you cannot change earlier records, and offer to let family "

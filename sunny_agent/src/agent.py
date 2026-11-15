@@ -676,33 +676,29 @@ _OPEN_FOR_CONFIRMATION_STATES = ("due", "escalated")
 
 
 def _opening_prompt(
-    context: AgentContext, task_instance_id: str | None
+    context: AgentContext | None, task_instance_id: str | None
 ) -> tuple[str | None, str]:
-    if not task_instance_id:
+    if not task_instance_id or context is None:
         return None, ""
     instance = next(
-        (
-            i
-            for i in context.get("today", [])
-            if i.get("instanceId") == task_instance_id
-        ),
+        (i for i in context["today"] if i["instanceId"] == task_instance_id),
         None,
     )
     if instance is None:
         return None, ""
-    label = instance.get("displayLabel", "")
-    if instance.get("state") not in _OPEN_FOR_CONFIRMATION_STATES:
+    label = instance["displayLabel"]
+    if instance["state"] not in _OPEN_FOR_CONFIRMATION_STATES:
         return None, label
     return _display_cue_speech(instance), label
 
 
 def _display_cue_speech(instance: TodayEntry) -> str:
-    label = instance.get("displayLabel") or ""
-    spoken = (instance.get("spokenPrompt") or "").strip()
+    label = instance["displayLabel"]
+    spoken = instance["spokenPrompt"].strip()
     if spoken and spoken != f"Time for {label}.":
         return one_line(spoken)
-    finish = "taken them" if instance.get("type") == "medication" else "finished"
-    scheduled = instance.get("scheduledTime") or ""
+    finish = "taken them" if instance["type"] == "medication" else "finished"
+    scheduled = instance["scheduledTime"]
     when = "" if scheduled == ANYTIME else f", at {_display_cue_spoken_time(scheduled)}"
     return f"Time for {label}{when}. Press Done when you have {finish}."
 
@@ -724,22 +720,51 @@ _APP_LOG_LEVELS = {
 }
 
 
-class AppLogEntry(TypedDict, total=False):
+class AppLogEntry(TypedDict):
     level: str
     component: str
     message: str
     metadata: dict[str, object]
 
 
+def _parse_app_log(data: bytes) -> AppLogEntry | None:
+    try:
+        payload: object = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    level = payload.get("level")
+    component = payload.get("component")
+    message = payload.get("message")
+    metadata = payload.get("metadata", {})
+    if not (
+        isinstance(level, str)
+        and isinstance(component, str)
+        and isinstance(message, str)
+        and isinstance(metadata, dict)
+    ):
+        return None
+    return {
+        "level": level,
+        "component": component,
+        "message": message,
+        "metadata": metadata,
+    }
+
+
 def _forward_app_log(packet: rtc.DataPacket) -> None:
     if packet.topic != APP_LOG_TOPIC:
         return
-    entry: AppLogEntry = json.loads(packet.data)
-    logging.getLogger(entry["component"]).log(
+    entry = _parse_app_log(packet.data)
+    if entry is None:
+        logger.warning("dropped an app log packet that is not a valid log entry")
+        return
+    logging.getLogger(f"ios.{entry['component']}").log(
         _APP_LOG_LEVELS.get(entry["level"], logging.INFO),
         "%s",
         entry["message"],
-        extra=entry.get("metadata") or {},
+        extra={"app": entry["metadata"]},
     )
 
 
@@ -779,12 +804,20 @@ async def entrypoint(ctx: JobContext) -> None:
             device_id=session_ctx.device_id,
         ),
     )
-    household = raw_context.get("household", {})
-    user_name = household.get("seniorPreferredName", "")
-    household_timezone = household.get("timezone", NO_HOUSEHOLD_TIMEZONE)
-    conv_logger = ConversationLogger(
-        convex, conversation_id, raw_context.get("recentQuestionTopics") or []
-    )
+    if raw_context is None:
+        user_name, household_timezone, weather_location = (
+            "",
+            NO_HOUSEHOLD_TIMEZONE,
+            None,
+        )
+        recent_topics: list[str] = []
+    else:
+        household = raw_context["household"]
+        user_name = household["seniorPreferredName"]
+        household_timezone = household["timezone"]
+        weather_location = household["weatherLocation"]
+        recent_topics = raw_context["recentQuestionTopics"]
+    conv_logger = ConversationLogger(convex, conversation_id, recent_topics)
     shutdown_logger = conv_logger
 
     initial_prompt, prompt_label = _opening_prompt(raw_context, session_instance_id)
@@ -930,7 +963,7 @@ async def entrypoint(ctx: JobContext) -> None:
         convex=convex,
         timezone=household_timezone,
         conversation_id=conversation_id,
-        weather_location=household.get("weatherLocation"),
+        weather_location=weather_location,
         prompt_label=prompt_label,
     )
 

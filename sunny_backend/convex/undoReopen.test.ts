@@ -1496,36 +1496,36 @@ describe("press ids", () => {
     expect((await row(f)).state).toBe("due");
   });
 
+  async function pressIdsSeenBy(f: Fixture, subject: string): Promise<string[][]> {
+    const asReader = f.t.withIdentity({ subject });
+    const day = await asReader.query(api.calendar.dayView, { householdId: f.householdId });
+    const today = await asReader.query(api.instances.today, { householdId: f.householdId });
+    return [day.tasks, today].map(
+      (list) => list.find((e) => e.instanceId === f.instanceId)!.confirmPressIds,
+    );
+  }
+
+  test("the day entry carries confirmPressIds only to the confirming device", async () => {
+    const f = await dueFixture();
+    await pair(f.t, f.householdId, "pat", "phone2", "senior_phone");
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await pressIdsSeenBy(f, "phone")).toEqual([[A], [A]]);
+    for (const other of ["phone2", "display", "pat", "val"]) {
+      expect(await pressIdsSeenBy(f, other)).toEqual([[], []]);
+    }
+  });
+
   test("the day entry carries confirmPressIds: the confirm, a same-device no-op, then [] after undo", async () => {
     const f = await dueFixture();
-    const ids = async (): Promise<string[][]> => {
-      const day = await f.t
-        .withIdentity({ subject: "phone" })
-        .query(api.calendar.dayView, { householdId: f.householdId });
-      const agent = await f.t.query(api.agent.today, {
-        agentKey: "test-agent-key",
-        householdId: f.householdId,
-      });
-      return [day.tasks, agent].map(
-        (list) => list.find((e) => e.instanceId === f.instanceId)!.confirmPressIds,
-      );
-    };
-    const saved = process.env.SUNNY_AGENT_KEY;
-    process.env.SUNNY_AGENT_KEY = "test-agent-key";
-    try {
-      await press(f, "2027-03-14T12:05:00Z", 0, A);
-      expect(await ids()).toEqual([[A], [A]]);
-      await press(f, "2027-03-14T12:05:05Z", 0, B);
-      expect(await ids()).toEqual([
-        [A, B],
-        [A, B],
-      ]);
-      await undo(f, "2027-03-14T12:05:10Z", 0, B);
-      expect(await ids()).toEqual([[], []]);
-    } finally {
-      if (saved === undefined) delete process.env.SUNNY_AGENT_KEY;
-      else process.env.SUNNY_AGENT_KEY = saved;
-    }
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await pressIdsSeenBy(f, "phone")).toEqual([[A], [A]]);
+    await press(f, "2027-03-14T12:05:05Z", 0, B);
+    expect(await pressIdsSeenBy(f, "phone")).toEqual([
+      [A, B],
+      [A, B],
+    ]);
+    await undo(f, "2027-03-14T12:05:10Z", 0, B);
+    expect(await pressIdsSeenBy(f, "phone")).toEqual([[], []]);
   });
 
   test("confirmInstance refuses a press id from a caregiver actor", async () => {

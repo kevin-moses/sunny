@@ -44,7 +44,7 @@ export async function snoozeDueTaskCore(
   label: string | null | undefined,
   now: number,
 ): Promise<SnoozeResult> {
-  const picked = pickDueEntry(await todayInstances(ctx, householdId, now), label);
+  const picked = pickDueEntry(await todayInstances(ctx, householdId, now, null), label);
   if (!("entry" in picked)) {
     return snoozeResult(picked.status, picked.status === "already_done" ? picked : null, {
       options: (picked.options ?? []).map((e) => e.displayLabel),
@@ -65,7 +65,7 @@ export async function dueScheduledMedication(
   householdId: Id<"households">,
   now: number,
 ): Promise<TodayEntry | null> {
-  const entries = await todayInstances(ctx, householdId, now);
+  const entries = await todayInstances(ctx, householdId, now, null);
   return entries.find((e) => e.type === "medication" && isDueEntry(e)) ?? null;
 }
 
@@ -74,7 +74,7 @@ export async function medicationStatusCore(
   household: Doc<"households">,
   now: number,
 ): Promise<MedicationStatus> {
-  const entries = await todayInstances(ctx, household._id, now);
+  const entries = await todayInstances(ctx, household._id, now, null);
   return {
     scheduled: entries.filter((e) => e.type === "medication"),
     asNeeded: await asNeededEntries(ctx, household, now),

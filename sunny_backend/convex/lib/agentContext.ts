@@ -197,7 +197,7 @@ export async function buildAgentContext(
       .query("sensitiveTopics")
       .withIndex("by_household", (q) => q.eq("householdId", id))
       .collect(),
-    todayInstances(ctx, id, now),
+    todayInstances(ctx, id, now, null),
     asNeededEntries(ctx, household, now),
     upcomingEvents(ctx, household, now),
     latestCaregiverMessage(ctx, id),

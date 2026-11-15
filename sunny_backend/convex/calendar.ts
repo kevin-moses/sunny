@@ -346,7 +346,7 @@ export const dayView = query({
       weekday,
       dateLabel: dateLabel(today),
       header: `${weekday} ${partOfDay(localTime(now, timezone))}`,
-      tasks: await todayInstances(ctx, householdId, now),
+      tasks: await todayInstances(ctx, householdId, now, actor),
       upcomingTasks:
         actor.kind === "caregiver"
           ? await upcomingTasks(ctx, householdId, today, WEEK_DAYS - 1)

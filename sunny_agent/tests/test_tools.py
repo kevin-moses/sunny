@@ -43,23 +43,51 @@ class FakeConvex:
         return self.responses[path]
 
 
-def _context(*items: TodayEntry) -> AgentContext:
+def empty_context(
+    name: str = "Mom", local_now: str = "2027-03-13T08:20:00"
+) -> AgentContext:
     return {
         "household": {
-            "seniorPreferredName": "Mom",
+            "seniorPreferredName": name,
             "timezone": TZ,
-            "localNow": "2027-03-13T08:20:00",
+            "localNow": local_now,
+            "weatherLocation": None,
         },
-        "today": list(items),
+        "caregivers": [],
+        "today": [],
+        "asNeeded": [],
+        "events": [],
+        "latestMessage": None,
+        "lifeProfile": [],
+        "sensitiveTopics": [],
+        "memory": [],
+        "recentConversations": [],
+        "recentQuestionTopics": [],
+        "list": {"openCount": 0, "items": []},
     }
 
 
+def today_entry(instance_id: str, label: str) -> TodayEntry:
+    return {
+        "instanceId": instance_id,
+        "type": "medication",
+        "displayLabel": label,
+        "spokenPrompt": f"Time for {label}.",
+        "pillDescription": None,
+        "checklistItems": [],
+        "scheduledTime": "08:00",
+        "state": "upcoming",
+        "confirmedAt": None,
+    }
+
+
+def context_with(*items: TodayEntry) -> AgentContext:
+    return {**empty_context(), "today": list(items)}
+
+
 MORNING_DUE: TodayEntry = {
-    "instanceId": "i-morning",
-    "displayLabel": "Morning pills",
-    "scheduledTime": "08:00",
+    **today_entry("i-morning", "Morning pills"),
     "state": "due",
-    "confirmedAt": None,
 }
 MORNING_DONE: TodayEntry = {
     **MORNING_DUE,
@@ -67,11 +95,8 @@ MORNING_DONE: TodayEntry = {
     "confirmedAt": 1804943400000,
 }
 EVENING: TodayEntry = {
-    "instanceId": "i-evening",
-    "displayLabel": "Evening pills",
+    **today_entry("i-evening", "Evening pills"),
     "scheduledTime": "20:00",
-    "state": "upcoming",
-    "confirmedAt": None,
 }
 
 
@@ -114,13 +139,18 @@ def test_describe_instance_states() -> None:
 
 
 def test_format_user_context_sections() -> None:
-    ctx = _context(MORNING_DONE)
+    ctx = context_with(MORNING_DONE)
     ctx["asNeeded"] = [
         {
             "displayLabel": "Pain reliever",
+            "pillDescription": None,
             "maxPerDay": 3,
             "minHoursBetween": 6.0,
+            "takenToday": [1804950000000],
             "takenLast24h": [1804950000000],
+            "remainingToday": 2,
+            "nextWithinLabelAt": None,
+            "daysUsedLast7": 1,
         }
     ]
     ctx["sensitiveTopics"] = [
@@ -145,7 +175,7 @@ def test_format_user_context_sections() -> None:
 
 
 def test_format_user_context_caregivers_and_weather() -> None:
-    ctx = _context()
+    ctx = context_with()
     ctx["household"]["weatherLocation"] = "Brooklyn, NY"
     ctx["caregivers"] = [{"name": "Anna"}, {"name": "Bob"}]
     block = format_user_context(ctx)
@@ -155,7 +185,7 @@ def test_format_user_context_caregivers_and_weather() -> None:
 
 
 def test_format_user_context_empty() -> None:
-    assert "No household information" in format_user_context({})
+    assert "No household information" in format_user_context(None)
 
 
 @pytest.mark.asyncio
@@ -311,7 +341,7 @@ async def test_cancel_reminder_sends_query() -> None:
 
 
 def test_format_user_context_events_and_conversations() -> None:
-    ctx = _context(MORNING_DUE)
+    ctx = context_with(MORNING_DUE)
     ctx["events"] = [
         {
             "title": "Dentist",
@@ -320,7 +350,13 @@ def test_format_user_context_events_and_conversations() -> None:
             "place": "Main St",
         }
     ]
-    ctx["latestMessage"] = {"from": "Sarah", "body": "Hi Mom", "hasPhoto": False}
+    ctx["latestMessage"] = {
+        "from": "Sarah",
+        "body": "Hi Mom",
+        "hasPhoto": False,
+        "sentAt": 1804940000000,
+        "seen": False,
+    }
     ctx["recentConversations"] = [
         {"startedAt": 1804943400000, "summary": "Asked time."}
     ]
