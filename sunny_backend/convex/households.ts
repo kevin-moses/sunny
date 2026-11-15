@@ -21,7 +21,6 @@ import {
 import { audit } from "./lib/audit";
 import { dropMemberConnections } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
-import { seedDefaultPolicies } from "./lib/policies";
 import {
   householdSettingsFields,
   requireTimezone,
@@ -100,7 +99,6 @@ export const create = mutation({
       backgroundPaused: false,
     });
     await insertMembership(ctx, { householdId, userId, role: "primary", displayName });
-    await seedDefaultPolicies(ctx, householdId);
     return householdId;
   },
 });

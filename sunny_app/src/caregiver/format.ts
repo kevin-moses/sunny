@@ -29,6 +29,8 @@ export type ChatPost = Extract<ChatItem, { type: 'post' }>;
 
 export const DIGEST_LABEL = 'Daily summary';
 
+export const HIGH_PRIORITY_DETAIL = 'High priority';
+
 export const WEEK_LENGTH = 7;
 
 export const WORKING_TEXT = 'Sunny is working on it...';
@@ -212,7 +214,9 @@ function spokenLabel(row: {
 function taskRow(task: DayTask, options: { id: string; userId: string | null }): TaskRowData {
   const variant: TaskVariant = !isOpen(task) ? 'done' : isAlert(task) ? 'alert' : 'open';
   const time = displayTime(task.scheduledTime);
-  const detail = doneDetail(task, options.userId);
+  const detail =
+    doneDetail(task, options.userId) ??
+    (task.highPriority && isOpen(task) ? HIGH_PRIORITY_DETAIL : null);
   return {
     kind: 'task',
     id: options.id,

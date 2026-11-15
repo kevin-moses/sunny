@@ -117,19 +117,6 @@ async function createDeviceUser(secret: string): Promise<string> {
   return user.id;
 }
 
-async function ensureDeviceUsername(secret: string, userId: string): Promise<void> {
-  const path = `/users/${encodeURIComponent(userId)}`;
-  const got = await clerkFetch(secret, "GET", path);
-  if (!got.ok) throw new Error(`Clerk get user failed with status ${got.status}`);
-  const user = (await got.json()) as { username?: unknown };
-  if (typeof user.username === "string" && user.username !== "") return;
-  let res = await clerkFetch(secret, "PATCH", path, { username: newDeviceUsername() });
-  if (await isUsernameTaken(res)) {
-    res = await clerkFetch(secret, "PATCH", path, { username: newDeviceUsername() });
-  }
-  if (!res.ok) throw new Error(`Clerk set username failed with status ${res.status}`);
-}
-
 async function deleteUser(secret: string, userId: string): Promise<void> {
   const res = await clerkFetch(secret, "DELETE", `/users/${encodeURIComponent(userId)}`);
   if (!res.ok && res.status !== 404) {
@@ -188,7 +175,6 @@ async function retryLostPairing(
   });
   if (found === null) return null;
   try {
-    await ensureDeviceUsername(secret, found.userId);
     const ticket = await createSignInToken(secret, found.userId);
     const { userId: _userId, ...paired } = found;
     return jsonResponse({ ticket, ...paired });

@@ -60,14 +60,12 @@ async function household(t: TestConvex, prefix = ""): Promise<Fixture> {
     const { code } = await pat.mutation(api.households.createJoinCode, { householdId, grants });
     await t.mutation(internal.households.pairDevice, { code, userId });
   }
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
   await pat.mutation(api.tasks.create, {
     householdId,
     type: "medication",
     title: "Morning pills",
     displayLabel: "Morning pills",
     times: ["08:00"],
-    escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
   });
   const { instanceId, phoneId } = await t.run(async (ctx) => {
     const instance = await ctx.db
@@ -880,7 +878,9 @@ describe("the core's refusal row", () => {
     const token = await issue(t, "display");
     const early = { instanceId: f.instanceId, pressedAgoMs: 10 * MIN, via: "widget" as const };
     await postConfirm(t, token, early);
-    await t.withIdentity({ subject: "phone" }).mutation(api.instances.confirmPressedTask, early);
+    await t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.confirmPressedTask, { ...early, pressId: "pressAAAAAAAAAAAAAAA" });
     const rows = (await audits(t)).filter(
       (a) =>
         a.action === "press_not_applied" &&
@@ -908,6 +908,7 @@ describe("a confirm through the device API is a device confirm", () => {
       instanceId: second.instanceId,
       via: "phone_app",
       pressedAgoMs: 0,
+      pressId: "pressAAAAAAAAAAAAAAA",
     });
     const rows = await audits(t);
     const transportOf = (householdId: Id<"households">, action: string): unknown =>
@@ -952,7 +953,7 @@ describe("a confirm through the device API is a device confirm", () => {
     expect(((await fresh.json()) as { status: string }).status).toBe("confirmed");
   });
 
-  test("the phone app's Undo takes back a press the same device made through the API", async () => {
+  test("the phone app's Undo cannot take back a press made through the API: it has no press id", async () => {
     const t = makeBackend();
     const f = await household(t);
     await force(f, { state: "due" });
@@ -962,9 +963,12 @@ describe("a confirm through the device API is a device confirm", () => {
     setNow(local("08:05") + 20_000);
     const undone = await t
       .withIdentity({ subject: "phone" })
-      .mutation(api.instances.undoPressedTask, { instanceId: f.instanceId });
-    expect(undone.status).toBe("undone");
-    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("due");
+      .mutation(api.instances.undoPressedTask, {
+        instanceId: f.instanceId,
+        pressId: "pressAAAAAAAAAAAAAAA",
+      });
+    expect(undone.status).toBe("too_late");
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("confirmed");
   });
 
   test("the device API offers no undo route", async () => {

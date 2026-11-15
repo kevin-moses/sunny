@@ -28,6 +28,7 @@ import {
   weekMonthLabel,
   weekRangeLabel,
   DIGEST_LABEL,
+  HIGH_PRIORITY_DETAIL,
   NOT_SPOKEN,
   otherTimesCaption,
   postLabel,
@@ -87,6 +88,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     confirmedBy: null,
     confirmedByName: null,
     resolutionNote: null,
+    highPriority: false,
     ...overrides,
   } as DayTask;
 }
@@ -1077,6 +1079,39 @@ describe('doneDetail', () => {
     expect(row.accessibilityLabel).toBe(
       '8:00 AM, Take medication, Done. Marked done by Pat at 2:05 PM. Note: Called her',
     );
+  });
+});
+
+describe('high priority detail', () => {
+  it('shows on an open high priority row and in its spoken label', () => {
+    const [row] = taskRows(makeDay({ tasks: [makeTask({ highPriority: true })] }));
+    expect(row.detail).toBe(HIGH_PRIORITY_DETAIL);
+    expect(row.accessibilityLabel).toBe('8:00 AM, Take medication. High priority');
+  });
+
+  it('is left off a row that is not high priority', () => {
+    const [row] = taskRows(makeDay({ tasks: [makeTask()] }));
+    expect(row.detail).toBeNull();
+  });
+
+  it('gives way to the done detail once the task is done', () => {
+    const task = makeTask({
+      highPriority: true,
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedByName: 'Pat',
+      confirmedBy: 'user_pat',
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    const [row] = taskRows(makeDay({ tasks: [task] }));
+    expect(row.detail).toBe('Marked done by Pat at 2:05 PM');
+  });
+
+  it('is not shown on a done row with no done detail', () => {
+    const [row] = taskRows(
+      makeDay({ tasks: [makeTask({ highPriority: true, state: 'confirmed' })] }),
+    );
+    expect(row.detail).toBeNull();
   });
 });
 

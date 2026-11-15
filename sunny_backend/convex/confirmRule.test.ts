@@ -62,14 +62,12 @@ async function setup(): Promise<Fixture> {
     grants: "home_display",
   });
   await t.mutation(internal.households.pairDevice, { code: display.code, userId: "display" });
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
   await pat.mutation(api.tasks.create, {
     householdId,
     type: "medication",
     title: "Morning pills",
     displayLabel: "Morning pills",
     times: ["08:00"],
-    escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
   });
   const rows = await t.run(async (ctx) => await ctx.db.query("taskInstances").collect());
   return { t, householdId, instanceId: rows[0]!._id };
@@ -148,6 +146,8 @@ describe("confirmable flag and the confirm mutation agree", () => {
 });
 
 describe("confirmPressedTask (pressedAgoMs)", () => {
+  let pressCount = 0;
+
   async function confirmAgo(
     f: Fixture,
     iso: string,
@@ -165,6 +165,7 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
         instanceId: options.instanceId ?? f.instanceId,
         via: options.via ?? "phone_app",
         pressedAgoMs,
+        pressId: `press${String((pressCount += 1)).padStart(12, "0")}`,
       });
   }
 
@@ -353,14 +354,12 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
       timezone: "America/Chicago",
       caregiverDisplayName: "Xen",
     });
-    const policies = await xen.query(api.tasks.listPolicies, { householdId: other });
     await xen.mutation(api.tasks.create, {
       householdId: other,
       type: "medication",
       title: "Dad pills",
       displayLabel: "Dad pills",
       times: ["08:00"],
-      escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
     });
     const theirs = await f.t.run(
       async (ctx) =>

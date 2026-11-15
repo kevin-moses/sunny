@@ -9,6 +9,7 @@ import type { CreateTaskArgs, TaskChanges } from "../tasks";
 import { SETUP_TOOL_HANDLERS, SETUP_TOOLS } from "./agentSetupTools";
 import type { SetupToolName } from "./agentSetupTools";
 import { isAnytimeTask } from "./anytime";
+import { ALERT_MINUTES, alertsCaregivers, isHighPriority } from "./escalation";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
 import { booleanField, changesOf, idField, stringField } from "./toolInput";
@@ -111,6 +112,10 @@ const TASK_FIELDS = {
     type: "array",
     items: { type: "string" },
     description: "Optional checklist entries, in order. Replaces the whole list on update.",
+  },
+  high_priority: {
+    type: "boolean",
+    description: `true: every caregiver is alerted when the senior has not confirmed it ${ALERT_MINUTES} minutes after its time. Only when the caregiver asks; default false. Medications always alert; anytime tasks never do.`,
   },
 };
 
@@ -385,6 +390,9 @@ const TASK_FIELD_READERS: Record<string, (out: TaskChanges, value: unknown, key:
     active: (out, value, key) => {
       out.active = booleanField(value, key);
     },
+    high_priority: (out, value, key) => {
+      out.highPriority = booleanField(value, key);
+    },
   };
 
 export function toTaskChanges(
@@ -508,6 +516,8 @@ function taskForModel(task: Doc<"tasks">): Record<string, unknown> {
     window_minutes: task.windowMinutes,
     pill_description: task.pillDescription ?? null,
     checklist_items: task.checklistItems,
+    high_priority: isHighPriority(task),
+    alerts_caregivers: alertsCaregivers(task),
     active: task.active,
   };
 }

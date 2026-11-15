@@ -9,7 +9,8 @@ import {
   todayRows,
 } from "./deviceState";
 import type { CueInput, DayEvent, DayTask, DeviceStateInput } from "./deviceState";
-import type { EscalationStep } from "./validators";
+import { ESCALATION_LADDER } from "./escalation";
+import type { EscalationStep } from "./escalation";
 
 const TZ = "America/New_York";
 const MIN = 60_000;
@@ -65,17 +66,12 @@ function makeInput(overrides: Partial<DeviceStateInput> = {}): DeviceStateInput 
   };
 }
 
-const MEDICATION: EscalationStep[] = [
-  { id: "p0", offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-  { id: "p15", offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-  { id: "a30", offsetMinutes: 30, action: "alert_on_call", skipIfClaimed: false },
-  { id: "a45", offsetMinutes: 45, action: "alert_all_caregivers", skipIfClaimed: true },
-];
+const MEDICATION = ESCALATION_LADDER;
 
 function cueInput(
   entry: Partial<Record<keyof DayTask, unknown>>,
   timing: Partial<CueInput["timing"]> = {},
-  steps: EscalationStep[] = MEDICATION,
+  steps: readonly EscalationStep[] = MEDICATION,
 ): CueInput {
   const task = makeTask(entry);
   const windowStart = local(task.scheduledTime, task.localDate);
@@ -88,7 +84,6 @@ function cueInput(
       windowEnd: windowStart + 60 * MIN,
       createdAt: windowStart - 600 * MIN,
       snoozedUntil: task.snoozedUntil,
-      claimedBy: null,
       firedSteps: [],
       ...timing,
     },
@@ -527,7 +522,7 @@ describe("cues", () => {
         cueInputs: [
           cueInput(
             { state: "due", seniorPrompts: 1 },
-            { state: "due", firedSteps: [{ stepId: "p0" }] },
+            { state: "due", firedSteps: [{ stepId: "prompt" }] },
           ),
         ],
       },
@@ -544,7 +539,7 @@ describe("cues", () => {
         cueInputs: [
           cueInput(
             { state: "due", snoozedUntil, seniorPrompts: 1 },
-            { state: "due", firedSteps: [{ stepId: "p0" }] },
+            { state: "due", firedSteps: [{ stepId: "prompt" }] },
           ),
         ],
       },
@@ -561,7 +556,7 @@ describe("cues", () => {
         cueInputs: [
           cueInput(
             { state: "due", snoozedUntil, seniorPrompts: 2 },
-            { state: "due", firedSteps: [{ stepId: "p0" }, { stepId: "p15" }] },
+            { state: "due", firedSteps: [{ stepId: "prompt" }, { stepId: "prompt_again" }] },
           ),
         ],
       },
@@ -576,7 +571,7 @@ describe("cues", () => {
         cueInputs: [
           cueInput(
             { state: "due", seniorPrompts: 1 },
-            { state: "due", createdAt: local("08:20"), firedSteps: [{ stepId: "p0" }] },
+            { state: "due", createdAt: local("08:20"), firedSteps: [{ stepId: "prompt" }] },
           ),
         ],
       },
@@ -684,7 +679,7 @@ describe("version", () => {
   const input = makeInput({
     tasks: [makeTask({ state: "due" })],
     eventsToday: [makeEvent()],
-    cueInputs: [cueInput({ state: "due" }, { state: "due", firedSteps: [{ stepId: "p0" }] })],
+    cueInputs: [cueInput({ state: "due" }, { state: "due", firedSteps: [{ stepId: "prompt" }] })],
   });
 
   it("is 16 hex characters and the same for the same content", () => {

@@ -3,7 +3,7 @@ import type { QueryCtx } from "../_generated/server";
 import { type Actor, memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
-import { isSnoozed, seniorPromptCount } from "./escalation";
+import { isHighPriority, isSnoozed, seniorPromptCount } from "./escalation";
 import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -17,6 +17,7 @@ export interface TodayEntry {
   spokenPrompt: string;
   pillDescription: string | null;
   checklistItems: string[];
+  highPriority: boolean;
   scheduledTime: string;
   state: InstanceState;
   confirmedAt: number | null;
@@ -104,6 +105,7 @@ export async function todayInstances(
       spokenPrompt: task.spokenPrompt,
       pillDescription: task.pillDescription ?? null,
       checklistItems: task.checklistItems,
+      highPriority: isHighPriority(task),
       scheduledTime: instance.scheduledTime,
       state: instance.state,
       confirmedAt,

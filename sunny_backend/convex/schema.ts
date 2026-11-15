@@ -12,7 +12,6 @@ import {
   digestSource,
   digestStatus,
   escalationAction,
-  escalationStep,
   instanceState,
   joinGrant,
   lifeCategory,
@@ -27,6 +26,8 @@ import {
   taskType,
   toolCall,
 } from "./lib/validators";
+
+const legacyFiredAction = v.union(escalationAction, v.literal("alert_on_call"));
 
 export default defineSchema({
   households: defineTable({
@@ -117,10 +118,15 @@ export default defineSchema({
     householdId: v.id("households"),
     name: v.string(),
     systemKey: v.optional(v.union(v.literal("medication"), v.literal("prompt_only"))),
-    steps: v.array(escalationStep),
-  })
-    .index("by_household", ["householdId"])
-    .index("by_household_system_key", ["householdId", "systemKey"]),
+    steps: v.array(
+      v.object({
+        id: v.string(),
+        action: legacyFiredAction,
+        offsetMinutes: v.number(),
+        skipIfClaimed: v.boolean(),
+      }),
+    ),
+  }).index("by_household", ["householdId"]),
 
   tasks: defineTable({
     householdId: v.id("households"),
@@ -137,6 +143,7 @@ export default defineSchema({
     endsOn: v.optional(v.string()),
     windowMinutes: v.number(),
     escalationPolicyId: v.optional(v.id("escalationPolicies")),
+    highPriority: v.optional(v.boolean()),
     asNeededMaxPerDay: v.optional(v.number()),
     asNeededMinHours: v.optional(v.number()),
     createdByKind: taskCreator,
@@ -174,7 +181,7 @@ export default defineSchema({
     firedSteps: v.array(
       v.object({
         stepId: v.string(),
-        action: escalationAction,
+        action: legacyFiredAction,
         firedAt: v.number(),
         notified: v.boolean(),
       }),

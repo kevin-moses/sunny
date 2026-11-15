@@ -14,7 +14,6 @@ import {
   SWEEP_BATCH,
 } from "./lib/delivery";
 import { gatherDigestFacts } from "./lib/digestFacts";
-import { receivesDigest } from "./lib/digestRecipients";
 import {
   composeWithClaude,
   factsForPrompt,
@@ -112,7 +111,7 @@ export const complete = internalMutation({
     if (!household) return 0;
     await postDigest(ctx, digest, text);
     const members = await householdCaregivers(ctx, household._id);
-    const recipients = await reachableMembers(ctx, members.filter(receivesDigest));
+    const recipients = await reachableMembers(ctx, members);
     for (const member of recipients) {
       await insertNotification(ctx, {
         householdId: household._id,

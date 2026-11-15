@@ -122,11 +122,11 @@ describe("tool list", () => {
       "remove_knowledge",
       "get_settings",
       "update_settings",
-      "set_digest_delivery",
       "add_task",
     ]) {
       expect(names).toContain(name);
     }
+    expect(names).not.toContain("set_digest_delivery");
   });
 });
 
@@ -444,9 +444,9 @@ describe("settings", () => {
       share_transcripts: false,
       weather_location: null,
       caregivers: [
-        { name: "Max", role: "member", receives_digest: true, reachable: true },
-        { name: "Pat", role: "primary", receives_digest: true, reachable: false },
-        { name: "Val", role: "viewer", receives_digest: true, reachable: false },
+        { name: "Max", role: "member", reachable: true },
+        { name: "Pat", role: "primary", reachable: false },
+        { name: "Val", role: "viewer", reachable: false },
       ],
     });
   });
@@ -536,37 +536,6 @@ describe("settings", () => {
       "Error: share_transcripts must be true or false",
     );
     expect((await tool(t, home, "update_settings", {})).text).toBe("Error: Nothing to change");
-  });
-
-  test("set_digest_delivery turns the requester's own digest off and on, no one else's", async () => {
-    const { t, home } = await makeWorld();
-    const off = await tool(t, home, "set_digest_delivery", { receives: false }, "pat");
-    expect(JSON.parse(off.text)).toEqual({
-      name: "Pat",
-      role: "primary",
-      receives_digest: false,
-      reachable: false,
-    });
-    const optedOut = (await rows(t, "householdMembers")).filter((m) => m.digestOptOut === true);
-    expect(optedOut.map((m) => m.userId)).toEqual(["pat"]);
-    const audit = (await rows(t, "auditLog")).find((r) => r.action === "digest_delivery")!;
-    expect(audit).toMatchObject({ actorUserId: "pat", detail: { userId: "pat", receives: false } });
-    expect(
-      (await tool(t, home, "set_digest_delivery", { caregiver: "Val", receives: false })).text,
-    ).toBe("Error: Unknown field caregiver");
-    const on = await tool(t, home, "set_digest_delivery", { receives: true }, "pat");
-    expect(JSON.parse(on.text).receives_digest).toBe(true);
-    expect((await rows(t, "householdMembers")).every((m) => m.digestOptOut === undefined)).toBe(
-      true,
-    );
-  });
-
-  test("set_digest_delivery writes and audits nothing when the setting is already so", async () => {
-    const { t, home } = await makeWorld();
-    expect((await ok(t, home, "set_digest_delivery", { receives: true })).receives_digest).toBe(
-      true,
-    );
-    expect((await rows(t, "auditLog")).some((r) => r.action === "digest_delivery")).toBe(false);
   });
 });
 
