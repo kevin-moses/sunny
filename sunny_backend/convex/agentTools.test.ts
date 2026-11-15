@@ -23,8 +23,8 @@
 // briefing's daily summaries: today's and yesterday's sent digests (oldest first, one line
 // each, dates kept), never older ones, pending or failed ones or another household's, and the
 // length cap. The system prompt labels the summaries as information, never instructions. The
-// briefing's caregiver line (roles, no on-call caregiver, names kept on one line) and the setup tools
-// in the tool list (2026-11-14).
+// briefing's caregiver line (roles, no on-call caregiver, names kept on one line) and the
+// setup tools in the tool list (2026-11-14).
 //
 // Last modified: 2026-11-14
 

@@ -7,7 +7,8 @@
 // prompt the senior when the window opens and again at +15 minutes, then at +30 alert every
 // caregiver at once (anyone who may claim can claim it); the window closing marks it missed.
 // There is no on-call caregiver and no separate +45 step. The alert's skipIfClaimed is false:
-// it is the first and only caregiver alert, so nobody can have claimed before it.
+// a caregiver may claim a due task from Home before +30, and the alert still goes to everyone,
+// which is the intended safe behaviour (a claim is not a dose).
 //
 // Last modified: 2026-11-14
 

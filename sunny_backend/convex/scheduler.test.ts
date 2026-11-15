@@ -4,9 +4,11 @@
 // 2026 New York DST changes, idempotence, no back-fill, the escalation ladder (prompt,
 // reprompt, then one alert to every caregiver at once; no on-call caregiver), missed windows,
 // audit of every state change, snooze, tasks added mid-window, bursts after a gap, inactive
-// tasks, a legacy "alert_on_call" step read as an alert to every caregiver, a legacy two-alert
-// ladder never alerting twice for one instance, schedule edits and deactivation, and the
-// household timezone resync. Also: the tick fans out one tickHousehold per household (with paging), editing a
+// tasks, a legacy "alert_on_call" step read as an alert to every caregiver, an unmigrated
+// two-alert ladder (everyone at +30, everyone again at +45 unless claimed, the second body
+// saying no one has claimed it), an instance whose +30 on-call alert fired under the old code
+// still reaching everyone at +45, schedule edits and deactivation, and the household timezone
+// resync. Also: the tick fans out one tickHousehold per household (with paging), editing a
 // policy mid-ladder neither re-fires nor skips steps (stable step ids), windows that cross
 // midnight stay listed and confirmable, and deleting a task purges its rows in bounded
 // batches while orphaned instances are harmless. The clock is driven by passing `now` to the
@@ -600,22 +602,80 @@ describe("escalation ladder", () => {
     expect((await reload(f.t, i1)).state).toBe("escalated");
   });
 
-  test("a legacy ladder does not alert everyone twice when nobody claims", async () => {
+  /**
+   * purpose: The caregiver alerts of an instance as [step, recipient, body], sorted.
+   * @param f: (Fixture) Fixture.
+   * @param instanceId: (Id<"taskInstances">) The instance.
+   * @return: (Promise<string[][]>) One triple per outbox row.
+   */
+  async function alertRows(f: Fixture, instanceId: Id<"taskInstances">): Promise<string[][]> {
+    return (await outbox(f.t, instanceId))
+      .filter((o) => o.kind === "caregiver_alert")
+      .map((o) => [String(o.payload["step"]), String(o.recipientUserId), o.body])
+      .sort();
+  }
+
+  test("an unmigrated ladder alerts everyone at +30 and again at +45 when nobody claimed", async () => {
+    const f = await setup("2027-03-13T11:00:00Z");
+    await legacyLadder(f);
+    const taskId = await makeTask(f);
+    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
+    await tick(f.t, "2027-03-13T13:00:00Z");
+    await tick(f.t, "2027-03-13T13:15:00Z");
+    await tick(f.t, "2027-03-13T13:30:00Z");
+    const late = await tick(f.t, "2027-03-13T13:45:00Z");
+    expect(late.stepsFired).toBe(1);
+    const unclaimed = "Due at 8:00 AM. No one has claimed it yet.";
+    expect(await alertRows(f, i1)).toEqual([
+      ["a30", "max", "Due at 8:00 AM."],
+      ["a30", "pat", "Due at 8:00 AM."],
+      ["a30", "val", "Due at 8:00 AM."],
+      ["a45", "max", unclaimed],
+      ["a45", "pat", unclaimed],
+      ["a45", "val", unclaimed],
+    ]);
+  });
+
+  test("an unmigrated ladder sends nothing at +45 once someone claimed", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
     await legacyLadder(f);
     const taskId = await makeTask(f);
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:30:00Z");
-    const late = await tick(f.t, "2027-03-13T13:45:00Z");
-    expect(late.stepsFired).toBe(0);
-    const alerts = (await outbox(f.t, i1)).filter((o) => o.kind === "caregiver_alert");
-    expect(alerts.map((a) => a.payload["step"])).toEqual(["a30", "a30", "a30"]);
-    expect((await reload(f.t, i1)).firedSteps.map((s) => [s.stepId, s.notified])).toEqual([
-      ["p0", false],
-      ["p15", true],
-      ["a30", true],
-      ["a45", false],
-    ]);
+    at("2027-03-13T13:31:00Z");
+    await f.t
+      .withIdentity({ subject: "max" })
+      .mutation(api.instances.claimTaskInstance, { instanceId: i1 });
+    await tick(f.t, "2027-03-13T13:45:00Z");
+    expect((await alertRows(f, i1)).map((r) => r[0])).toEqual(["a30", "a30", "a30"]);
+  });
+
+  test("an on-call alert fired under the old code is followed by +45 to every caregiver", async () => {
+    const f = await setup("2027-03-13T11:00:00Z");
+    await legacyLadder(f);
+    const taskId = await makeTask(f);
+    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
+    await tick(f.t, "2027-03-13T13:15:00Z");
+    // The old code fired +30 to the on-call caregiver only; firedSteps cannot tell.
+    await f.t.run(async (ctx) => {
+      const instance = (await ctx.db.get(i1))!;
+      await ctx.db.patch(i1, {
+        state: "escalated",
+        firedSteps: [
+          ...instance.firedSteps,
+          {
+            stepId: "a30",
+            action: "alert_on_call",
+            firedAt: Date.parse("2027-03-13T13:30:00Z"),
+            notified: true,
+          },
+        ],
+      });
+    });
+    await tick(f.t, "2027-03-13T13:45:00Z");
+    expect(await alertRows(f, i1)).toEqual(
+      ["max", "pat", "val"].map((u) => ["a45", u, "Due at 8:00 AM. No one has claimed it yet."]),
+    );
   });
 
   test("a task with no policy never fires but still opens and closes", async () => {

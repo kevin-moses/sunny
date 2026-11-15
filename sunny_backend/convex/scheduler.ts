@@ -13,21 +13,21 @@
 // (prompt, or caregiver alert) come due together only the latest, by its current position in
 // the policy, is sent. A caregiver alert goes to every caregiver of the household at once
 // (there is no on-call caregiver; the legacy "alert_on_call" action is read exactly as
-// "alert_all_caregivers"), and an instance alerts caregivers at most once: a later caregiver
-// alert step of the same ladder (a ladder not yet migrated from the old on-call default, or a
-// custom one) is recorded as fired with notified false, so nobody is alerted twice for one task. Each household runs in its own serializable transaction, so a slow or
-// overlapping tick conflicts only with writes to that household. The same per-household pass
-// also queues the day-of event notices (lib/eventNotices.ts, the port of event_notice_tick) and
-// the household's daily digest once its digestTime passes (digest.ts), so there is no second
-// per-minute cron. Every outbox row goes through insertNotification (lib/delivery.ts), which
-// enqueues its delivery. The functions take `now` so tests can drive the clock;
-// tickHouseholdCore is the pure pass tests call directly. Anytime instances (tasks without a
-// time, lib/anytime.ts) open and close like the others but never fire a step, so they never
-// notify anyone; their window ends at the next local midnight when the task
-// also occurs the next day, else two midnights after their date. When a step is due, whether it
-// is held back (snooze, claim) and which steps a task can fire (active, with a policy) is
-// lib/escalation.ts, which the device state also uses to predict when the next senior prompt
-// goes out.
+// "alert_all_caregivers"). A ladder with two caregiver alerts (one stored before the on-call
+// caregiver was removed and not yet migrated, or a custom one) alerts everyone at each step, the
+// later one only if it is still due (a skipIfClaimed step is skipped once claimed); that repeat
+// is the stored ladder doing what it says. Each household runs in its own serializable
+// transaction, so a slow or overlapping tick conflicts only with writes to that household. The
+// same per-household pass also queues the day-of event notices (lib/eventNotices.ts, the port of
+// event_notice_tick) and the household's daily digest once its digestTime passes (digest.ts), so
+// there is no second per-minute cron. Every outbox row goes through insertNotification
+// (lib/delivery.ts), which enqueues its delivery. The functions take `now` so tests can drive the
+// clock; tickHouseholdCore is the pure pass tests call directly. Anytime instances (tasks without a
+// time, lib/anytime.ts) open and close like the others but never fire a step, so they never notify
+// anyone; their window ends at the next local midnight when the task also occurs the next day, else
+// two midnights after their date. When a step is due, whether it is held back (snooze, claim) and
+// which steps a task can fire (active, with a policy) is lib/escalation.ts, which the device state
+// also uses to predict when the next senior prompt goes out.
 //
 // Last modified: 2026-11-14
 
@@ -96,10 +96,10 @@ async function openWindows(
  *          due once now reaches max(windowStart, createdAt) plus its offset; prompts wait
  *          while snoozed; skipIfClaimed steps are skipped once claimed (lib/escalation.ts
  *          stepDueAt and stepHeld, shared with the device state's promptTimes). Within each kind
- *          (prompt, caregiver alert) only the latest due step, by current position in the
- *          policy, is marked to notify; a caregiver alert is not marked when the instance
- *          has already alerted caregivers. Fired steps are matched by step id, so editing the
- *          policy does not change which steps count as fired.
+ *          (prompt, caregiver alert; the legacy "alert_on_call" counts as a caregiver alert)
+ *          only the latest due step, by current position in the policy, is marked to notify.
+ *          Fired steps are matched by step id, so editing the policy does not change which
+ *          steps count as fired.
  * @param instance: (Doc<"taskInstances">) An open instance.
  * @param steps: (EscalationStep[]) The task's policy steps in order.
  * @param now: (number) Epoch ms.
@@ -113,10 +113,7 @@ function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: 
     if (stepHeld(instance, step, now)) continue;
     due.push({ step, notify: false });
   }
-  // Every caregiver alert reaches everyone, so an instance alerts caregivers only once.
-  const alerted = instance.firedSteps.some((f) => isCaregiverAlert(f.action) && f.notified);
   for (const isAlert of [false, true]) {
-    if (isAlert && alerted) continue;
     const latest = due.filter((d) => isCaregiverAlert(d.step.action) === isAlert).at(-1);
     if (latest) latest.notify = true;
   }
@@ -126,7 +123,9 @@ function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: 
 /**
  * purpose: Queue the outbox rows for one fired step: senior prompts go to every device of the
  *          household, a caregiver alert (the legacy "alert_on_call" included) to every
- *          caregiver; delivery skips anyone it cannot reach at send time.
+ *          caregiver; delivery skips anyone it cannot reach at send time. A caregiver alert's
+ *          body is the due line, plus "No one has claimed it yet." for a skipIfClaimed step,
+ *          which only fires while nobody has claimed.
  * @param ctx: (MutationCtx) Mutation context.
  * @param instance: (Doc<"taskInstances">) The instance.
  * @param step: (EscalationStep) The step; its id is the payload's `step`.
@@ -149,7 +148,11 @@ async function queueNotifications(
     title: isPrompt
       ? task.displayLabel
       : `${household.seniorPreferredName} hasn't confirmed ${task.displayLabel}`,
-    body: isPrompt ? task.spokenPrompt : dueAt,
+    body: isPrompt
+      ? task.spokenPrompt
+      : step.skipIfClaimed
+        ? `${dueAt} No one has claimed it yet.`
+        : dueAt,
     payload: {
       taskId: task._id,
       localDate: instance.localDate,

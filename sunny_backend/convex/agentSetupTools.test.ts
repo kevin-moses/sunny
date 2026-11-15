@@ -15,12 +15,11 @@
 // lastDigestDate); set_digest_delivery changes only the requester's own delivery, takes no name,
 // and writes nothing when already so. Scoping: every tool acts on the request's household only
 // (another household's knowledge_id is not found, a model-supplied household id is an unknown
-// field), and
-// through the runtime a viewer's request runs no tool. Wording cards: a request's add_task and
-// update_task calls are recorded on the request row (changedTaskIds: each task once, in order
-// of first change, at most MAX_CHANGED_TASKS) and give one card per task with the live label,
-// the display's time, every time and the sentence the display speaks; a written prompt is used
-// as is; an anytime task has no sentence; a stopped task, a failed call and a task of another
+// field), and through the runtime a viewer's request runs no tool. Wording cards: a request's
+// add_task and update_task calls are recorded on the request row (changedTaskIds: each task once,
+// in order of first change, at most MAX_CHANGED_TASKS) and give one card per task with the live
+// label, the display's time, every time and the sentence the display speaks; a written prompt is
+// used as is; an anytime task has no sentence; a stopped task, a failed call and a task of another
 // household (put on the row directly) have no card; viewers get no requests and so no cards.
 //
 // Last modified: 2026-11-14
@@ -582,21 +581,22 @@ describe("settings", () => {
 
   test("set_digest_delivery turns the requester's own digest off and on, no one else's", async () => {
     const { t, home } = await makeWorld();
-    const off = await tool(t, home, "set_digest_delivery", { receives: false }, "max");
+    // Pat is not the first caregiver by user id (Max is), so "the first member" cannot pass.
+    const off = await tool(t, home, "set_digest_delivery", { receives: false }, "pat");
     expect(JSON.parse(off.text)).toEqual({
-      name: "Max",
-      role: "member",
+      name: "Pat",
+      role: "primary",
       receives_digest: false,
       reachable: false,
     });
     const optedOut = (await rows(t, "householdMembers")).filter((m) => m.digestOptOut === true);
-    expect(optedOut.map((m) => m.userId)).toEqual(["max"]);
+    expect(optedOut.map((m) => m.userId)).toEqual(["pat"]);
     const audit = (await rows(t, "auditLog")).find((r) => r.action === "digest_delivery")!;
-    expect(audit).toMatchObject({ actorUserId: "max", detail: { userId: "max", receives: false } });
+    expect(audit).toMatchObject({ actorUserId: "pat", detail: { userId: "pat", receives: false } });
     expect(
       (await tool(t, home, "set_digest_delivery", { caregiver: "Val", receives: false })).text,
     ).toBe("Error: Unknown field caregiver");
-    const on = await tool(t, home, "set_digest_delivery", { receives: true }, "max");
+    const on = await tool(t, home, "set_digest_delivery", { receives: true }, "pat");
     expect(JSON.parse(on.text).receives_digest).toBe(true);
     expect((await rows(t, "householdMembers")).every((m) => m.digestOptOut === undefined)).toBe(
       true,

@@ -4,8 +4,9 @@
 // hears what the senior will hear: on-device speech (expo-speech) with the home display's voice
 // settings (tuning.ts SPEECH_LANGUAGE and the default speech rate, DEFAULT_TUNING.speechRate).
 // The audio session plays even with the ring/silent switch on, ducking other audio, as the
-// display's cue does. If the audio session cannot be set, or the speech engine throws or reports
-// an error, the play ends in the failed state with nothing playing (never a stuck Stop button).
+// display's cue does. If the audio session cannot be set, that is logged and the sentence is
+// spoken anyway; if the speech itself fails (the engine throws or reports an error), the play
+// ends in the failed state with nothing playing (never a stuck Stop button).
 // Rules: one sentence plays at a time; tapping the playing card's button stops it, and tapping
 // another card's button stops the first and plays the second. Leaving the screen stops it: the
 // tab becoming inactive (the Chat tab stays mounted but hidden), the app leaving the foreground,
@@ -73,7 +74,8 @@ export function useWordingPlayer(active: boolean): WordingPlayer {
 
   /**
    * purpose: Speak one card's sentence, replacing anything playing. A stop or another play
-   *          during the audio setup wins (the token check); a failure ends in failedId.
+   *          during the audio setup wins (the token check); a failed audio setup is logged and
+   *          the sentence spoken anyway; a failure of the speech itself ends in failedId.
    * @param id: (string) The card.
    * @param sentence: (string) What to say.
    * @return: (Promise<void>) Resolves once the speech has started, failed or was replaced.
@@ -97,7 +99,11 @@ export function useWordingPlayer(active: boolean): WordingPlayer {
       };
       try {
         await setAudioModeAsync(AUDIO_MODE);
-        if (tokenRef.current !== token) return;
+      } catch (error) {
+        logger.warning('Wording', `Audio mode failed; speaking anyway: ${errorMessage(error)}`);
+      }
+      if (tokenRef.current !== token) return;
+      try {
         speakingRef.current = true;
         Speech.speak(sentence, {
           language: SPEECH_LANGUAGE,
@@ -110,7 +116,7 @@ export function useWordingPlayer(active: boolean): WordingPlayer {
           },
         });
       } catch (error) {
-        logger.warning('Wording', `Could not play the sentence: ${errorMessage(error)}`);
+        logger.warning('Wording', `Speech failed: ${errorMessage(error)}`);
         finish(true);
       }
     },

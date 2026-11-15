@@ -67,11 +67,10 @@ export type HouseholdSettingsChanges = ObjectType<typeof householdSettingsFields
  *          caller has checked that the actor may edit the household (editors: primary or
  *          member). Rules: a non-blank senior name; a region timezone (a change resyncs the
  *          schedule and forgets the remembered digest date); digest and event notice times are
- *          local "HH:MM"; the
- *          weather location is trimmed, at most 100 characters, and blank clears it. A change
- *          that alters something is audited (update_settings, with the changed values), under
- *          the caregiver (for the agent, the caregiver it acts for). Google events are re-pushed
- *          when the zone, notice time or senior's name changes or a pause ends.
+ *          local "HH:MM"; the weather location is trimmed, at most 100 characters, and blank clears
+ *          it. A change that alters something is audited (update_settings, with the changed
+ *          values), under the caregiver (for the agent, the caregiver it acts for). Google events
+ *          are re-pushed when the zone, notice time or senior's name changes or a pause ends.
  * @param ctx: (MutationCtx) Context.
  * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
  * @param householdId: (Id<"households">) Household.

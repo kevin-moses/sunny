@@ -4,14 +4,15 @@
 // single-use and 24 hour expiry of codes (an expired or redeemed device code gives a caregiver
 // the generic not_found error), caregiver and device redemption, the one-household-per-caregiver
 // rule (create and redeem reject a caregiver who already belongs to a household, leave the code
-// unredeemed, and allow a removed caregiver to join another), member removal
-// (no on-call caregiver: create sets none and update refuses the old field), push token ownership (a paired device's token is protected, a device
-// cannot take a live caregiver's, a caregiver takes over another caregiver's, an orphaned
-// owner's is taken over), device removal (push tokens dropped, Clerk user deletion scheduled),
-// the device identity claim, and the last-primary guard. These stand in for the former Supabase pgTAP grant
-// and RLS checks of the Supabase test suite.
+// unredeemed, and allow a removed caregiver to join another), member removal (no on-call
+// caregiver: create sets none and update refuses the old field), push token ownership (a paired
+// device's token is protected, a device cannot take a live caregiver's, a caregiver takes over
+// another caregiver's, an orphaned owner's is taken over), device removal (push tokens dropped,
+// Clerk user deletion scheduled), the device identity claim, and the last-primary guard. These
+// stand in for the former Supabase pgTAP grant and RLS checks of the Supabase test suite.
 //
-// mine's accountKind is covered for signed out, device (claim or device row) and caregiver accounts.
+// mine's accountKind is covered for signed out, device (claim or device row) and caregiver
+// accounts.
 //
 // Last modified: 2026-11-14
 

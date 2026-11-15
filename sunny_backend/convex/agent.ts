@@ -372,8 +372,8 @@ export const rememberFact = agentMutation({
 
 /**
  * purpose: Ask every reachable caregiver to look in (lib/voiceRouting.flagCaregiverCore).
- *          Only an identical event is a repeat. medication_limit and repeated_use are not accepted here: log_dose raises
- *          them, keyed on the medication.
+ *          Only an identical event is a repeat. medication_limit and repeated_use are not
+ *          accepted here: log_dose raises them, keyed on the medication.
  * @param householdId: (Id<"households">) Household.
  * @param reason: (string) symptom, money_request, scam, distress (a fall included) or
  *        help_requested.

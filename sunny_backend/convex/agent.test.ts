@@ -13,19 +13,19 @@
 // topics; medicationStatus; snoozeDueTask ("not yet"); logAsNeededDose (label limits, the
 // caregiver flag past a limit, never a dose without a rule); rememberFact (unverified, never
 // overwriting a verified fact); flagCaregiver (every reachable caregiver at once, no on-call
-// caregiver; repeat window, audit); sendFamilyMessage; readLatestMessage (seenAt); logQuestions and the digest
-// facts that read those rows; and households.update's weatherLocation. Each is scoped to the
-// household it is given. The system clock is frozen at NOW (the outbox enqueues delivery).
-// Review round 3: only an identical flag repeats (a fall after dizziness is sent), every
-// decision is audited, distress reaches every caregiver, exactly 12 capped flags an hour with
-// exempt reasons still sent; the dose repeat guard (asks, `another` logs, a silent repeated
-// call, a caregiver's dose), scheduled_due first, newest dose rows kept, a DST day; undo only in
-// the same conversation within 30 minutes, kept as undoneAt and left out of every count, with
-// a correction to the flagged caregivers; a repeated message's earlier outcome; whole-word list
-// ticking and items past the tenth; askedAt within the conversation; and every agent function
-// in the agent-key checks.
-// Caregiver push (2026-11-14): a caregiver is reachable with a push token only, a verified
-// phone only, or both, and not with neither; nobody is named as told without a queued row.
+// caregiver; repeat window, audit); sendFamilyMessage; readLatestMessage (seenAt);
+// logQuestions and the digest facts that read those rows; and households.update's weatherLocation.
+// Each is scoped to the household it is given. The system clock is frozen at NOW (the outbox
+// enqueues delivery). Review round 3: only an identical flag repeats (a fall after dizziness is
+// sent), every decision is audited, distress reaches every caregiver, exactly 12 capped flags an
+// hour with exempt reasons still sent; the dose repeat guard (asks, `another` logs, a silent
+// repeated call, a caregiver's dose), scheduled_due first, newest dose rows kept, a DST day; undo
+// only in the same conversation within 30 minutes, kept as undoneAt and left out of every count,
+// with a correction to the flagged caregivers; a repeated message's earlier outcome; whole-word
+// list ticking and items past the tenth; askedAt within the conversation; and every agent function
+// in the agent-key checks. Caregiver push (2026-11-14): a caregiver is reachable with a push token
+// only, a verified phone only, or both, and not with neither; nobody is named as told without a
+// queued row.
 //
 // Last modified: 2026-11-14
 

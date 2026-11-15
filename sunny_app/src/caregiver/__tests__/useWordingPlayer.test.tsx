@@ -2,9 +2,9 @@
 //
 // Purpose: Tests for useWordingPlayer with react-test-renderer and expo-speech, expo-audio and
 // AppState mocked at the module boundary: a play speaks with the display's language and rate
-// after setting the audio session; a session that cannot be set, or a speech engine that throws
-// at once, ends in the failed state with nothing playing; a stop tapped during the audio setup
-// means nothing is spoken; a second tap on the same card stops it; tapping another card stops
+// after setting the audio session; a session that cannot be set is logged and the sentence is
+// spoken anyway; a speech engine that throws at once ends in the failed state with nothing
+// playing; a stop tapped during the audio setup means nothing is spoken; a second tap on the same card stops it; tapping another card stops
 // the first and plays the second, and the first's late "stopped" callback does not clear the
 // second; finishing clears the playing card; an
 // error marks the card failed; the tab becoming inactive, the app leaving the foreground and
@@ -118,12 +118,12 @@ describe('useWordingPlayer', () => {
     expect(h.get().playingId).toBe('a');
   });
 
-  it('an audio session that cannot be set ends in the failed state, nothing playing', async () => {
+  it('an audio session that cannot be set is logged and the sentence is spoken anyway', async () => {
     mockSetAudioMode.mockRejectedValue(new Error('busy'));
     const h = renderPlayer();
     await tap(h, 'a');
-    expect(mockSpoken).toHaveLength(0);
-    expect(h.get()).toMatchObject({ playingId: null, failedId: 'a' });
+    expect(mockSpoken.map((s) => s.text)).toEqual(['sentence a']);
+    expect(h.get()).toMatchObject({ playingId: 'a', failedId: null });
   });
 
   it('a synchronous throw from the speech engine ends in the failed state', async () => {

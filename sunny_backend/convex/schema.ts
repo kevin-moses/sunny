@@ -267,8 +267,7 @@ export default defineSchema({
     createdAt: v.number(),
     // Escalation steps already handled, each once, by the step's stable id. action is a
     // snapshot of the step as fired; notified is false for a step superseded by a later step of
-    // the same kind in the same tick, and for a caregiver alert on an instance that has already
-    // alerted every caregiver.
+    // the same kind in the same tick.
     firedSteps: v.array(
       v.object({
         stepId: v.string(),

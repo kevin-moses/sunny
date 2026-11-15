@@ -14,8 +14,14 @@
 //    already been alerted), so the old default medication ladder (prompt 0, prompt 15, on call
 //    30, all caregivers 45 unless claimed) ends exactly as the new default (prompt 0, prompt 15,
 //    all caregivers 30). A ladder without a legacy step is left as it is.
+// A household with an open instance (due or escalated) that has already fired an
+// "alert_on_call" step keeps its ladder for now (its onCallUserId is still cleared): that
+// instance may still need the later all-caregivers step, which under the old code was its only
+// alert to everyone. Such a household is counted as deferred; when the result's deferred count
+// is not zero, run the command again later, once those windows have closed (at most a day).
 // It is idempotent (a second run finds nothing to change) and works in batches: it reads one
-// page of households and schedules itself for the next page until all are done. Once it has
+// page of households and schedules itself for the next page until all are done; each page logs
+// its counts. Once it has
 // run on every deployment, the deprecated onCallUserId field and the "alert_on_call" literal can
 // be deleted from schema.ts and lib/validators.ts.
 //
@@ -25,7 +31,7 @@
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { EscalationStep } from "./lib/validators";
@@ -41,6 +47,12 @@ export interface RemoveOnCallResult {
   clearedOnCall: number;
   /** Policies whose steps were rewritten in this batch. */
   policiesRewritten: number;
+  /**
+   * Households in this batch whose ladders were left for later because an open instance has
+   * already fired a legacy on-call step. When it is not zero (here or in a later page's log),
+   * run the migration again once those windows have closed.
+   */
+  deferred: number;
   /** True when this was the last page (otherwise the next page is scheduled). */
   isDone: boolean;
 }
@@ -69,29 +81,53 @@ export function withoutOnCallSteps(steps: EscalationStep[]): EscalationStep[] | 
 }
 
 /**
- * purpose: Migrate one household: clear onCallUserId and rewrite its policies' legacy steps.
+ * purpose: Whether an open instance (due or escalated) of the household has already fired a
+ *          legacy "alert_on_call" step, so it may still need the ladder's later steps.
+ * @param ctx: (MutationCtx) Context.
+ * @param householdId: (Id<"households">) Household.
+ * @return: (Promise<boolean>) True when such an instance exists.
+ */
+async function hasOpenLegacyAlert(
+  ctx: MutationCtx,
+  householdId: Id<"households">,
+): Promise<boolean> {
+  for (const state of ["due", "escalated"] as const) {
+    const open = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", state))
+      .collect();
+    if (open.some((i) => i.firedSteps.some((f) => f.action === "alert_on_call"))) return true;
+  }
+  return false;
+}
+
+/**
+ * purpose: Migrate one household: clear onCallUserId and, unless an open instance has already
+ *          fired a legacy on-call step (then deferred), rewrite its policies' legacy steps.
  * @param ctx: (MutationCtx) Context.
  * @param household: (Doc<"households">) The household.
- * @return: (Promise<{ clearedOnCall: boolean; policiesRewritten: number }>) What changed.
+ * @return: (Promise<{ clearedOnCall: boolean; policiesRewritten: number; deferred: boolean }>)
+ *          What changed, and whether the ladders were left for a later run.
  */
 async function migrateHousehold(
   ctx: MutationCtx,
   household: Doc<"households">,
-): Promise<{ clearedOnCall: boolean; policiesRewritten: number }> {
+): Promise<{ clearedOnCall: boolean; policiesRewritten: number; deferred: boolean }> {
   const clearedOnCall = household.onCallUserId !== undefined;
   if (clearedOnCall) await ctx.db.patch(household._id, { onCallUserId: undefined });
   const policies = await ctx.db
     .query("escalationPolicies")
     .withIndex("by_household", (q) => q.eq("householdId", household._id))
     .collect();
-  let policiesRewritten = 0;
-  for (const policy of policies) {
+  const rewrites = policies.flatMap((policy) => {
     const steps = withoutOnCallSteps(policy.steps);
-    if (steps === null) continue;
-    await ctx.db.patch(policy._id, { steps });
-    policiesRewritten += 1;
+    return steps === null ? [] : [{ policy, steps }];
+  });
+  if (rewrites.length > 0 && (await hasOpenLegacyAlert(ctx, household._id))) {
+    return { clearedOnCall, policiesRewritten: 0, deferred: true };
   }
-  return { clearedOnCall, policiesRewritten };
+  for (const { policy, steps } of rewrites) await ctx.db.patch(policy._id, { steps });
+  return { clearedOnCall, policiesRewritten: rewrites.length, deferred: false };
 }
 
 /**
@@ -99,8 +135,10 @@ async function migrateHousehold(
  *          households per run; schedules itself for the next page until every household is
  *          done. Internal: run with `npx convex run migrations:removeOnCall`.
  * @param cursor: (string | null, optional) The page to start from; omit for the first.
- * @param batchSize: (number, optional) Households per run, 1 to 200; default 50.
- * @return: (RemoveOnCallResult) What this run did.
+ * @param batchSize: (number, optional) Households per run, 1 to 200; default 50 (also for a
+ *        value that is not a finite number).
+ * @return: (RemoveOnCallResult) What this run did; a non-zero deferred count means the
+ *          command should be run again later.
  */
 export const removeOnCall = internalMutation({
   args: {
@@ -108,19 +146,24 @@ export const removeOnCall = internalMutation({
     batchSize: v.optional(v.number()),
   },
   handler: async (ctx, { cursor, batchSize }): Promise<RemoveOnCallResult> => {
-    const numItems = Math.min(Math.max(Math.floor(batchSize ?? DEFAULT_BATCH), 1), 200);
+    const wanted =
+      batchSize !== undefined && Number.isFinite(batchSize) ? batchSize : DEFAULT_BATCH;
+    const numItems = Math.min(Math.max(Math.floor(wanted), 1), 200);
     const page = await ctx.db.query("households").paginate({ cursor: cursor ?? null, numItems });
     const result: RemoveOnCallResult = {
       households: page.page.length,
       clearedOnCall: 0,
       policiesRewritten: 0,
+      deferred: 0,
       isDone: page.isDone,
     };
     for (const household of page.page) {
       const changed = await migrateHousehold(ctx, household);
       if (changed.clearedOnCall) result.clearedOnCall += 1;
       result.policiesRewritten += changed.policiesRewritten;
+      if (changed.deferred) result.deferred += 1;
     }
+    console.log(`migrations:removeOnCall ${JSON.stringify(result)}`);
     if (!page.isDone) {
       await ctx.scheduler.runAfter(0, internal.migrations.removeOnCall, {
         cursor: page.continueCursor,

@@ -219,10 +219,10 @@ async function capReached(
 
 /**
  * purpose: Ask the caregivers to look in: queue an agent_flag notification for every reachable
- *          caregiver and audit the decision, unless the same event (same key) reached family within the
- *          repeat window or, for a capped reason, the hourly cap is reached. Every decision is
- *          audited with its detail. Nobody is named as told unless a row was queued for them
- *          (already_flagged names who the earlier identical flag reached).
+ *          caregiver and audit the decision, unless the same event (same key) reached family
+ *          within the repeat window or, for a capped reason, the hourly cap is reached. Every
+ *          decision is audited with its detail. Nobody is named as told unless a row was queued for
+ *          them (already_flagged names who the earlier identical flag reached).
  * @param ctx: (MutationCtx) Context.
  * @param args: ({household, reason, detail, key, repeatWindowMs, subject, doseId,
  *        conversationId, now}) The household, why, a short description for the caregiver
