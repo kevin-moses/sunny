@@ -13,7 +13,10 @@
 // the null convention, the tuning values, an allowlist of the state's keys at every level, and
 // that version changes when and only when the content changes (generatedAt excluded) while
 // displayVersion changes only with what is drawn (rows, the hidden count; not a passing prompt
-// time), with the FNV-1a and canonical JSON helpers.
+// time), with the FNV-1a and canonical JSON helpers. For the wall display: nextUpAfterDue (an
+// early Now task is itself next, an event before it stays next, two rows sharing a label and a
+// clock time do not confuse it), past events (after the end, or an hour after the start without
+// one; the Now card and the all-done rule unchanged) and every row's and Next up item's type.
 //
 // Last modified: 2026-11-14
 
@@ -396,6 +399,7 @@ describe("nextUp", () => {
       when: "10:00",
       icon: "clock",
       initial: null,
+      type: "routine",
     });
   });
 
@@ -416,6 +420,7 @@ describe("nextUp", () => {
       when: "2:00",
       icon: "calendar",
       initial: "S",
+      type: "event",
     });
   });
 
@@ -709,6 +714,7 @@ describe("the state's shape", () => {
         "now",
         "done",
         "nextUp",
+        "nextUpAfterDue",
         "rows",
         "rowsHidden",
         "cues",
@@ -731,9 +737,12 @@ describe("the state's shape", () => {
       ].sort(),
     );
     expect(keys(state.done)).toEqual(["early", "instanceId"]);
-    expect(keys(state.nextUp)).toEqual(["icon", "initial", "title", "when"]);
+    expect(keys(state.nextUp)).toEqual(["icon", "initial", "title", "type", "when"]);
+    expect(keys(state.nextUpAfterDue)).toEqual(["icon", "initial", "title", "type", "when"]);
     expect(state.rows.length).toBeGreaterThan(0);
-    for (const row of state.rows) expect(keys(row)).toEqual(["key", "label", "mark", "time"]);
+    for (const row of state.rows) {
+      expect(keys(row)).toEqual(["key", "label", "mark", "time", "type"]);
+    }
     expect(state.cues.length).toBeGreaterThan(0);
     for (const cue of state.cues) {
       expect(keys(cue)).toEqual(
@@ -836,5 +845,103 @@ describe("version", () => {
     expect(canonicalJson({ a: 1, b: 2 })).toBe(canonicalJson({ b: 2, a: 1 }));
     expect(fnv1a64("")).toBe("cbf29ce484222325");
     expect(fnv1a64("a")).toBe("af63dc4c8601ec8c");
+  });
+});
+
+describe("for the wall display", () => {
+  /**
+   * purpose: An event occurrence with its instants on the fixture day.
+   * @param id: (string) Event id.
+   * @param hhmm: (string) Local start time.
+   * @param label: (string) Label.
+   * @param minutes: (number | null) Duration, or null for none.
+   * @return: (DayEvent) The occurrence.
+   */
+  const timedEvent = (id: string, hhmm: string, label: string, minutes: number | null): DayEvent =>
+    makeEvent({
+      eventId: id,
+      startTime: hhmm,
+      label,
+      visitorName: null,
+      startsAt: local(hhmm),
+      endsAt: minutes === null ? null : local(hhmm) + minutes * MIN,
+    });
+
+  it("makes an early Now task itself Next up after due, and leaves a due one out", () => {
+    const early = stateOf({
+      tasks: [makeTask({ instanceId: "walk", scheduledTime: "10:00", confirmable: true })],
+      eventsToday: [makeEvent()],
+    });
+    expect(early.nextUp?.title).toBe("Sarah visits");
+    expect(early.nextUpAfterDue).toMatchObject({ title: "Morning pills", when: "10:00" });
+    const due = stateOf({
+      tasks: [makeTask({ instanceId: "pills", state: "due" })],
+      eventsToday: [makeEvent()],
+    });
+    expect(due.nextUpAfterDue).toEqual(due.nextUp);
+  });
+
+  it("keeps an event before the early task as Next up after due", () => {
+    const state = stateOf({
+      tasks: [makeTask({ instanceId: "walk", scheduledTime: "10:15", confirmable: true })],
+      eventsToday: [timedEvent("nurse", "10:00", "Nurse visits", null)],
+    });
+    expect(state.nextUpAfterDue?.title).toBe("Nurse visits");
+  });
+
+  it("is not fooled by two rows with the same label and clock time", () => {
+    const state = stateOf({
+      tasks: [makeTask({ instanceId: "walk", scheduledTime: "10:15", confirmable: true })],
+      eventsToday: [
+        timedEvent("am", "07:10", "Nurse visits", null),
+        timedEvent("pm", "19:10", "Nurse visits", null),
+      ],
+    });
+    const twins = state.rows.filter((r) => r.label === "Nurse visits" && r.time === "7:10");
+    expect(twins).toHaveLength(2);
+    expect(state.nextUp).toMatchObject({ title: "Nurse visits", when: "7:10" });
+    expect(state.nextUpAfterDue).toMatchObject({ title: "Morning pills", when: "10:15" });
+  });
+
+  it("marks an event past after its end, or an hour after its start without one", () => {
+    const state = stateOf({
+      eventsToday: [
+        timedEvent("ended", "08:00", "Coffee", 60),
+        timedEvent("hour", "08:20", "Call", null),
+        timedEvent("recent", "08:40", "Mail", null),
+        timedEvent("on", "09:00", "Long visit", 120),
+        timedEvent("later", "11:00", "Lunch out", null),
+      ],
+    });
+    expect(state.rows.map((r) => [r.label, r.mark, r.type])).toEqual([
+      ["Coffee", "past", "event"],
+      ["Call", "past", "event"],
+      ["Mail", "none", "event"],
+      ["Long visit", "none", "event"],
+      ["Lunch out", "none", "event"],
+    ]);
+  });
+
+  it("does not change the Now card or the all-done rule", () => {
+    const tasks = [makeTask({ state: "confirmed" })];
+    const over = stateOf({ tasks, eventsToday: [timedEvent("e", "08:00", "Coffee", 30)] });
+    const without = stateOf({ tasks, eventsToday: [] });
+    expect(over.rows.find((r) => r.label === "Coffee")?.mark).toBe("past");
+    expect(over.now).toEqual(without.now);
+    expect(over.now.allDone).toBe(true);
+    const ongoing = stateOf({ tasks, eventsToday: [timedEvent("e", "09:00", "Visit", 120)] });
+    expect(ongoing.now).toEqual(without.now);
+  });
+
+  it("gives every row and Next up item its type", () => {
+    const state = stateOf({
+      tasks: [
+        makeTask({ type: "medication", state: "due" }),
+        makeTask({ instanceId: "t2", type: "reminder", scheduledTime: "11:00" }),
+      ],
+      eventsToday: [makeEvent()],
+    });
+    expect(state.rows.map((r) => r.type)).toEqual(["medication", "reminder", "event"]);
+    expect(state.nextUp?.type).toBe("reminder");
   });
 });

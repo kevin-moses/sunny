@@ -14,6 +14,10 @@
 // response Cache-Control: no-store:
 //   GET  /device/state    200 the device state (lib/deviceState.ts) with ETag "<version>";
 //                         304 with no body when If-None-Match matches.
+//   GET  /device/frame    the state drawn as an e-ink frame: deviceFrame.ts, a module of its own
+//                         so the font data loads only for it; it uses gate, deviceRoute,
+//                         notModified, unauthorizedResponse and findDeviceByTokenHash, exported
+//                         from here.
 //   POST /device/confirm  { instanceId, pressedAgoMs, via } with via button, widget,
 //                         live_activity or phone_app: instances.confirmPressedInstance as the
 //                         token's DeviceActor; 200 { status: "confirmed" | "rejected", reason
@@ -28,7 +32,11 @@
 //                         device_api: the core's refusals (deleted, too early, outside the
 //                         replay window, taken back) and this module's (an unreadable body, a
 //                         bad instance id, a press over 7 days old, another household's
-//                         instance, recorded without that id), at most 20 an hour per device
+//                         instance, recorded without that id, and a hardware Done, via button,
+//                         pressed more than 5 minutes (BUTTON_EARLY_GRACE_MS, a grace for the
+//                         device's clock) before an open task's window opened: "This task is
+//                         not due yet", because the wall display offers Done only for a due task
+//                         while the phone's surfaces keep their early hour), at most 20 an hour per device
 //                         (refusedPresses); past that the answer is the same and nothing is
 //                         written. A confirm here is a device confirm like the app's (state
 //                         confirmed, confirmedBy the device), so a caregiver's reopen stamps it,
@@ -41,8 +49,9 @@
 // A missing, malformed or unknown token is 401 with one fixed body. A bad body or instance id
 // is 400 (checked only after the token, so validation never answers an unauthenticated caller).
 // Each internal function resolves the device from the token hash again inside its own
-// transaction, so a device removed mid-request can do nothing more. All three routes go through
-// deviceRoute, so every answer, an unexpected 500 included, carries Cache-Control: no-store.
+// transaction, so a device removed mid-request can do nothing more. All four device routes (the
+// three here and deviceFrame.ts's) go through deviceRoute, so every answer, an unexpected 500
+// included, carries Cache-Control: no-store.
 //
 // Rate limits (@convex-dev/rate-limiter, as pairing.ts): an authenticated request spends the
 // device's own bucket (120 a minute); a failed authentication spends a strict global bucket and
@@ -73,6 +82,7 @@ import { audit } from "./lib/audit";
 import { loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
+import { isOpenState } from "./lib/escalation";
 import { appError, isAppError } from "./lib/errors";
 import {
   NO_STORE,
@@ -118,7 +128,44 @@ const REFUSED = {
   badId: "The task id is not valid",
   tooOld: "The press is too old",
   notHere: "The task is not in this household",
+  notDue: "This task is not due yet",
 } as const;
+
+/**
+ * How far before a task's window a hardware Done press may be and still count (ms). The press
+ * time is now - pressedAgoMs, and pressedAgoMs comes from the device's own clock: an ESP32 that
+ * slept on its internal slow clock can be minutes off after hours offline. Refusing a real press
+ * leaves a taken dose open and alerts the family, which is worse than accepting a press a few
+ * minutes early (the phone allows a whole hour), so only a press clearly before the window is
+ * refused.
+ */
+const BUTTON_EARLY_GRACE_MS = minutes(5);
+
+/**
+ * purpose: Whether a press is on an open task of this household (upcoming, due or escalated)
+ *          that was not due yet when it was pressed: pressed more than BUTTON_EARLY_GRACE_MS
+ *          before its window opened. Judged by the press time, so a queued press replayed after
+ *          the task came due is refused too, and a press after the window opened (or within the
+ *          grace before it) counts even if the scheduler has not marked it due yet. Another
+ *          household's, a missing or a closed instance is not judged here (the core answers it).
+ * @param ctx: (MutationCtx) Context.
+ * @param device: (Doc<"devices">) The device that pressed.
+ * @param press: ({ instanceId, pressedAgoMs }) The press.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<boolean>) True when the task was not due yet at the press.
+ */
+async function pressedBeforeDue(
+  ctx: MutationCtx,
+  device: Doc<"devices">,
+  press: { instanceId: Id<"taskInstances">; pressedAgoMs: number },
+  now: number,
+): Promise<boolean> {
+  if (press.pressedAgoMs < 0) return false; // the core refuses an impossible age itself
+  const instance = await ctx.db.get(press.instanceId);
+  if (instance === null || instance.householdId !== device.householdId) return false;
+  const pressedAt = now - press.pressedAgoMs;
+  return isOpenState(instance.state) && pressedAt < instance.windowStart - BUTTON_EARLY_GRACE_MS;
+}
 
 /** The 400 message for an instance id that is not one. */
 const BAD_ID_MESSAGE = "instanceId must be a task instance id";
@@ -174,7 +221,7 @@ type ConfirmOutcome =
  * @param tokenHash: (string) SHA-256 hex of the token.
  * @return: (Promise<Doc<"devices"> | null>) The device, or null for an unknown or revoked token.
  */
-async function findDeviceByTokenHash(
+export async function findDeviceByTokenHash(
   ctx: QueryCtx,
   tokenHash: string,
 ): Promise<Doc<"devices"> | null> {
@@ -345,8 +392,12 @@ async function auditRefusal(
 
 /**
  * purpose: Confirm a press for a device through instances.confirmPressedInstance (transport
- *          device_api), which decides everything, including refusing another household's
- *          instance by its household check. That refusal (forbidden) is answered exactly like a
+ *          device_api), which decides everything else, including refusing another household's
+ *          instance by its household check. A hardware Done (via "button") on a task of this
+ *          household that was not due yet at the press is refused first ("This task is not due
+ *          yet", audited and budgeted like this module's other refusals): the wall display
+ *          offers Done only for a due task, while the phone's surfaces keep their early hour.
+ *          The household refusal (forbidden) is answered exactly like a
  *          missing instance (rejected, NO_SUCH_TASK), so nothing says whether the instance exists,
  *          and is audited in the device's own household without its id. Refusals the core
  *          records (press_not_applied) count against the device's refused-press bucket; once it
@@ -363,6 +414,10 @@ async function confirmForDevice(
   args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number },
   now: number,
 ): Promise<{ status: "confirmed" | "rejected"; reason: string | null }> {
+  if (args.via === "button" && (await pressedBeforeDue(ctx, actor.device, args, now))) {
+    await auditRefusal(ctx, actor.device, REFUSED.notDue, args);
+    return { status: "rejected", reason: REFUSED.notDue };
+  }
   const budget = { key: actor.device._id };
   const room = (await rateLimiter.check(ctx, "refusedPresses", budget)).ok;
   let result: PressResult;
@@ -463,7 +518,7 @@ export const updateInfoByToken = internalMutation({
  * purpose: The one answer for a missing, malformed or unknown token.
  * @return: (Response) 401 with a fixed body.
  */
-function unauthorizedResponse(): Response {
+export function unauthorizedResponse(): Response {
   return errorResponse(401, "unauthenticated", "A valid device token is required", {
     "WWW-Authenticate": "Bearer",
   });
@@ -495,7 +550,7 @@ async function refuseAuthentication(ctx: ActionCtx, request: Request): Promise<R
  * @param request: (Request) The HTTP request.
  * @return: (Promise<string | Response>) The token hash, or the response to send (401 or 429).
  */
-async function gate(ctx: ActionCtx, request: Request): Promise<string | Response> {
+export async function gate(ctx: ActionCtx, request: Request): Promise<string | Response> {
   const token = parseBearerToken(request.headers.get("Authorization"));
   if (token === null) return await refuseAuthentication(ctx, request);
   const tokenHash = await hashDeviceToken(token);
@@ -659,6 +714,23 @@ function etagMatches(header: string | null, etag: string): boolean {
 }
 
 /**
+ * purpose: The 304 answer when the request's If-None-Match already names this entity tag.
+ * @param request: (Request) The HTTP request.
+ * @param etag: (string) The quoted entity tag.
+ * @param headers: (Record<string, string>, optional) More headers for the 304 (a frame's Done
+ *        instance).
+ * @return: (Response | null) 304 with no body (no-store, the tag), or null to answer in full.
+ */
+export function notModified(
+  request: Request,
+  etag: string,
+  headers: Record<string, string> = {},
+): Response | null {
+  if (!etagMatches(request.headers.get("If-None-Match"), etag)) return null;
+  return new Response(null, { status: 304, headers: { ...NO_STORE, ...headers, ETag: etag } });
+}
+
+/**
  * purpose: The quoted entity tag of a state.
  * @param state: (DeviceState) The state.
  * @return: (string) "\"<version>\"".
@@ -673,7 +745,7 @@ function etagOf(state: DeviceState): string {
  * @param handle: ((ctx, request) => Promise<Response>) The route.
  * @return: (PublicHttpAction) The HTTP action.
  */
-function deviceRoute(
+export function deviceRoute(
   fallback: string,
   handle: (ctx: ActionCtx, request: Request) => Promise<Response>,
 ): PublicHttpAction {
@@ -716,9 +788,8 @@ export const getState = deviceRoute("Could not load the device state", async (ct
   const state = await ctx.runQuery(internal.deviceApi.stateByToken, { tokenHash });
   if (state === null) return unauthorizedResponse();
   const etag = etagOf(state);
-  if (etagMatches(request.headers.get("If-None-Match"), etag)) {
-    return new Response(null, { status: 304, headers: { ...NO_STORE, ETag: etag } });
-  }
+  const cached = notModified(request, etag);
+  if (cached !== null) return cached;
   return jsonResponse(state, 200, { ETag: etag });
 });
 
