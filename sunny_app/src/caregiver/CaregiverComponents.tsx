@@ -7,23 +7,25 @@
 // tasks above a "Today" group), the planned tasks card (a future selected day's tasks, read-only
 // rows with a dulled disabled checkbox, in their own card above that day's events), the events
 // card (the selected day's events as a plain list) and the later-days card grouping the rest of
-// the week's events by day. A task row has a
-// rounded-square checkbox (editors tap an open one to mark it done; a done or marking one is
-// checked and greyed, with a detail line saying who confirmed it; an open one a viewer cannot
-// tick is dulled) and tappable text that opens the task's autosaving inline note editor (no Save
-// or Cancel). A saved note shows as a "Note:" subtitle. In task and event rows the time and the
-// label share one text baseline (TitleLine) and the subtitles line up under the label. Task rows
+// the week's events by day. A task row has a rounded-square checkbox (editors tap an open one
+// to mark it done; a done or marking one is checked and greyed, with a detail line saying who
+// confirmed it; editors may tap a done one the day view marks reopenable, which asks first
+// with a native alert, one at a time per row, and then reopens it, showing "Reopening..."
+// meanwhile; an open one a viewer cannot tick is dulled) and tappable text that opens the
+// task's autosaving inline note editor (no Save or Cancel). A saved note shows as a "Note:"
+// subtitle. In task and event rows the time and the label share one text baseline (TitleLine)
+// and the subtitles line up under the label. Task rows
 // are separated by hairlines that start at the text; event rows keep their calendar icon. The
 // cards that sit on a screen that re-renders often (calendar, alert, task row, events, later
 // days) are memoized, so the screen passes them stable callbacks. They take plain data from
 // format.ts and render the Figma design: warm translucent cards, serious status colors for
 // alerts, accent-tinted selection. No motion.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { SymbolView } from 'expo-symbols';
-import { memo, useEffect, useState, type ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { TaskInstanceId } from '../backend/convexApi';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -398,18 +400,57 @@ function NoteEditorField({
   );
 }
 
+/** The question asked before a task is reopened. */
+export const REOPEN_MESSAGE =
+  'It goes back on the list as not done. Reminders and family alerts that are already overdue will go out right away.';
+
+/**
+ * purpose: Ask before reopening a task, with a native alert: "Reopen <label>?", Cancel (cancel
+ *          style) and Reopen (default style). Reopening cannot be undone and can send family
+ *          alerts at once, which is why this one action asks first.
+ * @param label: (string) The task's label.
+ * @param onReopen: (() => void) Called when the caregiver chooses Reopen.
+ * @param onClose: (() => void) Called first whenever the alert goes away. On iOS (this app's
+ *        only platform) an alert cannot be dismissed without a button, so the Cancel and Reopen
+ *        buttons are what call it; onDismiss is Android-only and kept for completeness.
+ * @return: (void)
+ */
+export function confirmReopen(label: string, onReopen: () => void, onClose: () => void): void {
+  Alert.alert(
+    `Reopen ${label}?`,
+    REOPEN_MESSAGE,
+    [
+      { text: 'Cancel', style: 'cancel', onPress: onClose },
+      {
+        text: 'Reopen',
+        style: 'default',
+        onPress: () => {
+          onClose();
+          onReopen();
+        },
+      },
+    ],
+    { onDismiss: onClose },
+  );
+}
+
 /**
  * purpose: One task row. The first line has the checkbox, then time and label on one text
  *          baseline; the who-confirmed detail, the "Note: ..." subtitle and any running or
  *          failed action sit under the label. Editors tick an open task's checkbox to mark it
  *          done (it shows checked while the call runs and stays checked once the day view says
- *          done) and tap the text to open the autosaving note editor. Viewers can tap a
- *          truncated note to read all of it. A hairline above the text column separates it from
- *          the row before. Memoized: it re-renders only when its own props change.
- * @param props: ({ row, first, canEdit, action, onMarkDone, noteEditor }) The task row, whether
- *        it is the first in its list (no divider), whether this caregiver may edit, its running
- *        or failed action, the checkbox handler (called with the task instance) and the note
- *        editor shared by all rows.
+ *          done), tick a reopenable done task's checked box to reopen it after confirming
+ *          (confirmReopen, one alert at a time per row; "Reopening..." while the call runs,
+ *          the box stays checked, is not interactive and keeps its "Reopen <label>" label with
+ *          busy set; a failure shows in the row and the box stays checked) and tap the text to
+ *          open the autosaving note editor. Viewers can tap a truncated note to read all of it.
+ *          A hairline above the text column separates it from the row before. Memoized: it
+ *          re-renders only when its own props change.
+ * @param props: ({ row, first, canEdit, action, onMarkDone, onReopen, noteEditor }) The task
+ *        row, whether it is the first in its list (no divider), whether this caregiver may
+ *        edit, its running or failed action, the checkbox handlers for an open and for a
+ *        reopenable done task (called with the task instance) and the note editor shared by
+ *        all rows.
  * @return: (JSX.Element) The row.
  */
 export const TaskRow = memo(function TaskRow({
@@ -418,6 +459,7 @@ export const TaskRow = memo(function TaskRow({
   canEdit,
   action,
   onMarkDone,
+  onReopen,
   noteEditor,
 }: {
   row: TaskRowData;
@@ -425,12 +467,34 @@ export const TaskRow = memo(function TaskRow({
   canEdit: boolean;
   action?: TaskActionState;
   onMarkDone: (instanceId: TaskInstanceId) => void;
+  onReopen: (instanceId: TaskInstanceId) => void;
   noteEditor: NoteEditor;
 }) {
   const [noteShown, setNoteShown] = useState(false);
+  const asking = useRef(false);
   const marking = action?.status === 'marking';
-  const { kind, interactive } = checkboxState(row, { canEdit, busy: marking });
+  const reopening = action?.status === 'reopening';
+  const busy = marking || reopening;
+  const { kind, interactive } = checkboxState(row, { canEdit, busy });
   const done = kind === 'done';
+  const reopens = reopening || (done && interactive);
+
+  /**
+   * purpose: Ask before reopening, unless this row's alert is already up (a second tap opens
+   *          no second alert).
+   * @return: (void)
+   */
+  const askReopen = (): void => {
+    if (asking.current) return;
+    asking.current = true;
+    confirmReopen(
+      row.label,
+      () => onReopen(row.instanceId),
+      () => {
+        asking.current = false;
+      },
+    );
+  };
   const alert = row.variant === 'alert' && !done;
   const editing = noteEditor.open?.rowId === row.id;
   const noteText = noteLine(row.note);
@@ -439,10 +503,10 @@ export const TaskRow = memo(function TaskRow({
     <View style={[styles.taskRow, alert && { backgroundColor: alertTone.background }]}>
       <Pressable
         accessibilityRole="checkbox"
-        accessibilityLabel={`Mark ${row.label} done`}
-        accessibilityState={{ checked: done, disabled: !interactive, busy: marking }}
+        accessibilityLabel={reopens ? `Reopen ${row.label}` : `Mark ${row.label} done`}
+        accessibilityState={{ checked: done, disabled: !interactive, busy }}
         disabled={!interactive}
-        onPress={() => onMarkDone(row.instanceId)}
+        onPress={reopens ? askReopen : () => onMarkDone(row.instanceId)}
         style={({ pressed }) => [styles.checkboxTarget, interactive && pressed && styles.pressed]}
       >
         <CheckboxBox kind={kind} />
@@ -489,6 +553,9 @@ export const TaskRow = memo(function TaskRow({
             {action?.status === 'undoing' && (
               <Text style={[type.caption, { color: colors.secondaryText }]}>Undoing...</Text>
             )}
+            {reopening && (
+              <Text style={[type.caption, { color: colors.secondaryText }]}>Reopening...</Text>
+            )}
             {action?.status === 'saving' && (
               <Text style={[type.caption, { color: colors.secondaryText }]}>Saving note...</Text>
             )}
@@ -510,12 +577,17 @@ export const TaskRow = memo(function TaskRow({
   );
 });
 
-/** What the task rows need to act: their running or failed actions, and the checkbox handler. */
+/** What the task rows need to act: their running or failed actions, and the checkbox handlers. */
 export interface TaskRowActions {
   /** Running or failed actions by task instance id. */
   states: Partial<Record<string, TaskActionState>>;
-  /** Mark the task done (the checkbox). */
+  /** Mark the task done (the checkbox of an open task). */
   markDone: (instanceId: TaskInstanceId) => void;
+  /**
+   * Reopen the task (the checked box of a reopenable done task), called once the caregiver
+   * chose Reopen in the confirm alert.
+   */
+  reopen: (instanceId: TaskInstanceId) => void;
 }
 
 /**
@@ -555,6 +627,7 @@ export function TasksCard({
       canEdit={canEdit}
       action={rowActions.states[row.instanceId]}
       onMarkDone={rowActions.markDone}
+      onReopen={rowActions.reopen}
       noteEditor={noteEditor}
     />
   );

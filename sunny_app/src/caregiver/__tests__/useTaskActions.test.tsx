@@ -6,17 +6,18 @@
 // undoResolve and shows a refusal in the task's slot, a failed call sets the error state, a
 // success clears the state, a call that finishes after a newer one started leaves the newer
 // state alone (a note save ending during Mark done), error messages (including "Already marked
-// done.") clear themselves after 5 seconds or when the next action starts, and the action
-// functions keep their identity between renders.
+// done.") clear themselves after 5 seconds or when the next action starts, the action
+// functions keep their identity between renders, and reopen sends reopenTaskInstance, shows
+// "reopening" while it runs and the server's refusal when it fails.
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-import { callMutation } from '../../backend/api';
+import { BackendError, callMutation } from '../../backend/api';
 import { ERROR_CLEAR_MS, useTaskActions, type TaskActions } from '../useTaskActions';
 
 jest.mock('../../backend/convex', () => ({ convex: {} }));
@@ -134,6 +135,45 @@ describe('useTaskActions', () => {
       await pending;
     });
     expect(h.get().actions[ID as string]).toBeUndefined();
+  });
+
+  it('reopen sends reopenTaskInstance and clears the state on success', async () => {
+    const h = renderActions();
+    await act(async () => {
+      await h.get().reopen(ID);
+    });
+    const [ref, args] = mockCall.mock.calls[0];
+    expect(getFunctionName(ref as never)).toBe('instances:reopenTaskInstance');
+    expect(args).toEqual({ instanceId: ID });
+    expect(h.get().actions[ID as string]).toBeUndefined();
+  });
+
+  it('reopen shows the reopening state while the call runs', async () => {
+    let finish!: (value: unknown) => void;
+    mockCall.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const h = renderActions();
+    let pending!: Promise<void>;
+    act(() => {
+      pending = h.get().reopen(ID);
+    });
+    expect(h.get().actions[ID as string]).toEqual({ status: 'reopening' });
+    await act(async () => {
+      finish(null);
+      await pending;
+    });
+    expect(h.get().actions[ID as string]).toBeUndefined();
+  });
+
+  it('reopen shows the server refusal in the task slot', async () => {
+    mockCall.mockRejectedValue(new BackendError('This task is no longer on the schedule.', 400));
+    const h = renderActions();
+    await act(async () => {
+      await h.get().reopen(ID);
+    });
+    expect(h.get().actions[ID as string]).toEqual({
+      status: 'error',
+      message: 'This task is no longer on the schedule.',
+    });
   });
 
   it('undoMarkDone sends the undo mutation', async () => {
