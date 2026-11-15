@@ -1,57 +1,36 @@
-# tools.py
-# Purpose: Async helpers behind the agent's household tools, plus voice-friendly time and date
-# formatting shared with prompts.py. Every decision lives in the Convex agent:* functions; these
-# helpers only call one and phrase its result for the model. They contain no LiveKit imports;
-# the @function_tool methods on Assistant in agent.py call them. Instants arrive as epoch
-# milliseconds; now_epoch_ms is the one clock, so tests can fix it.
-#
-# Helpers: db_list_today (agent:today), db_confirm_task (agent:confirmDueTask: which task "Done"
-# means and the already-done guard), db_snooze_task (agent:snoozeDueTask, "not yet"),
-# db_create_senior_reminder / db_cancel_senior_reminder (senior-created reminders only),
-# db_medication_status, db_log_dose and db_undo_last_dose (as-needed doses, with
-# describe_as_needed for the label facts), db_remember_fact, db_flag_caregiver,
-# db_send_family_message and db_read_latest_message.
-#
-# Wording rules: results are facts, never advice (a medication result says what was taken and
-# what the label says, "in 24 hours", with days used in the last week); a result never names a
-# caregiver no text was queued for (_told: "already told" only for the same event, and when
-# nobody could be reached, "family could not be reached from here" with no reason); a distress
-# flag always adds the emergency lines (config.py, US numbers); a report that may repeat a dose
-# already written down asks whether it is the same one or another (log_dose another=true logs
-# it); a dose can only be taken back in the conversation that logged it, and otherwise she is
-# told earlier records cannot be changed here; an anytime task (scheduledTime ANYTIME) is
-# "<label>, anytime today", never "due now" or "not due until". one_line and quoted keep
-# family-written text to one line (a message body also in quotes).
-#
-# Last modified: 2026-11-14
-
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from config import CRISIS_LINE, EMERGENCY_NUMBER
-from convex_client import ConvexClient
+from config import US_CRISIS_LINE, US_EMERGENCY_NUMBER
+from convex_client import ConvexMutation, ConvexQuery
+from convex_types import (
+    AsNeededEntry,
+    CancelReminderResult,
+    ConfirmResult,
+    FamilyMessage,
+    FamilyMessageResult,
+    FlagResult,
+    FlagStatus,
+    LogDoseResult,
+    MedicationStatus,
+    RememberFactResult,
+    SnoozeResult,
+    TaskOutcome,
+    TodayEntry,
+    UndoDoseResult,
+)
 
 _DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-# What she is told when no caregiver could be texted: the fact, never the reason.
 UNREACHABLE = "Family could not be reached from here; say exactly that, plainly."
-# Added to every distress flag result, whatever happened to the flag.
 EMERGENCY_LINES = (
-    f" If they are hurt, fell, or are in danger, tell them to call {EMERGENCY_NUMBER}; if they "
-    f"talk about hurting themselves, give {EMERGENCY_NUMBER} and {CRISIS_LINE}, the crisis line."
+    f" If they are hurt, fell, or are in danger, tell them to call {US_EMERGENCY_NUMBER}; if they "
+    f"talk about hurting themselves, give {US_EMERGENCY_NUMBER} and {US_CRISIS_LINE}, the crisis line."
 )
 _DONE_STATES = {"confirmed", "resolved"}
-# scheduledTime of an anytime task (no time of day). Mirrors ANYTIME in
-# sunny_backend/convex/lib/anytime.ts; keep the two in sync.
 ANYTIME = "anytime"
 
 
 def format_time_for_voice(t: str) -> str:
-    """
-    purpose: Convert a 24-hour time string to a voice-friendly spoken form.
-    @param t: (str) Time in "HH:MM" or "HH:MM:SS" 24-hour format.
-    @return: (str) Spoken time, e.g. "9 AM", "9:30 PM", "noon", "midnight".
-    """
     parts = t.split(":")
     if len(parts) < 2:
         return t
@@ -74,11 +53,6 @@ def format_time_for_voice(t: str) -> str:
 
 
 def format_days_for_voice(days: list[str]) -> str:
-    """
-    purpose: Convert a list of day abbreviations to a voice-friendly spoken form.
-    @param days: (list[str]) Day abbreviations from ["mon","tue","wed","thu","fri","sat","sun"].
-    @return: (str) Spoken day string, e.g. "every day", "on weekdays", "on Mon, Tue".
-    """
     day_set = {d.lower() for d in days}
     if day_set == set(_DAY_ORDER):
         return "every day"
@@ -90,53 +64,22 @@ def format_days_for_voice(days: list[str]) -> str:
 
 
 def to_local(epoch_ms: float, tz: str) -> datetime:
-    """
-    purpose: Convert a Convex instant (epoch milliseconds) to the household's local time.
-    @param epoch_ms: (float) Milliseconds since the Unix epoch.
-    @param tz: (str) IANA timezone of the household.
-    @return: (datetime) Aware datetime in the household timezone.
-    """
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).astimezone(
-        ZoneInfo(tz)
-    )
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).astimezone(ZoneInfo(tz))
 
 
 def clock_for_voice(moment: datetime) -> str:
-    """
-    purpose: Spoken clock time of a datetime.
-    @param moment: (datetime) Any datetime (already in the desired timezone).
-    @return: (str) e.g. "8:10 AM".
-    """
     return format_time_for_voice(moment.strftime("%H:%M"))
 
 
 def spoken_date(day: date) -> str:
-    """
-    purpose: Spoken weekday and date, e.g. "Tuesday, January 5".
-    @param day: (date) The date to describe.
-    @return: (str) Weekday, month and day without a leading zero.
-    """
     return f"{day.strftime('%A, %B')} {day.day}"
 
 
 def local_clock(epoch_ms: float, tz: str) -> str:
-    """
-    purpose: Spoken local time of an instant in the household timezone.
-    @param epoch_ms: (float) Milliseconds since the Unix epoch.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) e.g. "8:10 AM".
-    """
     return clock_for_voice(to_local(epoch_ms, tz))
 
 
-def describe_instance(item: dict, tz: str) -> str:
-    """
-    purpose: Describe one of today's task instances for voice.
-    @param item: (dict) Entry from agent:today / agent:getContext()['today'] (camelCase keys).
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) e.g. "8 AM, Morning pills: done at 8:10 AM"; for an anytime task
-             "Water plants, anytime today: still to do today".
-    """
+def describe_instance(item: TodayEntry, tz: str) -> str:
     label = item.get("displayLabel", "")
     anytime = item.get("scheduledTime", "") == ANYTIME
     state = item.get("state", "")
@@ -146,8 +89,9 @@ def describe_instance(item: dict, tz: str) -> str:
     else:
         when = f"{format_time_for_voice(item.get('scheduledTime', ''))}, {label}"
         open_status = "due now"
-    if state in _DONE_STATES and item.get("confirmedAt"):
-        status = f"done at {local_clock(item['confirmedAt'], tz)}"
+    confirmed_at = item.get("confirmedAt")
+    if state in _DONE_STATES and confirmed_at:
+        status = f"done at {local_clock(confirmed_at, tz)}"
     elif (anytime and state != "missed") or state in ("due", "escalated"):
         status = open_status
     elif state == "missed":
@@ -157,40 +101,21 @@ def describe_instance(item: dict, tz: str) -> str:
     return f"{when}: {status}"
 
 
-async def db_list_today(client: ConvexClient, household_id: str, tz: str) -> str:
-    """
-    purpose: Describe today's schedule and what has been done, for voice.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) Voice-friendly listing of today's tasks, or a message if there are none.
-    """
-    items = await client.query("agent:today", {"householdId": household_id}) or []
+async def db_list_today(client: ConvexQuery, household_id: str, tz: str) -> str:
+    items: list[TodayEntry] = await client.query(
+        "agent:today", {"householdId": household_id}
+    )
     if not items:
         return "There is nothing on the schedule for today."
     return "Today: " + "; ".join(describe_instance(i, tz) for i in items) + "."
 
 
 async def db_confirm_task(
-    client: ConvexClient, household_id: str, tz: str, task_name: str
+    client: ConvexMutation, household_id: str, tz: str, task_name: str
 ) -> str:
-    """
-    purpose: Confirm one of today's tasks by voice through agent:confirmDueTask, which picks
-             the task (the due one when no name is given) and guards against confirming
-             twice. Phrases each outcome for the agent.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @param task_name: (str) Name or part of the task's label, or "" for whatever is due.
-    @return: (str) Voice-friendly outcome: confirmed, already done, nothing due, not
-             found, not due yet, or a clarifying question.
-    """
-    r = (
-        await client.mutation(
-            "agent:confirmDueTask",
-            {"householdId": household_id, "label": task_name or None},
-        )
-        or {}
+    r: ConfirmResult = await client.mutation(
+        "agent:confirmDueTask",
+        {"householdId": household_id, "label": task_name or None},
     )
     status = r.get("status")
     label = r.get("displayLabel") or task_name
@@ -209,16 +134,7 @@ async def db_confirm_task(
     return f"I don't see {task_name} on today's schedule."
 
 
-def _task_outcome(r: dict[str, Any], label: str, task_name: str, tz: str) -> str | None:
-    """
-    purpose: The outcomes "Done" and "not yet" phrase the same way: already done, not due
-             until a time (a timed task), and not on today's schedule.
-    @param r: (dict) The agent:confirmDueTask or agent:snoozeDueTask result.
-    @param label: (str) The task's display label (or the words said).
-    @param task_name: (str) The words said.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str | None) The sentence, or None for an outcome each tool phrases itself.
-    """
+def _task_outcome(r: TaskOutcome, label: str, task_name: str, tz: str) -> str | None:
     status = r.get("status")
     if status == "already_done":
         return f"Already done: {label} was confirmed at {local_clock(r['confirmedAt'], tz)}."
@@ -230,7 +146,7 @@ def _task_outcome(r: dict[str, Any], label: str, task_name: str, tz: str) -> str
 
 
 async def db_create_senior_reminder(
-    client: ConvexClient,
+    client: ConvexMutation,
     household_id: str,
     tz: str,
     title: str,
@@ -238,19 +154,6 @@ async def db_create_senior_reminder(
     on_date: str = "",
     days: list[str] | None = None,
 ) -> str:
-    """
-    purpose: Create a reminder the senior asked for through agent:createSeniorReminder, which
-             sets the senior-created defaults (prompt-only policy, wording, window).
-             One-off when on_date is given, otherwise recurring on days (every day if empty).
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household, used to phrase the date.
-    @param title: (str) What to remind them about, e.g. "call the plumber".
-    @param time: (str) 24-hour "HH:MM".
-    @param on_date: (str) "YYYY-MM-DD" for a one-off reminder, or "".
-    @param days: (list[str] | None) Day abbreviations for a recurring reminder.
-    @return: (str) Voice-friendly confirmation.
-    """
     day_list = [d.lower() for d in (days or []) if d.lower() in _DAY_ORDER]
     await client.mutation(
         "agent:createSeniorReminder",
@@ -279,22 +182,11 @@ async def db_create_senior_reminder(
 
 
 async def db_cancel_senior_reminder(
-    client: ConvexClient, household_id: str, title_query: str
+    client: ConvexMutation, household_id: str, title_query: str
 ) -> str:
-    """
-    purpose: Cancel a reminder the senior created through agent:cancelSeniorReminder.
-             Caregiver-created tasks are never matched.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param title_query: (str) Name or part of the reminder's title.
-    @return: (str) Voice-friendly outcome: cancelled, not found, or a clarifying question.
-    """
-    r = (
-        await client.mutation(
-            "agent:cancelSeniorReminder",
-            {"householdId": household_id, "query": title_query},
-        )
-        or {}
+    r: CancelReminderResult = await client.mutation(
+        "agent:cancelSeniorReminder",
+        {"householdId": household_id, "query": title_query},
     )
     titles = r.get("titles") or []
     if r.get("status") == "cancelled":
@@ -308,31 +200,14 @@ async def db_cancel_senior_reminder(
 
 
 def one_line(value: object) -> str:
-    """
-    purpose: Household text as one line: every run of whitespace, newlines included, becomes
-             a single space, so caregiver-written text cannot add lines to the prompt.
-    @param value: (object) Any value; None becomes "".
-    @return: (str) The trimmed single-line text.
-    """
     return " ".join(str(value or "").split())
 
 
 def quoted(text: object) -> str:
-    """
-    purpose: Family-written text in double quotes on one line, its own double quotes turned
-             into single quotes so the quoted span cannot be closed early.
-    @param text: (object) The text.
-    @return: (str) e.g. '"Coming at 2 with soup"'.
-    """
     return '"' + one_line(text).replace('"', "'") + '"'
 
 
 def join_names(names: list[str]) -> str:
-    """
-    purpose: Join names the way people say them.
-    @param names: (list[str]) Names in order.
-    @return: (str) "Anna", "Anna and Bob", "Anna, Bob and Sarah", or "family" when empty.
-    """
     if not names:
         return "family"
     if len(names) == 1:
@@ -341,50 +216,19 @@ def join_names(names: list[str]) -> str:
 
 
 def _same_local_day(a_ms: float, b_ms: float, tz: str) -> bool:
-    """
-    purpose: Whether two instants fall on the same household-local date.
-    @param a_ms: (float) Epoch ms.
-    @param b_ms: (float) Epoch ms.
-    @param tz: (str) IANA timezone of the household.
-    @return: (bool) True on the same local date.
-    """
     return to_local(a_ms, tz).date() == to_local(b_ms, tz).date()
 
 
 def now_epoch_ms() -> float:
-    """
-    purpose: The current instant in epoch milliseconds (one place, so tests can fix it).
-    @return: (float) Epoch ms.
-    """
-    return datetime.now(timezone.utc).timestamp() * 1000
+    return datetime.now(UTC).timestamp() * 1000
 
 
 def _dose_time(epoch_ms: float, now_ms: float, tz: str) -> str:
-    """
-    purpose: A dose time as spoken, marking one from the day before.
-    @param epoch_ms: (float) The dose, epoch ms.
-    @param now_ms: (float) Now, epoch ms.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) e.g. "11 AM" or "11 PM yesterday".
-    """
     clock = local_clock(epoch_ms, tz)
     return clock if _same_local_day(epoch_ms, now_ms, tz) else f"{clock} yesterday"
 
 
-def describe_as_needed(med: dict, tz: str, now_ms: float | None = None) -> str:
-    """
-    purpose: State the facts about one as-needed medication: label limits (the maximum is "in
-             24 hours", the backend's stricter reading of "a day"), doses in the last 24 hours
-             and, when now_ms is given, when another would be within the label and how many
-             of the last 7 days it was used. Facts only; the decision stays with the senior.
-    @param med: (dict) AsNeededEntry from agent:medicationStatus / getContext (camelCase).
-    @param tz: (str) IANA timezone of the household.
-    @param now_ms: (float | None) Epoch ms the facts are read at; None leaves out the
-                   time-dependent sentences (the session-start context goes stale).
-    @return: (str) e.g. "Pain reliever (small white): the label says up to 3 in 24 hours, at
-             least 6 hours apart. Taken in the last 24 hours: 11 AM (1 of 3). Another would
-             be within the label after 5 PM. Used on 2 of the last 7 days."
-    """
+def describe_as_needed(med: AsNeededEntry, tz: str, now_ms: float | None = None) -> str:
     reference = now_ms if now_ms is not None else now_epoch_ms()
     label = one_line(med.get("displayLabel"))
     if med.get("pillDescription"):
@@ -393,8 +237,9 @@ def describe_as_needed(med: dict, tz: str, now_ms: float | None = None) -> str:
     max_per_day = med.get("maxPerDay")
     if max_per_day:
         limits.append(f"up to {max_per_day} in 24 hours")
-    if med.get("minHoursBetween"):
-        limits.append(f"at least {float(med['minHoursBetween']):g} hours apart")
+    min_hours = med.get("minHoursBetween")
+    if min_hours:
+        limits.append(f"at least {float(min_hours):g} hours apart")
     label_text = (
         f"the label says {', '.join(limits)}" if limits else "no limits are on file"
     )
@@ -415,29 +260,18 @@ def describe_as_needed(med: dict, tz: str, now_ms: float | None = None) -> str:
             text += f" That is the most the label allows; the next would be {when}."
         else:
             text += f" Another would be within the label {when}."
-    if med.get("daysUsedLast7"):
-        text += f" Used on {med['daysUsedLast7']} of the last 7 days."
+    days_used = med.get("daysUsedLast7")
+    if days_used:
+        text += f" Used on {days_used} of the last 7 days."
     return text
 
 
 async def db_snooze_task(
-    client: ConvexClient, household_id: str, tz: str, task_name: str
+    client: ConvexMutation, household_id: str, tz: str, task_name: str
 ) -> str:
-    """
-    purpose: "Not yet": snooze the due task's prompts 15 minutes through
-             agent:snoozeDueTask, which picks the task the same way "Done" does.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @param task_name: (str) Name or part of the task's label, or "" for whatever is due.
-    @return: (str) Voice-friendly outcome.
-    """
-    r = (
-        await client.mutation(
-            "agent:snoozeDueTask",
-            {"householdId": household_id, "label": task_name or None},
-        )
-        or {}
+    r: SnoozeResult = await client.mutation(
+        "agent:snoozeDueTask",
+        {"householdId": household_id, "label": task_name or None},
     )
     status = r.get("status")
     label = r.get("displayLabel") or task_name
@@ -453,19 +287,9 @@ async def db_snooze_task(
     return "Nothing is due right now."
 
 
-async def db_medication_status(client: ConvexClient, household_id: str, tz: str) -> str:
-    """
-    purpose: The facts for a medication question, read fresh through agent:medicationStatus:
-             today's scheduled medications and their state, then each as-needed medication's
-             label limits, doses today and when another would be within the label.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) Voice-friendly facts.
-    """
-    r = (
-        await client.query("agent:medicationStatus", {"householdId": household_id})
-        or {}
+async def db_medication_status(client: ConvexQuery, household_id: str, tz: str) -> str:
+    r: MedicationStatus = await client.query(
+        "agent:medicationStatus", {"householdId": household_id}
     )
     now_ms = now_epoch_ms()
     scheduled = r.get("scheduled") or []
@@ -489,14 +313,11 @@ async def db_medication_status(client: ConvexClient, household_id: str, tz: str)
     return " ".join(parts)
 
 
-# How db_log_dose's result starts when a dose report may repeat one already written down and
-# the model must ask whether it is the same one or another. The result then holds the exact
-# question after "Say exactly:", which speech_guard.py speaks if the model does not.
 SAME_OR_ANOTHER = "Nothing new was logged yet"
 
 
 async def db_log_dose(
-    client: ConvexClient,
+    client: ConvexMutation,
     household_id: str,
     tz: str,
     medication: str,
@@ -504,32 +325,15 @@ async def db_log_dose(
     conversation_id: str | None,
     another: bool = False,
 ) -> str:
-    """
-    purpose: Log an as-needed dose the senior says they took through agent:logAsNeededDose,
-             which also flags the caregiver when the dose goes past a label limit. Nothing is
-             logged when no as-needed rule matches, or when the report may repeat a dose
-             already written down (then the model asks whether it is the same one or another).
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @param medication: (str) Words naming the medication, or "" when only one is on file.
-    @param minutes_ago: (int) Whole minutes since they took it (0 = just now).
-    @param conversation_id: (str | None) The conversation, if one was opened.
-    @param another: (bool) They said it is another dose, not the one already written down.
-    @return: (str) Voice-friendly facts after the dose, or why nothing was logged.
-    """
-    r = (
-        await client.mutation(
-            "agent:logAsNeededDose",
-            {
-                "householdId": household_id,
-                "label": medication or None,
-                "minutesAgo": max(0, int(minutes_ago)),
-                "another": another,
-                "conversationId": conversation_id or None,
-            },
-        )
-        or {}
+    r: LogDoseResult = await client.mutation(
+        "agent:logAsNeededDose",
+        {
+            "householdId": household_id,
+            "label": medication or None,
+            "minutesAgo": max(0, int(minutes_ago)),
+            "another": another,
+            "conversationId": conversation_id or None,
+        },
     )
     status = r.get("status")
     options = ", ".join(r.get("options") or [])
@@ -574,9 +378,8 @@ async def db_log_dose(
     if r.get("overDailyMax"):
         breaches.append(f"{r.get('count')} in 24 hours, more than the label allows")
     if r.get("tooSoon"):
-        hours = (
-            f"{float(med['minHoursBetween']):g} " if med.get("minHoursBetween") else ""
-        )
+        min_hours = med.get("minHoursBetween")
+        hours = f"{float(min_hours):g} " if min_hours else ""
         breaches.append(f"sooner than the label's {hours}hours apart")
     if breaches:
         text += f" This dose is {' and '.join(breaches)}. " + _told(
@@ -585,13 +388,7 @@ async def db_log_dose(
     return text
 
 
-def _told(status: str | None, names: list[str]) -> str:
-    """
-    purpose: Say who a flag reached, never naming anyone it did not reach.
-    @param status: (str | None) flagged, already_flagged, unreachable or rate_limited.
-    @param names: (list[str]) Caregivers a notification was queued for.
-    @return: (str) One sentence for the model to pass on.
-    """
+def _told(status: FlagStatus | None, names: list[str]) -> str:
     if status == "already_flagged" and names:
         return f"{join_names(names)} was already told about this a few minutes ago."
     if status == "flagged" and names:
@@ -602,33 +399,19 @@ def _told(status: str | None, names: list[str]) -> str:
 
 
 async def db_undo_last_dose(
-    client: ConvexClient,
+    client: ConvexMutation,
     household_id: str,
     tz: str,
     medication: str,
     conversation_id: str | None,
 ) -> str:
-    """
-    purpose: "No, I didn't take it": take back a dose they reported in this conversation in
-             the last 30 minutes, through agent:undoLastDose; family is told if that dose had
-             been reported to them. Any other dose cannot be changed here.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @param medication: (str) Words naming the medication, or "" for the last one reported.
-    @param conversation_id: (str | None) The conversation, if one was opened.
-    @return: (str) What was removed, or why nothing was.
-    """
-    r = (
-        await client.mutation(
-            "agent:undoLastDose",
-            {
-                "householdId": household_id,
-                "label": medication or None,
-                "conversationId": conversation_id or None,
-            },
-        )
-        or {}
+    r: UndoDoseResult = await client.mutation(
+        "agent:undoLastDose",
+        {
+            "householdId": household_id,
+            "label": medication or None,
+            "conversationId": conversation_id or None,
+        },
     )
     status = r.get("status")
     if status == "removed":
@@ -636,8 +419,9 @@ async def db_undo_last_dose(
             f"Removed the {one_line(r.get('displayLabel'))} written down at "
             f"{local_clock(r['takenAt'], tz)}."
         )
-        if r.get("corrected"):
-            text += f" {join_names(r['corrected'])} has been told it was a mistake."
+        corrected = r.get("corrected")
+        if corrected:
+            text += f" {join_names(corrected)} has been told it was a mistake."
         return text
     if status == "ambiguous":
         return f"Ask which one to take back: {', '.join(r.get('options') or [])}."
@@ -649,28 +433,15 @@ async def db_undo_last_dose(
 
 
 async def db_remember_fact(
-    client: ConvexClient, household_id: str, fact: str, conversation_id: str | None
+    client: ConvexMutation, household_id: str, fact: str, conversation_id: str | None
 ) -> str:
-    """
-    purpose: Note something the senior said (unverified until family confirms it) through
-             agent:rememberFact. Never changes an existing fact.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param fact: (str) The fact in a full sentence, e.g. "Margaret's glasses are in the hall
-                 drawer."
-    @param conversation_id: (str | None) The conversation, if one was opened.
-    @return: (str) Voice-friendly outcome.
-    """
-    r = (
-        await client.mutation(
-            "agent:rememberFact",
-            {
-                "householdId": household_id,
-                "fact": fact,
-                "conversationId": conversation_id or None,
-            },
-        )
-        or {}
+    r: RememberFactResult = await client.mutation(
+        "agent:rememberFact",
+        {
+            "householdId": household_id,
+            "fact": fact,
+            "conversationId": conversation_id or None,
+        },
     )
     if r.get("status") == "already_known":
         return "That was already noted."
@@ -678,34 +449,20 @@ async def db_remember_fact(
 
 
 async def db_flag_caregiver(
-    client: ConvexClient,
+    client: ConvexMutation,
     household_id: str,
     reason: str,
     detail: str,
     conversation_id: str | None,
 ) -> str:
-    """
-    purpose: Ask every reachable caregiver to look in, through agent:flagCaregiver (there is
-             no on-call caregiver). Never names anyone a text was not queued for.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param reason: (str) symptom, money_request, scam, distress or help_requested.
-    @param detail: (str) One or two sentences for the caregiver.
-    @param conversation_id: (str | None) The conversation, if one was opened.
-    @return: (str) Who was told, or that family could not be reached; a distress flag always
-             adds the emergency lines.
-    """
-    r = (
-        await client.mutation(
-            "agent:flagCaregiver",
-            {
-                "householdId": household_id,
-                "reason": reason,
-                "detail": detail,
-                "conversationId": conversation_id or None,
-            },
-        )
-        or {}
+    r: FlagResult = await client.mutation(
+        "agent:flagCaregiver",
+        {
+            "householdId": household_id,
+            "reason": reason,
+            "detail": detail,
+            "conversationId": conversation_id or None,
+        },
     )
     text = _told(r.get("status"), r.get("notified") or [])
     if reason == "distress":
@@ -714,33 +471,20 @@ async def db_flag_caregiver(
 
 
 async def db_send_family_message(
-    client: ConvexClient,
+    client: ConvexMutation,
     household_id: str,
     to: str,
     message: str,
     conversation_id: str | None,
 ) -> str:
-    """
-    purpose: Send a message the senior dictated to family through agent:sendFamilyMessage
-             (texted to caregivers by Sunny). Never names anyone a text was not queued for.
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param to: (str) The name they used, or "" for the family.
-    @param message: (str) The message, in their words.
-    @param conversation_id: (str | None) The conversation, if one was opened.
-    @return: (str) Who got it.
-    """
-    r = (
-        await client.mutation(
-            "agent:sendFamilyMessage",
-            {
-                "householdId": household_id,
-                "to": to or None,
-                "body": message,
-                "conversationId": conversation_id or None,
-            },
-        )
-        or {}
+    r: FamilyMessageResult = await client.mutation(
+        "agent:sendFamilyMessage",
+        {
+            "householdId": household_id,
+            "to": to or None,
+            "body": message,
+            "conversationId": conversation_id or None,
+        },
     )
     names = join_names(r.get("recipients") or [])
     status = r.get("status")
@@ -764,12 +508,6 @@ async def db_send_family_message(
 
 
 def _spoken_when(epoch_ms: float, tz: str) -> str:
-    """
-    purpose: When something was sent, relative to today.
-    @param epoch_ms: (float) Epoch ms.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) "today at 9 AM", "yesterday at 6 PM", or "on Monday, March 8".
-    """
     moment = to_local(epoch_ms, tz)
     today = to_local(now_epoch_ms(), tz).date()
     if moment.date() == today:
@@ -780,17 +518,11 @@ def _spoken_when(epoch_ms: float, tz: str) -> str:
 
 
 async def db_read_latest_message(
-    client: ConvexClient, household_id: str, tz: str
+    client: ConvexMutation, household_id: str, tz: str
 ) -> str:
-    """
-    purpose: The newest family message for reading aloud, through agent:readLatestMessage
-             (which marks it seen).
-    @param client: (ConvexClient) Convex client.
-    @param household_id: (str) Household id.
-    @param tz: (str) IANA timezone of the household.
-    @return: (str) Who sent it, when, and what it says; or that there is none.
-    """
-    r = await client.mutation("agent:readLatestMessage", {"householdId": household_id})
+    r: FamilyMessage | None = await client.mutation(
+        "agent:readLatestMessage", {"householdId": household_id}
+    )
     if not r:
         return "There are no messages from family."
     sender = one_line(r.get("from")) or "family"

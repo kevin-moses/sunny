@@ -1,17 +1,12 @@
-# test_tools.py
-# Purpose: Unit tests for the agent's task helpers (tools.py) and household context
-# formatting (prompts.py). A small fake Convex client stands in for the HTTP API, so these
-# run without a backend. Covers spoken time formatting, today's schedule descriptions,
-# the context block, and how each agent:confirmDueTask / agent:cancelSeniorReminder outcome
-# is phrased for voice (the selection rules themselves are tested in the Convex backend).
-# Updated 2026-11-09 for the context block's trust labels and unread-message line.
-#
-# Last modified: 2026-11-14
+from pathlib import Path
 
 import pytest
 
+from convex_client import ConvexArgs
+from convex_types import AgentContext, TodayEntry
 from prompts import format_user_context
 from tools import (
+    ANYTIME,
     db_cancel_senior_reminder,
     db_confirm_task,
     db_create_senior_reminder,
@@ -21,49 +16,34 @@ from tools import (
 )
 
 TZ = "America/New_York"
+BACKEND_ANYTIME_SOURCE = (
+    Path(__file__).resolve().parents[2]
+    / "sunny_backend"
+    / "convex"
+    / "lib"
+    / "anytime.ts"
+)
+
+
+def test_anytime_matches_the_backend_constant() -> None:
+    assert f'export const ANYTIME = "{ANYTIME}";' in BACKEND_ANYTIME_SOURCE.read_text()
 
 
 class FakeConvex:
-    """
-    purpose: Stand-in for ConvexClient. Returns canned values per function path and
-             records every call.
-    """
-
-    def __init__(self, responses: dict) -> None:
-        """
-        purpose: Store canned responses.
-        @param responses: (dict) Convex function path -> value returned.
-        """
+    def __init__(self, responses: dict[str, object]) -> None:
         self.responses = responses
-        self.calls: list[tuple[str, dict]] = []
+        self.calls: list[tuple[str, ConvexArgs]] = []
 
-    async def query(self, path: str, args: dict | None = None) -> object:
-        """
-        purpose: Record the query and return its canned value.
-        @param path: (str) Function path.
-        @param args: (dict | None) Function arguments.
-        @return: Canned value.
-        """
-        self.calls.append((path, args or {}))
+    async def query(self, path: str, args: ConvexArgs) -> object:
+        self.calls.append((path, args))
         return self.responses[path]
 
-    async def mutation(self, path: str, args: dict | None = None) -> object:
-        """
-        purpose: Record the mutation and return its canned value.
-        @param path: (str) Function path.
-        @param args: (dict | None) Function arguments.
-        @return: Canned value.
-        """
-        self.calls.append((path, args or {}))
+    async def mutation(self, path: str, args: ConvexArgs) -> object:
+        self.calls.append((path, args))
         return self.responses[path]
 
 
-def _context(*items: dict) -> dict:
-    """
-    purpose: Build an agent:getContext-shaped dict with the given instances for today.
-    @param items: (dict) Instances for the 'today' list.
-    @return: (dict) Context dict.
-    """
+def _context(*items: TodayEntry) -> AgentContext:
     return {
         "household": {
             "seniorPreferredName": "Mom",
@@ -74,19 +54,19 @@ def _context(*items: dict) -> dict:
     }
 
 
-MORNING_DUE = {
+MORNING_DUE: TodayEntry = {
     "instanceId": "i-morning",
     "displayLabel": "Morning pills",
     "scheduledTime": "08:00",
     "state": "due",
     "confirmedAt": None,
 }
-MORNING_DONE = {
+MORNING_DONE: TodayEntry = {
     **MORNING_DUE,
     "state": "confirmed",
     "confirmedAt": 1804943400000,
 }
-EVENING = {
+EVENING: TodayEntry = {
     "instanceId": "i-evening",
     "displayLabel": "Evening pills",
     "scheduledTime": "20:00",
@@ -96,7 +76,6 @@ EVENING = {
 
 
 def test_format_time_for_voice() -> None:
-    """purpose: Spoken times cover on-the-hour, minutes, noon and midnight."""
     assert format_time_for_voice("08:00") == "8 AM"
     assert format_time_for_voice("20:30") == "8:30 PM"
     assert format_time_for_voice("12:00") == "noon"
@@ -104,12 +83,19 @@ def test_format_time_for_voice() -> None:
 
 
 def test_describe_instance_anytime() -> None:
-    """purpose: An anytime task is spoken as anytime today, never with a clock time or due now."""
-    water = {**MORNING_DUE, "displayLabel": "Water plants", "scheduledTime": "anytime"}
+    water: TodayEntry = {
+        **MORNING_DUE,
+        "displayLabel": "Water plants",
+        "scheduledTime": "anytime",
+    }
     for state in ("upcoming", "due", "escalated"):
         text = describe_instance({**water, "state": state}, TZ)
         assert text == "Water plants, anytime today: still to do today"
-    done = {**water, "state": "confirmed", "confirmedAt": MORNING_DONE["confirmedAt"]}
+    done: TodayEntry = {
+        **water,
+        "state": "confirmed",
+        "confirmedAt": MORNING_DONE["confirmedAt"],
+    }
     assert describe_instance(done, TZ) == "Water plants, anytime today: done at 8:10 AM"
     assert (
         describe_instance({**water, "state": "missed"}, TZ)
@@ -118,7 +104,6 @@ def test_describe_instance_anytime() -> None:
 
 
 def test_describe_instance_states() -> None:
-    """purpose: Each instance state reads naturally, with the local confirmation time."""
     assert describe_instance(MORNING_DONE, TZ) == "8 AM, Morning pills: done at 8:10 AM"
     assert describe_instance(MORNING_DUE, TZ) == "8 AM, Morning pills: due now"
     assert describe_instance(EVENING, TZ) == "8 PM, Evening pills: later today"
@@ -129,7 +114,6 @@ def test_describe_instance_states() -> None:
 
 
 def test_format_user_context_sections() -> None:
-    """purpose: The context block includes schedule, meds, playbook and labeled memory."""
     ctx = _context(MORNING_DONE)
     ctx["asNeeded"] = [
         {
@@ -153,7 +137,6 @@ def test_format_user_context_sections() -> None:
         "Pain reliever: the label says up to 3 in 24 hours, at least 6 hours apart. "
         "Taken in the last 24 hours: 10 AM" in block
     )
-    # The session-start snapshot leaves out the time-dependent "within the label" line.
     assert "within the label" not in block
     assert "If asked about her husband: Say he loved her very much." in block
     assert '  - [verified by family] "Likes tea"' in block
@@ -162,7 +145,6 @@ def test_format_user_context_sections() -> None:
 
 
 def test_format_user_context_caregivers_and_weather() -> None:
-    """purpose: Caregivers are listed by name (no one is on call); the weather location shows."""
     ctx = _context()
     ctx["household"]["weatherLocation"] = "Brooklyn, NY"
     ctx["caregivers"] = [{"name": "Anna"}, {"name": "Bob"}]
@@ -173,13 +155,11 @@ def test_format_user_context_caregivers_and_weather() -> None:
 
 
 def test_format_user_context_empty() -> None:
-    """purpose: No household context produces a clear fallback line."""
     assert "No household information" in format_user_context({})
 
 
 @pytest.mark.asyncio
 async def test_confirm_task_sends_voice_and_no_label() -> None:
-    """purpose: With no name, confirmDueTask is called as voice with a null label."""
     client = FakeConvex(
         {
             "agent:confirmDueTask": {
@@ -189,7 +169,7 @@ async def test_confirm_task_sends_voice_and_no_label() -> None:
             }
         }
     )
-    result = await db_confirm_task(client, "h1", TZ, "")  # type: ignore[arg-type]
+    result = await db_confirm_task(client, "h1", TZ, "")
     assert result == "Confirmed: Morning pills at 8:12 AM."
     assert client.calls == [
         (
@@ -229,9 +209,8 @@ async def test_confirm_task_sends_voice_and_no_label() -> None:
     ],
 )
 async def test_confirm_task_phrases_each_outcome(response: dict, expected: str) -> None:
-    """purpose: Every confirmDueTask status is phrased for voice."""
     client = FakeConvex({"agent:confirmDueTask": response})
-    assert await db_confirm_task(client, "h1", TZ, "pills") == expected  # type: ignore[arg-type]
+    assert await db_confirm_task(client, "h1", TZ, "pills") == expected
 
 
 @pytest.mark.asyncio
@@ -257,16 +236,14 @@ async def test_confirm_task_phrases_each_outcome(response: dict, expected: str) 
 async def test_cancel_reminder_phrases_each_outcome(
     response: dict, expected: str
 ) -> None:
-    """purpose: Every cancelSeniorReminder status is phrased for voice."""
     client = FakeConvex({"agent:cancelSeniorReminder": response})
-    assert await db_cancel_senior_reminder(client, "h1", "pills") == expected  # type: ignore[arg-type]
+    assert await db_cancel_senior_reminder(client, "h1", "pills") == expected
 
 
 @pytest.mark.asyncio
 async def test_list_today_describes_schedule() -> None:
-    """purpose: db_list_today queries agent:today and joins the entries."""
     client = FakeConvex({"agent:today": [MORNING_DONE, EVENING]})
-    result = await db_list_today(client, "h1", TZ)  # type: ignore[arg-type]
+    result = await db_list_today(client, "h1", TZ)
     assert result == (
         "Today: 8 AM, Morning pills: done at 8:10 AM; 8 PM, Evening pills: later today."
     )
@@ -275,18 +252,16 @@ async def test_list_today_describes_schedule() -> None:
 
 @pytest.mark.asyncio
 async def test_list_today_empty() -> None:
-    """purpose: An empty schedule gets the nothing-scheduled sentence."""
     client = FakeConvex({"agent:today": []})
-    result = await db_list_today(client, "h1", TZ)  # type: ignore[arg-type]
+    result = await db_list_today(client, "h1", TZ)
     assert result == "There is nothing on the schedule for today."
 
 
 @pytest.mark.asyncio
 async def test_create_reminder_recurring_sends_iso_weekdays() -> None:
-    """purpose: Recurring reminders map day names to ISO numbers (Mon=1..Sun=7)."""
     client = FakeConvex({"agent:createSeniorReminder": {"taskId": "t1"}})
     result = await db_create_senior_reminder(
-        client,  # type: ignore[arg-type]
+        client,
         "h1",
         TZ,
         "call the plumber",
@@ -311,10 +286,9 @@ async def test_create_reminder_recurring_sends_iso_weekdays() -> None:
 
 @pytest.mark.asyncio
 async def test_create_reminder_one_off_sends_date_and_no_days() -> None:
-    """purpose: One-off reminders send onDate and null days."""
     client = FakeConvex({"agent:createSeniorReminder": {"taskId": "t1"}})
     await db_create_senior_reminder(
-        client,  # type: ignore[arg-type]
+        client,
         "h1",
         TZ,
         "call the plumber",
@@ -327,18 +301,16 @@ async def test_create_reminder_one_off_sends_date_and_no_days() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_reminder_sends_query() -> None:
-    """purpose: cancelSeniorReminder receives the household and the title query."""
     client = FakeConvex(
         {"agent:cancelSeniorReminder": {"status": "cancelled", "titles": ["x"]}}
     )
-    await db_cancel_senior_reminder(client, "h1", "pills")  # type: ignore[arg-type]
+    await db_cancel_senior_reminder(client, "h1", "pills")
     assert client.calls == [
         ("agent:cancelSeniorReminder", {"householdId": "h1", "query": "pills"})
     ]
 
 
 def test_format_user_context_events_and_conversations() -> None:
-    """purpose: Epoch-ms event starts and conversation dates render in household time."""
     ctx = _context(MORNING_DUE)
     ctx["events"] = [
         {
