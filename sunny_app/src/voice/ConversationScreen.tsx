@@ -1,15 +1,3 @@
-// sunny_app/src/voice/ConversationScreen.tsx
-//
-// Purpose: The live conversation screen shown while a voice session is interactive. It
-// owns the interaction mode (voice or text), which starts as voice for every conversation.
-//   Voice mode: the agent bar visualizer fills the screen and the "Agent is listening, start
-//     talking" hint shows until the first transcript arrives.
-//   Text mode: a compact visualizer above the transcript list and a message input.
-// The ControlBar sits at the bottom, hidden while the text keyboard is open.
-// Error and reconnecting banners are owned by the app shell, not this screen.
-//
-// Last modified: 2026-10-31
-
 import { useState, type ReactElement } from 'react';
 import { Keyboard, KeyboardAvoidingView, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,13 +11,8 @@ import { ControlBar } from './ControlBar';
 import { TranscriptList } from './TranscriptList';
 import { useConversation } from './voiceContext';
 
-/** Whether the conversation shows the voice visualizer or the text transcript. */
 type InteractionMode = 'voice' | 'text';
 
-/**
- * purpose: Render the conversation for the current interaction mode.
- * @return: (ReactElement) the full-screen conversation
- */
 export function ConversationScreen(): ReactElement {
   const insets = useSafeAreaInsets();
   const { messages } = useConversation();

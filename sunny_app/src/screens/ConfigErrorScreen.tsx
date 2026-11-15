@@ -1,19 +1,7 @@
-// sunny_app/src/screens/ConfigErrorScreen.tsx
-//
-// Purpose: Shown instead of the app when the Clerk publishable key is empty (an empty env
-// override), so a missing configuration is a clear message for the developer rather than a
-// crash. Seniors never see it in a correctly configured build.
-//
-// Last modified: 2026-10-29
-
 import { StyleSheet, Text, View } from 'react-native';
 
 import { colors, GRID, ROUNDED_FONT } from '../theme/colors';
 
-/**
- * purpose: Explain that the Clerk publishable key is missing and how to set it.
- * @return: (JSX.Element) The screen.
- */
 export function ConfigErrorScreen() {
   return (
     <View style={styles.root}>

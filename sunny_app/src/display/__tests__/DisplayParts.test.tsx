@@ -1,15 +1,3 @@
-// sunny_app/src/display/__tests__/DisplayParts.test.tsx
-//
-// Purpose: Render tests for where the voice card goes on the Now screen (NowBody): in the Next
-// up column beside a waiting task, so the task Done confirms stays in view; across the whole
-// body when nothing is waiting; and the Next up card as before without a voice card. Also the
-// Now card's tab: "Now", "Still to do" when overdue, "Later" with AM or PM when snoozed
-// (also at midnight and noon). And the Today rows (TodayBody): a missed row is grey with no
-// check and no "Now" tag and reads "Earlier today, not marked done"; done, plain and Now rows
-// are as before.
-//
-// Last modified: 2026-11-14
-
 import { describe, expect, it } from '@jest/globals';
 import React from 'react';
 import { SymbolView } from 'expo-symbols';
@@ -41,12 +29,6 @@ const NEXT: NextItem = { title: 'Sarah visits', when: '2:00', icon: 'calendar', 
 
 const ANSWER: VoiceCard = { kind: 'answer', tab: 'Sunny', text: 'Sarah is coming at 2.' };
 
-/**
- * purpose: Render NowBody and collect its text.
- * @param card: (NowCard) The Now card.
- * @param voice: (VoiceCard | null) The voice card.
- * @return: (string) Every text node joined with "|".
- */
 function textOf(card: NowCard, voice: VoiceCard | null): string {
   let renderer!: ReactTestRenderer;
   act(() => {
@@ -119,13 +101,6 @@ describe('NowBody', () => {
 });
 
 describe('tabText', () => {
-  /**
-   * purpose: A one-step task card at 8:00.
-   * @param overdue: (boolean) The family has been alerted.
-   * @param snoozed: (boolean) The senior said "not yet".
-   * @param scheduledTime: (string) Its local "HH:MM" time; 08:00 by default.
-   * @return: (NowCard) The card.
-   */
   const card = (overdue: boolean, snoozed: boolean, scheduledTime = '08:00'): NowCard =>
     ({
       kind: 'task',
@@ -157,12 +132,6 @@ describe('tabText', () => {
 });
 
 describe('TodayBody row marks', () => {
-  /**
-   * purpose: Render one Today row with the given mark and read what it draws.
-   * @param mark: (TodayRow['mark']) The row's mark.
-   * @return: (object) The row's accessibility value, time and label colors, symbol names and
-   *          the text drawn.
-   */
   function renderRow(mark: TodayRow['mark']) {
     const row: TodayRow = { key: 'r1', time: '8:00', label: 'Breakfast pills', mark };
     let renderer!: ReactTestRenderer;

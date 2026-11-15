@@ -1,32 +1,3 @@
-// sunny_app/src/caregiver/CaregiverHomeScreen.tsx
-//
-// Purpose: The caregiver Home tab: "<name>'s week" with the account button, then, in order: the
-// Alerts section (tasks that were escalated or missed, with "I'm on it" and "Mark done" buttons
-// for editors, or who is already on it), "Today's tasks" (a "Leftover" group of yesterday's open
-// tasks, then today's tasks in time order; editors tick any open task's checkbox, which marks it
-// done at once on the server and shows it checked, with a light haptic tap; for 5 seconds a
-// "Task completed / Undo" toast offers to take it back (a selection click, and the server
-// restores the task), only the latest tick has a toast; editors tap the checked box of a task
-// the day view marks reopenable to reopen it, after a native confirm alert and with no toast
-// (reopening a task whose toast is still up dismisses that toast); editors tap a task's text
-// to open an autosaving inline note editor, one at a time; saved notes show as a subtitle),
-// the calendar card (seven-day week strip whose cells choose the day shown; the dots mean
-// events) with the selected day's section directly below it: for today, its events only (its
-// tasks are the list above); for a later day, first that day's planned tasks in their own
-// read-only card (dulled disabled checkboxes, "No tasks." when none), then its events in a
-// separate card. Then "Later this week", the events of the days after the selected one grouped
-// by day (hidden when there are none; events only).
-// Everything comes from the shared day view state owned by CaregiverApp. The derived lists are
-// computed in two memos: one per day view and user (tasks, alerts, the strip, the range) and one
-// per day view and selection (the selected day's planned tasks and events, the later days, the
-// title), and the memoized cards get stable callbacks. While the first load is pending it shows a
-// spinner, and
-// if it fails with nothing cached, the error message. The scroll view lifts the focused note
-// editor above the keyboard (automaticallyAdjustKeyboardInsets) and dismisses the keyboard on
-// drag, which closes (and saves) an open note.
-//
-// Last modified: 2026-11-14
-
 import { SymbolView } from 'expo-symbols';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -69,22 +40,13 @@ import { useNoteEditor } from './useNoteEditor';
 import { useTaskActions } from './useTaskActions';
 import { useUndoToast } from './useUndoToast';
 
-/** Props for CaregiverHomeScreen. */
 interface CaregiverHomeScreenProps {
   dayView: DayViewState;
-  /** Whether this caregiver may claim alerts and mark tasks done (everyone but viewers). */
   canEdit: boolean;
-  /** The signed-in caregiver's Clerk user id, to tell their own claims from others'. */
   userId: string | null;
-  /** Called when the account button is pressed. */
   onAccountPress: () => void;
 }
 
-/**
- * purpose: The round account button at the right of the Home header.
- * @param props: ({ onPress: () => void }) The press handler.
- * @return: (JSX.Element) The button.
- */
 function AccountButton({ onPress }: { onPress: () => void }) {
   return (
     <Pressable
@@ -98,12 +60,6 @@ function AccountButton({ onPress }: { onPress: () => void }) {
   );
 }
 
-/**
- * purpose: Render the Home tab.
- * @param props: (CaregiverHomeScreenProps) The shared day view, the edit permission, the
- *        caregiver's user id and the account button handler.
- * @return: (JSX.Element) The screen.
- */
 export function CaregiverHomeScreen({
   dayView,
   canEdit,
@@ -121,12 +77,6 @@ export function CaregiverHomeScreen({
   const [selection, setSelection] = useState<DaySelection | null>(null);
   const todayDate = day?.localDate ?? null;
 
-  /**
-   * purpose: Tick a task: a light haptic tap at once, the server call, and the undo toast once
-   *          the call succeeded (not when it failed or someone else had marked it done).
-   * @param id: (TaskInstanceId) The task being ticked.
-   * @return: (void)
-   */
   const tick = useCallback(
     (id: TaskInstanceId): void => {
       tapHaptic();
@@ -137,10 +87,6 @@ export function CaregiverHomeScreen({
     [markDone, showToast],
   );
 
-  /**
-   * purpose: Undo the tick the toast is for, with a selection haptic, and hide the toast.
-   * @return: (void)
-   */
   const undo = useCallback((): void => {
     if (toastId === null) return;
     undoHaptic();
@@ -148,11 +94,6 @@ export function CaregiverHomeScreen({
     void undoMarkDone(toastId);
   }, [toastId, dismissToast, undoMarkDone]);
 
-  /**
-   * purpose: Select a day of the week strip, remembering which "today" it was chosen against.
-   * @param date: (string) The tapped cell's local date.
-   * @return: (void)
-   */
   const selectDay = useCallback(
     (date: string): void => {
       if (todayDate !== null) setSelection({ date, todayWhenChosen: todayDate });
@@ -164,13 +105,6 @@ export function CaregiverHomeScreen({
     toastIdRef.current = toastId;
   }, [toastId]);
 
-  /**
-   * purpose: Reopen a task the caregiver confirmed in the alert. A "Task completed / Undo"
-   *          toast still up for that task is dismissed first, since its Undo could no longer
-   *          apply. Keeps its identity between renders (the toast is read through a ref).
-   * @param id: (TaskInstanceId) The task being reopened.
-   * @return: (void)
-   */
   const reopenTask = useCallback(
     (id: TaskInstanceId): void => {
       if (toastIdRef.current === id) dismissToast();

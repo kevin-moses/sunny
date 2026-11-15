@@ -1,11 +1,3 @@
-// sunny_app/src/backend/__tests__/caregiverAuth.test.ts
-//
-// Purpose: Unit tests for caregiverAuth.ts: email and code validation, reading Clerk error
-// codes (API errors and runtime errors), picking the email code factor, the sign-in to sign-up fallback decision, and the safe
-// error messages.
-//
-// Last modified: 2026-10-31
-
 import { describe, expect, it, jest } from '@jest/globals';
 
 import { OFFLINE_ERROR_MESSAGE } from '../api';
@@ -23,13 +15,6 @@ import {
 
 jest.mock('../convex', () => ({ convex: {} }));
 
-/**
- * purpose: Build an error shaped like a Clerk API response error.
- * @param code: (string) The first entry's code.
- * @param message: (string) The first entry's short message.
- * @param longMessage: (string | undefined) The first entry's long message.
- * @return: (Error) The error with an `errors` array.
- */
 function clerkError(code: string, message: string, longMessage?: string): Error {
   return Object.assign(new Error(message), { errors: [{ code, message, longMessage }] });
 }

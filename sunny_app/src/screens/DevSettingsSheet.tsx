@@ -1,20 +1,3 @@
-// sunny_app/src/screens/DevSettingsSheet.tsx
-//
-// Purpose: Developer settings sheet (opened from the DEV pill in debug builds; on the home
-// display only by holding the pill): pick the accent color, adjust body text, button text and
-// corner radius with live previews (+/- steppers; no slider package is installed), reset to
-// defaults, and unpair the device so it can be paired again with a new code.
-// On the home display it adds a "Home display" section: every tunable of the display's voice
-// and cue behavior (display/tuning.ts) with its current value, default and allowed range, a
-// stepper that keeps it inside that range, its own reset, and two test actions: "Play due cue
-// now" (asks the display's cue owner, useDueCue, to play the chime and a sample prompt at the
-// current rate; it refuses during a voice session or while a cue plays and says why, and
-// closing the sheet stops it) and "Show sample answer" (puts a sample answer on the panel for
-// the current linger time). Changes are saved on the device and apply at once
-// (TuningProvider).
-//
-// Last modified: 2026-11-09
-
 import { useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -31,29 +14,19 @@ import {
   useTheme,
 } from '../theme/ThemeProvider';
 
-/** The sample answer shown by "Show sample answer". */
 const SAMPLE_ANSWER =
   'Sarah is coming today at 2:00. She is bringing lunch, so you do not need to cook.';
 
-/** Props for Stepper. */
 interface StepperProps {
   title: string;
   value: number;
   range: readonly [number, number];
   step: number;
   onChange: (value: number) => void;
-  /** Shows a value; points ("17pt") by default. */
   format?: (value: number) => string;
-  /** A small line under the title, or undefined. */
   hint?: string;
 }
 
-/**
- * purpose: A labelled -/+ control standing in for a slider.
- * @param props: (StepperProps) Title, current value, [min, max], step, change handler, and an
- *        optional value format and hint line.
- * @return: (JSX.Element) The control.
- */
 function Stepper({
   title,
   value,
@@ -64,13 +37,6 @@ function Stepper({
   hint,
 }: StepperProps) {
   const theme = useTheme();
-  /**
-   * purpose: Render one of the stepper's two round buttons.
-   * @param label: (string) '-' or '+'
-   * @param delta: (number) amount added to the value when pressed
-   * @param atLimit: (boolean) true when the value is already at that end of the range
-   * @return: (JSX.Element) the button
-   */
   const button = (label: string, delta: number, atLimit: boolean) => (
     <Pressable
       accessibilityRole="button"
@@ -98,11 +64,6 @@ function Stepper({
   );
 }
 
-/**
- * purpose: A section with a small uppercase heading and a card of rows.
- * @param props: ({ title: string, children }) The heading and the rows.
- * @return: (JSX.Element) The section.
- */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={{ gap: 8 }}>
@@ -112,13 +73,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/**
- * purpose: The home display's tunables and test actions.
- * @return: (JSX.Element | null) The section, or null outside a TuningProvider.
- */
 function DisplayTuningSection() {
   const controls = useTuningControls();
-  // Closing the sheet stops a test cue that is still playing.
   const stopRef = useLatest(controls?.stopTestCue);
   useEffect(() => () => stopRef.current?.(), [stopRef]);
   if (controls === null) return null;
@@ -129,11 +85,6 @@ function DisplayTuningSection() {
     <Section title="Home display">
       {TUNING_KEYS.map((key) => {
         const spec = TUNING_SPECS[key];
-        /**
-         * purpose: Show a value of this tunable.
-         * @param v: (number) The value.
-         * @return: (string) The text.
-         */
         const format = (v: number): string => formatTuning(key, v);
         return (
           <Stepper
@@ -162,19 +113,9 @@ function DisplayTuningSection() {
   );
 }
 
-/**
- * purpose: The dev settings sheet content.
- * @param props: ({ display: boolean, onClose: () => void }) Whether this is the home display
- *        (adds its tunables), and the handler that dismisses the sheet.
- * @return: (JSX.Element) The sheet.
- */
 export function DevSettingsSheet({ display, onClose }: { display: boolean; onClose: () => void }) {
   const theme = useTheme();
 
-  /**
-   * purpose: Unpair this device, then close the sheet.
-   * @return: (Promise<void>) resolves when the device is unpaired and the sheet closed
-   */
   const handleUnpair = async (): Promise<void> => {
     await unpair();
     onClose();

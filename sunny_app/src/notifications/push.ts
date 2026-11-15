@@ -1,37 +1,3 @@
-// sunny_app/src/notifications/push.ts
-//
-// Purpose: Push notifications for the paired senior device. There is no FCM: the raw APNs
-// device token is read with expo-notifications and stored in Convex (households.registerPushToken)
-// so the backend can send APNs pushes directly.
-//
-// Behavior:
-//   - Foreground banners: importing this module makes notifications show a banner, list
-//     entry and sound while the app is open (DEFAULT_NOTIFICATION_HANDLER, exported so the
-//     home display can restore it after silencing them).
-//   - Registration (usePushNotifications): about 1 second after mounting (letting the first
-//     screen settle) notification permission is requested (alert, sound, badge); if granted,
-//     the APNs token is registered with the backend. The token is registered again whenever
-//     the OS rotates it (addPushTokenListener), and the previous one is then unregistered. The last token that registered successfully
-//     is kept in AsyncStorage so unpairing can unregister it before the session is signed out.
-//   - Taps: a tap while the app is running (warm) and the tap that launched the app (cold
-//     start, handled once) call onTap, which starts a voice session with trigger
-//     'notification_tap'.
-//   - The hook is meant to be mounted only for a paired device. discardStaleLaunchTap()
-//     drops a launch tap that arrived while the device was unpaired; useDiscardNotificationTaps
-//     (mounted by the signed-out screens and caregiver onboarding) drops the launch tap and
-//     every tap that arrives while it is mounted, so no tap made while signed out runs later.
-//     A signed-in caregiver's pushes are handled by caregiverPush.ts.
-//   - Unpairing: unregisterStoredPushToken() removes the remembered token (bounded by a short
-//     timeout so an offline device can still unpair). If it cannot run, the backend lets a
-//     re-paired device take over a token whose previous owner is gone (an orphaned user).
-//
-// Notification payload contract (the push sender must follow it):
-//   data: { "task_instance_id": "<id of the taskInstances row that prompted the push>" }
-//   task_instance_id is optional. When it is a string it is forwarded to voice.livekitToken
-//   as taskInstanceId so the agent opens the conversation in the context of that task.
-//
-// Last modified: 2026-11-14
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { useEffect, useRef } from 'react';
@@ -41,21 +7,16 @@ import { api, type TaskInstanceId } from '../backend/convexApi';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 
-/** Delay before asking for notification permission after mounting, in milliseconds. */
 const PERMISSION_DELAY_MS = 1000;
 
-/** AsyncStorage key of the last push token that registered successfully. */
 const PUSH_TOKEN_KEY = 'sunny.pushToken';
 
-/** Longest unregistering may delay unpairing, in milliseconds. */
 const UNREGISTER_TIMEOUT_MS = 4000;
 
-/** What a tapped notification asks the voice layer to do. */
 export interface NotificationTap {
   taskInstanceId?: TaskInstanceId;
 }
 
-/** How the app presents a notification that arrives while it is open. */
 export const DEFAULT_NOTIFICATION_HANDLER: Notifications.NotificationHandler = {
   handleNotification: async () => ({
     shouldShowBanner: true,
@@ -67,11 +28,6 @@ export const DEFAULT_NOTIFICATION_HANDLER: Notifications.NotificationHandler = {
 
 Notifications.setNotificationHandler(DEFAULT_NOTIFICATION_HANDLER);
 
-/**
- * purpose: Extract the tap context from a notification's data payload.
- * @param data: (Record<string, unknown> | null | undefined) the notification content data
- * @return: (NotificationTap) taskInstanceId set only when task_instance_id is a non-empty string
- */
 function parseNotificationTap(data: Record<string, unknown> | null | undefined): NotificationTap {
   const value = data?.task_instance_id;
   return typeof value === 'string' && value !== ''
@@ -79,13 +35,6 @@ function parseNotificationTap(data: Record<string, unknown> | null | undefined):
     : {};
 }
 
-/**
- * purpose: Wait for a promise, but no longer than a timeout.
- * @param work: (Promise<unknown>) The work to wait for.
- * @param ms: (number) Longest wait in milliseconds.
- * @return: (Promise<boolean>) True if the work finished, false if the timeout passed first;
- *          rejects if the work rejects first.
- */
 async function waitAtMost(work: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<boolean>((resolve) => {
@@ -98,12 +47,6 @@ async function waitAtMost(work: Promise<unknown>, ms: number): Promise<boolean> 
   }
 }
 
-/**
- * purpose: Ask the backend to unregister a push token, giving up after UNREGISTER_TIMEOUT_MS.
- * @param token: (string) The token.
- * @return: (Promise<boolean>) True if the backend confirmed in time; false on timeout.
- * @raises: BackendError when the call fails.
- */
 async function unregisterToken(token: string): Promise<boolean> {
   return waitAtMost(
     callMutation(api.households.unregisterPushToken, { token }),
@@ -111,13 +54,6 @@ async function unregisterToken(token: string): Promise<boolean> {
   );
 }
 
-/**
- * purpose: Unregister the remembered push token and forget it once the backend confirmed.
- *          Called before signing out on unpair, while the session can still authenticate the
- *          call. Never throws, and gives up after UNREGISTER_TIMEOUT_MS so an offline device
- *          is not stuck unpairing; the token is then kept remembered.
- * @return: (Promise<void>) resolves when done; failures are logged
- */
 export async function unregisterStoredPushToken(): Promise<void> {
   try {
     const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
@@ -129,22 +65,10 @@ export async function unregisterStoredPushToken(): Promise<void> {
   }
 }
 
-/**
- * purpose: Forget the notification that launched the app, so a tap from before this device
- *          was paired does not start a surprise session after pairing.
- * @return: (void)
- */
 export function discardStaleLaunchTap(): void {
   Notifications.clearLastNotificationResponse();
 }
 
-/**
- * purpose: While mounted (the signed-out screens and caregiver onboarding), discard the last
- *          notification response on mount and every response that arrives, so a tap made while
- *          no one who may act on it is signed in never runs later (a voice session on a device
- *          paired afterwards, or a claim when a caregiver app mounts hours later).
- * @return: (void)
- */
 export function useDiscardNotificationTaps(): void {
   useEffect(() => {
     discardStaleLaunchTap();
@@ -155,12 +79,6 @@ export function useDiscardNotificationTaps(): void {
   }, []);
 }
 
-/**
- * purpose: Register an APNs device token for the signed-in device and remember it. When the
- *          OS rotated the token, best-effort unregister the previously remembered one.
- * @param token: (string) the raw APNs device token
- * @return: (Promise<void>) resolves when registered; failures are logged, not thrown
- */
 export async function registerPushToken(token: string): Promise<void> {
   try {
     const previous = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
@@ -177,10 +95,6 @@ export async function registerPushToken(token: string): Promise<void> {
   }
 }
 
-/**
- * purpose: Ask for notification permission, then read and register the APNs token.
- * @return: (Promise<void>) resolves when done; does nothing when permission is refused
- */
 async function registerForPush(): Promise<void> {
   const permission = await Notifications.requestPermissionsAsync({
     ios: { allowAlert: true, allowSound: true, allowBadge: true },
@@ -193,12 +107,6 @@ async function registerForPush(): Promise<void> {
   if (typeof deviceToken.data === 'string') await registerPushToken(deviceToken.data);
 }
 
-/**
- * purpose: Convert a notification response into a tap and hand it to the callback.
- * @param response: (Notifications.NotificationResponse) the tapped notification
- * @param onTap: ((tap: NotificationTap) => void) callback that starts the voice session
- * @return: (void)
- */
 function dispatchTap(
   response: Notifications.NotificationResponse,
   onTap: (tap: NotificationTap) => void,
@@ -208,12 +116,6 @@ function dispatchTap(
   onTap(parseNotificationTap(data));
 }
 
-/**
- * purpose: Wire token registration and tap handling for the paired device. onTap is read
- *          through a ref, so the latest callback is used without re-subscribing.
- * @param onTap: ((tap: NotificationTap) => void) called for each tapped notification
- * @return: (void)
- */
 export function usePushNotifications(onTap: (tap: NotificationTap) => void): void {
   const onTapRef = useRef(onTap);
 

@@ -1,23 +1,3 @@
-// sunny_app/src/caregiver/__tests__/TaskRowReopen.test.tsx
-//
-// Purpose: Tests for reopening a done task from the caregiver Home tab. The real
-// CaregiverHomeScreen is rendered (so its wiring of the row's Reopen to useTaskActions is under
-// test, not a copy of it) with a day view passed in; only convex.mutation (the network) is
-// stubbed, Alert.alert is spied, and native-only modules (symbols, haptics, safe area) are
-// mocked. Covers: an editor's reopenable done box is labelled "Reopen <label>", stays checked
-// and asks first with the exact title, message and buttons; only one alert at a time per row
-// (a second tap while it is up opens none; after Cancel, and after a Reopen followed by Mark
-// done, a tap asks again); Cancel sends
-// nothing; Reopen sends reopenTaskInstance (not the Mark done mutation), shows "Reopening..."
-// with the box checked, not interactive and still labelled "Reopen <label>" with busy set, and
-// clears on success; a failure shows the server's message and keeps the box checked; a viewer,
-// and a row whose reopenable flag is false, are as before (not interactive, labelled "Mark
-// <label> done", no alert); an open task's box still marks it done; a done task in the Leftover
-// group reopens the same way; reopening a task whose "Task completed / Undo" toast is still up
-// dismisses that toast; the row's reopen handler keeps its identity across action changes.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
@@ -53,11 +33,6 @@ const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) =
 const mounted: ReactTestRenderer[] = [];
 let alertSpy: jest.SpiedFunction<typeof Alert.alert>;
 
-/**
- * purpose: Build one of today's tasks.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) A 08:00 "Morning pills" task, confirmed by the phone and reopenable.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 'inst1',
@@ -82,11 +57,6 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/**
- * purpose: The day view state the Home screen takes, holding the given tasks.
- * @param tasks: (DayTask[]) Today's tasks.
- * @return: (DayViewState) The state.
- */
 function dayView(tasks: DayTask[]): DayViewState {
   const day = {
     seniorPreferredName: 'Margaret',
@@ -100,19 +70,8 @@ function dayView(tasks: DayTask[]): DayViewState {
   return { day, agenda: [], errorMessage: null, isOffline: false };
 }
 
-/**
- * purpose: Render the Home screen and give access to the first checkbox, texts and the toast.
- * @param tasks: (DayTask[]) Today's tasks.
- * @param canEdit: (boolean) Whether the caregiver is an editor.
- * @return: (object) box, texts, toastShown and update (render new tasks).
- */
 function render(tasks: DayTask[], canEdit = true) {
   let renderer!: ReactTestRenderer;
-  /**
-   * purpose: The screen element for a list of tasks.
-   * @param list: (DayTask[]) The tasks.
-   * @return: (JSX.Element) The element.
-   */
   const element = (list: DayTask[]) => (
     <CaregiverHomeScreen
       dayView={dayView(list)}
@@ -145,30 +104,16 @@ function render(tasks: DayTask[], canEdit = true) {
   };
 }
 
-/**
- * purpose: Tap a checkbox inside act and let promises settle.
- * @param box: (ReactTestInstance) The checkbox.
- * @return: (Promise<void>)
- */
 async function tap(box: ReactTestInstance): Promise<void> {
   await act(async () => {
     box.props.onPress();
   });
 }
 
-/**
- * purpose: The buttons of the latest alert.
- * @return: (AlertButton[]) Its buttons.
- */
 function alertButtons(): AlertButton[] {
   return (alertSpy.mock.calls.at(-1)?.[2] ?? []) as AlertButton[];
 }
 
-/**
- * purpose: Choose a button of the latest alert inside act and let promises settle.
- * @param text: (string) The button text.
- * @return: (Promise<void>)
- */
 async function choose(text: string): Promise<void> {
   await act(async () => {
     alertButtons()
@@ -177,10 +122,6 @@ async function choose(text: string): Promise<void> {
   });
 }
 
-/**
- * purpose: The names of the mutations sent so far.
- * @return: (string[]) In order.
- */
 function sentNames(): string[] {
   return mockMutation.mock.calls.map((c) => getFunctionName(c[0] as never));
 }

@@ -1,34 +1,3 @@
-// sunny_app/src/day/__tests__/pendingConfirms.test.ts
-//
-// Purpose: Tests for the durable pending-confirm queue. AsyncStorage is mocked at its boundary
-// with an in-memory map; the real queue, sendConfirm, callMutation and toBackendError run, with
-// only convex.mutation stubbed where the network is involved. Covers: the press is persisted
-// before enqueue resolves, an instance is queued once, a write failure rolls back only the new
-// entry, a failed read is retried and never overwrites stored presses; replay sends oldest first
-// one at a time with via phone_app and pressedAgoMs (an age that ignores clock skew) and empties
-// storage; a restart still has and sends the entries; no answer (network error, 429, 401, a
-// timeout) keeps the entry and ends the pass while a server error moves on to the next entry;
-// a permanent rejection (not found, forbidden, refused) removes the entry and is logged as an
-// error with its details; a held send is awaited again instead of being called again and removes
-// its entry when it lands; nothing is sent while offline; a press made during a pass is sent in
-// it; an entry failing online for over ten minutes is logged loudly; clear() drops everything
-// and ignores in-flight results; entries older than the maximum age are dropped as expired;
-// classifyFailure; applyPending (presses, undos, press again); toPending; toUndo. Undo entries:
-// press, undo and a second press of one task are three entries, a second undo is not queued, an
-// undo goes through undoPressedTask with the tap's age, order is kept per task through a server
-// error and a backoff while other tasks are sent, a press dropped for good lets its undo go,
-// stored undos survive a restart (malformed ones are ignored), an undo expires by its tap time,
-// and too_late removes the undo with a log. applyPending after an undo: own press delivered
-// shows open, own press still queued while another surface confirmed shows done, both queued
-// and the server open shows open. Press ids (expo-crypto mocked): sent with the press and the
-// same id with its undo, kept across a restart, old stored entries sent without one; stored
-// items that are not entries (an unknown restore state, a prototype key, a non-text id) are
-// dropped with a warning that gives only their count. clear() logs presses and undos. enqueue
-// resolves with the stored entry, or with the queued one a duplicate was skipped for; an undo
-// with an id restores only a confirm whose confirmPressIds hold that id.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
@@ -139,19 +108,10 @@ function undo(
   };
 }
 
-/**
- * purpose: A queue over the real send with the faked clock.
- * @return: (ConfirmQueue) The queue.
- */
 function makeQueue(connection?: ConnectionSource): ConfirmQueue {
   return createConfirmQueue({ send: sendConfirm, now: () => Date.now(), connection });
 }
 
-/**
- * purpose: A connection source the test can drive.
- * @param initial: (ConnectionState) The state at the start.
- * @return: (object) The source and a function that announces a new state to the queue.
- */
 function fakeConnection(initial: ConnectionState): {
   source: ConnectionSource;
   emit: (state: ConnectionState) => void;
@@ -174,18 +134,10 @@ function fakeConnection(initial: ConnectionState): {
   };
 }
 
-/**
- * purpose: The ids sent to the backend so far, in order.
- * @return: (string[]) Instance ids.
- */
 function sentIds(): string[] {
   return mockMutation.mock.calls.map((c) => (c[1] as { instanceId: string }).instanceId);
 }
 
-/**
- * purpose: What storage currently holds.
- * @return: (PendingConfirm[]) The persisted entries.
- */
 function stored(): PendingConfirm[] {
   const raw = mockStore.get(STORAGE_KEY);
   return raw === undefined ? [] : (JSON.parse(raw) as PendingConfirm[]);
@@ -896,11 +848,6 @@ describe('applyPending', () => {
     { instanceId: 'd', state: 'resolved', confirmable: false },
   ] as unknown as DayTask[];
 
-  /**
-   * purpose: A queue list, for readability.
-   * @param list: (PendingEntry[]) Entries, oldest first.
-   * @return: (PendingEntry[]) The same entries.
-   */
   const own = { ...tasks[2], confirmPressIds: [pressIdOf('c', NOW)] } as DayTask;
 
   const queued = (...list: PendingEntry[]): PendingEntry[] => list;
@@ -1121,13 +1068,8 @@ describe('toPending', () => {
 });
 
 describe('press ids', () => {
-  /** A press id in the server's accepted form. */
   const PID = 'pid-0000000000000001';
 
-  /**
-   * purpose: The arguments of the sent calls, in order.
-   * @return: (unknown[]) Arguments.
-   */
   const sentArgs = (): unknown[] => mockMutation.mock.calls.map((c) => c[1]);
 
   it('newPressId comes from the platform CSPRNG', () => {

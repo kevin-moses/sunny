@@ -1,23 +1,3 @@
-// sunny_app/src/caregiver/__tests__/format.test.ts
-//
-// Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection (never for anytime tasks), messages and claim text, anytime rows listed last, leftover (carried-over) tasks,
-// the note input, the done detail line (who confirmed, surface), today's task rows (leftover
-// split, notes, checkboxState for editors, viewers, busy rows and reopenable done rows, the
-// row's reopenable flag, note visibility), the
-// events-only rows of any day (a separate row type from task rows), the planned task rows of a
-// selected future day (none for today, so today's tasks are not duplicated),
-// the selected-day title and fallback rule,
-// the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
-// in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
-// fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise. Also
-// digest posts in the transcript (time order, the "Daily summary" label with the day) and
-// posts never counting as in progress. Wording cards: one per task after a finished request's
-// reply or error and for a cancelled request, none while it runs, the "Also at" caption of a
-// task with more than one time, and what VoiceOver reads for one.
-//
-// Last modified: 2026-11-14
-
 import { describe, expect, it } from '@jest/globals';
 
 import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../../day/types';
@@ -59,37 +39,19 @@ import {
   type TaskRowData,
 } from '../format';
 
-/** The day the fixtures are dated and the signed-in caregiver. */
 const TODAY = '2026-10-29';
 const USER = 'user_me';
-/** The household-local time the server reports for a confirmation (confirmedLocalTime). */
 const CONFIRMED_TIME = '14:05';
 
-/**
- * purpose: Build the event rows for a date the way the Home screen does.
- * @param day: (DayViewData) The day view.
- * @param date: (string) The selected local date.
- * @return: (EventRowData[]) The rows.
- */
 function eventsOf(day: DayViewData, date: string): EventRowData[] {
   return eventsForDate(day, date);
 }
 
-/**
- * purpose: Today's task rows (leftover and today) for a user, flattened in display order.
- * @param day: (DayViewData) The day view.
- * @return: (TaskRowData[]) The leftover rows followed by today's rows.
- */
 function taskRows(day: DayViewData): TaskRowData[] {
   const { leftover, today } = todaysTasks(day, USER);
   return [...leftover, ...today];
 }
 
-/**
- * purpose: Build an event occurrence.
- * @param overrides: (Partial<Record<keyof EventOccurrence, unknown>>) Fields to set.
- * @return: (EventOccurrence) An event on 2026-10-29 at 14:00 unless overridden.
- */
 function makeEvent(
   overrides: Partial<Record<keyof EventOccurrence, unknown>> = {},
 ): EventOccurrence {
@@ -106,11 +68,6 @@ function makeEvent(
   } as EventOccurrence;
 }
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) A due 08:00 task unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
@@ -134,11 +91,6 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/**
- * purpose: Build a day view dated Thursday 2026-10-29.
- * @param overrides: (Partial<DayViewData>) Fields to set.
- * @return: (DayViewData) An empty day unless overridden.
- */
 function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   return {
     seniorPreferredName: 'Margaret',
@@ -157,11 +109,6 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   };
 }
 
-/**
- * purpose: Build a digest post as agentRequests.transcript returns it.
- * @param overrides: (Partial<Record<keyof ChatPost, unknown>>) Fields to set.
- * @return: (ChatPost) A digest post for 2026-10-28 unless overridden.
- */
 function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): ChatPost {
   return {
     type: 'post',
@@ -174,11 +121,6 @@ function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): Cha
   } as ChatPost;
 }
 
-/**
- * purpose: Build an agent request as agentRequests.transcript returns it.
- * @param overrides: (Partial<Record<keyof AgentRequest, unknown>>) Fields to set.
- * @return: (AgentRequest) A succeeded request with a reply unless overridden.
- */
 function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {}): AgentRequest {
   return {
     type: 'request',
@@ -194,7 +136,6 @@ function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {
   } as AgentRequest;
 }
 
-/** A wording card's data as the transcript returns it. */
 const PILLS_WORDING: TaskWording = {
   taskId: 't1' as TaskWording['taskId'],
   label: 'Morning pills',
@@ -324,11 +265,6 @@ describe('alerts', () => {
   });
 });
 
-/**
- * purpose: Build a planned task.
- * @param overrides: (Partial<Record<keyof PlannedTask, unknown>>) Fields to set.
- * @return: (PlannedTask) An anytime task on 2026-11-02 unless overridden.
- */
 function makePlanned(overrides: Partial<Record<keyof PlannedTask, unknown>> = {}): PlannedTask {
   return {
     localDate: '2026-11-02',

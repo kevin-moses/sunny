@@ -1,23 +1,3 @@
-// sunny_app/src/display/__tests__/useDueCue.test.tsx
-//
-// Purpose: Tests for the display's due cue, rendering the real useDueCue (and the real
-// cueAudio) with react-test-renderer and fake timers. Only the device boundary is mocked:
-// expo-audio (the chime player and audio mode), expo-speech, AsyncStorage and the logger.
-// The tuning values are the defaults, given through TuningContext with the developer sheet's
-// test cue request. Covers: a cue when a task comes due (chime, then the prompt at the tuned
-// rate), no repeat on re-render, a repeat on each backend reprompt, once per task across app
-// launches, nothing while a voice session is live and the queued cue cueSettleMs after it, no
-// cue for a task confirmed meanwhile, one cue per snooze end (also after an earlier cue, not
-// again when the backend's withheld prompt comes with or just after it, none when the task
-// was confirmed, none twice across a restart during the snooze), stopping a cue when a session starts or the task is confirmed, one chime for
-// tasks due together (skipping the line of one confirmed during the cue), a task coming due
-// while another cue plays, one retry from the failed line of a cue that failed to play or
-// whose speech never finished, the test cue (refused during a session or while a cue plays,
-// stopped when the sheet closes), a chime that fails (the prompt is still spoken and the next
-// cue gets a fresh player), and nothing for anytime tasks.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
@@ -29,7 +9,6 @@ import { TuningContext } from '../TuningProvider';
 import type { TestCueRequest, TuningControls } from '../TuningProvider';
 import { CUED_STORAGE_KEY, TEST_CUE_BLOCKED, TEST_CUE_BUSY, useDueCue } from '../useDueCue';
 
-/** Options the hook passes to Speech.speak. */
 interface SpeakOptions {
   rate?: number;
   onDone?: () => void;
@@ -50,7 +29,6 @@ const mockPlayer = {
     return { remove: () => (mockPlayer.listener = null) };
   },
   seekTo: jest.fn(async (_seconds: number) => undefined),
-  // The chime "plays" for one second of fake time.
   play: jest.fn(() => {
     setTimeout(() => mockPlayer.listener?.({ didJustFinish: true }), 1000);
   }),
@@ -81,11 +59,6 @@ jest.mock('../../logging/logger', () => ({
   logger: { info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) A due 08:00 medication with a written prompt unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
@@ -101,7 +74,6 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/** The hook's inputs, and the developer sheet's test cue request. */
 interface Props {
   tasks: DayTask[] | null;
   blocked: boolean;
@@ -112,11 +84,6 @@ const onCue = jest.fn();
 const reportTestCue = jest.fn((_result: string) => undefined);
 const renderers: ReactTestRenderer[] = [];
 
-/**
- * purpose: The tree for some inputs: the hook under the tuning context.
- * @param props: (Props) The inputs.
- * @return: (JSX.Element) The tree.
- */
 function tree({ tasks, blocked, testCue }: Props) {
   const controls = {
     tuning: DEFAULT_TUNING,
@@ -130,22 +97,11 @@ function tree({ tasks, blocked, testCue }: Props) {
   );
 }
 
-/**
- * purpose: A component that only runs the hook.
- * @param props: (Props) The day's tasks and whether a voice session is live.
- * @return: (null) Nothing.
- */
 function Probe({ tasks, blocked }: Props): null {
   useDueCue(tasks, blocked, onCue);
   return null;
 }
 
-/**
- * purpose: Render the real hook with the given inputs and let the stored keys load.
- * @param props: (Props) The first inputs.
- * @return: (Promise<(next: Props) => Promise<void>>) A function that re-renders with new
- *          inputs and lets pending work run.
- */
 async function renderCue(props: Props): Promise<(next: Props) => Promise<void>> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
@@ -161,21 +117,12 @@ async function renderCue(props: Props): Promise<(next: Props) => Promise<void>> 
   };
 }
 
-/**
- * purpose: Advance fake time and run the promises it releases.
- * @param ms: (number) Milliseconds to advance.
- * @return: (Promise<void>) Resolves after the work ran.
- */
 async function settle(ms: number): Promise<void> {
   await act(async () => {
     await jest.advanceTimersByTimeAsync(ms);
   });
 }
 
-/**
- * purpose: Finish the line being spoken, as the speech engine would.
- * @return: (Promise<void>) Resolves after the hook reacted.
- */
 async function finishSpeech(): Promise<void> {
   await act(async () => {
     mockSpeech.at(-1)?.options.onDone?.();
@@ -183,10 +130,6 @@ async function finishSpeech(): Promise<void> {
   await settle(0);
 }
 
-/**
- * purpose: The lines spoken so far.
- * @return: (string[]) The texts.
- */
 function spoken(): string[] {
   return mockSpeech.map((s) => s.text);
 }
@@ -204,10 +147,6 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-/**
- * purpose: Make the line being spoken fail, as the speech engine would on an error.
- * @return: (Promise<void>) Resolves after the hook reacted.
- */
 async function failSpeech(): Promise<void> {
   await act(async () => {
     mockSpeech.at(-1)?.options.onError?.(new Error('speech failed'));
@@ -244,7 +183,6 @@ describe('useDueCue', () => {
     const update = await renderCue({ tasks: [makeTask({ seniorPrompts: 1 })], blocked: false });
     await settle(1500);
     await finishSpeech();
-    // Reprompts come minutes apart, beyond the minimum gap between cues.
     await settle(DEFAULT_TUNING.cueMinGapMs);
     await update({ tasks: [makeTask({ seniorPrompts: 2 })], blocked: false });
     await settle(1500);
@@ -282,19 +220,9 @@ describe('useDueCue', () => {
       until = Date.now() + 15 * MINUTE;
     });
 
-    /**
-     * purpose: The task snoozed until `until`, or with that snooze over.
-     * @param snoozed: (boolean) The snooze is still on.
-     * @param seniorPrompts: (number) Prompts the backend has sent.
-     * @return: (DayTask) The task.
-     */
     const task = (snoozed: boolean, seniorPrompts = 1): DayTask =>
       makeTask({ seniorPrompts, snoozed, snoozedUntil: until });
 
-    /**
-     * purpose: Play the first cue, then have the senior say "not yet".
-     * @return: (Promise<(next: Props) => Promise<void>>) The re-render function.
-     */
     const cuedThenSnoozed = async (): Promise<(next: Props) => Promise<void>> => {
       const update = await renderCue({ tasks: [makeTask({ seniorPrompts: 1 })], blocked: false });
       await settle(1500);
@@ -356,17 +284,14 @@ describe('useDueCue', () => {
       await cuedThenSnoozed();
       act(() => renderers.splice(0).forEach((r) => r.unmount()));
       jest.clearAllMocks();
-      // Restarted while snoozed: nothing plays.
       const update = await renderCue({ tasks: [task(true)], blocked: false });
       await settle(5000);
       expect(mockPlayer.play).not.toHaveBeenCalled();
-      // The snooze ends: one cue.
       await settle(15 * MINUTE);
       await update({ tasks: [task(false)], blocked: false });
       expect(mockPlayer.play).toHaveBeenCalledTimes(1);
       await settle(1500);
       await finishSpeech();
-      // Restarted again after that cue: nothing more.
       act(() => renderers.splice(0).forEach((r) => r.unmount()));
       await renderCue({ tasks: [task(false)], blocked: false });
       await settle(5000);
@@ -527,7 +452,6 @@ describe('useDueCue', () => {
     expect(spoken()).toEqual(['Time for your pills.']);
     await finishSpeech();
     await settle(10 * DEFAULT_TUNING.cueRetryMs);
-    // Played, so no retry: the audio mode was set for one cue only.
     expect(mockSetAudioMode).toHaveBeenCalledTimes(1);
     expect(mockPlayer.remove).toHaveBeenCalledTimes(1);
   });

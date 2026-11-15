@@ -1,17 +1,3 @@
-// sunny_app/src/caregiver/__tests__/useInlineEditor.test.tsx
-//
-// Purpose: Tests for useInlineEditor, rendering the real hook with react-test-renderer: opening a
-// text with its current value, saving on close only when draftToSave says so (unchanged and
-// blank required texts are not saved, blank details clear) and close reporting whether it
-// started a save, toggling the open text closes it, opening another text saves the first, a
-// failed save's draft comes back on reopening, a successful save keeps a newer failed draft,
-// close(key) acts only for the open text, hold closes a row's editor without saving but keeps
-// the draft for reopening, forget drops a row's drafts (and closes its editor) without saving,
-// unmounting saves an open draft, settle saves an open edit or reopens a kept one and reports
-// whether one was pending, and the actions keep their identity between renders.
-//
-// Last modified: 2026-11-09
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
@@ -24,10 +10,6 @@ const NAME: FieldTarget = { kind: 'entryName', id: 'e1' as never, current: 'Sara
 const DETAILS: FieldTarget = { kind: 'entryDetails', id: 'e1' as never, current: 'Daughter' };
 const FACT: FieldTarget = { kind: 'fact', id: 'f1' as never, current: 'Likes tea' };
 
-/**
- * purpose: Render the real hook and expose its latest return value.
- * @return: (object) A getter for the current InlineEditor and the renderer.
- */
 function renderEditor(): { get: () => InlineEditor; renderer: ReactTestRenderer } {
   let current!: InlineEditor;
   const Probe = (): null => {
@@ -41,36 +23,17 @@ function renderEditor(): { get: () => InlineEditor; renderer: ReactTestRenderer 
   return { get: () => current, renderer };
 }
 
-/**
- * purpose: Open a text and type a draft into it.
- * @param h: ({ get }) The rendered hook.
- * @param target: (FieldTarget) The text.
- * @param draft: (string) What is typed.
- * @return: (void)
- */
 function type(h: { get: () => InlineEditor }, target: FieldTarget, draft: string): void {
   act(() => h.get().toggle(target));
   act(() => h.get().setDraft(draft));
 }
 
-/**
- * purpose: Close the editor inside act and say whether that started a save.
- * @param h: ({ get }) The rendered hook.
- * @param key: (string, optional) Close only this text.
- * @return: (boolean) Whether close called save.
- */
 function close(h: { get: () => InlineEditor }, key?: string): boolean {
   const before = save.mock.calls.length;
   act(() => h.get().close(key));
   return save.mock.calls.length > before;
 }
 
-/**
- * purpose: Settle a text inside act and return what settle returned.
- * @param h: ({ get }) The rendered hook.
- * @param target: (FieldTarget) The text.
- * @return: (boolean) Whether there was a pending edit.
- */
 function settle(h: { get: () => InlineEditor }, target: FieldTarget): boolean {
   let pending = false;
   act(() => {

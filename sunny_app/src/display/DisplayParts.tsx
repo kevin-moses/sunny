@@ -1,29 +1,3 @@
-// sunny_app/src/display/DisplayParts.tsx
-//
-// Purpose: The pieces of the home display's two carousel screens, drawn at the design canvas
-// size (theme.CANVAS) in the black-and-white e-ink look:
-// - DisplayCanvas: the paper page with the orientation header ("Saturday morning", date with
-//   the year) and the going-out strip at the bottom, around a screen's body. DisplayMessage is
-//   the plain page shown while the day loads.
-// - NowBody: the 600 pt Now card on the left and the Next up card on the right. The Now card
-//   shows the task to act on (title, pill description, "Taken them? Press [Done]"), the
-//   overdue form ("Still to do", plus "Not sure? Press [Talk]"), one step of a multi-step
-//   task with its progress boxes, or a calm clear state. A snoozed task (the senior said "not
-//   yet") keeps its card, since Done still confirms it, but its tab reads "Later · 8:00 AM"
-//   (the one time on the panel written with AM or PM) instead of "Now" or "Still to do",
-//   matching the due cue, which stays quiet until the snooze ends.
-//   While the senior talks to Sunny, and for a few minutes after, the voice card (VoiceCardView: "Listening", "Thinking", then the
-//   answer as large text) takes the Next up card's place, so a waiting task stays in view on
-//   the left and Done still confirms what the screen shows. With nothing waiting, the voice
-//   card takes the whole body instead, because an answer of a few sentences only fits the
-//   full width at a size the senior can read across the room.
-// - TodayBody: today's tasks and events as rows; finished ones grey with a check, a task whose
-//   window closed unconfirmed grey without a check, the Now task boxed with a black "Now" tag.
-// The drawn keycaps only point at the physical Done and Talk keys; nothing here is pressable.
-// Text ignores the system text size because the canvas is a fixed page that scales as a whole.
-//
-// Last modified: 2026-11-14
-
 import { SymbolView } from 'expo-symbols';
 import type { SFSymbol } from 'expo-symbols';
 import type { ReactNode } from 'react';
@@ -37,30 +11,17 @@ import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
 import { CANVAS, TAB_SEPARATOR, font, ink } from './theme';
 import type { VoiceCard } from './voiceModel';
 
-/** Up to this many steps get progress boxes; longer tasks show only "Step 2 of 7". */
 const MAX_PROGRESS_BOXES = 5;
 
-/** The smallest an answer's text may shrink to fit its card, as a fraction of its size. */
 const ANSWER_MIN_SCALE = 0.6;
 
-/** Lines an answer may take at its smallest: in the Next up column, and across the body. */
 const ANSWER_LINES = 11;
 const ANSWER_LINES_WIDE = 9;
 
-/**
- * purpose: Text at the canvas's fixed size (system text size is ignored; the page scales).
- * @param props: (TextProps) Text props.
- * @return: (JSX.Element) The text.
- */
 export function DText(props: TextProps) {
   return <Text allowFontScaling={false} {...props} />;
 }
 
-/**
- * purpose: The paper page: orientation header, a screen's body, and the going-out strip.
- * @param props: ({ day: DayViewData, children: ReactNode }) The day view and the body.
- * @return: (JSX.Element) The page at canvas size.
- */
 export function DisplayCanvas({ day, children }: { day: DayViewData; children: ReactNode }) {
   return (
     <View style={styles.canvas}>
@@ -76,12 +37,6 @@ export function DisplayCanvas({ day, children }: { day: DayViewData; children: R
   );
 }
 
-/**
- * purpose: A plain paper page with one centered line, shown while the day loads or when it
- *          cannot be loaded.
- * @param props: ({ text: string }) The line.
- * @return: (JSX.Element) The page at canvas size.
- */
 export function DisplayMessage({ text }: { text: string }) {
   return (
     <View style={[styles.canvas, styles.centered]}>
@@ -90,10 +45,6 @@ export function DisplayMessage({ text }: { text: string }) {
   );
 }
 
-/**
- * purpose: The fixed reminder at the bottom of the page; nothing to press.
- * @return: (JSX.Element) The strip.
- */
 function GoingOutStrip() {
   return (
     <View
@@ -108,12 +59,6 @@ function GoingOutStrip() {
   );
 }
 
-/**
- * purpose: A drawing of a physical key (outlined, rounded) inside a prompt, for example
- *          "Press [check Done]". Not pressable.
- * @param props: ({ icon: SFSymbol, label: string }) The key's symbol and word.
- * @return: (JSX.Element) The keycap.
- */
 function Keycap({ icon, label }: { icon: SFSymbol; label: string }) {
   return (
     <View style={styles.keycap}>
@@ -123,12 +68,6 @@ function Keycap({ icon, label }: { icon: SFSymbol; label: string }) {
   );
 }
 
-/**
- * purpose: One prompt line, "<question> Press [key]".
- * @param props: ({ question: string, icon: SFSymbol, keyLabel: string }) The words before
- *        "Press" and the key drawn after it.
- * @return: (JSX.Element) The line.
- */
 function PromptLine({
   question,
   icon,
@@ -150,14 +89,6 @@ function PromptLine({
   );
 }
 
-/**
- * purpose: The Now screen's body: the Now card and the Next up card side by side. A voice card
- *          replaces the Next up card, or the whole body when nothing is waiting.
- * @param props: ({ card: NowCard, step: number, next: NextItem | null, voice: VoiceCard |
- *        null }) The Now card, the current step index of a multi-step task (0 for others), the
- *        next item, and the voice card (null when there is no voice session or answer).
- * @return: (JSX.Element) The body.
- */
 export function NowBody({
   card,
   step,
@@ -190,15 +121,6 @@ export function NowBody({
   );
 }
 
-/**
- * purpose: The voice card: a black tab ("Talk", "Sunny", "Sunny said · 10:42") over a
- *          thick-bordered box holding a symbol with a large title and a detail line
- *          ("Listening", "Ask your question."), or the answer as large text, shrunk only as
- *          far as needed to fit.
- * @param props: ({ card: VoiceCard, wide: boolean }) The card, and whether it has the whole
- *        body (larger answer text) or the Next up column.
- * @return: (JSX.Element) The card.
- */
 function VoiceCardView({ card, wide }: { card: VoiceCard; wide: boolean }) {
   const parts =
     card.kind === 'answer' ? [card.tab, card.text] : [card.tab, card.title, card.detail];
@@ -236,48 +158,23 @@ function VoiceCardView({ card, wide }: { card: VoiceCard; wide: boolean }) {
   );
 }
 
-/**
- * purpose: The first word of a task's tab: "Later" for a snoozed task, "Still to do" for an
- *          overdue one, otherwise "Now".
- * @param card: (TaskCard) The task card.
- * @return: (string) The word.
- */
 function tabLead(card: TaskCard): string {
   if (card.task.snoozed) return 'Later';
   if (card.overdue) return 'Still to do';
   return 'Now';
 }
 
-/**
- * purpose: The time on a one-step task's tab: with AM or PM after "Later" ("8:00 AM",
- *          "12:30 PM"), as the rest of the app writes a time it is waiting for; otherwise the
- *          display's plain clock form ("8:00").
- * @param card: (TaskCard) The task card.
- * @return: (string) The time.
- */
 function tabTime(card: TaskCard): string {
   const time = card.task.scheduledTime;
   return card.task.snoozed ? displayTime(time) : clockTime(time);
 }
 
-/**
- * purpose: The tab above the Now card: its lead (tabLead), followed by the task's time
- *          (one-step task, tabTime) or name (multi-step task); "Now" alone when nothing is
- *          waiting.
- * @param card: (NowCard) The card.
- * @return: (string) The tab text.
- */
 export function tabText(card: NowCard): string {
   if (card.kind === 'clear') return 'Now';
   const tail = card.steps !== null ? card.task.displayLabel : tabTime(card);
   return `${tabLead(card)}${TAB_SEPARATOR}${tail}`;
 }
 
-/**
- * purpose: The 600 pt Now column: the black tab and the thick-bordered card.
- * @param props: ({ card: NowCard, step: number }) The card and the current step index.
- * @return: (JSX.Element) The column.
- */
 function NowColumn({ card, step }: { card: NowCard; step: number }) {
   return (
     <View style={styles.nowColumn}>
@@ -297,11 +194,6 @@ function NowColumn({ card, step }: { card: NowCard; step: number }) {
   );
 }
 
-/**
- * purpose: The Now card when nothing needs doing.
- * @param props: ({ allDone: boolean }) Whether the whole day is finished.
- * @return: (JSX.Element) The content.
- */
 function ClearContent({ allDone }: { allDone: boolean }) {
   return (
     <View accessible style={styles.stack}>
@@ -313,13 +205,6 @@ function ClearContent({ allDone }: { allDone: boolean }) {
   );
 }
 
-/**
- * purpose: The Now card for a one-step task: icon, title, pill description, and the prompt to
- *          press Done. An overdue task drops the icon to make room for the second prompt,
- *          "Not sure? Press [Talk]".
- * @param props: ({ card }) The task card.
- * @return: (JSX.Element) The content.
- */
 function TaskContent({ card }: { card: TaskCard }) {
   const { task } = card;
   return (
@@ -345,12 +230,6 @@ function TaskContent({ card }: { card: TaskCard }) {
   );
 }
 
-/**
- * purpose: The Now card for a multi-step task: progress boxes with "Step n of N", the current
- *          step large, and the prompt to press Done when it is finished.
- * @param props: ({ steps: string[], step: number }) The steps and the current index.
- * @return: (JSX.Element) The content.
- */
 function StepContent({ steps, step }: { steps: string[]; step: number }) {
   const current = Math.min(step, steps.length - 1);
   const counter = `Step ${current + 1} of ${steps.length}`;
@@ -386,12 +265,6 @@ function StepContent({ steps, step }: { steps: string[]; step: number }) {
   );
 }
 
-/**
- * purpose: The Next up column's card: a circle with the visitor's initial or the item's icon,
- *          the title, and when.
- * @param props: ({ item: NextItem }) The next item.
- * @return: (JSX.Element) The label and card.
- */
 function NextCard({ item }: { item: NextItem }) {
   return (
     <>
@@ -421,13 +294,6 @@ function NextCard({ item }: { item: NextItem }) {
   );
 }
 
-/**
- * purpose: The Today screen's body: one row per task or event (finished rows grey with a
- *          check, missed rows grey without one, the Now row boxed and tagged), and a closing
- *          line when some later rows did not fit.
- * @param props: ({ rows: TodayRow[], hidden: number }) The rows and the count left out.
- * @return: (JSX.Element) The list.
- */
 export function TodayBody({ rows, hidden }: { rows: TodayRow[]; hidden: number }) {
   return (
     <View>
@@ -448,12 +314,6 @@ export function TodayBody({ rows, hidden }: { rows: TodayRow[]; hidden: number }
   );
 }
 
-/**
- * purpose: The screen reader state of a Today row.
- * @param mark: (TodayRow['mark']) The row's mark.
- * @return: ({ text: string } | undefined) "Done", "Now", the neutral "Earlier today, not marked
- *          done" for a missed row, or nothing for a plain row.
- */
 function todayRowValue(mark: TodayRow['mark']): { text: string } | undefined {
   switch (mark) {
     case 'done':
@@ -467,13 +327,6 @@ function todayRowValue(mark: TodayRow['mark']): { text: string } | undefined {
   }
 }
 
-/**
- * purpose: One Today row: time, label, and a grey check (done) or a black "Now" tag (the Now
- *          task, which is also boxed). A missed row is grey with neither, and its screen reader
- *          value is the neutral "Earlier today, not marked done".
- * @param props: ({ row: TodayRow }) The row.
- * @return: (JSX.Element) The row.
- */
 function TodayLine({ row }: { row: TodayRow }) {
   const done = row.mark === 'done';
   const now = row.mark === 'now';
@@ -570,7 +423,6 @@ const styles = StyleSheet.create({
   nextColumn: { flex: 1 },
   voiceColumn: { flex: 1 },
   voiceBox: { justifyContent: 'flex-start' },
-  // Fills the box, so the text has a bounded height to shrink into.
   answerText: { flex: 1 },
   nextLabel: { paddingVertical: 8 },
   nextBox: {

@@ -1,11 +1,3 @@
-// sunny_app/src/voice/ControlBar.tsx
-//
-// Purpose: Bottom action bar of the conversation: a microphone toggle with a small 3-bar local level meter, a text/voice mode toggle (disabled until the
-// agent has joined), and a red end-call button. Every button is a 60x60 point target for
-// senior accessibility, with explicit VoiceOver labels.
-//
-// Last modified: 2026-10-28
-
 import { BarVisualizer } from '@livekit/react-native';
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import type { ReactElement } from 'react';
@@ -15,10 +7,8 @@ import { BACKGROUND, colors } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
 import { useConversation, useVoice } from './voiceContext';
 
-/** Size of every control button, in points. */
 const BUTTON_SIZE = 60;
 
-/** Props for one round control button. */
 interface ControlButtonProps {
   label: string;
   symbol: SymbolViewProps['name'];
@@ -30,11 +20,6 @@ interface ControlButtonProps {
   children?: ReactElement;
 }
 
-/**
- * purpose: Render one 60x60 control button with an SF Symbol and optional extra content.
- * @param props: (ControlButtonProps) label, symbol, handler and visual state
- * @return: (ReactElement) the button
- */
 function ControlButton(props: ControlButtonProps): ReactElement {
   const { label, symbol, onPress, disabled, toggled, serious, accentColor, children } = props;
   const foreground = serious ? colors.seriousForeground : colors.text;
@@ -64,12 +49,6 @@ function ControlButton(props: ControlButtonProps): ReactElement {
   );
 }
 
-/**
- * purpose: Render the conversation control bar.
- * @param props: ({ isText: boolean, onToggleMode: () => void }) whether the conversation is
- *               in text mode, and the handler that switches between voice and text
- * @return: (ReactElement) the bar
- */
 export function ControlBar(props: { isText: boolean; onToggleMode: () => void }): ReactElement {
   const { isText, onToggleMode } = props;
   const { accentColor } = useTheme();

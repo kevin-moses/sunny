@@ -1,12 +1,3 @@
-// sunny_app/src/voice/__tests__/localAudio.test.ts
-//
-// Purpose: Tests for stopLocalAudio with a fake room: published audio tracks are stopped and
-// unpublished; a track waiting to publish in livekit-client's private pendingPublishPromises
-// map is stopped; and when that private field is missing, renamed or of another shape (or a
-// track's stop throws) nothing throws and the published tracks are still turned off.
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, it, jest } from '@jest/globals';
 import type { Room } from 'livekit-client';
 
@@ -16,28 +7,15 @@ jest.mock('../../logging/logger', () => ({
   logger: { info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
 
-/** A fake track. */
 interface FakeTrack {
   kind: string;
   stop: jest.Mock;
 }
 
-/**
- * purpose: A fake track.
- * @param kind: (string) 'audio' or 'video'.
- * @return: (FakeTrack) The track.
- */
 function makeTrack(kind = 'audio'): FakeTrack {
   return { kind, stop: jest.fn() };
 }
 
-/**
- * purpose: A fake room with one published microphone and the given private field value.
- * @param published: (FakeTrack) The published microphone.
- * @param pending: (unknown) What the private pendingPublishPromises field holds; omitted when
- *        undefined.
- * @return: ({ room: Room, unpublish: jest.Mock }) The room and its unpublish spy.
- */
 function makeRoom(published: FakeTrack, pending?: unknown): { room: Room; unpublish: jest.Mock } {
   const unpublish = jest.fn(async () => undefined);
   const localParticipant: Record<string, unknown> = {

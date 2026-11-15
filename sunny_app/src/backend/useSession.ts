@@ -1,17 +1,3 @@
-// sunny_app/src/backend/useSession.ts
-//
-// Purpose: React hook that tells the app shell what to show, from the Clerk session, Convex auth
-// and the households.mine query (decideSession in pairing.ts); nothing is persisted locally.
-// The last home seen in this app run (a paired device or a caregiver household) is kept in a ref
-// so a transient Convex auth or query failure does not unmount the home screen (or a live
-// conversation). The query is skipped until Convex confirms the session, because it answers an
-// empty result to a signed-out caller, which must not be mistaken for a removal. While the
-// decision is "removed" (a device whose pairing is gone) the hook unpairs the device, retrying
-// with a capped backoff until the session is gone; a caregiver is never unpaired. A failing
-// query is logged.
-//
-// Last modified: 2026-10-31
-
 import { useAuth } from '@clerk/expo';
 import { useConvexAuth } from 'convex/react';
 import { useEffect, useMemo } from 'react';
@@ -23,14 +9,6 @@ import { useQueryWithStatus } from './convex';
 import { api } from './convexApi';
 import { decideSession, homeOf, removalRetryDelay, unpair, type SessionDecision } from './pairing';
 
-/**
- * purpose: Follow the signed-in account: signed out, a paired senior device, a caregiver in a
- *          household, or a caregiver who still needs to join or create one.
- * @return: (SessionDecision) loading (possibly with a notice), signedOut, paired (with the
- *          device), removed, caregiver (with the household and role) or caregiverOnboarding. A
- *          removed device is already being unpaired by the hook. While loading after a home was
- *          seen, that home is returned instead.
- */
 export function useSession(): SessionDecision {
   const clerk = useAuth();
   const convex = useConvexAuth();
@@ -67,11 +45,6 @@ export function useSession(): SessionDecision {
     let attempt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let active = true;
-    /**
-     * purpose: Try to unpair the removed device, then schedule another try with backoff unless
-     *          the effect has been cleaned up.
-     * @return: (void) Nothing.
-     */
     const run = (): void => {
       void unpair().then(() => {
         if (active) timer = setTimeout(run, removalRetryDelay(attempt++));

@@ -1,16 +1,3 @@
-// sunny_app/src/display/__tests__/tuning.test.tsx
-//
-// Purpose: Tests for the display's tunables: clamping and rounding (tuning.ts), the start
-// timeout's bound against the voice layer's agent wait on the display, turning
-// stored data back into valid values, the display text, and TuningProvider rendered for real
-// with AsyncStorage mocked: defaults before anything is saved, saved values loaded at start,
-// a change made before they load kept, saved values ignored (and nothing saved) where the
-// developer sheet does not exist, changes clamped, saved and applied at once, reset restoring
-// and saving the defaults,
-// useTuning's defaults outside a provider, and the sample answer request.
-//
-// Last modified: 2026-11-09
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create } from 'react-test-renderer';
@@ -34,7 +21,6 @@ import type { DisplayTuning } from '../tuning';
 import { DISPLAY_AGENT_CONNECT_TIMEOUT_MS } from '../../voice/agentTimeouts';
 
 const mockStore = new Map<string, string>();
-// When set, reads wait for it, so a test can change a value before the load lands.
 let mockReadGate: Promise<void> | null = null;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -108,11 +94,6 @@ describe('formatTuning', () => {
   });
 });
 
-/**
- * purpose: Render the real provider and expose its controls.
- * @param persisted: (boolean) Whether saved values are used (the developer sheet exists).
- * @return: (Promise<() => TuningControls>) A getter for the latest controls.
- */
 async function renderProvider(persisted = true): Promise<() => TuningControls> {
   let current!: TuningControls;
   const Probe = (): null => {
@@ -129,10 +110,6 @@ async function renderProvider(persisted = true): Promise<() => TuningControls> {
   return () => current;
 }
 
-/**
- * purpose: The saved tunables.
- * @return: (DisplayTuning | null) The parsed stored value, or null when nothing is stored.
- */
 function saved(): DisplayTuning | null {
   const raw = mockStore.get(TUNING_STORAGE_KEY);
   return raw === undefined ? null : (JSON.parse(raw) as DisplayTuning);

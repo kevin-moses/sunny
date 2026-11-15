@@ -1,21 +1,3 @@
-// sunny_app/src/voice/__tests__/VoiceProvider.test.tsx
-//
-// Purpose: Tests for VoiceProvider, rendered for real with the LiveKit layer mocked: the
-// components-react hooks return a fake session whose start() behaves like LiveKit's (fetch the
-// token through the real token source, then connect the room), and a fake room whose
-// microphone, publications and RPC registry the test can see. The backend token action is a
-// promise the test resolves. Covers: a start cancelled during the token fetch never connects
-// and leaves no live microphone, including a microphone that comes on only after the cancel
-// and one still waiting to publish; a start that fails (the token action errors) turns the
-// microphone off too, whether it came on before or after the failure, and reports the error
-// once; unmounting turns the microphone off; a failed agent ends
-// the session exactly once; the agent connect timeout on the home display is never shorter than
-// any tuned start timeout (so the display's own timeout always decides) and 20 s on the phone;
-// and the phone RPC methods are registered on
-// the phone only.
-//
-// Last modified: 2026-11-09
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
@@ -27,17 +9,12 @@ import type { TuningControls } from '../../display/TuningProvider';
 import { VoiceProvider, useVoice } from '../VoiceProvider';
 import type { VoiceApi } from '../voiceContext';
 
-/** A promise the test settles by hand. */
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
   reject: (error: Error) => void;
 }
 
-/**
- * purpose: Make a promise the test settles by hand.
- * @return: (Deferred<T>) The promise and its resolve and reject functions.
- */
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
@@ -48,16 +25,11 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-/** A fake local audio track. */
 interface FakeTrack {
   kind: 'audio';
   stop: jest.Mock;
 }
 
-/**
- * purpose: A fake local microphone track.
- * @return: (FakeTrack) The track.
- */
 function makeTrack(): FakeTrack {
   return { kind: 'audio', stop: jest.fn() };
 }
@@ -75,7 +47,6 @@ const mockRoom = {
     pendingPublishPromises: new Map<FakeTrack, unknown>(),
     setMicrophoneEnabled: jest.fn(async (on: boolean) => {
       if (!on) return;
-      // The pre-connect microphone waits to publish until the room connects.
       mockRoom.localParticipant.pendingPublishPromises.set(mockPendingTrack, null);
       await mockMic.promise;
       mockRoom.localParticipant.audioTrackPublications.set('mic', { track: mockMicTrack });
@@ -160,10 +131,6 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 const DISPLAY = { householdId: 'h1', kind: 'home_display' } as unknown as PairedDevice;
 const PHONE = { householdId: 'h1', kind: 'senior_phone' } as unknown as PairedDevice;
 
-/**
- * purpose: A probe component that keeps the latest voice API, and a getter for it.
- * @return: ({ Probe, get }) The component and the getter.
- */
 function makeProbe(): { Probe: () => null; get: () => VoiceApi } {
   let current: VoiceApi | null = null;
   const Probe = (): null => {
@@ -176,20 +143,10 @@ function makeProbe(): { Probe: () => null; get: () => VoiceApi } {
 const probe = makeProbe();
 const Probe = probe.Probe;
 
-/**
- * purpose: The latest voice API.
- * @return: (VoiceApi) It.
- */
 function voiceApi(): VoiceApi {
   return probe.get();
 }
 
-/**
- * purpose: Render the provider for a device, optionally with tuned values.
- * @param device: (PairedDevice) The paired device.
- * @param startTimeoutMs: (number | undefined) A tuned start timeout.
- * @return: (ReactTestRenderer) The renderer.
- */
 function renderProvider(device: PairedDevice, startTimeoutMs?: number): ReactTestRenderer {
   const controls = {
     tuning: { ...DEFAULT_TUNING, startTimeoutMs: startTimeoutMs ?? DEFAULT_TUNING.startTimeoutMs },
@@ -207,10 +164,6 @@ function renderProvider(device: PairedDevice, startTimeoutMs?: number): ReactTes
   return renderer;
 }
 
-/**
- * purpose: Let pending promises run.
- * @return: (Promise<void>) Resolves after they ran.
- */
 async function flush(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
@@ -243,15 +196,12 @@ describe('cancelling a start', () => {
     await act(async () => {
       await voiceApi().disconnect();
     });
-    // The track still waiting to publish is stopped at once.
     expect(mockPendingTrack.stop).toHaveBeenCalled();
 
-    // The token arrives after the cancel: the room must not connect.
     mockToken.resolve({ serverUrl: 'wss://x', participantToken: 't' });
     await flush();
     expect(mockRoom.connect).not.toHaveBeenCalled();
 
-    // The microphone comes on after the cancel: it is stopped and unpublished.
     mockMic.resolve();
     await flush();
     expect(mockMicTrack.stop).toHaveBeenCalled();
