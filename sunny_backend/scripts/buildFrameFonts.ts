@@ -68,9 +68,22 @@ const FACES: Record<string, { pkg: string; file: string }> = {
 };
 
 /**
- * purpose: The characters kept: printable ASCII, Latin-1, Latin Extended-A (names), and the
- *          punctuation the screens or caregiver wording use (quotes, dashes, the ellipsis, the
- *          middle dot of the going-out strip).
+ * purpose: The characters requested: printable ASCII, Latin-1, Latin Extended-A (names), and
+ *          the punctuation the screens or caregiver wording use (quotes, dashes, the ellipsis,
+ *          the middle dot of the going-out strip, the bullet, the euro sign).
+ *          Requested characters the faces lack (checked against the fonts listed above):
+ *          - Atkinson Hyperlegible Next, every weight (37): U+00AD soft hyphen, U+00B5 micro
+ *            sign, U+0108 U+0109 (C, c circumflex), U+0114 U+0115 (E, e breve), U+011C U+011D
+ *            (G, g circumflex), U+0124 U+0125 (H, h circumflex), U+0128 U+0129 (I, i tilde),
+ *            U+012C U+012D (I, i breve), U+0134 U+0135 (J, j circumflex), U+0138 kra, U+013F
+ *            U+0140 (L, l middle dot), U+0149 n preceded by apostrophe, U+014A U+014B (eng),
+ *            U+014C U+014D (O, o macron), U+014E U+014F (O, o breve), U+0156 U+0157 (R, r
+ *            cedilla), U+015C U+015D (S, s circumflex), U+0166 U+0167 (T, t stroke), U+0168
+ *            U+0169 (U, u tilde), U+016C U+016D (U, u breve), U+017F long s.
+ *          - Literata, both weights (1): U+017F long s.
+ *          The renderer (convex/lib/frameText.ts cleanText) writes the meaningful ones out (the
+ *          micro sign as "mc"), drops the accents of the letters (decomposition) and maps the
+ *          rest to plain letters, so none is lost silently.
  * @return: (number[]) Codepoints, ascending.
  */
 function charset(): number[] {

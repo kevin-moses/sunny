@@ -1,7 +1,8 @@
 // lib/framePacked.ts
 // Purpose: The packed frame format the e-ink display's firmware reads (GET /device/frame
-// ?format=packed), with its encoder and a decoder (used by the tests; the firmware's decoder is
-// a C port of decodePayload). The firmware is written against this comment and notes/HANDOFF.md.
+// ?format=packed), and its encoder. The firmware is written against this comment and
+// notes/HANDOFF.md "Display frames"; lib/framePackedDecoder.helpers.ts is a reference decoder
+// (used by the tests, kept out of the deployed bundle) that a firmware decoder can port.
 //
 // Layout: a 16-byte header, then the payload. All multi-byte fields little-endian.
 //   offset  size  field
@@ -24,24 +25,31 @@
 //   n 0..127:   copy the next n + 1 bytes as they are;
 //   n 129..255: repeat the next byte 257 - n times (2 to 128);
 //   n 128:      no operation (never written by this encoder).
-// A streaming decoder needs a control byte, a remaining count and a repeat byte, and can hand
-// each finished row (240 bytes at 960 x 2 bpp) to the panel driver as it fills.
+// A decoder must reject: a magic other than "SNYF"; a version it does not know (a later
+// version may change anything after byte 4); an encoding other than 0 or 1; more levels than
+// the bits per pixel hold; a file whose length is not 16 plus the payload length; and a payload
+// that does not decode to exactly height * ceil(width * bpp / 8) bytes (a run that would write
+// past that, or a payload that ends before it). The payload is never longer than the raw
+// pixels plus one control byte per 128 of them, raw + ceil(raw / 128): for 960 x 680 at 2 bpp,
+// raw is 163,200 bytes and the payload at most 164,475 (the file 164,491). A streaming decoder
+// needs a control byte, a remaining count and a repeat byte, and can hand each finished row
+// (240 bytes at 960 x 2 bpp) to the panel driver as it fills.
 //
 // Last modified: 2026-11-14
 
 import type { Frame } from "./frameRaster";
 
 /** "SNYF". */
-const MAGIC = [0x53, 0x4e, 0x59, 0x46] as const;
+export const PACKED_MAGIC = [0x53, 0x4e, 0x59, 0x46] as const;
 
 /** The packed format's version. */
-const PACKED_VERSION = 1;
+export const PACKED_VERSION = 1;
 
 /** Header size in bytes. */
 export const PACKED_HEADER_BYTES = 16;
 
 /** Payload encodings. */
-const PACKED_ENCODING = { raw: 0, packBits: 1 } as const;
+export const PACKED_ENCODING = { raw: 0, packBits: 1 } as const;
 
 /**
  * purpose: The fewest bits per pixel (1, 2, 4 or 8) that hold a grey count's levels.
@@ -76,12 +84,15 @@ export function packPixels(frame: Frame): Uint8Array {
 }
 
 /**
- * purpose: PackBits encoding: runs of 3 or more equal bytes as repeats, the rest as literals.
+ * purpose: PackBits encoding: runs of 3 or more equal bytes as repeats, the rest as literals of
+ *          at most 128 bytes, written into one array of the largest size it can need
+ *          (raw + ceil(raw / 128)).
  * @param data: (Uint8Array) The bytes.
- * @return: (Uint8Array) The encoded bytes.
+ * @return: (Uint8Array) The encoded bytes (a view of that array).
  */
 export function packBits(data: Uint8Array): Uint8Array {
-  const out: number[] = [];
+  const out = new Uint8Array(data.length + Math.ceil(data.length / 128));
+  let o = 0;
   /**
    * purpose: Length of the run of equal bytes starting at a position (at most 128).
    * @param i: (number) Position.
@@ -96,17 +107,19 @@ export function packBits(data: Uint8Array): Uint8Array {
   while (i < data.length) {
     const run = runAt(i);
     if (run >= 3) {
-      out.push(257 - run, data[i]!);
+      out[o++] = 257 - run;
+      out[o++] = data[i]!;
       i += run;
       continue;
     }
     let end = i;
     while (end < data.length && end - i < 128 && runAt(end) < 3) end += 1;
-    out.push(end - i - 1);
-    for (let k = i; k < end; k += 1) out.push(data[k]!);
+    out[o++] = end - i - 1;
+    out.set(data.subarray(i, end), o);
+    o += end - i;
     i = end;
   }
-  return Uint8Array.from(out);
+  return out.subarray(0, o);
 }
 
 /**
@@ -118,7 +131,7 @@ export function encodePacked(frame: Frame): Uint8Array<ArrayBuffer> {
   const payload = packBits(packPixels(frame));
   const out = new Uint8Array(PACKED_HEADER_BYTES + payload.length);
   const view = new DataView(out.buffer);
-  out.set(MAGIC, 0);
+  out.set(PACKED_MAGIC, 0);
   out[4] = PACKED_VERSION;
   out[5] = bitsPerPixel(frame.greys);
   out[6] = PACKED_ENCODING.packBits;
@@ -128,105 +141,4 @@ export function encodePacked(frame: Frame): Uint8Array<ArrayBuffer> {
   view.setUint32(12, payload.length, true);
   out.set(payload, PACKED_HEADER_BYTES);
   return out;
-}
-
-/** The fields of a packed header. */
-export interface PackedHeader {
-  version: number;
-  bitsPerPixel: number;
-  encoding: number;
-  greys: number;
-  width: number;
-  height: number;
-  payloadBytes: number;
-}
-
-/**
- * purpose: Read and check a packed header.
- * @param bytes: (Uint8Array) The file.
- * @return: (PackedHeader) The fields.
- * @raises Error for a wrong magic, version, encoding, depth or length.
- */
-export function readPackedHeader(bytes: Uint8Array): PackedHeader {
-  if (bytes.length < PACKED_HEADER_BYTES || MAGIC.some((m, i) => bytes[i] !== m)) {
-    throw new Error("not a packed frame");
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const header = {
-    version: bytes[4]!,
-    bitsPerPixel: bytes[5]!,
-    encoding: bytes[6]!,
-    greys: bytes[7]! + 1,
-    width: view.getUint16(8, true),
-    height: view.getUint16(10, true),
-    payloadBytes: view.getUint32(12, true),
-  };
-  if (header.version !== PACKED_VERSION) throw new Error("unknown packed frame version");
-  if (![1, 2, 4, 8].includes(header.bitsPerPixel)) throw new Error("bad bits per pixel");
-  if (header.greys > 2 ** header.bitsPerPixel) throw new Error("more levels than bits");
-  if (bytes.length !== PACKED_HEADER_BYTES + header.payloadBytes) throw new Error("bad length");
-  return header;
-}
-
-/**
- * purpose: Decode a payload into pixel bytes, as a streaming firmware decoder would.
- * @param payload: (Uint8Array) The payload.
- * @param encoding: (number) PACKED_ENCODING value.
- * @param expected: (number) Pixel bytes the header promises.
- * @return: (Uint8Array) The pixel bytes.
- * @raises Error when the payload does not decode to exactly `expected` bytes.
- */
-function decodePayload(payload: Uint8Array, encoding: number, expected: number): Uint8Array {
-  if (encoding === PACKED_ENCODING.raw) {
-    if (payload.length !== expected) throw new Error("bad raw payload length");
-    return payload.slice();
-  }
-  if (encoding !== PACKED_ENCODING.packBits) throw new Error("unknown encoding");
-  const out = new Uint8Array(expected);
-  let o = 0;
-  let i = 0;
-  while (i < payload.length) {
-    const n = payload[i++]!;
-    if (n === 128) continue;
-    const count = n < 128 ? n + 1 : 257 - n;
-    if (o + count > expected || i + (n < 128 ? count : 1) > payload.length) {
-      throw new Error("payload overruns the frame");
-    }
-    if (n < 128) {
-      out.set(payload.subarray(i, i + count), o);
-      i += count;
-    } else {
-      out.fill(payload[i++]!, o, o + count);
-    }
-    o += count;
-  }
-  if (o !== expected) throw new Error("payload ends early");
-  return out;
-}
-
-/**
- * purpose: Decode a packed frame (the round trip of encodePacked).
- * @param bytes: (Uint8Array) The file.
- * @return: (Frame) The frame.
- * @raises Error for a malformed file.
- */
-export function decodePacked(bytes: Uint8Array): Frame {
-  const header = readPackedHeader(bytes);
-  const { width, height, greys } = header;
-  const bpp = header.bitsPerPixel;
-  const rowBytes = Math.ceil((width * bpp) / 8);
-  const pixels = decodePayload(
-    bytes.subarray(PACKED_HEADER_BYTES),
-    header.encoding,
-    rowBytes * height,
-  );
-  const levels = new Uint8Array(width * height);
-  const mask = (1 << bpp) - 1;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const bit = x * bpp;
-      levels[y * width + x] = (pixels[y * rowBytes + (bit >> 3)]! >> (8 - bpp - (bit & 7))) & mask;
-    }
-  }
-  return { width, height, greys, levels };
 }

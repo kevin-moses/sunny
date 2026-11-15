@@ -14,13 +14,10 @@
 // response Cache-Control: no-store:
 //   GET  /device/state    200 the device state (lib/deviceState.ts) with ETag "<version>";
 //                         304 with no body when If-None-Match matches.
-//   GET  /device/frame    ?page=now|today&format=png|packed: the state drawn for the screen the
-//                         device reported (lib/frame.ts; 960 x 680 with 4 greys until it
-//                         reports one), image/png or the packed format (lib/framePacked.ts),
-//                         with an ETag over the page's model, the screen, the format and the
-//                         renderer version; 304 before drawing when If-None-Match matches. A
-//                         bad query, or a reported screen outside what frames are drawn for, is
-//                         400. Drawing takes milliseconds, so nothing is cached.
+//   GET  /device/frame    the state drawn as an e-ink frame: deviceFrame.ts, a module of its own
+//                         so the font data loads only for it; it uses gate, deviceRoute,
+//                         notModified, unauthorizedResponse and findDeviceByTokenHash, exported
+//                         from here.
 //   POST /device/confirm  { instanceId, pressedAgoMs, via } with via button, widget,
 //                         live_activity or phone_app: instances.confirmPressedInstance as the
 //                         token's DeviceActor; 200 { status: "confirmed" | "rejected", reason
@@ -35,7 +32,10 @@
 //                         device_api: the core's refusals (deleted, too early, outside the
 //                         replay window, taken back) and this module's (an unreadable body, a
 //                         bad instance id, a press over 7 days old, another household's
-//                         instance, recorded without that id), at most 20 an hour per device
+//                         instance, recorded without that id, and a hardware Done, via button,
+//                         pressed before an open task's window opened: "This task is not due
+//                         yet", because the wall display offers Done only for a due task while
+//                         the phone's surfaces keep their early hour), at most 20 an hour per device
 //                         (refusedPresses); past that the answer is the same and nothing is
 //                         written. A confirm here is a device confirm like the app's (state
 //                         confirmed, confirmedBy the device), so a caregiver's reopen stamps it,
@@ -48,8 +48,9 @@
 // A missing, malformed or unknown token is 401 with one fixed body. A bad body or instance id
 // is 400 (checked only after the token, so validation never answers an unauthenticated caller).
 // Each internal function resolves the device from the token hash again inside its own
-// transaction, so a device removed mid-request can do nothing more. All three routes go through
-// deviceRoute, so every answer, an unexpected 500 included, carries Cache-Control: no-store.
+// transaction, so a device removed mid-request can do nothing more. All four device routes (the
+// three here and deviceFrame.ts's) go through deviceRoute, so every answer, an unexpected 500
+// included, carries Cache-Control: no-store.
 //
 // Rate limits (@convex-dev/rate-limiter, as pairing.ts): an authenticated request spends the
 // device's own bucket (120 a minute); a failed authentication spends a strict global bucket and
@@ -78,20 +79,9 @@ import { findDevice, requireUserId } from "./lib/access";
 import type { DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { loadDeviceState } from "./lib/deviceState";
-import type { CarouselPage, DeviceState } from "./lib/deviceState";
-import {
-  DEFAULT_SCREEN,
-  DRAWABLE_SCREEN,
-  FRAME_PAGES,
-  buildFrameModel,
-  drawFrame,
-  frameEtag,
-  isDrawableScreen,
-} from "./lib/frame";
-import type { FrameFormat } from "./lib/frame";
-import { encodePacked } from "./lib/framePacked";
-import { encodePng } from "./lib/framePng";
+import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
+import { isOpenState } from "./lib/escalation";
 import { appError, isAppError } from "./lib/errors";
 import {
   NO_STORE,
@@ -137,7 +127,33 @@ const REFUSED = {
   badId: "The task id is not valid",
   tooOld: "The press is too old",
   notHere: "The task is not in this household",
+  notDue: "This task is not due yet",
 } as const;
+
+/**
+ * purpose: Whether a press is on an open task of this household (upcoming, due or escalated)
+ *          that was not due yet when it was pressed: pressed before its window opened. Judged
+ *          by the press time, so a queued press replayed after the task came due is refused
+ *          too, and a press after the window opened counts even if the scheduler has not marked
+ *          it due yet. Another household's, a missing or a closed instance is not judged here
+ *          (the core answers it).
+ * @param ctx: (MutationCtx) Context.
+ * @param device: (Doc<"devices">) The device that pressed.
+ * @param press: ({ instanceId, pressedAgoMs }) The press.
+ * @param now: (number) Epoch ms.
+ * @return: (Promise<boolean>) True when the task was not due yet at the press.
+ */
+async function pressedBeforeDue(
+  ctx: MutationCtx,
+  device: Doc<"devices">,
+  press: { instanceId: Id<"taskInstances">; pressedAgoMs: number },
+  now: number,
+): Promise<boolean> {
+  if (press.pressedAgoMs < 0) return false; // the core refuses an impossible age itself
+  const instance = await ctx.db.get(press.instanceId);
+  if (instance === null || instance.householdId !== device.householdId) return false;
+  return isOpenState(instance.state) && now - press.pressedAgoMs < instance.windowStart;
+}
 
 /** The 400 message for an instance id that is not one. */
 const BAD_ID_MESSAGE = "instanceId must be a task instance id";
@@ -193,7 +209,7 @@ type ConfirmOutcome =
  * @param tokenHash: (string) SHA-256 hex of the token.
  * @return: (Promise<Doc<"devices"> | null>) The device, or null for an unknown or revoked token.
  */
-async function findDeviceByTokenHash(
+export async function findDeviceByTokenHash(
   ctx: QueryCtx,
   tokenHash: string,
 ): Promise<Doc<"devices"> | null> {
@@ -328,25 +344,6 @@ export const stateByToken = internalQuery({
 });
 
 /**
- * purpose: What a frame is drawn from: the token's device state and the screen its device
- *          reported (null when it has not). Internal.
- * @param tokenHash: (string) SHA-256 hex of the token.
- * @return: ({ state, screen } | null) The source, or null when the token no longer resolves.
- */
-export const frameSourceByToken = internalQuery({
-  args: { tokenHash: v.string() },
-  handler: async (
-    ctx,
-    args,
-  ): Promise<{ state: DeviceState; screen: DeviceScreen | null } | null> => {
-    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
-    if (device === null) return null;
-    const state = await loadDeviceState(ctx, device.householdId, Date.now());
-    return { state, screen: device.screen ?? null };
-  },
-});
-
-/**
  * purpose: Audit a press this module refuses before instances.confirmPressedInstance sees it, as
  *          that function audits its own refusals (action press_not_applied), while the device's
  *          refused-press bucket has room; past it nothing is written. Never records a foreign
@@ -383,8 +380,12 @@ async function auditRefusal(
 
 /**
  * purpose: Confirm a press for a device through instances.confirmPressedInstance (transport
- *          device_api), which decides everything, including refusing another household's
- *          instance by its household check. That refusal (forbidden) is answered exactly like a
+ *          device_api), which decides everything else, including refusing another household's
+ *          instance by its household check. A hardware Done (via "button") on a task of this
+ *          household that was not due yet at the press is refused first ("This task is not due
+ *          yet", audited and budgeted like this module's other refusals): the wall display
+ *          offers Done only for a due task, while the phone's surfaces keep their early hour.
+ *          The household refusal (forbidden) is answered exactly like a
  *          missing instance (rejected, NO_SUCH_TASK), so nothing says whether the instance exists,
  *          and is audited in the device's own household without its id. Refusals the core
  *          records (press_not_applied) count against the device's refused-press bucket; once it
@@ -401,6 +402,10 @@ async function confirmForDevice(
   args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number },
   now: number,
 ): Promise<{ status: "confirmed" | "rejected"; reason: string | null }> {
+  if (args.via === "button" && (await pressedBeforeDue(ctx, actor.device, args, now))) {
+    await auditRefusal(ctx, actor.device, REFUSED.notDue, args);
+    return { status: "rejected", reason: REFUSED.notDue };
+  }
   const budget = { key: actor.device._id };
   const room = (await rateLimiter.check(ctx, "refusedPresses", budget)).ok;
   let result: PressResult;
@@ -501,7 +506,7 @@ export const updateInfoByToken = internalMutation({
  * purpose: The one answer for a missing, malformed or unknown token.
  * @return: (Response) 401 with a fixed body.
  */
-function unauthorizedResponse(): Response {
+export function unauthorizedResponse(): Response {
   return errorResponse(401, "unauthenticated", "A valid device token is required", {
     "WWW-Authenticate": "Bearer",
   });
@@ -533,7 +538,7 @@ async function refuseAuthentication(ctx: ActionCtx, request: Request): Promise<R
  * @param request: (Request) The HTTP request.
  * @return: (Promise<string | Response>) The token hash, or the response to send (401 or 429).
  */
-async function gate(ctx: ActionCtx, request: Request): Promise<string | Response> {
+export async function gate(ctx: ActionCtx, request: Request): Promise<string | Response> {
   const token = parseBearerToken(request.headers.get("Authorization"));
   if (token === null) return await refuseAuthentication(ctx, request);
   const tokenHash = await hashDeviceToken(token);
@@ -700,11 +705,17 @@ function etagMatches(header: string | null, etag: string): boolean {
  * purpose: The 304 answer when the request's If-None-Match already names this entity tag.
  * @param request: (Request) The HTTP request.
  * @param etag: (string) The quoted entity tag.
+ * @param headers: (Record<string, string>, optional) More headers for the 304 (a frame's Done
+ *        instance).
  * @return: (Response | null) 304 with no body (no-store, the tag), or null to answer in full.
  */
-function notModified(request: Request, etag: string): Response | null {
+export function notModified(
+  request: Request,
+  etag: string,
+  headers: Record<string, string> = {},
+): Response | null {
   if (!etagMatches(request.headers.get("If-None-Match"), etag)) return null;
-  return new Response(null, { status: 304, headers: { ...NO_STORE, ETag: etag } });
+  return new Response(null, { status: 304, headers: { ...NO_STORE, ...headers, ETag: etag } });
 }
 
 /**
@@ -722,7 +733,7 @@ function etagOf(state: DeviceState): string {
  * @param handle: ((ctx, request) => Promise<Response>) The route.
  * @return: (PublicHttpAction) The HTTP action.
  */
-function deviceRoute(
+export function deviceRoute(
   fallback: string,
   handle: (ctx: ActionCtx, request: Request) => Promise<Response>,
 ): PublicHttpAction {
@@ -801,73 +812,6 @@ export const confirm = deviceRoute("Could not confirm the task", async (ctx, req
   const state = await stateAfterPress(ctx, tokenHash);
   const { status, reason } = outcome;
   return jsonResponse({ status, reason, state }, 200, state ? { ETag: etagOf(state) } : {});
-});
-
-/** The Content-Type of each frame format. */
-const FRAME_CONTENT_TYPES: Record<FrameFormat, string> = {
-  png: "image/png",
-  packed: "application/octet-stream",
-};
-
-/**
- * purpose: Read GET /device/frame's query: exactly one page (now or today) and one format (png
- *          or packed), nothing else.
- * @param url: (URL) The request URL.
- * @return: ({ page, format } | string) The choice, or the 400 message.
- */
-function parseFrameQuery(url: URL): { page: CarouselPage; format: FrameFormat } | string {
-  const params = url.searchParams;
-  const extra = [...params.keys()].find((k) => k !== "page" && k !== "format");
-  if (extra !== undefined) return "Only the page and format parameters are allowed";
-  const pages = params.getAll("page");
-  const formats = params.getAll("format");
-  const page = pages[0] as CarouselPage;
-  const format = formats[0] as FrameFormat;
-  if (pages.length !== 1 || !FRAME_PAGES.includes(page)) {
-    return `page must be one of ${FRAME_PAGES.join(", ")}`;
-  }
-  if (formats.length !== 1 || !Object.hasOwn(FRAME_CONTENT_TYPES, format)) {
-    return "format must be one of png, packed";
-  }
-  return { page, format };
-}
-
-/**
- * purpose: GET /device/frame?page=now|today&format=png|packed: the token's device state drawn
- *          for the screen its device reported (DEFAULT_SCREEN until it reports one), with an
- *          ETag over everything the bytes depend on (lib/frame.ts frameEtag); 304 when
- *          If-None-Match matches, before anything is drawn. 400 bad query or a reported screen
- *          frames cannot be drawn for; 401 bad token; 429 rate limited. The frame comes only
- *          from the token's own device (frameSourceByToken), so a device sees its own household.
- * @param ctx: (ActionCtx) Action context.
- * @param request: (Request) The HTTP request.
- * @return: (Response) The response.
- */
-export const getFrame = deviceRoute("Could not draw the frame", async (ctx, request) => {
-  const tokenHash = await gate(ctx, request);
-  if (tokenHash instanceof Response) return tokenHash;
-  const query = parseFrameQuery(new URL(request.url));
-  if (typeof query === "string") return errorResponse(400, "invalid", query);
-  const source = await ctx.runQuery(internal.deviceApi.frameSourceByToken, { tokenHash });
-  if (source === null) return unauthorizedResponse();
-  const screen = source.screen ?? DEFAULT_SCREEN;
-  if (!isDrawableScreen(screen)) {
-    return errorResponse(
-      400,
-      "invalid",
-      `Frames are drawn for screens of ${DRAWABLE_SCREEN.minWidth} x ${DRAWABLE_SCREEN.minHeight} to ${DRAWABLE_SCREEN.maxWidth} x ${DRAWABLE_SCREEN.maxHeight} pixels`,
-    );
-  }
-  const model = buildFrameModel(source.state, query.page);
-  const etag = `"${frameEtag(model, screen, query.format)}"`;
-  const cached = notModified(request, etag);
-  if (cached !== null) return cached;
-  const frame = drawFrame(model, screen);
-  const body = query.format === "png" ? encodePng(frame) : encodePacked(frame);
-  return new Response(body, {
-    status: 200,
-    headers: { ...NO_STORE, "Content-Type": FRAME_CONTENT_TYPES[query.format], ETag: etag },
-  });
 });
 
 /**

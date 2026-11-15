@@ -1,26 +1,35 @@
 // lib/frame.test.ts
 // Purpose: Tests for the server-drawn display frames (lib/frame.ts, frameRaster.ts,
-// frameText.ts, framePng.ts, framePacked.ts).
+// frameText.ts, framePng.ts, framePacked.ts with the reference decoder in
+// framePackedDecoder.helpers.ts).
 // Goldens: every case of lib/frameFixtures.helpers.ts, both pages, at 960 x 680 x 4 and
-// 800 x 480 x 2, must encode to exactly the PNG stored in lib/frameGoldens/. After an intended
-// drawing change, regenerate them with
+// 800 x 480 x 2, must encode to exactly the PNG stored in lib/frameGoldens/, and
+// lib/frameGoldens/MANIFEST.json ties the goldens and the font data to FRAME_RENDERER_VERSION:
+// a picture or font change without a version bump fails. After an intended drawing change,
+// bump FRAME_RENDERER_VERSION, then regenerate with
 //   FRAME_GOLDENS=update npx vitest run convex/lib/frame.test.ts
 // and look at the new files before committing them. FRAME_PREVIEW_DIR=<dir> also writes every
 // golden there (with a step-2 variant of the multi-step case).
-// Rules: an early task is never drawn as Now (clear card, plain row, Next up); a missed task
-// keeps the card at "Nothing to do right now."; a snoozed task's tab says Later; the step shown
-// is clamped. Determinism: two renders are byte-identical and no clock is read. Encoders: the
-// PNG is valid (signature, IHDR, CRCs, zlib stream inflated by the platform's
-// DecompressionStream back to the frame's samples); the packed format's header fields, row
-// padding, PackBits (the TIFF specification's example) and the round trip through the decoder,
-// raw encoding included, and refusals of malformed files. ETag inputs: page, format, screen and
-// renderer version change it; a state change that draws nothing does not. Text: cleaning,
-// wrapping, truncation with "…", shrinking to fit. Layout scales to other sizes. Time: the
-// largest drawable screen renders within a budget.
+// Rules: an early task is never drawn as Now (clear card, plain row, Next up after due, also
+// with two rows sharing a label and time) and Done names no task for it; a day with missed and
+// done tasks only is never all done; a snoozed task's tab says Later and its row is tagged
+// Later; an overdue multi-step task has the Talk prompt; a past event is dimmed; the step shown
+// is clamped; a label that cleans to nothing falls back to the item's type ("Step N" for a
+// step); a dose in micrograms reads "mcg". Layout (property test over generated cards, seeded):
+// on six screens no text reaches the band above the prompts rule or leaves the card.
+// Determinism: two renders are byte-identical and no clock is read (Date.now and
+// performance.now stubbed to different values). Encoders: the PNG is valid (signature, IHDR,
+// CRCs, zlib stream inflated by the platform's DecompressionStream back to the frame's samples);
+// the packed format's header fields, row padding, PackBits (the TIFF specification's example, a
+// literal run of 129 bytes or more, the size bound) and the round trip through the decoder, raw
+// encoding included, and refusals of malformed files. ETag: page, format, screen and renderer
+// version change it; row keys, an undrawn icon and the fields a multi-step card ignores do not.
+// Text: substitutions, decomposition, cleaning, wrapping, truncation with "…", shrinking to fit.
+// Time: the largest drawable screen renders within a budget.
 //
 // Last modified: 2026-11-14
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeviceState } from "./deviceState";
 import {
@@ -29,39 +38,40 @@ import {
   FRAME_PAGES,
   FRAME_RENDERER_VERSION,
   buildFrameModel,
+  drawFrame,
+  frameDoneInstance,
   frameEtag,
   isDrawableScreen,
+  nowCardGeometry,
   renderFrame,
 } from "./frame";
-import type { Frame, FrameModel, Screen } from "./frame";
-import { FRAME_CASES, FRAME_SCREENS, at } from "./frameFixtures.helpers";
+import type { Frame, Screen } from "./frame";
 import {
-  PACKED_HEADER_BYTES,
-  decodePacked,
-  encodePacked,
-  packBits,
-  packPixels,
-  readPackedHeader,
-} from "./framePacked";
+  FRAME_CASES,
+  FRAME_SCREENS,
+  at,
+  dayState,
+  fixtureEvent,
+  fixtureTask,
+} from "./frameFixtures.helpers";
+import { PACKED_HEADER_BYTES, encodePacked, packBits, packPixels } from "./framePacked";
+import { decodePacked, readPackedHeader } from "./framePackedDecoder.helpers";
 import { encodePng } from "./framePng";
 import { Path } from "./frameRaster";
 import { breakLines, cleanText, fitText, measure } from "./frameText";
 
-describe("Path", () => {
-  it("bounds only the points of the path, never the origin", () => {
-    const path = new Path().moveTo(100, 100).lineTo(110, 100).lineTo(110, 110).close();
-    expect([path.minX, path.minY, path.maxX, path.maxY]).toEqual([100, 100, 110, 110]);
-  });
-});
-
 /** Where the goldens live. */
 const GOLDENS = new URL("./frameGoldens/", import.meta.url);
+
+/** The generated font data, hashed into the manifest. */
+const FONT_DATA = new URL("./fonts/frameFontData.ts", import.meta.url);
 
 /** Budget (ms) for drawing and encoding the largest drawable screen (measured: about 150). */
 const LARGEST_BUDGET_MS = 1500;
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 /**
@@ -179,6 +189,23 @@ function expectSameFrame(actual: Frame, expected: Frame): void {
   expect(Buffer.from(actual.levels).equals(Buffer.from(expected.levels))).toBe(true);
 }
 
+/**
+ * purpose: SHA-256 of bytes, as hex.
+ * @param data: (Uint8Array) The bytes.
+ * @return: (Promise<string>) 64 hex characters.
+ */
+async function sha256(data: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", data as Uint8Array<ArrayBuffer>);
+  return Buffer.from(digest).toString("hex");
+}
+
+describe("Path", () => {
+  it("bounds only the points of the path, never the origin", () => {
+    const path = new Path().moveTo(100, 100).lineTo(110, 100).lineTo(110, 110).close();
+    expect([path.minX, path.minY, path.maxX, path.maxY]).toEqual([100, 100, 110, 110]);
+  });
+});
+
 describe("goldens", () => {
   const update = process.env.FRAME_GOLDENS === "update";
   const preview = process.env.FRAME_PREVIEW_DIR;
@@ -207,12 +234,48 @@ describe("goldens", () => {
       writeFileSync(`${preview}/${goldenName("steps-second-step", "now", screen)}`, png);
     }
   });
+
+  it("ties the goldens and the font data to the renderer version (MANIFEST.json)", async () => {
+    const files = readdirSync(GOLDENS)
+      .filter((f) => f.endsWith(".png"))
+      .sort();
+    const all = Buffer.concat(
+      files.map((f) => Buffer.concat([Buffer.from(f), readFileSync(new URL(f, GOLDENS))])),
+    );
+    const now = {
+      rendererVersion: FRAME_RENDERER_VERSION,
+      goldens: await sha256(all),
+      fontData: await sha256(readFileSync(FONT_DATA)),
+    };
+    const manifest = new URL("MANIFEST.json", GOLDENS);
+    let stored: typeof now | null = null;
+    try {
+      stored = JSON.parse(readFileSync(manifest, "utf8")) as typeof now;
+    } catch {
+      stored = null;
+    }
+    const changed =
+      stored === null || stored.goldens !== now.goldens || stored.fontData !== now.fontData;
+    if (update && changed) {
+      expect(
+        stored?.rendererVersion,
+        "the picture changed: bump FRAME_RENDERER_VERSION before updating the goldens",
+      ).not.toBe(FRAME_RENDERER_VERSION);
+      writeFileSync(manifest, `${JSON.stringify(now, null, 2)}\n`);
+      return;
+    }
+    expect(
+      stored,
+      "goldens or font data changed without a FRAME_RENDERER_VERSION bump and update",
+    ).toEqual(now);
+  });
 });
 
 describe("the wall display's rules", () => {
-  it("never draws an early task as Now: clear card, Next up, plain row", () => {
+  it("never draws an early task as Now: clear card, Next up, plain row, no Done", () => {
     const state = caseState("early-task");
     expect(state.now.task?.early).toBe(true);
+    expect(state.done?.early).toBe(true);
     const now = buildFrameModel(state, "now");
     expect(now).toMatchObject({
       now: { kind: "clear", allDone: false },
@@ -227,13 +290,30 @@ describe("the wall display's rules", () => {
       "none",
     ]);
     expect(state.rows[0]!.mark).toBe("now");
+    expect(frameDoneInstance(state)).toBeNull();
   });
 
   it("keeps an event that comes before the early task as Next up", () => {
     const model = buildFrameModel(caseState("early-after-event"), "now");
     expect(model).toMatchObject({
       now: { kind: "clear", allDone: false },
-      next: { title: "Nurse Joan visits", when: "7:45", initial: "J" },
+      next: { title: "Nurse Joan visits", when: "7:45", initial: "J", icon: null },
+    });
+  });
+
+  it("makes the early task Next up when two rows share a label and a clock time", () => {
+    const state = dayState("07:20", {
+      tasks: [fixtureTask("pills", "08:15", "Morning pills", { confirmable: true })],
+      eventsToday: [
+        fixtureEvent("am", "07:10", "Nurse visits", null),
+        fixtureEvent("pm", "19:10", "Nurse visits", null),
+      ],
+    });
+    expect(state.rows.filter((r) => r.label === "Nurse visits" && r.time === "7:10")).toHaveLength(
+      2,
+    );
+    expect(buildFrameModel(state, "now")).toMatchObject({
+      next: { title: "Morning pills", when: "8:15" },
     });
   });
 
@@ -243,7 +323,7 @@ describe("the wall display's rules", () => {
       ...early,
       now: { kind: "clear", task: null, allDone: false },
       done: null,
-      nextUp: { title: "Morning pills", when: "8:00", icon: "pills", initial: null },
+      nextUp: early.nextUpAfterDue,
       rows: early.rows.map((r) => ({ ...r, mark: "none" })),
     };
     for (const page of FRAME_PAGES) {
@@ -254,11 +334,15 @@ describe("the wall display's rules", () => {
     }
   });
 
-  it("draws a due task as Now", () => {
-    expect(buildFrameModel(caseState("due"), "now")).toMatchObject({
-      now: { kind: "task", tab: "Now  ·  8:00", label: "Morning pills", overdue: false },
+  it("draws a due task as Now and names it for Done", () => {
+    const state = caseState("due");
+    expect(buildFrameModel(state, "now")).toMatchObject({
+      now: { kind: "task", tab: "Now  \u00b7  8:00", label: "Morning pills", overdue: false },
       next: { title: "Walk around the block" },
     });
+    expect(frameDoneInstance(state)).toBe("pills-am");
+    expect(frameDoneInstance(caseState("snoozed"))).toBe("pills-am");
+    expect(frameDoneInstance(caseState("nothing-due"))).toBeNull();
   });
 
   it("keeps a day with a missed task at nothing to do, never all done", () => {
@@ -271,32 +355,224 @@ describe("the wall display's rules", () => {
     });
   });
 
-  it("writes Later on a snoozed task's tab and Still to do on an overdue one", () => {
-    expect(buildFrameModel(caseState("snoozed"), "now")).toMatchObject({
-      now: { tab: "Later  ·  8:00" },
+  it("is not all done on a day with only missed and done tasks and no event", () => {
+    const state = dayState("21:00", {
+      tasks: [
+        fixtureTask("a", "08:00", "Morning pills", { state: "missed" }),
+        fixtureTask("b", "12:00", "Lunch", { state: "confirmed" }),
+      ],
     });
+    expect(buildFrameModel(state, "now")).toMatchObject({ now: { kind: "clear", allDone: false } });
+  });
+
+  it("dims an event that is over", () => {
+    const today = buildFrameModel(caseState("missed"), "today");
+    const visit =
+      today.page === "today" ? today.rows.find((r) => r.label === "Sarah visits") : null;
+    expect(visit?.mark).toBe("past");
+    const earlier = buildFrameModel(caseState("nothing-due"), "today");
+    const coming =
+      earlier.page === "today" ? earlier.rows.find((r) => r.label === "Sarah visits") : null;
+    expect(coming?.mark).toBe("none");
+  });
+
+  it("writes Later on a snoozed task's tab and row, and Still to do on an overdue one", () => {
+    expect(buildFrameModel(caseState("snoozed"), "now")).toMatchObject({
+      now: { tab: "Later  \u00b7  8:00" },
+    });
+    const today = buildFrameModel(caseState("snoozed"), "today");
+    expect(today.page === "today" && today.rows[0]!.mark).toBe("later");
     expect(buildFrameModel(caseState("overdue"), "now")).toMatchObject({
-      now: { tab: "Still to do  ·  8:00", overdue: true },
+      now: { tab: "Still to do  \u00b7  8:00", overdue: true, icon: null },
     });
   });
 
-  it("names a multi-step task on its tab and clamps the step shown", () => {
+  it("names a multi-step task on its tab, clamps the step, and keeps overdue for Talk", () => {
     const state = caseState("steps");
     expect(buildFrameModel(state, "now", 9)).toMatchObject({
       now: {
-        tab: "Now  ·  Getting ready to go out",
+        kind: "steps",
+        tab: "Now  \u00b7  Getting ready to go out",
         step: 2,
         steps: ["Put on your coat", "Take your keys", "Lock the door"],
+        overdue: false,
       },
     });
     expect(buildFrameModel(state, "now", -3)).toMatchObject({ now: { step: 0 } });
+    expect(buildFrameModel(caseState("overdue-steps"), "now")).toMatchObject({
+      now: { kind: "steps", overdue: true, tab: "Still to do  \u00b7  Getting ready to go out" },
+    });
   });
 
   it("draws exactly the state's rows and its hidden count", () => {
     const state = caseState("many-rows");
     const model = buildFrameModel(state, "today");
     expect(state.rowsHidden).toBeGreaterThan(0);
-    expect(model).toMatchObject({ rows: state.rows, hidden: state.rowsHidden });
+    expect(model).toMatchObject({
+      rows: state.rows.map(({ time, label, mark }) => ({ time, label, mark })),
+      hidden: state.rowsHidden,
+    });
+  });
+
+  it("writes a dose in micrograms as mcg on the Now card and in rows", () => {
+    const state = caseState("micro-dose");
+    expect(buildFrameModel(state, "now")).toMatchObject({
+      now: { label: "Vitamin B12 1000 mcg", pillDescription: "1 1/2 tablets, >= 8 oz water" },
+      next: { title: "Vitamin D 25 mcg to with lunch" },
+    });
+  });
+
+  it("falls back to the item's type when a label has nothing drawable", () => {
+    const state = caseState("blank-label");
+    expect(buildFrameModel(state, "now")).toMatchObject({
+      now: { label: "Medication" },
+      next: { title: "Event" },
+    });
+    const today = buildFrameModel(state, "today");
+    expect(today.page === "today" && today.rows.map((r) => r.label)).toEqual([
+      "Medication",
+      "Event",
+      "Call Koji",
+    ]);
+    const steps = dayState("10:05", {
+      tasks: [
+        fixtureTask("out", "10:00", "\u{1F6AA}", {
+          type: "checklist",
+          state: "due",
+          checklistItems: ["Coat", "\u{1F511}"],
+        }),
+      ],
+    });
+    expect(buildFrameModel(steps, "now")).toMatchObject({
+      now: { tab: "Now  \u00b7  Checklist", steps: ["Coat", "Step 2"] },
+    });
+  });
+});
+
+describe("layout: text stays in the Now card (generated cards)", () => {
+  const words = (
+    "go big pig yoga jog gym plug bring grey jumper glasses pills yellow tablet keep upright " +
+    "quickly please pick up your keys gloves happy jelly gp extraordinarily Wolverhampton"
+  ).split(" ");
+  let seed = 7;
+  /**
+   * purpose: The next number of a fixed-seed Lehmer generator (deterministic; no Math.random).
+   * @param n: (number) Exclusive upper bound.
+   * @return: (number) 0 to n - 1.
+   */
+  const rnd = (n: number): number => {
+    seed = (seed * 48271) % 2147483647;
+    return seed % n;
+  };
+  /**
+   * purpose: A phrase of random words.
+   * @param count: (number) How many words.
+   * @return: (string) The phrase.
+   */
+  const phrase = (count: number): string =>
+    Array.from({ length: count }, () => words[rnd(words.length)]).join(" ");
+  const screens = [
+    { width: 800, height: 480, greys: 2 },
+    DEFAULT_SCREEN,
+    { width: 1194, height: 834, greys: 4 },
+    { width: 1600, height: 1000, greys: 16 },
+    { width: DRAWABLE_SCREEN.minWidth, height: DRAWABLE_SCREEN.minHeight, greys: 2 },
+    { width: 680, height: 960, greys: 4 },
+  ];
+  /**
+   * purpose: A card's state: a one-step medication or a two-step checklist at 08:40.
+   * @param overdue: (boolean) Escalated (Talk line) or due.
+   * @param label: (string) The label.
+   * @param pill: (string | null) The pill description, or a step's text for a checklist.
+   * @param steps: (boolean) A multi-step checklist.
+   * @return: ({ overdue: boolean; state: DeviceState }) The card.
+   */
+  const card = (
+    overdue: boolean,
+    label: string,
+    pill: string | null,
+    steps: boolean,
+  ): { overdue: boolean; state: DeviceState } => {
+    const state = overdue ? "escalated" : "due";
+    const task = steps
+      ? fixtureTask("x", "08:00", label, {
+          type: "checklist",
+          state,
+          checklistItems: [pill ?? "", "b"],
+        })
+      : fixtureTask("x", "08:00", label, { type: "medication", state, pillDescription: pill });
+    return { overdue, state: dayState("08:40", { tasks: [task] }) };
+  };
+  const cards = [
+    // The cards the review found colliding with the prompts rule.
+    card(
+      true,
+      "glasses go please upright",
+      "gloves jumper plug jelly bring yoga happy pick keep",
+      false,
+    ),
+    card(
+      true,
+      "Blood pressure tablet and the yellow capsule",
+      "One round pink tablet, big yellow gel capsule, keep upright",
+      false,
+    ),
+    card(
+      true,
+      "Getting ready",
+      "Put on your warm winter coat, gloves and a hat, and pick up your keys and glasses",
+      true,
+    ),
+    ...Array.from({ length: 40 }, (_, n) =>
+      n % 4 === 3
+        ? card(rnd(2) === 0, phrase(1 + rnd(6)), phrase(4 + rnd(16)), true)
+        : card(rnd(3) > 0, phrase(3 + rnd(8)), rnd(5) === 0 ? null : phrase(4 + rnd(12)), false),
+    ),
+  ];
+
+  it("no text in the band above the prompts rule, none outside the card", () => {
+    const hits: string[] = [];
+    cards.forEach(({ overdue, state }, n) => {
+      for (const screen of screens) {
+        const frame = drawFrame(buildFrameModel(state, "now"), screen);
+        const { box, inner, promptsTop } = nowCardGeometry(screen, overdue ? 2 : 1);
+        const scale = Math.min(screen.width / 1194, screen.height / 834);
+        const paper = screen.greys - 1;
+        /**
+         * purpose: Whether a rectangle of pixels is all paper.
+         * @param x0: (number) First column.
+         * @param x1: (number) Column after the last.
+         * @param y0: (number) First row.
+         * @param y1: (number) Row after the last.
+         * @return: (boolean) True when blank.
+         */
+        const blank = (x0: number, x1: number, y0: number, y1: number): boolean => {
+          for (let y = y0; y < y1; y += 1) {
+            for (let x = x0; x < x1; x += 1) {
+              if (frame.levels[y * screen.width + x] !== paper) return false;
+            }
+          }
+          return true;
+        };
+        const rule = Math.round(promptsTop);
+        const band = Math.max(2, Math.floor(12 * scale));
+        const left = Math.floor(inner.x);
+        const right = Math.ceil(inner.x + inner.w);
+        const boxRight = Math.round(box.x + box.w);
+        const boxBottom = Math.round(box.y + box.h);
+        const where = `card ${n} at ${screen.width}x${screen.height}`;
+        if (!blank(left, right, rule - band, rule)) hits.push(`${where}: above the rule`);
+        const gutter = Math.floor(box.x + box.w + 32 * scale);
+        if (!blank(boxRight + 1, gutter, Math.round(box.y), boxBottom)) {
+          hits.push(`${where}: right of the card`);
+        }
+        const stripTop = Math.floor(screen.height - 100 * scale);
+        if (!blank(Math.round(box.x), boxRight, boxBottom + 1, stripTop - 1)) {
+          hits.push(`${where}: below the card`);
+        }
+      }
+    });
+    expect(hits).toEqual([]);
   });
 });
 
@@ -311,14 +587,18 @@ describe("determinism", () => {
     }
   });
 
-  it("reads no clock: the same state draws the same frame at any time", () => {
+  it("reads no clock: the same state draws the same frame whatever the clocks say", () => {
     const state = caseState("due");
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const date = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-01-01T00:00:00Z"));
+    const perf = vi.spyOn(performance, "now").mockReturnValue(1);
     const first = encodePacked(renderFrame(state, DEFAULT_SCREEN, "today"));
-    vi.setSystemTime(new Date("2031-06-15T13:37:00Z"));
+    const firstNow = encodePacked(renderFrame(state, DEFAULT_SCREEN, "now"));
+    date.mockReturnValue(Date.parse("2031-06-15T13:37:00Z"));
+    perf.mockReturnValue(987654.321);
     const second = encodePacked(renderFrame(state, DEFAULT_SCREEN, "today"));
+    const secondNow = encodePacked(renderFrame(state, DEFAULT_SCREEN, "now"));
     expect(Buffer.from(first).equals(Buffer.from(second))).toBe(true);
+    expect(Buffer.from(firstNow).equals(Buffer.from(secondNow))).toBe(true);
   });
 });
 
@@ -326,18 +606,23 @@ describe("PNG", () => {
   it("is a valid greyscale PNG that inflates back to the frame, at every depth", async () => {
     const state = caseState("due");
     for (const greys of [2, 3, 4, 16, 256]) {
-      const screen = { width: 323, height: 241, greys };
+      const screen = { width: 501, height: 351, greys };
       const frame = renderFrame(state, screen, "now");
       const decoded = await decodePng(encodePng(frame), greys);
-      expect(decoded.width).toBe(323);
-      expect(decoded.height).toBe(241);
+      expect(decoded.width).toBe(501);
+      expect(decoded.height).toBe(351);
       expectSameFrame(decoded, frame);
     }
   });
 
   it("uses the bit depth that holds the levels exactly", () => {
+    /**
+     * purpose: The PNG bit depth written for a grey count.
+     * @param greys: (number) Grey levels.
+     * @return: (number) The IHDR bit depth.
+     */
     const depthOf = (greys: number): number =>
-      encodePng(renderFrame(caseState("due"), { width: 200, height: 150, greys }, "now"))[24]!;
+      encodePng(renderFrame(caseState("due"), { width: 500, height: 350, greys }, "now"))[24]!;
     expect([2, 3, 4, 16, 17, 256].map(depthOf)).toEqual([1, 8, 2, 4, 8, 8]);
   });
 });
@@ -356,7 +641,7 @@ describe("packed format", () => {
     );
     expect([...small.subarray(4, 8)]).toEqual([1, 1, 1, 1]);
     const many = encodePacked(
-      renderFrame(caseState("due"), { width: 200, height: 150, greys: 16 }, "now"),
+      renderFrame(caseState("due"), { width: 500, height: 350, greys: 16 }, "now"),
     );
     expect([...many.subarray(4, 8)]).toEqual([1, 4, 1, 15]);
   });
@@ -397,6 +682,31 @@ describe("packed format", () => {
     expect(packBits(long).length).toBe(16);
   });
 
+  it("splits literal runs of 129 bytes or more without ever writing the no-op count", () => {
+    for (const length of [129, 130, 256, 300, 1000]) {
+      const varied = Uint8Array.from({ length }, (_, i) => i % 2);
+      const packed = packBits(varied);
+      const controls: number[] = [];
+      for (let i = 0; i < packed.length;) {
+        const n = packed[i]!;
+        controls.push(n);
+        i += n < 128 ? n + 2 : 2;
+      }
+      expect(controls).not.toContain(128);
+      expect(controls.every((n) => n < 128)).toBe(true);
+      expect(packed.length).toBe(length + Math.ceil(length / 128));
+    }
+  });
+
+  it("never exceeds raw + ceil(raw / 128) bytes, even for noise", () => {
+    let seed = 11;
+    const noise = Uint8Array.from({ length: 20000 }, () => {
+      seed = (seed * 48271) % 2147483647;
+      return seed % 3 === 0 ? 0xff : seed & 0xff;
+    });
+    expect(packBits(noise).length).toBeLessThanOrEqual(20000 + Math.ceil(20000 / 128));
+  });
+
   it("decodes a raw payload and a no-op control byte", () => {
     const frame: Frame = {
       width: 8,
@@ -416,8 +726,13 @@ describe("packed format", () => {
 
   it("refuses malformed files", () => {
     const good = encodePacked(
-      renderFrame(caseState("due"), { width: 200, height: 150, greys: 4 }, "now"),
+      renderFrame(caseState("due"), { width: 500, height: 350, greys: 4 }, "now"),
     );
+    /**
+     * purpose: A copy of the good file with a change applied.
+     * @param patch: ((b: Uint8Array) => Uint8Array) The change.
+     * @return: (Uint8Array) The changed file.
+     */
     const broken = (patch: (b: Uint8Array) => Uint8Array): Uint8Array => patch(good.slice());
     expect(() => decodePacked(broken((b) => ((b[0] = 0), b)))).toThrow("not a packed frame");
     expect(() => decodePacked(broken((b) => ((b[4] = 2), b)))).toThrow("version");
@@ -460,15 +775,80 @@ describe("frameEtag", () => {
   it("does not change when only undrawn parts of the state change", () => {
     const later: DeviceState = { ...state, version: "other", generatedAt: at("08:11"), cues: [] };
     expect(frameEtag(buildFrameModel(later, "now"), DEFAULT_SCREEN, "png")).toBe(base);
+    const today = buildFrameModel(state, "today");
+    const rekeyed: DeviceState = { ...state, rows: state.rows.map((r) => ({ ...r, key: "x" })) };
+    expect(frameEtag(buildFrameModel(rekeyed, "today"), DEFAULT_SCREEN, "png")).toBe(
+      frameEtag(today, DEFAULT_SCREEN, "png"),
+    );
+  });
+
+  it("leaves out the icon behind an initial and what a multi-step card does not draw", () => {
+    const visit = caseState("early-after-event");
+    const visitModel = buildFrameModel(visit, "now");
+    const otherIcon: DeviceState = {
+      ...visit,
+      nextUpAfterDue: { ...visit.nextUpAfterDue!, icon: "bell" },
+    };
+    expect(frameEtag(buildFrameModel(otherIcon, "now"), DEFAULT_SCREEN, "png")).toBe(
+      frameEtag(visitModel, DEFAULT_SCREEN, "png"),
+    );
+    const steps = caseState("steps");
+    const task = steps.now.task!;
+    const changed: DeviceState = {
+      ...steps,
+      now: {
+        ...steps.now,
+        task: {
+          ...task,
+          icon: "bell",
+          question: "Taken them?",
+          pillDescription: "x",
+          time: "9:00",
+        },
+      },
+    };
+    expect(frameEtag(buildFrameModel(changed, "now"), DEFAULT_SCREEN, "png")).toBe(
+      frameEtag(buildFrameModel(steps, "now"), DEFAULT_SCREEN, "png"),
+    );
   });
 });
 
 describe("text", () => {
   const style = { face: "semiBold", size: 36, lineHeight: 43 } as const;
 
-  it("cleans household text: NFC, undrawable characters left out, whitespace collapsed", () => {
-    expect(cleanText("  Café \u{1F48A}  with\n Zélie  ")).toBe("Café with Zélie");
-    expect(cleanText("\u{1F600}")).toBe("");
+  it("writes out symbols whose meaning a missing glyph would lose", () => {
+    expect(cleanText("Vitamin B12 1000 \u00b5g")).toBe("Vitamin B12 1000 mcg");
+    expect(cleanText("25 \u03bcg")).toBe("25 mcg");
+    expect(cleanText("\u2265 2 and \u2264 4")).toBe(">= 2 and <= 4");
+    expect(cleanText("8am\u21929am")).toBe("8am to 9am");
+    expect(cleanText("8am \u2192 9am")).toBe("8am to 9am");
+    expect(cleanText("2 \u00d7 a day, 1\u00f72")).toBe("2 x a day, 1/2");
+    expect(cleanText("1\u00bd, \u00bc and \u00be")).toBe("1 1/2, 1/4 and 3/4");
+    expect(cleanText("Keep at 20\u00b0, 98.6\u2109")).toBe("Keep at 20\u00b0, 98.6\u00b0F");
+    expect(cleanText("care\u00adful \u2212 5")).toBe("careful - 5");
+  });
+
+  it("keeps the letters of names the font lacks without their accents", () => {
+    expect(cleanText("K\u014dji")).toBe("Koji");
+    expect(cleanText("\u0108ar\u0125an")).toBe("Carhan");
+    expect(cleanText("\u014ae\u0167")).toBe("Net");
+  });
+
+  it("keeps the meaning of compatibility characters: ligatures, wide digits, units, subscripts", () => {
+    expect(cleanText("\ufb01nish")).toBe("finish");
+    expect(cleanText("\uff11\uff12 mg")).toBe("12 mg");
+    expect(cleanText("5\u338e")).toBe("5mg");
+    expect(cleanText("50 \u338d")).toBe("50 mcg");
+    expect(cleanText("H\u2082O")).toBe("H2O");
+    expect(cleanText("Vit D\u2122")).toBe("Vit D");
+  });
+
+  it("drops what cannot be drawn: Chinese, emoji, whitespace runs", () => {
+    expect(cleanText("\u65e9\u9910")).toBe("");
+    expect(cleanText("\u{1F48A}\u{1F48A}")).toBe("");
+    expect(cleanText("  Caf\u00e9 \u{1F48A}  with\n Ze\u0301lie  ")).toBe(
+      "Caf\u00e9 with Z\u00e9lie",
+    );
   });
 
   it("wraps at spaces and ends a cut last line with an ellipsis", () => {
@@ -482,7 +862,7 @@ describe("text", () => {
     const cut = breakLines(text, style, width, 2);
     expect(cut.truncated).toBe(true);
     expect(cut.lines[0]).toBe("Blood pressure tablet");
-    expect(cut.lines[1]!.endsWith("…")).toBe(true);
+    expect(cut.lines[1]!.endsWith("\u2026")).toBe(true);
     expect(measure(cut.lines[1]!, style)).toBeLessThanOrEqual(width);
   });
 
@@ -510,7 +890,7 @@ describe("text", () => {
   });
 });
 
-describe("layout on other screens", () => {
+describe("screens", () => {
   it("draws every case on portrait, small, large and many-grey screens", () => {
     const screens = [
       { width: 680, height: 960, greys: 4 },
@@ -543,6 +923,7 @@ describe("layout on other screens", () => {
     expect(isDrawableScreen({ width: 477, height: 600, greys: 4 })).toBe(false);
     expect(isDrawableScreen({ width: 600, height: 333, greys: 4 })).toBe(false);
     expect(isDrawableScreen({ width: 600, height: 400, greys: 1 })).toBe(false);
+    expect(isDrawableScreen({ width: 600, height: 400, greys: 3.5 })).toBe(false);
     expect(isDrawableScreen({ width: 600.5, height: 400, greys: 4 })).toBe(false);
   });
 });

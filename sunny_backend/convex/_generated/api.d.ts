@@ -19,6 +19,7 @@ import type * as calendarPush from "../calendarPush.js";
 import type * as crons from "../crons.js";
 import type * as delivery from "../delivery.js";
 import type * as deviceApi from "../deviceApi.js";
+import type * as deviceFrame from "../deviceFrame.js";
 import type * as digest from "../digest.js";
 import type * as googleCalendar from "../googleCalendar.js";
 import type * as households from "../households.js";
@@ -107,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   delivery: typeof delivery;
   deviceApi: typeof deviceApi;
+  deviceFrame: typeof deviceFrame;
   digest: typeof digest;
   googleCalendar: typeof googleCalendar;
   households: typeof households;

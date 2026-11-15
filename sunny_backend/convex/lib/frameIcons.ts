@@ -161,6 +161,12 @@ export function drawIcon(
     case "bell": {
       const s = box.size;
       const path = new Path();
+      /**
+       * purpose: A point of the bell in unit coordinates, in pixels.
+       * @param u: (number) x in 0..1.
+       * @param v: (number) y in 0..1.
+       * @return: ([number, number]) The pixel point.
+       */
       const p = (u: number, v: number): [number, number] => [box.x + u * s, box.y + v * s];
       path.moveTo(...p(0.5, 0.1));
       path.quadTo(...p(0.8, 0.1), ...p(0.8, 0.45));

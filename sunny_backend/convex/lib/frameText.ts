@@ -12,11 +12,15 @@
 // allowed lines; at the minimum it is truncated.
 //
 // Kerning covers pairs of printable ASCII and curly quotes only (accented letters and "…" are
-// set unkerned; scripts/buildFrameFonts.ts). cleanText checks characters against the regular
-// Atkinson face; a character another face lacks is skipped when that face draws it.
+// set unkerned; scripts/buildFrameFonts.ts). One walk (walk) places glyphs and measures every
+// prefix, so drawing and line breaking always agree.
 //
-// Characters a face cannot draw (emoji, scripts outside Latin) are left out rather than drawn
-// as an empty box, which a senior could read as a checkbox; runs of whitespace become one space.
+// cleanText prepares household words so meaning is never lost to a missing glyph: symbols
+// such as the micro sign ("µg" draws "mcg"), comparison signs, arrows and fractions are written
+// out (SUBSTITUTIONS), letters the faces lack lose their accents ("Ō" draws "O"), and only what
+// is left (emoji, pictographs, scripts outside Latin) is dropped, never drawn as an empty box,
+// which a senior could read as a checkbox. It checks against the regular Atkinson face; every
+// Atkinson weight has the same characters, and Literata (header and date only) has more.
 //
 // Last modified: 2026-11-14
 
@@ -29,7 +33,7 @@ import { oneLine } from "./text";
 export type FaceName = keyof typeof FACE_DATA;
 
 /** The truncation mark. */
-const ELLIPSIS = "…";
+const ELLIPSIS = "\u2026";
 
 /** One glyph: its advance and contours in font units (y up), points as x, y, onCurve. */
 interface Glyph {
@@ -115,59 +119,98 @@ function face(name: FaceName): Face {
 }
 
 /**
- * purpose: Prepare words from the household (labels, names, steps) for a frame: Unicode NFC (so
- *          a decomposed "é" finds its glyph), characters the text faces cannot draw left out,
- *          every whitespace run one space, trimmed.
+ * Characters written out before drawing, so no meaning is lost by leaving a character out:
+ * symbols in doses and instructions (the micro sign as "mc", so "µg" draws "mcg", the spelling
+ * pharmacists use because "µg" is misread as "mg"; comparison signs; arrows; times and divide;
+ * fractions, spaced so "1½" draws "1 1/2"; prime marks, the minus sign, degrees Celsius and
+ * Fahrenheit), the invisible soft hyphen and the trademark sign, and the letters the Atkinson
+ * faces lack that have no decomposition (scripts/buildFrameFonts.ts lists every character each
+ * face lacks). The degree sign itself, the plus-minus sign and the dashes are in every face and
+ * stay.
+ */
+const SUBSTITUTIONS = new Map<string, string>([
+  ["\u00b5", "mc"],
+  ["\u03bc", "mc"],
+  ["\u2265", ">="],
+  ["\u2264", "<="],
+  ["\u2192", " to "],
+  ["\u21d2", " to "],
+  ["\u27f6", " to "],
+  ["\u2794", " to "],
+  ["\u2190", " <- "],
+  ["\u2194", " <-> "],
+  ["\u00d7", "x"],
+  ["\u00f7", "/"],
+  ["\u00bd", " 1/2"],
+  ["\u00bc", " 1/4"],
+  ["\u00be", " 3/4"],
+  ["\u2153", " 1/3"],
+  ["\u2154", " 2/3"],
+  ["\u215b", " 1/8"],
+  ["\u2032", "'"],
+  ["\u2033", '"'],
+  ["\u2212", "-"],
+  ["\u2011", "-"],
+  ["\u2103", "\u00b0C"],
+  ["\u2109", "\u00b0F"],
+  ["\u2122", ""],
+  ["\u00ad", ""],
+  ["\u017f", "s"],
+  ["\u0138", "k"],
+  ["\u0149", "'n"],
+  ["\u013f", "L"],
+  ["\u0140", "l"],
+  ["\u014a", "N"],
+  ["\u014b", "n"],
+  ["\u0166", "T"],
+  ["\u0167", "t"],
+]);
+
+/**
+ * purpose: Prepare words from the household (labels, names, steps) for a frame. After Unicode
+ *          NFC: a character in SUBSTITUTIONS is written out; whitespace becomes a space; a
+ *          character the regular Atkinson face has stays; any other is decomposed with its
+ *          compatibility forms (NFKD), its parts written out through SUBSTITUTIONS, and the drawable
+ *          parts kept without their marks, so "Ō" draws "O", "ﬁ" draws "fi", "５㎎" draws "5mg"
+ *          and "H₂O" draws "H2O"; what is left (emoji,
+ *          pictographs, scripts outside Latin) is left out rather than drawn as an empty box,
+ *          which a senior could read as a checkbox. Runs of spaces become one; trimmed. The
+ *          result can be empty; callers then draw a plain fallback.
  * @param text: (string) The text.
  * @return: (string) The cleaned text.
  */
 export function cleanText(text: string): string {
   const { glyphs } = face("regular");
-  const kept = Array.from(text.normalize("NFC").replace(/\s/g, " "))
-    .filter((ch) => glyphs.has(ch.codePointAt(0)!))
-    .join("");
-  return oneLine(kept);
-}
-
-/**
- * purpose: The glyphs of a string with each one's x position in pixels.
- * @param text: (string) Text, cleaned (cleanText); characters the face lacks are skipped.
- * @param style: (TextStyle) The style.
- * @return: ({ placed: { glyph: Glyph; x: number }[]; width: number }) Glyphs and total width.
- */
-function place(
-  text: string,
-  style: TextStyle,
-): { placed: { glyph: Glyph; x: number }[]; width: number } {
-  const f = face(style.face);
-  const scale = style.size / f.unitsPerEm;
-  const placed: { glyph: Glyph; x: number }[] = [];
-  let pen = 0;
-  let previous: Glyph | null = null;
-  for (const ch of text) {
-    const glyph = f.glyphs.get(ch.codePointAt(0)!);
-    if (glyph === undefined) continue;
-    if (previous !== null) pen += f.kerning.get(previous.index * 65536 + glyph.index) ?? 0;
-    placed.push({ glyph, x: pen * scale });
-    pen += glyph.advance;
-    previous = glyph;
+  /**
+   * purpose: Whether the regular face draws a character.
+   * @param ch: (string) One character.
+   * @return: (boolean) True when it has the glyph.
+   */
+  const drawable = (ch: string): boolean => glyphs.has(ch.codePointAt(0)!);
+  let out = "";
+  for (const ch of text.normalize("NFC")) {
+    const written = SUBSTITUTIONS.get(ch);
+    if (written !== undefined) out += written;
+    else if (/\s/.test(ch)) out += " ";
+    else if (drawable(ch)) out += ch;
+    else {
+      out += Array.from(ch.normalize("NFKD"))
+        .map((part) => SUBSTITUTIONS.get(part) ?? part)
+        .filter((part) => !/\p{M}/u.test(part) && Array.from(part).every(drawable))
+        .join("");
+    }
   }
-  return { placed, width: pen * scale };
+  return oneLine(out);
 }
 
-/**
- * purpose: The width of a text in pixels.
- * @param text: (string) Text, cleaned (cleanText).
- * @param style: (TextStyle) The style.
- * @return: (number) Width in pixels.
- */
-export function measure(text: string, style: TextStyle): number {
-  return place(text, style).width;
-}
-
-/** The pen after every prefix of a string, so prefix widths cost nothing to look up. */
-interface Prefixes {
-  /** pens[n]: the pen (font units, kerning included) after the first n characters. */
+/** One pass over a string in a face: where each glyph goes and the pen after every prefix. */
+interface Walk {
+  chars: string[];
+  /** glyphs[i]: the glyph of chars[i], or null when the face lacks it (it is skipped). */
+  glyphs: (Glyph | null)[];
+  /** starts[i]: the pen (font units, kerning included) where chars[i]'s glyph is drawn. */
+  starts: number[];
+  /** pens[n]: the pen after the first n characters (pens[length] is the whole width). */
   pens: number[];
   /** last[n]: the last glyph placed among the first n characters (for kerning onward). */
   last: (Glyph | null)[];
@@ -177,29 +220,48 @@ interface Prefixes {
 }
 
 /**
- * purpose: The pen after every prefix of a string, accumulated exactly as place() does, so
- *          pens[n] * scale equals measure() of the first n characters.
- * @param chars: (string[]) The characters.
+ * purpose: Walk a string in a face once, with pair kerning: the glyph positions drawLine uses
+ *          and the prefix widths line breaking uses, so they always agree (pens[n] * scale is
+ *          the width of the first n characters).
+ * @param text: (string | string[]) The text, or its characters.
  * @param style: (TextStyle) The style.
- * @return: (Prefixes) The pens.
+ * @return: (Walk) The walk.
  */
-function prefixes(chars: string[], style: TextStyle): Prefixes {
+function walk(text: string | string[], style: TextStyle): Walk {
   const f = face(style.face);
+  const chars = typeof text === "string" ? Array.from(text) : text;
+  const glyphs: (Glyph | null)[] = [];
+  const starts: number[] = [];
   const pens = [0];
   const last: (Glyph | null)[] = [null];
   let pen = 0;
   let previous: Glyph | null = null;
   for (const ch of chars) {
-    const glyph = f.glyphs.get(ch.codePointAt(0)!);
-    if (glyph !== undefined) {
+    const glyph = f.glyphs.get(ch.codePointAt(0)!) ?? null;
+    if (glyph !== null) {
       if (previous !== null) pen += f.kerning.get(previous.index * 65536 + glyph.index) ?? 0;
+      starts.push(pen);
       pen += glyph.advance;
       previous = glyph;
+    } else {
+      starts.push(pen);
     }
+    glyphs.push(glyph);
     pens.push(pen);
     last.push(previous);
   }
-  return { pens, last, scale: style.size / f.unitsPerEm, face: f };
+  return { chars, glyphs, starts, pens, last, scale: style.size / f.unitsPerEm, face: f };
+}
+
+/**
+ * purpose: The width of a text in pixels.
+ * @param text: (string) Text, cleaned (cleanText).
+ * @param style: (TextStyle) The style.
+ * @return: (number) Width in pixels.
+ */
+export function measure(text: string, style: TextStyle): number {
+  const { pens, scale } = walk(text, style);
+  return pens[pens.length - 1]! * scale;
 }
 
 /**
@@ -211,7 +273,7 @@ function prefixes(chars: string[], style: TextStyle): Prefixes {
  * @return: (number) How many characters fit.
  */
 function fittingChars(chars: string[], style: TextStyle, maxWidth: number): number {
-  const { pens, scale } = prefixes(chars, style);
+  const { pens, scale } = walk(chars, style);
   let n = chars.length;
   while (n > 1 && pens[n]! * scale > maxWidth) n -= 1;
   return n;
@@ -226,8 +288,7 @@ function fittingChars(chars: string[], style: TextStyle, maxWidth: number): numb
  * @return: (string) The truncated line, ending in "…".
  */
 function truncate(text: string, style: TextStyle, maxWidth: number): string {
-  const chars = Array.from(text);
-  const { pens, last, scale, face: f } = prefixes(chars, style);
+  const { chars, pens, last, scale, face: f } = walk(text, style);
   const ellipsis = f.glyphs.get(ELLIPSIS.codePointAt(0)!);
   for (let n = chars.length; n > 0; n -= 1) {
     let m = n;
@@ -350,17 +411,17 @@ export function drawLine(
   top: number,
   paint: Paint,
 ): number {
-  const f = face(style.face);
-  const scale = style.size / f.unitsPerEm;
   const originX = Math.round(x);
   const baseline = Math.round(baselineIn(style, top));
-  const { placed, width } = place(text, style);
+  const { glyphs, starts, pens, scale } = walk(text, style);
   const path = new Path();
-  for (const { glyph, x: gx } of placed) {
-    for (const points of glyph.contours) addContour(path, points, originX + gx, baseline, scale);
-  }
+  glyphs.forEach((glyph, i) => {
+    if (glyph === null) return;
+    const gx = originX + starts[i]! * scale;
+    for (const points of glyph.contours) addContour(path, points, gx, baseline, scale);
+  });
   if (path.segments.length > 0) canvas.fillPath(path, paint);
-  return width;
+  return pens[pens.length - 1]! * scale;
 }
 
 /**
@@ -382,8 +443,23 @@ function addContour(
 ): void {
   const n = points.length / 3;
   if (n < 2) return;
+  /**
+   * purpose: A point's x in pixels (indexes wrap around the contour).
+   * @param i: (number) Point index.
+   * @return: (number) Pixels.
+   */
   const px = (i: number): number => ox + points[3 * (i % n)]! * scale;
+  /**
+   * purpose: A point's y in pixels, flipped from the font's y up (indexes wrap around).
+   * @param i: (number) Point index.
+   * @return: (number) Pixels.
+   */
   const py = (i: number): number => baseline - points[3 * (i % n) + 1]! * scale;
+  /**
+   * purpose: Whether a point is on the curve (indexes wrap around).
+   * @param i: (number) Point index.
+   * @return: (boolean) True for an on-curve point.
+   */
   const on = (i: number): boolean => points[3 * (i % n) + 2] === 1;
   // Start on an on-curve point, or the midpoint of the first two off-curve points.
   let first = 0;

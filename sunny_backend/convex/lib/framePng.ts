@@ -2,10 +2,13 @@
 // Purpose: PNG encoding of a display frame (lib/frameRaster.ts Frame), for the iPad stand-in,
 // previews and golden tests. Greyscale (colour type 0) at the bit depth that holds the frame's
 // levels exactly: 1 bit for 2 greys, 2 for 4, 4 for 16, 8 for 256; any other grey count is
-// written at 8 bits with level l as round(l * 255 / (greys - 1)). Rows use filter 0.
+// written at 8 bits with level l as round(l * 255 / (greys - 1)), a half rounded up (the
+// packed format keeps the level itself). Rows use filter 0.
 //
 // The zlib stream is made here, with no dependency: one deflate block with the fixed Huffman
-// codes and greedy LZ77 matching (hash chains over the last 32 KiB). Frames are mostly paper
+// codes and greedy LZ77 matching (hash chains over the last 32 KiB, kept as a 32 Ki-entry ring,
+// and output into a growing byte array, so memory stays near the size of the raw rows even at
+// 2048 x 2048). Frames are mostly paper
 // and repeated rows, which that compresses well (a 960 x 680 x 4 frame is a few kilobytes), and
 // the output is byte-for-byte deterministic, which a platform compressor (CompressionStream,
 // not documented in the Convex runtime) would not promise across versions.
@@ -38,11 +41,35 @@ const MAX_MATCH = 258;
 const MAX_CHAIN = 64;
 const HASH_SIZE = 1 << 15;
 
-/** A little-endian bit writer (deflate's bit order). */
+/** A little-endian bit writer (deflate's bit order) into a growing byte array. */
 class BitWriter {
-  private bytes: number[] = [];
+  private bytes: Uint8Array;
+  private length = 0;
   private bits = 0;
   private count = 0;
+
+  /**
+   * purpose: A writer with room for an expected number of bytes (it grows when needed).
+   * @param capacity: (number) Bytes to allocate at first.
+   */
+  constructor(capacity: number) {
+    this.bytes = new Uint8Array(Math.max(64, capacity));
+  }
+
+  /**
+   * purpose: Append one finished byte, doubling the array when it is full.
+   * @param byte: (number) The byte.
+   * @return: (void)
+   */
+  private push(byte: number): void {
+    if (this.length === this.bytes.length) {
+      const grown = new Uint8Array(this.bytes.length * 2);
+      grown.set(this.bytes);
+      this.bytes = grown;
+    }
+    this.bytes[this.length] = byte;
+    this.length += 1;
+  }
 
   /**
    * purpose: Write the low `n` bits of a value, least significant first.
@@ -55,7 +82,7 @@ class BitWriter {
       this.bits |= ((value >>> i) & 1) << this.count;
       this.count += 1;
       if (this.count === 8) {
-        this.bytes.push(this.bits);
+        this.push(this.bits);
         this.bits = 0;
         this.count = 0;
       }
@@ -73,14 +100,14 @@ class BitWriter {
   }
 
   /**
-   * purpose: Pad to a byte and return the bytes.
+   * purpose: Pad to a byte and return the bytes written (a view of the writer's array).
    * @return: (Uint8Array) The stream.
    */
   finish(): Uint8Array {
-    if (this.count > 0) this.bytes.push(this.bits);
+    if (this.count > 0) this.push(this.bits);
     this.bits = 0;
     this.count = 0;
-    return Uint8Array.from(this.bytes);
+    return this.bytes.subarray(0, this.length);
   }
 }
 
@@ -131,11 +158,13 @@ function putMatch(out: BitWriter, length: number, distance: number): void {
  * @return: (Uint8Array) The deflate stream.
  */
 function deflate(data: Uint8Array): Uint8Array {
-  const out = new BitWriter();
+  const out = new BitWriter((data.length >> 4) + 1024);
   out.put(1, 1);
   out.put(1, 2);
   const head = new Int32Array(HASH_SIZE).fill(-1);
-  const prev = new Int32Array(data.length);
+  // The chains as a ring over the window: a position's slot is reused only by the position
+  // WINDOW later, by when the first is too far back to be a candidate.
+  const prev = new Int32Array(WINDOW);
   /**
    * purpose: The hash of the three bytes at a position.
    * @param i: (number) Position (with two bytes after it).
@@ -151,7 +180,7 @@ function deflate(data: Uint8Array): Uint8Array {
   const insert = (i: number): void => {
     if (i + 2 >= data.length) return;
     const h = hash(i);
-    prev[i] = head[h]!;
+    prev[i & (WINDOW - 1)] = head[h]!;
     head[h] = i;
   };
   let i = 0;
@@ -168,7 +197,7 @@ function deflate(data: Uint8Array): Uint8Array {
       ) {
         // A candidate that differs at the best length so far cannot beat it (zlib's check).
         if (bestLength > 0 && data[candidate + bestLength] !== data[i + bestLength]) {
-          candidate = prev[candidate]!;
+          candidate = prev[candidate & (WINDOW - 1)]!;
           continue;
         }
         let length = 0;
@@ -178,7 +207,7 @@ function deflate(data: Uint8Array): Uint8Array {
           bestDistance = i - candidate;
           if (length === limit) break;
         }
-        candidate = prev[candidate]!;
+        candidate = prev[candidate & (WINDOW - 1)]!;
       }
     }
     if (bestLength >= 3) {

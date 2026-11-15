@@ -3,44 +3,68 @@
 // state (lib/deviceState.ts), a screen ({ width, height, greys }, as the device reported it on
 // PUT /device/info) and a page ("now" or "today", the carousel's pages) to a grey-level frame
 // (lib/frameRaster.ts), which lib/framePng.ts and lib/framePacked.ts encode. GET /device/frame
-// (deviceApi.ts) serves it. Nothing here reads a clock: the frame depends only on its inputs.
+// (deviceFrame.ts) serves it. Nothing here reads a clock: the frame depends only on its inputs.
 //
-// Two steps. buildFrameModel picks what the page shows (the words, marks and icons, already
-// cleaned for drawing); its JSON, the screen, the format and FRAME_RENDERER_VERSION make the
-// frame's ETag (frameEtag), so a device polling an unchanged screen costs no drawing. drawFrame
-// then lays the model out and draws it.
+// Two steps. buildFrameModel picks what the page shows, holding only what is drawn (the words,
+// already cleaned for drawing, marks and icons; no row keys, no icon behind an initial, nothing
+// a multi-step card ignores); its JSON, the screen, the format and FRAME_RENDERER_VERSION make
+// the frame's ETag (frameEtag), so a device polling an unchanged screen costs no drawing.
+// drawFrame then lays the model out and draws it. frameDoneInstance names the task a Done press
+// confirms while the frames are on screen. lib/frameGoldens/MANIFEST.json and its test tie the
+// goldens and the font data to FRAME_RENDERER_VERSION, so a picture cannot change under an old
+// ETag.
 //
 // The design is the iPad's (sunny_app/src/display/DisplayParts.tsx and theme.ts, drawn at a
 // 1194 x 834 point canvas): an orientation header (day and part of day, the date with the year,
 // a thick rule), the page body, and the going-out strip ("Going out?  Wallet · Keys · Glasses ·
 // Phone") at the bottom. Now page: the Now card (black tab, thick box: icon, title, pill
 // description and "Taken them? Press [Done]", with "Not sure? Press [Talk]" once overdue; one
-// step of a multi-step task with its progress boxes; or "Nothing to do right now." / "Everything
-// is done.") beside Next up (a circle with the visitor's initial or an icon, the title, when).
-// Today page: one row per task or event, the Now task boxed and tagged, finished rows grey with
-// a check, missed rows grey without one, "And N more later" when the state left rows out.
+// step of a multi-step task with its progress boxes, with Talk too once overdue; or "Nothing to
+// do right now." / "Everything is done.") beside Next up (a circle with the visitor's initial or
+// an icon, the title, when). Today page: one row per task or event, the Now task boxed and
+// tagged "Now" ("Later" while snoozed), finished rows grey with a check, missed tasks and past
+// events grey without one, "And N more later" when the state left rows out. A label with
+// nothing drawable left (emoji, Chinese) is drawn as the item's type ("Medication", "Event",
+// "Step 2"); frameText.ts cleanText writes out symbols such as "µg" as "mcg".
 // Layout: every size is the design's points times one scale, s = min(width / 1194, height /
 // 834); the space a different aspect ratio leaves goes to the parts that stretch on the iPad
-// (the Next up column, the row labels, the body), so any reported size from 478 x 334 (where
-// the smallest text reaches MIN_TEXT_PX) to 2048 x 2048 works. Rows are exactly the state's
-// rows (its own overflow rule chose them; seven rows of 70 points fit the 500-point body).
+// (the Next up column, the row labels, the body). Screens from 478 x 334 (where the smallest
+// text reaches MIN_TEXT_PX) to 2048 x 2048 are drawn. Rows are exactly the state's rows (its own
+// overflow rule chose them; seven rows of 70 points fit the 500-point body).
+// Guaranteed and tested (lib/frame.test.ts, generated cards on six screens): the Now card's text
+// never leaves the card, and its line boxes end the design's 24 points above the prompts rule;
+// the test checks that no ink at all (descenders included) reaches the 12 points above it.
+// (At the design's sizes a two-line title always fits once the description is dropped; the
+// further shrinking below is a safety net only steps need today.) To keep that,
+// when a task card's parts do not fit, the icon goes first, then the description's second line,
+// then the whole description, and then the title shrinks below 70% (never under MIN_TEXT_PX)
+// until it fits; a step's text shrinks the same way. Other text (header, tab, rows, Next up) is
+// cut to its width with "…".
 //
 // Rules of the wall display that differ from the device state:
 // - The state makes a task inside its early hour the Now task (early: true, the phone's rule).
 //   The wall display offers Done only for a task that is due, so an early task is drawn as
-//   upcoming: the Now card is clear ("Nothing to do right now."), its row is plain, and it is
-//   Next up unless an event today comes before it.
-// - A snoozed Now task (the senior said "not yet") keeps its card; its tab reads "Later · 8:00".
-//   The iPad writes that one time with AM or PM; the state carries only the clock form.
+//   upcoming: the Now card is clear ("Nothing to do right now."), its row is plain, Next up is
+//   the state's nextUpAfterDue (the task itself unless an event comes before it), and
+//   frameDoneInstance names nothing.
+// - A snoozed Now task (the senior said "not yet") keeps its card; its tab reads "Later · 8:00"
+//   and its row is tagged "Later". The iPad writes that one time with AM or PM; the state
+//   carries only the clock form.
 // - A multi-step task's current step lives on the device until the backend tracks steps; the
 //   frame shows the step it is given (the first by default).
-// Where the Now card's parts do not all fit its box (a two-line title and a two-line pill
-// description), the icon goes first, then the description's second line, so nothing is clipped.
 //
 // Last modified: 2026-11-14
 
-import type { CarouselPage, DeviceState, NextItem, NowTask, TodayRow } from "./deviceState";
+import type {
+  CarouselPage,
+  DeviceState,
+  ItemType,
+  NextItem,
+  NowTask,
+  TodayRow,
+} from "./deviceState";
 import { canonicalJson, fnv1a64 } from "./deviceState";
+import type { DeviceIcon } from "./deviceWording";
 import type { FrameIcon } from "./frameIcons";
 import { drawIcon } from "./frameIcons";
 import { Canvas, Path, addCircle, addRoundRect } from "./frameRaster";
@@ -51,7 +75,7 @@ import type { FaceName, Lines, TextStyle } from "./frameText";
 export type { Frame, Screen } from "./frameRaster";
 
 /** Change whenever a drawing change should make every device fetch its frames again. */
-export const FRAME_RENDERER_VERSION = 1;
+export const FRAME_RENDERER_VERSION = 2;
 
 /** The pages a frame can show (the carousel's pages, lib/deviceState.ts deviceTuning). */
 export const FRAME_PAGES: readonly CarouselPage[] = ["now", "today"];
@@ -118,34 +142,86 @@ export const DRAWABLE_SCREEN = {
   maxHeight: 2048,
 };
 
-/** The Now card as the wall display draws it. */
+/**
+ * The Now card as the wall display draws it, holding only what is drawn (so the ETag changes
+ * only when the picture can): a clear card, a one-step task, or one step of a multi-step task.
+ */
 export type NowView =
   | { kind: "clear"; allDone: boolean }
   | {
       kind: "task";
-      /** "Now  ·  8:00", "Still to do  ·  8:00", "Later  ·  8:00" or the lead and the label. */
+      /** "Now  ·  8:00", "Still to do  ·  8:00" or "Later  ·  8:00". */
       tab: string;
       label: string;
-      icon: FrameIcon;
+      /** The task's icon; null once overdue (the Talk line takes its room). */
+      icon: FrameIcon | null;
       /** "Taken them?" or "Finished?". */
       question: string;
       pillDescription: string | null;
-      /** Adds "Not sure? Press [Talk]" and drops the icon. */
+      /** Adds "Not sure? Press [Talk]". */
       overdue: boolean;
-      /** Two or more steps, or null. */
-      steps: string[] | null;
+    }
+  | {
+      kind: "steps";
+      /** The lead and the task's label: "Now  ·  Getting ready". */
+      tab: string;
+      /** Two or more steps. */
+      steps: string[];
       /** The step shown (0-based, within steps). */
       step: number;
+      /** Adds "Not sure? Press [Talk]". */
+      overdue: boolean;
     };
+
+/** Next up as drawn: the visitor's initial, or the icon when there is none. */
+export interface FrameNext {
+  title: string;
+  when: string;
+  /** Null when the initial is drawn instead. */
+  icon: DeviceIcon | null;
+  initial: string | null;
+}
+
+/** A Today row as drawn (the state's row without its key). */
+export interface FrameRow {
+  time: string;
+  label: string;
+  /**
+   * The state's marks, except: the Now task's row is "later" while it is snoozed (boxed, tagged
+   * "Later") and "none" while it is early (not Now on the wall).
+   */
+  mark: TodayRow["mark"] | "later";
+}
 
 /** Everything one page draws. */
 export type FrameModel = {
   header: string;
   date: string;
 } & (
-  | { page: "now"; now: NowView; next: NextItem | null }
-  | { page: "today"; rows: TodayRow[]; hidden: number }
+  | { page: "now"; now: NowView; next: FrameNext | null }
+  | { page: "today"; rows: FrameRow[]; hidden: number }
 );
+
+/** The word drawn for an item whose label cleans to nothing (only emoji or Chinese, say). */
+const TYPE_WORDS: Record<ItemType, string> = {
+  medication: "Medication",
+  appointment: "Appointment",
+  routine: "Routine",
+  checklist: "Checklist",
+  reminder: "Reminder",
+  event: "Event",
+};
+
+/**
+ * purpose: A label cleaned for drawing, or the item's type word when nothing drawable is left,
+ *          so no card or row is ever untitled.
+ * @param text: (string) The label.
+ * @param type: (ItemType) The item's type.
+ * @return: (string) The text to draw.
+ */
+function labelOr(text: string, type: ItemType): string {
+  return cleanText(text) || TYPE_WORDS[type];
+}
 
 /**
  * purpose: Whether the state's Now task is one the wall display draws as Now: due (not inside
@@ -159,6 +235,16 @@ function dueNowTask(state: DeviceState): NowTask | null {
 }
 
 /**
+ * purpose: Whether a task's prompts are held by a snooze ("not yet").
+ * @param state: (DeviceState) The state (its cues carry the snooze).
+ * @param task: (NowTask) The task.
+ * @return: (boolean) True while snoozed.
+ */
+function isSnoozed(state: DeviceState, task: NowTask): boolean {
+  return state.cues.some((c) => c.instanceId === task.instanceId && c.snoozed);
+}
+
+/**
  * purpose: The Now card of a due task.
  * @param state: (DeviceState) The state (for the task's snooze).
  * @param task: (NowTask) The task.
@@ -166,40 +252,42 @@ function dueNowTask(state: DeviceState): NowTask | null {
  * @return: (NowView) The card.
  */
 function taskView(state: DeviceState, task: NowTask, step: number): NowView {
-  const snoozed = state.cues.some((c) => c.instanceId === task.instanceId && c.snoozed);
-  const steps = task.steps === null ? null : task.steps.map(cleanText);
-  const label = cleanText(task.label);
-  const lead = snoozed ? "Later" : task.overdue ? "Still to do" : "Now";
+  const label = labelOr(task.label, task.type);
+  const lead = isSnoozed(state, task) ? "Later" : task.overdue ? "Still to do" : "Now";
+  if (task.steps !== null) {
+    const steps = task.steps.map((s, i) => cleanText(s) || `Step ${i + 1}`);
+    return {
+      kind: "steps",
+      tab: `${lead}${TAB_SEPARATOR}${label}`,
+      steps,
+      step: Math.max(0, Math.min(Math.floor(step), steps.length - 1)),
+      overdue: task.overdue,
+    };
+  }
   return {
     kind: "task",
-    tab: `${lead}${TAB_SEPARATOR}${steps !== null ? label : task.time}`,
+    tab: `${lead}${TAB_SEPARATOR}${task.time}`,
     label,
-    icon: task.icon,
+    icon: task.overdue ? null : task.icon,
     question: task.question,
-    pillDescription: task.pillDescription === null ? null : cleanText(task.pillDescription),
+    pillDescription: task.pillDescription === null ? null : cleanText(task.pillDescription) || null,
     overdue: task.overdue,
-    steps,
-    step: steps === null ? 0 : Math.max(0, Math.min(Math.floor(step), steps.length - 1)),
   };
 }
 
 /**
- * purpose: Next up while the state's Now task is early: the state skipped that task, so it is
- *          Next up itself unless the state's Next up is an event today that comes before it in
- *          the day's order (found among the rows, which are in that order).
- * @param state: (DeviceState) The state.
- * @param task: (NowTask) The early task.
- * @return: (NextItem) The item.
+ * purpose: Next up as drawn, from the state's Next up item.
+ * @param next: (NextItem) The item.
+ * @return: (FrameNext) Cleaned, with only the initial or the icon.
  */
-function nextBeforeEarly(state: DeviceState, task: NowTask): NextItem {
-  const own: NextItem = { title: task.label, when: task.time, icon: task.icon, initial: null };
-  const next = state.nextUp;
-  if (next === null) return own;
-  const taskRow = state.rows.findIndex((r) => r.key === `task-${task.instanceId}`);
-  const eventRow = state.rows.findIndex(
-    (r) => r.key.startsWith("event-") && r.label === next.title && r.time === next.when,
-  );
-  return eventRow !== -1 && (taskRow === -1 || eventRow < taskRow) ? next : own;
+function nextView(next: NextItem): FrameNext {
+  const initial = next.initial === null ? null : cleanText(next.initial) || null;
+  return {
+    title: labelOr(next.title, next.type),
+    when: cleanText(next.when),
+    icon: initial === null ? next.icon : null,
+    initial,
+  };
 }
 
 /**
@@ -213,30 +301,32 @@ export function buildFrameModel(state: DeviceState, page: CarouselPage, step = 0
   const header = { header: cleanText(state.header), date: cleanText(state.fullDate) };
   const task = dueNowTask(state);
   if (page === "today") {
-    const rows = state.rows.map((r) => ({
-      ...r,
-      label: cleanText(r.label),
-      mark: r.mark === "now" && task === null ? ("none" as const) : r.mark,
+    const nowMark = task === null ? "none" : isSnoozed(state, task) ? "later" : "now";
+    const rows = state.rows.map((r): FrameRow => ({
+      time: r.time,
+      label: labelOr(r.label, r.type),
+      mark: r.mark === "now" ? nowMark : r.mark,
     }));
     return { ...header, page, rows, hidden: state.rowsHidden };
   }
-  const early = state.now.task !== null && task === null ? state.now.task : null;
-  const next = early !== null ? nextBeforeEarly(state, early) : state.nextUp;
   return {
     ...header,
     page,
     now:
       task !== null ? taskView(state, task, step) : { kind: "clear", allDone: state.now.allDone },
-    next:
-      next === null
-        ? null
-        : {
-            ...next,
-            title: cleanText(next.title),
-            when: cleanText(next.when),
-            initial: next.initial === null ? null : cleanText(next.initial) || null,
-          },
+    next: state.nextUpAfterDue === null ? null : nextView(state.nextUpAfterDue),
   };
+}
+
+/**
+ * purpose: The task a Done press confirms while this state's frames are on screen: the due Now
+ *          task (snoozed or not), never one inside its early hour, which the frames draw as
+ *          upcoming. GET /device/frame sends it so the firmware confirms only what it shows.
+ * @param state: (DeviceState) The device state.
+ * @return: (string | null) The task instance id, or null when Done confirms nothing.
+ */
+export function frameDoneInstance(state: DeviceState): string | null {
+  return state.done !== null && !state.done.early ? state.done.instanceId : null;
 }
 
 /** The output encodings of a frame. */
@@ -359,10 +449,11 @@ function oneLineIn(text: string, style: TextStyle, width: number): string {
  * purpose: Draw the orientation header (day and part of day, the date line, the rule below).
  * @param ctx: (Ctx) Canvas and ruler.
  * @param model: (FrameModel) The model.
- * @param area: (Rect) The content area (its top is the header's top).
- * @return: (number) The header's bottom (below the rule).
+ * @param area: (Rect) The content area (its top is the header's top). pageGeometry puts the
+ *        body below the rule drawn here.
+ * @return: (void)
  */
-function drawHeader(ctx: Ctx, model: FrameModel, area: Rect): number {
+function drawHeader(ctx: Ctx, model: FrameModel, area: Rect): void {
   const { r } = ctx;
   const header = r.text("header");
   const date = r.text("date");
@@ -371,9 +462,7 @@ function drawHeader(ctx: Ctx, model: FrameModel, area: Rect): number {
   y += header.lineHeight + r.u(6);
   drawLine(ctx.canvas, oneLineIn(model.date, date, area.w), date, area.x, y, "ink");
   y += date.lineHeight + r.u(24);
-  const rule = r.line(6);
-  ctx.canvas.fillRect(area.x, y, area.w, rule, "ink");
-  return y + rule;
+  ctx.canvas.fillRect(area.x, y, area.w, r.line(6), "ink");
 }
 
 /**
@@ -422,7 +511,7 @@ function drawKeycap(ctx: Ctx, icon: FrameIcon, label: string, x: number, top: nu
   const style = r.text("keycap");
   const border = r.line(3);
   const iconSize = r.u(28);
-  const height = keycapHeight(ctx);
+  const height = keycapHeight(r);
   const width = 2 * border + r.u(14) + iconSize + r.u(6) + measure(label, style) + r.u(18);
   const radius = r.u(12);
   canvas.fillPath(addRoundRect(new Path(), x, top, width, height, radius), "ink");
@@ -446,11 +535,10 @@ function drawKeycap(ctx: Ctx, icon: FrameIcon, label: string, x: number, top: nu
 
 /**
  * purpose: The keycap's height.
- * @param ctx: (Ctx) Canvas and ruler.
+ * @param r: (Ruler) The screen's ruler.
  * @return: (number) Pixels.
  */
-function keycapHeight(ctx: Ctx): number {
-  const { r } = ctx;
+function keycapHeight(r: Ruler): number {
   return 2 * r.line(3) + 2 * r.u(6) + Math.max(r.text("keycap").lineHeight, r.u(28));
 }
 
@@ -462,14 +550,29 @@ interface Prompt {
 }
 
 /**
- * purpose: The height of the prompts block (a rule, then one line per prompt).
- * @param ctx: (Ctx) Canvas and ruler.
- * @param count: (number) Prompt lines.
- * @return: (number) Pixels.
+ * purpose: The prompts of a task card: "<question> Press [Done]", and "Not sure? Press [Talk]"
+ *          once the task is overdue.
+ * @param question: (string) The words before the Done key.
+ * @param overdue: (boolean) The task is overdue.
+ * @return: (Prompt[]) The lines.
  */
-function promptsHeight(ctx: Ctx, count: number): number {
-  const { r } = ctx;
-  return r.line(3) + r.u(24) + count * keycapHeight(ctx) + (count - 1) * r.u(16);
+function taskPrompts(question: string, overdue: boolean): Prompt[] {
+  const prompts: Prompt[] = [{ question, icon: "checkmark", key: "Done" }];
+  if (overdue) prompts.push({ question: "Not sure?", icon: "mic", key: "Talk" });
+  return prompts;
+}
+
+/**
+ * purpose: The top of the prompts block (its rule) at the bottom of the Now card's inside: a
+ *          rule, then one keycap line per prompt.
+ * @param r: (Ruler) The screen's ruler.
+ * @param inner: (Rect) The card's inside.
+ * @param count: (number) Prompt lines.
+ * @return: (number) The rule's top in pixels.
+ */
+function promptsTopIn(r: Ruler, inner: Rect, count: number): number {
+  const height = r.line(3) + r.u(24) + count * keycapHeight(r) + (count - 1) * r.u(16);
+  return inner.y + inner.h - height;
 }
 
 /**
@@ -481,11 +584,11 @@ function promptsHeight(ctx: Ctx, count: number): number {
  */
 function drawPrompts(ctx: Ctx, prompts: Prompt[], inner: Rect): number {
   const { canvas, r } = ctx;
-  const top = inner.y + inner.h - promptsHeight(ctx, prompts.length);
+  const top = promptsTopIn(r, inner, prompts.length);
   const rule = r.line(3);
   canvas.fillRect(inner.x, top, inner.w, rule, "ink");
   const style = r.text("prompt");
-  const keyHeight = keycapHeight(ctx);
+  const keyHeight = keycapHeight(r);
   prompts.forEach((p, i) => {
     const y = top + rule + r.u(24) + i * (keyHeight + r.u(16));
     const words = `${p.question} Press`;
@@ -503,9 +606,45 @@ function drawPrompts(ctx: Ctx, prompts: Prompt[], inner: Rect): number {
 }
 
 /**
+ * purpose: A title laid out in a block: fitText (the largest size down to minScale holding the
+ *          whole text in maxLines), and when that is taller than maxHeight, smaller sizes in
+ *          steps of 5% (never under MIN_TEXT_PX) with only as many lines as the height holds,
+ *          the last cut with "…", until it fits.
+ * @param text: (string) The text.
+ * @param style: (TextStyle) The full-size style.
+ * @param minScale: (number) The smallest size fitText may use.
+ * @param maxWidth: (number) Line width in pixels.
+ * @param maxLines: (number) Most lines.
+ * @param maxHeight: (number) Height available in pixels.
+ * @return: ({ style: TextStyle } & Lines) The style used and the lines.
+ */
+function fitTitle(
+  text: string,
+  style: TextStyle,
+  minScale: number,
+  maxWidth: number,
+  maxLines: number,
+  maxHeight: number,
+): { style: TextStyle } & Lines {
+  const fitted = fitText(text, style, minScale, maxWidth, maxLines);
+  if (fitted.lines.length * fitted.style.lineHeight <= maxHeight) return fitted;
+  const floor = Math.min(1, MIN_TEXT_PX / style.size);
+  for (let step = 0; ; step += 1) {
+    const scale = Math.max(floor, minScale - step * 0.05);
+    const sized = { ...style, size: style.size * scale, lineHeight: style.lineHeight * scale };
+    const lines = Math.max(1, Math.min(maxLines, Math.floor(maxHeight / sized.lineHeight)));
+    const broken = breakLines(text, sized, maxWidth, lines);
+    const fits = broken.lines.length * sized.lineHeight <= maxHeight;
+    if ((fits && !broken.truncated) || scale <= floor) return { style: sized, ...broken };
+  }
+}
+
+/**
  * purpose: Draw a one-step task's card inside: icon, title (up to two lines, shrinking to 70%),
- *          pill description (up to two lines) and the prompts. When they do not all fit, the
- *          icon is left out first, then the description's second line.
+ *          pill description (up to two lines) and the prompts. The text always ends at least
+ *          24 points above the prompts rule: when it does not fit, the icon is left out first,
+ *          then the description's second line, then the whole description, and then the title
+ *          shrinks further (fitTitle).
  * @param ctx: (Ctx) Canvas and ruler.
  * @param card: (Extract<NowView, { kind: "task" }>) The card.
  * @param inner: (Rect) The card's inside.
@@ -513,37 +652,42 @@ function drawPrompts(ctx: Ctx, prompts: Prompt[], inner: Rect): number {
  */
 function drawTaskContent(ctx: Ctx, card: Extract<NowView, { kind: "task" }>, inner: Rect): void {
   const { canvas, r } = ctx;
-  const prompts: Prompt[] = [{ question: card.question, icon: "checkmark", key: "Done" }];
-  if (card.overdue) prompts.push({ question: "Not sure?", icon: "mic", key: "Talk" });
-  const room = inner.h - promptsHeight(ctx, prompts.length) - r.u(24);
+  const prompts = taskPrompts(card.question, card.overdue);
+  const room = promptsTopIn(r, inner, prompts.length) - r.u(24) - inner.y;
   const detail = r.text("taskDetail");
-  const title = fitText(card.label, r.text("taskTitle"), 0.7, inner.w, 2);
-  const pillCount =
+  const titleStyle = r.text("taskTitle");
+  const first = fitText(card.label, titleStyle, 0.7, inner.w, 2);
+  const pillAll =
     card.pillDescription === null
       ? 0
       : breakLines(card.pillDescription, detail, inner.w, 2).lines.length;
   /**
-   * purpose: The stack's height for a choice of icon and pill description lines.
+   * purpose: The stack's height for a choice of icon, description lines and title height.
    * @param icon: (boolean) The icon is drawn.
-   * @param pillLines: (number) Most lines of the pill description.
+   * @param pillLines: (number) Description lines (0 leaves it out).
+   * @param titleHeight: (number) The title's height in pixels.
    * @return: (number) Pixels.
    */
-  const stackHeight = (icon: boolean, pillLines: number): number => {
-    const pill =
-      card.pillDescription === null
-        ? 0
-        : r.u(12) + Math.min(pillLines, pillCount) * detail.lineHeight;
-    return (icon ? r.u(64) + r.u(12) : 0) + title.lines.length * title.style.lineHeight + pill;
-  };
-  const showIcon = !card.overdue && stackHeight(true, 2) <= room;
-  const pillLines = stackHeight(showIcon, 2) <= room ? 2 : 1;
+  const stackHeight = (icon: boolean, pillLines: number, titleHeight: number): number =>
+    (icon ? r.u(64) + r.u(12) : 0) +
+    titleHeight +
+    (pillLines > 0 ? r.u(12) + pillLines * detail.lineHeight : 0);
+  const firstHeight = first.lines.length * first.style.lineHeight;
+  const showIcon = card.icon !== null && stackHeight(true, pillAll, firstHeight) <= room;
+  const pillLines = [pillAll, Math.min(1, pillAll), 0].find(
+    (lines) => stackHeight(showIcon, lines, firstHeight) <= room,
+  );
+  const title =
+    pillLines === undefined
+      ? fitTitle(card.label, titleStyle, 0.7, inner.w, 2, room - stackHeight(showIcon, 0, 0))
+      : first;
   let y = inner.y;
-  if (showIcon) {
+  if (showIcon && card.icon !== null) {
     drawIcon(canvas, card.icon, inner.x, y, r.u(64), "ink");
     y += r.u(64) + r.u(12);
   }
   y += drawLines(ctx, title.lines, title.style, inner.x, y, "ink");
-  if (card.pillDescription !== null) {
+  if (card.pillDescription !== null && pillLines !== undefined && pillLines > 0) {
     const pill = breakLines(card.pillDescription, detail, inner.w, pillLines);
     drawLines(ctx, pill.lines, detail, inner.x, y + r.u(12), "ink");
   }
@@ -552,15 +696,16 @@ function drawTaskContent(ctx: Ctx, card: Extract<NowView, { kind: "task" }>, inn
 
 /**
  * purpose: Draw a multi-step task's card inside: progress boxes (up to five steps) with
- *          "Step n of N", the current step large (up to three lines, shrinking to 70%), and
- *          "Finished? Press [Done]".
+ *          "Step n of N", the current step large (up to three lines, shrinking to 70%, and
+ *          further if needed so it ends at least 24 points above the prompts rule), and
+ *          "Finished? Press [Done]", with "Not sure? Press [Talk]" once overdue.
  * @param ctx: (Ctx) Canvas and ruler.
- * @param steps: (string[]) The steps.
- * @param step: (number) The current step index.
+ * @param card: (Extract<NowView, { kind: "steps" }>) The card.
  * @param inner: (Rect) The card's inside.
  * @return: (void)
  */
-function drawStepContent(ctx: Ctx, steps: string[], step: number, inner: Rect): void {
+function drawStepContent(ctx: Ctx, card: Extract<NowView, { kind: "steps" }>, inner: Rect): void {
+  const { steps, step } = card;
   const { canvas, r } = ctx;
   const counterStyle = r.text("prompt");
   const boxSize = r.u(52);
@@ -600,9 +745,11 @@ function drawStepContent(ctx: Ctx, steps: string[], step: number, inner: Rect): 
     "ink",
   );
   const titleTop = inner.y + rowHeight + r.u(12) + r.u(12);
-  const title = fitText(steps[step] ?? "", r.text("stepTitle"), 0.7, inner.w, 3);
+  const prompts = taskPrompts("Finished?", card.overdue);
+  const room = promptsTopIn(r, inner, prompts.length) - r.u(24) - titleTop;
+  const title = fitTitle(steps[step] ?? "", r.text("stepTitle"), 0.7, inner.w, 3, room);
   drawLines(ctx, title.lines, title.style, inner.x, titleTop, "ink");
-  drawPrompts(ctx, [{ question: "Finished?", icon: "checkmark", key: "Done" }], inner);
+  drawPrompts(ctx, prompts, inner);
 }
 
 /**
@@ -679,37 +826,92 @@ function tabSize(ctx: Ctx, words: string, padY: number, padX: number): { w: numb
  */
 function drawNowBody(ctx: Ctx, model: Extract<FrameModel, { page: "now" }>, body: Rect): void {
   const { canvas, r } = ctx;
-  const columnWidth = Math.min(body.w, r.u(600));
-  const tabText = model.now.kind === "task" ? model.now.tab : "Now";
-  const tab = drawTab(ctx, tabText, body.x, body.y, 8, 20, columnWidth);
-  const box = { x: body.x, y: body.y + tab.h, w: columnWidth, h: body.h - tab.h };
-  const border = r.line(6);
+  const { box, inner, border } = cardGeometry(r, body);
+  drawTab(ctx, model.now.kind === "clear" ? "Now" : model.now.tab, body.x, body.y, 8, 20, box.w);
   canvas.strokeRect(box.x, box.y, box.w, box.h, border, "ink");
+  const now = model.now;
+  if (now.kind === "clear") drawClearContent(ctx, now.allDone, inner);
+  else if (now.kind === "steps") drawStepContent(ctx, now, inner);
+  else drawTaskContent(ctx, now, inner);
+  // On every drawable screen the body is at least 1098 points wide, so this column is at least
+  // 466 points.
+  const nextX = body.x + box.w + r.u(32);
+  if (model.next !== null) {
+    drawNextCard(ctx, model.next, { x: nextX, y: body.y, w: body.x + body.w - nextX, h: body.h });
+  }
+}
+
+/**
+ * purpose: Where the Now card goes in the body: below its tab, 600 points wide (the body is at
+ *          least 1098 points wide on every drawable screen), with a 6-point border and the
+ *          design's padding inside.
+ * @param r: (Ruler) The screen's ruler.
+ * @param body: (Rect) The body.
+ * @return: ({ box: Rect; inner: Rect; border: number }) The card, its inside and its border.
+ */
+function cardGeometry(r: Ruler, body: Rect): { box: Rect; inner: Rect; border: number } {
+  const tabHeight = r.text("tab").lineHeight + 2 * r.u(8);
+  const box = { x: body.x, y: body.y + tabHeight, w: r.u(600), h: body.h - tabHeight };
+  const border = r.line(6);
   const inner = {
     x: box.x + border + r.u(36),
     y: box.y + border + r.u(36),
     w: box.w - 2 * border - 2 * r.u(36),
     h: box.h - 2 * border - r.u(36) - r.u(32),
   };
-  const now = model.now;
-  if (now.kind === "clear") drawClearContent(ctx, now.allDone, inner);
-  else if (now.steps !== null) drawStepContent(ctx, now.steps, now.step, inner);
-  else drawTaskContent(ctx, now, inner);
-  const nextX = body.x + columnWidth + r.u(32);
-  if (model.next !== null && body.x + body.w - nextX > r.u(120)) {
-    drawNextCard(ctx, model.next, { x: nextX, y: body.y, w: body.x + body.w - nextX, h: body.h });
-  }
+  return { box, inner, border };
+}
+
+/**
+ * purpose: The page's body: between the header (with its rule) and the going-out strip, inside
+ *          the side margins.
+ * @param r: (Ruler) The screen's ruler.
+ * @param screen: (Screen) The screen.
+ * @return: ({ body: Rect; stripTop: number; padX: number }) The body, the strip's top and the
+ *          side margin.
+ */
+function pageGeometry(r: Ruler, screen: Screen): { body: Rect; stripTop: number; padX: number } {
+  const padX = r.u(48);
+  const stripTop = screen.height - r.u(100);
+  // Summed in drawHeader's order, so the body starts exactly below the rule it draws.
+  let headerBottom = r.u(28);
+  headerBottom += r.text("header").lineHeight + r.u(6);
+  headerBottom += r.text("date").lineHeight + r.u(24);
+  const bodyTop = headerBottom + r.line(6) + r.u(28);
+  const body = {
+    x: padX,
+    y: bodyTop,
+    w: screen.width - 2 * padX,
+    h: stripTop - r.u(28) - bodyTop,
+  };
+  return { body, stripTop, padX };
+}
+
+/**
+ * purpose: The Now card's place on a screen, for tests that check text stays inside it.
+ * @param screen: (Screen) The screen.
+ * @param promptLines: (number) Prompt lines on the card (1, or 2 once overdue).
+ * @return: ({ box: Rect; inner: Rect; promptsTop: number }) The card, its inside and the top
+ *          of its prompts rule, in pixels.
+ */
+export function nowCardGeometry(
+  screen: Screen,
+  promptLines: number,
+): { box: Rect; inner: Rect; promptsTop: number } {
+  const r = new Ruler(screen);
+  const { box, inner } = cardGeometry(r, pageGeometry(r, screen).body);
+  return { box, inner, promptsTop: promptsTopIn(r, inner, promptLines) };
 }
 
 /**
  * purpose: Draw the Next up column: its label, and a box with a circle (the visitor's initial
  *          or the item's icon), the title (up to two lines) and when.
  * @param ctx: (Ctx) Canvas and ruler.
- * @param item: (NextItem) The next item.
+ * @param item: (FrameNext) The next item.
  * @param column: (Rect) The column.
  * @return: (void)
  */
-function drawNextCard(ctx: Ctx, item: NextItem, column: Rect): void {
+function drawNextCard(ctx: Ctx, item: FrameNext, column: Rect): void {
   const { canvas, r } = ctx;
   const label = r.text("nextLabel");
   drawLine(canvas, "Next up", label, column.x, column.y + r.u(8), "ink");
@@ -734,7 +936,7 @@ function drawNextCard(ctx: Ctx, item: NextItem, column: Rect): void {
     const style = r.text("initial");
     const w = measure(item.initial, style);
     drawLine(canvas, item.initial, style, cx - w / 2, middle - style.lineHeight / 2, "ink");
-  } else {
+  } else if (item.icon !== null) {
     const size = r.u(36);
     drawIcon(canvas, item.icon, cx - size / 2, middle - size / 2, size, "ink");
   }
@@ -745,8 +947,9 @@ function drawNextCard(ctx: Ctx, item: NextItem, column: Rect): void {
 
 /**
  * purpose: Draw the Today page's body: the state's rows (finished grey with a check, missed
- *          grey alone, the Now row boxed with a black "Now" tag), "And N more later" when rows
- *          were left out, or "Nothing planned today.".
+ *          tasks and past events grey alone, the Now row boxed with a black "Now" tag, or
+ *          "Later" while it is snoozed), "And N more later" when rows were left out, or
+ *          "Nothing planned today.".
  * @param ctx: (Ctx) Canvas and ruler.
  * @param model: (Extract<FrameModel, { page: "today" }>) The model.
  * @param body: (Rect) The body.
@@ -769,15 +972,15 @@ function drawTodayBody(ctx: Ctx, model: Extract<FrameModel, { page: "today" }>, 
     body.y + row * rowHeight + (rowHeight - style.lineHeight) / 2;
   model.rows.forEach((row, i) => {
     const y = body.y + i * rowHeight;
-    const now = row.mark === "now";
-    const grey = row.mark === "done" || row.mark === "missed";
+    const tagText = row.mark === "now" ? "Now" : row.mark === "later" ? "Later" : null;
+    const grey = row.mark === "done" || row.mark === "missed" || row.mark === "past";
     const paint: Paint = grey ? "grey" : "ink";
-    const labelStyle = r.text(now ? "rowLabelNow" : "rowLabel");
+    const labelStyle = r.text(tagText !== null ? "rowLabelNow" : "rowLabel");
     let right = body.x + body.w - pad;
-    if (now) {
+    if (tagText !== null) {
       canvas.strokeRect(body.x, y, body.w, rowHeight, r.line(5), "ink");
-      const tag = tabSize(ctx, "Now", 4, 16);
-      drawTab(ctx, "Now", right - tag.w, y + (rowHeight - tag.h) / 2, 4, 16, tag.w);
+      const tag = tabSize(ctx, tagText, 4, 16);
+      drawTab(ctx, tagText, right - tag.w, y + (rowHeight - tag.h) / 2, 4, 16, tag.w);
       right -= tag.w + r.u(24);
     } else if (row.mark === "done") {
       const check = r.u(30);
@@ -821,12 +1024,8 @@ export function drawFrame(model: FrameModel, screen: Screen): Frame {
   const canvas = new Canvas(screen);
   const r = new Ruler(screen);
   const ctx = { canvas, r };
-  const padX = r.u(48);
-  const stripTop = screen.height - r.u(100);
-  const area = { x: padX, y: r.u(28), w: screen.width - 2 * padX, h: 0 };
-  const headerBottom = drawHeader(ctx, model, area);
-  const bodyTop = headerBottom + r.u(28);
-  const body = { x: padX, y: bodyTop, w: area.w, h: stripTop - r.u(28) - bodyTop };
+  const { body, stripTop, padX } = pageGeometry(r, screen);
+  drawHeader(ctx, model, { x: padX, y: r.u(28), w: body.w, h: 0 });
   if (model.page === "now") drawNowBody(ctx, model, body);
   else drawTodayBody(ctx, model, body);
   drawStrip(ctx, stripTop, padX);
