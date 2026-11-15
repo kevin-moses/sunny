@@ -9,7 +9,11 @@ import type { TuningControls } from '../TuningProvider';
 import { useDisplayKeys } from '../useDisplayKeys';
 import type { DisplayKeys } from '../useDisplayKeys';
 
-const mockMutation = jest.fn(async (..._args: unknown[]) => null);
+const mockMutation = jest.fn(
+  async (..._args: unknown[]): Promise<{ state: string; currentStep?: number }> => ({
+    state: 'confirmed',
+  }),
+);
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -104,5 +108,25 @@ describe('useDisplayKeys', () => {
     });
     expect(show).toHaveBeenLastCalledWith('Checked off: Morning pills');
     expect(talk).not.toHaveBeenCalled();
+  });
+
+  it('sends every Done of a multi-step task and names the step the backend advanced past', async () => {
+    const steps = ['Put on your coat', 'Take your keys', 'Lock the door'];
+    const card = {
+      ...CARD,
+      task: { ...CARD.task, step: { index: 1, count: 3, text: 'Take your keys' } },
+      steps,
+    } as unknown as TaskCard;
+    mockMutation.mockResolvedValueOnce({ state: 'due', currentStep: 2 });
+    const get = renderKeys(card);
+    await act(async () => {
+      get().pressDone();
+    });
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockMutation).toHaveBeenCalledWith(expect.anything(), {
+      instanceId: 't1',
+      via: 'button',
+    });
+    expect(show).toHaveBeenLastCalledWith('Step 2 done');
   });
 });

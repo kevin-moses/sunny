@@ -351,12 +351,13 @@ export async function changeInstance(
   if (changed.length === 0) return instance;
   await ctx.db.patch(instance._id, Object.fromEntries(changed));
   const after = (await ctx.db.get(instance._id))!;
-  let action: "state_change" | "claim" | "snooze" | "note";
+  let action: "state_change" | "claim" | "snooze" | "note" | "step";
   let detail: Record<string, unknown>;
   if (after.state !== instance.state) action = "state_change";
   else if (after.claimedBy !== instance.claimedBy) action = "claim";
   else if (after.snoozedUntil !== instance.snoozedUntil) action = "snooze";
   else if (after.resolutionNote !== instance.resolutionNote) action = "note";
+  else if (after.currentStep !== instance.currentStep) action = "step";
   else return after;
   if (action === "note") {
     detail = { hasNote: after.resolutionNote !== undefined };
@@ -365,6 +366,10 @@ export async function changeInstance(
     if (after.confirmedVia !== undefined) detail["via"] = after.confirmedVia;
     if (after.claimedBy !== undefined) detail["claimedBy"] = after.claimedBy;
     if (after.snoozedUntil !== undefined) detail["snoozedUntil"] = after.snoozedUntil;
+    if (after.currentStep !== instance.currentStep) {
+      detail["fromStep"] = instance.currentStep ?? 0;
+      detail["toStep"] = after.currentStep ?? 0;
+    }
     if (extraDetail !== undefined) Object.assign(detail, extraDetail);
   }
   await audit(ctx, {

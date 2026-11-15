@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   clockTime,
   cueSpeech,
+  stepSpeech,
+  withStepSpeech,
   doneQuestion,
   fullDate,
   hasWrittenPrompt,
@@ -17,6 +19,7 @@ function speechTask(overrides: Partial<SpeechTask> = {}): SpeechTask {
     displayLabel: "Morning pills",
     spokenPrompt: "Time for Morning pills.",
     scheduledTime: "08:00",
+    step: null,
     ...overrides,
   };
 }
@@ -89,6 +92,19 @@ describe("cueSpeech", () => {
       scheduledTime: "15:30",
     });
     expect(cueSpeech(task)).toBe("Time for Walk, at 3:30. Press Done when you have finished.");
+  });
+
+  it("reads the current step of a multi-step task after the prompt", () => {
+    const task = speechTask({
+      type: "checklist",
+      spokenPrompt: "Time to get ready to go out.",
+      step: { index: 1, count: 3, text: " Take your keys " },
+    });
+    expect(cueSpeech(task)).toBe("Time to get ready to go out. Step 2 of 3: Take your keys.");
+    expect(stepSpeech({ index: 0, count: 2, text: "Is the stove off?" })).toBe(
+      "Step 1 of 2: Is the stove off?",
+    );
+    expect(withStepSpeech("Reminder.", null)).toBe("Reminder.");
   });
 });
 

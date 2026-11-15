@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
 
+import { isDone } from '../day/format';
+
 import { callMutation, toBackendError } from '../backend/api';
 import { api } from '../backend/convexApi';
 import type { TaskCard } from './model';
 import { useTuning } from './TuningProvider';
 
 export interface DisplayKeys {
-  step: number;
   doneBusy: boolean;
   pressDone: () => void;
   pressTalk: () => void;
@@ -19,11 +20,8 @@ export function useDisplayKeys(
   talk: () => void,
 ): DisplayKeys {
   const { pressGapMs } = useTuning();
-  const [progress, setProgress] = useState<{ instanceId: string; index: number } | null>(null);
   const [doneBusy, setDoneBusy] = useState(false);
   const lastPress = useRef(0);
-
-  const step = card !== null && progress?.instanceId === card.task.instanceId ? progress.index : 0;
 
   const accept = (): boolean => {
     const now = Date.now();
@@ -37,11 +35,15 @@ export function useDisplayKeys(
     setDoneBusy(true);
     show('Saving');
     try {
-      await callMutation(api.instances.confirmTaskInstance, {
+      const row = await callMutation(api.instances.confirmTaskInstance, {
         instanceId: task.instanceId,
         via: 'button',
       });
-      show(`Checked off: ${task.displayLabel}`);
+      show(
+        isDone(row) || task.step === null
+          ? `Checked off: ${task.displayLabel}`
+          : `Step ${task.step.index + 1} done`,
+      );
     } catch (error) {
       show(toBackendError(error).message);
     } finally {
@@ -55,11 +57,6 @@ export function useDisplayKeys(
       show('Nothing to mark done right now');
       return;
     }
-    if (card.steps !== null && step < card.steps.length - 1) {
-      setProgress({ instanceId: card.task.instanceId, index: step + 1 });
-      show(`Step ${step + 1} done`);
-      return;
-    }
     void confirm(card.task);
   };
 
@@ -67,5 +64,5 @@ export function useDisplayKeys(
     if (accept()) talk();
   };
 
-  return { step, doneBusy, pressDone, pressTalk };
+  return { doneBusy, pressDone, pressTalk };
 }

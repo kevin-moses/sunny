@@ -170,7 +170,7 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
 
   async function confirmed(...args: Parameters<typeof confirmAgo>) {
     const result = await confirmAgo(...args);
-    if (result.status !== "confirmed") throw new Error(`rejected: ${result.reason}`);
+    if (result.status === "rejected") throw new Error(`rejected: ${result.reason}`);
     return result.instance;
   }
 

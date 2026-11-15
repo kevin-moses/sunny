@@ -1,4 +1,4 @@
-import { clockTime, isDue } from '../day/format';
+import { clockTime, isDue, stepCounter } from '../day/format';
 import type { DayTask } from '../day/types';
 
 export const SAMPLE_PROMPT =
@@ -68,9 +68,20 @@ export function hasWrittenPrompt(task: Pick<DayTask, 'spokenPrompt' | 'displayLa
   return prompt !== '' && prompt !== `Time for ${task.displayLabel}.`;
 }
 
-export function cueSpeech(task: DayTask): string {
+export function stepSpeech(step: NonNullable<DayTask['step']>): string {
+  const text = step.text.trim();
+  const end = /[.!?]$/.test(text) ? '' : '.';
+  return `${stepCounter(step)}: ${text}${end}`;
+}
+
+function baseCueSpeech(task: DayTask): string {
   if (hasWrittenPrompt(task)) return task.spokenPrompt.trim();
   const finish = task.type === 'medication' ? 'taken them' : 'finished';
   const when = spokenTime(task.scheduledTime);
   return `Time for ${task.displayLabel}, at ${when}. Press Done when you have ${finish}.`;
+}
+
+export function cueSpeech(task: DayTask): string {
+  const base = baseCueSpeech(task);
+  return task.step === null ? base : `${base} ${stepSpeech(task.step)}`;
 }

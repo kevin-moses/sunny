@@ -7,6 +7,12 @@ TaskType = Literal["medication", "appointment", "routine", "checklist", "reminde
 FlagStatus = Literal["flagged", "already_flagged", "unreachable", "rate_limited"]
 
 
+class TaskStep(TypedDict):
+    index: int
+    count: int
+    text: str
+
+
 class TodayEntry(TypedDict):
     instanceId: str
     type: TaskType
@@ -14,6 +20,7 @@ class TodayEntry(TypedDict):
     spokenPrompt: str
     pillDescription: str | None
     checklistItems: list[str]
+    step: TaskStep | None
     scheduledTime: str
     state: InstanceState
     confirmedAt: float | None
@@ -100,6 +107,7 @@ class AgentContext(TypedDict):
 class ConfirmResult(TypedDict):
     status: Literal[
         "confirmed",
+        "advanced",
         "already_done",
         "nothing_due",
         "not_found",
@@ -109,6 +117,7 @@ class ConfirmResult(TypedDict):
     displayLabel: NotRequired[str]
     scheduledTime: NotRequired[str]
     confirmedAt: NotRequired[float | None]
+    step: NotRequired[TaskStep | None]
     options: NotRequired[list[TodayEntry]]
 
 

@@ -32,7 +32,7 @@ const ANSWER: VoiceCard = { kind: 'answer', tab: 'Sunny', text: 'Sarah is coming
 function textOf(card: NowCard, voice: VoiceCard | null): string {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(<NowBody card={card} step={0} next={NEXT} voice={voice} />);
+    renderer = create(<NowBody card={card} next={NEXT} voice={voice} />);
   });
   return renderer.root
     .findAll((node) => typeof node.props.children === 'string')
@@ -75,7 +75,7 @@ describe('NowBody', () => {
     const card = nowCard(day);
     let renderer!: ReactTestRenderer;
     act(() => {
-      renderer = create(<NowBody card={card} step={0} next={null} voice={null} />);
+      renderer = create(<NowBody card={card} next={null} voice={null} />);
     });
     const texts = renderer.root.findAllByType(Text).map((t) => t.props.children as unknown);
     expect(texts).toContain('Nothing to do right now.');
@@ -87,12 +87,33 @@ describe('NowBody', () => {
     let renderer!: ReactTestRenderer;
     act(() => {
       renderer = create(
-        <NowBody card={{ kind: 'clear', allDone: true }} step={0} next={null} voice={null} />,
+        <NowBody card={{ kind: 'clear', allDone: true }} next={null} voice={null} />,
       );
     });
     const texts = renderer.root.findAllByType(Text).map((t) => t.props.children as unknown);
     expect(texts).toContain('Everything is done.');
     expect(renderer.root.findAllByType(SymbolView)).toHaveLength(1);
+  });
+
+  it("draws the backend's current step with its counter", () => {
+    const steps = ['Put on your coat', 'Take your keys', 'Lock the door'];
+    const card = {
+      kind: 'task',
+      task: {
+        instanceId: 'out',
+        displayLabel: 'Going out',
+        type: 'checklist',
+        scheduledTime: '10:00',
+        checklistItems: steps,
+        step: { index: 1, count: 3, text: 'Take your keys' },
+      },
+      overdue: false,
+      steps,
+    } as unknown as NowCard;
+    const text = textOf(card, null);
+    expect(text).toContain('Step 2 of 3');
+    expect(text).toContain('Take your keys');
+    expect(text).not.toContain('Put on your coat');
   });
 
   it('shows Next up without a voice card', () => {

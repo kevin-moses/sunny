@@ -75,6 +75,7 @@ def today_entry(instance_id: str, label: str) -> TodayEntry:
         "spokenPrompt": f"Time for {label}.",
         "pillDescription": None,
         "checklistItems": [],
+        "step": None,
         "scheduledTime": "08:00",
         "state": "upcoming",
         "confirmedAt": None,
@@ -125,6 +126,48 @@ def test_describe_instance_anytime() -> None:
     assert (
         describe_instance({**water, "state": "missed"}, TZ)
         == "Water plants, anytime today: not done yet"
+    )
+
+
+GOING_OUT: TodayEntry = {
+    **today_entry("i-out", "Going out"),
+    "type": "checklist",
+    "state": "due",
+    "checklistItems": ["Put on your coat", "Take your keys", "Lock the door"],
+    "step": {"index": 1, "count": 3, "text": "Take your keys"},
+}
+
+
+def test_describe_instance_names_the_current_step_until_done() -> None:
+    assert describe_instance(GOING_OUT, TZ) == (
+        "8 AM, Going out: due now, on step 2 of 3: Take your keys"
+    )
+    done: TodayEntry = {**GOING_OUT, "state": "confirmed", "confirmedAt": 1804943400000}
+    assert describe_instance(done, TZ) == "8 AM, Going out: done at 8:10 AM"
+
+
+@pytest.mark.asyncio
+async def test_list_today_describes_the_current_step() -> None:
+    client = FakeConvex({"agent:today": [GOING_OUT]})
+    assert await db_list_today(client, "h1", TZ) == (
+        "Today: 8 AM, Going out: due now, on step 2 of 3: Take your keys."
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirm_task_on_a_step_reads_the_next_step() -> None:
+    client = FakeConvex(
+        {
+            "agent:confirmDueTask": {
+                "status": "advanced",
+                "displayLabel": "Going out",
+                "step": {"index": 2, "count": 3, "text": "Lock the door"},
+            }
+        }
+    )
+    assert await db_confirm_task(client, "h1", TZ, "") == (
+        "Step 2 of 3 of Going out is done; the task is not done until the last step. "
+        "Next: Step 3 of 3: Lock the door. Read that step to them."
     )
 
 

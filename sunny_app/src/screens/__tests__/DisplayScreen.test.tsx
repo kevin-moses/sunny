@@ -47,6 +47,7 @@ function dueTask(instanceId: string): DayTask {
     spokenPrompt: 'Time for Morning pills.',
     pillDescription: null,
     checklistItems: [],
+    step: null,
     scheduledTime: '08:00',
     state: 'due',
     carriedOver: false,

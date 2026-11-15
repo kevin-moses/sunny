@@ -22,6 +22,7 @@ import {
   dayState,
   fixtureEvent,
   fixtureTask,
+  stepsState,
 } from "./frameFixtures.helpers";
 import { FACE_DATA } from "./fonts/frameFontData";
 import { PACKED_HEADER_BYTES, encodePacked, packBits, packPixels } from "./framePacked";
@@ -155,7 +156,7 @@ describe("goldens", () => {
   it("writes a preview of the multi-step task on its second step when asked", () => {
     if (preview === undefined) return;
     for (const screen of FRAME_SCREENS) {
-      const png = encodePng(renderFrame(caseState("steps"), screen, "now", 1));
+      const png = encodePng(renderFrame(stepsState(1), screen, "now"));
       writeFileSync(`${preview}/${goldenName("steps-second-step", "now", screen)}`, png);
     }
   });
@@ -312,9 +313,8 @@ describe("the wall display's rules", () => {
     });
   });
 
-  it("names a multi-step task on its tab, clamps the step, and keeps overdue for Talk", () => {
-    const state = caseState("steps");
-    expect(buildFrameModel(state, "now", 9)).toMatchObject({
+  it("names a multi-step task on its tab, draws the state's step, and keeps overdue for Talk", () => {
+    expect(buildFrameModel(stepsState(2), "now")).toMatchObject({
       now: {
         kind: "steps",
         tab: "Now  \u00b7  Getting ready to go out",
@@ -323,7 +323,7 @@ describe("the wall display's rules", () => {
         overdue: false,
       },
     });
-    expect(buildFrameModel(state, "now", -3)).toMatchObject({ now: { step: 0 } });
+    expect(buildFrameModel(caseState("steps"), "now")).toMatchObject({ now: { step: 0 } });
     expect(buildFrameModel(caseState("overdue-steps"), "now")).toMatchObject({
       now: { kind: "steps", overdue: true, tab: "Still to do  \u00b7  Getting ready to go out" },
     });

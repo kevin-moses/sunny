@@ -34,6 +34,8 @@ import {
   partOfDay,
   weekdayName,
 } from "./time";
+import { taskStep } from "./taskSteps";
+import type { TaskStep } from "./taskSteps";
 import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
 import type { EscalationStep } from "./validators";
@@ -65,6 +67,7 @@ export type DayTask = Pick<
   | "spokenPrompt"
   | "pillDescription"
   | "checklistItems"
+  | "step"
   | "scheduledTime"
   | "state"
   | "carriedOver"
@@ -89,6 +92,7 @@ export type CueEntry = Pick<
   | "type"
   | "displayLabel"
   | "spokenPrompt"
+  | "step"
   | "scheduledTime"
   | "state"
   | "seniorPrompts"
@@ -121,6 +125,7 @@ export interface NowTask {
   overdue: boolean;
   early: boolean;
   steps: string[] | null;
+  step: TaskStep | null;
 }
 
 export interface NowCard {
@@ -249,7 +254,8 @@ export function nowCard(
         pillDescription: target.pillDescription,
         overdue: target.state === "escalated" || target.carriedOver,
         early: target.state === "upcoming",
-        steps: target.checklistItems.length >= 2 ? [...target.checklistItems] : null,
+        steps: target.step === null ? null : [...target.checklistItems],
+        step: target.step,
       },
       allDone: false,
     };
@@ -470,6 +476,7 @@ function cueInputFor(instance: Doc<"taskInstances">, loaded: TaskSteps | null): 
       type: task.type,
       displayLabel: task.displayLabel,
       spokenPrompt: task.spokenPrompt,
+      step: taskStep(task.checklistItems, instance.currentStep),
       scheduledTime: instance.scheduledTime,
       state: instance.state,
       seniorPrompts: seniorPromptCount(instance.firedSteps),

@@ -93,10 +93,12 @@ interface RefusedRequest {
   via: DeviceVia | null;
 }
 
+type PressStatus = PressResult["status"];
+
 type ConfirmOutcome =
   | { kind: "unauthorized" }
   | { kind: "bad_instance" }
-  | { kind: "done"; status: "confirmed" | "rejected"; reason: string | null };
+  | { kind: "done"; status: PressStatus; reason: string | null };
 
 export async function findDeviceByTokenHash(
   ctx: QueryCtx,
@@ -212,7 +214,7 @@ async function confirmForDevice(
   actor: DeviceActor,
   args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number },
   now: number,
-): Promise<{ status: "confirmed" | "rejected"; reason: string | null }> {
+): Promise<{ status: PressStatus; reason: string | null }> {
   if (args.via === "button" && (await pressedBeforeDue(ctx, actor.device, args, now))) {
     await auditRefusal(ctx, actor.device, REFUSED.notDue, args);
     return { status: "rejected", reason: REFUSED.notDue };
@@ -229,7 +231,7 @@ async function confirmForDevice(
     await auditRefusal(ctx, actor.device, REFUSED.notHere, args);
     return { status: "rejected", reason: NO_SUCH_TASK };
   }
-  if (result.status === "confirmed") return { status: "confirmed", reason: null };
+  if (result.status !== "rejected") return { status: result.status, reason: null };
   if (room) await rateLimiter.limit(ctx, "refusedPresses", budget);
   return { status: "rejected", reason: result.reason };
 }

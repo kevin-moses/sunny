@@ -17,6 +17,7 @@ import { audit } from "./lib/audit";
 import { ANYTIME } from "./lib/anytime";
 import { recentPosts, type ChatPostView } from "./lib/chatPosts";
 import { clockTime, cueSpeech } from "./lib/deviceWording";
+import { taskStep } from "./lib/taskSteps";
 import { appError } from "./lib/errors";
 import { requireMaxLength, requireNonBlank } from "./lib/text";
 import type { AgentRequestStatus } from "./lib/validators";
@@ -258,6 +259,7 @@ function taskWording(task: Doc<"tasks">): TaskWording {
             displayLabel: task.displayLabel,
             spokenPrompt: task.spokenPrompt,
             scheduledTime: first,
+            step: taskStep(task.checklistItems, 0),
           }),
   };
 }

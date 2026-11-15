@@ -110,7 +110,8 @@ const TASK_FIELDS = {
   checklist_items: {
     type: "array",
     items: { type: "string" },
-    description: "Optional checklist entries, in order. Replaces the whole list on update.",
+    description:
+      "Optional steps, in order. With two or more, the senior sees one step at a time: Done moves to the next step, and the task is done only after the last one. Replaces the whole list on update.",
   },
 };
 

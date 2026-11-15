@@ -18,6 +18,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Morning pills',
     spokenPrompt: 'Time for Morning pills.',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     seniorPrompts: 0,
     snoozed: false,
@@ -179,6 +180,18 @@ describe('cueSpeech', () => {
       scheduledTime: '15:30',
     });
     expect(cueSpeech(task)).toBe('Time for Walk, at 3:30. Press Done when you have finished.');
+  });
+
+  it("reads the backend's current step after the prompt", () => {
+    const task = makeTask({
+      type: 'checklist',
+      displayLabel: 'Going out',
+      spokenPrompt: 'Time to get ready to go out.',
+      step: { index: 1, count: 3, text: 'Take your keys' },
+    });
+    expect(cueSpeech(task)).toBe('Time to get ready to go out. Step 2 of 3: Take your keys.');
+    const asked = makeTask({ step: { index: 0, count: 2, text: 'Is the stove off?' } });
+    expect(cueSpeech(asked)).toMatch(/Step 1 of 2: Is the stove off\?$/);
   });
 });
 

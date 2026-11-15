@@ -60,8 +60,8 @@ export function doneQuestion(task: Pick<DayTask, 'type'>): string {
   return task.type === 'medication' ? 'Taken them?' : 'Finished?';
 }
 
-export function instructionSteps(task: Pick<DayTask, 'checklistItems'>): string[] | null {
-  return task.checklistItems.length >= 2 ? task.checklistItems : null;
+export function instructionSteps(task: Pick<DayTask, 'checklistItems' | 'step'>): string[] | null {
+  return task.step === null ? null : task.checklistItems;
 }
 
 export function nowCard(day: DayViewData): NowCard {

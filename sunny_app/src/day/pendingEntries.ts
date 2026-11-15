@@ -9,6 +9,7 @@ export interface PendingConfirm {
   label: string;
   pressedAt: number;
   pressId: string;
+  step?: number;
 }
 
 interface RestoreState {
@@ -68,6 +69,29 @@ export function describeEntry(entry: PendingEntry): Record<string, unknown> {
   };
 }
 
+export function repeatsLatest(latest: PendingEntry, entry: PendingEntry): boolean {
+  if (latest.kind === 'undo' || entry.kind === 'undo') return latest.kind === entry.kind;
+  return latest.step === entry.step;
+}
+
+type Stepped<T> = T & { step: NonNullable<DayTask['step']> };
+
+export function hasStepAfter<T extends Pick<DayTask, 'step'>>(task: T): task is Stepped<T> {
+  return task.step !== null && task.step.index < task.step.count - 1;
+}
+
+export function pressLabel(task: Pick<DayTask, 'displayLabel' | 'step'>): string {
+  return hasStepAfter(task)
+    ? `${task.displayLabel}, step ${task.step.index + 1}`
+    : task.displayLabel;
+}
+
+function withStepIndex(task: DayTask, index: number): DayTask {
+  if (task.step === null) return task;
+  const text = task.checklistItems[index] ?? task.step.text;
+  return { ...task, step: { ...task.step, index, text } };
+}
+
 export function latestByInstance(
   entries: readonly PendingEntry[],
 ): ReadonlyMap<string, PendingEntry> {
@@ -84,7 +108,11 @@ export function isEntry(value: unknown): value is PendingEntry {
   if (typeof entry.instanceId !== 'string' || typeof entry.label !== 'string') return false;
   if (typeof entry.pressId !== 'string') return false;
   const kind = (value as { kind?: unknown }).kind;
-  if (kind === undefined) return isFiniteNumber(entry.pressedAt);
+  if (kind === undefined) {
+    return (
+      isFiniteNumber(entry.pressedAt) && (entry.step === undefined || isFiniteNumber(entry.step))
+    );
+  }
   const restore = entry.restore as { state?: unknown; confirmable?: unknown } | undefined;
   return (
     kind === 'undo' &&
@@ -96,11 +124,12 @@ export function isEntry(value: unknown): value is PendingEntry {
 }
 
 export function toPending(
-  task: Pick<DayTask, 'instanceId' | 'displayLabel'>,
+  task: Pick<DayTask, 'instanceId' | 'displayLabel' | 'step'>,
   pressedAt: number,
   pressId: string,
 ): PendingConfirm {
-  return { instanceId: task.instanceId, label: task.displayLabel, pressedAt, pressId };
+  const base = { instanceId: task.instanceId, label: task.displayLabel, pressedAt, pressId };
+  return task.step === null ? base : { ...base, step: task.step.index };
 }
 
 export function toUndo(
@@ -122,17 +151,33 @@ function replayQueued(task: DayTask, queued: readonly PendingEntry[]): DayTask {
   let shown = task;
   let confirmPressIds: readonly string[] =
     task.state === 'confirmed' ? (task.confirmPressIds ?? []) : [];
-  let beforeLocalConfirm: DayTask | null = null;
+  const appliedSteps: readonly string[] = task.stepPressIds ?? [];
+  let lastStepPress = appliedSteps.at(-1) ?? null;
+  let beforeLocalPress: DayTask | null = null;
   for (const entry of queued) {
     if (entry.kind === 'undo') {
-      if (!confirmPressIds.includes(entry.pressId)) continue;
-      shown = beforeLocalConfirm ?? { ...shown, ...entry.restore };
-      confirmPressIds = [];
-      beforeLocalConfirm = null;
+      if (confirmPressIds.includes(entry.pressId)) {
+        shown = beforeLocalPress ?? { ...shown, ...entry.restore };
+        confirmPressIds = [];
+      } else if (entry.pressId === lastStepPress && isOpen(shown) && shown.step !== null) {
+        shown = beforeLocalPress ?? withStepIndex(shown, shown.step.index - 1);
+        lastStepPress = null;
+      } else {
+        continue;
+      }
+      beforeLocalPress = null;
+    } else if (appliedSteps.includes(entry.pressId)) {
+      continue;
     } else if (isOpen(shown)) {
-      beforeLocalConfirm = shown;
-      shown = { ...shown, state: 'confirmed', confirmable: false };
-      confirmPressIds = [entry.pressId];
+      beforeLocalPress = shown;
+      if (hasStepAfter(shown)) {
+        shown = withStepIndex(shown, shown.step.index + 1);
+        lastStepPress = entry.pressId;
+      } else {
+        shown = { ...shown, state: 'confirmed', confirmable: false };
+        confirmPressIds = [entry.pressId];
+        lastStepPress = null;
+      }
     } else if (confirmPressIds.length > 0) {
       confirmPressIds = [...confirmPressIds, entry.pressId];
     }

@@ -6,6 +6,7 @@ import type { MutationCtx } from "./_generated/server";
 import { queueDigestIfDue } from "./digest";
 import { householdCaregivers, SYSTEM_ACTOR } from "./lib/access";
 import { isAnytimeInstance } from "./lib/anytime";
+import { withStepSpeech } from "./lib/deviceWording";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
 import { announceEvents } from "./lib/eventNotices";
@@ -18,6 +19,7 @@ import {
   stepHeld,
 } from "./lib/escalation";
 import { changeInstance, expandTasks } from "./lib/schedule";
+import { taskStep } from "./lib/taskSteps";
 import { formatTime12 } from "./lib/time";
 import { isCaregiverAlert } from "./lib/validators";
 import type { EscalationStep } from "./lib/validators";
@@ -94,7 +96,9 @@ async function queueNotifications(
     title: isPrompt
       ? task.displayLabel
       : `${household.seniorPreferredName} hasn't confirmed ${task.displayLabel}`,
-    body: isPrompt ? task.spokenPrompt : `${dueAt}${note}`,
+    body: isPrompt
+      ? withStepSpeech(task.spokenPrompt, taskStep(task.checklistItems, instance.currentStep))
+      : `${dueAt}${note}`,
     payload: {
       taskId: task._id,
       localDate: instance.localDate,

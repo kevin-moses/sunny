@@ -1,6 +1,7 @@
 import { buildDeviceState } from "./deviceState";
 import type { CueInput, DayEvent, DayTask, DeviceState, DeviceStateInput } from "./deviceState";
 import { DEFAULT_SCREEN } from "./frame";
+import { taskStep } from "./taskSteps";
 import { MINUTE_MS, zonedInstant } from "./time";
 
 const TZ = "America/New_York";
@@ -16,6 +17,7 @@ export function fixtureTask(
   label: string,
   overrides: Partial<Record<keyof DayTask, unknown>> = {},
 ): DayTask {
+  const items = (overrides.checklistItems as string[] | undefined) ?? [];
   return {
     instanceId: id,
     localDate: DATE,
@@ -24,6 +26,7 @@ export function fixtureTask(
     spokenPrompt: `Time for ${label}.`,
     pillDescription: null,
     checklistItems: [],
+    step: taskStep(items, 0),
     scheduledTime: time,
     state: "upcoming",
     carriedOver: false,
@@ -115,6 +118,20 @@ function usualDay(
 }
 
 const GOING_OUT = ["Put on your coat", "Take your keys", "Lock the door"];
+
+export function stepsState(index: number): DeviceState {
+  return dayState("10:05", {
+    tasks: [
+      fixtureTask("pills-am", "08:00", "Morning pills", { ...PILLS, state: "confirmed" }),
+      fixtureTask("out", "10:00", "Getting ready to go out", {
+        type: "checklist",
+        state: "due",
+        checklistItems: GOING_OUT,
+        step: taskStep(GOING_OUT, index),
+      }),
+    ],
+  });
+}
 
 export const FRAME_CASES: { name: string; state: DeviceState }[] = [
   { name: "due", state: dayState("08:10", usualDay({ am: "due" })) },
@@ -216,19 +233,7 @@ export const FRAME_CASES: { name: string; state: DeviceState }[] = [
       ],
     }),
   },
-  {
-    name: "steps",
-    state: dayState("10:05", {
-      tasks: [
-        fixtureTask("pills-am", "08:00", "Morning pills", { ...PILLS, state: "confirmed" }),
-        fixtureTask("out", "10:00", "Getting ready to go out", {
-          type: "checklist",
-          state: "due",
-          checklistItems: GOING_OUT,
-        }),
-      ],
-    }),
-  },
+  { name: "steps", state: stepsState(0) },
   {
     name: "overdue-steps",
     state: dayState("10:40", {

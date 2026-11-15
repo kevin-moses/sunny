@@ -32,8 +32,18 @@ import {
 import type { QueuedPress } from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
+import { isOpenState } from "./lib/escalation";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
+import {
+  advancedStep,
+  hasStepAfter,
+  latestStepPress,
+  seniorCanUndoStep,
+  stepPressed,
+  steppedBack,
+  taskStep,
+} from "./lib/taskSteps";
 import { isLocalDate, isLocalTime, localDate, minutes } from "./lib/time";
 import { todayInstances } from "./lib/today";
 import type { TodayEntry } from "./lib/today";
@@ -63,7 +73,14 @@ export const NO_SUCH_TASK = "The task no longer exists";
 export type ConfirmTransport = "app" | "device_api";
 
 export type ConfirmDueResult = Partial<TodayEntry> & {
-  status: "confirmed" | "already_done" | "nothing_due" | "not_found" | "ambiguous" | "not_due_yet";
+  status:
+    | "confirmed"
+    | "advanced"
+    | "already_done"
+    | "nothing_due"
+    | "not_found"
+    | "ambiguous"
+    | "not_due_yet";
   options?: TodayEntry[];
 };
 
@@ -163,6 +180,7 @@ export async function confirmInstance(
   }
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
+  if (args.pressId !== undefined && stepPressed(instance, args.pressId)) return instance;
   if (isDoneState(instance.state)) return await recordNoOpPress(ctx, actor, instance, args.pressId);
   const takenBack = queuedPress === null ? null : queuedPressTakenBack(queuedPress, instance);
   if (takenBack !== null) throw appError("invalid", takenBack);
@@ -187,6 +205,17 @@ export async function confirmInstance(
     ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
     ...(args.transport === undefined ? {} : { transport: args.transport }),
   };
+  const step = asCaregiver ? null : await instanceStep(ctx, instance);
+  if (hasStepAfter(step)) {
+    const press = { at: now, by: actorUserId(actor), pressId: args.pressId };
+    return await changeInstance(
+      ctx,
+      actor,
+      instance,
+      advancedStep(instance, step, press),
+      pressDetail,
+    );
+  }
   return await changeInstance(
     ctx,
     actor,
@@ -205,6 +234,14 @@ export async function confirmInstance(
     },
     pressDetail,
   );
+}
+
+async function instanceStep(
+  ctx: QueryCtx,
+  instance: Doc<"taskInstances">,
+): Promise<ReturnType<typeof taskStep>> {
+  const task = await ctx.db.get(instance.taskId);
+  return task === null ? null : taskStep(task.checklistItems, instance.currentStep);
 }
 
 async function recordNoOpPress(
@@ -319,10 +356,13 @@ async function undoRefusal(
   pressId: string | undefined,
   tappedAt: number,
 ): Promise<string | null> {
-  if (pressId !== undefined && !(instance.confirmPressIds ?? []).includes(pressId)) {
+  if (isOpenState(instance.state)) {
+    if (!seniorCanUndoStep(instance, userId, pressId, tappedAt)) {
+      return "The task has no step done by this device within the undo window";
+    }
+  } else if (pressId !== undefined && !(instance.confirmPressIds ?? []).includes(pressId)) {
     return "This press is not part of the task's confirmation";
-  }
-  if (!seniorCanUndo(instance, userId, tappedAt)) {
+  } else if (!seniorCanUndo(instance, userId, tappedAt)) {
     return "The task is not confirmed by this device within the undo window";
   }
   if (!(await runsOnSchedule(ctx, instance))) return "This task is no longer on the schedule";
@@ -366,6 +406,27 @@ export async function undoPressedInstance(
       },
     });
     return { status: "too_late" };
+  }
+  const lastStep = latestStepPress(instance);
+  if (isOpenState(instance.state) && lastStep !== null) {
+    const takenBack = lastStep.pressId === undefined ? [] : [lastStep.pressId];
+    const steppedBackRow = await changeInstance(
+      ctx,
+      actor,
+      instance,
+      {
+        ...steppedBack(instance),
+        confirmTakenBackAt: Math.min(now, Math.max(tappedAt, lastStep.at)),
+        confirmTakenBackBy: actor.userId,
+        takenBackPressIds: withTakenBackPressIds(instance.takenBackPressIds, takenBack),
+      },
+      {
+        undo: true,
+        ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
+        takenBackPressIds: takenBack,
+      },
+    );
+    return { status: "undone", instance: steppedBackRow };
   }
   const restored = await changeInstance(
     ctx,
@@ -472,9 +533,10 @@ export async function confirmDueTaskCore(
   }
   return {
     ...entry,
-    status: "confirmed",
+    status: pressStatus(row),
     state: row.state,
     confirmedAt: row.confirmedAt ?? null,
+    step: taskStep(entry.checklistItems, row.currentStep),
   };
 }
 
@@ -610,7 +672,12 @@ export const confirmTaskInstance = mutation({
 });
 
 export type PressResult =
-  { status: "confirmed"; instance: Doc<"taskInstances"> } | { status: "rejected"; reason: string };
+  | { status: "confirmed" | "advanced"; instance: Doc<"taskInstances"> }
+  | { status: "rejected"; reason: string };
+
+function pressStatus(row: Doc<"taskInstances">): "confirmed" | "advanced" {
+  return isDoneState(row.state) ? "confirmed" : "advanced";
+}
 
 export async function confirmPressedInstance(
   ctx: MutationCtx,
@@ -660,7 +727,8 @@ export async function confirmPressedInstance(
   }
   if (instance === null) return await rejected(NO_SUCH_TASK);
   try {
-    return { status: "confirmed", instance: await confirmInstance(ctx, actor, args, now) };
+    const row = await confirmInstance(ctx, actor, args, now);
+    return { status: pressStatus(row), instance: row };
   } catch (error) {
     if (error instanceof ConvexError && !isAppError(error, "forbidden")) {
       return await rejected((error.data as { message?: string }).message ?? "Not applied");

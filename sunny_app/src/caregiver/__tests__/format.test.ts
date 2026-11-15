@@ -22,6 +22,7 @@ import {
   plannedTasksForDate,
   resolveSelectedDate,
   shouldSaveNote,
+  stepProgress,
   selectedDayTitle,
   todaysTasks,
   WORKING_TEXT,
@@ -74,6 +75,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Take medication',
     localDate: '2026-10-29',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     carriedOver: false,
     confirmedAt: null,
@@ -1096,5 +1098,36 @@ describe('alreadyDoneMessage', () => {
 
   it('says already done when the signed-in user is unknown', () => {
     expect(alreadyDoneMessage('user_other', null)).toBe(ALREADY_DONE_MESSAGE);
+  });
+});
+
+describe('multi-step tasks', () => {
+  const STEPS = ['Put on your coat', 'Take your keys', 'Lock the door'];
+
+  function onStep(index: number, overrides: Partial<Record<keyof DayTask, unknown>> = {}) {
+    return makeTask({
+      checklistItems: STEPS,
+      step: { index, count: STEPS.length, text: STEPS[index] },
+      ...overrides,
+    });
+  }
+
+  it('shows Step N of M on an open task in progress', () => {
+    expect(stepProgress(onStep(1))).toBe('Step 2 of 3');
+    const [row] = taskRows(makeDay({ tasks: [onStep(2)] }));
+    expect(row).toMatchObject({ variant: 'open', detail: 'Step 3 of 3' });
+    expect(row!.accessibilityLabel).toBe('8:00 AM, Take medication. Step 3 of 3');
+  });
+
+  it('shows no step before the first Done or once the task is done', () => {
+    expect(stepProgress(onStep(0))).toBeNull();
+    expect(stepProgress(onStep(2, { state: 'confirmed' }))).toBeNull();
+    expect(stepProgress(makeTask())).toBeNull();
+  });
+
+  it('says the step in the alert', () => {
+    expect(alertMessage(onStep(1, { state: 'escalated', scheduledTime: '14:05' }))).toBe(
+      'Due at 2:05 PM. On step 2 of 3. Sunny has alerted the family.',
+    );
   });
 });

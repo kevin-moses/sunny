@@ -52,6 +52,7 @@ def _instance(
         "type": "medication" if "pills" in label.lower() else "routine",
         "pillDescription": None,
         "checklistItems": [],
+        "step": None,
     }
 
 

@@ -81,6 +81,7 @@ from tools import (
     db_snooze_task,
     db_undo_last_dose,
     one_line,
+    step_speech,
 )
 from weather import Place, WeatherError, lookup_place, weather_report
 
@@ -256,7 +257,9 @@ class Assistant(Agent):
             'Record that the senior did a task ("I took them", "done"). Confirms the '
             "matching task on today's schedule, or the one due now when no name is "
             "given. If it was already confirmed, returns when, so the senior is never "
-            "told to repeat a dose. Only call when the senior clearly says they did it."
+            "told to repeat a dose. A task with steps is done one step at a time: each "
+            "call marks the current step done and returns the next step to read out. "
+            "Only call when the senior clearly says they did it."
         )
     )
     async def confirm_task(
@@ -693,6 +696,12 @@ def _opening_prompt(
 
 
 def _display_cue_speech(instance: TodayEntry) -> str:
+    base = _display_cue_base(instance)
+    step = instance.get("step")
+    return base if step is None else f"{base} {one_line(step_speech(step))}"
+
+
+def _display_cue_base(instance: TodayEntry) -> str:
     label = instance["displayLabel"]
     spoken = instance["spokenPrompt"].strip()
     if spoken and spoken != f"Time for {label}.":

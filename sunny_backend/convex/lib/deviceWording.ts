@@ -1,4 +1,5 @@
 import { ANYTIME } from "./anytime";
+import type { TaskStep } from "./taskSteps";
 import { daysBetween, isLocalDate, weekdayName } from "./time";
 import type { TaskType } from "./validators";
 
@@ -9,6 +10,7 @@ export interface SpeechTask {
   displayLabel: string;
   spokenPrompt: string;
   scheduledTime: string;
+  step: TaskStep | null;
 }
 
 function timeParts(localTime: string): { hour: number; minute: string } | null {
@@ -36,11 +38,25 @@ export function hasWrittenPrompt(task: Pick<SpeechTask, "spokenPrompt" | "displa
   return prompt !== "" && prompt !== `Time for ${task.displayLabel}.`;
 }
 
-export function cueSpeech(task: SpeechTask): string {
+export function stepSpeech(step: TaskStep): string {
+  const text = step.text.trim();
+  const end = /[.!?]$/.test(text) ? "" : ".";
+  return `Step ${step.index + 1} of ${step.count}: ${text}${end}`;
+}
+
+export function withStepSpeech(speech: string, step: TaskStep | null): string {
+  return step === null ? speech : `${speech} ${stepSpeech(step)}`;
+}
+
+function baseCueSpeech(task: SpeechTask): string {
   if (hasWrittenPrompt(task)) return task.spokenPrompt.trim();
   const finish = task.type === "medication" ? "taken them" : "finished";
   const when = spokenTime(task.scheduledTime);
   return `Time for ${task.displayLabel}, at ${when}. Press Done when you have ${finish}.`;
+}
+
+export function cueSpeech(task: SpeechTask): string {
+  return withStepSpeech(baseCueSpeech(task), task.step);
 }
 
 export function doneQuestion(type: TaskType): string {

@@ -84,6 +84,7 @@ function task(overrides: Partial<DayTask> = {}): DayTask {
     instanceId: 'inst1',
     displayLabel: 'Morning pills',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     confirmable: true,
     ...overrides,
@@ -1140,5 +1141,111 @@ describe('DoneCard', () => {
     expect(style.minHeight).toBeGreaterThanOrEqual(60);
     expect(style.backgroundColor).not.toBe(colors.success);
     expect(style.backgroundColor).toBe(colors.surface);
+  });
+});
+
+describe('Done on a multi-step task', () => {
+  const STEPS = ['Put on your coat', 'Take your keys', 'Lock the door'];
+
+  function multi(index: number, overrides: Partial<DayTask> = {}): DayTask {
+    return task({
+      displayLabel: 'Going out',
+      checklistItems: STEPS,
+      step: { index, count: STEPS.length, text: STEPS[index]! },
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+    mockStore.clear();
+    mockFailWrites = false;
+    mockWriteGate = null;
+    mockConnected = false;
+    mockMutation.mockReset();
+    announce = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    announceQueued = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+    announce.mockRestore();
+    announceQueued.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('offline, each press shows the next step and only the last press shows the task done', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, multi(0), true);
+    await press(h);
+    expect(h.get().undo).toEqual({
+      label: 'Going out, step 1',
+      text: 'Going out, step 1 done. It will be sent when the internet is back.',
+    });
+    let shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'due', step: { index: 1, text: 'Take your keys' } });
+    await advance(SETTLE_MS);
+    h.rerender(shown[0]!, true, [multi(0)]);
+    await press(h);
+    shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'due', step: { index: 2, text: 'Lock the door' } });
+    await advance(SETTLE_MS);
+    h.rerender(shown[0]!, true, [multi(0)]);
+    await press(h);
+    expect(h.get().undo?.text).toBe('Going out done. It will be sent when the internet is back.');
+    shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'confirmed', confirmable: false });
+    expect(queue.getEntries().map((e) => (e.kind === 'undo' ? null : e.step))).toEqual([0, 1, 2]);
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it('Undo of a step press shows the step again and says that step is not done', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, multi(0), true);
+    await press(h);
+    await act(async () => {
+      h.get().pressUndo();
+    });
+    const shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'due', step: { index: 0, text: 'Put on your coat' } });
+    expect(announceQueued).toHaveBeenCalledWith('Going out, step 1 is not done.', {
+      queue: true,
+    });
+  });
+});
+
+describe('DoneCard with a step', () => {
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+  });
+
+  it('shows the counter and the step text, and says them on the Done button', () => {
+    let renderer!: ReactTestRenderer;
+    const multi = task({
+      displayLabel: 'Going out',
+      checklistItems: ['Put on your coat', 'Take your keys'],
+      step: { index: 1, count: 2, text: 'Take your keys' },
+    });
+    act(() => {
+      renderer = create(<DoneCard task={multi} message={null} onPress={() => {}} />);
+      mounted.push(renderer);
+    });
+    const texts = renderer.root
+      .findAll((n) => (n.type as unknown) === 'Text')
+      .map((n) => String(n.props.children));
+    expect(texts).toEqual(['Going out', 'Step 2 of 2', 'Take your keys', 'Done']);
+    const button = renderer.root.find(
+      (n) => typeof n.type !== 'string' && n.props.accessibilityRole === 'button',
+    );
+    expect(button.props.accessibilityLabel).toBe('Done: Going out, step 2 of 2, Take your keys');
   });
 });

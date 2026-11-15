@@ -17,7 +17,7 @@ export function compareTaskTime(
   return a.scheduledTime < b.scheduledTime ? -1 : a.scheduledTime > b.scheduledTime ? 1 : 0;
 }
 
-export function isDone(task: DayTask): boolean {
+export function isDone(task: Pick<DayTask, 'state'>): boolean {
   return task.state === 'confirmed' || task.state === 'resolved';
 }
 
@@ -28,11 +28,15 @@ export const SPOKEN = {
   missed: 'Earlier today, not marked done',
 } as const;
 
+export function stepCounter(step: NonNullable<DayTask['step']>): string {
+  return `Step ${step.index + 1} of ${step.count}`;
+}
+
 export function isMissed(task: DayTask): boolean {
   return task.state === 'missed';
 }
 
-export function isOpen(task: DayTask): boolean {
+export function isOpen(task: Pick<DayTask, 'state'>): boolean {
   return !isDone(task);
 }
 

@@ -128,7 +128,7 @@ function isSnoozed(state: DeviceState, task: NowTask): boolean {
   return state.cues.some((c) => c.instanceId === task.instanceId && c.snoozed);
 }
 
-function taskView(state: DeviceState, task: NowTask, step: number): NowView {
+function taskView(state: DeviceState, task: NowTask): NowView {
   const label = labelOr(task.label, task.type);
   const lead = isSnoozed(state, task) ? "Later" : task.overdue ? "Still to do" : "Now";
   if (task.steps !== null) {
@@ -137,7 +137,7 @@ function taskView(state: DeviceState, task: NowTask, step: number): NowView {
       kind: "steps",
       tab: `${lead}${TAB_SEPARATOR}${label}`,
       steps,
-      step: Math.max(0, Math.min(Math.floor(step), steps.length - 1)),
+      step: task.step?.index ?? 0,
       overdue: task.overdue,
     };
   }
@@ -162,7 +162,7 @@ function nextView(next: NextItem): FrameNext {
   };
 }
 
-export function buildFrameModel(state: DeviceState, page: CarouselPage, step = 0): FrameModel {
+export function buildFrameModel(state: DeviceState, page: CarouselPage): FrameModel {
   const header = { header: cleanText(state.header), date: cleanText(state.fullDate) };
   const task = dueNowTask(state);
   if (page === "today") {
@@ -177,8 +177,7 @@ export function buildFrameModel(state: DeviceState, page: CarouselPage, step = 0
   return {
     ...header,
     page,
-    now:
-      task !== null ? taskView(state, task, step) : { kind: "clear", allDone: state.now.allDone },
+    now: task !== null ? taskView(state, task) : { kind: "clear", allDone: state.now.allDone },
     next: state.nextUpAfterDue === null ? null : nextView(state.nextUpAfterDue),
   };
 }
@@ -654,13 +653,8 @@ export function drawFrame(model: FrameModel, screen: Screen): Frame {
   return canvas.toFrame();
 }
 
-export function renderFrame(
-  state: DeviceState,
-  screen: Screen,
-  page: CarouselPage,
-  step = 0,
-): Frame {
-  return drawFrame(buildFrameModel(state, page, step), screen);
+export function renderFrame(state: DeviceState, screen: Screen, page: CarouselPage): Frame {
+  return drawFrame(buildFrameModel(state, page), screen);
 }
 
 export function isDrawableScreen(screen: Screen): boolean {

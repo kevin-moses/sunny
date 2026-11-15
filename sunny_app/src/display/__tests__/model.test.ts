@@ -12,6 +12,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Morning pills',
     pillDescription: null,
     checklistItems: [],
+    step: null,
     scheduledTime: '08:00',
     state: 'upcoming',
     carriedOver: false,
@@ -74,12 +75,16 @@ describe('nowCard', () => {
     expect(due.kind === 'task' && due.overdue).toBe(false);
   });
 
-  it('uses two or more checklist items as steps', () => {
+  it('shows the steps of a task the backend gives a current step', () => {
     const steps = ['Wash your hands', 'Tilt your head back'];
-    const multi = nowCard(makeDay({ tasks: [makeTask({ state: 'due', checklistItems: steps })] }));
+    const step = { index: 1, count: 2, text: 'Tilt your head back' };
+    const multi = nowCard(
+      makeDay({ tasks: [makeTask({ state: 'due', checklistItems: steps, step })] }),
+    );
     const single = nowCard(
       makeDay({ tasks: [makeTask({ state: 'due', checklistItems: ['Only one'] })] }),
     );
+    expect(multi.kind === 'task' && multi.task.step).toEqual(step);
     expect(multi.kind === 'task' && multi.steps).toEqual(steps);
     expect(single.kind === 'task' && single.steps).toBeNull();
   });

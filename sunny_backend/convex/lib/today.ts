@@ -4,6 +4,8 @@ import { type Actor, memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
 import { isSnoozed, seniorPromptCount } from "./escalation";
+import { taskStep, visibleStepPressIds } from "./taskSteps";
+import type { TaskStep } from "./taskSteps";
 import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
@@ -17,6 +19,7 @@ export interface TodayEntry {
   spokenPrompt: string;
   pillDescription: string | null;
   checklistItems: string[];
+  step: TaskStep | null;
   scheduledTime: string;
   state: InstanceState;
   confirmedAt: number | null;
@@ -33,6 +36,7 @@ export interface TodayEntry {
   confirmable: boolean;
   reopenable: boolean;
   confirmPressIds: string[];
+  stepPressIds: string[];
   seniorPrompts: number;
   snoozed: boolean;
   snoozedUntil: number | null;
@@ -49,13 +53,16 @@ export function receivedDaysLater(
   );
 }
 
+function seniorReader(reader: Actor | null): string | null {
+  return reader?.kind === "senior_device" ? reader.userId : null;
+}
+
 function visibleConfirmPressIds(
   instance: Pick<Doc<"taskInstances">, "confirmedBy" | "confirmPressIds">,
   reader: Actor | null,
 ): string[] {
-  return reader?.kind === "senior_device" && instance.confirmedBy === reader.userId
-    ? (instance.confirmPressIds ?? [])
-    : [];
+  const userId = seniorReader(reader);
+  return userId !== null && instance.confirmedBy === userId ? (instance.confirmPressIds ?? []) : [];
 }
 
 export async function todayInstances(
@@ -104,6 +111,7 @@ export async function todayInstances(
       spokenPrompt: task.spokenPrompt,
       pillDescription: task.pillDescription ?? null,
       checklistItems: task.checklistItems,
+      step: taskStep(task.checklistItems, instance.currentStep),
       scheduledTime: instance.scheduledTime,
       state: instance.state,
       confirmedAt,
@@ -124,6 +132,7 @@ export async function todayInstances(
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
       confirmPressIds: visibleConfirmPressIds(instance, reader),
+      stepPressIds: visibleStepPressIds(instance, seniorReader(reader)),
       seniorPrompts: seniorPromptCount(instance.firedSteps),
       snoozed: isSnoozed(instance.snoozedUntil, now),
       snoozedUntil: instance.snoozedUntil ?? null,

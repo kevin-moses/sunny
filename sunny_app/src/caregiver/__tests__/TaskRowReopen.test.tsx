@@ -39,6 +39,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Morning pills',
     localDate: '2026-11-14',
     scheduledTime: '08:00',
+    step: null,
     state: 'confirmed',
     carriedOver: false,
     confirmedAt: Date.parse('2026-11-14T13:02:00Z'),

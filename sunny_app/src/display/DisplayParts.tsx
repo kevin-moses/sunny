@@ -91,12 +91,10 @@ function PromptLine({
 
 export function NowBody({
   card,
-  step,
   next,
   voice,
 }: {
   card: NowCard;
-  step: number;
   next: NextItem | null;
   voice: VoiceCard | null;
 }) {
@@ -109,7 +107,7 @@ export function NowBody({
   }
   return (
     <View style={styles.nowBody}>
-      <NowColumn card={card} step={step} />
+      <NowColumn card={card} />
       <View style={styles.nextColumn}>
         {voice !== null ? (
           <VoiceCardView card={voice} wide={false} />
@@ -175,7 +173,7 @@ export function tabText(card: NowCard): string {
   return `${tabLead(card)}${TAB_SEPARATOR}${tail}`;
 }
 
-function NowColumn({ card, step }: { card: NowCard; step: number }) {
+function NowColumn({ card }: { card: NowCard }) {
   return (
     <View style={styles.nowColumn}>
       <View style={styles.tab}>
@@ -185,7 +183,7 @@ function NowColumn({ card, step }: { card: NowCard; step: number }) {
         {card.kind === 'clear' ? (
           <ClearContent allDone={card.allDone} />
         ) : card.steps !== null ? (
-          <StepContent steps={card.steps} step={step} />
+          <StepContent steps={card.steps} step={card.task.step?.index ?? 0} />
         ) : (
           <TaskContent card={card} />
         )}

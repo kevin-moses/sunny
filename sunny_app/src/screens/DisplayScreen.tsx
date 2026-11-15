@@ -101,12 +101,7 @@ export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   } else {
     panel = (
       <DisplayCanvas day={day}>
-        <NowBody
-          card={card}
-          step={keys.step}
-          next={nextItem(day, agenda, nowTaskId)}
-          voice={voice.card}
-        />
+        <NowBody card={card} next={nextItem(day, agenda, nowTaskId)} voice={voice.card} />
       </DisplayCanvas>
     );
   }

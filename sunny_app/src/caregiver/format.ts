@@ -9,6 +9,7 @@ import {
   isAnytime,
   isDone,
   isOpen,
+  stepCounter,
 } from '../day/format';
 import {
   addDays,
@@ -96,10 +97,17 @@ export function isAlert(task: DayTask): boolean {
   return !isAnytime(task) && (task.state === 'escalated' || task.state === 'missed');
 }
 
+export function stepProgress(task: Pick<DayTask, 'state' | 'step'>): string | null {
+  if (task.step === null || task.step.index === 0 || !isOpen(task)) return null;
+  return stepCounter(task.step);
+}
+
 export function alertMessage(task: DayTask): string {
   const parts: string[] = [];
   if (task.carriedOver) parts.push('Left over from yesterday.');
   parts.push(`Due at ${displayTime(task.scheduledTime)}.`);
+  const progress = stepProgress(task);
+  if (progress !== null) parts.push(`On ${progress.toLowerCase()}.`);
   if (task.state === 'escalated') parts.push('Sunny has alerted the family.');
   return parts.join(' ');
 }
@@ -212,7 +220,7 @@ function spokenLabel(row: {
 function taskRow(task: DayTask, options: { id: string; userId: string | null }): TaskRowData {
   const variant: TaskVariant = !isOpen(task) ? 'done' : isAlert(task) ? 'alert' : 'open';
   const time = displayTime(task.scheduledTime);
-  const detail = doneDetail(task, options.userId);
+  const detail = doneDetail(task, options.userId) ?? stepProgress(task);
   return {
     kind: 'task',
     id: options.id,

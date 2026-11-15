@@ -17,6 +17,7 @@ from convex_types import (
     MedicationStatus,
     RememberFactResult,
     SnoozeResult,
+    TaskStep,
     TodayEntry,
     UndoDoseResult,
 )
@@ -80,6 +81,12 @@ def local_clock(epoch_ms: float, tz: str) -> str:
     return clock_for_voice(to_local(epoch_ms, tz))
 
 
+def step_speech(step: TaskStep) -> str:
+    text = step["text"].strip()
+    end = "" if text.endswith((".", "!", "?")) else "."
+    return f"Step {step['index'] + 1} of {step['count']}: {text}{end}"
+
+
 def describe_instance(item: TodayEntry, tz: str) -> str:
     label = item.get("displayLabel", "")
     anytime = item.get("scheduledTime", "") == ANYTIME
@@ -99,6 +106,11 @@ def describe_instance(item: TodayEntry, tz: str) -> str:
         status = "not done yet"
     else:
         status = "later today"
+    step = item.get("step")
+    if step is not None and state not in _DONE_STATES:
+        status += (
+            f", on step {step['index'] + 1} of {step['count']}: {step['text'].strip()}"
+        )
     return f"{when}: {status}"
 
 
@@ -122,6 +134,12 @@ async def db_confirm_task(
     label = r.get("displayLabel") or task_name
     if status == "confirmed":
         return f"Confirmed: {label}{_at_clock(r.get('confirmedAt'), tz)}."
+    step = r.get("step")
+    if status == "advanced" and step is not None:
+        return (
+            f"Step {step['index']} of {step['count']} of {label} is done; the task is "
+            f"not done until the last step. Next: {step_speech(step)} Read that step to them."
+        )
     shared = _task_outcome(r, label, task_name, tz)
     if shared is not None:
         return shared

@@ -1198,6 +1198,19 @@ class TestReviewFixes:
             "Time for Walk. Press Done when you have finished."
         )
 
+    def test_opening_prompt_reads_the_current_step(self) -> None:
+        entry: TodayEntry = {
+            **today_entry("i1", "Going out"),
+            "type": "checklist",
+            "state": "due",
+            "spokenPrompt": "Time to get ready to go out.",
+            "checklistItems": ["Put on your coat", "Take your keys"],
+            "step": {"index": 1, "count": 2, "text": "Take your keys"},
+        }
+        assert _opening_prompt(context_with(entry), "i1")[0] == (
+            "Time to get ready to go out. Step 2 of 2: Take your keys."
+        )
+
     def test_short_real_words_pass_the_garbage_filter(self) -> None:
         for text in ("Hi", "no", "OK.", "Yes"):
             assert _is_garbage_input(text) is False

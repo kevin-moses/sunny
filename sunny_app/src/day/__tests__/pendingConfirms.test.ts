@@ -842,10 +842,10 @@ describe('classifyFailure', () => {
 
 describe('applyPending', () => {
   const tasks = [
-    { instanceId: 'a', state: 'due', confirmable: true },
-    { instanceId: 'b', state: 'upcoming', confirmable: true },
-    { instanceId: 'c', state: 'confirmed', confirmable: false },
-    { instanceId: 'd', state: 'resolved', confirmable: false },
+    { instanceId: 'a', state: 'due', confirmable: true, step: null },
+    { instanceId: 'b', state: 'upcoming', confirmable: true, step: null },
+    { instanceId: 'c', state: 'confirmed', confirmable: false, step: null },
+    { instanceId: 'd', state: 'resolved', confirmable: false, step: null },
   ] as unknown as DayTask[];
 
   const own = { ...tasks[2], confirmPressIds: [pressIdOf('c', NOW)] } as DayTask;
@@ -1068,7 +1068,7 @@ describe('toUndo', () => {
 
 describe('toPending', () => {
   it('builds an entry from a task, the press time and the press id', () => {
-    const task = { instanceId: 'a', displayLabel: 'Pills' } as unknown as DayTask;
+    const task = { instanceId: 'a', displayLabel: 'Pills', step: null } as unknown as DayTask;
     expect(toPending(task, 7, 'pid-0000000000000001')).toEqual({
       instanceId: 'a',
       label: 'Pills',
@@ -1141,5 +1141,99 @@ describe('press ids', () => {
       'Ignored stored items that are not entries',
       { count: 3 },
     );
+  });
+});
+
+describe('queued presses on a multi-step task', () => {
+  const STEPS = ['Put on your coat', 'Take your keys', 'Lock the door'];
+
+  function multi(index: number, overrides: Record<string, unknown> = {}): DayTask {
+    return {
+      instanceId: 'm',
+      displayLabel: 'Going out',
+      state: 'due',
+      confirmable: true,
+      checklistItems: STEPS,
+      step: { index, count: STEPS.length, text: STEPS[index] },
+      confirmPressIds: [],
+      stepPressIds: [],
+      ...overrides,
+    } as unknown as DayTask;
+  }
+
+  function stepPress(n: number, step: number): PendingConfirm {
+    return { ...entry('m', NOW + n, `pid-step-${n}`), step };
+  }
+
+  function stepUndo(n: number, pressN: number): PendingUndo {
+    return undo('m', NOW + n, 'due', 'Going out', `pid-step-${pressN}`);
+  }
+
+  it('a queued press shows the next step, not confirmed', () => {
+    const [shown] = applyPending([multi(0)], [stepPress(1, 0)]);
+    expect(shown).toMatchObject({
+      state: 'due',
+      confirmable: true,
+      step: { index: 1, count: 3, text: 'Take your keys' },
+    });
+  });
+
+  it('confirms only with the press made on the last step', () => {
+    const two = applyPending([multi(0)], [stepPress(1, 0), stepPress(2, 1)]);
+    expect(two[0]).toMatchObject({ state: 'due', step: { index: 2, text: 'Lock the door' } });
+    const three = applyPending([multi(0)], [stepPress(1, 0), stepPress(2, 1), stepPress(3, 2)]);
+    expect(three[0]).toMatchObject({ state: 'confirmed', confirmable: false });
+  });
+
+  it('does not apply again a press the server already counted', () => {
+    const server = multi(1, { stepPressIds: ['pid-step-1'] });
+    expect(applyPending([server], [stepPress(1, 0)])[0]).toBe(server);
+    expect(applyPending([server], [stepPress(1, 0), stepPress(2, 1)])[0]).toMatchObject({
+      step: { index: 2, text: 'Lock the door' },
+    });
+  });
+
+  it('an undo of a queued step press shows the step before it', () => {
+    const [shown] = applyPending([multi(0)], [stepPress(1, 0), stepPress(2, 1), stepUndo(3, 2)]);
+    expect(shown).toMatchObject({ state: 'due', step: { index: 1, text: 'Take your keys' } });
+  });
+
+  it('an undo of a step press the server counted goes back one step', () => {
+    const server = multi(2, { stepPressIds: ['pid-step-1', 'pid-step-2'] });
+    expect(applyPending([server], [stepUndo(3, 2)])[0]).toMatchObject({
+      step: { index: 1, text: 'Take your keys' },
+    });
+    expect(applyPending([server], [stepUndo(3, 1)])[0]).toBe(server);
+  });
+
+  it('an undo of the last-step press shows the last step open again', () => {
+    const [shown] = applyPending([multi(2)], [stepPress(1, 2), stepUndo(2, 1)]);
+    expect(shown).toMatchObject({ state: 'due', step: { index: 2, text: 'Lock the door' } });
+  });
+
+  it('queues a press made on each step, and only one press made on the same step', async () => {
+    const queue = makeQueue();
+    await queue.enqueue(stepPress(1, 0));
+    await queue.enqueue(stepPress(2, 1));
+    expect(await queue.enqueue(stepPress(3, 1))).toEqual(stepPress(2, 1));
+    expect(stored()).toEqual([stepPress(1, 0), stepPress(2, 1)]);
+  });
+
+  it('keeps a stored step across a restart and drops an entry with a step that is not a number', async () => {
+    const bad = { ...stepPress(2, 1), step: 'one' };
+    mockStore.set(STORAGE_KEY, JSON.stringify([stepPress(1, 0), bad]));
+    const queue = makeQueue();
+    await queue.load();
+    expect(queue.getEntries()).toEqual([stepPress(1, 0)]);
+  });
+
+  it('toPending records the step on screen for a multi-step task', () => {
+    expect(toPending(multi(1), 7, 'pid-0000000000000001')).toEqual({
+      instanceId: 'm',
+      label: 'Going out',
+      pressedAt: 7,
+      pressId: 'pid-0000000000000001',
+      step: 1,
+    });
   });
 });

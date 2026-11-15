@@ -166,6 +166,17 @@ export default defineSchema({
     confirmTakenBackBy: v.optional(v.string()),
     confirmPressIds: v.optional(v.array(v.string())),
     takenBackPressIds: v.optional(v.array(v.string())),
+    currentStep: v.optional(v.number()),
+    stepPresses: v.optional(
+      v.array(
+        v.object({
+          step: v.number(),
+          at: v.number(),
+          by: v.optional(v.string()),
+          pressId: v.optional(v.string()),
+        }),
+      ),
+    ),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),
     claimedBy: v.optional(v.string()),

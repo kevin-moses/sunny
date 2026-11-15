@@ -66,6 +66,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Morning pills',
     spokenPrompt: 'Time for your pills.',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     seniorPrompts: 0,
     snoozed: false,

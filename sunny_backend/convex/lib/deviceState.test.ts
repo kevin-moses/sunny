@@ -9,6 +9,7 @@ import {
   todayRows,
 } from "./deviceState";
 import type { CueInput, DayEvent, DayTask, DeviceStateInput } from "./deviceState";
+import { taskStep } from "./taskSteps";
 import type { EscalationStep } from "./validators";
 
 const TZ = "America/New_York";
@@ -20,6 +21,7 @@ function local(hhmm: string, date = "2026-11-07"): number {
 }
 
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
+  const items = (overrides.checklistItems as string[] | undefined) ?? [];
   return {
     instanceId: "t1",
     localDate: "2026-11-07",
@@ -28,6 +30,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     spokenPrompt: "Time for Morning pills.",
     pillDescription: null,
     checklistItems: [],
+    step: taskStep(items, 0),
     scheduledTime: "08:00",
     state: "upcoming",
     carriedOver: false,
@@ -650,6 +653,7 @@ describe("the state's shape", () => {
         "overdue",
         "early",
         "steps",
+        "step",
       ].sort(),
     );
     expect(keys(state.done)).toEqual(["early", "instanceId"]);

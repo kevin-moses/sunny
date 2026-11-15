@@ -7,6 +7,7 @@ import { currentLocalDate } from './localDate';
 import type { ConfirmQueue } from './pendingConfirms';
 import {
   newPressId,
+  pressLabel,
   toPending,
   toUndo,
   type PendingConfirm,
@@ -125,7 +126,7 @@ export function useDoneAction(
     announcedUndone.current = undone;
     const shown = shownTasks.find((t) => t.instanceId === undone.task.instanceId);
     if (shown !== undefined && isOpen(shown)) {
-      announceQueued(`${undone.task.displayLabel} is not done.`);
+      announceQueued(`${pressLabel(undone.task)} is not done.`);
     }
   }, [undone, shownTasks]);
 
@@ -137,7 +138,7 @@ export function useDoneAction(
 
   const offerUndo = (pressed: Pressed, now: number): void => {
     const left = pressed.pressedAt + UNDO_MS - now;
-    const spoken = `${pressed.task.displayLabel} done.${isOffline ? OFFLINE_NOTE : ''} Undo`;
+    const spoken = `${pressLabel(pressed.task)} done.${isOffline ? OFFLINE_NOTE : ''} Undo`;
     setOffer(left > 0 ? pressed : null, spoken);
     if (left > 0) undoTimer.current = setTimeout(() => setOffer(null), left);
   };
@@ -242,8 +243,8 @@ export function useDoneAction(
     offer === null
       ? null
       : {
-          label: offer.pressed.task.displayLabel,
-          text: `${offer.pressed.task.displayLabel} done.${unsent ? OFFLINE_NOTE : ''}`,
+          label: pressLabel(offer.pressed.task),
+          text: `${pressLabel(offer.pressed.task)} done.${unsent ? OFFLINE_NOTE : ''}`,
         };
 
   return { task, message, pressDone, undo, pressUndo };

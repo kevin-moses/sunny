@@ -9,6 +9,7 @@ import {
   isDue,
   isMissed,
   SPOKEN,
+  stepCounter,
   whenText,
 } from '../day/format';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
@@ -246,6 +247,9 @@ export function DoneCard({
   if (task === null && message === null && undo === null) return null;
   const early = task !== null && task.state === 'upcoming';
   const comingUp = task === null ? '' : `Coming up at ${displayTime(task.scheduledTime)}`;
+  const step = task?.step ?? null;
+  const counter = step === null ? '' : stepCounter(step);
+  const stepSpoken = step === null ? '' : `, ${counter.toLowerCase()}, ${step.text}`;
   return (
     <View style={{ gap: 12, alignSelf: 'stretch' }}>
       {task !== null && (
@@ -264,13 +268,19 @@ export function DoneCard({
             <Text style={[styles.rounded, { fontSize: 30, fontWeight: '700' }]}>
               {task.displayLabel}
             </Text>
+            {step !== null && (
+              <>
+                <Text style={[styles.rounded, styles.stepCounter]}>{counter}</Text>
+                <Text style={[styles.rounded, styles.stepText]}>{step.text}</Text>
+              </>
+            )}
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
               early
-                ? `Done early: ${task.displayLabel}, ${comingUp.toLowerCase()}`
-                : `Done: ${task.displayLabel}`
+                ? `Done early: ${task.displayLabel}${stepSpoken}, ${comingUp.toLowerCase()}`
+                : `Done: ${task.displayLabel}${stepSpoken}`
             }
             onPress={onPress}
             style={({ pressed }) => [
@@ -314,6 +324,8 @@ const styles = StyleSheet.create({
   },
   earlyButton: { backgroundColor: colors.surface, borderWidth: 4, borderColor: colors.success },
   earlyText: { color: colors.success, fontSize: 34 },
+  stepCounter: { fontSize: 22, fontWeight: '600', color: colors.secondaryText },
+  stepText: { fontSize: 28, fontWeight: '600' },
   doneText: { fontFamily: ROUNDED_FONT, fontSize: 40, fontWeight: '700', color: colors.surface },
   offline: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   undoLine: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 12 },

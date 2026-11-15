@@ -7,11 +7,11 @@ import { logger } from '../logging/logger';
 import {
   describeEntry,
   entryKey,
-  entryKind,
   entryTime,
   entryWhat,
   isEntry,
   latestByInstance,
+  repeatsLatest,
   type PendingEntry,
 } from './pendingEntries';
 import { withTimeout } from './withTimeout';
@@ -241,7 +241,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     if (gen !== generation) throw new Error('The queue was cleared');
     if (!loadedOk) throw new Error('The stored queue could not be read');
     const latest = latestByInstance(entries).get(entry.instanceId);
-    if (latest !== undefined && entryKind(latest) === entryKind(entry)) return latest;
+    if (latest !== undefined && repeatsLatest(latest, entry)) return latest;
     adding = entry;
     try {
       await persist();
