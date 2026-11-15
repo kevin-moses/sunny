@@ -1,15 +1,15 @@
 // lib/agentContext.ts
 // Purpose: What the voice agent knows about a household at the start of a conversation
 // (agent.getContext), and the newest caregiver message it reads aloud (agent.readLatestMessage).
-// One builder assembles: the household and its weather location, the caregivers' names (and
-// who is on call), today's schedule (lib/today), the as-needed medication facts
+// One builder assembles: the household and its weather location, the caregivers' names,
+// today's schedule (lib/today), the as-needed medication facts
 // (lib/voiceDoses), the next 7 days of events, the newest caregiver message, the life profile
 // and the agent's memory window in the order the caregiver app lists them (lib/profileReads),
 // the sensitive-topic playbook, the newest conversation summaries, the question topics of the
 // last week (so the post-call extractor reuses a topic for a repeat), and the household list
 // (items only when short). Loading the context never marks a message seen.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
@@ -22,7 +22,7 @@ import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
 import { asNeededEntries } from "./voiceDoses";
 import type { AsNeededEntry } from "./voiceDoses";
-import { householdCaregivers } from "./voiceRouting";
+import { householdCaregivers } from "./access";
 
 /** Days of events in the context. */
 const EVENT_WINDOW_DAYS = 7;
@@ -50,7 +50,7 @@ export interface AgentContext {
     localNow: string;
     weatherLocation: string | null;
   };
-  caregivers: Array<{ name: string; onCall: boolean }>;
+  caregivers: Array<{ name: string }>;
   today: TodayEntry[];
   asNeeded: AsNeededEntry[];
   events: Array<{
@@ -290,10 +290,7 @@ export async function buildAgentContext(
       localNow: localDateTime(now, household.timezone),
       weatherLocation: household.weatherLocation ?? null,
     },
-    caregivers: caregivers.map((m) => ({
-      name: m.displayName,
-      onCall: m.userId === household.onCallUserId,
-    })),
+    caregivers: caregivers.map((m) => ({ name: m.displayName })),
     today,
     asNeeded,
     events,

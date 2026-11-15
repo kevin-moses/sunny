@@ -26,7 +26,7 @@
 // judged at the tap time; Done, Undo, Done delivered in order ends confirmed), a reopen that
 // stamps only a device confirm, and the exact pressWasTakenBack boundary.
 //
-// Last modified: 2026-11-13
+// Last modified: 2026-11-14
 
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
@@ -706,7 +706,7 @@ describe("reopenTaskInstance", () => {
     await tick(f, "2027-03-14T12:00:00Z");
     await tick(f, "2027-03-14T12:15:00Z");
     const policy = (await f.t.run(async (ctx) => await ctx.db.get(f.medication)))!;
-    const [first, second, third, fourth] = policy.steps;
+    const [first, second, third] = policy.steps;
     const firedBefore = (await row(f)).firedSteps;
     expect(firedBefore.map((s) => s.stepId)).toEqual([first!.id, second!.id]);
 
@@ -721,6 +721,7 @@ describe("reopenTaskInstance", () => {
     expect(afterReopen.firedSteps.map((s) => s.stepId)).toEqual([first!.id, second!.id, third!.id]);
     expect(afterReopen.state).toBe("escalated");
 
+    // The default ladder has one caregiver alert (every caregiver at +30); nothing follows it.
     await tick(f, "2027-03-14T12:36:00Z");
     expect((await row(f)).firedSteps).toHaveLength(3);
     await tick(f, "2027-03-14T12:45:00Z");
@@ -728,7 +729,6 @@ describe("reopenTaskInstance", () => {
       first!.id,
       second!.id,
       third!.id,
-      fourth!.id,
     ]);
   });
 });

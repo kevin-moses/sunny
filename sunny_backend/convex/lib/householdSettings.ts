@@ -12,7 +12,7 @@ import type { ObjectType } from "convex/values";
 import { v } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
-import { findMember, loadHousehold } from "./access";
+import { loadHousehold } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
 import { resyncHouseholdCalendars } from "./calendarSync";
@@ -51,7 +51,6 @@ export const householdSettingsFields = {
   seniorPreferredName: v.optional(v.string()),
   seniorFullName: v.optional(v.string()),
   timezone: v.optional(v.string()),
-  onCallUserId: v.optional(v.string()),
   digestTime: v.optional(v.string()),
   eventNoticeTime: v.optional(v.string()),
   shareTranscripts: v.optional(v.boolean()),
@@ -67,8 +66,8 @@ export type HouseholdSettingsChanges = ObjectType<typeof householdSettingsFields
  *          (lib/agentSetupTools.ts update_settings): validate and apply settings changes. The
  *          caller has checked that the actor may edit the household (editors: primary or
  *          member). Rules: a non-blank senior name; a region timezone (a change resyncs the
- *          schedule and forgets the remembered digest date); the on-call caregiver must be a
- *          member of the household; digest and event notice times are local "HH:MM"; the
+ *          schedule and forgets the remembered digest date); digest and event notice times are
+ *          local "HH:MM"; the
  *          weather location is trimmed, at most 100 characters, and blank clears it. A change
  *          that alters something is audited (update_settings, with the changed values), under
  *          the caregiver (for the agent, the caregiver it acts for). Google events are re-pushed
@@ -101,12 +100,6 @@ export async function updateHouseholdCore(
       await ctx.db.patch(householdId, { timezone: patch.timezone, lastDigestDate: undefined });
       await resyncHouseholdTimezone(ctx, actor, householdId, patch.timezone, Date.now());
     }
-  }
-  if (fields.onCallUserId !== undefined) {
-    if (!(await findMember(ctx, householdId, fields.onCallUserId))) {
-      throw appError("invalid", "The on-call caregiver must be a member of the household");
-    }
-    patch.onCallUserId = fields.onCallUserId;
   }
   if (fields.digestTime !== undefined) {
     assertTime(fields.digestTime, "Digest time");

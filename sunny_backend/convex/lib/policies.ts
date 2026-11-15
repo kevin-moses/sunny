@@ -3,9 +3,13 @@
 // SPEC defaults, ported from private.seed_default_policies). They carry a systemKey so
 // code finds them without depending on the editable name; they may be renamed and tuned
 // but not deleted (enforced by the policy mutations). Also assigns the stable step ids
-// (assignStepIds) that firedSteps on instances refer to.
+// (assignStepIds) that firedSteps on instances refer to. The medication default (2026-11-14):
+// prompt the senior when the window opens and again at +15 minutes, then at +30 alert every
+// caregiver at once (anyone who may claim can claim it); the window closing marks it missed.
+// There is no on-call caregiver and no separate +45 step. The alert's skipIfClaimed is false:
+// it is the first and only caregiver alert, so nobody can have claimed before it.
 //
-// Last modified: 2026-10-28
+// Last modified: 2026-11-14
 
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -56,12 +60,11 @@ export async function seedDefaultPolicies(
     steps: [
       { id: crypto.randomUUID(), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
       { id: crypto.randomUUID(), offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-      { id: crypto.randomUUID(), offsetMinutes: 30, action: "alert_on_call", skipIfClaimed: false },
       {
         id: crypto.randomUUID(),
-        offsetMinutes: 45,
+        offsetMinutes: 30,
         action: "alert_all_caregivers",
-        skipIfClaimed: true,
+        skipIfClaimed: false,
       },
     ],
   });

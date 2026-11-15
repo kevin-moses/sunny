@@ -11,7 +11,11 @@
 // later of window start and creation; senior prompts wait while snoozed; skipIfClaimed steps
 // are skipped once claimed; inactive tasks never fire; and when several steps of one kind
 // (prompt, or caregiver alert) come due together only the latest, by its current position in
-// the policy, is sent. Each household runs in its own serializable transaction, so a slow or
+// the policy, is sent. A caregiver alert goes to every caregiver of the household at once
+// (there is no on-call caregiver; the legacy "alert_on_call" action is read exactly as
+// "alert_all_caregivers"), and an instance alerts caregivers at most once: a later caregiver
+// alert step of the same ladder (a ladder not yet migrated from the old on-call default, or a
+// custom one) is recorded as fired with notified false, so nobody is alerted twice for one task. Each household runs in its own serializable transaction, so a slow or
 // overlapping tick conflicts only with writes to that household. The same per-household pass
 // also queues the day-of event notices (lib/eventNotices.ts, the port of event_notice_tick) and
 // the household's daily digest once its digestTime passes (digest.ts), so there is no second
@@ -33,7 +37,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { queueDigestIfDue } from "./digest";
-import { SYSTEM_ACTOR } from "./lib/access";
+import { householdCaregivers, SYSTEM_ACTOR } from "./lib/access";
 import { isAnytimeInstance } from "./lib/anytime";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
@@ -41,6 +45,7 @@ import { announceEvents } from "./lib/eventNotices";
 import { activePolicySteps, stepDueAt, stepHeld } from "./lib/escalation";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12 } from "./lib/time";
+import { isCaregiverAlert } from "./lib/validators";
 import type { EscalationStep } from "./lib/validators";
 
 /** Households a tick page schedules; the next page is scheduled as a follow-up. */
@@ -92,7 +97,8 @@ async function openWindows(
  *          while snoozed; skipIfClaimed steps are skipped once claimed (lib/escalation.ts
  *          stepDueAt and stepHeld, shared with the device state's promptTimes). Within each kind
  *          (prompt, caregiver alert) only the latest due step, by current position in the
- *          policy, is marked to notify. Fired steps are matched by step id, so editing the
+ *          policy, is marked to notify; a caregiver alert is not marked when the instance
+ *          has already alerted caregivers. Fired steps are matched by step id, so editing the
  *          policy does not change which steps count as fired.
  * @param instance: (Doc<"taskInstances">) An open instance.
  * @param steps: (EscalationStep[]) The task's policy steps in order.
@@ -107,8 +113,11 @@ function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: 
     if (stepHeld(instance, step, now)) continue;
     due.push({ step, notify: false });
   }
-  for (const isPrompt of [true, false]) {
-    const latest = due.filter((d) => (d.step.action === "prompt_senior") === isPrompt).at(-1);
+  // Every caregiver alert reaches everyone, so an instance alerts caregivers only once.
+  const alerted = instance.firedSteps.some((f) => isCaregiverAlert(f.action) && f.notified);
+  for (const isAlert of [false, true]) {
+    if (isAlert && alerted) continue;
+    const latest = due.filter((d) => isCaregiverAlert(d.step.action) === isAlert).at(-1);
     if (latest) latest.notify = true;
   }
   return due;
@@ -116,8 +125,8 @@ function dueSteps(instance: Doc<"taskInstances">, steps: EscalationStep[], now: 
 
 /**
  * purpose: Queue the outbox rows for one fired step: senior prompts go to every device of the
- *          household, an on-call alert to the on-call member (or every primary when none is
- *          set), an all-caregivers alert to every member.
+ *          household, a caregiver alert (the legacy "alert_on_call" included) to every
+ *          caregiver; delivery skips anyone it cannot reach at send time.
  * @param ctx: (MutationCtx) Mutation context.
  * @param instance: (Doc<"taskInstances">) The instance.
  * @param step: (EscalationStep) The step; its id is the payload's `step`.
@@ -140,11 +149,7 @@ async function queueNotifications(
     title: isPrompt
       ? task.displayLabel
       : `${household.seniorPreferredName} hasn't confirmed ${task.displayLabel}`,
-    body: isPrompt
-      ? task.spokenPrompt
-      : step.action === "alert_on_call"
-        ? dueAt
-        : `${dueAt} No one has claimed it yet.`,
+    body: isPrompt ? task.spokenPrompt : dueAt,
     payload: {
       taskId: task._id,
       localDate: instance.localDate,
@@ -162,17 +167,8 @@ async function queueNotifications(
     }
     return;
   }
-  const members = await ctx.db
-    .query("householdMembers")
-    .withIndex("by_household_user", (q) => q.eq("householdId", instance.householdId))
-    .collect();
-  const onCall = household.onCallUserId;
-  for (const member of members) {
-    const wanted =
-      step.action === "alert_all_caregivers" ||
-      member.userId === onCall ||
-      (onCall === undefined && member.role === "primary");
-    if (wanted) await insertNotification(ctx, { ...row, recipientUserId: member.userId });
+  for (const member of await householdCaregivers(ctx, instance.householdId)) {
+    await insertNotification(ctx, { ...row, recipientUserId: member.userId });
   }
 }
 
@@ -236,7 +232,7 @@ async function markEscalated(ctx: MutationCtx, householdId: Id<"households">): P
     .query("taskInstances")
     .withIndex("by_household_state", (q) => q.eq("householdId", householdId).eq("state", "due"))
     .collect();
-  const alerted = due.filter((i) => i.firedSteps.some((f) => f.action !== "prompt_senior"));
+  const alerted = due.filter((i) => i.firedSteps.some((f) => isCaregiverAlert(f.action)));
   for (const instance of alerted) {
     await changeInstance(ctx, SYSTEM_ACTOR, instance, { state: "escalated" });
   }

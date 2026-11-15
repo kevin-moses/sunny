@@ -9,14 +9,16 @@
 // Default policy on create (medication vs prompt_only, explicit wins, missing seed), the policy
 // switch on a type change across the medication boundary (seeded policies move, custom ones
 // stay), size caps that apply only to written values (a legacy long label stays editable), and
-// the backfillDefaultPolicies maintenance mutation.
+// the backfillDefaultPolicies maintenance mutation. No policy writer accepts the legacy
+// "alert_on_call" action (2026-11-14).
 //
-// Last modified: 2026-11-01
+// Last modified: 2026-11-14
 
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import type { EscalationStepInput } from "./lib/validators";
 import schema from "./schema";
 
 beforeEach(() => {
@@ -383,8 +385,28 @@ describe("tasks.remove", () => {
 describe("escalation policies", () => {
   const steps = [
     { offsetMinutes: 0, action: "prompt_senior" as const, skipIfClaimed: false },
-    { offsetMinutes: 20, action: "alert_on_call" as const, skipIfClaimed: false },
+    { offsetMinutes: 20, action: "alert_all_caregivers" as const, skipIfClaimed: false },
   ];
+
+  test("no policy writer accepts the legacy on-call action", async () => {
+    const f = await setup();
+    const pat = f.t.withIdentity({ subject: "pat" });
+    const legacy = [{ offsetMinutes: 20, action: "alert_on_call", skipIfClaimed: false }];
+    await expect(
+      pat.mutation(api.tasks.createPolicy, {
+        householdId: f.householdId,
+        name: "Old",
+        steps: legacy as unknown as typeof steps,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      pat.mutation(api.tasks.updatePolicy, {
+        householdId: f.householdId,
+        policyId: f.medication,
+        steps: legacy as unknown as typeof steps,
+      }),
+    ).rejects.toThrow();
+  });
 
   test("listPolicies returns the two seeded policies to every reader", async () => {
     const f = await setup();
@@ -484,27 +506,28 @@ describe("escalation policies", () => {
       (await pat.query(api.tasks.listPolicies, { householdId: f.householdId })).find(
         (p) => p._id === f.medication,
       )!;
-    const [s0, s1, s2, s3] = (await read()).steps;
+    // The seeded steps hold only the actions a client may send (no legacy on-call step).
+    const [s0, s1, s2] = (await read()).steps as EscalationStepInput[];
     await pat.mutation(api.tasks.updatePolicy, {
       householdId: f.householdId,
       policyId: f.medication,
       steps: [
-        s3!,
+        s2!,
         { ...s1!, id: "forged" },
         { offsetMinutes: 50, action: "prompt_senior", skipIfClaimed: false },
         s0!,
       ],
     });
     const after = (await read()).steps;
-    expect(after[0]!.id).toBe(s3!.id);
+    expect(after[0]!.id).toBe(s2!.id);
     expect(after[3]!.id).toBe(s0!.id);
     const fresh = [after[1]!.id, after[2]!.id];
-    expect(new Set([...fresh, s0!.id, s1!.id, s2!.id, s3!.id]).size).toBe(6);
+    expect(new Set([...fresh, s0!.id, s1!.id, s2!.id]).size).toBe(5);
     await expect(
       pat.mutation(api.tasks.updatePolicy, {
         householdId: f.householdId,
         policyId: f.medication,
-        steps: [s3!, s3!],
+        steps: [s2!, s2!],
       }),
     ).rejects.toMatchObject({ data: { code: "invalid" } });
   });

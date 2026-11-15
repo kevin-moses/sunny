@@ -34,6 +34,10 @@
 // Caregiver setup by chat (2026-11-14): householdMembers.digestOptOut (a caregiver who does
 // not want the digest pushed or texted) and agentRequests.changedTaskIds (the tasks a request's
 // add_task and update_task calls changed, for the wording cards in the chat).
+// No on-call caregiver (2026-11-14): every caregiver is alerted at once. Two legacy items stay
+// valid only so stored rows still match: households.onCallUserId (never read or written) and the
+// escalation action "alert_on_call" (read exactly as "alert_all_caregivers", never written;
+// lib/validators.ts). Delete both once migrations.removeOnCall has run on every deployment.
 //
 // Last modified: 2026-11-14
 
@@ -73,7 +77,9 @@ export default defineSchema({
     seniorFullName: v.optional(v.string()),
     // IANA region zone ("America/New_York"); validated by lib/time.isValidTimezone.
     timezone: v.string(),
-    // Caregiver who gets the first alerts; must be a member of this household.
+    // Deprecated (2026-11-14): there is no on-call caregiver; never read or written. Kept so
+    // stored rows still match the schema until migrations.removeOnCall has cleared it on every
+    // deployment; then delete this field.
     onCallUserId: v.optional(v.string()),
     digestTime: v.string(),
     eventNoticeTime: v.string(),
@@ -260,8 +266,9 @@ export default defineSchema({
     // windowStart). Explicit rather than _creationTime so tests can drive the clock.
     createdAt: v.number(),
     // Escalation steps already handled, each once, by the step's stable id. action is a
-    // snapshot of the step as fired; notified is false for a step superseded by a later step of the same kind in
-    // the same tick.
+    // snapshot of the step as fired; notified is false for a step superseded by a later step of
+    // the same kind in the same tick, and for a caregiver alert on an instance that has already
+    // alerted every caregiver.
     firedSteps: v.array(
       v.object({
         stepId: v.string(),

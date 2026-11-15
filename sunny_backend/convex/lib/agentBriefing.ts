@@ -2,9 +2,8 @@
 // Purpose: The household briefing the agent receives at the start of each request, ported
 // from the Supabase agent runtime: the senior's preferred name, the timezone, the local
 // weekday and date/time now, the requesting caregiver's display name, the household's
-// caregivers with their roles and who is on call (so the agent can name them in the settings
-// tools: on call, who receives the digest), and the calendar for
-// today and the next 7 days (one line per occurrence with its event_id so the model can
+// caregivers with their roles (so the agent knows who is in the family chat), and the calendar
+// for today and the next 7 days (one line per occurrence with its event_id so the model can
 // change or cancel it), and the household's active tasks, one terse line each with its
 // task_id, type, times, weekdays and today's state per time (so the agent can answer "did she
 // take her pills" and change or stop a task without a lookup). Built on the calendar's
@@ -168,20 +167,15 @@ async function digestLines(
 
 /**
  * purpose: The briefing's caregiver line: each caregiver's display name (on one line, so a name
- *          cannot pose as a briefing line) with their role, and which one is on call, e.g.
- *          "Anna (primary, on call), Ben (member)".
+ *          cannot pose as a briefing line) with their role, e.g. "Anna (primary), Ben
+ *          (member)".
  * @param ctx: (QueryCtx) Context.
  * @param household: (Doc<"households">) The household.
  * @return: (Promise<string>) The text; "(none)" when there are none.
  */
 async function caregiversText(ctx: QueryCtx, household: Doc<"households">): Promise<string> {
   const members = await householdCaregivers(ctx, household._id);
-  const text = members
-    .map((m) => {
-      const onCall = m.userId === household.onCallUserId ? ", on call" : "";
-      return `${joinLines(m.displayName)} (${m.role}${onCall})`;
-    })
-    .join(", ");
+  const text = members.map((m) => `${joinLines(m.displayName)} (${m.role})`).join(", ");
   return text || "(none)";
 }
 

@@ -12,8 +12,8 @@
 // Voice tools (2026-11-09): the context's weather location, caregivers and recent question
 // topics; medicationStatus; snoozeDueTask ("not yet"); logAsNeededDose (label limits, the
 // caregiver flag past a limit, never a dose without a rule); rememberFact (unverified, never
-// overwriting a verified fact); flagCaregiver (on-call first, all caregivers otherwise, repeat
-// window, audit); sendFamilyMessage; readLatestMessage (seenAt); logQuestions and the digest
+// overwriting a verified fact); flagCaregiver (every reachable caregiver at once, no on-call
+// caregiver; repeat window, audit); sendFamilyMessage; readLatestMessage (seenAt); logQuestions and the digest
 // facts that read those rows; and households.update's weatherLocation. Each is scoped to the
 // household it is given. The system clock is frozen at NOW (the outbox enqueues delivery).
 // Review round 3: only an identical flag repeats (a fall after dizziness is sent), every
@@ -77,8 +77,8 @@ interface Fixture {
 type World = Pick<Fixture, "t" | "householdId">;
 
 /**
- * purpose: Create a household for Margaret in New York with caregiver Anna (user_a, on call,
- *          with a verified phone so she can be texted).
+ * purpose: Create a household for Margaret in New York with caregiver Anna (user_a, with a
+ *          verified phone so she can be texted).
  * @return: (Promise<Fixture>) The fixture.
  */
 async function setup(): Promise<Fixture> {
@@ -339,7 +339,7 @@ describe("getContext", () => {
         localNow: "2027-03-10T10:00:00",
         weatherLocation: null,
       },
-      caregivers: [{ name: "Anna", onCall: true }],
+      caregivers: [{ name: "Anna" }],
       today: [],
       asNeeded: [],
       events: [],
@@ -1397,7 +1397,7 @@ describe("context additions", () => {
     ).rejects.toMatchObject({ data: { code: "invalid" } });
   });
 
-  test("caregivers name the on-call one; recent topics are distinct, newest first", async () => {
+  test("caregivers are named with no one on call; recent topics are distinct, newest first", async () => {
     const f = await setup();
     await addFamily(f);
     // A long conversation, so its questions can span the last 8 days.
@@ -1420,11 +1420,7 @@ describe("context additions", () => {
       now: NOW,
     });
     expect(context.caregivers).toEqual(
-      expect.arrayContaining([
-        { name: "Anna", onCall: true },
-        { name: "Bob", onCall: false },
-        { name: "Sarah Lee", onCall: false },
-      ]),
+      expect.arrayContaining([{ name: "Anna" }, { name: "Bob" }, { name: "Sarah Lee" }]),
     );
     expect(context.recentQuestionTopics).toEqual(["sarah visit", "weather"]);
   });
@@ -1597,7 +1593,7 @@ describe("logAsNeededDose", () => {
     expect(await outbox(f, "agent_flag")).toEqual([]);
   });
 
-  test("a dose past the daily maximum flags the on-call caregiver", async () => {
+  test("a dose past the daily maximum flags every reachable caregiver", async () => {
     const f = await setup();
     await addFamily(f);
     const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 2 });
@@ -1609,15 +1605,15 @@ describe("logAsNeededDose", () => {
       householdId: f.householdId,
       now: NOW,
     });
-    expect(result).toMatchObject({
-      status: "logged",
-      overDailyMax: true,
-      tooSoon: false,
-      flagged: ["Anna"],
-    });
+    expect(result).toMatchObject({ status: "logged", overDailyMax: true, tooSoon: false });
+    expect([...(result as { flagged: string[] }).flagged].sort()).toEqual([
+      "Anna",
+      "Bob",
+      "Sarah Lee",
+    ]);
     const flags = await outbox(f, "agent_flag");
-    expect(flags).toHaveLength(1);
-    expect(flags[0]).toMatchObject({
+    expect(flags.map((r) => r.recipientUserId).sort()).toEqual(["user_a", "user_b", "user_c"]);
+    expect(flags.find((r) => r.recipientUserId === "user_a")).toMatchObject({
       recipientUserId: "user_a",
       state: "pending",
       title: "Margaret went past a medication limit",
@@ -1869,7 +1865,7 @@ describe("rememberFact", () => {
 });
 
 describe("flagCaregiver", () => {
-  test("reaches the on-call caregiver only and audits the flag", async () => {
+  test("reaches every reachable caregiver at once and audits the flag", async () => {
     const f = await setup();
     await addFamily(f);
     const result = await f.t.mutation(api.agent.flagCaregiver, {
@@ -1880,11 +1876,11 @@ describe("flagCaregiver", () => {
       conversationId: f.conversationId,
       now: NOW,
     });
-    expect(result).toEqual({ status: "flagged", notified: ["Anna"] });
+    expect(result.status).toBe("flagged");
+    expect([...result.notified].sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
     const rows = await outbox(f, "agent_flag");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      recipientUserId: "user_a",
+    expect(rows.map((r) => r.recipientUserId).sort()).toEqual(["user_a", "user_b", "user_c"]);
+    expect(rows.find((r) => r.recipientUserId === "user_a")).toMatchObject({
       title: "Margaret may be facing a scam",
       body: "A caller said her grandson is in jail and asked for gift cards.",
       payload: { reason: "scam", flaggedAt: NOW, conversationId: f.conversationId },
@@ -1893,8 +1889,13 @@ describe("flagCaregiver", () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({
       actorKind: "agent",
-      detail: { reason: "scam", recipients: ["user_a"], conversationId: f.conversationId },
+      detail: { reason: "scam", conversationId: f.conversationId },
     });
+    expect([...(audits[0]!.detail.recipients as string[])].sort()).toEqual([
+      "user_a",
+      "user_b",
+      "user_c",
+    ]);
   });
 
   test("a long model detail reaches the caregiver as at most two sentences", async () => {
@@ -1914,15 +1915,15 @@ describe("flagCaregiver", () => {
     expect(audited!.detail.detail).toBe(flag!.body);
   });
 
-  test("falls back to every caregiver when no one is on call", async () => {
+  test("a stored legacy on-call caregiver changes nothing: every caregiver is flagged", async () => {
     const f = await setup();
     await addFamily(f);
-    await f.t.run(async (ctx) => await ctx.db.patch(f.householdId, { onCallUserId: undefined }));
+    await f.t.run(async (ctx) => await ctx.db.patch(f.householdId, { onCallUserId: "user_b" }));
     const result = await f.t.mutation(api.agent.flagCaregiver, {
       agentKey: KEY,
       householdId: f.householdId,
-      reason: "distress",
-      detail: "She said she is scared and does not know where she is.",
+      reason: "symptom",
+      detail: "She said her chest hurts.",
       now: NOW,
     });
     expect(result.notified.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
@@ -2235,7 +2236,7 @@ async function flagAt(
 }
 
 describe("reachability: nobody is named as told without a queued text", () => {
-  test("an unreachable on-call caregiver falls back to the reachable ones", async () => {
+  test("an unreachable caregiver is left out; the reachable ones are flagged", async () => {
     const f = await setup();
     await addFamily(f);
     await unreachable(f, "user_a");
@@ -2517,12 +2518,17 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     const relief = await insertTask(f, { title: "Pain reliever", asNeededMaxPerDay: 1 });
     await insertDose(f, relief, MIDNIGHT + HOUR);
     expect(await reportDose(f, NOW)).toMatchObject({ status: "logged", flagStatus: "flagged" });
-    expect(await undoDose(f, NOW + MINUTE)).toEqual({
+    const undone = await undoDose(f, NOW + MINUTE);
+    expect(undone).toMatchObject({
       status: "removed",
       displayLabel: "Pain reliever",
       takenAt: NOW,
-      corrected: ["Anna"],
     });
+    expect([...(undone as { corrected: string[] }).corrected].sort()).toEqual([
+      "Anna",
+      "Bob",
+      "Sarah Lee",
+    ]);
     const rows = await doseRows(f);
     expect(rows.map((d) => [d.takenAt, d.undoneAt])).toEqual([
       [MIDNIGHT + HOUR, undefined],
@@ -2530,7 +2536,7 @@ describe("doses: repeats, undo, scope and the 24-hour window", () => {
     ]);
     expect(await auditRows(f, "undo_dose")).toHaveLength(1);
     expect(await auditRows(f, "flag_correction")).toHaveLength(1);
-    const flags = await outbox(f, "agent_flag");
+    const flags = (await outbox(f, "agent_flag")).filter((r) => r.recipientUserId === "user_a");
     expect(flags.map((r) => [r.recipientUserId, r.body])).toEqual([
       [
         "user_a",
@@ -2774,13 +2780,16 @@ describe("flags: only an identical event is a repeat", () => {
     ]);
   });
 
-  test("distress reaches every reachable caregiver, not only the one on call", async () => {
+  test("distress and every other reason reach every reachable caregiver", async () => {
     const f = await setup();
     await addFamily(f);
     const result = await flagAt(f, "distress", NOW, "She is scared.");
     expect(result.notified.sort()).toEqual(["Anna", "Bob", "Sarah Lee"]);
-    // Other reasons still go to the on-call caregiver.
-    expect((await flagAt(f, "symptom", NOW, "Dizzy.")).notified).toEqual(["Anna"]);
+    expect((await flagAt(f, "symptom", NOW, "Dizzy.")).notified.sort()).toEqual([
+      "Anna",
+      "Bob",
+      "Sarah Lee",
+    ]);
   });
 });
 

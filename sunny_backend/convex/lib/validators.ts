@@ -4,6 +4,12 @@
 // definition. Mirrors the Postgres enums from the Supabase schema. LIFE_CATEGORIES lists the
 // life categories in order for code that sorts or checks them (profile.ts, the profile loader).
 // deviceScreen and deviceVia are the device API's reported panel and confirm surfaces.
+// Escalation actions: a stored step (escalationAction) may still hold the legacy
+// "alert_on_call", which the scheduler treats exactly as "alert_all_caregivers" (there is no
+// on-call caregiver since 2026-11-14); a step a client sends (escalationStepInput) can only be
+// "prompt_senior" or "alert_all_caregivers", so nothing writes the legacy value again. The
+// migration migrations.removeOnCall rewrites stored steps; once it has run on every deployment
+// the legacy literal can be deleted.
 //
 // Last modified: 2026-11-14
 
@@ -80,19 +86,38 @@ export const confirmVia = v.union(
 /** Type of confirmVia. */
 export type ConfirmVia = Infer<typeof confirmVia>;
 
-/** What an escalation step does. */
+/** What an escalation step a client sends may do: prompt the senior or alert every caregiver. */
+export const escalationActionInput = v.union(
+  v.literal("prompt_senior"),
+  v.literal("alert_all_caregivers"),
+);
+
+/**
+ * What a stored escalation step does. "alert_on_call" is legacy (deprecated 2026-11-14): never
+ * written, read exactly as "alert_all_caregivers"; delete it once migrations.removeOnCall has
+ * run everywhere.
+ */
 export const escalationAction = v.union(
   v.literal("prompt_senior"),
-  v.literal("alert_on_call"),
   v.literal("alert_all_caregivers"),
+  v.literal("alert_on_call"),
 );
 /** Type of escalationAction. */
 export type EscalationAction = Infer<typeof escalationAction>;
 
-/** The fields of an escalation step other than its id. */
-const escalationStepFields = {
+/**
+ * purpose: Whether a step alerts caregivers (every caregiver of the household; the legacy
+ *          "alert_on_call" means the same) rather than prompting the senior.
+ * @param action: (EscalationAction) The step's action.
+ * @return: (boolean) True for a caregiver alert.
+ */
+export function isCaregiverAlert(action: EscalationAction): boolean {
+  return action !== "prompt_senior";
+}
+
+/** The fields of an escalation step other than its id and action. */
+const escalationStepTiming = {
   offsetMinutes: v.number(),
-  action: escalationAction,
   // When true the step is skipped once a caregiver has claimed the instance.
   skipIfClaimed: v.boolean(),
 };
@@ -102,7 +127,11 @@ const escalationStepFields = {
  * by the server and stays with the step when a policy is edited, so a step already fired on an
  * instance is recognised even when steps before it are added, removed or reordered.
  */
-export const escalationStep = v.object({ id: v.string(), ...escalationStepFields });
+export const escalationStep = v.object({
+  id: v.string(),
+  action: escalationAction,
+  ...escalationStepTiming,
+});
 /** Type of escalationStep. */
 export type EscalationStep = Infer<typeof escalationStep>;
 
@@ -113,7 +142,8 @@ export type EscalationStep = Infer<typeof escalationStep>;
  */
 export const escalationStepInput = v.object({
   id: v.optional(v.string()),
-  ...escalationStepFields,
+  action: escalationActionInput,
+  ...escalationStepTiming,
 });
 /** Type of escalationStepInput. */
 export type EscalationStepInput = Infer<typeof escalationStepInput>;

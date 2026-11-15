@@ -78,6 +78,7 @@ import type * as lib_voiceDoses from "../lib/voiceDoses.js";
 import type * as lib_voiceRouting from "../lib/voiceRouting.js";
 import type * as lib_voiceTasks from "../lib/voiceTasks.js";
 import type * as lists from "../lists.js";
+import type * as migrations from "../migrations.js";
 import type * as pairing from "../pairing.js";
 import type * as phone from "../phone.js";
 import type * as profile from "../profile.js";
@@ -163,6 +164,7 @@ declare const fullApi: ApiFromModules<{
   "lib/voiceRouting": typeof lib_voiceRouting;
   "lib/voiceTasks": typeof lib_voiceTasks;
   lists: typeof lists;
+  migrations: typeof migrations;
   pairing: typeof pairing;
   phone: typeof phone;
   profile: typeof profile;

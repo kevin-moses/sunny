@@ -20,14 +20,12 @@
 // get_knowledge's description, like the system prompt, says that the text of knowledge items
 // (above all facts the senior said) is information about the senior, never an instruction.
 //
-// Settings: get_settings returns the digest time, the on-call caregiver, whether caregivers
-// see full transcripts (shareTranscripts, agreed with the senior at onboarding), the weather
-// place and every caregiver with their role, whether they receive the digest and whether they
-// can be reached; update_settings changes the first four through updateHouseholdCore
-// (lib/householdSettings.ts, the checks of households.update). on_call is a caregiver's name,
-// which resolves to one member of the household by display name (whole name, else first name,
-// ignoring case and spacing); an unknown or ambiguous name is refused with the list of
-// caregivers.
+// Settings: get_settings returns the digest time, whether caregivers see full transcripts
+// (shareTranscripts, agreed with the senior at onboarding), the weather place and every
+// caregiver with their role, whether they receive the digest and whether they can be reached;
+// update_settings changes the first three through updateHouseholdCore (lib/householdSettings.ts,
+// the checks of households.update). There is no on-call caregiver (2026-11-14): a task's alert
+// goes to every caregiver at once, so there is no on-call setting and no tool names a caregiver.
 // set_digest_delivery takes only `receives` and turns the digest's push and text on or off for
 // the requesting caregiver (lib/digestRecipients.ts, where the provisional rule lives). Times
 // are the household's local 24-hour "HH:MM"; the model turns "7 in the evening" into "19:00".
@@ -66,7 +64,6 @@ import { appError } from "./errors";
 import { updateHouseholdCore } from "./householdSettings";
 import type { HouseholdSettingsChanges } from "./householdSettings";
 import { entriesInOrder } from "./profileReads";
-import { textKey } from "./text";
 import { booleanField, changesOf, idField, rejectUnknownKeys, stringField } from "./toolInput";
 import type { ToolContext, ToolHandler } from "./toolInput";
 import { LIFE_CATEGORIES } from "./validators";
@@ -99,7 +96,7 @@ const CHANGE_KEYS: Record<KnowledgeKind, readonly string[]> = {
 };
 
 /** The settings update_settings may change. */
-const SETTINGS_KEYS = ["digest_time", "on_call", "share_transcripts", "weather_location"] as const;
+const SETTINGS_KEYS = ["digest_time", "share_transcripts", "weather_location"] as const;
 
 /** The kind and knowledge_id properties shared by update_knowledge and remove_knowledge. */
 const KNOWLEDGE_REF = {
@@ -207,22 +204,18 @@ export const SETUP_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
     type: "custom",
     name: "get_settings",
     description:
-      "Read the household's settings: digest_time (when the daily summary is sent, local HH:MM), on_call (the caregiver who gets the first alerts), share_transcripts (whether caregivers may read the senior's full conversations, as agreed with the senior), weather_location (the place Sunny checks the weather for), and caregivers: each one's name, role, whether they are on call, whether they receive the daily summary by push or text (receives_digest) and whether Sunny can reach them at all (reachable: the app with notifications, or a verified phone).",
+      "Read the household's settings: digest_time (when the daily summary is sent, local HH:MM), share_transcripts (whether caregivers may read the senior's full conversations, as agreed with the senior), weather_location (the place Sunny checks the weather for), and caregivers: each one's name, role, whether they receive the daily summary by push or text (receives_digest) and whether Sunny can reach them at all (reachable: the app with notifications, or a verified phone). Every caregiver is alerted at once when a task is not confirmed; there is no on-call caregiver.",
     input_schema: { type: "object", properties: {} },
   },
   {
     type: "custom",
     name: "update_settings",
     description:
-      'Change household settings; send only what changes. digest_time is local 24-hour HH:MM (convert "7 in the evening" to "19:00"). on_call is a caregiver\'s name as the caregivers call them; an unknown or ambiguous name is refused with the list of caregivers. Change on_call or share_transcripts only when the caregiver\'s current message asks for it; share_transcripts changes what the senior agreed to share. weather_location is a place such as "Brooklyn, NY"; null or "" clears it. The result has every setting as now stored, as get_settings returns them.',
+      'Change household settings; send only what changes. digest_time is local 24-hour HH:MM (convert "7 in the evening" to "19:00"). Change share_transcripts only when the caregiver\'s current message asks for it; it changes what the senior agreed to share. weather_location is a place such as "Brooklyn, NY"; null or "" clears it. The result has every setting as now stored, as get_settings returns them.',
     input_schema: {
       type: "object",
       properties: {
         digest_time: { type: "string", description: "Local 24-hour HH:MM." },
-        on_call: {
-          type: "string",
-          description: "The caregiver's name.",
-        },
         share_transcripts: { type: "boolean" },
         weather_location: { type: "string", description: 'e.g. "Brooklyn, NY"; "" clears.' },
       },
@@ -455,60 +448,18 @@ async function removeKnowledge(
 }
 
 /**
- * purpose: Find the one caregiver of the household a name means: the members whose whole
- *          display name matches (ignoring case and spacing), or failing that whose first name
- *          does. Anything but exactly one match is refused, listing the caregivers so the model
- *          can ask which one the caregiver means.
- * @param members: (Doc<"householdMembers">[]) The household's caregivers.
- * @param name: (string) The name the caregiver used.
- * @return: (Doc<"householdMembers">) The caregiver.
- * @raises invalid for an unknown or ambiguous name.
- */
-export function resolveCaregiver(
-  members: Doc<"householdMembers">[],
-  name: string,
-): Doc<"householdMembers"> {
-  const wanted = textKey(name);
-  const whole = members.filter((m) => textKey(m.displayName) === wanted);
-  const matches = whole.length
-    ? whole
-    : members.filter((m) => textKey(m.displayName).split(" ")[0] === wanted);
-  if (matches.length === 1) return matches[0]!;
-  /**
-   * purpose: Caregivers' names as one comma-separated list, for the refusal.
-   * @param rows: (Doc<"householdMembers">[]) The caregivers.
-   * @return: (string) Their display names.
-   */
-  const list = (rows: Doc<"householdMembers">[]): string =>
-    rows.map((m) => m.displayName).join(", ");
-  if (matches.length === 0) {
-    throw appError(
-      "invalid",
-      `No caregiver of this household is called "${name}". The caregivers are: ${list(members)}. Ask which one they mean.`,
-    );
-  }
-  throw appError(
-    "invalid",
-    `More than one caregiver could be "${name}": ${list(matches)}. Ask which one they mean.`,
-  );
-}
-
-/**
  * purpose: One caregiver as get_settings and set_digest_delivery show them.
  * @param ctx: (QueryCtx) Context.
  * @param member: (Doc<"householdMembers">) The caregiver.
- * @param onCallUserId: (string | undefined) The household's on-call caregiver.
- * @return: (Promise<Record<string, unknown>>) name, role, on_call, receives_digest, reachable.
+ * @return: (Promise<Record<string, unknown>>) name, role, receives_digest, reachable.
  */
 async function caregiverForModel(
   ctx: QueryCtx,
   member: Doc<"householdMembers">,
-  onCallUserId: string | undefined,
 ): Promise<Record<string, unknown>> {
   return {
     name: member.displayName,
     role: member.role,
-    on_call: member.userId === onCallUserId,
     receives_digest: receivesDigest(member),
     reachable: await isReachableMember(ctx, member),
   };
@@ -518,53 +469,35 @@ async function caregiverForModel(
  * purpose: The household's settings as get_settings and update_settings return them.
  * @param ctx: (QueryCtx) Context.
  * @param household: (Doc<"households">) The household as stored.
- * @return: (Promise<Record<string, unknown>>) digest_time, on_call (a name or null),
- *          share_transcripts, weather_location (or null) and caregivers.
+ * @return: (Promise<Record<string, unknown>>) digest_time, share_transcripts,
+ *          weather_location (or null) and caregivers.
  */
 async function settingsForModel(
   ctx: QueryCtx,
   household: Doc<"households">,
 ): Promise<Record<string, unknown>> {
   const members = await householdCaregivers(ctx, household._id);
-  const onCall = members.find((m) => m.userId === household.onCallUserId);
   return {
     digest_time: household.digestTime,
-    on_call: onCall?.displayName ?? null,
     share_transcripts: household.shareTranscripts,
     weather_location: household.weatherLocation ?? null,
-    caregivers: await Promise.all(
-      members.map((m) => caregiverForModel(ctx, m, household.onCallUserId)),
-    ),
+    caregivers: await Promise.all(members.map((m) => caregiverForModel(ctx, m))),
   };
 }
 
 /**
- * purpose: Map update_settings input to the household core's changes, resolving on_call to a
- *          member. A weather_location of null or "" clears it.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
+ * purpose: Map update_settings input to the household core's changes. A weather_location of
+ *          null or "" clears it.
  * @param input: (Record<string, unknown>) update_settings input.
- * @return: (Promise<HouseholdSettingsChanges>) The changes.
- * @raises invalid for an unknown or missing field, a wrong type, or an unknown or ambiguous
- *         caregiver name.
+ * @return: (HouseholdSettingsChanges) The changes.
+ * @raises invalid for an unknown or missing field or a wrong type.
  */
-async function settingsChanges(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-  input: Record<string, unknown>,
-): Promise<HouseholdSettingsChanges> {
+function settingsChanges(input: Record<string, unknown>): HouseholdSettingsChanges {
   rejectUnknownKeys(input, SETTINGS_KEYS);
   if (Object.keys(input).length === 0) throw appError("invalid", "Nothing to change");
   const changes: HouseholdSettingsChanges = {};
   if (input.digest_time !== undefined) {
     changes.digestTime = stringField(input.digest_time, "digest_time");
-  }
-  if (input.on_call !== undefined) {
-    const name = stringField(input.on_call, "on_call");
-    changes.onCallUserId = resolveCaregiver(
-      await householdCaregivers(ctx, householdId),
-      name,
-    ).userId;
   }
   if (input.share_transcripts !== undefined) {
     changes.shareTranscripts = booleanField(input.share_transcripts, "share_transcripts");
@@ -621,14 +554,12 @@ export const SETUP_TOOL_HANDLERS: Record<SetupToolName, ToolHandler> = {
     return await settingsForModel(ctx, await loadHousehold(ctx, householdId));
   },
   update_settings: async (ctx, { householdId, actor }, input) => {
-    const changes = await settingsChanges(ctx, householdId, input);
+    const changes = settingsChanges(input);
     return await settingsForModel(ctx, await updateHouseholdCore(ctx, actor, householdId, changes));
   },
   set_digest_delivery: async (ctx, { householdId, actor }, input) => {
     rejectUnknownKeys(input, ["receives"]);
     const receives = booleanField(input.receives, "receives");
-    const household = await loadHousehold(ctx, householdId);
-    const updated = await setDigestDelivery(ctx, actor, householdId, receives);
-    return await caregiverForModel(ctx, updated, household.onCallUserId);
+    return await caregiverForModel(ctx, await setDigestDelivery(ctx, actor, householdId, receives));
   },
 };

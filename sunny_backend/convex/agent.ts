@@ -23,7 +23,7 @@
 // Clock: an optional `now` (epoch ms) is honored here only (backend callers), else Date.now().
 // Instants in results are epoch ms; absent optional values are null.
 //
-// Last modified: 2026-11-09
+// Last modified: 2026-11-14
 
 import { customMutation, customQuery } from "convex-helpers/server/customFunctions";
 import { v } from "convex/values";
@@ -371,9 +371,8 @@ export const rememberFact = agentMutation({
 });
 
 /**
- * purpose: Ask the on-call caregiver (or every reachable caregiver; for distress, all of them)
- *          to look in (lib/voiceRouting.flagCaregiverCore). Only an identical event is a
- *          repeat. medication_limit and repeated_use are not accepted here: log_dose raises
+ * purpose: Ask every reachable caregiver to look in (lib/voiceRouting.flagCaregiverCore).
+ *          Only an identical event is a repeat. medication_limit and repeated_use are not accepted here: log_dose raises
  *          them, keyed on the medication.
  * @param householdId: (Id<"households">) Household.
  * @param reason: (string) symptom, money_request, scam, distress (a fall included) or

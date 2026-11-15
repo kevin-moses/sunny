@@ -9,14 +9,13 @@
 // memory rule: a fact the senior said never overwrites one a caregiver stored by chat, and a
 // correction by chat keeps the senior source while verifying it. Settings: get_settings shape;
 // update_settings for the digest time (a bad time is refused with households.update's error),
-// on-call by name (whole name, first name, case; unknown and ambiguous names refused listing the
-// choices, nothing changed),
-// sharing, the weather place (set and cleared, the clearing audited as null) and its audit row,
-// and no audit row for a change that changes nothing; updateHouseholdCore returns the row read
-// back (a timezone change clears lastDigestDate); set_digest_delivery changes only the
-// requester's own delivery, takes no name, and writes nothing when already so. Scoping: every tool acts on the
-// request's household only (another household's knowledge_id is not found, another
-// household's caregiver name is unknown, a model-supplied household id is an unknown field), and
+// no on-call setting (the field is refused), sharing, the weather place (set and cleared, the
+// clearing audited as null) and its audit row, and no audit row for a change that changes
+// nothing; updateHouseholdCore returns the row read back (a timezone change clears
+// lastDigestDate); set_digest_delivery changes only the requester's own delivery, takes no name,
+// and writes nothing when already so. Scoping: every tool acts on the request's household only
+// (another household's knowledge_id is not found, a model-supplied household id is an unknown
+// field), and
 // through the runtime a viewer's request runs no tool. Wording cards: a request's add_task and
 // update_task calls are recorded on the request row (changedTaskIds: each task once, in order
 // of first change, at most MAX_CHANGED_TASKS) and give one card per task with the live label,
@@ -31,7 +30,6 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { AGENT_TOOLS, executeAgentTool } from "./lib/agentTools";
 import { MAX_CHANGED_TASKS } from "./agentRuntime";
-import { resolveCaregiver } from "./lib/agentSetupTools";
 import { updateHouseholdCore } from "./lib/householdSettings";
 import { rememberFactCore } from "./lib/seniorMemory";
 import {
@@ -485,13 +483,12 @@ describe("settings", () => {
     );
     expect(await ok(t, home, "get_settings", {})).toEqual({
       digest_time: "19:00",
-      on_call: "Pat",
       share_transcripts: false,
       weather_location: null,
       caregivers: [
-        { name: "Max", role: "member", on_call: false, receives_digest: true, reachable: true },
-        { name: "Pat", role: "primary", on_call: true, receives_digest: true, reachable: false },
-        { name: "Val", role: "viewer", on_call: false, receives_digest: true, reachable: false },
+        { name: "Max", role: "member", receives_digest: true, reachable: true },
+        { name: "Pat", role: "primary", receives_digest: true, reachable: false },
+        { name: "Val", role: "viewer", receives_digest: true, reachable: false },
       ],
     });
   });
@@ -544,30 +541,6 @@ describe("settings", () => {
     expect((await household(t, home)).digestTime).toBe("19:00");
   });
 
-  test("on call resolves a caregiver by whole or first name, ignoring case", async () => {
-    const { t, home } = await makeWorld();
-    await addMember(t, home, "sam", "member", "Sam Rivera");
-    expect((await ok(t, home, "update_settings", { on_call: "MAX" })).on_call).toBe("Max");
-    expect((await household(t, home)).onCallUserId).toBe("max");
-    expect((await ok(t, home, "update_settings", { on_call: "sam" })).on_call).toBe("Sam Rivera");
-    expect((await ok(t, home, "update_settings", { on_call: "sam  rivera" })).on_call).toBe(
-      "Sam Rivera",
-    );
-  });
-
-  test("an unknown or ambiguous name is refused with the choices and changes nothing", async () => {
-    const { t, home } = await makeWorld();
-    await addMember(t, home, "sam1", "member", "Sam Rivera");
-    await addMember(t, home, "sam2", "member", "Sam Okafor");
-    expect((await tool(t, home, "update_settings", { on_call: "Sarah" })).text).toBe(
-      'Error: No caregiver of this household is called "Sarah". The caregivers are: Max, Pat, Sam Rivera, Sam Okafor, Val. Ask which one they mean.',
-    );
-    expect((await tool(t, home, "update_settings", { on_call: "Sam" })).text).toBe(
-      'Error: More than one caregiver could be "Sam": Sam Rivera, Sam Okafor. Ask which one they mean.',
-    );
-    expect((await household(t, home)).onCallUserId).toBe("pat");
-  });
-
   test("a change that changes nothing writes no audit row; a cleared place is audited as null", async () => {
     const { t, home } = await makeWorld();
     await ok(t, home, "update_settings", { digest_time: "19:00", share_transcripts: false });
@@ -596,9 +569,11 @@ describe("settings", () => {
 
   test("update_settings refuses unknown fields, wrong types and an empty change", async () => {
     const { t, home } = await makeWorld();
-    expect((await tool(t, home, "update_settings", { timezone: "UTC" })).text).toBe(
-      "Error: Unknown field timezone",
-    );
+    for (const key of ["timezone", "on_call"]) {
+      expect((await tool(t, home, "update_settings", { [key]: "x" })).text).toBe(
+        `Error: Unknown field ${key}`,
+      );
+    }
     expect((await tool(t, home, "update_settings", { share_transcripts: "yes" })).text).toBe(
       "Error: share_transcripts must be true or false",
     );
@@ -611,7 +586,6 @@ describe("settings", () => {
     expect(JSON.parse(off.text)).toEqual({
       name: "Max",
       role: "member",
-      on_call: false,
       receives_digest: false,
       reachable: false,
     });
@@ -635,19 +609,6 @@ describe("settings", () => {
       true,
     );
     expect((await rows(t, "auditLog")).some((r) => r.action === "digest_delivery")).toBe(false);
-  });
-
-  test("resolveCaregiver prefers the whole name over a first-name match", () => {
-    /**
-     * purpose: A member row with only the fields the resolver reads.
-     * @param userId: (string) User id.
-     * @param displayName: (string) Display name.
-     * @return: (Doc<"householdMembers">) The row.
-     */
-    const member = (userId: string, displayName: string): Doc<"householdMembers"> =>
-      ({ userId, displayName }) as Doc<"householdMembers">;
-    const members = [member("a", "Sam"), member("b", "Sam Rivera")];
-    expect(resolveCaregiver(members, "sam").userId).toBe("a");
   });
 });
 
@@ -677,11 +638,8 @@ describe("household scoping", () => {
     expect((await ok(t, home, "get_knowledge", {})).facts).toEqual([]);
   });
 
-  test("another household's caregiver cannot be named, and no tool takes a household id", async () => {
+  test("no tool takes a household id", async () => {
     const { t, home } = await makeWorld();
-    expect((await tool(t, home, "update_settings", { on_call: "Ben" })).text).toMatch(
-      /^Error: No caregiver of this household is called "Ben"/,
-    );
     expect((await tool(t, home, "get_settings", { household_id: "x" })).text).toBe(
       "Error: Unknown field household_id",
     );

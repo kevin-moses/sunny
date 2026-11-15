@@ -33,7 +33,9 @@
 // clears it). Its rules live in lib/householdSettings.ts updateHouseholdCore, which the
 // household agent's settings tools (lib/agentSetupTools.ts) call too, so a setting changed in
 // chat passes the same checks; a change that alters something is audited (update_settings)
-// under the caregiver who made it.
+// under the caregiver who made it. There is no on-call caregiver (2026-11-14): every caregiver
+// gets a task's alert at once, so households no longer have an on-call setting; the stored
+// onCallUserId field is deprecated (never read or written; migrations.removeOnCall clears it).
 //
 // Last modified: 2026-11-14
 
@@ -148,7 +150,7 @@ function isDeviceGrant(grant: JoinGrant): grant is DeviceKind {
 }
 
 /**
- * purpose: Create a household with the caller as primary caregiver and on-call contact.
+ * purpose: Create a household with the caller as its primary caregiver.
  * @param seniorPreferredName: (string) What the senior likes to be called.
  * @param timezone: (string) IANA zone of the household.
  * @param caregiverDisplayName: (string) The caller's display name.
@@ -171,7 +173,6 @@ export const create = mutation({
     const householdId = await ctx.db.insert("households", {
       seniorPreferredName,
       timezone,
-      onCallUserId: userId,
       digestTime: "19:00",
       eventNoticeTime: "08:00",
       shareTranscripts: false,
@@ -249,7 +250,6 @@ export const get = query({
  * @param seniorPreferredName: (string, optional) Non-blank name.
  * @param seniorFullName: (string, optional) Full name.
  * @param timezone: (string, optional) IANA zone.
- * @param onCallUserId: (string, optional) Must be a member of the household.
  * @param digestTime: (string, optional) Local "HH:MM".
  * @param eventNoticeTime: (string, optional) Local "HH:MM".
  * @param shareTranscripts: (boolean, optional) Whether caregivers see full transcripts.
@@ -337,8 +337,7 @@ export const updateMemberRole = mutation({
 
 /**
  * purpose: Remove a caregiver. A primary may remove anyone; any member may remove themselves.
- *          If the removed member was on call the household has no on-call contact (the SQL
- *          foreign key's `on delete set null`). The last primary cannot be removed.
+ *          The last primary cannot be removed.
  * @param householdId: (Id<"households">) Household.
  * @param userId: (string) Member to remove.
  * @return: (null)
@@ -358,11 +357,6 @@ export const removeMember = mutation({
     await ctx.db.delete(member._id);
     // Their Google connection (and token) goes with them.
     await dropMemberConnections(ctx, args.householdId, args.userId);
-
-    const household = await ctx.db.get(args.householdId);
-    if (household && household.onCallUserId === args.userId) {
-      await ctx.db.patch(args.householdId, { onCallUserId: undefined });
-    }
     return null;
   },
 });

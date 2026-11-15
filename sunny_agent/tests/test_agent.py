@@ -27,7 +27,7 @@
 # The behavioral tests need ANTHROPIC_API_KEY (the agent and judge are Claude Haiku) and are
 # skipped without it.
 #
-# Last modified: 2026-11-10
+# Last modified: 2026-11-14
 
 import json
 import os
@@ -100,7 +100,7 @@ CONTEXT: dict[str, Any] = {
         "localNow": "2027-03-13T13:30:00",
         "weatherLocation": "Brooklyn, NY",
     },
-    "caregivers": [{"name": "Anna", "onCall": True}, {"name": "Bob", "onCall": False}],
+    "caregivers": [{"name": "Anna"}, {"name": "Bob"}],
     "today": [
         _instance("i1", "Morning pills", "08:00", "confirmed", "2027-03-13T08:10"),
         _instance("i2", "Afternoon walk", "14:00", "upcoming"),
