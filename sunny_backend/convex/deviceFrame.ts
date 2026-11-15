@@ -19,7 +19,10 @@
 //     one inside its early hour). The header is absent when Done confirms nothing. Firmware
 //     contract: on a Done press, POST /device/confirm with exactly the id of the frame on
 //     screen (via "button"), and send nothing when its frame had none. The confirm route also
-//     refuses a button press on a task not due yet.
+//     refuses a button press made more than 5 minutes before the task's window opened, judged
+//     from pressedAgoMs: the device must report pressedAgoMs to within those 5 minutes, and
+//     should correct its clock from the server when it reconnects, before replaying queued
+//     presses.
 //
 // Last modified: 2026-11-14
 

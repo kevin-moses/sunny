@@ -11,9 +11,11 @@
 // differ); 400 for an unknown, missing or repeated page or format, an extra parameter, or a
 // reported screen frames are not drawn for; 401 without a valid token; the device's request
 // bucket is shared with the other routes. Done: a button press on a task not due yet is refused
-// ("This task is not due yet"), audited and budgeted, and leaves the task alone; a button press
-// after the window opened confirms even before the scheduler marks it due; the phone's surfaces
-// keep their early hour.
+// ("This task is not due yet"), audited and budgeted, and leaves the task alone; 5 minutes of
+// grace for the device's clock (4 minutes early counts, 6 is refused); a queued press made
+// before the window is refused even after the task came due; a button press after the window
+// opened confirms even before the scheduler marks it due; the phone's surfaces keep their early
+// hour.
 //
 // Last modified: 2026-11-14
 
@@ -452,6 +454,27 @@ describe("the hardware Done key (POST /device/confirm via button)", () => {
       via: "button",
     });
     expect(answer).toMatchObject({ status: "rejected", reason: "This task is not due yet" });
+  });
+
+  test("allows 5 minutes for the device's clock: 4 minutes early counts, 6 is refused", async () => {
+    const t = makeBackend();
+    const { token, instanceId } = await household(t, "", "Morning pills");
+    // Now is 08:10 and the window opened at 08:00: 16 minutes ago is 07:54, 6 minutes early.
+    const sixEarly = await confirm(t, token, {
+      instanceId,
+      pressedAgoMs: 16 * 60_000,
+      via: "button",
+    });
+    expect(sixEarly).toMatchObject({ status: "rejected", reason: "This task is not due yet" });
+    expect(await stateOf(t, instanceId)).toBe("upcoming");
+    // 14 minutes ago is 07:56, 4 minutes early: inside the grace.
+    const fourEarly = await confirm(t, token, {
+      instanceId,
+      pressedAgoMs: 14 * 60_000,
+      via: "button",
+    });
+    expect(fourEarly.status).toBe("confirmed");
+    expect(await stateOf(t, instanceId)).toBe("confirmed");
   });
 
   test("a queued press made before the window is refused after the task came due", async () => {

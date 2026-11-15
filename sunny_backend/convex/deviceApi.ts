@@ -33,9 +33,10 @@
 //                         replay window, taken back) and this module's (an unreadable body, a
 //                         bad instance id, a press over 7 days old, another household's
 //                         instance, recorded without that id, and a hardware Done, via button,
-//                         pressed before an open task's window opened: "This task is not due
-//                         yet", because the wall display offers Done only for a due task while
-//                         the phone's surfaces keep their early hour), at most 20 an hour per device
+//                         pressed more than 5 minutes (BUTTON_EARLY_GRACE_MS, a grace for the
+//                         device's clock) before an open task's window opened: "This task is
+//                         not due yet", because the wall display offers Done only for a due task
+//                         while the phone's surfaces keep their early hour), at most 20 an hour per device
 //                         (refusedPresses); past that the answer is the same and nothing is
 //                         written. A confirm here is a device confirm like the app's (state
 //                         confirmed, confirmedBy the device), so a caregiver's reopen stamps it,
@@ -131,12 +132,22 @@ const REFUSED = {
 } as const;
 
 /**
+ * How far before a task's window a hardware Done press may be and still count (ms). The press
+ * time is now - pressedAgoMs, and pressedAgoMs comes from the device's own clock: an ESP32 that
+ * slept on its internal slow clock can be minutes off after hours offline. Refusing a real press
+ * leaves a taken dose open and alerts the family, which is worse than accepting a press a few
+ * minutes early (the phone allows a whole hour), so only a press clearly before the window is
+ * refused.
+ */
+const BUTTON_EARLY_GRACE_MS = minutes(5);
+
+/**
  * purpose: Whether a press is on an open task of this household (upcoming, due or escalated)
- *          that was not due yet when it was pressed: pressed before its window opened. Judged
- *          by the press time, so a queued press replayed after the task came due is refused
- *          too, and a press after the window opened counts even if the scheduler has not marked
- *          it due yet. Another household's, a missing or a closed instance is not judged here
- *          (the core answers it).
+ *          that was not due yet when it was pressed: pressed more than BUTTON_EARLY_GRACE_MS
+ *          before its window opened. Judged by the press time, so a queued press replayed after
+ *          the task came due is refused too, and a press after the window opened (or within the
+ *          grace before it) counts even if the scheduler has not marked it due yet. Another
+ *          household's, a missing or a closed instance is not judged here (the core answers it).
  * @param ctx: (MutationCtx) Context.
  * @param device: (Doc<"devices">) The device that pressed.
  * @param press: ({ instanceId, pressedAgoMs }) The press.
@@ -152,7 +163,8 @@ async function pressedBeforeDue(
   if (press.pressedAgoMs < 0) return false; // the core refuses an impossible age itself
   const instance = await ctx.db.get(press.instanceId);
   if (instance === null || instance.householdId !== device.householdId) return false;
-  return isOpenState(instance.state) && now - press.pressedAgoMs < instance.windowStart;
+  const pressedAt = now - press.pressedAgoMs;
+  return isOpenState(instance.state) && pressedAt < instance.windowStart - BUTTON_EARLY_GRACE_MS;
 }
 
 /** The 400 message for an instance id that is not one. */
