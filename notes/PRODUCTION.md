@@ -5,7 +5,7 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 ## 1. Convex production deployment
 
 - [ ] From `sunny_backend/`, logged in to Convex in your terminal: `npx convex deploy` (or use a deploy key in CI).
-- [ ] Note the prod URLs: `https://<prod>.convex.cloud` (clients) and `https://<prod>.convex.site` (HTTP actions: `/pair`, `/google/callback`, `/twilio/sms`).
+- [ ] Note the prod URLs: `https://<prod>.convex.cloud` (clients) and `https://<prod>.convex.site` (HTTP actions: `/pair`, `/google/start`, `/google/callback`, `/twilio/sms`).
 - [ ] Set every env var below on prod: `npx convex env set --prod NAME value`. For multi-line secrets use `--from-file`, for example `npx convex env set --prod APNS_KEY_P8 --from-file <key.p8>`. Never commit these or paste them in chat.
 
 | Component | Variables |
@@ -19,7 +19,7 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 | Twilio | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_WEBHOOK_URL`, optional `SMS_ALLOWED_COUNTRY_CODES` |
 
 - [ ] Generate fresh values for prod secrets (`openssl rand -hex 32`, `openssl rand -base64 32` for `CALENDAR_TOKEN_KEY`). Keep a copy of `CALENDAR_TOKEN_KEY` somewhere safe.
-- [ ] Warning: rotating or losing `CALENDAR_TOKEN_KEY` forces every caregiver to reconnect Google Calendar and invalidates pending phone verification codes (codes are HMACs keyed from it).
+- [ ] Keep `CALENDAR_TOKEN_KEY` fixed once prod has data; no key-rotation policy has been designed. Stored Google tokens and phone-code MACs carry no key id, so rotating or losing the key forces every caregiver to reconnect Google Calendar and invalidates pending phone verification codes (codes are HMACs keyed from it).
 - [ ] Confirm the crons are running in the prod dashboard (scheduler tick every minute, sweepers).
 
 ## 2. Clerk production instance
@@ -39,14 +39,14 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 
 ## 4. Managed Agents
 
-- [ ] Run `scripts/setup_managed_agent.ts` (needed once to create the agent and environment; prompt, model and tool changes later take effect on backend deploy because sessions pass them as overrides) against the production Anthropic organization (or reuse the existing agent): `npm run setup:agent -- --prod` (from `sunny_backend`). The root `.env` needs the production `ANTHROPIC_API_KEY`; the script reads the agent and environment ids from the production deployment and stores any newly created ones there.
+- [ ] Run `scripts/setup_managed_agent.ts` against the production Anthropic organization (or reuse the existing agent): `npm run setup:agent -- --prod` (from `sunny_backend`). It is needed once, to create the agent and environment; later prompt, model and tool changes take effect on backend deploy because sessions pass them as overrides. The root `.env` needs the production `ANTHROPIC_API_KEY`; the script reads the agent and environment ids from the production deployment and stores any newly created ones there.
 - [ ] The script stores `SUNNY_AGENT_ID` and `SUNNY_ENVIRONMENT_ID` on Convex prod itself; verify with `npx convex env get SUNNY_AGENT_ID --prod`. Set `ANTHROPIC_API_KEY` on Convex prod manually (`npx convex env set ANTHROPIC_API_KEY <key> --prod`).
 - [ ] Read section 8 first: Claude Managed Agents is not covered by Anthropic's BAA.
 
 ## 5. Google Calendar
 
 - [ ] Publish the OAuth consent screen and complete Google's verification for the `calendar.app.created` scope. In testing mode refresh tokens expire after 7 days.
-- [ ] Add the prod redirect URI (`https://<prod>.convex.site/google/callback`) to the OAuth client and set `GOOGLE_REDIRECT_URI` to match.
+- [ ] Add the prod redirect URI (`https://<prod>.convex.site/google/callback`) to the OAuth client and set `GOOGLE_REDIRECT_URI` to match. `/google/start` is Sunny's own route and is not registered with Google, but it is built from `GOOGLE_REDIRECT_URI`'s host, so that must be the deployment's own `.convex.site` host (the cookie is host-only).
 - [ ] Setup details: `notes/GOOGLE_CALENDAR_SETUP.md`.
 
 ## 6. APNs
@@ -66,7 +66,7 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 ### Applicability (needs a lawyer)
 
 - A direct-to-family consumer app is likely not a HIPAA covered entity or business associate. It becomes a business associate if sold to agencies or clinics.
-- The FTC Health Breach Notification Rule (2024 update) likely applies as a personal health record vendor. A breach includes unauthorized disclosure. Notify individuals within 60 days and the FTC; notify media if 500 or more people in a state are affected.
+- The FTC Health Breach Notification Rule (2024 update) likely applies, with Sunny as a personal health record vendor. A breach includes unauthorized disclosure. Notify individuals within 60 days and the FTC; notify media if 500 or more people in a state are affected.
 - State laws (for example Washington My Health My Data) were not researched.
 
 ### BAA table
@@ -84,7 +84,7 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 | Google Calendar | Not for personal accounts | A Workspace BAA does not cover personal accounts; treat caregiver calendars as outside any BAA |
 | APNs | No BAA found | UNVERIFIED |
 
-### If HIPAA applies, Sunny must change
+### Required changes if HIPAA applies
 
 - [ ] Household agent: move from Managed Agents to the Messages API with our own tool loop, or keep PHI out of it.
 - [ ] SMS wording: minimal PHI ("Check Sunny for an update") instead of medication names.
@@ -95,4 +95,4 @@ Work through this when Sunny is ready for real families. The dev setup (`endurin
 ## 9. Decommission the old Supabase project
 
 - [ ] Only after the cleanup PR merges and nothing uses the project (user action in the Supabase dashboard).
-- [ ] Nothing was planned for migration (no pilot data). If you are unsure, export first: any tables with real data, and note that Google tokens lived in Vault and cannot be moved (caregivers reconnect).
+- [ ] No migration was planned (there is no pilot data). If you are unsure, first export any tables with real data. Google tokens lived in Vault and cannot be moved; caregivers reconnect.

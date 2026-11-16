@@ -9,15 +9,12 @@ Any frontend code should go in sunny_app. Backend code (Convex functions, schema
 Assume i have two separate terminals in the background running sunny_backend (`npx convex dev`) and sunny_app. don't run the apps as a background process
 
 # styling
-code with .py and .ts/.tsx should follow best standards for documentation. Each file should have a top level set of comments that address the intention of what the file contents are, and should be updated whenever a change is made to the file.
+No comments in code. This covers .py, .ts, .tsx and .js files: no `#` or `//` or `/* */` comments, no docstrings, no JSDoc/TSDoc, no file header blocks, no `{/* */}` in JSX. Names, types and small well-named helpers carry the meaning; if code needs a comment to be understood, rename or restructure it instead.
 
-Every function, component, class, etc. should have documentation under the declaration, i.e.
-def foo(a: int,b: str) -> int:
-"""
-purpose: perform foo.
-@param a: (int) number for ___
-@param b: (str) string for __
-@return c 
+No suppression pragmas either (`# type: ignore`, `# noqa`, `eslint-disable`, `@ts-expect-error`, `@ts-ignore`, mypy `ignore_errors` overrides). Fix the type or lint error at its root.
 
-any modifications to those function, component, class, etc. should also update the documentation as needed.
+No quick fixes. Code that would need a comment like "for now", "until X", "TODO", "workaround" or "just in case" is not done: find the root cause and fix that. If the right fix is a product decision, ask me instead of guessing.
 
+Contracts and constraints that the code cannot express (external API quirks, byte layouts, ordering rules between services) belong in notes/ (HANDOFF.md, SCHEMA.md, AGENT_RUNTIME.md), not in code.
+
+Run the declauding skill (`/declauding`) on text that AI wrote and that is not code: the AI-written parts of .md files, commit messages and PR descriptions, before committing or posting them. Leave text I wrote, and copied template text such as the LiveKit starter README in sunny_agent, as it is.

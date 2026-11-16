@@ -74,6 +74,7 @@ import type * as lib_profileReads from "../lib/profileReads.js";
 import type * as lib_schedule from "../lib/schedule.js";
 import type * as lib_secretBox from "../lib/secretBox.js";
 import type * as lib_seniorMemory from "../lib/seniorMemory.js";
+import type * as lib_taskDraft from "../lib/taskDraft.js";
 import type * as lib_taskSteps from "../lib/taskSteps.js";
 import type * as lib_text from "../lib/text.js";
 import type * as lib_time from "../lib/time.js";
@@ -167,6 +168,7 @@ declare const fullApi: ApiFromModules<{
   "lib/schedule": typeof lib_schedule;
   "lib/secretBox": typeof lib_secretBox;
   "lib/seniorMemory": typeof lib_seniorMemory;
+  "lib/taskDraft": typeof lib_taskDraft;
   "lib/taskSteps": typeof lib_taskSteps;
   "lib/text": typeof lib_text;
   "lib/time": typeof lib_time;

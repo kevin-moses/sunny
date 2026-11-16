@@ -2,7 +2,7 @@
 
 This file is the living spec and the source of truth; change it whenever a product decision changes, and add a line to the change log at the end. It began as an export of the Claude Doc "Memory-Care Agent — POC Feature Spec" (https://claude.ai/artifact/XBuzb5G7QUsSEoevKWnkHn) on 2026-10-24; that doc is no longer kept in sync.
 
-Last updated: 2026-11-13.
+Last updated: 2026-11-15.
 
 ## Goal and scope
 
@@ -22,7 +22,7 @@ The POC proves one loop: a family sets up a parent's day in the caregiver app, t
 
 **The app is smart, not the user:** caregivers say what they want in plain words and Sunny works out the settings. Nothing in the caregiver app asks a caregiver to fill in a form that Sunny could fill in for them.
 
-**A full personal agent behind a simple front:** the senior gets the same capable agent anyone else could use (open questions, lookups, small errands) without ever having to learn how to use one. The schedule and checklists are the structure the agent works inside; they are not the limit of what it will talk about.
+**A full personal agent behind a simple front:** the senior gets the same capable agent anyone else could use (open questions, lookups, small errands) without ever having to learn how to use one. The schedule and checklists are the structure that the agent works inside, not the limit of what it will talk about.
 
 ## Shared state
 
@@ -46,22 +46,21 @@ The agent changes instance states on schedule; surfaces only render and confirm.
 | Device | Kind (senior phone, home display), screen resolution and grey levels, device token | Pairing | Backend |
 | Life profile | People and relationships, places, doctors, daily habits, interests, preferences, sensitive topics and how to handle them | Caregiver app, with the senior at onboarding | Agent |
 | Agent memory | Facts learned in conversation, each with source (caregiver or senior), date and a verified flag | Agent; caregivers review and correct | Agent |
-| Task | Type (medication, appointment, routine, checklist, reminder), created_by (caregiver or senior), schedule rule, confirmation window, display label, spoken prompt, pill description, as-needed limits copied from the label, escalation policy | Caregiver app, agent on the senior's request | Agent |
-| Task instance | Date, state, confirmed_by, confirmed_via (button, widget, voice, caregiver), timestamps | Agent, all surfaces | All |
+| Task | Type (medication, appointment, routine, checklist, reminder), created_by (caregiver or senior), schedule rule, confirmation window, display label, spoken prompt, pill description, as-needed limits copied from the label, high priority (yes or no; medications always are), instruction steps | Caregiver app, agent on the senior's request | Agent |
+| Task instance | Date, state, current step of a multi-step task, confirmed_by, confirmed_via (button, widget, voice, caregiver), timestamps | Agent, all surfaces | All |
 | Checklist | Items, trigger (time, going out, manual) | Caregiver app | Display, phone, voice |
 | Event | Title, time, place, visitor name | Caregiver app | Display, phone, voice |
 | Message | Sender, recipient, text, optional photo or voice clip, seen_at | Caregiver app, agent on the senior's request | Display, phone, voice |
-| Escalation policy | Ordered steps: delay, channel, recipient | Caregiver app | Agent |
 | Conversation log | Transcript, topic, tools used, outcome (answered, routed, unsure), repeat count | Agent | Agent, digest |
 | Audit log | Every state change with actor and surface | All | Caregiver app |
 
-This state is the agent's context, not its boundary. Questions it can't answer from the household go to general knowledge and tools, covered under Voice and Agent below.
+The agent uses this state as context but is not limited to it. Questions that it can't answer from the household go to general knowledge and tools, as described in the Voice and Agent sections below.
 
-**Task instance states:** upcoming -> due -> confirmed, or due -> missed -> escalated -> resolved. A caregiver can resolve on the senior's behalf ("I called; she took them"), recorded under their name. An editor caregiver can also reopen any task confirmed that day, recorded in the audit log; this is the backstop for a Done pressed by mistake. A reopened task is simply unconfirmed again: its escalation ladder continues, so prompts and family alerts whose time has already passed go out right away.
+**Task instance states:** upcoming -> due -> confirmed, or due -> missed -> escalated -> resolved. A caregiver can resolve on the senior's behalf ("I called; she took them"), recorded under their name. A caregiver who can edit (primary or member) can also reopen any task confirmed that day, recorded in the audit log; this is the backstop for a Done pressed by mistake. A reopened task is unconfirmed again: its escalation ladder continues, so prompts and family alerts whose time has already passed go out right away.
 
-**Offline rule:** the display and phone cache today's and tomorrow's instances, move tasks to due on their own clock and keep prompting from the cache. Confirmations queue locally, survive a restart, and sync when the connection returns. The device sends how long ago the press was, so the task is recorded at the time of the press and a wrong device clock cannot shift it. A family alert can still fire for a task that was confirmed offline; that is accepted. An Undo tapped offline is queued the same way and judged from when it was tapped. Every Done press on the phone carries its own id and its Undo names that press, so the phone's presses and undos take effect in the order they were made whatever the network does (delay, a dropped connection, a message sent twice); the last thing the senior did wins. A press made before an undo, or before a caregiver reopened a device's confirmation, is ignored if it arrives afterwards, so a queued press can never mark a task done again after it was taken back. Against a caregiver's reopen and presses from other devices the order is still judged by estimated press times. Known limit: a press sent on a connection that had silently dropped is recorded at the time the connection came back, not when it was pressed.
+**Offline rule:** the display and phone cache today's and tomorrow's instances, move tasks to due on their own clock and keep prompting from the cache. Confirmations queue locally, survive a restart, and sync when the connection returns. The device sends how long ago the press was, so the task is recorded at the time of the press and a wrong device clock cannot shift it. A family alert can still fire for a task that was confirmed offline; that is accepted. An Undo tapped offline is queued the same way and judged from when it was tapped. Every Done press on the phone carries its own id, and its Undo names that press, so the phone's presses and undos take effect in the order they were made, whatever the network does (a delay, a dropped connection, a message sent twice); the last thing the senior did wins. A press made before an undo, or before a caregiver reopened a device's confirmation, is ignored if it arrives afterwards, so a queued press can never mark a task done again after it was taken back. When a press is ordered against a caregiver's reopen or against presses from other devices, the order is still judged by estimated press times. Known limit: a press sent on a connection that had silently dropped is recorded at the time the connection came back, not when it was pressed.
 
-**Devices and the device API:** the rules that decide what a senior surface shows (which task is "Now", what is Next up, which rows appear, when to chime and what to say) live in the backend as one device state. Every senior surface reads it: the phone app, the widget, the Live Activity, the iPad and the e-ink display. A device gets a long-lived device token at pairing and uses a small HTTP device API (read the state, fetch a drawn frame, confirm); the phone's Undo goes through the app's own signed-in call, because only the phone app offers it; removing the device in the caregiver app revokes the token. A device reports its screen resolution and grey levels, and the server draws e-ink frames to fit, so no layout assumes one screen size.
+**Devices and the device API:** the rules that decide what a senior surface shows live in the backend as one device state. They decide which task is "Now", what is Next up, which rows appear, and when to chime and what to say. Every senior surface reads this state: the phone app, the widget, the Live Activity, the iPad and the e-ink display. A device gets a long-lived device token at pairing and uses a small HTTP device API to read the state, fetch a drawn frame and confirm. The phone's Undo goes through the app's own signed-in call instead, because only the phone app offers Undo. Removing the device in the caregiver app revokes the token. A device reports its screen resolution and grey levels, and the server draws e-ink frames to fit, so no layout assumes one screen size.
 
 ## Caregiver app
 
@@ -71,15 +70,15 @@ All setup and all visibility live here; the senior never configures anything. Ch
 | --- | --- | --- |
 | Household setup | Create the senior's profile; invite siblings as primary, member or viewer | Must have |
 | Schedule by chat | Add or change medications, appointments, routines and checklists by telling Sunny; Sunny picks times, windows and the ladder | Must have |
-| Senior-facing wording | Sunny writes the short label the display shows and the exact sentence voice speaks; a card under its reply shows both, read live from the task, with a play button for the sentence. A task with several times lists the others ("Also at 8:00 PM"); a task with no time is never announced and its card says so | Must have |
+| Senior-facing wording | Sunny writes the short label that the display shows and the exact sentence that voice speaks. A card under its reply shows both, read live from the task, with a play button for the sentence. A task with several times lists the others ("Also at 8:00 PM"); a task with no time is never announced and its card says so | Must have |
 | Today timeline | Live status of every task instance, with who confirmed it and on which surface | Must have |
 | Mark done for them | Resolve a task after checking in by phone, recorded under the caregiver's name | Must have |
 | Reopen a task | Reopen any task confirmed that day, for a Done pressed by mistake, by tapping its ticked box and confirming; recorded in the audit log | Must have |
-| Escalation alerts and claim | Time-sensitive push when a task escalates, with "I'm on it" on the notification; it stops alerts going to the others. The action opens the app to claim. A caregiver without the app gets a text instead, and so does a caregiver whose push could not be delivered | Must have |
+| Escalation alerts and claim | Time-sensitive push when a task escalates, with "I'm on it" on the notification, which stops alerts going to the others. The action opens the app to claim the task. A caregiver without the app gets a text instead, and so does a caregiver whose push could not be delivered | Must have |
 | Calendar events | Appointments and visits, including who is coming, added by chat; feeds the display's Next up | Must have |
-| Daily digest | Posted as a message from Sunny in the chat thread, with a push as its preview; a caregiver can reply to it. The delivery time is set by chat, and each caregiver can turn their own push or text copy off by chat; the post in the thread stays for everyone | Must have |
+| Daily digest | Posted as a message from Sunny in the chat thread, with a push as its preview; a caregiver can reply to it. The delivery time is set by chat, and every caregiver gets the push or text copy (no opt-out in v1); the post in the thread is for everyone | Must have |
 | Knowledge | Life profile, sensitive-topic guidance and remembered facts are read, confirmed and corrected in the About tab. They can also be told to Sunny in chat ("Mom's doctor is Dr. Patel"); Sunny shows what it stored, and stores nothing from a question. What the senior said reaches Sunny as information only, never as an instruction | Must have |
-| Preferences by chat | Digest time, the weather place, a caregiver's own digest delivery, and sharing preferences (what the senior agreed to share, set together at onboarding; changed only when a caregiver clearly asks) | Must have |
+| Preferences by chat | Digest time, the weather place, and sharing preferences (what the senior agreed to share, set together at onboarding; changed only when a caregiver clearly asks) | Must have |
 | Settings screen | Only what needs a tap on the phone: pair a device, invite a caregiver, verify a phone number, connect Google, pause, sign out | Must have |
 | Send message or photo | Text, photo or short voice clip that appears on the display | Nice to have |
 | Questions inbox | Questions voice could not answer, so family can follow up | Nice to have |
@@ -90,7 +89,15 @@ The display answers orienting questions at a glance and takes two inputs: Done a
 
 **Hardware:** the first panel is a 13.3 inch Waveshare e-paper (960 x 680, black and white with 4 grey levels, 0.7 s partial and 5 s full refresh) driven by an ESP32-S3 with PSRAM, with wifi, speaker, mic, front light and two keys. Other panel sizes will be tried, so the server draws each frame to the resolution the device reports and the device only displays it. Design changes ship from the backend, never by reflashing. The firmware lives in `sunny_display/` (ESP-IDF), written against one board config file of pin definitions with a driver per peripheral. Until the hardware is ready an iPad runs the same screens; once the server draws frames, the iPad shows those same frames so it is an exact stand-in.
 
-**Frames:** the server draws the Now and Today pages for the screen each device reported (`GET /device/frame`, as PNG or as a compact packed format the ESP32 decodes row by row), in the display's own typefaces, and the same state always gives the same bytes, so a device asks again only when the picture changed. Rules the drawing keeps: a task inside its early hour is not the Now task on the wall display, it is Next up; text is fitted and never overlaps the prompts (the icon goes first, then the description, then the title shrinks); a symbol that carries meaning is written out and never dropped ("1000 µg" is drawn "1000 mcg"), a letter the typeface lacks falls back to its base letter, and a label with nothing drawable shows its type word ("Medication"). Known limit: labels in non-Latin scripts are not drawn. Each frame names the task its Done key confirms, and names none when nothing is due; the firmware sends that task on a press and nothing otherwise. The server also refuses a hardware Done press on a task that was not due when pressed, with 5 minutes of grace for the device's clock.
+**Frames:** the server draws the Now and Today pages for the screen that each device reported (`GET /device/frame`, as PNG or as a compact packed format that the ESP32 decodes row by row), in the display's own typefaces. The same state always gives the same bytes, so a device asks again only when the picture changed. The drawing follows these rules:
+
+- A task inside its early hour is shown as Next up on the wall display, not as the Now task.
+- Text is fitted and never overlaps the prompts (the icon goes first, then the description, then the title shrinks).
+- A symbol that carries meaning is written out and never dropped ("1000 µg" is drawn "1000 mcg").
+- A letter that the typeface lacks falls back to its base letter.
+- A label with nothing drawable shows its type word ("Medication").
+
+Known limit: labels in non-Latin scripts are not drawn. Each frame names the task that its Done key confirms, and names none when nothing is due; the firmware sends that task on a press, and sends nothing when the frame names none. The server also rejects a hardware Done press on a task that was not due when it was pressed, allowing 5 minutes of grace for the device's clock.
 
 | Feature | What it does | Priority |
 | --- | --- | --- |
@@ -111,7 +118,7 @@ The display answers orienting questions at a glance and takes two inputs: Done a
 | Door sensor cue | For later stages: when the front door opens, chime, highlight the going-out strip and read it once; nothing to confirm | Later |
 | Weather | One line: temperature and what to wear | Later |
 
-The panel alternates between a Now page and a Today page. The page list and the interval are sent by the server, so whether the carousel stays on real e-ink (each flip is a partial refresh that leaves ghosting until a full one) is decided on the hardware without reflashing. Apart from that, refresh on state changes and at part-of-day boundaries only; skipping minute ticks keeps it calm and saves power.
+The panel alternates between a Now page and a Today page. The page list and the interval are sent by the server, so the choice of whether to keep the carousel on real e-ink is made on the hardware, without reflashing. Each flip is a partial refresh, which leaves ghosting until the next full refresh. Apart from the page flips, the panel refreshes only on state changes and at part-of-day boundaries; skipping minute ticks keeps it calm and saves power.
 
 Talk on the ESP32 is parked until the base firmware works; the device API reserves a voice-token call for it.
 
@@ -130,15 +137,15 @@ The phone mirrors the display for when the senior is out, with the same Today li
 
 The phone needs iOS 17.2 or later (interactive widgets and push-started Live Activities).
 
-Two early checks: confirm on a real phone whether the widget appears under Apple's Assistive Access mode. Many seniors choose not to use it, so the one-screen app becomes an Assistive Access tile only if a pilot household needs it. And don't rebuild left-behind alerts for wallet and keys, since item trackers like AirTag already do that. Recommend them at onboarding instead.
+Two early checks. First, confirm on a real phone whether the widget appears under Apple's Assistive Access mode. Many seniors choose not to use that mode, so the one-screen app becomes an Assistive Access tile only if a pilot household needs it. Second, don't rebuild left-behind alerts for wallet and keys, since item trackers like AirTag already do that; recommend the trackers at onboarding instead.
 
 ## Voice
 
-Voice does three jobs: prompt, confirm and answer anything. It is a full personal agent the senior reaches with the Talk button, but it never speaks without a task or a question behind it.
+Voice does three jobs: prompt, confirm and answer anything. It is a full personal agent that the senior reaches with the Talk button, but it never speaks without a task or a question behind it.
 
 | Feature | What it does | Priority |
 | --- | --- | --- |
-| Scheduled prompt | A fixed sentence per task: "It's 8 o'clock. Time for your morning pills, the small white ones. Press the button when you've taken them." Sunny writes the task's sentence when the task is created and the server adds only the time lead; a reprompt is the identical sentence. It plays as local audio on the display, with no voice session: built-in speech on the iPad, and a clip made on the server in Sunny's voice on the e-ink device | Must have |
+| Scheduled prompt | A fixed sentence per task: "It's 8 o'clock. Time for your morning pills, the small white ones. Press the button when you've taken them." Sunny writes the task's sentence when the task is created, and the server adds only the time at the start; a reprompt repeats the same sentence. It plays as local audio on the display, with no voice session: built-in speech on the iPad, and a clip made on the server in Sunny's voice on the e-ink device | Must have |
 | Voice confirm | "Done", "I took them" or "yes" confirms; "not yet" snoozes 15 minutes; anything unclear counts as unconfirmed | Must have |
 | Already-done guard | If the task is confirmed: "You took your morning pills at 8:10." Guards against double doses | Must have |
 | Questions about their life | Day, schedule, visits, people, places and earlier conversations, answered from household state and memory first | Must have |
@@ -167,16 +174,18 @@ The backend runs the schedule, the escalation ladder and the digest. This is whe
 
 **Scheduler:** expands each task's schedule into daily instances at local midnight, handles timezone and daylight-saving changes, and pushes the day to every surface.
 
-**Escalation ladder, proposed defaults for medication**
+**Escalation ladder** (the same for every household). Medications and tasks marked high priority use the full ladder:
 
 1. Window opens: display chime and light, spoken prompt on the display, phone notification and Live Activity
 2. +15 min: the same chime and prompt again, and a second notification
 3. +30 min: alert every caregiver at once ("Mom hasn't confirmed her morning pills") by push, or by text for a caregiver without the app; anyone who may claim can claim it
 4. Window closes: mark missed and include it in the digest
 
-There is no on-call caregiver: nobody is designated to be alerted first. A caregiver who claimed the task before the alert is still alerted with everyone else, because a claim is not a dose. A window that closes before any caregiver was alerted (a window shorter than 30 minutes, or a task added late in its window) alerts every caregiver as it closes, with "Its time has now passed." in the text; the task is still marked missed and can still be claimed. It does not alert when the window ended more than 60 minutes earlier, which only happens after the scheduler was down; those tasks appear in the digest.
+Every caregiver is alerted at the same time; nobody is designated to be alerted first. A caregiver who claimed the task before the alert is still alerted with everyone else, because claiming a task does not mean the dose was taken. A window that closes before any caregiver was alerted (a window shorter than 30 minutes, or a task added late in its window) alerts every caregiver as it closes, with "Its time has now passed." in the text; the task is still marked missed and can still be claimed. This closing alert is not sent when the window ended more than 60 minutes earlier, which happens only after the scheduler was down; those tasks appear in the digest.
 
-Routines and checklists default to digest-only, with no escalation. Every delay is configurable per task.
+Every other timed task gets one prompt when its window opens (step 1) and is marked missed when the window closes (step 4); it is not prompted again and never alerts a caregiver. A caregiver marks a task high priority through Sunny in chat.
+
+**Multi-step tasks:** a task's instruction steps are stored on the task, and the backend tracks the current step of each instance, so the display, the phone and voice show and advance the same step. Done moves to the next step; Done on the last step confirms the task. Until then the task is not done: repeat prompts and caregiver alerts keep firing on schedule, and each prompt reads the current step. Every press names the step it was made on, so a second press for a step already passed (a double press, a replay, or the display and the phone pressing together) does nothing. A Done on a step clears a snooze, since she has started. When a caregiver changes the steps while today's task is in progress, it restarts at step 1. The caregiver's task row shows "Step N of M" from the first step, next to "High priority" when that applies.
 
 **Answering:** every question runs through the same loop.
 
@@ -188,7 +197,7 @@ Routines and checklists default to digest-only, with no escalation. Every delay 
 
 **Memory hygiene:** things the senior says can be mistaken, so they never overwrite caregiver-verified facts. Conflicts surface in the caregiver app for a quick yes or no.
 
-**Daily digest:** one message at the caregiver's chosen time, 3–5 lines written only from the day's logged events, with a plain template as fallback. It covers what was confirmed and when, misses and escalations, questions voice couldn't answer, and repeat-question counts. It is posted in the caregiver chat thread with a push as its preview; a caregiver without the app, or whose push could not be delivered, gets it by text. It goes to every caregiver who can be reached, except one who turned their own copy off by chat. A view-only caregiver cannot chat, so they cannot turn it off until the settings screen exists.
+**Daily digest:** one message at the caregiver's chosen time, 3–5 lines written only from the day's logged events, with a plain template as fallback. It covers what was confirmed and when, misses and escalations, questions voice couldn't answer, and repeat-question counts. It is posted in the caregiver chat thread with a push as its preview; a caregiver without the app, or whose push could not be delivered, gets it by text. It goes to every caregiver who can be reached, view-only caregivers included; nobody can turn it off.
 
 **Fan-out:** push to the caregiver app; push updates to the widget and Live Activity. The e-ink display checks the device API over HTTPS (see Power above); a persistent connection (WebSocket or MQTT) can replace the checks later behind the same API.
 
@@ -246,7 +255,7 @@ With no as-needed rule on file, voice still says what was taken today, then offe
 
 - Verifying pills were actually taken, or dispensing them; pair with a smart dispenser later
 - Passive sensors, activity monitoring and fall detection
-- Emergency response; onboarding states plainly that this is not an emergency device
+- Emergency response; onboarding says in plain words that this is not an emergency device
 - Android
 - Pharmacy, refill or health-record integrations
 - Cognitive scoring or anything resembling diagnosis
@@ -276,13 +285,13 @@ These features move Sunny from reminding the senior to helping them act. None of
 | Support level | One caregiver setting that adjusts answer detail, escalation timing and display density as the condition changes | Later |
 | Patterns for the doctor | Observations to mention at appointments ("morning pills drifted from 8:10 to 9:30 over three weeks"); never scores or anything resembling diagnosis | Later |
 
-**Memory, two meanings:** agent memory is facts the agent knows, verified by caregivers. Family memories are photos and moments shown on the display. They are separate features.
+**Memory, two meanings:** agent memory is facts that the agent knows, verified by caregivers. Family memories are photos and moments shown on the display. They are separate features.
 
 ## Build order and success metrics
 
-Built so far (merged to `main` through PR 17, 2026-11-14, plus the Undo and Reopen change this line ships with):
+Built so far (merged to `main` through PR 20 on 2026-11-15):
 
-- Backend: shared state, scheduler, escalation ladder with claim, question log, household list, senior undo and caregiver reopen (no buttons in the app yet), caregiver alerts by push with text as the fallback, daily digest posted in the chat thread, device token, HTTP device API and one server-computed device state (nothing in the app reads it yet)
+- Backend: shared state, scheduler, escalation ladder with claim, question log, household list, senior undo and caregiver reopen, caregiver alerts by push with text as the fallback, daily digest posted in the chat thread, device token, HTTP device API and one server-computed device state (nothing in the app reads it yet)
 - Caregiver app: Home timeline with mark done, Chat with task, calendar, knowledge and settings tools and the wording card, About tab (life profile, hard questions, remembered facts, messages)
 - Senior phone: Today screen with Talk and one large Done (up to 60 minutes early, presses queued durably offline and recorded at the time of the press)
 - iPad display: Now and Today pages, Done and Talk keys, Talk on the panel with the answer shown for 3 minutes, chime and spoken prompt at every prompt step
@@ -297,9 +306,9 @@ Remaining, in order:
 3. Senior surfaces offline: day view kept across a restart, due transitions and the cue on the device's own clock, display Done through the durable queue, the app's screens reading the device state (the phone's 30-second undo and the caregiver's Reopen button are built)
 4. Caregiver alerts: push with "I'm on it", text as fallback, digest posted in the chat thread (built; still to check on a real phone: time-sensitive delivery, the action on the lock screen, a tap that starts the app)
 5. iOS extension: home screen widget, lock screen widget, Live Activity, iOS 17.2 floor, Assistive Access check (runs alongside 3 and 4)
-6. Frame renderer: server-drawn frames sized per device (built; not yet run inside Convex or shown on a panel); still to build: prompt audio clips, the iPad switched to frames, a frame for each step of a multi-step task
+6. Frame renderer: server-drawn frames sized per device (built; not yet run inside Convex or shown on a panel). Frames draw a multi-step task's current step (built). Still to build: prompt audio clips, and switching the iPad to frames
 7. Firmware: `sunny_display/`, code and QR pairing, wifi hotspot setup, over-the-air updates, docked and battery modes, frames sent ahead for offline; then Talk on the ESP32
-8. Caregiver setup by chat: knowledge and preference tools and the wording card (built; not yet tried with the real model or on a phone); still to build: the settings screen, views for the list and for flags
+8. Caregiver setup by chat: knowledge and preference tools and the wording card (built; not yet tried with the real model or on a phone). Still to build: the settings screen, and views for the list and for flags
 9. Pilot readiness: metrics, export and delete, production deployment, BAAs
 10. Pilot with 3–5 households
 
@@ -320,3 +329,5 @@ Steps 6 and 7 start when a board that can be flashed arrives (expected around 20
 - 2026-11-13: This file became the living spec. Caregiver editing is chat only, with Sunny choosing the settings; schedule and event forms dropped; knowledge and preferences by chat; a small settings screen for actions that need a tap. Senior phone gets one large Done with a 30-second undo; the display has no undo and caregivers can reopen a confirmed task. Offline devices keep their own clock and send the press time. Prompts play as local audio at every prompt step. Device token, HTTP device API and a server device state shared by every senior surface. E-ink hardware named (Waveshare 13.3 inch, ESP32-S3), server-drawn frames sized per device, docked with a battery mode, pairing by code and QR, over-the-air updates. Caregiver alerts by push with text as fallback; digest in the chat thread. Widgets and Live Activity scoped; iOS 17.2 floor. "After the pilot" section added from the newer doc export. Build order rewritten against `origin/main` as of PR 12. Missed tasks are dimmed on senior surfaces (decided after the first simulator check).
 - 2026-11-14: After a reopen the ladder continues and overdue prompts and alerts go out right away. On a day with a missed task the display says "Nothing to do right now.", never that everything is done. An offline Undo is queued and judged from the tap; a press made before a take-back is ignored. Status lines updated after the first simulator check. Caregiver push built: a caregiver whose push cannot be delivered is texted, "I'm on it" opens the app to claim, the newest sign-in on a shared phone takes over its push token, and the digest goes to every reachable caregiver until recipients can be set by chat. The device API has no undo: only the phone app offers Undo, through its own signed-in call.
 - 2026-11-14: No on-call caregiver. At +30 minutes every caregiver is alerted at once and anyone who may claim can claim; the separate +45 step and the on-call setting are gone, and voice flags go to every reachable caregiver. Stored ladders from before are rewritten by a one-off migration (`npx convex run migrations:removeOnCall`); until it runs, an old ladder alerts everyone at +30 and again at +45 if nobody claimed. A window that closes before any caregiver was alerted now alerts them as it closes. Caregiver setup by chat, first half: Sunny reads and changes the life profile, hard-question guidance and remembered facts through the About tab's own rules; sets the digest time, weather place and sharing preference; a caregiver turns only their own digest copy on or off (provisional); a wording card under Sunny's reply shows each changed task's label and spoken sentence with a play button. Settings changes are now in the audit log.
+- 2026-11-15: No custom escalation policies: medications and high-priority tasks alert caregivers, every other task only prompts the senior. Multi-step tasks track their current step on the backend, and the ladder runs until the last step is done. No digest opt-out in v1. Legacy fields from earlier designs (on-call caregiver and similar) are removed once the data is migrated. For the POC: one shared agent key, the US only, and `CALENDAR_TOKEN_KEY` is not rotated (a rotation policy comes later). Google sign-in is tied to the browser that started it.
+- 2026-11-15: A reminder the senior sets by voice keeps its full wording for speech; its display label is clipped at a word to fit the 60-character label. Presses carry the step they were made on; a step Done clears a snooze; changing a task's steps restarts today's instance at step 1; caregiver rows show the step and high priority together.
