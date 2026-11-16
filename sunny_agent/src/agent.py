@@ -50,7 +50,7 @@ from config import (
     TTS_VOICE,
 )
 from convex_client import ConvexApi, create_convex_client
-from convex_types import AgentContext, TodayEntry
+from convex_types import AgentContext, TaskStep, TodayEntry
 from list_tools import db_add_to_list, db_read_list, db_take_off_list
 from memory import (
     ConversationLogger,
@@ -68,6 +68,7 @@ from speech_guard import (
 )
 from tools import (
     ANYTIME,
+    StepsRead,
     db_cancel_senior_reminder,
     db_confirm_task,
     db_create_senior_reminder,
@@ -108,6 +109,7 @@ class Assistant(Agent):
         conversation_id: str = "",
         weather_location: str | None = None,
         prompt_label: str = "",
+        prompt_step: TaskStep | None = None,
     ) -> None:
         super().__init__(instructions=instructions)
         self._household_id = household_id
@@ -117,6 +119,8 @@ class Assistant(Agent):
         self._weather_location = (weather_location or "").strip()
         self._weather_place: Place | None = None
         self._prompt_label = prompt_label
+        self._steps_read = StepsRead()
+        self._steps_read.note(prompt_label, prompt_step)
         self._tavily: TavilyClient | None = None
         self._another_is_hers = False
 
@@ -258,8 +262,7 @@ class Assistant(Agent):
             "matching task on today's schedule, or the one due now when no name is "
             "given. If it was already confirmed, returns when, so the senior is never "
             "told to repeat a dose. A task with steps is done one step at a time: each "
-            "call marks the current step done and returns the next step to read out; "
-            "pass the step number you last read out for it. "
+            "call marks the current step done and returns the next step to read out. "
             "Only call when the senior clearly says they did it."
         )
     )
@@ -275,21 +278,13 @@ class Assistant(Agent):
                 )
             ),
         ] = "",
-        step: Annotated[
-            int,
-            Field(
-                description=(
-                    "For a task with steps, the step number you last read out for it, e.g. 2 "
-                    'for "Step 2 of 3"; 0 when you did not read a step'
-                ),
-                ge=0,
-            ),
-        ] = 0,
     ) -> str:
         label = task_name or self._prompt_label
         return await self._household_tool(
             "record that",
-            lambda h: db_confirm_task(self._convex, h, self._timezone, label, step),
+            lambda h: db_confirm_task(
+                self._convex, h, self._timezone, label, self._steps_read
+            ),
         )
 
     @function_tool(
@@ -689,15 +684,21 @@ def _recovery_message(consecutive_errors: int, name: str) -> str:
 _OPEN_FOR_CONFIRMATION_STATES = ("due", "escalated")
 
 
-def _opening_prompt(
+def _prompt_instance(
     context: AgentContext | None, task_instance_id: str | None
-) -> tuple[str | None, str]:
+) -> TodayEntry | None:
     if not task_instance_id or context is None:
-        return None, ""
-    instance = next(
+        return None
+    return next(
         (i for i in context["today"] if i["instanceId"] == task_instance_id),
         None,
     )
+
+
+def _opening_prompt(
+    context: AgentContext | None, task_instance_id: str | None
+) -> tuple[str | None, str]:
+    instance = _prompt_instance(context, task_instance_id)
     if instance is None:
         return None, ""
     label = instance["displayLabel"]
@@ -841,6 +842,7 @@ async def entrypoint(ctx: JobContext) -> None:
     shutdown_logger = conv_logger
 
     initial_prompt, prompt_label = _opening_prompt(raw_context, session_instance_id)
+    prompt_instance = _prompt_instance(raw_context, session_instance_id)
     if initial_prompt:
         logger.info(f"Task prompt opening: {initial_prompt!r}")
 
@@ -985,6 +987,7 @@ async def entrypoint(ctx: JobContext) -> None:
         conversation_id=conversation_id,
         weather_location=weather_location,
         prompt_label=prompt_label,
+        prompt_step=None if prompt_instance is None else prompt_instance.get("step"),
     )
 
     await session.start(

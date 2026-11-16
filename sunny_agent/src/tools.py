@@ -123,23 +123,44 @@ async def db_list_today(client: ConvexQuery, household_id: str, tz: str) -> str:
     return "Today: " + "; ".join(describe_instance(i, tz) for i in items) + "."
 
 
+class StepsRead:
+    def __init__(self) -> None:
+        self._steps: dict[str, int] = {}
+
+    def note(self, label: str, step: TaskStep | None) -> None:
+        key = label.strip().lower()
+        if step is None:
+            self._steps.pop(key, None)
+        else:
+            self._steps[key] = step["index"]
+
+    def step_for(self, said: str) -> int | None:
+        needle = said.strip().lower()
+        if not needle:
+            return None
+        matches = [index for key, index in self._steps.items() if needle in key]
+        return matches[0] if len(matches) == 1 else None
+
+
 async def db_confirm_task(
     client: ConvexMutation,
     household_id: str,
     tz: str,
     task_name: str,
-    step_read: int = 0,
+    steps_read: StepsRead | None = None,
 ) -> str:
     r: ConfirmResult = await client.mutation(
         "agent:confirmDueTask",
         {
             "householdId": household_id,
             "label": task_name or None,
-            "step": step_read - 1 if step_read > 0 else None,
+            "step": None if steps_read is None else steps_read.step_for(task_name),
         },
     )
     status = r["status"]
     label = r.get("displayLabel") or task_name
+    if steps_read is not None and status in ("advanced", "other_step", "confirmed"):
+        steps_read.note(label, None if status == "confirmed" else r.get("step"))
     if status == "confirmed":
         return f"Confirmed: {label}{_at_clock(r.get('confirmedAt'), tz)}."
     step = r.get("step")
@@ -151,8 +172,8 @@ async def db_confirm_task(
     if status == "other_step":
         current = "" if step is None else f" It is on {step_speech(step)}"
         return (
-            f"Nothing was marked done: {label} is not on the step you named.{current} "
-            "Read that step to them."
+            f"Nothing was marked done: {label} is on another step than the one read "
+            f"out.{current} Read that step to them."
         )
     shared = _task_outcome(r, label, task_name, tz)
     if shared is not None:

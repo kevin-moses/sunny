@@ -7,6 +7,7 @@ from convex_types import AgentContext, TodayEntry
 from prompts import format_user_context
 from tools import (
     ANYTIME,
+    StepsRead,
     db_cancel_senior_reminder,
     db_confirm_task,
     db_create_senior_reminder,
@@ -252,43 +253,82 @@ async def test_confirm_task_sends_voice_and_no_label() -> None:
     ]
 
 
+KEYS = {"index": 1, "count": 3, "text": "Take your keys"}
+DOOR = {"index": 2, "count": 3, "text": "Lock the door"}
+
+
+def _steps_read_on(index: int) -> StepsRead:
+    steps = StepsRead()
+    steps.note("Going out", {"index": index, "count": 3, "text": "Put on your coat"})
+    return steps
+
+
 @pytest.mark.asyncio
-async def test_confirm_task_sends_the_step_it_read_as_an_index() -> None:
+async def test_confirm_task_sends_the_step_the_session_read_and_follows_it() -> None:
+    steps = _steps_read_on(0)
     client = FakeConvex(
         {
             "agent:confirmDueTask": {
                 "status": "advanced",
                 "displayLabel": "Going out",
-                "step": {"index": 2, "count": 3, "text": "Lock the door"},
+                "step": KEYS,
             }
         }
     )
-    await db_confirm_task(client, "h1", TZ, "going out", 2)
-    assert client.calls == [
-        (
-            "agent:confirmDueTask",
-            {"householdId": "h1", "label": "going out", "step": 1},
-        )
-    ]
+    await db_confirm_task(client, "h1", TZ, "going out", steps)
+    client.responses["agent:confirmDueTask"] = {
+        "status": "advanced",
+        "displayLabel": "Going out",
+        "step": DOOR,
+    }
+    await db_confirm_task(client, "h1", TZ, "going out", steps)
+    client.responses["agent:confirmDueTask"] = {
+        "status": "confirmed",
+        "displayLabel": "Going out",
+        "confirmedAt": 1804943520000,
+    }
+    await db_confirm_task(client, "h1", TZ, "going out", steps)
+    await db_confirm_task(client, "h1", TZ, "going out", steps)
+    assert [call[1]["step"] for call in client.calls] == [0, 1, 2, None]
+
+
+@pytest.mark.asyncio
+async def test_confirm_task_sends_no_step_for_a_task_the_session_did_not_read() -> None:
+    client = FakeConvex({"agent:confirmDueTask": {"status": "nothing_due"}})
+    await db_confirm_task(client, "h1", TZ, "", _steps_read_on(0))
+    await db_confirm_task(client, "h1", TZ, "pills", _steps_read_on(0))
+    await db_confirm_task(client, "h1", TZ, "going out", None)
+    assert [call[1]["step"] for call in client.calls] == [None, None, None]
+
+
+def test_steps_read_needs_one_match() -> None:
+    steps = _steps_read_on(1)
+    steps.note("Going to bed", {"index": 0, "count": 2, "text": "Brush teeth"})
+    assert steps.step_for("going out") == 1
+    assert steps.step_for("going") is None
+    steps.note("Going out", None)
+    assert steps.step_for("going") == 0
 
 
 @pytest.mark.asyncio
 async def test_confirm_task_on_another_step_marks_nothing_and_reads_the_current_one() -> (
     None
 ):
+    steps = _steps_read_on(0)
     client = FakeConvex(
         {
             "agent:confirmDueTask": {
                 "status": "other_step",
                 "displayLabel": "Going out",
-                "step": {"index": 1, "count": 3, "text": "Take your keys"},
+                "step": KEYS,
             }
         }
     )
-    assert await db_confirm_task(client, "h1", TZ, "", 1) == (
-        "Nothing was marked done: Going out is not on the step you named. It is on "
-        "Step 2 of 3: Take your keys. Read that step to them."
+    assert await db_confirm_task(client, "h1", TZ, "going out", steps) == (
+        "Nothing was marked done: Going out is on another step than the one read out. "
+        "It is on Step 2 of 3: Take your keys. Read that step to them."
     )
+    assert steps.step_for("going out") == 1
 
 
 @pytest.mark.asyncio

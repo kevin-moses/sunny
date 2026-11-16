@@ -975,6 +975,40 @@ async def test_another_dose_is_logged_only_after_the_question_was_asked() -> Non
     assert convex.another == [False, False, True]
 
 
+@pytest.mark.asyncio
+async def test_confirm_after_a_step_prompt_names_the_step_read_out() -> None:
+    sent: list[ConvexArgs] = []
+
+    class _StepConvex:
+        async def query(self, path: str, args: ConvexArgs) -> object:
+            raise AssertionError(f"unexpected query {path}")
+
+        async def mutation(self, path: str, args: ConvexArgs) -> object:
+            assert path == "agent:confirmDueTask"
+            sent.append(args)
+            return {
+                "status": "advanced",
+                "displayLabel": "Going out",
+                "step": {"index": 2, "count": 3, "text": "Lock the door"},
+            }
+
+    assistant = Assistant(
+        instructions="x",
+        household_id="h1",
+        convex=_StepConvex(),
+        prompt_label="Going out",
+        prompt_step={"index": 1, "count": 3, "text": "Take your keys"},
+    )
+    await Assistant.confirm_task(assistant, MagicMock())
+    await Assistant.confirm_task(assistant, MagicMock(), "going out")
+    await Assistant.confirm_task(assistant, MagicMock(), "pills")
+    assert [(a["label"], a["step"]) for a in sent] == [
+        ("Going out", 1),
+        ("going out", 2),
+        ("pills", None),
+    ]
+
+
 def _history_with_tools() -> ChatContext:
     return ChatContext(
         [
