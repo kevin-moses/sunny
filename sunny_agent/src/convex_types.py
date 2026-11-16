@@ -113,6 +113,7 @@ class ConfirmResult(TypedDict):
         "not_found",
         "ambiguous",
         "not_due_yet",
+        "other_step",
     ]
     displayLabel: NotRequired[str]
     scheduledTime: NotRequired[str]

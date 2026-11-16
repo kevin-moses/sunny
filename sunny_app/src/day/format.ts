@@ -28,6 +28,10 @@ export const SPOKEN = {
   missed: 'Earlier today, not marked done',
 } as const;
 
+export function stepIndex(task: Pick<DayTask, 'step'>): number {
+  return task.step?.index ?? 0;
+}
+
 export function stepCounter(step: NonNullable<DayTask['step']>): string {
   return `Step ${step.index + 1} of ${step.count}`;
 }

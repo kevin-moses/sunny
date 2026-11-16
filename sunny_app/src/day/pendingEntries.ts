@@ -1,6 +1,6 @@
 import * as Crypto from 'expo-crypto';
 
-import { isOpen } from './format';
+import { isOpen, stepIndex } from './format';
 import type { DayTask } from './types';
 
 export interface PendingConfirm {
@@ -92,6 +92,14 @@ function withStepIndex(task: DayTask, index: number): DayTask {
   return { ...task, step: { ...task.step, index, text } };
 }
 
+function advanced(task: Stepped<DayTask>): DayTask {
+  return { ...withStepIndex(task, task.step.index + 1), snoozed: false, snoozedUntil: null };
+}
+
+function pressedOtherStep(task: DayTask, entry: PendingConfirm): boolean {
+  return entry.step !== undefined && entry.step !== stepIndex(task);
+}
+
 export function latestByInstance(
   entries: readonly PendingEntry[],
 ): ReadonlyMap<string, PendingEntry> {
@@ -128,8 +136,13 @@ export function toPending(
   pressedAt: number,
   pressId: string,
 ): PendingConfirm {
-  const base = { instanceId: task.instanceId, label: task.displayLabel, pressedAt, pressId };
-  return task.step === null ? base : { ...base, step: task.step.index };
+  return {
+    instanceId: task.instanceId,
+    label: task.displayLabel,
+    pressedAt,
+    pressId,
+    step: stepIndex(task),
+  };
 }
 
 export function toUndo(
@@ -160,7 +173,7 @@ function replayQueued(task: DayTask, queued: readonly PendingEntry[]): DayTask {
         shown = beforeLocalPress ?? { ...shown, ...entry.restore };
         confirmPressIds = [];
       } else if (entry.pressId === lastStepPress && isOpen(shown) && shown.step !== null) {
-        shown = beforeLocalPress ?? withStepIndex(shown, shown.step.index - 1);
+        shown = withStepIndex(shown, shown.step.index - 1);
         lastStepPress = null;
       } else {
         continue;
@@ -169,11 +182,12 @@ function replayQueued(task: DayTask, queued: readonly PendingEntry[]): DayTask {
     } else if (appliedSteps.includes(entry.pressId)) {
       continue;
     } else if (isOpen(shown)) {
-      beforeLocalPress = shown;
+      if (pressedOtherStep(shown, entry)) continue;
       if (hasStepAfter(shown)) {
-        shown = withStepIndex(shown, shown.step.index + 1);
+        shown = advanced(shown);
         lastStepPress = entry.pressId;
       } else {
+        beforeLocalPress = shown;
         shown = { ...shown, state: 'confirmed', confirmable: false };
         confirmPressIds = [entry.pressId];
         lastStepPress = null;

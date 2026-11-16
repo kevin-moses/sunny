@@ -10,6 +10,7 @@ import {
   logDoseCore,
   snoozeInstance,
 } from "./instances";
+import { executeAgentTool } from "./lib/agentTools";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -1279,6 +1280,69 @@ describe("senior reminders", () => {
     await expect(
       asPhone.mutation(api.instances.createSeniorReminder, { ...base, title: "x".repeat(200) }),
     ).resolves.toBeDefined();
+  });
+
+  test("a long spoken reminder keeps its title and gets a label a caregiver can save", async () => {
+    const f = await reminderFixture();
+    const title = "call the pharmacy about refilling my blood pressure pills before saturday";
+    expect(title).toHaveLength(73);
+    const task = await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.createSeniorReminder, {
+        householdId: f.householdId,
+        title,
+        time: "10:00",
+      });
+    expect(task).toMatchObject({
+      title,
+      displayLabel: "Call the pharmacy about refilling my blood pressure pills…",
+      spokenPrompt: `Reminder: ${title}.`,
+    });
+    const pat = f.t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: task._id,
+      times: ["11:30"],
+      highPriority: true,
+    });
+    const stopped = await f.t.run(
+      async (ctx) =>
+        await executeAgentTool(
+          ctx,
+          {
+            householdId: f.householdId,
+            actor: { kind: "agent", onBehalfOf: "pat" },
+            now: Date.now(),
+          },
+          { name: "stop_task", input: { task_id: task._id } },
+        ),
+    );
+    expect(stopped.isError).toBe(false);
+    const saved = await f.t.run(async (ctx) => await ctx.db.get(task._id));
+    expect(saved).toMatchObject({ times: ["11:30"], highPriority: true, active: false, title });
+  });
+
+  test("a reminder saved earlier with a label over the cap can still be changed", async () => {
+    const f = await reminderFixture();
+    const label = "Call the pharmacy about refilling my blood pressure pills before saturday";
+    const task = await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.createSeniorReminder, {
+        householdId: f.householdId,
+        title: label.toLowerCase(),
+        time: "10:00",
+      });
+    await f.t.run(async (ctx) => await ctx.db.patch(task._id, { displayLabel: label }));
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: task._id,
+      times: ["11:00"],
+    });
+    const saved = await f.t.run(async (ctx) => await ctx.db.get(task._id));
+    expect(saved).toMatchObject({
+      times: ["11:00"],
+      displayLabel: "Call the pharmacy about refilling my blood pressure pills…",
+    });
   });
 
   test("a today reminder is allowed", async () => {

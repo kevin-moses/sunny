@@ -1,6 +1,6 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { isAsNeededTask } from "../tasks";
+import { isAsNeededTask } from "./taskDraft";
 import { logDoseCore } from "../instances";
 import { audit } from "./audit";
 import { daysUsed, doseStatus, limitBreaches } from "./doseLimits";

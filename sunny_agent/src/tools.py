@@ -124,11 +124,19 @@ async def db_list_today(client: ConvexQuery, household_id: str, tz: str) -> str:
 
 
 async def db_confirm_task(
-    client: ConvexMutation, household_id: str, tz: str, task_name: str
+    client: ConvexMutation,
+    household_id: str,
+    tz: str,
+    task_name: str,
+    step_read: int = 0,
 ) -> str:
     r: ConfirmResult = await client.mutation(
         "agent:confirmDueTask",
-        {"householdId": household_id, "label": task_name or None},
+        {
+            "householdId": household_id,
+            "label": task_name or None,
+            "step": step_read - 1 if step_read > 0 else None,
+        },
     )
     status = r["status"]
     label = r.get("displayLabel") or task_name
@@ -139,6 +147,12 @@ async def db_confirm_task(
         return (
             f"Step {step['index']} of {step['count']} of {label} is done; the task is "
             f"not done until the last step. Next: {step_speech(step)} Read that step to them."
+        )
+    if status == "other_step":
+        current = "" if step is None else f" It is on {step_speech(step)}"
+        return (
+            f"Nothing was marked done: {label} is not on the step you named.{current} "
+            "Read that step to them."
         )
     shared = _task_outcome(r, label, task_name, tz)
     if shared is not None:

@@ -3,6 +3,7 @@ import type { QueryCtx } from "../_generated/server";
 import { type Actor, memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
+import { isDueEntry } from "./dueTask";
 import { isSnoozed, seniorPromptCount } from "./escalation";
 import { taskStep, visibleStepPressIds } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
@@ -41,6 +42,14 @@ export interface TodayEntry {
   seniorPrompts: number;
   snoozed: boolean;
   snoozedUntil: number | null;
+}
+
+export function shownOn(
+  instance: Pick<Doc<"taskInstances">, "localDate" | "state">,
+  date: string,
+): boolean {
+  if (instance.localDate === date) return true;
+  return instance.localDate === addDays(date, -1) && isDueEntry(instance);
 }
 
 export function receivedDaysLater(
@@ -83,7 +92,7 @@ export async function todayInstances(
       )
       .collect()
   )
-    .filter((i) => i.state === "due" || i.state === "escalated")
+    .filter((i) => shownOn(i, date))
     .sort(compareDayOrder);
   const todays = (
     await ctx.db

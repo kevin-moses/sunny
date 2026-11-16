@@ -34,7 +34,7 @@ import {
   partOfDay,
   weekdayName,
 } from "./time";
-import { taskStep } from "./taskSteps";
+import { stepIndex, taskStep } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
 import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
@@ -136,6 +136,7 @@ export interface NowCard {
 export interface DoneTarget {
   instanceId: Id<"taskInstances">;
   early: boolean;
+  step: number;
 }
 
 export interface NextItem {
@@ -210,6 +211,10 @@ export function doneTarget<T extends DayTask>(tasks: T[]): T | null {
   return (
     tasks.find((t) => t.state === "upcoming" && t.confirmable && !isAnytimeInstance(t)) ?? null
   );
+}
+
+export function frameDoneTarget(state: Pick<DeviceState, "done">): DoneTarget | null {
+  return state.done !== null && !state.done.early ? state.done : null;
 }
 
 export function buildAgenda(tasks: DayTask[], events: DayEvent[]): AgendaItem[] {
@@ -419,7 +424,11 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
     done:
       target === null
         ? null
-        : { instanceId: target.instanceId, early: target.state === "upcoming" },
+        : {
+            instanceId: target.instanceId,
+            early: target.state === "upcoming",
+            step: stepIndex(target.step),
+          },
     nextUp: nextItem(agenda, input.upcoming, today, time, nowTaskId),
     nextUpAfterDue: nextItem(agenda, input.upcoming, today, time, dueTaskId),
     rows,

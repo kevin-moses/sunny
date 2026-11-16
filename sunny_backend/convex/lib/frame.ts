@@ -182,10 +182,6 @@ export function buildFrameModel(state: DeviceState, page: CarouselPage): FrameMo
   };
 }
 
-export function frameDoneInstance(state: DeviceState): string | null {
-  return state.done !== null && !state.done.early ? state.done.instanceId : null;
-}
-
 export type FrameFormat = "png" | "packed";
 
 export function frameEtag(

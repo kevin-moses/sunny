@@ -261,6 +261,7 @@ describe('useDoneAction', () => {
       via: 'phone_app',
       pressedAgoMs: 0,
       pressId: expect.stringMatching(/^press-\d{16}$/),
+      step: 0,
     });
     expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toEqual([]);
   });
@@ -652,7 +653,7 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0, pressId: pressId(1) },
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0, pressId: pressId(1), step: 0 },
       ],
       ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 0, pressId: pressId(1) }],
     ]);
@@ -796,7 +797,13 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 600_000, pressId: pressId(1) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 600_000,
+          pressId: pressId(1),
+          step: 0,
+        },
       ],
       [
         'instances:undoPressedTask',
@@ -821,7 +828,13 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 900_000, pressId: pressId(1) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 900_000,
+          pressId: pressId(1),
+          step: 0,
+        },
       ],
       [
         'instances:undoPressedTask',
@@ -829,7 +842,13 @@ describe('Undo on the phone', () => {
       ],
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 880_000, pressId: pressId(2) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 880_000,
+          pressId: pressId(2),
+          step: 0,
+        },
       ],
     ]);
   });
@@ -916,7 +935,13 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 60_000, pressId: pressId(1) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 60_000,
+          pressId: pressId(1),
+          step: 0,
+        },
       ],
       [
         'instances:undoPressedTask',

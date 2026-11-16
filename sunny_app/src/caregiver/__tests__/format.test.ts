@@ -1160,6 +1160,43 @@ describe('multi-step tasks', () => {
     expect(stepProgress(makeTask())).toBeNull();
   });
 
+  it('shows the step on the row from step 1 of an open task', () => {
+    const [row] = taskRows(makeDay({ tasks: [onStep(0)] }));
+    expect(row).toMatchObject({ variant: 'open', detail: 'Step 1 of 3' });
+    expect(row!.accessibilityLabel).toBe('8:00 AM, Take medication. Step 1 of 3');
+  });
+
+  it('joins high priority and the step on an open row', () => {
+    const [first] = taskRows(makeDay({ tasks: [onStep(0, { highPriority: true })] }));
+    expect(first!.detail).toBe('High priority · Step 1 of 3');
+    const [second] = taskRows(makeDay({ tasks: [onStep(1, { highPriority: true })] }));
+    expect(second!.detail).toBe('High priority · Step 2 of 3');
+    expect(second!.accessibilityLabel).toBe(
+      '8:00 AM, Take medication. High priority · Step 2 of 3',
+    );
+  });
+
+  it('keeps the step and high priority on a missed row', () => {
+    const [row] = taskRows(
+      makeDay({ tasks: [onStep(1, { highPriority: true, state: 'missed' })] }),
+    );
+    expect(row).toMatchObject({ variant: 'alert', detail: 'High priority · Step 2 of 3' });
+  });
+
+  it('gives a done multi-step row its done detail only', () => {
+    const task = onStep(2, {
+      highPriority: true,
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedByName: 'Pat',
+      confirmedBy: 'user_pat',
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    expect(taskRows(makeDay({ tasks: [task] }))[0]!.detail).toBe('Marked done by Pat at 2:05 PM');
+    const confirmed = onStep(2, { highPriority: true, state: 'confirmed' });
+    expect(taskRows(makeDay({ tasks: [confirmed] }))[0]!.detail).toBeNull();
+  });
+
   it('says the step in the alert', () => {
     expect(alertMessage(onStep(1, { state: 'escalated', scheduledTime: '14:05' }))).toBe(
       'Due at 2:05 PM. On step 2 of 3. Sunny has alerted the family.',

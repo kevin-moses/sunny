@@ -10,7 +10,7 @@ import type { ConfirmTransport, PressResult } from "./instances";
 import { findDevice, requireUserId } from "./lib/access";
 import type { DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
-import { loadDeviceState } from "./lib/deviceState";
+import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
 import { isOpenState } from "./lib/escalation";
@@ -23,9 +23,14 @@ import {
   jsonResponse,
   rateLimitedResponse,
 } from "./lib/httpResponse";
+import { STEP_NOT_VALID, isStepIndex } from "./lib/taskSteps";
 import { DAY_MS, minutes } from "./lib/time";
 import { DEVICE_VIAS, deviceScreen, deviceVia } from "./lib/validators";
 import type { DeviceScreen, DeviceVia } from "./lib/validators";
+
+export const DONE_INSTANCE_HEADER = "Sunny-Done-Instance";
+
+export const DONE_STEP_HEADER = "Sunny-Done-Step";
 
 const LAST_SEEN_INTERVAL_MS = minutes(5);
 
@@ -77,6 +82,7 @@ interface ConfirmRequest {
   instanceId: string;
   pressedAgoMs: number;
   via: DeviceVia;
+  step?: number;
 }
 
 interface InfoRequest {
@@ -212,7 +218,7 @@ async function auditRefusal(
 async function confirmForDevice(
   ctx: MutationCtx,
   actor: DeviceActor,
-  args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number },
+  args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number; step?: number },
   now: number,
 ): Promise<{ status: PressStatus; reason: string | null }> {
   if (args.via === "button" && (await pressedBeforeDue(ctx, actor.device, args, now))) {
@@ -237,7 +243,13 @@ async function confirmForDevice(
 }
 
 export const confirmByToken = internalMutation({
-  args: { tokenHash: v.string(), instanceId: v.string(), via: deviceVia, pressedAgoMs: v.number() },
+  args: {
+    tokenHash: v.string(),
+    instanceId: v.string(),
+    via: deviceVia,
+    pressedAgoMs: v.number(),
+    step: v.optional(v.number()),
+  },
   handler: async (ctx, args): Promise<ConfirmOutcome> => {
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
     if (device === null) return { kind: "unauthorized" };
@@ -249,7 +261,7 @@ export const confirmByToken = internalMutation({
     const result = await confirmForDevice(
       ctx,
       deviceActor(device),
-      { instanceId, via: args.via, pressedAgoMs: args.pressedAgoMs },
+      { instanceId, via: args.via, pressedAgoMs: args.pressedAgoMs, step: args.step },
       Date.now(),
     );
     return { kind: "done", ...result };
@@ -355,9 +367,9 @@ function refusedRequest(
 }
 
 function parseConfirmRequest(body: Record<string, unknown>): ConfirmRequest | RefusedRequest {
-  const extra = unknownKey(body, ["instanceId", "pressedAgoMs", "via"]);
+  const extra = unknownKey(body, ["instanceId", "pressedAgoMs", "via", "step"]);
   if (extra !== null) return refusedRequest(extra, REFUSED.unreadable, body);
-  const { instanceId, pressedAgoMs, via } = body;
+  const { instanceId, pressedAgoMs, via, step } = body;
   if (
     typeof instanceId !== "string" ||
     instanceId === "" ||
@@ -373,7 +385,11 @@ function parseConfirmRequest(body: Record<string, unknown>): ConfirmRequest | Re
   if (typeof via !== "string" || !(DEVICE_VIAS as readonly string[]).includes(via)) {
     return refusedRequest(`via must be one of ${DEVICE_VIAS.join(", ")}`, REFUSED.unreadable, body);
   }
-  return { instanceId, pressedAgoMs, via: via as DeviceVia };
+  if (step === undefined) return { instanceId, pressedAgoMs, via: via as DeviceVia };
+  if (typeof step !== "number" || !isStepIndex(step)) {
+    return refusedRequest(STEP_NOT_VALID, REFUSED.unreadable, body);
+  }
+  return { instanceId, pressedAgoMs, via: via as DeviceVia, step };
 }
 
 function isIntIn(value: unknown, bounds: { min: number; max: number }): value is number {
@@ -437,6 +453,13 @@ export function notModified(
 function etagOf(state: DeviceState): string {
   return `"${state.version}"`;
 }
+
+export function doneHeaders(state: DeviceState): Record<string, string> {
+  const target = frameDoneTarget(state);
+  if (target === null) return {};
+  return { [DONE_INSTANCE_HEADER]: target.instanceId, [DONE_STEP_HEADER]: String(target.step) };
+}
+
 export function deviceRoute(
   fallback: string,
   handle: (ctx: ActionCtx, request: Request) => Promise<Response>,
@@ -465,9 +488,10 @@ export const getState = deviceRoute("Could not load the device state", async (ct
   const state = await ctx.runQuery(internal.deviceApi.stateByToken, { tokenHash });
   if (state === null) return unauthorizedResponse();
   const etag = etagOf(state);
-  const cached = notModified(request, etag);
+  const done = doneHeaders(state);
+  const cached = notModified(request, etag, done);
   if (cached !== null) return cached;
-  return jsonResponse(state, 200, { ETag: etag });
+  return jsonResponse(state, 200, { ...done, ETag: etag });
 });
 
 export const confirm = deviceRoute("Could not confirm the task", async (ctx, request) => {
@@ -491,7 +515,8 @@ export const confirm = deviceRoute("Could not confirm the task", async (ctx, req
   if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
   const state = await stateAfterPress(ctx, tokenHash);
   const { status, reason } = outcome;
-  return jsonResponse({ status, reason, state }, 200, state ? { ETag: etagOf(state) } : {});
+  const headers = state ? { ...doneHeaders(state), ETag: etagOf(state) } : {};
+  return jsonResponse({ status, reason, state }, 200, headers);
 });
 
 export const putInfo = deviceRoute("Could not store the device info", async (ctx, request) => {

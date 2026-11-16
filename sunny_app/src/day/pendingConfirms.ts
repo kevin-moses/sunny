@@ -97,6 +97,7 @@ export async function sendConfirm(entry: PendingEntry): Promise<void> {
     via: 'phone_app',
     pressedAgoMs: Math.max(0, Date.now() - entry.pressedAt),
     pressId: entry.pressId,
+    ...(entry.step === undefined ? {} : { step: entry.step }),
   });
   if (result.status === 'rejected') throw new BackendError(result.reason, 400);
 }

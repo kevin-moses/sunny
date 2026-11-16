@@ -1,6 +1,6 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { isAsNeededTask } from "../tasks";
+import { isAsNeededTask } from "./taskDraft";
 import { memberNames } from "./access";
 import { isAnytimeInstance } from "./anytime";
 import { caregiverAlerted } from "./escalation";

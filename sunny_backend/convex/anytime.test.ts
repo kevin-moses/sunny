@@ -5,7 +5,7 @@ import { gatherDigestFacts } from "./lib/digestFacts";
 import { anytimeWindow, compareDayOrder, isAnytimeTask } from "./lib/anytime";
 import { SYSTEM_ACTOR } from "./lib/access";
 import { resyncHouseholdTimezone } from "./lib/schedule";
-import { isAsNeededTask } from "./tasks";
+import { isAsNeededTask } from "./lib/taskDraft";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 

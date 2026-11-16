@@ -404,7 +404,7 @@ describe("GET /device/state", () => {
       .withIdentity({ subject: "display" })
       .query(api.deviceApi.state, { minute: 1 });
     expect(viaHttp).toEqual(viaQuery);
-    expect(viaQuery.done).toEqual({ instanceId: f.instanceId, early: false });
+    expect(viaQuery.done).toEqual({ instanceId: f.instanceId, early: false, step: 0 });
   });
 
   test("the query refuses caregivers and signed-out callers", async () => {

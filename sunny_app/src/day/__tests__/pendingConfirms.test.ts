@@ -1067,13 +1067,14 @@ describe('toUndo', () => {
 });
 
 describe('toPending', () => {
-  it('builds an entry from a task, the press time and the press id', () => {
+  it('builds an entry from a task, the press time, the press id and step 0 for a task without steps', () => {
     const task = { instanceId: 'a', displayLabel: 'Pills', step: null } as unknown as DayTask;
     expect(toPending(task, 7, 'pid-0000000000000001')).toEqual({
       instanceId: 'a',
       label: 'Pills',
       pressedAt: 7,
       pressId: 'pid-0000000000000001',
+      step: 0,
     });
   });
 });
@@ -1225,6 +1226,53 @@ describe('queued presses on a multi-step task', () => {
     const queue = makeQueue();
     await queue.load();
     expect(queue.getEntries()).toEqual([stepPress(1, 0)]);
+  });
+
+  it('a queued press made on a step the task has left changes nothing, as on the server', () => {
+    const server = multi(1, { stepPressIds: [] });
+    expect(applyPending([server], [stepPress(1, 0)])[0]).toBe(server);
+    const last = multi(2);
+    expect(applyPending([last], [stepPress(1, 0)])[0]).toBe(last);
+  });
+
+  it('a queued press without a step, stored by an older app, still advances', () => {
+    const { step: _step, ...older } = stepPress(1, 0);
+    expect(applyPending([multi(1)], [older])[0]).toMatchObject({
+      step: { index: 2, text: 'Lock the door' },
+    });
+  });
+
+  it('a press and its Undo on a missed task apply as on the server', () => {
+    const missed = multi(0, { state: 'missed', confirmable: false });
+    expect(applyPending([missed], [stepPress(1, 0)])[0]).toMatchObject({
+      state: 'missed',
+      step: { index: 1, text: 'Take your keys' },
+    });
+    expect(applyPending([missed], [stepPress(1, 0), stepUndo(2, 1)])[0]).toMatchObject({
+      state: 'missed',
+      step: { index: 0, text: 'Put on your coat' },
+    });
+  });
+
+  it('a step advance clears the snooze, and its Undo leaves it cleared, as on the server', () => {
+    const snoozed = multi(0, { snoozed: true, snoozedUntil: NOW + 900_000 });
+    const pressed = applyPending([snoozed], [stepPress(1, 0)])[0];
+    expect(pressed).toMatchObject({ snoozed: false, snoozedUntil: null, step: { index: 1 } });
+    const undone = applyPending([snoozed], [stepPress(1, 0), stepUndo(2, 1)])[0];
+    expect(undone).toMatchObject({ snoozed: false, snoozedUntil: null, step: { index: 0 } });
+  });
+
+  it('sends the step a queued press was made on, and no step for an older stored press', async () => {
+    const queue = makeQueue();
+    const { step: _step, ...older } = stepPress(2, 1);
+    await queue.enqueue(stepPress(1, 0));
+    await queue.enqueue(older);
+    mockMutation.mockResolvedValue({ status: 'advanced' });
+    await queue.replay();
+    expect(mockMutation.mock.calls.map((c) => c[1])).toEqual([
+      expect.objectContaining({ pressId: 'pid-step-1', step: 0 }),
+      expect.not.objectContaining({ step: expect.anything() }),
+    ]);
   });
 
   it('toPending records the step on screen for a multi-step task', () => {

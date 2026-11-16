@@ -32,14 +32,19 @@ import {
 import type { QueuedPress } from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
 import { appError, isAppError } from "./lib/errors";
-import { isOpenState } from "./lib/escalation";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
-import { cleanOptional, normalizeWeekdays, requireMaxLength } from "./lib/text";
+import { clippedLabel, validateDraft } from "./lib/taskDraft";
+import { cleanOptional, normalizeWeekdays } from "./lib/text";
 import {
+  OTHER_STEP,
+  STEP_NOT_VALID,
   advancedStep,
   hasStepAfter,
+  isStepIndex,
   latestStepPress,
+  pressedOtherStep,
   seniorCanUndoStep,
+  stepIndex,
   stepPressed,
   steppedBack,
   taskStep,
@@ -54,7 +59,6 @@ const DOSE_CLOCK_SKEW_MS = minutes(5);
 const DEFAULT_SNOOZE_MINUTES = 15;
 const MAX_SNOOZE_MINUTES = 120;
 const REMINDER_WINDOW_MINUTES = 30;
-const MAX_REMINDER_TITLE_LENGTH = 200;
 const MAX_RESOLUTION_NOTE_LENGTH = 500;
 export const UNDO_WINDOW_MS = 30_000;
 
@@ -80,7 +84,8 @@ export type ConfirmDueResult = Partial<TodayEntry> & {
     | "nothing_due"
     | "not_found"
     | "ambiguous"
-    | "not_due_yet";
+    | "not_due_yet"
+    | "other_step";
   options?: TodayEntry[];
 };
 
@@ -130,6 +135,12 @@ function requirePressId(pressId: string | undefined): void {
   }
 }
 
+function requireStep(step: number | undefined): void {
+  if (step !== undefined && !isStepIndex(step)) {
+    throw appError("invalid", STEP_NOT_VALID);
+  }
+}
+
 function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number): void {
   if (pressedAt < instance.windowStart - EARLY_CONFIRM_MS) {
     throw appError("invalid", "This task was not due yet when it was pressed");
@@ -139,19 +150,41 @@ function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number)
   }
 }
 
+interface ConfirmArgs {
+  instanceId: Id<"taskInstances">;
+  via: ConfirmVia;
+  note?: string;
+  pressedAgoMs?: number;
+  pressId?: string;
+  step?: number;
+  transport?: ConfirmTransport;
+}
+
+interface ConfirmOutcome {
+  row: Doc<"taskInstances">;
+  otherStep: boolean;
+}
+
 export async function confirmInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: {
-    instanceId: Id<"taskInstances">;
-    via: ConfirmVia;
-    note?: string;
-    pressedAgoMs?: number;
-    pressId?: string;
-    transport?: ConfirmTransport;
-  },
+  args: ConfirmArgs,
   now: number,
 ): Promise<Doc<"taskInstances">> {
+  return (await confirmOutcome(ctx, actor, args, now)).row;
+}
+
+function applied(row: Doc<"taskInstances">): ConfirmOutcome {
+  return { row, otherStep: false };
+}
+
+async function confirmOutcome(
+  ctx: MutationCtx,
+  actor: Actor,
+  args: ConfirmArgs,
+  now: number,
+  options: { recordOtherStep?: boolean } = {},
+): Promise<ConfirmOutcome> {
   const instance = await loadInstance(ctx, args.instanceId);
   const asCaregiver = isHouseholdEditor(actor, instance.householdId);
   if (!asCaregiver && !actsForSenior(actor, instance.householdId)) {
@@ -178,10 +211,13 @@ export async function confirmInstance(
     }
     requirePressId(args.pressId);
   }
+  requireStep(args.step);
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
-  if (args.pressId !== undefined && stepPressed(instance, args.pressId)) return instance;
-  if (isDoneState(instance.state)) return await recordNoOpPress(ctx, actor, instance, args.pressId);
+  if (args.pressId !== undefined && stepPressed(instance, args.pressId)) return applied(instance);
+  if (isDoneState(instance.state)) {
+    return applied(await recordNoOpPress(ctx, actor, instance, args.pressId));
+  }
   const takenBack = queuedPress === null ? null : queuedPressTakenBack(queuedPress, instance);
   if (takenBack !== null) throw appError("invalid", takenBack);
   if (asCaregiver) {
@@ -206,17 +242,24 @@ export async function confirmInstance(
     ...(args.transport === undefined ? {} : { transport: args.transport }),
   };
   const step = asCaregiver ? null : await instanceStep(ctx, instance);
+  if (!asCaregiver && pressedOtherStep(step, args.step)) {
+    if (options.recordOtherStep !== false) {
+      await recordOtherStepPress(ctx, actor, instance, args, stepIndex(step), now);
+    }
+    return { row: instance, otherStep: true };
+  }
   if (hasStepAfter(step)) {
     const press = { at: now, by: actorUserId(actor), pressId: args.pressId };
-    return await changeInstance(
-      ctx,
-      actor,
-      instance,
-      advancedStep(instance, step, press),
-      pressDetail,
+    return applied(
+      await changeInstance(ctx, actor, instance, advancedStep(instance, step, press), {
+        ...pressDetail,
+        ...(instance.snoozedUntil === undefined
+          ? {}
+          : { clearedSnoozedUntil: instance.snoozedUntil }),
+      }),
     );
   }
-  return await changeInstance(
+  const confirmed = await changeInstance(
     ctx,
     actor,
     instance,
@@ -234,6 +277,7 @@ export async function confirmInstance(
     },
     pressDetail,
   );
+  return applied(confirmed);
 }
 
 async function instanceStep(
@@ -242,6 +286,36 @@ async function instanceStep(
 ): Promise<ReturnType<typeof taskStep>> {
   const task = await ctx.db.get(instance.taskId);
   return task === null ? null : taskStep(task.checklistItems, instance.currentStep);
+}
+
+async function recordOtherStepPress(
+  ctx: MutationCtx,
+  actor: Actor,
+  instance: Doc<"taskInstances">,
+  args: ConfirmArgs,
+  currentStep: number,
+  now: number,
+): Promise<void> {
+  await audit(ctx, {
+    householdId: instance.householdId,
+    actor,
+    action: "press_not_applied",
+    entity: "task_instance",
+    entityId: instance._id,
+    detail: {
+      reason: OTHER_STEP,
+      instanceId: instance._id,
+      via: args.via,
+      pressedStep: args.step,
+      currentStep,
+      receivedAt: now,
+      ...(args.pressedAgoMs === undefined
+        ? {}
+        : { pressedAgoMs: args.pressedAgoMs, pressedAt: now - args.pressedAgoMs }),
+      ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
+      ...(args.transport === undefined ? {} : { transport: args.transport }),
+    },
+  });
 }
 
 async function recordNoOpPress(
@@ -356,7 +430,7 @@ async function undoRefusal(
   pressId: string,
   tappedAt: number,
 ): Promise<string | null> {
-  if (isOpenState(instance.state)) {
+  if (!isDoneState(instance.state)) {
     if (!seniorCanUndoStep(instance, userId, pressId, tappedAt)) {
       return "The task has no step done by this device within the undo window";
     }
@@ -408,8 +482,7 @@ export async function undoPressedInstance(
     return { status: "too_late" };
   }
   const lastStep = latestStepPress(instance);
-  if (isOpenState(instance.state) && lastStep !== null) {
-    const takenBack = lastStep.pressId === undefined ? [] : [lastStep.pressId];
+  if (!isDoneState(instance.state) && lastStep !== null) {
     const steppedBackRow = await changeInstance(
       ctx,
       actor,
@@ -418,12 +491,12 @@ export async function undoPressedInstance(
         ...steppedBack(instance),
         confirmTakenBackAt: Math.min(now, Math.max(tappedAt, lastStep.at)),
         confirmTakenBackBy: actor.userId,
-        takenBackPressIds: withTakenBackPressIds(instance.takenBackPressIds, takenBack),
+        takenBackPressIds: withTakenBackPressIds(instance.takenBackPressIds, [args.pressId]),
       },
       {
         undo: true,
-        ...(args.pressId === undefined ? {} : { pressId: args.pressId }),
-        takenBackPressIds: takenBack,
+        pressId: args.pressId,
+        takenBackPressIds: [args.pressId],
       },
     );
     return { status: "undone", instance: steppedBackRow };
@@ -509,6 +582,7 @@ export async function confirmDueTaskCore(
     householdId: Id<"households">;
     via: ConfirmVia;
     label?: string;
+    step?: number;
     transport?: ConfirmTransport;
   },
   now: number,
@@ -519,21 +593,22 @@ export async function confirmDueTaskCore(
   const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now, actor), args.label);
   if (!("entry" in picked)) return picked;
   const { entry } = picked;
-  let row: Doc<"taskInstances">;
+  let outcome: ConfirmOutcome;
   try {
-    row = await confirmInstance(
+    outcome = await confirmOutcome(
       ctx,
       actor,
-      { instanceId: entry.instanceId, via: args.via, transport: args.transport },
+      { instanceId: entry.instanceId, via: args.via, step: args.step, transport: args.transport },
       now,
     );
   } catch (e) {
     if (isAppError(e, "invalid")) return { ...entry, status: "not_due_yet" };
     throw e;
   }
+  const { row } = outcome;
   return {
     ...entry,
-    status: pressStatus(row),
+    status: outcome.otherStep ? "other_step" : pressStatus(row),
     state: row.state,
     confirmedAt: row.confirmedAt ?? null,
     step: taskStep(entry.checklistItems, row.currentStep),
@@ -559,7 +634,6 @@ export async function createSeniorReminderCore(
   if (title === "" || !isLocalTime(args.time)) {
     throw appError("invalid", "A reminder needs a title and a time (HH:MM)");
   }
-  requireMaxLength(title, MAX_REMINDER_TITLE_LENGTH, "The title");
   if (args.onDate !== undefined && !isLocalDate(args.onDate)) {
     throw appError("invalid", "The date must be YYYY-MM-DD");
   }
@@ -568,25 +642,28 @@ export async function createSeniorReminderCore(
     throw appError("invalid", "That date has already passed");
   }
   const days = normalizeWeekdays(args.days ?? [], "Days must be 1 (Monday) to 7 (Sunday)");
+  const draft = validateDraft({
+    type: "reminder",
+    title,
+    displayLabel: clippedLabel(title.charAt(0).toUpperCase() + title.slice(1)),
+    spokenPrompt: `Reminder: ${title}.`,
+    checklistItems: [],
+    times: [args.time],
+    onceOn: args.onDate,
+    daysOfWeek:
+      args.onDate === undefined && days.length >= 1 && days.length <= 6 ? days : undefined,
+    windowMinutes: REMINDER_WINDOW_MINUTES,
+    highPriority: false,
+    active: true,
+  });
   const taskId = await insertTask(
     ctx,
     actor,
     {
+      ...draft,
       householdId: args.householdId,
-      type: "reminder",
-      title,
-      displayLabel: title.charAt(0).toUpperCase() + title.slice(1),
-      spokenPrompt: `Reminder: ${title}.`,
-      checklistItems: [],
-      times: [args.time],
-      onceOn: args.onDate,
-      daysOfWeek:
-        args.onDate === undefined && days.length >= 1 && days.length <= 6 ? days : undefined,
-      windowMinutes: REMINDER_WINDOW_MINUTES,
-      highPriority: false,
       createdByKind: "senior",
       createdBy: actorUserId(actor),
-      active: true,
     },
     now,
   );
@@ -657,7 +734,12 @@ export async function logDoseCore(
 }
 
 export const confirmTaskInstance = mutation({
-  args: { instanceId: v.id("taskInstances"), via: confirmVia, note: v.optional(v.string()) },
+  args: {
+    instanceId: v.id("taskInstances"),
+    via: confirmVia,
+    note: v.optional(v.string()),
+    step: v.optional(v.number()),
+  },
   handler: async (ctx, args): Promise<Doc<"taskInstances">> => {
     const instance = await loadInstance(ctx, args.instanceId);
     const actor = await requireReader(ctx, instance.householdId);
@@ -681,6 +763,7 @@ export async function confirmPressedInstance(
     via: ConfirmVia;
     pressedAgoMs: number;
     pressId?: string;
+    step?: number;
     transport: ConfirmTransport;
   },
   now: number,
@@ -721,7 +804,9 @@ export async function confirmPressedInstance(
   }
   if (instance === null) return await rejected(NO_SUCH_TASK);
   try {
-    const row = await confirmInstance(ctx, actor, args, now);
+    const { row } = await confirmOutcome(ctx, actor, args, now, {
+      recordOtherStep: options.recordRefusal,
+    });
     return { status: pressStatus(row), instance: row };
   } catch (error) {
     if (error instanceof ConvexError && !isAppError(error, "forbidden")) {
@@ -737,6 +822,7 @@ export const confirmPressedTask = mutation({
     via: confirmVia,
     pressedAgoMs: v.number(),
     pressId: v.string(),
+    step: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<PressResult> => {
     const actor = await requireDeviceActor(ctx);
@@ -810,7 +896,12 @@ export const today = query({
 });
 
 export const confirmDueTask = mutation({
-  args: { householdId: v.id("households"), via: confirmVia, label: v.optional(v.string()) },
+  args: {
+    householdId: v.id("households"),
+    via: confirmVia,
+    label: v.optional(v.string()),
+    step: v.optional(v.number()),
+  },
   handler: async (ctx, args): Promise<ConfirmDueResult> => {
     const actor = await requireSenior(ctx, args.householdId);
     return await confirmDueTaskCore(ctx, actor, { ...args, transport: "app" }, Date.now());

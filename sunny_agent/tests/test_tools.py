@@ -247,9 +247,48 @@ async def test_confirm_task_sends_voice_and_no_label() -> None:
     assert client.calls == [
         (
             "agent:confirmDueTask",
-            {"householdId": "h1", "label": None},
+            {"householdId": "h1", "label": None, "step": None},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_task_sends_the_step_it_read_as_an_index() -> None:
+    client = FakeConvex(
+        {
+            "agent:confirmDueTask": {
+                "status": "advanced",
+                "displayLabel": "Going out",
+                "step": {"index": 2, "count": 3, "text": "Lock the door"},
+            }
+        }
+    )
+    await db_confirm_task(client, "h1", TZ, "going out", 2)
+    assert client.calls == [
+        (
+            "agent:confirmDueTask",
+            {"householdId": "h1", "label": "going out", "step": 1},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_task_on_another_step_marks_nothing_and_reads_the_current_one() -> (
+    None
+):
+    client = FakeConvex(
+        {
+            "agent:confirmDueTask": {
+                "status": "other_step",
+                "displayLabel": "Going out",
+                "step": {"index": 1, "count": 3, "text": "Take your keys"},
+            }
+        }
+    )
+    assert await db_confirm_task(client, "h1", TZ, "", 1) == (
+        "Nothing was marked done: Going out is not on the step you named. It is on "
+        "Step 2 of 3: Take your keys. Read that step to them."
+    )
 
 
 @pytest.mark.asyncio

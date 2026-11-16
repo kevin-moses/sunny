@@ -1,7 +1,8 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
-import { isAsNeededTask, listTasksCore } from "../tasks";
+import { listTasksCore } from "../tasks";
+import { isAsNeededTask } from "./taskDraft";
 import { findMember, householdCaregivers } from "./access";
 import { isAnytimeTask } from "./anytime";
 import { joinLines } from "./text";

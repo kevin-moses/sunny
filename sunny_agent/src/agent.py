@@ -258,7 +258,8 @@ class Assistant(Agent):
             "matching task on today's schedule, or the one due now when no name is "
             "given. If it was already confirmed, returns when, so the senior is never "
             "told to repeat a dose. A task with steps is done one step at a time: each "
-            "call marks the current step done and returns the next step to read out. "
+            "call marks the current step done and returns the next step to read out; "
+            "pass the step number you last read out for it. "
             "Only call when the senior clearly says they did it."
         )
     )
@@ -274,11 +275,21 @@ class Assistant(Agent):
                 )
             ),
         ] = "",
+        step: Annotated[
+            int,
+            Field(
+                description=(
+                    "For a task with steps, the step number you last read out for it, e.g. 2 "
+                    'for "Step 2 of 3"; 0 when you did not read a step'
+                ),
+                ge=0,
+            ),
+        ] = 0,
     ) -> str:
         label = task_name or self._prompt_label
         return await self._household_tool(
             "record that",
-            lambda h: db_confirm_task(self._convex, h, self._timezone, label),
+            lambda h: db_confirm_task(self._convex, h, self._timezone, label, step),
         )
 
     @function_tool(

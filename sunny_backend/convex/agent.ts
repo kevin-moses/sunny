@@ -101,13 +101,19 @@ export const confirmDueTask = agentMutation({
   args: {
     householdId: v.id("households"),
     label: nullable(v.string()),
+    step: nullable(v.number()),
     now: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<ConfirmDueResult> => {
     return await confirmDueTaskCore(
       ctx,
       VOICE_AGENT,
-      { householdId: args.householdId, via: "voice", label: args.label ?? undefined },
+      {
+        householdId: args.householdId,
+        via: "voice",
+        label: args.label ?? undefined,
+        step: args.step ?? undefined,
+      },
       clock(args.now),
     );
   },

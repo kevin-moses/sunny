@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';
 
-import { clockTime, displayTime, SPOKEN } from '../day/format';
+import { clockTime, displayTime, SPOKEN, stepIndex } from '../day/format';
 import type { DayViewData } from '../day/types';
 import { doneQuestion, fullDate, taskIcon } from './model';
 import type { NextItem, NowCard, TaskCard, TodayRow } from './model';
@@ -183,7 +183,7 @@ function NowColumn({ card }: { card: NowCard }) {
         {card.kind === 'clear' ? (
           <ClearContent allDone={card.allDone} />
         ) : card.steps !== null ? (
-          <StepContent steps={card.steps} step={card.task.step?.index ?? 0} />
+          <StepContent steps={card.steps} step={stepIndex(card.task)} />
         ) : (
           <TaskContent card={card} />
         )}

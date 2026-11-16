@@ -190,7 +190,7 @@ describe("done (the phone's doneTarget)", () => {
         }),
       ],
     });
-    expect(state.done).toEqual({ instanceId: "walk", early: true });
+    expect(state.done).toEqual({ instanceId: "walk", early: true, step: 0 });
     expect(state.now.kind).toBe("task");
     expect(state.now.task).toMatchObject({
       instanceId: "walk",
@@ -205,7 +205,7 @@ describe("done (the phone's doneTarget)", () => {
 
   it("a due target is not early", () => {
     const state = stateOf({ tasks: [makeTask({ state: "due", confirmable: true })] });
-    expect(state.done).toEqual({ instanceId: "t1", early: false });
+    expect(state.done).toEqual({ instanceId: "t1", early: false, step: 0 });
     expect(state.now.task?.early).toBe(false);
   });
 });
@@ -301,7 +301,7 @@ describe("now (the Now card)", () => {
       ],
     });
     expect(state.now.task?.instanceId).toBe("b");
-    expect(state.done).toEqual({ instanceId: "b", early: false });
+    expect(state.done).toEqual({ instanceId: "b", early: false, step: 0 });
   });
 });
 
@@ -651,7 +651,7 @@ describe("the state's shape", () => {
         "step",
       ].sort(),
     );
-    expect(keys(state.done)).toEqual(["early", "instanceId"]);
+    expect(keys(state.done)).toEqual(["early", "instanceId", "step"]);
     expect(keys(state.nextUp)).toEqual(["icon", "initial", "title", "type", "when"]);
     expect(keys(state.nextUpAfterDue)).toEqual(["icon", "initial", "title", "type", "when"]);
     expect(state.rows.length).toBeGreaterThan(0);

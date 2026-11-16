@@ -105,12 +105,13 @@ describe('useDisplayKeys', () => {
     expect(mockMutation).toHaveBeenCalledWith(expect.anything(), {
       instanceId: 't1',
       via: 'button',
+      step: 0,
     });
     expect(show).toHaveBeenLastCalledWith('Checked off: Morning pills');
     expect(talk).not.toHaveBeenCalled();
   });
 
-  it('sends every Done of a multi-step task and names the step the backend advanced past', async () => {
+  it('sends the step on screen with a multi-step Done and names the step the backend advanced past', async () => {
     const steps = ['Put on your coat', 'Take your keys', 'Lock the door'];
     const card = {
       ...CARD,
@@ -126,6 +127,7 @@ describe('useDisplayKeys', () => {
     expect(mockMutation).toHaveBeenCalledWith(expect.anything(), {
       instanceId: 't1',
       via: 'button',
+      step: 1,
     });
     expect(show).toHaveBeenLastCalledWith('Step 2 done');
   });

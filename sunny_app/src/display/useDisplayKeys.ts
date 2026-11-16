@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 
-import { isDone } from '../day/format';
+import { isDone, stepIndex } from '../day/format';
 
 import { callMutation, toBackendError } from '../backend/api';
 import { api } from '../backend/convexApi';
@@ -38,6 +38,7 @@ export function useDisplayKeys(
       const row = await callMutation(api.instances.confirmTaskInstance, {
         instanceId: task.instanceId,
         via: 'button',
+        step: stepIndex(task),
       });
       show(
         isDone(row) || task.step === null

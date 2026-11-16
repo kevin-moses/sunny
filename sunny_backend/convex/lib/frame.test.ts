@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeviceState } from "./deviceState";
+import { frameDoneTarget } from "./deviceState";
 import {
   DEFAULT_SCREEN,
   DRAWABLE_SCREEN,
@@ -8,7 +9,6 @@ import {
   FRAME_RENDERER_VERSION,
   buildFrameModel,
   drawFrame,
-  frameDoneInstance,
   frameEtag,
   isDrawableScreen,
   nowCardGeometry,
@@ -216,7 +216,7 @@ describe("the wall display's rules", () => {
       "none",
     ]);
     expect(state.rows[0]!.mark).toBe("now");
-    expect(frameDoneInstance(state)).toBeNull();
+    expect(frameDoneTarget(state)).toBeNull();
   });
 
   it("keeps an event that comes before the early task as Next up", () => {
@@ -266,9 +266,9 @@ describe("the wall display's rules", () => {
       now: { kind: "task", tab: "Now  \u00b7  8:00", label: "Morning pills", overdue: false },
       next: { title: "Walk around the block" },
     });
-    expect(frameDoneInstance(state)).toBe("pills-am");
-    expect(frameDoneInstance(caseState("snoozed"))).toBe("pills-am");
-    expect(frameDoneInstance(caseState("nothing-due"))).toBeNull();
+    expect(frameDoneTarget(state)).toEqual({ instanceId: "pills-am", early: false, step: 0 });
+    expect(frameDoneTarget(caseState("snoozed"))?.instanceId).toBe("pills-am");
+    expect(frameDoneTarget(caseState("nothing-due"))).toBeNull();
   });
 
   it("keeps a day with a missed task at nothing to do, never all done", () => {

@@ -104,6 +104,15 @@ export function stepProgress(task: Pick<DayTask, 'state' | 'step'>): string | nu
   return stepCounter(task.step);
 }
 
+function openDetail(task: Pick<DayTask, 'state' | 'step' | 'highPriority'>): string | null {
+  if (!isOpen(task)) return null;
+  const parts = [
+    task.highPriority ? HIGH_PRIORITY_DETAIL : null,
+    task.step === null ? null : stepCounter(task.step),
+  ].filter((part) => part !== null);
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
 export function alertMessage(task: DayTask): string {
   const parts: string[] = [];
   if (task.carriedOver) parts.push('Left over from yesterday.');
@@ -222,10 +231,7 @@ function spokenLabel(row: {
 function taskRow(task: DayTask, options: { id: string; userId: string | null }): TaskRowData {
   const variant: TaskVariant = !isOpen(task) ? 'done' : isAlert(task) ? 'alert' : 'open';
   const time = displayTime(task.scheduledTime);
-  const detail =
-    doneDetail(task, options.userId) ??
-    stepProgress(task) ??
-    (task.highPriority && isOpen(task) ? HIGH_PRIORITY_DETAIL : null);
+  const detail = doneDetail(task, options.userId) ?? openDetail(task);
   return {
     kind: 'task',
     id: options.id,

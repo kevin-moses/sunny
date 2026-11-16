@@ -4,6 +4,9 @@ import type { MutationCtx } from "../_generated/server";
 import type { Actor } from "./access";
 import { anytimeWindow, ANYTIME, isAnytimeInstance, isAnytimeTask } from "./anytime";
 import { audit } from "./audit";
+import { isDoneState, withTakenBackPressIds } from "./confirmRule";
+import { hasStepProgress, stepPressIds } from "./taskSteps";
+import { shownOn } from "./today";
 import { addDays, isoWeekday, localDate, minutes, zonedInstant } from "./time";
 
 export type TaskFields = Omit<Doc<"tasks">, "_id" | "_creationTime">;
@@ -203,6 +206,44 @@ async function refreshAnytimeWindow(
   });
 }
 
+function sameItems(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, i) => item === b[i]);
+}
+
+async function restartStepsShownToday(
+  ctx: MutationCtx,
+  actor: Actor,
+  task: Doc<"tasks">,
+  now: number,
+): Promise<void> {
+  const timezone = (await ctx.db.get(task.householdId))?.timezone;
+  if (!timezone) return;
+  const today = localDate(now, timezone);
+  const recent = await ctx.db
+    .query("taskInstances")
+    .withIndex("by_task_date_time", (q) =>
+      q.eq("taskId", task._id).gte("localDate", addDays(today, -1)).lte("localDate", today),
+    )
+    .collect();
+  for (const instance of recent) {
+    if (isDoneState(instance.state) || !shownOn(instance, today) || !hasStepProgress(instance)) {
+      continue;
+    }
+    const pressIds = stepPressIds(instance);
+    await changeInstance(
+      ctx,
+      actor,
+      instance,
+      {
+        currentStep: 0,
+        stepPresses: undefined,
+        takenBackPressIds: withTakenBackPressIds(instance.takenBackPressIds, pressIds),
+      },
+      { restart: true, reason: "steps_changed", takenBackPressIds: pressIds },
+    );
+  }
+}
+
 export async function resyncHouseholdTimezone(
   ctx: MutationCtx,
   actor: Actor,
@@ -301,6 +342,9 @@ export async function patchTask(
   const updated = (await ctx.db.get(task._id))!;
   await auditTask(ctx, actor, "update", updated._id, updated);
   if (changed) await resyncTask(ctx, actor, updated, now);
+  if (!sameItems(task.checklistItems, updated.checklistItems)) {
+    await restartStepsShownToday(ctx, actor, updated, now);
+  }
   return updated;
 }
 
@@ -355,9 +399,9 @@ export async function changeInstance(
   let detail: Record<string, unknown>;
   if (after.state !== instance.state) action = "state_change";
   else if (after.claimedBy !== instance.claimedBy) action = "claim";
+  else if (after.currentStep !== instance.currentStep) action = "step";
   else if (after.snoozedUntil !== instance.snoozedUntil) action = "snooze";
   else if (after.resolutionNote !== instance.resolutionNote) action = "note";
-  else if (after.currentStep !== instance.currentStep) action = "step";
   else return after;
   if (action === "note") {
     detail = { hasNote: after.resolutionNote !== undefined };

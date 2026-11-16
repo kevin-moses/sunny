@@ -4,7 +4,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { DONE_INSTANCE_HEADER } from "./deviceFrame";
+import { DONE_INSTANCE_HEADER } from "./deviceApi";
 import { loadDeviceState } from "./lib/deviceState";
 import { DEFAULT_SCREEN, drawFrame, renderFrame } from "./lib/frame";
 import type { Screen } from "./lib/frame";

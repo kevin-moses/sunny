@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import { internalQuery } from "./_generated/server";
 import {
   deviceRoute,
+  doneHeaders,
   findDeviceByTokenHash,
   gate,
   notModified,
@@ -16,7 +17,6 @@ import {
   FRAME_PAGES,
   buildFrameModel,
   drawFrame,
-  frameDoneInstance,
   frameEtag,
   isDrawableScreen,
 } from "./lib/frame";
@@ -25,8 +25,6 @@ import { encodePacked } from "./lib/framePacked";
 import { encodePng } from "./lib/framePng";
 import { NO_STORE, errorResponse } from "./lib/httpResponse";
 import type { DeviceScreen } from "./lib/validators";
-
-export const DONE_INSTANCE_HEADER = "Sunny-Done-Instance";
 
 const FRAME_CONTENT_TYPES: Record<FrameFormat, string> = {
   png: "image/png",
@@ -78,8 +76,7 @@ export const getFrame = deviceRoute("Could not draw the frame", async (ctx, requ
       `Frames are drawn for screens of ${DRAWABLE_SCREEN.minWidth} x ${DRAWABLE_SCREEN.minHeight} to ${DRAWABLE_SCREEN.maxWidth} x ${DRAWABLE_SCREEN.maxHeight} pixels`,
     );
   }
-  const done = frameDoneInstance(source.state);
-  const doneHeader: Record<string, string> = done === null ? {} : { [DONE_INSTANCE_HEADER]: done };
+  const doneHeader = doneHeaders(source.state);
   const model = buildFrameModel(source.state, query.page);
   const etag = `"${frameEtag(model, screen, query.format)}"`;
   const cached = notModified(request, etag, doneHeader);
