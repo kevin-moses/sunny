@@ -1,4 +1,7 @@
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired
+
+from pydantic import TypeAdapter
+from typing_extensions import TypedDict
 
 InstanceState = Literal[
     "upcoming", "due", "escalated", "confirmed", "missed", "resolved"
@@ -227,3 +230,21 @@ class TickListItemResult(TypedDict):
     status: Literal["ticked", "not_found", "ambiguous"]
     text: str | None
     options: list[str]
+
+
+TODAY = TypeAdapter[list[TodayEntry]](list[TodayEntry])
+AGENT_CONTEXT = TypeAdapter[AgentContext](AgentContext)
+CONFIRM_RESULT = TypeAdapter[ConfirmResult](ConfirmResult)
+SNOOZE_RESULT = TypeAdapter[SnoozeResult](SnoozeResult)
+CANCEL_REMINDER_RESULT = TypeAdapter[CancelReminderResult](CancelReminderResult)
+MEDICATION_STATUS = TypeAdapter[MedicationStatus](MedicationStatus)
+LOG_DOSE_RESULT = TypeAdapter[LogDoseResult](LogDoseResult)
+UNDO_DOSE_RESULT = TypeAdapter[UndoDoseResult](UndoDoseResult)
+REMEMBER_FACT_RESULT = TypeAdapter[RememberFactResult](RememberFactResult)
+FLAG_RESULT = TypeAdapter[FlagResult](FlagResult)
+FAMILY_MESSAGE_RESULT = TypeAdapter[FamilyMessageResult](FamilyMessageResult)
+LATEST_FAMILY_MESSAGE = TypeAdapter[FamilyMessage | None](FamilyMessage | None)
+SPOKEN_LIST_ITEMS = TypeAdapter[list[SpokenListItem]](list[SpokenListItem])
+OPEN_LIST_ITEMS = TypeAdapter[list[str]](list[str])
+TICK_LIST_ITEM_RESULT = TypeAdapter[TickListItemResult](TickListItemResult)
+CONVERSATION_ID = TypeAdapter[str](str)

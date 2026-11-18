@@ -34,6 +34,8 @@ export const MAX_CONFIRM_PRESS_IDS = 4;
 
 export const PRESS_ID_NOT_VALID = "The press id is not valid";
 
+export const NOT_DUE_YET = "This task is not due yet";
+
 export const PRESS_TAKEN_BACK = "This press was taken back";
 
 export const PRESS_BEFORE_TAKE_BACK = "This press was made before the confirmation was taken back";

@@ -10,6 +10,7 @@ import type { ConfirmTransport, PressResult } from "./instances";
 import { findDevice, requireUserId } from "./lib/access";
 import type { DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
+import { NOT_DUE_YET } from "./lib/confirmRule";
 import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
@@ -50,7 +51,7 @@ const REFUSED = {
   badId: "The task id is not valid",
   tooOld: "The press is too old",
   notHere: "The task is not in this household",
-  notDue: "This task is not due yet",
+  notDue: NOT_DUE_YET,
 } as const;
 
 const BUTTON_EARLY_GRACE_MS = minutes(5);

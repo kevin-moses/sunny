@@ -5,7 +5,14 @@ import httpx
 import pytest
 
 import convex_client
-from convex_client import ConvexClient, ConvexError, create_convex_client
+from convex_client import (
+    ConvexClient,
+    ConvexError,
+    create_convex_client,
+    mutation_as,
+    query_as,
+)
+from convex_types import CONFIRM_RESULT, OPEN_LIST_ITEMS
 
 
 def _client(handler: Callable[[httpx.Request], httpx.Response]) -> ConvexClient:
@@ -207,3 +214,36 @@ def test_factory_raises_key_error_when_missing(
     monkeypatch.delenv(missing)
     with pytest.raises(KeyError):
         create_convex_client()
+
+
+def _returning(value: object) -> ConvexClient:
+    return _client(
+        lambda request: httpx.Response(200, json={"status": "success", "value": value})
+    )
+
+
+@pytest.mark.asyncio
+async def test_typed_calls_return_the_value_when_it_has_the_declared_shape() -> None:
+    items = await query_as(_returning(["milk"]), "agent:listItems", {}, OPEN_LIST_ITEMS)
+    assert items == ["milk"]
+    result = await mutation_as(
+        _returning({"status": "nothing_due"}),
+        "agent:confirmDueTask",
+        {},
+        CONFIRM_RESULT,
+    )
+    assert result == {"status": "nothing_due"}
+
+
+@pytest.mark.asyncio
+async def test_typed_calls_refuse_a_value_with_another_shape() -> None:
+    with pytest.raises(ConvexError) as exc:
+        await mutation_as(
+            _returning({"status": "done"}), "agent:confirmDueTask", {}, CONFIRM_RESULT
+        )
+    assert exc.value.code == "bad_response"
+    assert (
+        exc.value.message == "Unexpected response from agent:confirmDueTask at status"
+    )
+    with pytest.raises(ConvexError):
+        await query_as(_returning([1]), "agent:listItems", {}, OPEN_LIST_ITEMS)

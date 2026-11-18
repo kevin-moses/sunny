@@ -9,6 +9,7 @@ import { PRESS_TAKEN_BACK, SENIOR_UNDO_MS } from "./lib/confirmRule";
 import type { DeviceState } from "./lib/deviceState";
 import {
   OTHER_STEP,
+  STEP_NOT_VALID,
   hasStepAfter,
   seniorCanUndoStep,
   steppedBack,
@@ -277,6 +278,20 @@ describe("senior Undo with steps", () => {
     await undo(f, "2027-03-14T12:01:10Z", 1);
     expect((await row(f)).currentStep).toBe(0);
     expect((await press(f, "2027-03-14T12:01:30Z", 4)).status).toBe("advanced");
+    expect((await row(f)).currentStep).toBe(1);
+  });
+
+  test("a step Undo leaves another device's earlier press to be judged by its step", async () => {
+    const f = await setup();
+    const token = await deviceToken(f);
+    await press(f, "2027-03-14T12:01:10Z", 1);
+    await undo(f, "2027-03-14T12:01:20Z", 1);
+    const back = await row(f);
+    expect(back.currentStep).toBe(0);
+    expect(back.confirmTakenBackAt).toBeUndefined();
+    at("2027-03-14T12:01:30Z");
+    const res = await postConfirm(f, token, { pressedAgoMs: 30_000, step: 0 });
+    expect(((await res.json()) as { status: string }).status).toBe("advanced");
     expect((await row(f)).currentStep).toBe(1);
   });
 
@@ -571,6 +586,19 @@ describe("every press names its step", () => {
       reason: OTHER_STEP,
       via: "voice",
     });
+  });
+
+  test("voice with a step a task cannot have is an error, not a task that is not due yet", async () => {
+    const f = await setup();
+    at("2027-03-14T12:01:00Z");
+    await expect(
+      f.t.mutation(api.agent.confirmDueTask, {
+        agentKey: AGENT_KEY,
+        householdId: f.householdId,
+        step: 99,
+      }),
+    ).rejects.toMatchObject({ data: { code: "invalid", message: STEP_NOT_VALID } });
+    expect((await row(f)).currentStep).toBeUndefined();
   });
 
   test("a press without a step keeps advancing as before", async () => {

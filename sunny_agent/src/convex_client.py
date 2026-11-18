@@ -1,9 +1,10 @@
 import asyncio
 import os
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Protocol, TypeVar
 
 import httpx
+from pydantic import TypeAdapter, ValidationError
 
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _RETRY_BACKOFF_SECONDS = 0.25
@@ -11,13 +12,15 @@ _REDACTED = "[redacted]"
 
 ConvexArgs = Mapping[str, object]
 
+T = TypeVar("T")
+
 
 class ConvexQuery(Protocol):
-    async def query(self, path: str, args: ConvexArgs) -> Any: ...
+    async def query(self, path: str, args: ConvexArgs) -> object: ...
 
 
 class ConvexMutation(Protocol):
-    async def mutation(self, path: str, args: ConvexArgs) -> Any: ...
+    async def mutation(self, path: str, args: ConvexArgs) -> object: ...
 
 
 class ConvexApi(ConvexQuery, ConvexMutation, Protocol):
@@ -29,6 +32,31 @@ class ConvexError(Exception):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+
+async def query_as(
+    client: ConvexQuery, path: str, args: ConvexArgs, returns: TypeAdapter[T]
+) -> T:
+    return _validated(path, returns, await client.query(path, args))
+
+
+async def mutation_as(
+    client: ConvexMutation, path: str, args: ConvexArgs, returns: TypeAdapter[T]
+) -> T:
+    return _validated(path, returns, await client.mutation(path, args))
+
+
+def _validated(path: str, returns: TypeAdapter[T], value: object) -> T:
+    try:
+        return returns.validate_python(value)
+    except ValidationError as e:
+        fields = ", ".join(
+            ".".join(str(part) for part in error["loc"]) or "value"
+            for error in e.errors(include_input=False)
+        )
+        raise ConvexError(
+            "bad_response", f"Unexpected response from {path} at {fields}"
+        ) from None
 
 
 class ConvexClient:
@@ -43,10 +71,10 @@ class ConvexClient:
             base_url=url.rstrip("/"), timeout=_TIMEOUT, transport=transport
         )
 
-    async def query(self, path: str, args: ConvexArgs | None = None) -> Any:
+    async def query(self, path: str, args: ConvexArgs | None = None) -> object:
         return await self._call("query", path, args)
 
-    async def mutation(self, path: str, args: ConvexArgs | None = None) -> Any:
+    async def mutation(self, path: str, args: ConvexArgs | None = None) -> object:
         return await self._call("mutation", path, args)
 
     async def aclose(self) -> None:
@@ -66,7 +94,7 @@ class ConvexClient:
             await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
             return await self._http.post(f"/api/{kind}", json=body)
 
-    async def _call(self, kind: str, path: str, args: ConvexArgs | None) -> Any:
+    async def _call(self, kind: str, path: str, args: ConvexArgs | None) -> object:
         body: dict[str, object] = {
             "path": path,
             "args": {**(args or {}), "agentKey": self._agent_key},

@@ -1,5 +1,5 @@
-from convex_client import ConvexMutation, ConvexQuery
-from convex_types import SpokenListItem, TickListItemResult
+from convex_client import ConvexMutation, ConvexQuery, mutation_as, query_as
+from convex_types import OPEN_LIST_ITEMS, SPOKEN_LIST_ITEMS, TICK_LIST_ITEM_RESULT
 from tools import join_names, one_line, quoted
 
 READ_ALOUD_MAX = 6
@@ -8,12 +8,15 @@ READ_ALOUD_MAX = 6
 async def db_add_to_list(
     client: ConvexMutation, household_id: str, items: list[str]
 ) -> str:
-    results: list[SpokenListItem] = await client.mutation(
-        "agent:addListItems", {"householdId": household_id, "items": items}
+    results = await mutation_as(
+        client,
+        "agent:addListItems",
+        {"householdId": household_id, "items": items},
+        SPOKEN_LIST_ITEMS,
     )
     by_status: dict[str, list[str]] = {}
     for r in results:
-        by_status.setdefault(r.get("status", ""), []).append(one_line(r.get("text")))
+        by_status.setdefault(r["status"], []).append(one_line(r["text"]))
     parts = []
     if by_status.get("added"):
         parts.append(f"Added {join_names(by_status['added'])} to the list.")
@@ -34,8 +37,8 @@ async def db_add_to_list(
 
 
 async def db_read_list(client: ConvexQuery, household_id: str) -> str:
-    open_items: list[str] = await client.query(
-        "agent:listItems", {"householdId": household_id}
+    open_items = await query_as(
+        client, "agent:listItems", {"householdId": household_id}, OPEN_LIST_ITEMS
     )
     items = [quoted(i) for i in open_items]
     if not items:
@@ -50,13 +53,16 @@ async def db_read_list(client: ConvexQuery, household_id: str) -> str:
 
 
 async def db_take_off_list(client: ConvexMutation, household_id: str, item: str) -> str:
-    r: TickListItemResult = await client.mutation(
-        "agent:tickListItem", {"householdId": household_id, "item": item}
+    r = await mutation_as(
+        client,
+        "agent:tickListItem",
+        {"householdId": household_id, "item": item},
+        TICK_LIST_ITEM_RESULT,
     )
-    status = r.get("status")
+    status = r["status"]
     if status == "ticked":
-        return f"Took {quoted(r.get('text'))} off the list."
+        return f"Took {quoted(r['text'])} off the list."
     if status == "ambiguous":
-        options = [quoted(o) for o in r.get("options") or []]
+        options = [quoted(o) for o in r["options"]]
         return f"Several items match: {join_names(options)}. Ask which one."
     return f"{one_line(item)} is not on the list."

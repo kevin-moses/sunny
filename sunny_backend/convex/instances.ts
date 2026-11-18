@@ -1,4 +1,4 @@
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -16,6 +16,7 @@ import { audit } from "./lib/audit";
 import {
   EARLY_CONFIRM_MS,
   LATE_SYNC_MS,
+  NOT_DUE_YET,
   REPLAY_GRACE_MS,
   caregiverCanReopen,
   isDoneState,
@@ -31,7 +32,7 @@ import {
 } from "./lib/confirmRule";
 import type { QueuedPress } from "./lib/confirmRule";
 import { pickDueEntry } from "./lib/dueTask";
-import { appError, isAppError } from "./lib/errors";
+import { appError } from "./lib/errors";
 import { changeInstance, insertTask, patchTask } from "./lib/schedule";
 import { clippedLabel, validateDraft } from "./lib/taskDraft";
 import { cleanOptional, normalizeWeekdays } from "./lib/text";
@@ -123,10 +124,14 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
   );
 }
 
+const PRESS_AGE_NOT_VALID = "The press age must be zero or more";
+
+function isPressAge(ageMs: number): boolean {
+  return Number.isFinite(ageMs) && ageMs >= 0;
+}
+
 function requirePressAge(ageMs: number): void {
-  if (!Number.isFinite(ageMs) || ageMs < 0) {
-    throw appError("invalid", "The press age must be zero or more");
-  }
+  if (!isPressAge(ageMs)) throw appError("invalid", PRESS_AGE_NOT_VALID);
 }
 
 function requirePressId(pressId: string | undefined): void {
@@ -135,19 +140,31 @@ function requirePressId(pressId: string | undefined): void {
   }
 }
 
-function requireStep(step: number | undefined): void {
-  if (step !== undefined && !isStepIndex(step)) {
-    throw appError("invalid", STEP_NOT_VALID);
+function malformedPress(
+  actor: Actor,
+  press: { pressedAgoMs?: number; pressId?: string; step?: number },
+): string | null {
+  const fromDevice = actor.kind === "senior_device";
+  if (press.pressedAgoMs !== undefined) {
+    if (!fromDevice) return "Only the senior's device can send a press age";
+    if (!isPressAge(press.pressedAgoMs)) return PRESS_AGE_NOT_VALID;
   }
+  if (press.pressId !== undefined) {
+    if (!fromDevice) return "Only the senior's device can send a press id";
+    if (!isPressId(press.pressId)) return PRESS_ID_NOT_VALID;
+  }
+  if (press.step !== undefined && !isStepIndex(press.step)) return STEP_NOT_VALID;
+  return null;
 }
 
-function requirePressInWindow(instance: Doc<"taskInstances">, pressedAt: number): void {
+function pressOutsideWindow(instance: Doc<"taskInstances">, pressedAt: number): string | null {
   if (pressedAt < instance.windowStart - EARLY_CONFIRM_MS) {
-    throw appError("invalid", "This task was not due yet when it was pressed");
+    return "This task was not due yet when it was pressed";
   }
   if (pressedAt > instance.windowEnd + REPLAY_GRACE_MS) {
-    throw appError("invalid", "This press was too long after the task's window");
+    return "This press was too long after the task's window";
   }
+  return null;
 }
 
 interface ConfirmArgs {
@@ -160,10 +177,10 @@ interface ConfirmArgs {
   transport?: ConfirmTransport;
 }
 
-interface ConfirmOutcome {
-  row: Doc<"taskInstances">;
-  otherStep: boolean;
-}
+type ConfirmOutcome =
+  | { kind: "applied" | "other_step"; row: Doc<"taskInstances"> }
+  | { kind: "not_due"; reason: string }
+  | { kind: "refused"; reason: string };
 
 export async function confirmInstance(
   ctx: MutationCtx,
@@ -171,11 +188,15 @@ export async function confirmInstance(
   args: ConfirmArgs,
   now: number,
 ): Promise<Doc<"taskInstances">> {
-  return (await confirmOutcome(ctx, actor, args, now)).row;
+  const outcome = await confirmOutcome(ctx, actor, args, now);
+  if (outcome.kind === "not_due" || outcome.kind === "refused") {
+    throw appError("invalid", outcome.reason);
+  }
+  return outcome.row;
 }
 
 function applied(row: Doc<"taskInstances">): ConfirmOutcome {
-  return { row, otherStep: false };
+  return { kind: "applied", row };
 }
 
 async function confirmOutcome(
@@ -193,25 +214,12 @@ async function confirmOutcome(
   if (!asCaregiver && args.via === "caregiver") {
     throw appError("invalid", "Only a caregiver can confirm as a caregiver");
   }
-  let queuedPress: QueuedPress | null = null;
-  if (args.pressedAgoMs !== undefined) {
-    if (actor.kind !== "senior_device") {
-      throw appError("invalid", "Only the senior's device can send a press age");
-    }
-    requirePressAge(args.pressedAgoMs);
-    queuedPress = {
-      pressedAt: now - args.pressedAgoMs,
-      pressId: args.pressId,
-      userId: actor.userId,
-    };
-  }
-  if (args.pressId !== undefined) {
-    if (actor.kind !== "senior_device") {
-      throw appError("invalid", "Only the senior's device can send a press id");
-    }
-    requirePressId(args.pressId);
-  }
-  requireStep(args.step);
+  const malformed = malformedPress(actor, args);
+  if (malformed !== null) throw appError("invalid", malformed);
+  const queuedPress: QueuedPress | null =
+    args.pressedAgoMs === undefined || actor.kind !== "senior_device"
+      ? null
+      : { pressedAt: now - args.pressedAgoMs, pressId: args.pressId, userId: actor.userId };
   const note = cleanOptional(args.note, MAX_RESOLUTION_NOTE_LENGTH, "The note");
   const replayed = args.pressedAgoMs !== undefined && args.pressedAgoMs > LATE_SYNC_MS;
   if (args.pressId !== undefined && stepPressed(instance, args.pressId)) return applied(instance);
@@ -219,16 +227,14 @@ async function confirmOutcome(
     return applied(await recordNoOpPress(ctx, actor, instance, args.pressId));
   }
   const takenBack = queuedPress === null ? null : queuedPressTakenBack(queuedPress, instance);
-  if (takenBack !== null) throw appError("invalid", takenBack);
-  if (asCaregiver) {
-    const household = await loadHousehold(ctx, instance.householdId);
-    if (instance.localDate > localDate(now, household.timezone)) {
-      throw appError("invalid", "This task is not due yet");
-    }
-  } else if (!notTooEarly(instance, now)) {
-    throw appError("invalid", "This task is not due yet");
+  if (takenBack !== null) return { kind: "refused", reason: takenBack };
+  if (!(await isDue(ctx, instance, asCaregiver, now))) {
+    return { kind: "not_due", reason: NOT_DUE_YET };
   }
-  if (replayed) requirePressInWindow(instance, now - (args.pressedAgoMs ?? 0));
+  if (replayed && queuedPress !== null) {
+    const outsideWindow = pressOutsideWindow(instance, queuedPress.pressedAt);
+    if (outsideWindow !== null) return { kind: "refused", reason: outsideWindow };
+  }
   const confirmedAt =
     args.pressedAgoMs === undefined
       ? now
@@ -246,7 +252,7 @@ async function confirmOutcome(
     if (options.recordOtherStep !== false) {
       await recordOtherStepPress(ctx, actor, instance, args, stepIndex(step), now);
     }
-    return { row: instance, otherStep: true };
+    return { kind: "other_step", row: instance };
   }
   if (hasStepAfter(step)) {
     const press = { at: now, by: actorUserId(actor), pressId: args.pressId };
@@ -278,6 +284,17 @@ async function confirmOutcome(
     pressDetail,
   );
   return applied(confirmed);
+}
+
+async function isDue(
+  ctx: QueryCtx,
+  instance: Doc<"taskInstances">,
+  asCaregiver: boolean,
+  now: number,
+): Promise<boolean> {
+  if (!asCaregiver) return notTooEarly(instance, now);
+  const household = await loadHousehold(ctx, instance.householdId);
+  return instance.localDate <= localDate(now, household.timezone);
 }
 
 async function instanceStep(
@@ -481,16 +498,13 @@ export async function undoPressedInstance(
     });
     return { status: "too_late" };
   }
-  const lastStep = latestStepPress(instance);
-  if (!isDoneState(instance.state) && lastStep !== null) {
+  if (!isDoneState(instance.state) && latestStepPress(instance) !== null) {
     const steppedBackRow = await changeInstance(
       ctx,
       actor,
       instance,
       {
         ...steppedBack(instance),
-        confirmTakenBackAt: Math.min(now, Math.max(tappedAt, lastStep.at)),
-        confirmTakenBackBy: actor.userId,
         takenBackPressIds: withTakenBackPressIds(instance.takenBackPressIds, [args.pressId]),
       },
       {
@@ -593,22 +607,18 @@ export async function confirmDueTaskCore(
   const picked = pickDueEntry(await todayInstances(ctx, args.householdId, now, actor), args.label);
   if (!("entry" in picked)) return picked;
   const { entry } = picked;
-  let outcome: ConfirmOutcome;
-  try {
-    outcome = await confirmOutcome(
-      ctx,
-      actor,
-      { instanceId: entry.instanceId, via: args.via, step: args.step, transport: args.transport },
-      now,
-    );
-  } catch (e) {
-    if (isAppError(e, "invalid")) return { ...entry, status: "not_due_yet" };
-    throw e;
-  }
+  const outcome = await confirmOutcome(
+    ctx,
+    actor,
+    { instanceId: entry.instanceId, via: args.via, step: args.step, transport: args.transport },
+    now,
+  );
+  if (outcome.kind === "not_due") return { ...entry, status: "not_due_yet" };
+  if (outcome.kind === "refused") throw appError("invalid", outcome.reason);
   const { row } = outcome;
   return {
     ...entry,
-    status: outcome.otherStep ? "other_step" : pressStatus(row),
+    status: outcome.kind === "other_step" ? "other_step" : pressStatus(row),
     state: row.state,
     confirmedAt: row.confirmedAt ?? null,
     step: taskStep(entry.checklistItems, row.currentStep),
@@ -796,24 +806,21 @@ export async function confirmPressedInstance(
     });
     return { status: "rejected", reason };
   };
-  if (!idValid) {
+  const malformed = malformedPress(actor, args);
+  if (malformed !== null) {
     if (instance !== null && instance.householdId !== actor.householdId) {
       throw appError("forbidden", "Not allowed to confirm this task");
     }
-    return await rejected(PRESS_ID_NOT_VALID);
+    return await rejected(malformed);
   }
   if (instance === null) return await rejected(NO_SUCH_TASK);
-  try {
-    const { row } = await confirmOutcome(ctx, actor, args, now, {
-      recordOtherStep: options.recordRefusal,
-    });
-    return { status: pressStatus(row), instance: row };
-  } catch (error) {
-    if (error instanceof ConvexError && !isAppError(error, "forbidden")) {
-      return await rejected((error.data as { message?: string }).message ?? "Not applied");
-    }
-    throw error;
+  const outcome = await confirmOutcome(ctx, actor, args, now, {
+    recordOtherStep: options.recordRefusal,
+  });
+  if (outcome.kind === "not_due" || outcome.kind === "refused") {
+    return await rejected(outcome.reason);
   }
+  return { status: pressStatus(outcome.row), instance: outcome.row };
 }
 
 export const confirmPressedTask = mutation({

@@ -709,7 +709,7 @@ def _opening_prompt(
 
 def _display_cue_speech(instance: TodayEntry) -> str:
     base = _display_cue_base(instance)
-    step = instance.get("step")
+    step = instance["step"]
     return base if step is None else f"{base} {one_line(step_speech(step))}"
 
 
@@ -987,7 +987,7 @@ async def entrypoint(ctx: JobContext) -> None:
         conversation_id=conversation_id,
         weather_location=weather_location,
         prompt_label=prompt_label,
-        prompt_step=None if prompt_instance is None else prompt_instance.get("step"),
+        prompt_step=None if prompt_instance is None else prompt_instance["step"],
     )
 
     await session.start(

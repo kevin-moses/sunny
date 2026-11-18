@@ -16,8 +16,14 @@ from config import (
     SUMMARY_MODEL,
     SUMMARY_TIMEOUT_S,
 )
-from convex_client import ConvexArgs, ConvexMutation, ConvexQuery
-from convex_types import AgentContext, QuestionRow
+from convex_client import (
+    ConvexArgs,
+    ConvexMutation,
+    ConvexQuery,
+    mutation_as,
+    query_as,
+)
+from convex_types import AGENT_CONTEXT, CONVERSATION_ID, AgentContext, QuestionRow
 
 logger = logging.getLogger("agent.memory")
 
@@ -162,11 +168,11 @@ async def load_agent_context(
     if not household_id:
         return None
     try:
-        context: AgentContext = await client.query(
-            "agent:getContext", {"householdId": household_id}
+        context = await query_as(
+            client, "agent:getContext", {"householdId": household_id}, AGENT_CONTEXT
         )
     except Exception as e:
-        logger.warning(f"Failed to load agent context for {household_id}: {e}")
+        logger.error(f"Failed to load agent context for {household_id}: {e}")
         return None
     logger.info(f"Loaded agent context for household {household_id}")
     return context
@@ -182,7 +188,8 @@ async def create_conversation(
     if not household_id:
         return ""
     try:
-        conversation_id: str = await client.mutation(
+        conversation_id = await mutation_as(
+            client,
             "agent:startConversation",
             {
                 "householdId": household_id,
@@ -190,6 +197,7 @@ async def create_conversation(
                 "trigger": trigger,
                 "taskInstanceId": task_instance_id or None,
             },
+            CONVERSATION_ID,
         )
         logger.info(
             f"Created conversation {conversation_id} for household {household_id} "
