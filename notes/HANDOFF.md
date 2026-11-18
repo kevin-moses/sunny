@@ -283,7 +283,7 @@ Voice agent (sunny_agent):
 
 ## Checks
 
-Style is enforced by pre-commit: run `uv tool run pre-commit run --all-files` from the repo root. It runs ruff, ruff-format and mypy for `sunny_agent`; prettier and tsc for `sunny_backend/convex` and `sunny_backend/scripts`; and prettier, eslint and tsc for `sunny_app`. Run `npm install` in `sunny_app` and `sunny_backend` first. Before committing, run `/simplify` and the TLM code reviewer (see `CLAUDE.md`).
+Style is enforced by pre-commit: run `uv tool run pre-commit run --all-files` from the repo root. It runs ruff, ruff-format and mypy for `sunny_agent`; prettier and tsc for `sunny_backend/convex` and `sunny_backend/scripts`; and prettier, eslint and tsc for `sunny_app`. Two more hooks reject comments in code anywhere in the repo. `sunny_agent/scripts/no_comments.py` flags Python comments (`# type: ignore` and `# noqa` included), docstrings and other bare string statements, and a mypy `ignore_errors` setting in a `pyproject.toml`. `sunny_backend/scripts/checkNoComments.ts` flags every comment in .ts, .tsx and .js files, which covers `eslint-disable`, `@ts-ignore`, `@ts-expect-error` and JSX `{/* */}`; `convex/_generated` and `node_modules` are skipped. Both use the language's own parser, so a `#` or `//` inside a string, template, regex or JSX text is not flagged. They cannot catch a workaround written without a comment, or a check loosened in configuration (ruff `per-file-ignores`, a rule turned off in an ESLint config, a tsconfig setting); those are left to review. A shebang or a `# -*- coding` line counts as a comment too. Run `npm install` in `sunny_app` and `sunny_backend` first. Before committing, run `/simplify` and the TLM code reviewer (see `CLAUDE.md`).
 
 ## Where each product feature lives
 

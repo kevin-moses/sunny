@@ -29,7 +29,7 @@ repos:
     hooks:
       - id: mypy
         name: mypy
-        entry: bash -c 'cd sunny_agent && uv run mypy src/ tests/'
+        entry: bash -c 'cd sunny_agent && uv run mypy src/ tests/ scripts/'
         language: system
         types: [python]
         pass_filenames: false
@@ -83,3 +83,21 @@ repos:
         language: system
         pass_filenames: false
         files: ^sunny_app/
+
+  # --- No comments, docstrings or suppression pragmas in code (CLAUDE.md) ---
+  # Parser-based, so a # or // inside a string, template, regex or JSX text is not flagged.
+  - repo: local
+    hooks:
+      - id: no-comments-python
+        name: no comments (python)
+        entry: bash -c 'cd sunny_agent && uv run python scripts/no_comments.py "${@/#/../}"' --
+        language: system
+        pass_filenames: true
+        files: (\.py|(^|/)pyproject\.toml)$
+      - id: no-comments-ts
+        name: no comments (ts/js)
+        entry: bash -c 'cd sunny_backend && npx tsx scripts/checkNoComments.ts "${@/#/../}"' --
+        language: system
+        pass_filenames: true
+        files: \.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$
+        exclude: (^|/)(_generated|node_modules)/
