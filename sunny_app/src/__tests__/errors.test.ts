@@ -1,9 +1,3 @@
-// sunny_app/src/__tests__/errors.test.ts
-//
-// Purpose: Unit tests for errorMessage: Error messages, plain strings and the fallback.
-//
-// Last modified: 2026-10-28
-
 import { describe, expect, it } from '@jest/globals';
 
 import { errorMessage } from '../errors';

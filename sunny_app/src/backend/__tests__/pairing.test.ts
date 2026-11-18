@@ -1,16 +1,3 @@
-// sunny_app/src/backend/__tests__/pairing.test.ts
-//
-// Purpose: Unit tests for pairing.ts with Clerk, expo-crypto, AsyncStorage, fetch and the push
-// module mocked: the /pair request (cleaned code, nonce, timeout vs offline messages), nonce
-// reuse for a retry of the same code, error mapping of the server's body, ticket sign-in
-// (including a failing stale sign out), pair() waiting for an unpair in flight, unpair (never
-// rejects, every step isolated, shared run), the removal retry backoff, and decideSession /
-// rememberHome / showHome (Clerk-only "signedOut", transient Convex auth, query failure, an
-// authenticated account that mine does not know, removal of a device account without a device
-// entry, caregiver home and onboarding, the remembered home).
-//
-// Last modified: 2026-11-09
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { BackendError } from '../api';
@@ -20,9 +7,8 @@ import {
   nonceForCode,
   pair,
   pairErrorFromBody,
-  rememberHome,
+  homeOf,
   removalRetryDelay,
-  showHome,
   UNREACHABLE_NOTICE,
   unpair,
   type HomeDecision,
@@ -102,12 +88,6 @@ jest.mock('../convex', () => ({
 
 const PAIR_BODY = { ticket: 'tkt', householdId: 'h1', deviceId: 'd1', kind: 'senior_phone' };
 
-/**
- * purpose: Build a fetch Response-like object.
- * @param status: (number) HTTP status.
- * @param body: (unknown) JSON body, or undefined for an unreadable body.
- * @return: (object) Something with ok, status and json().
- */
 function reply(status: number, body?: unknown) {
   return {
     ok: status >= 200 && status < 300,
@@ -119,11 +99,6 @@ function reply(status: number, body?: unknown) {
   };
 }
 
-/**
- * purpose: Read the JSON body of the nth fetch call.
- * @param index: (number) Zero-based call index.
- * @return: (Record<string, unknown>) The parsed request body.
- */
 function sentBody(index = 0): Record<string, unknown> {
   const init = mockFetch.mock.calls[index]?.[1] as { body: string };
   return JSON.parse(init.body) as Record<string, unknown>;
@@ -163,7 +138,12 @@ describe('pair', () => {
   });
 
   it('starts a new pairing with an empty queue of Done presses', async () => {
-    await confirmQueue.enqueue({ instanceId: 'inst_old' as never, label: 'Pills', pressedAt: 1 });
+    await confirmQueue.enqueue({
+      instanceId: 'inst_old' as never,
+      label: 'Pills',
+      pressedAt: 1,
+      pressId: 'pid-0000000000000001',
+    });
     expect(confirmQueue.getEntries()).toHaveLength(1);
     await pair('ABCD1234');
     expect(confirmQueue.getEntries()).toEqual([]);
@@ -385,13 +365,6 @@ describe('removalRetryDelay', () => {
   });
 });
 
-/**
- * purpose: Build a households.mine entry.
- * @param deviceKind: (string | null) The device kind; null for a caregiver entry.
- * @param householdId: (string) The household id.
- * @param role: (string | null) The caregiver role; defaults to primary for a caregiver entry.
- * @return: (MineEntry) The entry.
- */
 function mineEntry(
   deviceKind: string | null,
   householdId = 'h1',
@@ -400,22 +373,10 @@ function mineEntry(
   return { household: { _id: householdId }, role, deviceKind } as unknown as MineEntry;
 }
 
-/**
- * purpose: Build a households.mine result.
- * @param accountKind: (AccountKind | null) The account kind; null when Convex knows no account.
- * @param households: (MineEntry[]) The household entries.
- * @return: (MineResult) The result.
- */
 function mineResult(accountKind: AccountKind | null, households: MineEntry[] = []): MineResult {
   return { accountKind, households };
 }
 
-/**
- * purpose: Build a caregiver home decision.
- * @param householdId: (string) The household id.
- * @param role: (string) The caregiver role.
- * @return: (HomeDecision) The caregiver decision.
- */
 function caregiverHome(householdId: string, role: string): HomeDecision {
   return { state: 'caregiver', home: { householdId, role } } as unknown as HomeDecision;
 }
@@ -426,12 +387,6 @@ const CAREGIVER = caregiverHome('h1', 'primary');
 const LOADING: SessionDecision = { state: 'loading' };
 const UNREACHABLE: SessionDecision = { state: 'loading', notice: UNREACHABLE_NOTICE };
 
-/**
- * purpose: Build decideSession inputs for a signed-in, Convex-authenticated account whose
- *          query has not answered yet.
- * @param overrides: (Partial<SessionInputs>) Fields to set.
- * @return: (SessionInputs) The inputs.
- */
 function inputs(overrides: Partial<SessionInputs> = {}): SessionInputs {
   return {
     clerkLoaded: true,
@@ -510,38 +465,20 @@ describe('decideSession', () => {
   });
 });
 
-describe('rememberHome', () => {
-  it('remembers a paired device or a caregiver home', () => {
-    expect(rememberHome(PAIRED, null)).toBe(PAIRED);
-    expect(rememberHome(CAREGIVER, PAIRED)).toBe(CAREGIVER);
+describe('homeOf', () => {
+  it('is the decision for a paired device or a caregiver home', () => {
+    expect(homeOf(PAIRED)).toBe(PAIRED);
+    expect(homeOf(CAREGIVER)).toBe(CAREGIVER);
   });
 
-  it('keeps the home while loading', () => {
-    expect(rememberHome(LOADING, PAIRED)).toBe(PAIRED);
-    expect(rememberHome(UNREACHABLE, CAREGIVER)).toBe(CAREGIVER);
-    expect(rememberHome(LOADING, null)).toBeNull();
+  it('says nothing while loading', () => {
+    expect(homeOf(LOADING)).toBeUndefined();
+    expect(homeOf(UNREACHABLE)).toBeUndefined();
   });
 
-  it('forgets the home when signed out, removed or onboarding', () => {
-    expect(rememberHome({ state: 'signedOut' }, CAREGIVER)).toBeNull();
-    expect(rememberHome({ state: 'removed' }, PAIRED)).toBeNull();
-    expect(rememberHome({ state: 'caregiverOnboarding' }, CAREGIVER)).toBeNull();
-  });
-});
-
-describe('showHome', () => {
-  it('shows the remembered home while the decision is loading', () => {
-    expect(showHome(LOADING, PAIRED)).toEqual({ shown: PAIRED, remembered: PAIRED });
-    expect(showHome(UNREACHABLE, CAREGIVER)).toEqual({ shown: CAREGIVER, remembered: CAREGIVER });
-  });
-
-  it('shows the loading decision when no home is remembered', () => {
-    expect(showHome(UNREACHABLE, null)).toEqual({ shown: UNREACHABLE, remembered: null });
-  });
-
-  it('shows a settled decision and updates the remembered home', () => {
-    expect(showHome(CAREGIVER, PAIRED)).toEqual({ shown: CAREGIVER, remembered: CAREGIVER });
-    const signedOut: SessionDecision = { state: 'signedOut' };
-    expect(showHome(signedOut, PAIRED)).toEqual({ shown: signedOut, remembered: null });
+  it('is null when signed out, removed or onboarding', () => {
+    expect(homeOf({ state: 'signedOut' })).toBeNull();
+    expect(homeOf({ state: 'removed' })).toBeNull();
+    expect(homeOf({ state: 'caregiverOnboarding' })).toBeNull();
   });
 });

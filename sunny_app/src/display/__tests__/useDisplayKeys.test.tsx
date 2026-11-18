@@ -1,14 +1,3 @@
-// sunny_app/src/display/__tests__/useDisplayKeys.test.tsx
-//
-// Purpose: Tests for the display's keys, rendering the real useDisplayKeys with
-// react-test-renderer and fake timers; the backend call is the mocked boundary and the
-// tuning values are injected through TuningContext. Covers Talk handing each press to the
-// voice layer with a second press inside pressGapMs ignored (also across keys, and with a
-// tuned gap), and Done confirming the task on the screen on its own, whatever the voice layer
-// is doing.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create } from 'react-test-renderer';
@@ -20,7 +9,11 @@ import type { TuningControls } from '../TuningProvider';
 import { useDisplayKeys } from '../useDisplayKeys';
 import type { DisplayKeys } from '../useDisplayKeys';
 
-const mockMutation = jest.fn(async (..._args: unknown[]) => null);
+const mockMutation = jest.fn(
+  async (..._args: unknown[]): Promise<{ state: string; currentStep?: number }> => ({
+    state: 'confirmed',
+  }),
+);
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -42,12 +35,6 @@ const CARD = {
   steps: null,
 } as unknown as TaskCard;
 
-/**
- * purpose: Render the real hook with a press gap.
- * @param card: (TaskCard | null) The Now task.
- * @param pressGapMs: (number) The tuned press gap.
- * @return: (() => DisplayKeys) A getter for the latest result.
- */
 function renderKeys(
   card: TaskCard | null,
   pressGapMs: number = DEFAULT_TUNING.pressGapMs,
@@ -118,8 +105,30 @@ describe('useDisplayKeys', () => {
     expect(mockMutation).toHaveBeenCalledWith(expect.anything(), {
       instanceId: 't1',
       via: 'button',
+      step: 0,
     });
     expect(show).toHaveBeenLastCalledWith('Checked off: Morning pills');
     expect(talk).not.toHaveBeenCalled();
+  });
+
+  it('sends the step on screen with a multi-step Done and names the step the backend advanced past', async () => {
+    const steps = ['Put on your coat', 'Take your keys', 'Lock the door'];
+    const card = {
+      ...CARD,
+      task: { ...CARD.task, step: { index: 1, count: 3, text: 'Take your keys' } },
+      steps,
+    } as unknown as TaskCard;
+    mockMutation.mockResolvedValueOnce({ state: 'due', currentStep: 2 });
+    const get = renderKeys(card);
+    await act(async () => {
+      get().pressDone();
+    });
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockMutation).toHaveBeenCalledWith(expect.anything(), {
+      instanceId: 't1',
+      via: 'button',
+      step: 1,
+    });
+    expect(show).toHaveBeenLastCalledWith('Step 2 done');
   });
 });

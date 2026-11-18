@@ -1,46 +1,3 @@
-// schema.ts
-// Purpose: The shared household state every surface renders (see notes/SPEC.md "Shared
-// state" and notes/CONVEX_MIGRATION.md). Ported from the Supabase migrations:
-// households, caregiver membership and paired devices; join codes; escalation policies
-// (steps embedded in order); tasks and their daily instances (fired escalation steps
-// embedded on the instance); self-reported doses; the notification outbox; the audit
-// log; calendar events and day-of notices; and what the agent reads: family messages,
-// life profile, sensitive topics, agent memory and the conversation log.
-// Conventions: instants are epoch ms; household-local dates are "YYYY-MM-DD" and local
-// times "HH:MM"; weekdays are ISO numbers (1 = Monday); user ids are Clerk user ids
-// (the identity's subject). Uniqueness the SQL schema enforced is checked by the
-// mutations that write each table, using the indexes below. The scheduler tables carry the
-// household-scoped indexes the per-household tick and the resync paths read (active tasks,
-// instances by state, by task and state).
-// Agent requests: a caregiver message to the household agent (agentRequests, the row the app
-// subscribes to) and the tool calls the agent made for it (agentToolCalls, recorded once so a
-// retried workflow step never repeats a calendar write).
-// Google Calendar: calendarConnections (one per caregiver per household, refresh token stored
-// encrypted), calendarEventLinks (our event to the Google event, per connection) and
-// calendarSyncs (the pending push of one event to one connection; at most one row per key,
-// see lib/calendarSync.ts).
-// Delivery (notificationOutbox state) and the daily digest (digests, one row per household and
-// local date).
-// SMS: caregiver phone numbers live on householdMembers (phone, phoneVerifiedAt, pendingPhone);
-// phoneVerifications holds the texted verification codes (phone.ts).
-// Not yet ported (later phases): storage for photos and voice clips.
-// Voice agent (2026-11-09): households.weatherLocation (the place the agent's weather tool
-// looks up) and listItems (the household's one shared list).
-// Device API (2026-11-13): devices.tokenHash and tokenIssuedAt (the HTTP device token, stored
-// only as a hash, index by_token_hash), screen and firmware (reported by the device).
-// Caregiver chat (2026-11-14): chatPosts, Sunny's own posts in the caregiver chat thread (the
-// daily digest), merged with agentRequests into the transcript; notificationOutbox.pushState,
-// which lets a caregiver's push whose retries ran out be texted.
-// Caregiver setup by chat (2026-11-14): householdMembers.digestOptOut (a caregiver who does
-// not want the digest pushed or texted) and agentRequests.changedTaskIds (the tasks a request's
-// add_task and update_task calls changed, for the wording cards in the chat).
-// No on-call caregiver (2026-11-14): every caregiver is alerted at once. Two legacy items stay
-// valid only so stored rows still match: households.onCallUserId (never read or written) and the
-// escalation action "alert_on_call" (read exactly as "alert_all_caregivers", never written;
-// lib/validators.ts). Delete both once migrations.removeOnCall has run on every deployment.
-//
-// Last modified: 2026-11-14
-
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
@@ -55,7 +12,6 @@ import {
   digestSource,
   digestStatus,
   escalationAction,
-  escalationStep,
   instanceState,
   joinGrant,
   lifeCategory,
@@ -75,22 +31,12 @@ export default defineSchema({
   households: defineTable({
     seniorPreferredName: v.string(),
     seniorFullName: v.optional(v.string()),
-    // IANA region zone ("America/New_York"); validated by lib/time.isValidTimezone.
     timezone: v.string(),
-    // Deprecated (2026-11-14): there is no on-call caregiver; never read or written. Kept so
-    // stored rows still match the schema until migrations.removeOnCall has cleared it on every
-    // deployment; then delete this field.
-    onCallUserId: v.optional(v.string()),
     digestTime: v.string(),
     eventNoticeTime: v.string(),
-    // Agreed at onboarding: caregivers see full transcripts only when true.
     shareTranscripts: v.boolean(),
-    // Caregiver "stop": no background work for the household runs while true.
     backgroundPaused: v.boolean(),
-    // Local date of the latest digest row, so ticks after the day's digest skip the lookup.
     lastDigestDate: v.optional(v.string()),
-    // Place name the voice agent looks the weather up for, e.g. "Brooklyn, NY"; absent means
-    // the agent has no weather location.
     weatherLocation: v.optional(v.string()),
   }),
 
@@ -99,25 +45,14 @@ export default defineSchema({
     userId: v.string(),
     role: memberRole,
     displayName: v.string(),
-    // E.164 number. Reachable by SMS only when phoneVerifiedAt is also set (see phone.ts).
     phone: v.optional(v.string()),
     phoneVerifiedAt: v.optional(v.number()),
-    // A number awaiting its texted code; becomes phone on confirmMyPhone.
     pendingPhone: v.optional(v.string()),
-    // True when this caregiver does not want the daily digest by push or text (set through the
-    // household agent, lib/digestRecipients.ts); absent means they receive it. The digest is
-    // still posted in the chat thread for everyone.
-    digestOptOut: v.optional(v.boolean()),
   })
     .index("by_household_user", ["householdId", "userId"])
     .index("by_user", ["userId"])
-    // Inbound SMS: members by number (callers also check phoneVerifiedAt).
     .index("by_phone", ["phone"]),
 
-  // The one outstanding phone verification per member. The code is generated by the send action
-  // (never stored or scheduled in plaintext); codeHash is an HMAC and is absent until the code
-  // exists. sendError is the caregiver-safe reason a text failed; sendErrorDetail is the raw text
-  // (never returned to clients). Replaced on every resend, swept after expiry.
   phoneVerifications: defineTable({
     householdId: v.id("households"),
     userId: v.string(),
@@ -131,8 +66,6 @@ export default defineSchema({
     .index("by_household_user", ["householdId", "userId"])
     .index("by_expires", ["expiresAt"]),
 
-  // Inbound texts already handled, by Twilio MessageSid, so a webhook retry gets the same reply
-  // and claims nothing twice. Swept after expiresAt.
   smsInbound: defineTable({
     messageSid: v.string(),
     reply: v.union(v.null(), v.string()),
@@ -141,24 +74,16 @@ export default defineSchema({
     .index("by_sid", ["messageSid"])
     .index("by_expires", ["expiresAt"]),
 
-  // Senior-side devices; userId is the Clerk user created for the device at pairing.
   devices: defineTable({
     householdId: v.id("households"),
     userId: v.string(),
     kind: deviceKind,
     name: v.optional(v.string()),
     lastSeenAt: v.optional(v.number()),
-    // Set by /pair: when the device was paired and the client's retry nonce. Never returned
-    // to clients (listDevices strips pairingNonce).
     pairedAt: v.optional(v.number()),
     pairingNonce: v.optional(v.string()),
-    // The device token for the HTTP device API (deviceApi.ts): only the SHA-256 hex digest of
-    // the token is stored, and when it was issued. Never returned to clients (listDevices
-    // strips tokenHash). Issuing a new token replaces the hash; deleting the row revokes it.
     tokenHash: v.optional(v.string()),
     tokenIssuedAt: v.optional(v.number()),
-    // What the device reported about itself through PUT /device/info: its panel in pixels
-    // and grey levels, and its firmware version (at most 40 characters).
     screen: v.optional(deviceScreen),
     firmware: v.optional(v.string()),
   })
@@ -185,59 +110,35 @@ export default defineSchema({
     .index("by_code", ["code"])
     .index("by_household", ["householdId"]),
 
-  escalationPolicies: defineTable({
-    householdId: v.id("households"),
-    name: v.string(),
-    // Stable key for the seeded defaults, so code never depends on the editable name.
-    systemKey: v.optional(v.union(v.literal("medication"), v.literal("prompt_only"))),
-    // Ordered; each step carries a stable id (instances record fired steps by id, so editing
-    // the ladder never makes a step look fired or unfired).
-    steps: v.array(escalationStep),
-  })
-    .index("by_household", ["householdId"])
-    .index("by_household_system_key", ["householdId", "systemKey"]),
-
   tasks: defineTable({
     householdId: v.id("households"),
     type: taskType,
-    // Caregiver-facing name, e.g. "Morning pills (lisinopril, metformin)".
     title: v.string(),
-    // Short label the display and widget show, e.g. "Morning pills".
     displayLabel: v.string(),
-    // Exact sentence every surface speaks or shows; defaults to "Time for <label>.".
     spokenPrompt: v.string(),
     pillDescription: v.optional(v.string()),
     checklistItems: v.array(v.string()),
-    // Local "HH:MM" times. Empty means one of two things: a medication is as-needed (only
-    // logged); any other type is an "anytime" task, done anytime that day (lib/anytime.ts).
     times: v.array(v.string()),
-    // ISO weekdays; absent = every day.
     daysOfWeek: v.optional(v.array(v.number())),
-    // One-off task on a single local date.
     onceOn: v.optional(v.string()),
     startsOn: v.optional(v.string()),
     endsOn: v.optional(v.string()),
     windowMinutes: v.number(),
-    escalationPolicyId: v.optional(v.id("escalationPolicies")),
+    highPriority: v.boolean(),
     asNeededMaxPerDay: v.optional(v.number()),
     asNeededMinHours: v.optional(v.number()),
     createdByKind: taskCreator,
     createdBy: v.optional(v.string()),
     active: v.boolean(),
-    // Last change to any schedule field; expansion never back-fills windows that opened
-    // before the schedule existed.
     scheduleChangedAt: v.number(),
   })
     .index("by_household", ["householdId"])
-    .index("by_household_active", ["householdId", "active"])
-    .index("by_household_policy", ["householdId", "escalationPolicyId"]),
+    .index("by_household_active", ["householdId", "active"]),
 
   taskInstances: defineTable({
     taskId: v.id("tasks"),
     householdId: v.id("households"),
     localDate: v.string(),
-    // Local "HH:MM", or the sentinel "anytime" (lib/anytime.ts ANYTIME) for an anytime task,
-    // whose window runs from local midnight to local midnight two days later.
     scheduledTime: v.string(),
     windowStart: v.number(),
     windowEnd: v.number(),
@@ -245,42 +146,29 @@ export default defineSchema({
     confirmedAt: v.optional(v.number()),
     confirmedBy: v.optional(v.string()),
     confirmedVia: v.optional(confirmVia),
-    // When the server received a confirm that a senior device had held (it was pressed offline)
-    // and sent later; set only when that is more than LATE_SYNC_MS after confirmedAt.
     confirmReceivedAt: v.optional(v.number()),
-    // The state any confirm (a senior device's, the voice agent's or a caregiver's resolve)
-    // replaced, kept so instances.undoPressedTask, undoResolve and reopenTaskInstance can
-    // restore it; cleared by each of them. (Named for the caregiver resolve it began with.)
     resolvedFromState: v.optional(instanceState),
-    // The snooze that confirm cleared, restored by the undo (not by a reopen).
     resolvedFromSnoozedUntil: v.optional(v.number()),
-    // When a senior's undo or a caregiver's reopen last took a confirmation back. A press with
-    // an age made at or before this instant is refused (instances.confirmInstance), so a stale
-    // press still held in a device's queue cannot confirm the task again. Never cleared.
     confirmTakenBackAt: v.optional(v.number()),
-    // Who last took the confirmation back (with confirmTakenBackAt): the device's user id for a
-    // senior undo, the caregiver's for a reopen. A press with an id from that same device skips
-    // the time rule (lib/confirmRule.queuedPressTakenBack). Never cleared.
     confirmTakenBackBy: v.optional(v.string()),
-    // The ids the phone's queue gave the presses that make up this confirmation: the confirming
-    // press first, then the newest presses of the same device user that landed on it as
-    // no-ops (at most 4 in all). Cleared with the confirmation. A senior undo carrying a press
-    // id applies only when its id is here.
     confirmPressIds: v.optional(v.array(v.string())),
-    // Ids of presses taken back (every take-back, a senior undo or a caregiver's reopen,
-    // appends all of confirmPressIds), newest last, at most 8. A press resent with one of these
-    // ids is refused. Never cleared.
     takenBackPressIds: v.optional(v.array(v.string())),
+    currentStep: v.optional(v.number()),
+    stepPresses: v.optional(
+      v.array(
+        v.object({
+          step: v.number(),
+          at: v.number(),
+          by: v.optional(v.string()),
+          pressId: v.optional(v.string()),
+        }),
+      ),
+    ),
     resolutionNote: v.optional(v.string()),
     snoozedUntil: v.optional(v.number()),
     claimedBy: v.optional(v.string()),
     claimedAt: v.optional(v.number()),
-    // When the instance was created (escalation offsets count from the later of this and
-    // windowStart). Explicit rather than _creationTime so tests can drive the clock.
     createdAt: v.number(),
-    // Escalation steps already handled, each once, by the step's stable id. action is a
-    // snapshot of the step as fired; notified is false for a step superseded by a later step of
-    // the same kind in the same tick.
     firedSteps: v.array(
       v.object({
         stepId: v.string(),
@@ -292,12 +180,9 @@ export default defineSchema({
   })
     .index("by_task_date_time", ["taskId", "localDate", "scheduledTime"])
     .index("by_household_date", ["householdId", "localDate"])
-    // The scheduler tick reads one household's instances by state; resync deletes a task's
-    // or household's upcoming instances without scanning history.
     .index("by_task_state", ["taskId", "state", "windowStart"])
     .index("by_household_state", ["householdId", "state", "windowStart"]),
 
-  // As-needed medication taken outside a scheduled instance.
   doseLog: defineTable({
     householdId: v.id("households"),
     taskId: v.id("tasks"),
@@ -305,20 +190,11 @@ export default defineSchema({
     reportedVia: confirmVia,
     reportedBy: v.optional(v.string()),
     note: v.optional(v.string()),
-    // When the dose was written down (rows before this field: their _creationTime); the voice
-    // conversation a self-reported dose came from (only she can take it back, in that
-    // conversation); and when it was taken back: an undone row is kept but never counted.
-    loggedAt: v.optional(v.number()),
+    loggedAt: v.number(),
     conversationId: v.optional(v.id("conversations")),
     undoneAt: v.optional(v.number()),
   }).index("by_household_task_taken", ["householdId", "taskId", "takenAt"]),
 
-  // The only place notifications are queued (insert with lib/delivery.ts insertNotification,
-  // which enqueues delivery). One recipient per row: a device gets APNs; a member gets APNs when
-  // they have a push token, else SMS, and SMS as the fallback when the push cannot be delivered
-  // (lib/delivery.ts). state leaves "pending" once; settledAt is then set, channel (what
-  // actually delivered it) only when sent, and detail holds the skip reason or an internal error
-  // (never returned to clients).
   notificationOutbox: defineTable({
     householdId: v.id("households"),
     kind: notificationKind,
@@ -332,28 +208,17 @@ export default defineSchema({
     state: outboxState,
     channel: v.optional(deliveryChannel),
     settledAt: v.optional(v.number()),
-    // Delivery runs started, capped so the sweeper never loops on one row; attemptStartedAt
-    // leases the row so the sweeper skips one a run is working on.
     attempts: v.optional(v.number()),
     attemptStartedAt: v.optional(v.number()),
     detail: v.optional(v.string()),
-    // A member row's push with a text to fall back on: "retrying" after a retryable push
-    // failure, "gave_up" once the push retries ran out and the row was enqueued again to be
-    // texted (delivery.onDeliveryComplete). Absent otherwise.
     pushState: v.optional(v.union(v.literal("retrying"), v.literal("gave_up"))),
   })
-    // Reply-to-claim finds a member's latest alerts without paging past other kinds.
     .index("by_recipient_kind", ["recipientUserId", "kind"])
     .index("by_recipient_device", ["recipientDeviceId"])
-    // Deleting an instance deletes its notifications (the SQL foreign key cascaded).
     .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
-    // The sweeper reads pending rows older than a cutoff (state, then creation time).
     .index("by_state", ["state"]),
 
-  // One row per household per local date: the daily digest (digest.ts). pending until the text
-  // is composed, posted in the caregiver chat and its outbox rows (push or SMS per caregiver)
-  // are queued; source records which path wrote the text.
   digests: defineTable({
     householdId: v.id("households"),
     localDate: v.string(),
@@ -365,48 +230,31 @@ export default defineSchema({
     .index("by_household_date", ["householdId", "localDate"])
     .index("by_status", ["status"]),
 
-  // A post from Sunny in the household's one caregiver chat thread (lib/chatPosts.ts). The only
-  // kind today is the daily digest, posted once by digest.complete when the digest's text is
-  // stored (so one per household per local date, like digests). The chat transcript
-  // (agentRequests.transcript) merges these with the agentRequests rows by creation time.
   chatPosts: defineTable({
     householdId: v.id("households"),
     kind: v.literal("digest"),
-    // The text as posted (the digest text, at most 600 characters).
     body: v.string(),
-    // The household-local date the post is about ("YYYY-MM-DD").
     localDate: v.string(),
     digestId: v.id("digests"),
-  })
-    // Newest first (creation time is the implicit last index field).
-    .index("by_household", ["householdId"]),
+  }).index("by_household", ["householdId"]),
 
-  // A caregiver's Google account connection; Sunny keeps its own secondary calendar there.
   calendarConnections: defineTable({
     householdId: v.id("households"),
-    // Clerk user id of the caregiver who connected.
     userId: v.string(),
     provider: v.literal("google"),
     accountEmail: v.optional(v.string()),
-    // The Sunny-owned calendar created in the caregiver's account.
     externalCalendarId: v.string(),
     status: calendarConnectionStatus,
-    // Caregiver-readable reason when status is not active.
     error: v.optional(v.string()),
-    // The OAuth refresh token as an encrypted box (lib/secretBox.ts). Never returned to clients.
     refreshToken: v.string(),
-    // The current access token as an encrypted box and when it expires (epoch ms), so a
-    // burst of pushes refreshes about once. Cleared on revoke and reconnect.
     accessToken: v.optional(v.string()),
     accessTokenExpiresAt: v.optional(v.number()),
     lastSyncedAt: v.optional(v.number()),
-    // Caregiver-safe note that some pushes failed after retries; cleared by the next success.
     lastError: v.optional(v.string()),
   })
     .index("by_household_status", ["householdId", "status"])
     .index("by_household_user", ["householdId", "userId"]),
 
-  // Our event to the Google event, per connection.
   calendarEventLinks: defineTable({
     eventId: v.id("events"),
     connectionId: v.id("calendarConnections"),
@@ -417,30 +265,26 @@ export default defineSchema({
     .index("by_event_connection", ["eventId", "connectionId"])
     .index("by_connection", ["connectionId"]),
 
-  // The pending push of one event to one connection; unique per (eventId, connectionId).
-  // States and transitions: see lib/calendarSync.ts.
   calendarSyncs: defineTable({
     eventId: v.id("events"),
     connectionId: v.id("calendarConnections"),
     state: calendarSyncState,
-    // Set on every transition; the sweeper re-enqueues rows idle for too long.
     updatedAt: v.number(),
-    // Pushes that failed after all retries; one delayed re-enqueue is allowed.
     failures: v.optional(v.number()),
   })
     .index("by_event_connection", ["eventId", "connectionId"])
     .index("by_connection", ["connectionId"])
     .index("by_updated", ["updatedAt"]),
 
-  // Single-use OAuth nonces: connectUrl stores one, the callback consumes it. Expired rows
-  // are swept hourly (crons.ts).
-  oauthStates: defineTable({
-    nonce: v.string(),
+  oauthFlows: defineTable({
+    ticketHash: v.string(),
     userId: v.string(),
     householdId: v.id("households"),
     expiresAt: v.number(),
+    started: v.optional(v.object({ browserHash: v.string(), codeVerifier: v.string() })),
+    consumedAt: v.optional(v.number()),
   })
-    .index("by_nonce", ["nonce"])
+    .index("by_ticket", ["ticketHash"])
     .index("by_expires", ["expiresAt"]),
 
   auditLog: defineTable({
@@ -453,13 +297,8 @@ export default defineSchema({
     detail: v.record(v.string(), v.any()),
   })
     .index("by_household", ["householdId"])
-    // The voice agent reads its own recent decisions (the outcome of a repeated message).
     .index("by_household_action", ["householdId", "action"]),
 
-  // One row per voice agent flag that reached family (rows were queued for `recipientUserIds`):
-  // the repeat check (same key within its window) and the hourly cap read it by index. Every
-  // flag decision, sent or not, is also an auditLog row (flag_caregiver). doseId: the dose a
-  // medication_limit flag was about, so taking the dose back can send a correction.
   agentFlags: defineTable({
     householdId: v.id("households"),
     reason: v.string(),
@@ -473,13 +312,9 @@ export default defineSchema({
     .index("by_household_key_at", ["householdId", "key", "at"])
     .index("by_household_at", ["householdId", "at"]),
 
-  // Appointments and visits, scheduled in household-local terms so 2 PM stays 2 PM across
-  // DST; occurrences are computed (lib/occurrences.ts). Cancelling is a soft delete
-  // (deletedAt) so the cancellation can sync to Google.
   events: defineTable({
     householdId: v.id("households"),
     title: v.string(),
-    // Optional shorter or gentler wording the senior sees.
     label: v.optional(v.string()),
     startsOn: v.string(),
     startTime: v.string(),
@@ -487,7 +322,6 @@ export default defineSchema({
     place: v.optional(v.string()),
     visitorName: v.optional(v.string()),
     notes: v.optional(v.string()),
-    // ISO weekdays of a weekly repeat; absent = one-off on startsOn.
     repeatDays: v.optional(v.array(v.number())),
     repeatUntil: v.optional(v.string()),
     createdVia: actorKind,
@@ -495,10 +329,8 @@ export default defineSchema({
     deletedAt: v.optional(v.number()),
   })
     .index("by_household", ["householdId"])
-    // Live events: deletedAt is absent until cancelled.
     .index("by_household_deleted", ["householdId", "deletedAt"]),
 
-  // Occurrences already announced to caregivers (one notice per event per local date).
   eventNotices: defineTable({
     eventId: v.id("events"),
     localDate: v.string(),
@@ -507,7 +339,6 @@ export default defineSchema({
   familyMessages: defineTable({
     householdId: v.id("households"),
     senderKind: messageSender,
-    // Caregiver who sent it; absent when the senior sent it through the agent.
     senderUserId: v.optional(v.string()),
     body: v.optional(v.string()),
     photoStorageId: v.optional(v.id("_storage")),
@@ -523,7 +354,6 @@ export default defineSchema({
     createdBy: v.optional(v.string()),
   }).index("by_household", ["householdId"]),
 
-  // Caregiver-written guidance for hard questions, e.g. "Where's my husband?".
   sensitiveTopics: defineTable({
     householdId: v.id("households"),
     topic: v.string(),
@@ -531,8 +361,6 @@ export default defineSchema({
     createdBy: v.optional(v.string()),
   }).index("by_household", ["householdId"]),
 
-  // Facts the agent knows. Verified once verifiedAt is set; senior-stated facts start
-  // unverified and never overwrite caregiver-verified ones.
   agentMemory: defineTable({
     householdId: v.id("households"),
     fact: v.string(),
@@ -542,14 +370,11 @@ export default defineSchema({
     conversationId: v.optional(v.id("conversations")),
   })
     .index("by_household", ["householdId"])
-    // Verified facts (verifiedAt set) and the newest unverified ones (verifiedAt absent), read
-    // without scanning every fact (profile.ts).
     .index("by_household_verified", ["householdId", "verifiedAt"]),
 
   conversations: defineTable({
     householdId: v.id("households"),
     deviceId: v.optional(v.id("devices")),
-    // 'talk' (Talk button), 'scheduled_prompt', 'notification_tap'.
     trigger: v.string(),
     taskInstanceId: v.optional(v.id("taskInstances")),
     startedAt: v.number(),
@@ -563,91 +388,57 @@ export default defineSchema({
     content: v.string(),
   }).index("by_conversation", ["conversationId"]),
 
-  // The household's one shared list ("Add milk to the list"): open items have no doneAt.
-  // Written through lib/householdList.ts only (voice agent, caregivers, the senior's devices).
   listItems: defineTable({
     householdId: v.id("households"),
-    // One trimmed line, at most lib/householdList MAX_LIST_ITEM_LENGTH characters.
     text: v.string(),
     addedByKind: listActorKind,
-    // The caregiver's or the device's user id; absent when the voice agent added it.
     addedBy: v.optional(v.string()),
     addedAt: v.number(),
-    // Set when ticked ("I bought the milk"); cleared by a caregiver's untick.
     doneAt: v.optional(v.number()),
     doneByKind: v.optional(listActorKind),
     doneBy: v.optional(v.string()),
   })
-    // Open items (doneAt absent) in the order added, and recently ticked ones.
     .index("by_household_done", ["householdId", "doneAt"])
-    // Items added in a time range (the digest's "Added to the list" line).
     .index("by_household_added", ["householdId", "addedAt"]),
 
-  // One row per question the senior asked; the digest counts repeats by topic and day.
   agentQuestions: defineTable({
     householdId: v.id("households"),
     conversationId: v.optional(v.id("conversations")),
     askedAt: v.number(),
     question: v.string(),
-    // Short normalized topic, e.g. "sarah visit time"; repeats share a topic.
     topic: v.string(),
     outcome: questionOutcome,
     toolsUsed: v.array(v.string()),
   }).index("by_household_asked", ["householdId", "askedAt"]),
 
-  // A caregiver's request to the household agent. Run by the agentRuntime workflow.
   agentRequests: defineTable({
     householdId: v.id("households"),
-    // Clerk user id of the requesting caregiver.
     requestedBy: v.string(),
     message: v.string(),
-    // Earlier succeeded request whose Managed Agents session this one continues.
     continueRequestId: v.optional(v.id("agentRequests")),
     status: agentRequestStatus,
     workflowId: v.optional(v.string()),
-    // Known up front for a continuation (copied from the earlier request), set after the
-    // session starts otherwise. At most one in-progress request may use a session.
     sessionId: v.optional(v.string()),
-    // AGENT_CONFIG_FINGERPRINT (lib/agentFingerprint.ts) of the agent config this request's
-    // session runs: the current one for a fresh request, copied from the continued request for
-    // a continuation. Absent on rows from before it existed. A conversation whose fingerprint
-    // differs from the deployed one is not continued (agentRequests.findLatestContinuable).
-    agentConfig: v.optional(v.string()),
-    // True when the caregiver sent this as part of the one household chat (continueLatest) but
-    // it began a new session because the latest conversation could not be continued (the agent
-    // config changed). The session's first message then carries the recent chat
-    // (agentRuntime.sessionInputs) so it reads as one continuing conversation.
+    agentConfig: v.string(),
     carryOver: v.optional(v.boolean()),
-    // user.message events the session had before this request's message was posted.
     baselineUserMessages: v.optional(v.number()),
     reply: v.optional(v.string()),
-    // Caregiver-safe failure text; shown in the app.
     error: v.optional(v.string()),
-    // Raw failure detail (SDK errors, env var names, ids). Never returned by agentRequests.
     errorDetail: v.optional(v.string()),
     finishedAt: v.optional(v.number()),
-    // Tasks this request's successful add_task and update_task calls created or changed, each
-    // once, in order of first change, at most MAX_CHANGED_TASKS (agentRuntime.ts). Written in
-    // the same transaction as the tool's effect; agentRequests.transcript reads the tasks live
-    // for the chat's wording cards.
     changedTaskIds: v.optional(v.array(v.id("tasks"))),
   })
-    // Newest first (creation time is the implicit last index field).
     .index("by_household", ["householdId"])
     .index("by_household_status", ["householdId", "status"])
     .index("by_session", ["sessionId", "status"]),
 
-  // One row per tool call the agent made for a request, with the result that was (or will be)
-  // sent back. Written in the same transaction as the tool's effect.
   agentToolCalls: defineTable({
     requestId: v.id("agentRequests"),
-    // toolUseId (Managed Agents event id of the agent.custom_tool_use), name and input.
     ...toolCall.fields,
     text: v.string(),
     isError: v.boolean(),
     sentAt: v.optional(v.number()),
   })
     .index("by_request_tool", ["requestId", "toolUseId"])
-    // Calls whose result was sent: sentAt is absent until then, so gt(0) selects the sent ones.
     .index("by_request_sent", ["requestId", "sentAt"]),
 });

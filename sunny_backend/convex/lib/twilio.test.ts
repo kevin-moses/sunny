@@ -1,15 +1,3 @@
-// lib/twilio.test.ts
-// Purpose: Tests for lib/twilio.ts with a stubbed global fetch (Twilio is never called):
-// E.164 normalization, the Twilio environment (missing variables, bad sender), the send
-// request shape, the mapping of Twilio responses to { ok, retryable } (2xx, 4xx, 429, 5xx,
-// network error, timeout), phone number redaction in error text, X-Twilio-Signature
-// computation and validation (valid, tampered, missing, URL and token sensitivity, repeated
-// parameters), TwiML escaping (control characters stripped), sendSmsFromEnv (including the
-// config result and the timedOut flag), the webhook URL (no default), and the allowed country
-// codes.
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   escapeXml,
@@ -207,7 +195,6 @@ describe("sendSmsFromEnv", () => {
 });
 
 describe("sendTwilioSms", () => {
-  /** Stub fetch to answer with a JSON body and status; returns the mock for inspection. */
   function stubFetch(status: number, body: unknown) {
     const mock = vi.fn(async () => Response.json(body, { status }));
     vi.stubGlobal("fetch", mock);
@@ -237,6 +224,7 @@ describe("sendTwilioSms", () => {
       ok: false,
       retryable: false,
       error: "Twilio 400 (code 21211): The 'To' number [number] is not valid",
+      twilioCode: 21211,
     });
   });
 
@@ -324,7 +312,6 @@ describe("Twilio signature", () => {
   const params = () => new URLSearchParams({ From: "+15551234567", Body: "1", To: "+15550001111" });
 
   test("matches an independent HMAC-SHA1 computation (openssl)", async () => {
-    // printf URL+sorted name/value pairs | openssl dgst -sha1 -hmac 12345 -binary | base64
     const docParams = new URLSearchParams({
       CallSid: "CA1234567890ABCDE",
       Caller: "+12349013030",

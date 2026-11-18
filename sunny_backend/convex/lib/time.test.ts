@@ -1,10 +1,3 @@
-// lib/time.test.ts
-// Purpose: Tests for household-local date and time math, centered on the New York DST
-// transitions of 2026 (spring forward 2026-03-08, fall back 2026-11-01) that the SQL tests
-// covered, plus date arithmetic, weekday, part-of-day and formatting helpers.
-//
-// Last modified: 2026-10-28
-
 import { describe, expect, test } from "vitest";
 import {
   addDays,
@@ -185,29 +178,24 @@ describe("validators", () => {
 
 describe("zonedInstant in zones ahead of UTC+12", () => {
   test("Auckland spring-forward gap resolves to 03:30 NZDT", () => {
-    // 02:30 does not exist; the pre-change offset is NZST (+12), so 14:30Z the day before,
-    // which is 03:30 NZDT (+13).
     const t = zonedInstant("2026-09-27", "02:30", "Pacific/Auckland");
     expect(t).toBe(Date.UTC(2026, 8, 26, 14, 30));
     expect(localDateTime(t, "Pacific/Auckland")).toBe("2026-09-27T03:30:00");
   });
 
   test("Auckland fall-back repeated time resolves to the later NZST instant", () => {
-    // 02:30 happens at 13:30Z (NZDT, +13) and 14:30Z (NZST, +12); the later one wins.
     expect(zonedInstant("2026-04-05", "02:30", "Pacific/Auckland")).toBe(
       Date.UTC(2026, 3, 4, 14, 30),
     );
   });
 
   test("Auckland time on a non-transition day", () => {
-    // Mid-July is NZST (+12).
     expect(zonedInstant("2026-07-15", "08:00", "Pacific/Auckland")).toBe(
       Date.UTC(2026, 6, 14, 20, 0),
     );
   });
 
   test("Chatham gap start 02:45 reads back as 03:45", () => {
-    // Chatham jumps from 02:45 (+12:45) to 03:45 (+13:45) on 2026-09-27.
     const t = zonedInstant("2026-09-27", "02:45", "Pacific/Chatham");
     expect(t).toBe(Date.UTC(2026, 8, 26, 14, 0));
     expect(localDateTime(t, "Pacific/Chatham")).toBe("2026-09-27T03:45:00");

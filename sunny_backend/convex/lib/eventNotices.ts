@@ -1,20 +1,3 @@
-// lib/eventNotices.ts
-// Purpose: Day-of event notices, ported from public.event_notice_tick in the SQL calendar
-// migration. Once a household's local time reaches its eventNoticeTime, every live event
-// occurrence on the household's local today that has not started yet and has no eventNotices
-// row for (eventId, localDate) is announced: the eventNotices row is inserted and one
-// "event_notice" notificationOutbox row is queued for every household member (the SQL joined
-// household_members with no role filter; devices are separate and get none). An event added
-// after the notice time the same day is announced on the next scheduler tick; an event that
-// already started is not. Cancelled events are never announced and notices already queued
-// stay. Like the SQL, the pass does not look at backgroundPaused. It runs inside the
-// household's own tickHousehold mutation (scheduler.ts), so there is no second cron and no
-// global transaction. Rows are inserted through insertNotification (lib/delivery.ts), which
-// enqueues their delivery. Times are household-local, so DST and zones far from UTC follow the
-// household's zone.
-//
-// Last modified: 2026-10-29
-
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { insertNotification } from "./delivery";
@@ -22,13 +5,6 @@ import { householdOccurrences } from "./occurrences";
 import type { Occurrence } from "./occurrences";
 import { formatTime12, localDate, localTime } from "./time";
 
-/**
- * purpose: The title, body and payload of one occurrence's notice, worded as the SQL did:
- *          "Today: Physio at 3:00 PM" / "Mom has Physio at 3:00 PM today at Clinic."
- * @param household: (Doc<"households">) The household (for the senior's name).
- * @param occurrence: (Occurrence) The occurrence being announced.
- * @return: (object) title, body and payload { eventId, localDate }.
- */
 export function noticeContent(
   household: Doc<"households">,
   occurrence: Occurrence,
@@ -43,16 +19,6 @@ export function noticeContent(
   };
 }
 
-/**
- * purpose: Announce the household's day-of events that are due: nothing before the notice
- *          time; afterwards each unannounced occurrence of today that has not started gets an
- *          eventNotices row and one outbox row per household member. Idempotent per
- *          (event, local date).
- * @param ctx: (MutationCtx) Mutation context.
- * @param household: (Doc<"households">) The household, as the tick already read it.
- * @param now: (number) Epoch ms.
- * @return: (Promise<number>) Occurrences announced.
- */
 export async function announceEvents(
   ctx: MutationCtx,
   household: Doc<"households">,
@@ -65,8 +31,6 @@ export async function announceEvents(
     await householdOccurrences(ctx, householdId, household.timezone, today, today)
   ).filter((o) => o.startsAt > now);
   if (upcoming.length === 0) return 0;
-  // No index lists one household's notices for a day, so look each event up (in parallel)
-  // and diff against the set already announced.
   const announced = new Set(
     (
       await Promise.all(

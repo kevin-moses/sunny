@@ -13,7 +13,7 @@ One-time setup of the Google Cloud project behind "Connect Google Calendar" (Con
 2. **Audience**: leave the publishing status at **Testing** and add **test users**: every Google account that will connect (yours, and any caregiver testing with you). Unverified apps only work for listed test users.
 3. **Data access > Add or remove scopes**: add `https://www.googleapis.com/auth/calendar.app.created` (filter for "calendar.app.created"), `openid` and `.../auth/userinfo.email`. Save.
 
-Testing-mode limits: refresh tokens expire after 7 days, so a test caregiver reconnects weekly until the app is published and verified (calendar scopes need Google's verification before public launch).
+In testing mode, refresh tokens expire after 7 days, so a test caregiver reconnects weekly until the app is published and verified. Calendar scopes need Google's verification before public launch.
 
 ## 3. OAuth client
 
@@ -33,7 +33,7 @@ npx convex env set GOOGLE_OAUTH_STATE_SECRET "$(openssl rand -hex 32)"
 npx convex env set CALENDAR_TOKEN_KEY "$(openssl rand -base64 32)"
 ```
 
-`CALENDAR_TOKEN_KEY` encrypts the stored refresh tokens. Keep a copy somewhere safe: stored tokens carry no key id, so rotating or losing the key makes them unreadable and every caregiver has to reconnect Google Calendar (Sunny marks such connections with a reconnect message).
+`CALENDAR_TOKEN_KEY` encrypts the stored refresh tokens and also keys the phone verification codes. Keep a copy somewhere safe: stored tokens carry no key id, so rotating or losing the key makes them unreadable and every caregiver has to reconnect Google Calendar (Sunny marks such connections with a reconnect message).
 
 ## 5. Connect
 
@@ -42,4 +42,4 @@ cd sunny_backend
 npx tsx scripts/caregiver.ts google
 ```
 
-Open the printed link signed in as a test user, allow access, and a calendar named "Mom (Sunny)" appears in Google Calendar with every Sunny event, each with a popup reminder on the morning of the event. Later edits are pushed automatically (a few seconds apart at most; repeated edits merge). The app can list the connection with `googleCalendar:myConnections` and remove it with `googleCalendar:disconnect`; the Google calendar itself is left in place.
+Open the printed link once, within 5 minutes, in the browser where you sign in as a test user. The link sets a cookie that the callback checks, so a different browser or a second use shows "Link expired". Allow access, and a calendar named after the senior ("Mom (Sunny)" when her preferred name is Mom) appears in Google Calendar with every Sunny event. Each event has a popup reminder at the household's event notice time on the day of the event, or an hour before it when the event starts earlier than that. Sunny pushes later edits automatically (a few seconds apart at most; repeated edits merge). The app can list the connection with `googleCalendar:myConnections` and remove it with `googleCalendar:disconnect`; the Google calendar itself is left in place.

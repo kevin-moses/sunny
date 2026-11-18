@@ -1,12 +1,3 @@
-// scripts/devGuard.test.ts
-// Purpose: Tests for scripts/devGuard.ts: env files read with dotenv's own parse (export, quotes,
-// comments and the "NAME: value" colon form the CLI also accepts) and the deployment decision in
-// the Convex CLI's precedence: a shell variable beats .env.local, which beats .env; empty values
-// are unset; a deploy key (or its CONVEX_DEPLOYMENT_TOKEN alias) wins over CONVEX_DEPLOYMENT;
-// self-hosted targets and non-dev keys or deployments are refused.
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, test } from "vitest";
 import { deploymentProblem, readEnvFile } from "./devGuard";
 

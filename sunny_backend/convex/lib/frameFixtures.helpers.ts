@@ -1,51 +1,23 @@
-// lib/frameFixtures.helpers.ts
-// Purpose: Representative device states for the frame renderer's golden tests
-// (lib/frame.test.ts), built through the real buildDeviceState (lib/deviceState.ts) from a
-// household's day on Saturday 2026-11-07 in New York, so a change to the state's rules shows up
-// in the goldens too. Cases: a due medication, nothing due, a missed task ("Nothing to do right
-// now.", with the afternoon visit over and dimmed), everything done at night, an empty day, a
-// long label, more rows than fit, an event as Next up, an early task (not drawn as Now), an
-// early task with a visit before it (the visit stays Next up), an overdue task (the Talk
-// prompt), a snoozed task (its row tagged "Later"), a multi-step checklist, an overdue
-// multi-step checklist (the Talk prompt too), a dose in micrograms ("µg" drawn "mcg", fractions
-// and signs written out), and labels with nothing drawable (emoji, Chinese) that fall back to
-// the item's type, beside a name whose letter the font lacks ("Kōji" drawn "Koji"). The
-// builders (dayState, fixtureTask, fixtureEvent) are exported for tests that need another day.
-// Test helper only (the ".helpers" name keeps it out of the deployed bundle).
-//
-// Last modified: 2026-11-14
-
 import { buildDeviceState } from "./deviceState";
 import type { CueInput, DayEvent, DayTask, DeviceState, DeviceStateInput } from "./deviceState";
 import { DEFAULT_SCREEN } from "./frame";
+import { taskStep } from "./taskSteps";
 import { MINUTE_MS, zonedInstant } from "./time";
 
 const TZ = "America/New_York";
 const DATE = "2026-11-07";
 
-/**
- * purpose: The instant of a New York wall time on the fixture day.
- * @param hhmm: (string) Local "HH:MM".
- * @return: (number) Epoch ms.
- */
 export function at(hhmm: string): number {
   return zonedInstant(DATE, hhmm, TZ);
 }
 
-/**
- * purpose: A task entry.
- * @param id: (string) Instance id (any text in a fixture).
- * @param time: (string) Local "HH:MM".
- * @param label: (string) Display label.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Other fields.
- * @return: (DayTask) An upcoming routine unless overridden.
- */
 export function fixtureTask(
   id: string,
   time: string,
   label: string,
   overrides: Partial<Record<keyof DayTask, unknown>> = {},
 ): DayTask {
+  const items = (overrides.checklistItems as string[] | undefined) ?? [];
   return {
     instanceId: id,
     localDate: DATE,
@@ -54,6 +26,7 @@ export function fixtureTask(
     spokenPrompt: `Time for ${label}.`,
     pillDescription: null,
     checklistItems: [],
+    step: taskStep(items, 0),
     scheduledTime: time,
     state: "upcoming",
     carriedOver: false,
@@ -64,16 +37,6 @@ export function fixtureTask(
   } as DayTask;
 }
 
-/**
- * purpose: An event occurrence, with its start and end instants.
- * @param id: (string) Event id.
- * @param time: (string) Local "HH:MM".
- * @param label: (string) Label.
- * @param visitorName: (string | null) Who visits.
- * @param localDate: (string, optional) Date; default the fixture day.
- * @param minutes: (number | null, optional) Duration; default none (over an hour after start).
- * @return: (DayEvent) The occurrence.
- */
 export function fixtureEvent(
   id: string,
   time: string,
@@ -94,12 +57,6 @@ export function fixtureEvent(
   } as DayEvent;
 }
 
-/**
- * purpose: The cue input of a task (a window of 60 minutes, no policy steps), so snoozes reach
- *          the state's cues.
- * @param entry: (DayTask) The task.
- * @return: (CueInput) The input.
- */
 function cue(entry: DayTask): CueInput {
   const windowStart = at(entry.scheduledTime);
   return {
@@ -111,19 +68,12 @@ function cue(entry: DayTask): CueInput {
       windowEnd: windowStart + 60 * MINUTE_MS,
       createdAt: windowStart - 600 * MINUTE_MS,
       snoozedUntil: entry.snoozedUntil,
-      claimedBy: null,
       firedSteps: [],
     },
     steps: [],
   };
 }
 
-/**
- * purpose: The device state of a day at a time.
- * @param time: (string) Local "HH:MM" now.
- * @param day: (Partial<DeviceStateInput>) Tasks and events.
- * @return: (DeviceState) The state.
- */
 export function dayState(time: string, day: Partial<DeviceStateInput>): DeviceState {
   const tasks = day.tasks ?? [];
   return buildDeviceState(
@@ -139,16 +89,8 @@ export function dayState(time: string, day: Partial<DeviceStateInput>): DeviceSt
   );
 }
 
-/** Morning pills with a pill description. */
 const PILLS = { type: "medication", pillDescription: "2 small white pills" } as const;
 
-/**
- * purpose: The usual day: morning pills, a walk, lunch, a visit, evening pills.
- * @param states: (Record<string, string>) Task states by key (am, walk, lunch, pm); default
- *        upcoming.
- * @param am: (Partial<Record<keyof DayTask, unknown>>, optional) More fields of the morning pills.
- * @return: (Partial<DeviceStateInput>) The day.
- */
 function usualDay(
   states: Record<string, string>,
   am: Partial<Record<keyof DayTask, unknown>> = {},
@@ -174,10 +116,22 @@ function usualDay(
   };
 }
 
-/** The checklist of the multi-step cases. */
 const GOING_OUT = ["Put on your coat", "Take your keys", "Lock the door"];
 
-/** Every golden case: a name for the files and the state. */
+export function stepsState(index: number): DeviceState {
+  return dayState("10:05", {
+    tasks: [
+      fixtureTask("pills-am", "08:00", "Morning pills", { ...PILLS, state: "confirmed" }),
+      fixtureTask("out", "10:00", "Getting ready to go out", {
+        type: "checklist",
+        state: "due",
+        checklistItems: GOING_OUT,
+        step: taskStep(GOING_OUT, index),
+      }),
+    ],
+  });
+}
+
 export const FRAME_CASES: { name: string; state: DeviceState }[] = [
   { name: "due", state: dayState("08:10", usualDay({ am: "due" })) },
   {
@@ -278,19 +232,7 @@ export const FRAME_CASES: { name: string; state: DeviceState }[] = [
       ],
     }),
   },
-  {
-    name: "steps",
-    state: dayState("10:05", {
-      tasks: [
-        fixtureTask("pills-am", "08:00", "Morning pills", { ...PILLS, state: "confirmed" }),
-        fixtureTask("out", "10:00", "Getting ready to go out", {
-          type: "checklist",
-          state: "due",
-          checklistItems: GOING_OUT,
-        }),
-      ],
-    }),
-  },
+  { name: "steps", state: stepsState(0) },
   {
     name: "overdue-steps",
     state: dayState("10:40", {
@@ -328,5 +270,4 @@ export const FRAME_CASES: { name: string; state: DeviceState }[] = [
   },
 ];
 
-/** The screens the goldens are drawn for: the Waveshare panel and a small 1-bit panel. */
 export const FRAME_SCREENS = [DEFAULT_SCREEN, { width: 800, height: 480, greys: 2 }];

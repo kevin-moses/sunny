@@ -1,61 +1,23 @@
-// lib/frameIcons.ts
-// Purpose: The small pictures of the server-drawn display frames, drawn as filled paths in a
-// square box so they scale with the screen: one per device-state icon name (pills, calendar,
-// checklist, bell, clock; lib/deviceWording.ts DeviceIcon), plus the checkmark of finished rows
-// and progress boxes, the microphone of the Talk keycap and the walking figure of the going-out
-// strip. They stand in for the SF Symbols the iPad draws (sunny_app/src/display/DisplayParts.tsx)
-// with the same bold, simple weight; nothing here looks pressable. Shapes with an inside (the
-// calendar's frame, the clock's ring) are drawn ink first and then paper over, so every path is
-// filled in one winding direction.
-//
-// Last modified: 2026-11-14
-
 import type { DeviceIcon } from "./deviceWording";
 import { Path, addCircle, addPolyline, addRoundRect, addSegment } from "./frameRaster";
 import type { Canvas, Paint } from "./frameRaster";
 
-/** Every icon a frame draws. */
 export type FrameIcon = DeviceIcon | "checkmark" | "mic" | "walk";
 
-/** A box in pixels with a drawing scale: unit coordinates 0..1 map onto it. */
 interface Box {
   x: number;
   y: number;
   size: number;
 }
 
-/**
- * purpose: Unit coordinates (pairs in 0..1) to pixel coordinates in a box.
- * @param box: (Box) The box.
- * @param units: (number[]) x, y pairs.
- * @return: (number[]) Pixel pairs.
- */
 function toPixels(box: Box, units: number[]): number[] {
   return units.map((v, i) => (i % 2 === 0 ? box.x : box.y) + v * box.size);
 }
 
-/**
- * purpose: Fill a thick polyline given in unit coordinates.
- * @param canvas: (Canvas) The canvas.
- * @param box: (Box) The box.
- * @param units: (number[]) x, y pairs in 0..1.
- * @param width: (number) Line width as a fraction of the box.
- * @param paint: (Paint) The paint.
- * @return: (void)
- */
 function line(canvas: Canvas, box: Box, units: number[], width: number, paint: Paint): void {
   canvas.fillPath(addPolyline(new Path(), toPixels(box, units), width * box.size), paint);
 }
 
-/**
- * purpose: Fill a thick straight segment with square (butt) ends, given in unit coordinates.
- * @param canvas: (Canvas) The canvas.
- * @param box: (Box) The box.
- * @param units: ([number, number, number, number]) Start x, y and end x, y in 0..1.
- * @param width: (number) Width as a fraction of the box.
- * @param paint: (Paint) The paint.
- * @return: (void)
- */
 function bar(
   canvas: Canvas,
   box: Box,
@@ -67,29 +29,11 @@ function bar(
   canvas.fillPath(addSegment(new Path(), x0, y0, x1, y1, (width * box.size) / 2), paint);
 }
 
-/**
- * purpose: Fill a circle given in unit coordinates.
- * @param canvas: (Canvas) The canvas.
- * @param box: (Box) The box.
- * @param cx: (number) Center x in 0..1.
- * @param cy: (number) Center y in 0..1.
- * @param r: (number) Radius as a fraction of the box.
- * @param paint: (Paint) The paint.
- * @return: (void)
- */
 function circle(canvas: Canvas, box: Box, cx: number, cy: number, r: number, paint: Paint): void {
   const s = box.size;
   canvas.fillPath(addCircle(new Path(), box.x + cx * s, box.y + cy * s, r * s), paint);
 }
 
-/**
- * purpose: Fill a rounded rectangle given in unit coordinates.
- * @param canvas: (Canvas) The canvas.
- * @param box: (Box) The box.
- * @param rect: ([number, number, number, number, number]) x, y, width, height, radius in 0..1.
- * @param paint: (Paint) The paint.
- * @return: (void)
- */
 function roundRect(
   canvas: Canvas,
   box: Box,
@@ -104,17 +48,6 @@ function roundRect(
   );
 }
 
-/**
- * purpose: Draw an icon in a square box.
- * @param canvas: (Canvas) The canvas.
- * @param icon: (FrameIcon) Which icon.
- * @param x: (number) Box left in pixels.
- * @param y: (number) Box top in pixels.
- * @param size: (number) Box side in pixels.
- * @param paint: (Paint) The ink (the icon's own insides are paper, or `background`).
- * @param background: (Paint) What the icon sits on (default paper).
- * @return: (void)
- */
 export function drawIcon(
   canvas: Canvas,
   icon: FrameIcon,
@@ -130,7 +63,6 @@ export function drawIcon(
       line(canvas, box, [0.14, 0.53, 0.4, 0.78, 0.86, 0.22], 0.15, paint);
       return;
     case "pills":
-      // A capsule on the diagonal, its lower half filled.
       line(canvas, box, [0.26, 0.74, 0.74, 0.26], 0.46, paint);
       line(canvas, box, [0.26, 0.74, 0.74, 0.26], 0.28, background);
       line(canvas, box, [0.26, 0.74, 0.38, 0.62], 0.28, paint);
@@ -161,12 +93,6 @@ export function drawIcon(
     case "bell": {
       const s = box.size;
       const path = new Path();
-      /**
-       * purpose: A point of the bell in unit coordinates, in pixels.
-       * @param u: (number) x in 0..1.
-       * @param v: (number) y in 0..1.
-       * @return: ([number, number]) The pixel point.
-       */
       const p = (u: number, v: number): [number, number] => [box.x + u * s, box.y + v * s];
       path.moveTo(...p(0.5, 0.1));
       path.quadTo(...p(0.8, 0.1), ...p(0.8, 0.45));

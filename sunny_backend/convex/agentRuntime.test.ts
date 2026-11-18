@@ -1,21 +1,3 @@
-// agentRuntime.test.ts
-// Purpose: Tests for agentRuntime.ts. The workflow component is registered in convex-test and
-// lib/managedAgents (the network wrapper) and lib/agentTools (part A's tools) are replaced by
-// mocks, so no real API is called; the tool double inserts an audit row as its observable
-// effect. End to end through the real workflow: a request whose poll returns a tool call,
-// where a lagging event list shows the same call again, writes exactly one effect and one
-// result, then stores the reply and succeeds; a continued request posts to the earlier
-// session; the agent stopping or its session terminating fails the request with the reason;
-// a missing environment fails with a clear message; a paused household waits and then resumes;
-// a request older than 30 minutes fails; a cancel ends the run; a new session after an agent
-// config change carries the recent chat (and a first request or continuation does not). Plus the step functions
-// directly: executeToolCalls reuses a stored result, fails when the requester is no longer an
-// editor of the household, pollUntil's outcomes, the paused gate on
-// every acting step, and the onComplete handler. The day's digest is in the first message of
-// a fresh session and in the message posted to a continued one (the briefing heads both).
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -76,7 +58,6 @@ beforeEach(() => {
   mocks.getSessionStatus.mockResolvedValue("idle");
   mocks.sendToolResults.mockResolvedValue(undefined);
   mocks.sendUserMessage.mockResolvedValue(undefined);
-  // The tool double: one audit row per real execution, so repeats are countable.
   mocks.executeAgentTool.mockImplementation(async (ctx, toolCtx, call) => {
     await ctx.db.insert("auditLog", {
       householdId: toolCtx.householdId,
@@ -97,12 +78,6 @@ afterEach(() => {
   }
 });
 
-/**
- * purpose: Create a household and queue a request through the public API.
- * @param t: (TestConvex) Harness.
- * @param extra: ({ continueRequestId }) Optional continuation.
- * @return: (Promise<{ householdId, requestId }>) The ids.
- */
 async function startRequest(
   t: TestConvex,
   extra: { continueRequestId?: Id<"agentRequests"> } = {},
@@ -114,16 +89,8 @@ async function startRequest(
   return { householdId, requestId };
 }
 
-/**
- * purpose: Run scheduled functions (workflow steps and sleeps) in small clock steps until
- *          every request has finished. Small steps keep the fake clock near real elapsed
- *          time; running all timers would jump it past the 30 minute cap through the
- *          workpool's recurring bookkeeping.
- * @param t: (TestConvex) Harness.
- */
 async function drain(t: TestConvex): Promise<void> {
   for (let i = 0; i < 400; i++) {
-    // A poll step may sleep on the fake clock, so keep the clock moving while it finishes.
     let finished = false;
     void t.finishInProgressScheduledFunctions().then(() => {
       finished = true;
@@ -139,21 +106,10 @@ async function drain(t: TestConvex): Promise<void> {
   throw new Error("requests did not finish");
 }
 
-/**
- * purpose: Read a request row.
- * @param t: (TestConvex) Harness.
- * @param requestId: (Id<"agentRequests">) The request.
- * @return: The row.
- */
 async function getRequest(t: TestConvex, requestId: Id<"agentRequests">) {
   return await t.run(async (ctx) => await ctx.db.get(requestId));
 }
 
-/**
- * purpose: Count audit rows written by the tool double.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<number>) Number of real tool executions.
- */
 async function toolEffects(t: TestConvex): Promise<number> {
   return await t.run(async (ctx) => {
     const rows = await ctx.db.query("auditLog").collect();
@@ -190,10 +146,6 @@ const repliedOnly: SessionEvent[] = [
   { id: "i2", type: "session.status_idle", stop_reason: { type: "end_turn" } },
 ];
 
-/**
- * purpose: Make listSessionEvents return successive snapshots, repeating the last.
- * @param snapshots: (SessionEvent[][]) Event lists, one per call.
- */
 function scriptEvents(...snapshots: SessionEvent[][]): void {
   let call = 0;
   mocks.listSessionEvents.mockImplementation(async () => {
@@ -222,7 +174,6 @@ describe("workflow end to end", () => {
   });
 
   describe("carry-over of the earlier conversation", () => {
-    /** Send a continueLatest message as user_a and return the first message text sent. */
     const sendLatestAndRun = async (t: TestConvex, householdId: Id<"households">) => {
       scriptEvents(repliedOnly);
       await t.withIdentity({ subject: "user_a" }).mutation(api.agentRequests.request, {
@@ -392,8 +343,6 @@ describe("workflow end to end", () => {
 
   test("a tool call polled twice runs once, sends once and then succeeds", async () => {
     const t = makeBackend();
-    // Poll 1 sees the call; after we send the result the event list still lags (shows the
-    // call unanswered) once, then catches up with the result and the reply.
     scriptEvents(needsTools, needsTools, answered);
     const { requestId } = await startRequest(t);
     await drain(t);
@@ -465,7 +414,6 @@ describe("workflow end to end", () => {
       { id: "m1", type: "agent.message", content: [{ type: "text", text: "New answer" }] },
       { id: "i1", type: "session.status_idle", stop_reason: { type: "end_turn" } },
     ];
-    // 1: baseline read before posting; 2: the new message is not visible yet (lag); 3: it is.
     scriptEvents(oldTurn, oldTurn, newTurn);
     const householdId = await createHousehold(t);
     const earlier = await insertRequest(t, householdId, {
@@ -557,7 +505,6 @@ describe("workflow end to end", () => {
       .withIdentity({ subject: "user_a" })
       .mutation(api.agentRequests.request, { householdId, message: "hi" });
 
-    // Let the first steps and a few 60 second sleeps run while paused.
     await t.finishInProgressScheduledFunctions();
     for (let i = 0; i < 3; i++) {
       await vi.advanceTimersByTimeAsync(PAUSE_RECHECK_MS + 1);
@@ -604,11 +551,6 @@ describe("workflow end to end", () => {
 });
 
 describe("step functions", () => {
-  /**
-   * purpose: A running request with a session, for calling steps directly.
-   * @param t: (TestConvex) Harness.
-   * @return: The ids.
-   */
   async function runningRequest(t: TestConvex) {
     const householdId = await createHousehold(t);
     const requestId = await insertRequest(t, householdId, {
@@ -817,11 +759,6 @@ describe("step functions", () => {
 });
 
 describe("hardening", () => {
-  /**
-   * purpose: A running request with a session.
-   * @param t: (TestConvex) Harness.
-   * @return: The ids.
-   */
   async function running(t: TestConvex) {
     const householdId = await createHousehold(t);
     const requestId = await insertRequest(t, householdId, {

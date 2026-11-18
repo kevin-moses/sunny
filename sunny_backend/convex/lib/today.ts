@@ -1,57 +1,18 @@
-// lib/today.ts
-// Purpose: The senior's schedule for today, ported from private.today_json. Today is the
-// household-local date of the given instant, plus any instance from the previous local date
-// whose window crosses midnight and is still due or escalated (a 23:30 task with a 120 minute
-// window is still being prompted at 00:10, so it must still be listed and confirmable; an
-// anytime instance stays open through the whole next day, so yesterday's undone one is
-// listed as carried over and the day after it is not).
-// Entries are ordered by window start with anytime instances (lib/anytime.ts) after the timed
-// ones of the same day, yesterday's first, and carry the task fields every
-// surface (display, widget, agent context) renders. Absent optional
-// values are null, not missing keys, as in the other view-shaped results (lib/occurrences).
-//
-// Each entry also says who claimed it ("I'm on it"): claimedBy is the claimer's user id and
-// claimedByName their household display name (null when unclaimed or no longer a member).
-// confirmedBy is the confirming user id; confirmedByName is the household display name of the
-// caregiver who marked it done (state "resolved"), null for a device confirmation or when the
-// member is gone. confirmedLocalTime is the household-local "HH:MM" of confirmedAt. localDate
-// is the instance's own local date and carriedOver is true for yesterday's still-open
-// instances, and resolutionNote is the note the caregiver left. confirmReceivedAt is set when a
-// confirm pressed offline reached the server late (confirmReceivedLocalTime and
-// confirmReceivedDaysLater say when, in household time). confirmable says whether a senior
-// device may confirm the instance now (lib/confirmRule.ts, the confirm mutation's own rule), so
-// a surface can offer Done early without copying the 60 minute constant. reopenable says
-// whether an editor caregiver may reopen it (confirmed or resolved, either marked done
-// today or one of today's tasks, and its task still runs that way: active, and still timed at
-// that time or anytime to match; the role is the mutation's check), so the app can show the
-// control without copying the rule. confirmPressIds lists the phone queue's press ids of the
-// confirmation (the instance's confirmPressIds, [] when none), so the phone can tell whether a
-// confirm is the one its own Undo takes back. seniorPrompts counts the senior prompts the
-// escalation policy has sent for the instance (fired prompt_senior steps that were notified), so the
-// home display can repeat its due cue on each reprompt; snoozed is true while a snooze
-// ("not yet") holds the senior prompts back at `now`, the scheduler's own test, so the
-// display holds its cue until the snooze ends; snoozedUntil is when the latest snooze ends
-// (kept after it passed), so the display owes one cue per snooze end. Both are the shared
-// rules in lib/escalation.ts (seniorPromptCount, isSnoozed), which the scheduler and the device
-// state use too.
-//
-// Last modified: 2026-11-14
-
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { memberNames } from "./access";
+import { type Actor, memberNames } from "./access";
 import { compareDayOrder } from "./anytime";
 import { caregiverCanReopen, seniorCanConfirm, taskStillRuns } from "./confirmRule";
+import { isDueEntry } from "./dueTask";
 import { isSnoozed, seniorPromptCount } from "./escalation";
+import { taskStep, visibleStepPressIds } from "./taskSteps";
+import type { TaskStep } from "./taskSteps";
 import { addDays, daysBetween, localDate, localTime } from "./time";
 import type { ConfirmVia, InstanceState, TaskType } from "./validators";
 
-/** One of today's instances joined with its task. */
 export interface TodayEntry {
   instanceId: Id<"taskInstances">;
-  /** The instance's household-local date, "YYYY-MM-DD" (yesterday's for a carry-over). */
   localDate: string;
-  /** True for yesterday's instance that is still due or escalated. */
   carriedOver: boolean;
   taskId: Id<"tasks">;
   type: TaskType;
@@ -59,57 +20,38 @@ export interface TodayEntry {
   spokenPrompt: string;
   pillDescription: string | null;
   checklistItems: string[];
-  /** Household-local "HH:MM", or the ANYTIME sentinel ("anytime") for a task without a time. */
+  step: TaskStep | null;
+  highPriority: boolean;
   scheduledTime: string;
   state: InstanceState;
   confirmedAt: number | null;
-  /** Household-local "HH:MM" of confirmedAt; null when not confirmed. */
   confirmedLocalTime: string | null;
   confirmedVia: ConfirmVia | null;
-  /** When the server received a late-synced confirm (pressed offline); null for a live one. */
   confirmReceivedAt: number | null;
-  /** Household-local "HH:MM" of confirmReceivedAt; null when it is null. */
   confirmReceivedLocalTime: string | null;
-  /** Local days from confirmedAt to confirmReceivedAt (0 same day); null when absent. */
   confirmReceivedDaysLater: number | null;
   claimedBy: string | null;
   claimedByName: string | null;
-  /**
-   * The confirming user id: the caregiver's for a resolution, the device's account id for a
-   * device confirmation; null when unconfirmed.
-   */
   confirmedBy: string | null;
-  /** The caregiver's display name; null unless state is "resolved", or when they left. */
   confirmedByName: string | null;
   resolutionNote: string | null;
-  /** A senior device may confirm it now (open and not more than 60 minutes early). */
   confirmable: boolean;
-  /**
-   * An editor caregiver may reopen it now: confirmed or resolved, marked done today or due
-   * today, and its task still runs (not deactivated, not switched to or from anytime, time kept).
-   */
   reopenable: boolean;
-  /**
-   * The phone queue's ids of the presses that make up the confirmation (the confirming press
-   * first, then same-device presses that landed on it as no-ops); [] when there are none. The
-   * phone shows a task open after its own Undo only when the undo's press id is here.
-   */
   confirmPressIds: string[];
-  /** How many senior prompts (notified prompt_senior steps) have been sent; 0 before any. */
+  stepPressIds: string[];
   seniorPrompts: number;
-  /** True while the instance is snoozed (now is before its snoozedUntil). */
   snoozed: boolean;
-  /** When the latest snooze ends or ended (epoch ms); null when never snoozed. */
   snoozedUntil: number | null;
 }
 
-/**
- * purpose: How many local days after the confirmation a late-synced confirm reached the server.
- * @param instance: (object) The instance's confirmedAt and confirmReceivedAt.
- * @param timezone: (string) The household's IANA zone.
- * @return: (number | null) 0 for the same local day, 1 for the next, and so on; null when the
- *          instance has no confirmReceivedAt (or no confirmedAt).
- */
+export function shownOn(
+  instance: Pick<Doc<"taskInstances">, "localDate" | "state">,
+  date: string,
+): boolean {
+  if (instance.localDate === date) return true;
+  return instance.localDate === addDays(date, -1) && isDueEntry(instance);
+}
+
 export function receivedDaysLater(
   instance: { confirmedAt?: number; confirmReceivedAt?: number },
   timezone: string,
@@ -121,19 +63,23 @@ export function receivedDaysLater(
   );
 }
 
-/**
- * purpose: Today's instances for a household in schedule order, preceded by yesterday's
- *          instances that are still due or escalated.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param now: (number) Epoch ms; its household-local date defines "today".
- * @return: (TodayEntry[]) Entries ordered by window start, anytime ones last within a day
- *          (yesterday's carry-over first); empty if the household is gone.
- */
+function seniorReader(reader: Actor | null): string | null {
+  return reader?.kind === "senior_device" ? reader.userId : null;
+}
+
+function visibleConfirmPressIds(
+  instance: Pick<Doc<"taskInstances">, "confirmedBy" | "confirmPressIds">,
+  reader: Actor | null,
+): string[] {
+  const userId = seniorReader(reader);
+  return userId !== null && instance.confirmedBy === userId ? (instance.confirmPressIds ?? []) : [];
+}
+
 export async function todayInstances(
   ctx: QueryCtx,
   householdId: Id<"households">,
   now: number,
+  reader: Actor | null,
 ): Promise<TodayEntry[]> {
   const household = await ctx.db.get(householdId);
   if (!household) return [];
@@ -146,7 +92,7 @@ export async function todayInstances(
       )
       .collect()
   )
-    .filter((i) => i.state === "due" || i.state === "escalated")
+    .filter((i) => shownOn(i, date))
     .sort(compareDayOrder);
   const todays = (
     await ctx.db
@@ -156,11 +102,6 @@ export async function todayInstances(
   ).sort(compareDayOrder);
   const carriedIds = new Set(carryOver.map((i) => i._id));
   const names = await memberNames(ctx, householdId);
-  /**
-   * purpose: A member's display name.
-   * @param userId: (string | null) Clerk user id, or null.
-   * @return: (string | null) The name; null for null, or when no longer a member.
-   */
   const nameOf = (userId: string | null): string | null =>
     userId === null ? null : (names.get(userId) ?? null);
   const entries: TodayEntry[] = [];
@@ -180,6 +121,8 @@ export async function todayInstances(
       spokenPrompt: task.spokenPrompt,
       pillDescription: task.pillDescription ?? null,
       checklistItems: task.checklistItems,
+      step: taskStep(task.checklistItems, instance.currentStep),
+      highPriority: task.highPriority,
       scheduledTime: instance.scheduledTime,
       state: instance.state,
       confirmedAt,
@@ -199,7 +142,8 @@ export async function todayInstances(
       confirmable: seniorCanConfirm(instance, now),
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
-      confirmPressIds: instance.confirmPressIds ?? [],
+      confirmPressIds: visibleConfirmPressIds(instance, reader),
+      stepPressIds: visibleStepPressIds(instance, seniorReader(reader)),
       seniorPrompts: seniorPromptCount(instance.firedSteps),
       snoozed: isSnoozed(instance.snoozedUntil, now),
       snoozedUntil: instance.snoozedUntil ?? null,

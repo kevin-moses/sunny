@@ -1,11 +1,3 @@
-// lib/occurrences.test.ts
-// Purpose: Unit tests for lib/occurrences.ts with plain event documents (no database):
-// one-off and weekly expansion, bounds, cancelled events, DST stability across the
-// 2026-11-01 fall-back and 2027-03-14 spring-forward, ordering, the JSON shapes, the next
-// occurrence, and the not-in-the-past rules with their messages.
-//
-// Last modified: 2026-10-28
-
 import { describe, expect, test } from "vitest";
 import type { Doc, Id } from "../_generated/dataModel";
 import { isAppError } from "./errors";
@@ -19,11 +11,6 @@ import {
 
 const NY = "America/New_York";
 
-/**
- * purpose: A plain event document with sensible defaults.
- * @param overrides: (Partial<Doc<"events">>) Fields to set.
- * @return: (Doc<"events">) The event.
- */
 function makeEvent(overrides: Partial<Doc<"events">> = {}): Doc<"events"> {
   return {
     _id: "evt1" as Id<"events">,
@@ -37,20 +24,10 @@ function makeEvent(overrides: Partial<Doc<"events">> = {}): Doc<"events"> {
   };
 }
 
-/**
- * purpose: Epoch ms of a UTC instant.
- * @param iso: (string) ISO instant.
- * @return: (number) Epoch ms.
- */
 function at(iso: string): number {
   return Date.parse(iso);
 }
 
-/**
- * purpose: The message of the application error thrown by a function.
- * @param fn: (() => void) Function expected to throw an invalid error.
- * @return: (string) The error message.
- */
 function invalidMessage(fn: () => void): string {
   try {
     fn();
@@ -90,7 +67,6 @@ describe("expandOccurrences", () => {
   });
 
   test("a weekly repeat occurs on its weekdays from startsOn until repeatUntil", () => {
-    // 2027-03-08 is a Monday; Tuesday and Thursday repeat through 2027-03-25.
     const event = makeEvent({
       startsOn: "2027-03-08",
       startTime: "10:00",
@@ -269,7 +245,6 @@ describe("assertEventNotPast", () => {
   });
 
   test("rejects a weekly repeat whose weekdays never occur before repeatUntil", () => {
-    // 2027-03-22 is a Monday; only Sunday is requested and the repeat ends Tuesday.
     const schedule = {
       startsOn: "2027-03-22",
       startTime: "09:00",

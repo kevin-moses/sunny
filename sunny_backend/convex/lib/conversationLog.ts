@@ -1,32 +1,14 @@
-// lib/conversationLog.ts
-// Purpose: The voice conversation record the agent keeps (agent.ts startConversation, logTurn,
-// finishConversation, logQuestions), and the check that a conversation the agent names belongs
-// to the household it acts for. Rules:
-// - A conversation's device and prompting task instance must belong to its household.
-// - A transcript turn longer than MAX_TURN_CONTENT_LENGTH is cut, not rejected.
-// - Finishing sets endedAt, and the summary only when a non-blank one is given (the agent
-//   finishes once before its post-call model call and again with the summary).
-// - Questions (memory.py extracts them after the call): at most 50 per conversation, text cut
-//   to its caps, topics lower-cased so repeats share one, blank ones skipped, askedAt within
-//   the conversation (never before its start, never after its end); once any question of a conversation is logged, a later call
-//   inserts nothing (idempotent per conversation).
-//
-// Last modified: 2026-11-09
-
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { appError } from "./errors";
 import type { QuestionOutcome } from "./validators";
 
-/** Longest transcript turn stored; longer content is truncated, not rejected. */
 export const MAX_TURN_CONTENT_LENGTH = 20_000;
-/** Caps for one logQuestions call. */
 const MAX_QUESTIONS_PER_CONVERSATION = 50;
 const MAX_QUESTION_LENGTH = 500;
 const MAX_TOPIC_LENGTH = 80;
 const MAX_TOOLS_PER_QUESTION = 20;
 
-/** One question as memory.py sends it. */
 interface AskedQuestion {
   question: string;
   topic: string;
@@ -35,15 +17,6 @@ interface AskedQuestion {
   askedAt?: number | null;
 }
 
-/**
- * purpose: Check that a row the agent names exists and belongs to the household.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param id: (Id<"conversations" | "devices" | "taskInstances">) The row.
- * @param label: (string) What it is, for the error message ("Conversation").
- * @return: (Promise<void>)
- * @raises not_found for a missing row or one of another household.
- */
 async function requireInHousehold(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -54,14 +27,6 @@ async function requireInHousehold(
   if (!row || row.householdId !== householdId) throw appError("not_found", `${label} not found`);
 }
 
-/**
- * purpose: Check that a conversation the agent names belongs to the household.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param conversationId: (Id<"conversations"> | null | undefined) The conversation, if any.
- * @return: (Promise<Id<"conversations"> | undefined>) The id, or undefined when none given.
- * @raises not_found for a missing conversation or one of another household.
- */
 export async function householdConversation(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -72,13 +37,6 @@ export async function householdConversation(
   return conversationId;
 }
 
-/**
- * purpose: Load a conversation the agent names.
- * @param ctx: (QueryCtx) Context.
- * @param conversationId: (Id<"conversations">) The conversation.
- * @return: (Promise<Doc<"conversations">>) The row.
- * @raises not_found when it does not exist.
- */
 async function loadConversation(
   ctx: QueryCtx,
   conversationId: Id<"conversations">,
@@ -88,13 +46,6 @@ async function loadConversation(
   return conversation;
 }
 
-/**
- * purpose: Open a conversation row when a voice session starts.
- * @param ctx: (MutationCtx) Context.
- * @param args: ({householdId, deviceId, trigger, taskInstanceId, now}) The session.
- * @return: (Promise<Id<"conversations">>) The new conversation.
- * @raises not_found for a device or instance that is missing or of another household.
- */
 export async function startConversationCore(
   ctx: MutationCtx,
   args: {
@@ -118,13 +69,6 @@ export async function startConversationCore(
   });
 }
 
-/**
- * purpose: Append one transcript turn.
- * @param ctx: (MutationCtx) Context.
- * @param args: ({conversationId, role, content}) The turn.
- * @return: (Promise<void>) Resolves when stored.
- * @raises not_found when the conversation does not exist.
- */
 export async function logTurnCore(
   ctx: MutationCtx,
   args: { conversationId: Id<"conversations">; role: "user" | "assistant"; content: string },
@@ -137,13 +81,6 @@ export async function logTurnCore(
   });
 }
 
-/**
- * purpose: Set a conversation's end time, and its summary when a non-blank one is given.
- * @param ctx: (MutationCtx) Context.
- * @param args: ({conversationId, summary, now}) The conversation, summary and clock.
- * @return: (Promise<void>) Resolves when patched.
- * @raises not_found when the conversation does not exist.
- */
 export async function finishConversationCore(
   ctx: MutationCtx,
   args: { conversationId: Id<"conversations">; summary?: string | null; now: number },
@@ -156,12 +93,6 @@ export async function finishConversationCore(
   });
 }
 
-/**
- * purpose: When a question was asked, kept within the conversation.
- * @param conversation: (Doc<"conversations">) The conversation.
- * @param askedAt: (number | null | undefined) The extractor's time, if any.
- * @return: (number) Epoch ms from startedAt to endedAt (when ended); startedAt when unknown.
- */
 function askedWithin(
   conversation: Doc<"conversations">,
   askedAt: number | null | undefined,
@@ -170,14 +101,6 @@ function askedWithin(
   return Math.min(Math.max(askedAt ?? conversation.startedAt, conversation.startedAt), latest);
 }
 
-/**
- * purpose: Store the questions of a finished conversation (see the header for the rules).
- * @param ctx: (MutationCtx) Context.
- * @param conversationId: (Id<"conversations">) The conversation.
- * @param questions: (AskedQuestion[]) At most 50.
- * @return: (Promise<number>) Rows inserted (0 when already logged).
- * @raises not_found when the conversation does not exist; invalid for more than 50 questions.
- */
 export async function logQuestionsCore(
   ctx: MutationCtx,
   conversationId: Id<"conversations">,

@@ -1,97 +1,35 @@
-// lib/agentTools.ts
-// Purpose: The household agent's custom tools: their definitions (sent with every new Managed
-// Agents session as overrides by lib/managedAgents.ts createSession, so a deploy is enough after
-// changing them; scripts/setup_managed_agent.ts only keeps the console's copy in sync) and their
-// execution inside a Convex mutation. The knowledge and settings tools (get_knowledge,
-// add_knowledge, update_knowledge, remove_knowledge, get_settings, update_settings,
-// set_digest_delivery) are defined in lib/agentSetupTools.ts and joined into the list and the
-// dispatch table here. The shared input readers and ToolContext are in lib/toolInput.ts.
-// Calendar tools (get_calendar, add_event, update_event, cancel_event) are thin wrappers over the
-// calendar cores (addEventCore, updateEventCore, cancelEventCore, listOccurrencesCore); task tools
-// (get_tasks, add_task, update_task, stop_task) wrap the task cores in tasks.ts
-// (listTasksCore, createTaskCore, updateTaskCore). These are the cores the caregiver app also
-// uses, so every write goes through the same validation, audit and resync rules.
-//
-// Context and provenance: executeAgentTool takes a ToolContext { householdId, actor, now }
-// built by the runtime from the request row, never from the model's input. The actor is an
-// agent actor { kind: "agent", onBehalfOf: <requesting caregiver>, requestId }, so a task or
-// event the agent adds records createdBy = the requester (a task is createdByKind
-// "caregiver", an event createdVia "agent") and the audit row records the requester as its
-// user id and the request id in detail. The cores refuse events and tasks of any other
-// household. Tools are a Record<ToolName, handler> table; an unknown tool is a missing key.
-//
-// Task rules the agent has beyond the app: times are optional and a non-medication task with
-// no times is an anytime task (done anytime that day, never prompted; lib/anytime.ts), while a
-// medication must have a time (the core rejects it otherwise, telling the model to ask the
-// caregiver; as-needed medications, which have no times and limits, stay app-only, so their
-// fields are not in the tool schema). update_task with times [] on a non-medication task makes
-// it anytime. add_task refuses a duplicate (an active task of the household with the same
-// type, the same display label ignoring case and spacing, a shared time and a schedule that
-// can fall on the same day: weekday sets and starts/ends ranges overlap, or a one-off date is
-// covered), naming the existing task_id; update_task runs the same guard, excluding the task itself, when the
-// updated task is active and the change touches type, label, times, schedule or active.
-// update_task refuses an as-needed medication (no times and an as-needed limit) with "As-needed
-// medications are managed in the app."; stop_task may still stop one, because stopping is safe
-// and only removes prompts. The agent can stop a task (active false, history kept) but never
-// hard delete one.
-//
-// Bad input and application errors become tool errors the model can read and fix; anything
-// else is rethrown. A result over MAX_TOOL_RESULT_CHARS becomes a tool error asking for a
-// narrower request.
-//
-// get_calendar result: a JSON array of occurrences, earliest first, each
-// { event_id, title, label, starts_on, start_time, duration_minutes, place, visitor_name,
-//   repeat_weekdays (mon..sun names or null), repeat_until, created_via, cancelled,
-//   local_date, starts_at, ends_at }.
-// get_tasks result: a JSON array of tasks in creation order, each { task_id, type, title,
-//   display_label, spoken_prompt, times (HH:MM; empty for an anytime task), anytime (true for a
-//   task with no time), repeat_weekdays (mon..sun names or null =
-//   every day), once_on, starts_on, ends_on, window_minutes, pill_description,
-//   checklist_items, active }; stopped tasks only with include_stopped; optionally only one
-//   type. add_task, update_task and stop_task return the task in that shape.
-//
-// Wording card: a successful add_task or update_task also reports its task id
-// (ToolOutcome.taskId), which the runtime appends to the request's changedTaskIds so the
-// caregiver's chat can show the task's current label and spoken sentence under Sunny's reply
-// (agentRequests.transcript).
-//
-// Last modified: 2026-11-14
-
 import type Anthropic from "@anthropic-ai/sdk";
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { addEventCore, cancelEventCore, listOccurrencesCore, updateEventCore } from "../calendar";
 import type { AddEventArgs, EventChanges } from "../calendar";
-import { createTaskCore, isAsNeededTask, listTasksCore, updateTaskCore } from "../tasks";
+import { createTaskCore, listTasksCore, updateTaskCore } from "../tasks";
 import type { CreateTaskArgs, TaskChanges } from "../tasks";
 import { SETUP_TOOL_HANDLERS, SETUP_TOOLS } from "./agentSetupTools";
 import type { SetupToolName } from "./agentSetupTools";
 import { isAnytimeTask } from "./anytime";
+import { ALERT_MINUTES, alertsCaregivers } from "./escalation";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
+import { isAsNeededTask } from "./taskDraft";
 import { booleanField, changesOf, idField, stringField } from "./toolInput";
 import type { ToolContext, ToolHandler } from "./toolInput";
 import { isoWeekday, WEEKDAY_CODES, weekdayCodes } from "./time";
 import { taskType } from "./validators";
 import type { TaskType } from "./validators";
 
-/** Longest tool result sent to the model; larger results become a tool error, never truncated JSON. */
 export const MAX_TOOL_RESULT_CHARS = 50_000;
 
-/** Why update_task refuses an as-needed medication (stop_task may still stop one). */
 const AS_NEEDED_REFUSAL = "As-needed medications are managed in the app.";
 
-/** Task types, as the model writes them. */
 const TASK_TYPES: readonly TaskType[] = taskType.members.map((m) => m.value);
 
-/** One tool call: its name and the model's input. */
 export interface ToolCall {
   name: string;
   input: Record<string, unknown>;
 }
 
-/** JSON-schema properties shared by add_event and the `changes` of update_event. */
 const EVENT_FIELDS = {
   title: {
     type: "string",
@@ -125,7 +63,6 @@ const EVENT_FIELDS = {
   },
 };
 
-/** JSON-schema properties of add_task and (with active) of the `changes` of update_task. */
 const TASK_FIELDS = {
   type: {
     type: "string",
@@ -175,26 +112,27 @@ const TASK_FIELDS = {
   checklist_items: {
     type: "array",
     items: { type: "string" },
-    description: "Optional checklist entries, in order. Replaces the whole list on update.",
+    description:
+      "Optional steps, in order. With two or more, the senior sees one step at a time: Done moves to the next step, and the task is done only after the last one. Replaces the whole list on update.",
+  },
+  high_priority: {
+    type: "boolean",
+    description: `true: every caregiver is alerted when the senior has not confirmed it ${ALERT_MINUTES} minutes after its time. Only when the caregiver asks; default false. Medications always alert; anytime tasks never do.`,
   },
 };
 
-/** The `changes` properties of update_task: the add_task fields plus active. */
 const UPDATE_TASK_FIELDS = {
   ...TASK_FIELDS,
   active: { type: "boolean", description: "false stops the task, true resumes a stopped one." },
 };
 
-/** Keys add_task accepts, and keys update_task's `changes` accepts. */
 const ADD_TASK_KEYS: readonly string[] = Object.keys(TASK_FIELDS);
 const UPDATE_TASK_KEYS: readonly string[] = Object.keys(UPDATE_TASK_FIELDS);
 
-/** The task_id property shared by the tools that act on one task. */
 const TASK_ID_PROPERTY = {
   task_id: { type: "string", description: "The task_id from the briefing or get_tasks." },
 };
 
-/** Custom tool definitions for the Managed Agents agent config. */
 export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["tools"]> = [
   {
     type: "custom",
@@ -310,13 +248,6 @@ export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
   ...SETUP_TOOLS,
 ];
 
-/**
- * purpose: Read a list-of-strings field of tool input.
- * @param value: (unknown) The field's value.
- * @param key: (string) Field name, for the error message.
- * @return: (string[]) The strings.
- * @raises invalid when it is not an array of strings.
- */
 function stringListField(value: unknown, key: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw appError("invalid", `${key} must be a list of strings`);
@@ -324,14 +255,6 @@ function stringListField(value: unknown, key: string): string[] {
   return value as string[];
 }
 
-/**
- * purpose: Read a number field of tool input; null is allowed when the field is clearable.
- * @param value: (unknown) The field's value.
- * @param key: (string) Field name, for the error message.
- * @param integer: (boolean) Whether it must be a whole number.
- * @return: (number | null) The number, or null.
- * @raises invalid for anything else.
- */
 function numberField(value: unknown, key: string, integer: boolean): number | null {
   if (value === null) return null;
   if (
@@ -344,13 +267,6 @@ function numberField(value: unknown, key: string, integer: boolean): number | nu
   return value;
 }
 
-/**
- * purpose: Read a repeat_weekdays field of tool input (events and tasks).
- * @param value: (unknown) A list of mon..sun codes, an empty list or null.
- * @return: (number[] | null) ISO weekdays (1 = Monday .. 7 = Sunday); null for null or an
- *          empty list (no repeat for an event, every day for a task).
- * @raises invalid when it is not a list of mon..sun.
- */
 function weekdaysField(value: unknown): number[] | null {
   if (value === null) return null;
   if (!Array.isArray(value) || value.some((d) => !WEEKDAY_CODES.includes(String(d)))) {
@@ -359,12 +275,6 @@ function weekdaysField(value: unknown): number[] | null {
   return value.length ? value.map((d) => WEEKDAY_CODES.indexOf(String(d)) + 1) : null;
 }
 
-/**
- * purpose: Read a task type from tool input.
- * @param value: (unknown) The field's value.
- * @return: (TaskType) The type.
- * @raises invalid when it is missing or not one of the task types.
- */
 function taskTypeField(value: unknown): TaskType {
   const type = stringField(value, "type");
   if (!TASK_TYPES.includes(type as TaskType)) {
@@ -373,31 +283,17 @@ function taskTypeField(value: unknown): TaskType {
   return type as TaskType;
 }
 
-/**
- * purpose: Drop the keys whose value is null or undefined (null means "absent" when adding).
- * @param fields: (T) Mapped fields.
- * @return: A copy without null and undefined values.
- */
 function withoutNulls<T extends object>(fields: T): { [K in keyof T]?: Exclude<T[K], null> } {
   return Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== null && value !== undefined),
   ) as { [K in keyof T]?: Exclude<T[K], null> };
 }
 
-/** Where an id in tool input comes from: its input key and the tool that lists it. */
 const ID_SOURCES = {
   events: { key: "event_id", tool: "get_calendar" },
   tasks: { key: "task_id", tool: "get_tasks" },
 } as const;
 
-/**
- * purpose: Read and validate an event_id or task_id from tool input as an id of that table.
- * @param ctx: (MutationCtx) Context (to normalize the id).
- * @param table: ("events" | "tasks") Which table's id to read.
- * @param input: (Record<string, unknown>) Tool input.
- * @return: (Id<T>) The id.
- * @raises invalid when missing or not an id of that table.
- */
 function idOf<T extends keyof typeof ID_SOURCES>(
   ctx: MutationCtx,
   table: T,
@@ -407,15 +303,6 @@ function idOf<T extends keyof typeof ID_SOURCES>(
   return idField(ctx, table, input[key], key, `the briefing or ${tool}`);
 }
 
-/**
- * purpose: Convert tool-style event fields (snake_case, weekday names) to the calendar
- *          core's camelCase fields (ISO weekday numbers). A null clears a clearable field;
- *          an empty or null repeat_weekdays becomes null (one-off). Values are only typed
- *          here; dates, times, lengths and ranges are validated by the core.
- * @param fields: (Record<string, unknown>) title, date, start_time, repeat_weekdays, ...
- * @return: (EventChanges) onDate, startTime, repeatDays (1 = Monday .. 7 = Sunday), ...
- * @raises invalid for an unknown field or a value of the wrong type.
- */
 export function toEventChanges(fields: Record<string, unknown>): EventChanges {
   const out: EventChanges = {};
   for (const [key, value] of Object.entries(fields)) {
@@ -453,13 +340,6 @@ export function toEventChanges(fields: Record<string, unknown>): EventChanges {
   return out;
 }
 
-/**
- * purpose: Build the arguments of a new event from add_event input: the mapped fields with
- *          nulls treated as absent, and title, date and start time required.
- * @param input: (Record<string, unknown>) add_event input.
- * @return: (AddEventArgs) Arguments for addEventCore.
- * @raises invalid when a required field is missing or a field is unknown.
- */
 function toAddEventArgs(input: Record<string, unknown>): AddEventArgs {
   const mapped = toEventChanges(input);
   const { title, onDate, startTime } = mapped;
@@ -469,12 +349,6 @@ function toAddEventArgs(input: Record<string, unknown>): AddEventArgs {
   return { ...withoutNulls(mapped), title, onDate, startTime };
 }
 
-/**
- * purpose: Readers for each task field a tool may carry, keyed by the tool-style (snake_case)
- *          name. Each types its value and stores it, camelCased, on the changes. This table
- *          and the key lists (ADD_TASK_KEYS, UPDATE_TASK_KEYS) are the only places a field is
- *          known; a key with no reader is unknown.
- */
 const TASK_FIELD_READERS: Record<string, (out: TaskChanges, value: unknown, key: string) => void> =
   {
     type: (out, value) => {
@@ -518,20 +392,11 @@ const TASK_FIELD_READERS: Record<string, (out: TaskChanges, value: unknown, key:
     active: (out, value, key) => {
       out.active = booleanField(value, key);
     },
+    high_priority: (out, value, key) => {
+      out.highPriority = booleanField(value, key);
+    },
   };
 
-/**
- * purpose: Convert tool-style task fields (snake_case, weekday names) to the task core's
- *          camelCase changes (ISO weekday numbers). A null clears a clearable field; null or
- *          an empty repeat_weekdays list becomes null (every day); a null spoken_prompt
- *          becomes blank (restores the default). Values are only typed here; times, dates and
- *          ranges are validated by the core.
- * @param fields: (Record<string, unknown>) title, times, repeat_weekdays, ...
- * @param allowed: (readonly string[]) Keys this call may carry; default is everything
- *        update_task accepts (add_task passes the shorter list, which has no active).
- * @return: (TaskChanges) type, displayLabel, daysOfWeek (1 = Monday .. 7 = Sunday), ...
- * @raises invalid for an unknown or not allowed field or a value of the wrong type.
- */
 export function toTaskChanges(
   fields: Record<string, unknown>,
   allowed: readonly string[] = UPDATE_TASK_KEYS,
@@ -545,14 +410,6 @@ export function toTaskChanges(
   return out;
 }
 
-/**
- * purpose: Build the arguments of a new task from add_task input: the mapped fields with
- *          nulls treated as absent, and type, title and display_label required. Times are
- *          optional (no times = anytime); that a medication has one is checked by the core.
- * @param input: (Record<string, unknown>) add_task input.
- * @return: (CreateTaskArgs) Arguments for createTaskCore.
- * @raises invalid when a required field is missing or a field is unknown (including active).
- */
 function toAddTaskArgs(input: Record<string, unknown>): CreateTaskArgs {
   const mapped = toTaskChanges(input, ADD_TASK_KEYS);
   const { type, title, displayLabel } = mapped;
@@ -562,28 +419,15 @@ function toAddTaskArgs(input: Record<string, unknown>): CreateTaskArgs {
   return { ...withoutNulls(mapped), type, title, displayLabel };
 }
 
-/**
- * purpose: A task label compared loosely: trimmed, spacing collapsed, lower case.
- * @param label: (string) A display label.
- * @return: (string) The normalized label.
- */
 function normalizeLabel(label: string): string {
   return label.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-/** The fields of a task that decide whether it duplicates another. */
 type DuplicateKey = Pick<
   Doc<"tasks">,
   "type" | "displayLabel" | "times" | "daysOfWeek" | "onceOn" | "startsOn" | "endsOn"
 >;
 
-/**
- * purpose: Whether a task's schedule puts an occurrence on a local date: inside its starts and
- *          ends dates and, for a one-off, on that date, else on one of its weekdays.
- * @param task: (DuplicateKey) The task's schedule fields.
- * @param date: (string) Local "YYYY-MM-DD".
- * @return: (boolean) True when the task occurs on the date.
- */
 function occursOnDate(task: DuplicateKey, date: string): boolean {
   if (task.startsOn !== undefined && date < task.startsOn) return false;
   if (task.endsOn !== undefined && date > task.endsOn) return false;
@@ -591,14 +435,6 @@ function occursOnDate(task: DuplicateKey, date: string): boolean {
   return task.daysOfWeek === undefined || task.daysOfWeek.includes(isoWeekday(date));
 }
 
-/**
- * purpose: Whether two task schedules can fall on the same day. A one-off is checked on its
- *          date; two repeating schedules need overlapping starts/ends ranges and a shared
- *          weekday (no weekday list = every day).
- * @param a: (DuplicateKey) One schedule.
- * @param b: (DuplicateKey) The other schedule.
- * @return: (boolean) True when some day could have both.
- */
 function schedulesOverlap(a: DuplicateKey, b: DuplicateKey): boolean {
   if (a.onceOn !== undefined) return occursOnDate(b, a.onceOn) && occursOnDate(a, a.onceOn);
   if (b.onceOn !== undefined) return occursOnDate(a, b.onceOn) && occursOnDate(b, b.onceOn);
@@ -609,31 +445,11 @@ function schedulesOverlap(a: DuplicateKey, b: DuplicateKey): boolean {
   return a.daysOfWeek.some((day) => b.daysOfWeek!.includes(day));
 }
 
-/**
- * purpose: Whether two tasks of the same type share a time: a common "HH:MM", or both are
- *          anytime tasks (no times, not medication).
- * @param a: (DuplicateKey) One task.
- * @param b: (DuplicateKey) The other task.
- * @return: (boolean) True when they share a time or are both anytime.
- */
 function sharesTime(a: DuplicateKey, b: DuplicateKey): boolean {
   if (isAnytimeTask(a) && isAnytimeTask(b)) return true;
   return a.times.some((time) => b.times.includes(time));
 }
 
-/**
- * purpose: Refuse a task that duplicates an active one: same type, same normalized display
- *          label, at least one shared time (or both anytime) and a schedule that can fall on
- *          the same day (same label and time on different weekdays, or in disjoint date
- *          ranges, is allowed).
- * @param ctx: (MutationCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param candidate: (DuplicateKey) The task about to exist (a new task, or an updated one as
- *        it will be after the change).
- * @param excludeId: (Id<"tasks">, optional) The task being updated, never its own duplicate.
- * @return: (Promise<void>) Resolves when there is no duplicate.
- * @raises invalid naming the existing task_id.
- */
 async function rejectDuplicateTask(
   ctx: MutationCtx,
   householdId: Id<"households">,
@@ -657,23 +473,10 @@ async function rejectDuplicateTask(
   }
 }
 
-/**
- * purpose: What an update would make of a task, for the duplicate check: the task with the
- *          changes applied to the fields that decide duplication (null clears).
- * @param task: (Doc<"tasks">) The task before the change.
- * @param changes: (TaskChanges) The update's changes.
- * @return: (DuplicateKey & { active: boolean }) The merged fields and whether it stays active.
- */
 function mergedForDuplicateCheck(
   task: Doc<"tasks">,
   changes: TaskChanges,
 ): DuplicateKey & { active: boolean } {
-  /**
-   * purpose: Merge an optional value: undefined keeps the current one, null clears it.
-   * @param value: (T | null | undefined) The change.
-   * @param current: (T | undefined) The current value.
-   * @return: (T | undefined) The merged value.
-   */
   const merge = <T>(value: T | null | undefined, current: T | undefined) =>
     value === undefined ? current : (value ?? undefined);
   return {
@@ -688,7 +491,6 @@ function mergedForDuplicateCheck(
   };
 }
 
-/** The change keys that can make a task a duplicate (the guard runs only when one is present). */
 const DUPLICATE_RELEVANT_KEYS: readonly (keyof TaskChanges)[] = [
   "type",
   "displayLabel",
@@ -700,13 +502,6 @@ const DUPLICATE_RELEVANT_KEYS: readonly (keyof TaskChanges)[] = [
   "active",
 ];
 
-/**
- * purpose: Present a task the way the model reads it: snake_case names matching the other
- *          tools, task_id first, weekday names instead of ISO numbers. As-needed limits are
- *          app-only and not shown.
- * @param task: (Doc<"tasks">) One task.
- * @return: (Record<string, unknown>) JSON-ready item.
- */
 function taskForModel(task: Doc<"tasks">): Record<string, unknown> {
   return {
     task_id: task._id,
@@ -723,17 +518,12 @@ function taskForModel(task: Doc<"tasks">): Record<string, unknown> {
     window_minutes: task.windowMinutes,
     pill_description: task.pillDescription ?? null,
     checklist_items: task.checklistItems,
+    high_priority: task.highPriority,
+    alerts_caregivers: alertsCaregivers(task),
     active: task.active,
   };
 }
 
-/**
- * purpose: Present an occurrence the way the model reads it: snake_case field names that
- *          match the other tools, event_id first, weekday names instead of ISO numbers, and
- *          the occurrence's local date and start time.
- * @param o: (OccurrenceJson) One occurrence.
- * @return: (Record<string, unknown>) JSON-ready item.
- */
 function occurrenceForModel(o: OccurrenceJson): Record<string, unknown> {
   return {
     event_id: o.eventId,
@@ -755,7 +545,6 @@ function occurrenceForModel(o: OccurrenceJson): Record<string, unknown> {
   };
 }
 
-/** The tools, by name (the names of AGENT_TOOLS). */
 type ToolName =
   | SetupToolName
   | "get_tasks"
@@ -767,7 +556,6 @@ type ToolName =
   | "update_event"
   | "cancel_event";
 
-/** The tool handlers; a name not in this table is an unknown tool. */
 const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   get_tasks: async (ctx, { householdId }, input) => {
     const { include_stopped: includeStopped, type } = input;
@@ -820,27 +608,14 @@ const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   ...SETUP_TOOL_HANDLERS,
 };
 
-/** The tools whose successful result is a task the caregiver's chat shows a wording card for. */
 const WORDING_TOOLS: ReadonlySet<string> = new Set(["add_task", "update_task"]);
 
-/** What a tool call produced: the text for the model and, for a wording tool, its task. */
 export interface ToolOutcome {
   text: string;
   isError: boolean;
-  /** The task a successful add_task or update_task created or changed. */
   taskId?: Id<"tasks">;
 }
 
-/**
- * purpose: Run one custom tool call for a household.
- * @param ctx: (MutationCtx) Context.
- * @param toolCtx: (ToolContext) Household, agent actor and clock, from the request row.
- * @param call: (ToolCall) Tool name and the model's input.
- * @return: (Promise<ToolOutcome>) Result text for the model, and for a successful add_task or
- *          update_task the task's id (recorded on the request for the chat's wording card). Bad
- *          input, application errors and unknown tools give isError true ("Error: <message>"
- *          for errors); other errors are rethrown.
- */
 export async function executeAgentTool(
   ctx: MutationCtx,
   toolCtx: ToolContext,

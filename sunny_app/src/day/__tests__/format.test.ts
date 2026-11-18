@@ -1,13 +1,3 @@
-// sunny_app/src/day/__tests__/format.test.ts
-//
-// Purpose: Unit tests for the day clock helpers on the camelCase calendar.dayView shape:
-// the agenda merge and its order, relative day wording, event detail wording, local "HH:MM"
-// time formatting (with and without AM and PM, including "Anytime"), anytime ordering and the
-// task state checks. Fixtures are built with small helpers that fill the fields the helpers do
-// not read, so each test states only what it cares about.
-//
-// Last modified: 2026-11-13
-
 import { describe, expect, it } from '@jest/globals';
 
 import {
@@ -28,12 +18,6 @@ import {
 } from '../format';
 import type { DayTask, DayViewData, EventOccurrence } from '../types';
 
-/**
- * purpose: Build an event occurrence.
- * @param overrides: (Partial<Record<keyof EventOccurrence, unknown>>) Fields to set; ids may
- *        be plain strings.
- * @return: (EventOccurrence) An occurrence on 2026-10-26 at 14:00 unless overridden.
- */
 function makeEvent(
   overrides: Partial<Record<keyof EventOccurrence, unknown>> = {},
 ): EventOccurrence {
@@ -58,12 +42,6 @@ function makeEvent(
   } as EventOccurrence;
 }
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set; ids may be
- *        plain strings.
- * @return: (DayTask) A due 08:00 task unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
@@ -81,11 +59,6 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/**
- * purpose: Build a day view dated 2026-10-26 (a Monday).
- * @param overrides: (Partial<DayViewData>) Fields to set.
- * @return: (DayViewData) An empty day unless overridden.
- */
 function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   return {
     seniorPreferredName: 'Margaret',
@@ -104,12 +77,6 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   };
 }
 
-/**
- * purpose: A day with one upcoming event.
- * @param localDate: (string) The event's local date.
- * @param startTime: (string) The event's start time.
- * @return: (DayViewData) The day.
- */
 function dayWithUpcoming(localDate: string, startTime: string): DayViewData {
   return makeDay({ upcoming: [makeEvent({ localDate, startTime })] });
 }

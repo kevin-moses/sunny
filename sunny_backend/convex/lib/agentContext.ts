@@ -1,16 +1,3 @@
-// lib/agentContext.ts
-// Purpose: What the voice agent knows about a household at the start of a conversation
-// (agent.getContext), and the newest caregiver message it reads aloud (agent.readLatestMessage).
-// One builder assembles: the household and its weather location, the caregivers' names,
-// today's schedule (lib/today), the as-needed medication facts
-// (lib/voiceDoses), the next 7 days of events, the newest caregiver message, the life profile
-// and the agent's memory window in the order the caregiver app lists them (lib/profileReads),
-// the sensitive-topic playbook, the newest conversation summaries, the question topics of the
-// last week (so the post-call extractor reuses a topic for a repeat), and the household list
-// (items only when short). Loading the context never marks a message seen.
-//
-// Last modified: 2026-11-14
-
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { LIST_CONTEXT_MAX, openListItems } from "./householdList";
@@ -24,15 +11,11 @@ import { asNeededEntries } from "./voiceDoses";
 import type { AsNeededEntry } from "./voiceDoses";
 import { householdCaregivers } from "./access";
 
-/** Days of events in the context. */
 const EVENT_WINDOW_DAYS = 7;
-/** Conversation summaries in the context. */
 const RECENT_CONVERSATIONS = 5;
-/** Question topics from this far back are offered to the extractor. */
 const TOPIC_LOOKBACK_MS = 7 * DAY_MS;
 const MAX_RECENT_TOPICS = 30;
 
-/** The household's family message as the agent reads it. */
 export interface MessageView {
   from: string;
   body: string | null;
@@ -41,7 +24,6 @@ export interface MessageView {
   seen: boolean;
 }
 
-/** Everything the agent knows about a household at the start of a conversation. */
 export interface AgentContext {
   household: {
     id: Id<"households">;
@@ -67,19 +49,10 @@ export interface AgentContext {
   sensitiveTopics: Array<{ topic: string; guidance: string }>;
   memory: Array<{ fact: string; source: string; verified: boolean; notedAt: number }>;
   recentConversations: Array<{ startedAt: number; summary: string }>;
-  /** Distinct question topics of the last 7 days, newest first. */
   recentQuestionTopics: string[];
-  /** The household list: how many items are open, and their text when there are at most 8. */
   list: { openCount: number; items: string[] };
 }
 
-/**
- * purpose: Occurrences in the next 7 days that have not ended yet.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<AgentContext["events"]>) Events ordered by start.
- */
 async function upcomingEvents(
   ctx: QueryCtx,
   household: Doc<"households">,
@@ -106,14 +79,6 @@ async function upcomingEvents(
     }));
 }
 
-/**
- * purpose: The newest message a caregiver sent (profile.sendMessage), with the sender's
- *          display name.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<{row: Doc<"familyMessages">; view: MessageView} | null>) The row and its
- *          view, or null when none.
- */
 export async function latestCaregiverMessage(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -141,12 +106,6 @@ export async function latestCaregiverMessage(
   };
 }
 
-/**
- * purpose: Life profile entries in the order the caregiver app lists them (entriesInOrder).
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["lifeProfile"]>) The entries.
- */
 async function lifeProfile(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -155,12 +114,6 @@ async function lifeProfile(
   return rows.map((r) => ({ category: r.category, name: r.name, details: r.details ?? null }));
 }
 
-/**
- * purpose: What the agent remembers: the memory window of lib/profileReads, in its order.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["memory"]>) At most 50 facts, verified first.
- */
 async function memoryFacts(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -173,12 +126,6 @@ async function memoryFacts(
   }));
 }
 
-/**
- * purpose: The newest conversations that have a summary.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["recentConversations"]>) Up to 5, newest first.
- */
 async function recentSummaries(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -196,13 +143,6 @@ async function recentSummaries(
   return out;
 }
 
-/**
- * purpose: Distinct question topics of the last 7 days.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<string[]>) Up to 30 topics, newest first.
- */
 async function recentQuestionTopics(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -222,13 +162,6 @@ async function recentQuestionTopics(
   return [...topics];
 }
 
-/**
- * purpose: The household list for the context: the open count, and the items when there are
- *          at most LIST_CONTEXT_MAX (a longer list is read with the listItems tool).
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<AgentContext["list"]>) The summary.
- */
 async function listSummary(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -240,20 +173,12 @@ async function listSummary(
   };
 }
 
-/**
- * purpose: Build the agent's context for a household at an instant.
- * @param ctx: (QueryCtx) Context.
- * @param household: (Doc<"households">) The household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<AgentContext>) The context.
- */
 export async function buildAgentContext(
   ctx: QueryCtx,
   household: Doc<"households">,
   now: number,
 ): Promise<AgentContext> {
   const id = household._id;
-  // The parts are independent reads, so they run together.
   const [
     caregivers,
     topics,
@@ -272,7 +197,7 @@ export async function buildAgentContext(
       .query("sensitiveTopics")
       .withIndex("by_household", (q) => q.eq("householdId", id))
       .collect(),
-    todayInstances(ctx, id, now),
+    todayInstances(ctx, id, now, null),
     asNeededEntries(ctx, household, now),
     upcomingEvents(ctx, household, now),
     latestCaregiverMessage(ctx, id),

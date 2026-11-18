@@ -1,28 +1,3 @@
-// delivery.test.ts
-// Purpose: Tests for notification delivery (delivery.ts, lib/delivery.ts). APNs and SMS are
-// mocked (deliveryMocks.helpers.ts); the delivery action runs directly through t.action, and
-// one test runs it through the workpool. Covers: routing per kind and recipient (device -> APNs
-// with task_instance_id, member -> SMS to the verified phone, title and body combined, the
-// caregiver_alert reply hint); token cleanup; skipped rows (no tokens, unverified or missing
-// phone, device removed, recipient left the household, no recipient, stale content); retryable
-// versus permanent failures for both channels; configuration errors not retried; settled and
-// missing rows left alone; the attempt cap; the completion handler; the sweeper; and insertion
-// through insertNotification being delivered end to end.
-// Caregiver push: a member with a push token gets APNs and no SMS, one without gets the SMS
-// unchanged, the push data (notification_id, kind, household_id, task_instance_id), the
-// interruption level and category per kind and role (and for a device), the digest's push
-// title, the SMS fallback for the same row when every token is unregistered or refused for good
-// (and its failure), mixed token results (a dead token deleted and the row texted or retried),
-// no fallback without a verified phone or for a retryable failure, and a removed member skipped
-// even with a token. APNs not configured: texted with a verified phone, held pending without.
-// Push retries running out: a caregiver with a verified phone is texted exactly once (also
-// through the workpool end to end; a second completion, the sweeper and another run text
-// nothing more), a text that also runs out ends failed, a fallback text that fails after an
-// earlier push retry clears the mark and ends failed without another text, and without a
-// phone, for a device or for an SMS-only caregiver the row ends failed as before.
-//
-// Last modified: 2026-11-14
-
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -57,20 +32,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: A fresh fixture.
- * @return: (Promise<DeliveryFixture>) The fixture.
- */
 async function setup(): Promise<DeliveryFixture> {
   return await deliveryFixture(makeBackend());
 }
 
-/**
- * purpose: Run the delivery action for a row.
- * @param f: (DeliveryFixture) Fixture.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @return: The outcome.
- */
 async function deliver(f: DeliveryFixture, outboxId: Id<"notificationOutbox">) {
   return await f.t.action(internal.delivery.deliver, { outboxId });
 }
@@ -286,7 +251,6 @@ describe("APNs routing", () => {
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("failed");
     expect(await outboxRow(f, id)).toMatchObject({ state: "failed" });
-    // The token is kept: only 410 Unregistered deletes tokens.
     expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toHaveLength(
       2,
     );
@@ -496,26 +460,12 @@ describe("SMS routing", () => {
   });
 });
 
-/**
- * purpose: Give a caregiver push tokens (the caregiver app with notifications on).
- * @param f: (DeliveryFixture) Fixture.
- * @param userId: (string) The caregiver's user id.
- * @param tokens: (string[]) Tokens to register.
- * @return: (Promise<void>) Resolves when written.
- */
 async function addTokens(f: DeliveryFixture, userId: string, ...tokens: string[]): Promise<void> {
   await f.t.run(async (ctx) => {
     for (const token of tokens) await ctx.db.insert("pushTokens", { userId, token });
   });
 }
 
-/**
- * purpose: Script APNs to answer every token with one outcome.
- * @param outcome: ("unregistered" | "failed") The outcome.
- * @param status: (number) HTTP status.
- * @param retryable: (boolean) Whether a failure is retryable.
- * @return: (void)
- */
 function apnsAnswers(outcome: "unregistered" | "failed", status: number, retryable = false): void {
   providerMocks.apnsSend.mockImplementation(async (args: { tokens: string[] }) =>
     args.tokens.map((token) => ({ token, outcome, status, reason: "Why", retryable })),
@@ -782,13 +732,6 @@ describe("caregiver push", () => {
       errorSpy.mockRestore();
     });
 
-    /**
-     * purpose: Report the row's workpool run as failed for good, as the workpool does when the
-     *          retries are used up.
-     * @param f: (DeliveryFixture) Fixture.
-     * @param id: (Id<"notificationOutbox">) The row.
-     * @return: (Promise<void>) Resolves when handled.
-     */
     async function retriesRanOut(f: DeliveryFixture, id: Id<"notificationOutbox">): Promise<void> {
       await f.t.mutation(internal.delivery.onDeliveryComplete, {
         workId: "work_1" as WorkId,
@@ -811,7 +754,6 @@ describe("caregiver push", () => {
       expect(providerMocks.apnsSend).toHaveBeenCalledTimes(pushes);
       expect(providerMocks.smsSend).toHaveBeenCalledTimes(1);
       expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "sms" });
-      // A second completion, a sweeper pass and another run text nothing more.
       await retriesRanOut(f, id);
       vi.setSystemTime(NOW + STUCK_AFTER_MS + 60_000);
       expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(0);
@@ -858,16 +800,13 @@ describe("caregiver push", () => {
       const f = await setup();
       await addTokens(f, "pat", "pat-1");
       const id = await insertOutbox(f, { recipientUserId: "pat" });
-      // Run 1: the push fails retryably, so the row is marked.
       apnsAnswers("failed", 503, true);
       await expect(deliver(f, id)).rejects.toThrow(/APNs delivery failed/);
       expect((await outboxRow(f, id)).pushState).toBe("retrying");
-      // Run 2: the push fails for good, the fallback text is tried and fails retryably.
       apnsAnswers("unregistered", 410);
       providerMocks.smsSend.mockResolvedValue({ ok: false, retryable: true, error: "503 busy" });
       await expect(deliver(f, id)).rejects.toThrow(/SMS delivery failed/);
       expect((await outboxRow(f, id)).pushState).toBeUndefined();
-      // The workpool gives up: the row fails and is not enqueued to be texted again.
       await retriesRanOut(f, id);
       const row = await outboxRow(f, id);
       expect(row.state).toBe("failed");
@@ -1099,12 +1038,6 @@ describe("sweeper", () => {
   });
 });
 
-/**
- * purpose: Drive the workpool until a row is settled (the same loop the calendar tests use).
- * @param f: (DeliveryFixture) Fixture.
- * @param id: (Id<"notificationOutbox">) The row.
- * @return: (Promise<void>) Resolves when settled or after a bounded number of rounds.
- */
 async function drivePool(f: DeliveryFixture, id: Id<"notificationOutbox">): Promise<void> {
   for (let i = 0; i < 100 && (await outboxRow(f, id)).state === "pending"; i++) {
     let finished = false;

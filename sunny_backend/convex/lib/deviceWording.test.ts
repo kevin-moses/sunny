@@ -1,16 +1,9 @@
-// lib/deviceWording.test.ts
-// Purpose: Unit tests for the senior-surface wording ported from the app
-// (lib/deviceWording.ts), with the app's own cases (sunny_app/src/day/__tests__/format.test.ts
-// clockTime and relativeDayName, sunny_app/src/display/__tests__/cue.test.ts spokenTime,
-// cueSpeech and hasWrittenPrompt, display/__tests__/model.test.ts fullDate) plus the Done
-// question and the task icons.
-//
-// Last modified: 2026-11-13
-
 import { describe, expect, it } from "vitest";
 import {
   clockTime,
   cueSpeech,
+  stepSpeech,
+  withStepSpeech,
   doneQuestion,
   fullDate,
   hasWrittenPrompt,
@@ -20,17 +13,13 @@ import {
 } from "./deviceWording";
 import type { SpeechTask } from "./deviceWording";
 
-/**
- * purpose: Build a task for the cue sentence.
- * @param overrides: (Partial<SpeechTask>) Fields to set.
- * @return: (SpeechTask) An 08:00 medication with the backend's default prompt unless overridden.
- */
 function speechTask(overrides: Partial<SpeechTask> = {}): SpeechTask {
   return {
     type: "medication",
     displayLabel: "Morning pills",
     spokenPrompt: "Time for Morning pills.",
     scheduledTime: "08:00",
+    step: null,
     ...overrides,
   };
 }
@@ -103,6 +92,19 @@ describe("cueSpeech", () => {
       scheduledTime: "15:30",
     });
     expect(cueSpeech(task)).toBe("Time for Walk, at 3:30. Press Done when you have finished.");
+  });
+
+  it("reads the current step of a multi-step task after the prompt", () => {
+    const task = speechTask({
+      type: "checklist",
+      spokenPrompt: "Time to get ready to go out.",
+      step: { index: 1, count: 3, text: " Take your keys " },
+    });
+    expect(cueSpeech(task)).toBe("Time to get ready to go out. Step 2 of 3: Take your keys.");
+    expect(stepSpeech({ index: 0, count: 2, text: "Is the stove off?" })).toBe(
+      "Step 1 of 2: Is the stove off?",
+    );
+    expect(withStepSpeech("Reminder.", null)).toBe("Reminder.");
   });
 });
 

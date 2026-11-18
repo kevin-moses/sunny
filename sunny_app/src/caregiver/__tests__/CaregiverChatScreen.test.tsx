@@ -1,18 +1,3 @@
-// sunny_app/src/caregiver/__tests__/CaregiverChatScreen.test.tsx
-//
-// Purpose: Render tests for the Chat tab with react-test-renderer, the transcript query mocked
-// at the Convex hook (useQueryWithStatus) and the network at callMutation: the thread is read
-// from agentRequests.transcript for editors and viewers alike; a digest post shows in time order
-// as a Sunny message under a "Daily summary" label with the day; an editor's reply after it is
-// an ordinary agentRequests.request with continueLatest; a viewer sees the posts read-only (the
-// note instead of the input). Wording cards: one per task under the reply (label line, then
-// sentence line, read by VoiceOver as one), no button for a task without a time, play speaks
-// with the display's voice and a second tap stops, hiding the tab stops, viewers see none; a
-// task with more than one time shows "Also at 8:00 PM"; a failed play shows its failure, puts it
-// in the card's accessible label and announces it once.
-//
-// Last modified: 2026-11-14
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import React from 'react';
@@ -40,7 +25,6 @@ jest.mock('react-native-safe-area-context', () => ({
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
 
-/** What the screen asked expo-speech to say, with its options (callbacks included). */
 const mockSpoken: { text: string; options: SpeechOptions }[] = [];
 const mockSpeechStop = jest.fn();
 
@@ -67,7 +51,6 @@ const mockCall = callMutation as unknown as jest.Mock<(...a: unknown[]) => Promi
 
 const HOUSEHOLD = 'household_1' as HouseholdId;
 
-/** The thread as agentRequests.transcript returns it: newest first. */
 const THREAD = [
   {
     type: 'request',
@@ -110,12 +93,6 @@ const THREAD = [
   },
 ];
 
-/**
- * purpose: Render the Chat tab.
- * @param canSend: (boolean) Whether the caregiver may message Sunny.
- * @param thread: (unknown[]) What the transcript query returns.
- * @return: (Promise<ReactTestRenderer>) The renderer.
- */
 async function renderChat(canSend: boolean, thread: unknown[] = THREAD) {
   mockQuery.mockReturnValue({ status: 'success', data: thread, error: undefined });
   let renderer: ReactTestRenderer | undefined;
@@ -125,11 +102,6 @@ async function renderChat(canSend: boolean, thread: unknown[] = THREAD) {
   return renderer!;
 }
 
-/**
- * purpose: The Chat tab with fixed household, senior and user.
- * @param props: ({ canSend, active }) Whether the caregiver may send and the tab shows.
- * @return: (JSX.Element) The screen.
- */
 function Chat({ canSend, active }: { canSend: boolean; active: boolean }) {
   return (
     <CaregiverChatScreen
@@ -142,11 +114,6 @@ function Chat({ canSend, active }: { canSend: boolean; active: boolean }) {
   );
 }
 
-/**
- * purpose: Every text on screen, in order.
- * @param renderer: (ReactTestRenderer) The rendered screen.
- * @return: (string[]) The texts.
- */
 function texts(renderer: ReactTestRenderer): string[] {
   return renderer.root.findAllByType(Text).map((t) => String(t.props.children));
 }
@@ -157,10 +124,8 @@ beforeEach(() => {
   mockCall.mockResolvedValue('r3');
 });
 
-/** The sentence the display speaks for the pills task in WORDING_THREAD. */
 const SENTENCE = "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.";
 
-/** A thread whose one request added two tasks: a timed one and an anytime one. */
 const WORDING_THREAD = [
   {
     ...THREAD[2],
@@ -178,11 +143,6 @@ const WORDING_THREAD = [
   },
 ];
 
-/**
- * purpose: The wording card buttons on screen.
- * @param renderer: (ReactTestRenderer) The rendered screen.
- * @return: The pressable nodes labelled play or stop.
- */
 function cardButtons(renderer: ReactTestRenderer) {
   return renderer.root.findAll(
     (node) =>

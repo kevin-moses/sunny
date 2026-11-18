@@ -1,32 +1,7 @@
-// lib/frameRaster.ts
-// Purpose: The drawing surface of the server-drawn display frames (lib/frame.ts). A Canvas holds
-// one 8-bit luminance value per pixel (255 paper, 0 ink) and draws filled rectangles and filled
-// paths (lines and quadratic curves: glyph outlines and icons) with exact area coverage
-// antialiasing, the accumulation method of font-rs. toFrame then maps luminance to the panel's
-// grey levels: the nearest level, so with 4 greys a text edge gets one in-between grey and with
-// 2 greys everything is a crisp 1-bit threshold at half coverage.
-//
-// Paints: ink, paper and grey (finished and missed items). With 3 or more greys, grey is the
-// level nearest the design's #6B6B6B; with 2 greys it is a 50% checkerboard of ink and paper
-// fixed to the pixel grid, so a greyed row still looks different from a plain one on a 1-bit
-// panel.
-//
-// Everything here is deterministic: only +, -, *, /, Math.floor, Math.ceil, Math.round,
-// Math.min, Math.max, Math.abs and Math.sqrt (all exactly specified by IEEE 754 and
-// ECMAScript), so the same drawing calls always give the same bytes.
-//
-// Last modified: 2026-11-14
-
 import type { DeviceScreen } from "./validators";
 
-/**
- * A screen as a device reports it (PUT /device/info, stored on its devices row): width and
- * height in pixels, and greys, the levels the panel shows, black and white included (2 for a
- * 1-bit panel).
- */
 export type Screen = DeviceScreen;
 
-/** A finished frame: one grey level per pixel, row-major, 0 = black, greys - 1 = white. */
 export interface Frame {
   width: number;
   height: number;
@@ -34,24 +9,15 @@ export interface Frame {
   levels: Uint8Array;
 }
 
-/** What a shape is filled with. */
 export type Paint = "ink" | "grey" | "paper";
 
-/** The luminance of the design's grey (#6B6B6B). */
 const GREY_LUMINANCE = 0x6b;
 
-/** Curve flattening tolerance, in pixels. */
 const FLATTEN_TOLERANCE = 0.05;
 
-/** Most line segments one quadratic curve becomes. */
 const MAX_CURVE_SEGMENTS = 32;
 
-/**
- * A path in pixel coordinates: closed contours of straight segments. Curves are flattened as
- * they are added.
- */
 export class Path {
-  /** Segments as x0, y0, x1, y1 quadruples. */
   readonly segments: number[] = [];
   minX = Infinity;
   minY = Infinity;
@@ -62,12 +28,6 @@ export class Path {
   private x = 0;
   private y = 0;
 
-  /**
-   * purpose: Start a new contour (closing the previous one).
-   * @param x: (number) X in pixels.
-   * @param y: (number) Y in pixels.
-   * @return: (Path) This path.
-   */
   moveTo(x: number, y: number): Path {
     this.close();
     this.startX = this.x = x;
@@ -76,12 +36,6 @@ export class Path {
     return this;
   }
 
-  /**
-   * purpose: A straight segment to a point.
-   * @param x: (number) X in pixels.
-   * @param y: (number) Y in pixels.
-   * @return: (Path) This path.
-   */
   lineTo(x: number, y: number): Path {
     if (x !== this.x || y !== this.y) {
       this.segments.push(this.x, this.y, x, y);
@@ -92,15 +46,6 @@ export class Path {
     return this;
   }
 
-  /**
-   * purpose: A quadratic curve to a point, flattened into enough segments that it is never
-   *          more than FLATTEN_TOLERANCE pixels off.
-   * @param cx: (number) Control point x.
-   * @param cy: (number) Control point y.
-   * @param x: (number) End x.
-   * @param y: (number) End y.
-   * @return: (Path) This path.
-   */
   quadTo(cx: number, cy: number, x: number, y: number): Path {
     const x0 = this.x;
     const y0 = this.y;
@@ -119,21 +64,11 @@ export class Path {
     return this;
   }
 
-  /**
-   * purpose: Close the current contour back to its start.
-   * @return: (Path) This path.
-   */
   close(): Path {
     this.lineTo(this.startX, this.startY);
     return this;
   }
 
-  /**
-   * purpose: Grow the bounds to include a point.
-   * @param x: (number) X.
-   * @param y: (number) Y.
-   * @return: (void)
-   */
   private extend(x: number, y: number): void {
     if (x < this.minX) this.minX = x;
     if (y < this.minY) this.minY = y;
@@ -142,18 +77,6 @@ export class Path {
   }
 }
 
-/**
- * purpose: Add one line's signed area to an accumulation buffer (font-rs draw_line). The
- *          running sum of a row then gives each pixel's coverage.
- * @param acc: (Float64Array) The buffer, `stride` wide per row.
- * @param stride: (number) Row length (the box width plus 2).
- * @param height: (number) Rows.
- * @param ax: (number) Start x, already clamped to the box.
- * @param ay: (number) Start y.
- * @param bx: (number) End x, already clamped to the box.
- * @param by: (number) End y.
- * @return: (void)
- */
 function accumulateLine(
   acc: Float64Array,
   stride: number,
@@ -204,19 +127,13 @@ function accumulateLine(
   }
 }
 
-/** A grey-level drawing surface of one screen's size. */
 export class Canvas {
   readonly width: number;
   readonly height: number;
   readonly greys: number;
-  /** Luminance per pixel, 255 paper. */
   private readonly luminance: Uint8Array;
   private readonly greyLuminance: number;
 
-  /**
-   * purpose: A blank (paper) canvas.
-   * @param screen: (Screen) Size and grey levels.
-   */
   constructor(screen: Screen) {
     this.width = screen.width;
     this.height = screen.height;
@@ -226,13 +143,6 @@ export class Canvas {
     this.greyLuminance = Math.round(Math.round(GREY_LUMINANCE / step) * step);
   }
 
-  /**
-   * purpose: The luminance a paint puts at a pixel (grey on a 2-level panel is a checkerboard).
-   * @param paint: (Paint) The paint.
-   * @param x: (number) Pixel column.
-   * @param y: (number) Pixel row.
-   * @return: (number) 0 to 255.
-   */
   private paintAt(paint: Paint, x: number, y: number): number {
     if (paint === "ink") return 0;
     if (paint === "paper") return 255;
@@ -240,14 +150,6 @@ export class Canvas {
     return (x + y) % 2 === 0 ? 0 : 255;
   }
 
-  /**
-   * purpose: Blend a paint into one pixel at a coverage.
-   * @param x: (number) Column, inside the canvas.
-   * @param y: (number) Row, inside the canvas.
-   * @param coverage: (number) 0 to 1.
-   * @param paint: (Paint) The paint.
-   * @return: (void)
-   */
   private blend(x: number, y: number, coverage: number, paint: Paint): void {
     const i = y * this.width + x;
     const dst = this.luminance[i]!;
@@ -255,15 +157,6 @@ export class Canvas {
     this.luminance[i] = coverage >= 1 ? src : Math.round(dst + (src - dst) * coverage);
   }
 
-  /**
-   * purpose: Fill a rectangle snapped to whole pixels (edges rounded), clipped to the canvas.
-   * @param x: (number) Left.
-   * @param y: (number) Top.
-   * @param width: (number) Width.
-   * @param height: (number) Height.
-   * @param paint: (Paint) The paint.
-   * @return: (void)
-   */
   fillRect(x: number, y: number, width: number, height: number, paint: Paint): void {
     const x0 = Math.max(0, Math.round(x));
     const y0 = Math.max(0, Math.round(y));
@@ -274,16 +167,6 @@ export class Canvas {
     }
   }
 
-  /**
-   * purpose: Draw a rectangle's border inside its bounds, every side `thickness` thick.
-   * @param x: (number) Left.
-   * @param y: (number) Top.
-   * @param width: (number) Width.
-   * @param height: (number) Height.
-   * @param thickness: (number) Border width in pixels (whole).
-   * @param paint: (Paint) The paint.
-   * @return: (void)
-   */
   strokeRect(
     x: number,
     y: number,
@@ -302,16 +185,6 @@ export class Canvas {
     this.fillRect(x1 - thickness, y0 + thickness, thickness, y1 - y0 - 2 * thickness, paint);
   }
 
-  /**
-   * purpose: Fill a path (nonzero for shapes drawn in one direction; glyph holes, wound the
-   *          other way, stay empty) with antialiased coverage. Rows above and below the canvas
-   *          are cut exactly; points left or right of it are moved onto its edge rather than
-   *          clipped, so a shape crossing a side edge is drawn slanted there (frames keep every
-   *          shape inside the canvas).
-   * @param path: (Path) The path.
-   * @param paint: (Paint) The paint.
-   * @return: (void)
-   */
   fillPath(path: Path, paint: Paint): void {
     path.close();
     const left = Math.max(0, Math.floor(path.minX));
@@ -339,10 +212,6 @@ export class Canvas {
     }
   }
 
-  /**
-   * purpose: The finished frame: each pixel's luminance mapped to the nearest grey level.
-   * @return: (Frame) The frame.
-   */
   toFrame(): Frame {
     const max = this.greys - 1;
     const levelOf = Uint8Array.from({ length: 256 }, (_, l) => Math.round((l * max) / 255));
@@ -352,18 +221,9 @@ export class Canvas {
   }
 }
 
-/** sqrt(1/2) and tan(pi/8), the constants of a circle made of eight quadratic arcs. */
 const HALF_SQRT2 = 0.7071067811865476;
 const TAN_EIGHTH = 0.41421356237309503;
 
-/**
- * purpose: Add a circle (clockwise on screen) to a path, as eight quadratic arcs.
- * @param path: (Path) The path.
- * @param cx: (number) Center x.
- * @param cy: (number) Center y.
- * @param r: (number) Radius.
- * @return: (Path) The path.
- */
 export function addCircle(path: Path, cx: number, cy: number, r: number): Path {
   const k = r * TAN_EIGHTH;
   const h = r * HALF_SQRT2;
@@ -379,17 +239,6 @@ export function addCircle(path: Path, cx: number, cy: number, r: number): Path {
   return path.close();
 }
 
-/**
- * purpose: Add a rounded rectangle (clockwise on screen) to a path; each corner is two
- *          quadratic arcs.
- * @param path: (Path) The path.
- * @param x: (number) Left.
- * @param y: (number) Top.
- * @param width: (number) Width.
- * @param height: (number) Height.
- * @param radius: (number) Corner radius (clamped to half the shorter side).
- * @return: (Path) The path.
- */
 export function addRoundRect(
   path: Path,
   x: number,
@@ -419,14 +268,6 @@ export function addRoundRect(
   return path.close();
 }
 
-/**
- * purpose: Add a thick polyline (round joins and caps) to a path: a quadrilateral per segment
- *          and a circle per point, all wound the same way so overlaps stay filled once.
- * @param path: (Path) The path.
- * @param points: (number[]) x, y pairs in pixels.
- * @param width: (number) Line width in pixels.
- * @return: (Path) The path.
- */
 export function addPolyline(path: Path, points: number[], width: number): Path {
   const r = width / 2;
   for (let i = 0; i + 3 < points.length; i += 2) {
@@ -436,17 +277,6 @@ export function addPolyline(path: Path, points: number[], width: number): Path {
   return path;
 }
 
-/**
- * purpose: Add a thick straight segment with square ends (a quadrilateral, wound like
- *          addCircle) to a path; nothing for a segment of zero length.
- * @param path: (Path) The path.
- * @param x0: (number) Start x.
- * @param y0: (number) Start y.
- * @param x1: (number) End x.
- * @param y1: (number) End y.
- * @param r: (number) Half the width, in pixels.
- * @return: (Path) The path.
- */
 export function addSegment(
   path: Path,
   x0: number,

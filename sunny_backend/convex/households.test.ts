@@ -1,31 +1,11 @@
-// households.test.ts
-// Purpose: Tests for households.ts with convex-test: creation and defaults, access control
-// for every public function (non-members, viewers, devices), role rules for join codes,
-// single-use and 24 hour expiry of codes (an expired or redeemed device code gives a caregiver
-// the generic not_found error), caregiver and device redemption, the one-household-per-caregiver
-// rule (create and redeem reject a caregiver who already belongs to a household, leave the code
-// unredeemed, and allow a removed caregiver to join another), member removal (no on-call
-// caregiver: create sets none and update refuses the old field), push token ownership (a paired
-// device's token is protected, a device cannot take a live caregiver's, a caregiver takes over
-// another caregiver's, an orphaned owner's is taken over), device removal (push tokens dropped,
-// Clerk user deletion scheduled), the device identity claim, and the last-primary guard. These
-// stand in for the former Supabase pgTAP grant and RLS checks of the Supabase test suite.
-//
-// mine's accountKind is covered for signed out, device (claim or device row) and caregiver
-// accounts.
-//
-// Last modified: 2026-11-14
-
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal, api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-// Fake timers keep jobs scheduled by one test (removeDevice) from running during another.
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -34,30 +14,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A valid household timezone used across tests. */
 const NY = "America/New_York";
 
-/** Valid APNs device tokens: 64 hex characters. */
 const TOK_1 = "1".repeat(64);
 const DEV_TOK = "d".repeat(64);
 const A_TOK = "a".repeat(64);
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   return convexTest(schema, modules);
 }
 
-/** The convex-test harness type, with the schema's table types. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/**
- * purpose: Create a household owned by user_a.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<Id<"households">>) The household.
- */
 async function createHousehold(t: TestConvex): Promise<Id<"households">> {
   return await t.withIdentity({ subject: "user_a" }).mutation(api.households.create, {
     seniorPreferredName: "Margaret",
@@ -66,14 +34,6 @@ async function createHousehold(t: TestConvex): Promise<Id<"households">> {
   });
 }
 
-/**
- * purpose: Add a caregiver with a role through the real invite flow.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) New caregiver's user id.
- * @param grants: (string) Caregiver grant.
- * @return: (Promise<void>) Resolves once joined.
- */
 async function addCaregiver(
   t: TestConvex,
   householdId: Id<"households">,
@@ -86,13 +46,6 @@ async function addCaregiver(
   await t.withIdentity({ subject: userId }).mutation(api.households.redeemJoinCode, { code });
 }
 
-/**
- * purpose: Pair a device through the internal mutation.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Device's Clerk user id.
- * @return: (Promise<Id<"devices">>) The device.
- */
 async function pairDevice(
   t: TestConvex,
   householdId: Id<"households">,
@@ -105,13 +58,6 @@ async function pairDevice(
   return result.deviceId;
 }
 
-/**
- * purpose: Create a join code as user_a.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param grants: (string) Grant for the code.
- * @return: (Promise<string>) The code.
- */
 async function makeCode(
   t: TestConvex,
   householdId: Id<"households">,
@@ -124,12 +70,11 @@ async function makeCode(
   return code;
 }
 
-/** The message of the one-household-per-caregiver rejection. */
 const ONE_HOUSEHOLD =
   "You already belong to a household. Ask its primary caregiver to remove you before joining another.";
 
 describe("create", () => {
-  test("seeds defaults and the primary member, with no on-call caregiver", async () => {
+  test("seeds defaults and the primary member", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const asA = t.withIdentity({ subject: "user_a" });
@@ -143,41 +88,9 @@ describe("create", () => {
       shareTranscripts: false,
       backgroundPaused: false,
     });
-    expect(household.onCallUserId).toBeUndefined();
     const members = await asA.query(api.households.listMembers, { householdId });
     expect(members).toHaveLength(1);
     expect(members[0]).toMatchObject({ userId: "user_a", role: "primary", displayName: "Anna" });
-  });
-
-  test("seeds the Medication and Prompt only policies with the SPEC steps", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const policies = await t.run(
-      async (ctx) =>
-        await ctx.db
-          .query("escalationPolicies")
-          .withIndex("by_household", (q) => q.eq("householdId", householdId))
-          .collect(),
-    );
-    expect(policies).toHaveLength(2);
-    const medication = policies.find((p) => p.systemKey === "medication");
-    const promptOnly = policies.find((p) => p.systemKey === "prompt_only");
-    expect(medication?.name).toBe("Medication");
-    expect(medication?.steps).toEqual([
-      { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-      { id: expect.any(String), offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-      {
-        id: expect.any(String),
-        offsetMinutes: 30,
-        action: "alert_all_caregivers",
-        skipIfClaimed: false,
-      },
-    ]);
-    expect(new Set(medication?.steps.map((s) => s.id)).size).toBe(3);
-    expect(promptOnly?.name).toBe("Prompt only");
-    expect(promptOnly?.steps).toEqual([
-      { id: expect.any(String), offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-    ]);
   });
 
   test("a paired device cannot create a household", async () => {
@@ -493,19 +406,6 @@ describe("update", () => {
         ...fields,
       }),
     ).rejects.toMatchObject({ data: { code: "invalid" } });
-  });
-
-  test("update no longer accepts an on-call caregiver", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const asA = t.withIdentity({ subject: "user_a" });
-    await expect(
-      asA.mutation(api.households.update, {
-        householdId,
-        ...({ onCallUserId: "user_a" } as unknown as Record<string, never>),
-      }),
-    ).rejects.toThrow();
-    expect((await asA.query(api.households.get, { householdId })).onCallUserId).toBeUndefined();
   });
 });
 
@@ -955,7 +855,6 @@ describe("pairDevice", () => {
     ).rejects.toMatchObject({
       data: { code: "not_found", message: "This code is invalid or has expired" },
     });
-    // The code is not consumed: a caregiver can still redeem it.
     await t.withIdentity({ subject: "user_b" }).mutation(api.households.redeemJoinCode, { code });
   });
 
@@ -1064,12 +963,6 @@ describe("devices", () => {
 });
 
 describe("push tokens", () => {
-  /**
-   * purpose: All push token rows for a token value.
-   * @param t: (TestConvex) Harness.
-   * @param token: (string) Token.
-   * @return: (Promise<string[]>) User ids that own the token.
-   */
   async function owners(t: TestConvex, token: string): Promise<string[]> {
     return await t.run(async (ctx) => {
       const rows = await ctx.db
@@ -1130,7 +1023,6 @@ describe("push tokens", () => {
         token: TOK_1,
       }),
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
-    // A device user recognised only by its token claim is refused as well.
     await expect(
       t
         .withIdentity({ subject: "device_new", sunny_kind: "device" })
@@ -1161,7 +1053,6 @@ describe("push tokens", () => {
     await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
       token: TOK_1,
     });
-    // The old device row is gone but its token row survived (it could not unregister).
     await t.run(async (ctx) => await ctx.db.delete(deviceId));
 
     await t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
@@ -1189,7 +1080,6 @@ describe("push tokens", () => {
   });
 
   test("a caregiver signed in but not yet in any household counts as orphaned", async () => {
-    // Accepted behavior: such a user owns no household, so their token can be taken over.
     const t = makeBackend();
     await t.withIdentity({ subject: "user_new" }).mutation(api.households.registerPushToken, {
       token: TOK_1,

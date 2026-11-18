@@ -1,20 +1,10 @@
-// convex/voice.test.ts
-// Purpose: Tests for voice.livekitToken: only a paired device may call it (signed out,
-// caregivers and removed devices are refused), the task instance must belong to the device's
-// household, the minted token decodes to the exact snake_case participant metadata the Python
-// agent parses, the room and identity naming, the one-hour ttl and grants, the default and
-// accepted triggers, and an error when the LiveKit env vars are missing. LiveKit is never
-// contacted: the token is signed locally and decoded here.
-//
-// Last modified: 2026-10-29
-
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { withUncheckedArgs } from "./testing.helpers";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const ENV_KEYS = ["LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "LIVEKIT_SERVER_URL"] as const;
@@ -34,18 +24,12 @@ afterEach(() => {
   }
 });
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   return convexTest(schema, modules);
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** A household with one paired device ("phone") and an instance in it. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
@@ -53,11 +37,6 @@ interface Fixture {
   instanceId: Id<"taskInstances">;
 }
 
-/**
- * purpose: Insert a household with a task instance directly.
- * @param t: (TestConvex) Harness.
- * @return: (Promise<{householdId, instanceId}>) The ids.
- */
 async function seedHousehold(
   t: TestConvex,
 ): Promise<{ householdId: Id<"households">; instanceId: Id<"taskInstances"> }> {
@@ -82,6 +61,7 @@ async function seedHousehold(
       createdByKind: "caregiver",
       active: true,
       scheduleChangedAt: 0,
+      highPriority: false,
     });
     const instanceId = await ctx.db.insert("taskInstances", {
       taskId,
@@ -98,10 +78,6 @@ async function seedHousehold(
   });
 }
 
-/**
- * purpose: Build a household with a paired device user "phone" and an instance.
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const { householdId, instanceId } = await seedHousehold(t);
@@ -112,11 +88,6 @@ async function setup(): Promise<Fixture> {
   return { t, householdId, deviceId, instanceId };
 }
 
-/**
- * purpose: Decode the payload of a JWT without verifying it.
- * @param jwt: (string) The token.
- * @return: (Record<string, unknown>) The claims.
- */
 function claims(jwt: string): Record<string, unknown> {
   const payload = jwt.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/");
   return JSON.parse(atob(payload)) as Record<string, unknown>;
@@ -186,9 +157,8 @@ describe("livekitToken", () => {
     await expect(
       f.t
         .withIdentity({ subject: "phone" })
-        // @ts-expect-error not a valid trigger
-        .action(api.voice.livekitToken, { trigger: "shout" }),
-    ).rejects.toThrow();
+        .action(withUncheckedArgs(api.voice.livekitToken), { trigger: "shout" }),
+    ).rejects.toThrow(/Validator error/);
   });
 });
 

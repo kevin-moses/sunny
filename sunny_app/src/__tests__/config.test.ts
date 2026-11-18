@@ -1,10 +1,3 @@
-// sunny_app/src/__tests__/config.test.ts
-//
-// Purpose: Unit tests for deriveSiteUrl: the Convex HTTP actions URL derived from the
-// deployment URL.
-//
-// Last modified: 2026-10-29
-
 import { describe, expect, it } from '@jest/globals';
 
 import { deriveSiteUrl } from '../config';

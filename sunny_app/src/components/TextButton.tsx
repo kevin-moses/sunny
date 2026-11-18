@@ -1,15 +1,7 @@
-// sunny_app/src/components/TextButton.tsx
-//
-// Purpose: A plain text button for secondary actions (Back, Sign out, Resend code, Use a
-// different email). At least 44pt tall for easy tapping; dimmed while disabled.
-//
-// Last modified: 2026-10-30
-
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 
 import { colors, ROUNDED_FONT } from '../theme/colors';
 
-/** Props for TextButton. */
 interface TextButtonProps {
   label: string;
   onPress: () => void;
@@ -18,12 +10,6 @@ interface TextButtonProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/**
- * purpose: Render a text-only button.
- * @param props: (TextButtonProps) Label, press handler, disabled flag, accessibility hint and
- *        optional extra style.
- * @return: (JSX.Element) The button.
- */
 export function TextButton({
   label,
   onPress,

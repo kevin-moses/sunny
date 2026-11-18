@@ -1,53 +1,3 @@
-// lib/voiceRouting.ts
-// Purpose: The two ways the voice agent reaches family on the senior's behalf, shared by the
-// agent:* functions (agent.ts): flagging a caregiver (notes/SPEC.md "Route to a person": past a
-// medication limit, new or repeated symptoms, money requests or anything scam-like, signs of
-// distress, or the senior asking for family) and sending a family message the senior dictated
-// ("Tell Sarah I'm home"). Both queue through the notification outbox (insertNotification, so
-// delivery, retries and the send-time checks are the usual ones) and write an audit row.
-//
-// Reachability: a member is reachable when they have a verified phone (texted) or at least one
-// push token (the caregiver app; lib/delivery isReachableMember), and only reachable members
-// get an outbox row and are named as told. A flag goes to every reachable caregiver at once
-// (there is no on-call caregiver since 2026-11-14), distress included.
-// A family message goes to the reachable caregivers whose display name matches the name the
-// senior used (whole name or first name, case-insensitive), else to every reachable caregiver.
-// When nobody is reachable the status is "unreachable": the flag is still audited and the
-// message still stored and audited, and the tool says family could not be reached from here.
-// (Delivery may still skip a row at send time, for example a number outside the allowed
-// countries, or a push token APNs no longer accepts for a caregiver with no verified phone;
-// a verified phone or a registered token is the best check available when the row is queued.
-// A dead token with a verified phone falls back to the text, lib/delivery.)
-//
-// familyMessages has no recipient field, so when the senior named someone the stored body
-// itself starts "For <name>:" ("For Sarah: I'm home"), and the notification carries the same
-// text; the audit row's detail also keeps the name.
-//
-// Repeats and caps (every decision is an audit row with detail.status, detail.at and the
-// detail text, including a repeat that was not sent):
-// - Only an identical event is a repeat. A model flag's key is its reason plus its detail
-//   (lib/text.textKey); log_dose's flags are keyed on the medication (medication_limit:<task>,
-//   repeated_use:<task>). A flag whose key reached family in the last 10 minutes (or the
-//   caller's longer window: a week for repeated use) is not sent again (already_flagged, naming
-//   who was told). A different detail within the window is sent.
-// - At most 12 symptom, money_request and scam flags per household per hour reach family
-//   (rate_limited after that). distress, help_requested, medication_limit, repeated_use and a
-//   dose correction are never capped and do not count. The cap counts agentFlags rows, which
-//   hold only flags that went out, so held decisions never push sent ones out of the count.
-// - An identical message from the senior within 2 minutes is not sent again (already_sent,
-//   with the earlier outcome and recipients from its audit row).
-// - At most 10 messages from the senior per household per hour (rate_limited after that; the
-//   message is not stored).
-// - Taking back a dose that raised a medication_limit flag sends the same caregivers a short
-//   correction (sendDoseCorrection), uncapped.
-//
-// Flag detail (flagDetail): whatever the model or log_dose writes, a caregiver receives one
-// line holding at most the first two sentences, any run of 6 or more digits (spaces or dashes
-// between them allowed: card, bank and account numbers) replaced by "[number removed]", cut to
-// 240 characters.
-//
-// Last modified: 2026-11-14
-
 import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
@@ -59,7 +9,6 @@ import { appError } from "./errors";
 import { oneLine, textKey } from "./text";
 import { HOUR_MS, MINUTE_MS } from "./time";
 
-/** Why the model may flag a caregiver (a fall is distress; log_dose raises its own two). */
 export const modelFlagReason = v.union(
   v.literal("symptom"),
   v.literal("money_request"),
@@ -67,38 +16,23 @@ export const modelFlagReason = v.union(
   v.literal("distress"),
   v.literal("help_requested"),
 );
-/** Every reason a flag can have: the model's, and log_dose's medication_limit and repeated_use. */
 type FlagReason = Infer<typeof modelFlagReason> | "medication_limit" | "repeated_use";
-/** Reasons the hourly cap applies to; the others always go out and are not counted. */
 const CAPPED_REASONS: ReadonlySet<string> = new Set(["symptom", "money_request", "scam"]);
 
-/** The voice agent as an actor (no caregiver behind it). */
 export const VOICE_AGENT: Actor = { kind: "agent" };
 
-/** A delivered flag with the same key within this window (ms) is not sent again. */
 export const FLAG_REPEAT_WINDOW_MS = 10 * MINUTE_MS;
-/** Flags that may reach family per household per hour. */
 const MAX_FLAGS_PER_HOUR = 12;
-/** An identical senior message within this window (ms) is not sent again. */
 const MESSAGE_REPEAT_WINDOW_MS = 2 * MINUTE_MS;
-/** Messages from the senior per household per hour. */
 const MAX_MESSAGES_PER_HOUR = 10;
-/** Senior messages scanned (newest first) for repeats and the hourly cap. */
 const RECENT_MESSAGE_SCAN = MAX_MESSAGES_PER_HOUR + 20;
-/** A medication's newest limit flags searched for the one a dose raised. */
 const RECENT_FLAG_SCAN = 50;
-/** Sentences of a flag detail that reach a caregiver; the rest is dropped. */
 const MAX_FLAG_SENTENCES = 2;
-/** Hard cap on a flag detail after the sentence cut; longer text ends with "...". */
 export const MAX_FLAG_DETAIL_LENGTH = 240;
-/** Longest family message sent; longer text is cut, not rejected. */
 const MAX_MESSAGE_LENGTH = 1000;
-/** Longest recipient name kept in "For <name>:". */
 const MAX_NAME_LENGTH = 60;
-/** What a long digit run in a flag detail becomes. */
 const NUMBER_REMOVED = "[number removed]";
 
-/** Notification title per reason, given the senior's preferred name and the flag's subject. */
 const FLAG_TITLES: Record<FlagReason, (name: string, subject: string) => string> = {
   medication_limit: (name) => `${name} went past a medication limit`,
   repeated_use: (name, medication) => `${name} has used ${medication} often`,
@@ -109,41 +43,20 @@ const FLAG_TITLES: Record<FlagReason, (name: string, subject: string) => string>
   help_requested: (name) => `${name} asked for you`,
 };
 
-/** What flagCaregiverCore did. */
 export interface FlagResult {
-  /** flagged: rows were queued for `notified`; already_flagged: an earlier flag with the same
-   * key reached `notified`; unreachable: no caregiver has a verified phone or a push token;
-   * rate_limited: the hourly cap was reached. */
   status: "flagged" | "already_flagged" | "unreachable" | "rate_limited";
-  /** Display names of the caregivers a notification was queued for; empty otherwise. */
   notified: string[];
 }
 
-/** How a new family message went out. */
 type SendStatus = "sent" | "sent_to_family" | "unreachable";
 
-/** What sendFamilyMessageCore did. */
 export interface FamilyMessageResult {
-  /** sent: to the named caregiver(s) or, with no name, to every reachable caregiver;
-   * sent_to_family: the named person is not a reachable caregiver, so every reachable caregiver
-   * got it; unreachable: stored, but nobody could be reached; already_sent: the same message was
-   * handled moments ago (see earlierStatus); rate_limited: the hourly cap was reached and
-   * nothing was stored. */
   status: SendStatus | "already_sent" | "rate_limited";
   messageId: Id<"familyMessages"> | null;
-  /** Who got it; for already_sent, who got the earlier one. */
   recipients: string[];
-  /** For already_sent: how the earlier identical message went out; null otherwise. */
   earlierStatus: SendStatus | null;
 }
 
-/**
- * purpose: The caregivers a spoken name refers to: whole display name or first name, ignoring
- *          case.
- * @param members: (Doc<"householdMembers">[]) The household's caregivers.
- * @param name: (string) The name the senior used, e.g. "Sarah".
- * @return: (Doc<"householdMembers">[]) Matching members; empty for a blank name or no match.
- */
 export function membersNamed(
   members: Doc<"householdMembers">[],
   name: string,
@@ -157,13 +70,6 @@ export function membersNamed(
   });
 }
 
-/**
- * purpose: The flag detail a caregiver receives: one line, at most the first
- *          MAX_FLAG_SENTENCES sentences, long digit runs removed, at most
- *          MAX_FLAG_DETAIL_LENGTH characters.
- * @param text: (string) The detail as written by the model or log_dose.
- * @return: (string) The capped detail ("" for blank text).
- */
 export function flagDetail(text: string): string {
   const kept = oneLine(text)
     .replace(/\d(?:[\s-]?\d){5,}/g, NUMBER_REMOVED)
@@ -174,14 +80,6 @@ export function flagDetail(text: string): string {
   return `${kept.slice(0, MAX_FLAG_DETAIL_LENGTH - 3).trimEnd()}...`;
 }
 
-/**
- * purpose: The newest flag with a key that reached family within a window.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param key: (string) The repeat key.
- * @param since: (number) Epoch ms; older flags are left out.
- * @return: (Promise<Doc<"agentFlags"> | null>) The flag, or null.
- */
 async function sentFlagWithKey(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -197,14 +95,6 @@ async function sentFlagWithKey(
     .first();
 }
 
-/**
- * purpose: Whether the hourly cap is reached: MAX_FLAGS_PER_HOUR capped-reason flags reached
- *          family in the hour before now.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param now: (number) Epoch ms.
- * @return: (Promise<boolean>) True when another capped flag must wait.
- */
 async function capReached(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -217,21 +107,6 @@ async function capReached(
   return lastHour.filter((f) => CAPPED_REASONS.has(f.reason)).length >= MAX_FLAGS_PER_HOUR;
 }
 
-/**
- * purpose: Ask the caregivers to look in: queue an agent_flag notification for every reachable
- *          caregiver and audit the decision, unless the same event (same key) reached family
- *          within the repeat window or, for a capped reason, the hourly cap is reached. Every
- *          decision is audited with its detail. Nobody is named as told unless a row was queued for
- *          them (already_flagged names who the earlier identical flag reached).
- * @param ctx: (MutationCtx) Context.
- * @param args: ({household, reason, detail, key, repeatWindowMs, subject, doseId,
- *        conversationId, now}) The household, why, a short description for the caregiver
- *        (capped by flagDetail; blank sends the title only), the repeat key (default: the reason
- *        plus the detail's textKey), how long a sent flag with that key suppresses another
- *        (default 10 minutes), the title's subject (repeated_use: the medication), the dose a
- *        medication_limit flag is about, the conversation it came from, and the clock.
- * @return: (Promise<FlagResult>) The status and the caregivers named as told.
- */
 export async function flagCaregiverCore(
   ctx: MutationCtx,
   args: {
@@ -307,14 +182,6 @@ export async function flagCaregiverCore(
   return { status, notified: names };
 }
 
-/**
- * purpose: Tell the caregivers a dose's medication_limit flag reached that she took the dose
- *          back: one short agent_flag text each, never capped, audited as flag_correction.
- * @param ctx: (MutationCtx) Context.
- * @param args: ({household, taskId, doseId, conversationId, now}) The household, the
- *        medication, the dose taken back, the conversation and the clock.
- * @return: (Promise<string[]>) The caregivers' names; empty when the dose raised no sent flag.
- */
 export async function sendDoseCorrection(
   ctx: MutationCtx,
   args: {
@@ -361,13 +228,6 @@ export async function sendDoseCorrection(
   return flag.names;
 }
 
-/**
- * purpose: The senior's messages sent within the last hour.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param now: (number) Epoch ms (compared with the rows' creation time).
- * @return: (Promise<Doc<"familyMessages">[]>) Rows, newest first.
- */
 async function recentSeniorMessages(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -381,14 +241,6 @@ async function recentSeniorMessages(
   return rows.filter((r) => r.senderKind === "senior" && r._creationTime >= now - HOUR_MS);
 }
 
-/**
- * purpose: How an earlier message went out, from its send audit row (by_household_action).
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @param messageId: (Id<"familyMessages">) The earlier message.
- * @return: (Promise<{status, names}>) Its status and recipients' names; unreachable with no
- *          names when the row is not found.
- */
 async function earlierSend(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -406,21 +258,6 @@ async function earlierSend(
   };
 }
 
-/**
- * purpose: Send a message the senior dictated to family: store it as a familyMessages row from
- *          the senior (body "For <name>: <message>" when a name was given), queue a
- *          family_message notification with the same text to the named reachable caregiver
- *          (or every reachable caregiver) and audit it. An identical message within 2 minutes
- *          is not sent again (already_sent says how that one went out); past 10 messages an
- *          hour nothing is stored. Each outcome is audited, with the recipients' names.
- * @param ctx: (MutationCtx) Context.
- * @param args: ({household, to, body, conversationId, now}) The household, the name the senior
- *        used (blank for "my family"; one line, at most 60 characters), the message (trimmed;
- *        the stored body is cut to 1000 characters), the conversation it came from and the
- *        clock (the server clock: it is compared with row creation times).
- * @return: (Promise<FamilyMessageResult>) The status, the message id and the recipients' names.
- * @raises invalid when the message is blank.
- */
 export async function sendFamilyMessageCore(
   ctx: MutationCtx,
   args: {

@@ -1,14 +1,3 @@
-// sunny_app/src/caregiver/__tests__/useNoteEditor.test.tsx
-//
-// Purpose: Tests for useNoteEditor, rendering the real hook with react-test-renderer: opening a
-// row, saving on close only when the trimmed draft changed (blank clears), toggling the open row
-// closes it, opening another row saves the first, a failed save's draft comes back when the row
-// is reopened, unmounting saves an open draft, and toggle, setDraft and close keep their
-// identity between renders. Also: a successful save keeps a newer failed draft for the same
-// task, and close(rowId) acts only when that row is the open one.
-//
-// Last modified: 2026-11-01
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
@@ -20,10 +9,6 @@ const save = jest.fn<(id: TaskInstanceId, note: string | undefined) => Promise<b
 const A = { rowId: 'row-a', instanceId: 'a' as TaskInstanceId, note: 'Old' };
 const B = { rowId: 'row-b', instanceId: 'b' as TaskInstanceId, note: null };
 
-/**
- * purpose: Render the real hook and expose its latest return value.
- * @return: (object) A getter for the current NoteEditor and the renderer.
- */
 function renderEditor(): { get: () => NoteEditor; renderer: ReactTestRenderer } {
   let current!: NoteEditor;
   const Probe = (): null => {

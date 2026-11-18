@@ -1,16 +1,3 @@
-// calendar.test.ts
-// Purpose: Tests for calendar.ts with convex-test and a fake clock (vi.setSystemTime drives
-// Date.now() inside the functions). Ports the calendar assertions of the former Supabase pgTAP suite
-// (its calendar job tests): who may add, update and cancel; validation and normalization;
-// created-by provenance; past-time and repeat rules; DST stability of a weekly event;
-// update semantics (absent = unchanged, null = cleared, unknown keys rejected); soft
-// delete; audit rows; listEvents range limits; and dayView (header, part-of-day
-// boundaries, Next up with the 30 minute default, tasks with their sent senior prompts and snooze,
-// upcoming). Includes one access test per public function: outsiders, viewers and the paired
-// device.
-//
-// Last modified: 2026-11-09
-
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -18,42 +5,26 @@ import type { Id } from "./_generated/dataModel";
 import { addEventCore, cancelEventCore, updateEventCore } from "./calendar";
 import { isAppError } from "./lib/errors";
 import schema from "./schema";
+import { withUncheckedArgs } from "./testing.helpers";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const NY = "America/New_York";
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   return convexTest(schema, modules);
 }
 
-/** The convex-test harness type, with the schema's table types. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/**
- * purpose: Epoch ms of a UTC instant.
- * @param iso: (string) ISO instant.
- * @return: (number) Epoch ms.
- */
 function at(iso: string): number {
   return Date.parse(iso);
 }
 
-/**
- * purpose: Set the fake clock.
- * @param iso: (string) ISO instant.
- * @return: (void)
- */
 function setNow(iso: string): void {
   vi.setSystemTime(new Date(iso));
 }
 
-/** A household with a primary (user_a), a member, a viewer, a paired device and an outsider. */
 interface World {
   t: TestConvex;
   householdId: Id<"households">;
@@ -64,10 +35,6 @@ interface World {
   outsider: ReturnType<TestConvex["withIdentity"]>;
 }
 
-/**
- * purpose: Build the household and its people through the real households functions.
- * @return: (Promise<World>) Harness, household id and one handle per kind of caller.
- */
 async function makeWorld(): Promise<World> {
   const t = makeBackend();
   const primary = t.withIdentity({ subject: "user_a" });
@@ -101,11 +68,6 @@ async function makeWorld(): Promise<World> {
   };
 }
 
-/**
- * purpose: The application error code of a rejected promise.
- * @param promise: (Promise<unknown>) Call expected to reject.
- * @return: (Promise<string>) The code, or "other" when it is not an application error.
- */
 async function errorCode(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -118,11 +80,6 @@ async function errorCode(promise: Promise<unknown>): Promise<string> {
   return "none";
 }
 
-/**
- * purpose: The message of the application error of a rejected promise.
- * @param promise: (Promise<unknown>) Call expected to reject.
- * @return: (Promise<string>) The message.
- */
 async function errorMessage(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -331,11 +288,6 @@ describe("addEvent", () => {
 });
 
 describe("updateEvent", () => {
-  /**
-   * purpose: A weekly Tuesday and Thursday walk and a one-off physio.
-   * @param w: (World) The world.
-   * @return: (Promise) Both events.
-   */
   async function seed(w: World) {
     const walk = await w.primary.mutation(api.calendar.addEvent, {
       householdId: w.householdId,
@@ -444,10 +396,10 @@ describe("updateEvent", () => {
   test("unknown keys are rejected", async () => {
     const w = await makeWorld();
     const { physio } = await seed(w);
-    const call = w.primary.mutation(api.calendar.updateEvent, {
+    const call = w.primary.mutation(withUncheckedArgs(api.calendar.updateEvent), {
       householdId: w.householdId,
       eventId: physio.eventId,
-      changes: { color: "red" } as never,
+      changes: { color: "red" },
     });
     expect(await errorCode(call)).toBe("other");
   });
@@ -455,10 +407,10 @@ describe("updateEvent", () => {
   test("a required field cannot be null", async () => {
     const w = await makeWorld();
     const { physio } = await seed(w);
-    const call = w.primary.mutation(api.calendar.updateEvent, {
+    const call = w.primary.mutation(withUncheckedArgs(api.calendar.updateEvent), {
       householdId: w.householdId,
       eventId: physio.eventId,
-      changes: { title: null } as never,
+      changes: { title: null },
     });
     expect(await errorCode(call)).toBe("other");
   });
@@ -725,12 +677,6 @@ describe("listEvents", () => {
 });
 
 describe("dayView", () => {
-  /**
-   * purpose: A weekly Tuesday and Thursday 10:00 walk (no duration) and a 14:00 physio of 60
-   *          minutes, both on Thursday 2027-03-18; the clock is left on 2027-03-01.
-   * @param w: (World) The world.
-   * @return: (Promise<void>) Resolves when added.
-   */
   async function seed(w: World): Promise<void> {
     await w.primary.mutation(api.calendar.addEvent, {
       householdId: w.householdId,
@@ -750,12 +696,6 @@ describe("dayView", () => {
     });
   }
 
-  /**
-   * purpose: The day view at an instant.
-   * @param w: (World) The world.
-   * @param iso: (string) ISO instant to set the clock to.
-   * @return: (Promise) The day view.
-   */
   async function viewAt(w: World, iso: string) {
     setNow(iso);
     return await w.primary.query(api.calendar.dayView, { householdId: w.householdId });
@@ -875,6 +815,7 @@ describe("dayView", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       const base = {
         taskId,
@@ -917,6 +858,7 @@ describe("dayView", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       const base = {
         taskId,
@@ -932,10 +874,9 @@ describe("dayView", () => {
         state: "escalated",
         firedSteps: [
           { stepId: "a", action: "prompt_senior", firedAt: 0, notified: true },
-          // Superseded in the same tick: recorded but never sent, so not counted.
           { stepId: "b", action: "prompt_senior", firedAt: 1, notified: false },
           { stepId: "c", action: "prompt_senior", firedAt: 1, notified: true },
-          { stepId: "d", action: "alert_on_call", firedAt: 2, notified: true },
+          { stepId: "d", action: "alert_all_caregivers", firedAt: 2, notified: true },
         ],
       });
       await ctx.db.insert("taskInstances", {
@@ -969,6 +910,7 @@ describe("dayView", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       const base = {
         taskId,
@@ -996,12 +938,10 @@ describe("dayView", () => {
     expect(during.tasks.map((t) => [t.scheduledTime, t.snoozed])).toEqual([
       ["08:00", true],
       ["09:00", false],
-      // A snooze ending at this instant no longer holds the prompts back, as in the scheduler.
       ["10:00", false],
     ]);
     const after = await viewAt(w, "2027-03-18T12:45:00Z");
     expect(after.tasks.map((t) => t.snoozed)).toEqual([false, false, false]);
-    // The end of the latest snooze stays readable after it passed (null when never snoozed).
     expect(after.tasks.map((t) => t.snoozedUntil)).toEqual([
       at("2027-03-18T12:45:00Z"),
       null,

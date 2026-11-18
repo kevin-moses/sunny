@@ -1,37 +1,7 @@
-// lib/frame.test.ts
-// Purpose: Tests for the server-drawn display frames (lib/frame.ts, frameRaster.ts,
-// frameText.ts, framePng.ts, framePacked.ts with the reference decoder in
-// framePackedDecoder.helpers.ts).
-// Goldens: every case of lib/frameFixtures.helpers.ts, both pages, at 960 x 680 x 4 and
-// 800 x 480 x 2, must encode to exactly the PNG stored in lib/frameGoldens/, and
-// lib/frameGoldens/MANIFEST.json ties the goldens and the font data to FRAME_RENDERER_VERSION:
-// a picture or font change without a version bump fails. After an intended drawing change,
-// bump FRAME_RENDERER_VERSION, then regenerate with
-//   FRAME_GOLDENS=update npx vitest run convex/lib/frame.test.ts
-// and look at the new files before committing them. FRAME_PREVIEW_DIR=<dir> also writes every
-// golden there (with a step-2 variant of the multi-step case).
-// Rules: an early task is never drawn as Now (clear card, plain row, Next up after due, also
-// with two rows sharing a label and time) and Done names no task for it; a day with missed and
-// done tasks only is never all done; a snoozed task's tab says Later and its row is tagged
-// Later; an overdue multi-step task has the Talk prompt; a past event is dimmed; the step shown
-// is clamped; a label that cleans to nothing falls back to the item's type ("Step N" for a
-// step); a dose in micrograms reads "mcg". Layout (property test over generated cards, seeded):
-// on six screens no text reaches the band above the prompts rule or leaves the card.
-// Determinism: two renders are byte-identical and no clock is read (Date.now and
-// performance.now stubbed to different values). Encoders: the PNG is valid (signature, IHDR,
-// CRCs, zlib stream inflated by the platform's DecompressionStream back to the frame's samples);
-// the packed format's header fields, row padding, PackBits (the TIFF specification's example, a
-// literal run of 129 bytes or more, the size bound) and the round trip through the decoder, raw
-// encoding included, and refusals of malformed files. ETag: page, format, screen and renderer
-// version change it; row keys, an undrawn icon and the fields a multi-step card ignores do not.
-// Text: substitutions, decomposition, cleaning, wrapping, truncation with "…", shrinking to fit.
-// Time: the largest drawable screen renders within a budget.
-//
-// Last modified: 2026-11-14
-
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DeviceState } from "./deviceState";
+import { frameDoneTarget } from "./deviceState";
 import {
   DEFAULT_SCREEN,
   DRAWABLE_SCREEN,
@@ -39,7 +9,6 @@ import {
   FRAME_RENDERER_VERSION,
   buildFrameModel,
   drawFrame,
-  frameDoneInstance,
   frameEtag,
   isDrawableScreen,
   nowCardGeometry,
@@ -53,20 +22,17 @@ import {
   dayState,
   fixtureEvent,
   fixtureTask,
+  stepsState,
 } from "./frameFixtures.helpers";
+import { FACE_DATA } from "./fonts/frameFontData";
 import { PACKED_HEADER_BYTES, encodePacked, packBits, packPixels } from "./framePacked";
 import { decodePacked, readPackedHeader } from "./framePackedDecoder.helpers";
 import { encodePng } from "./framePng";
 import { Path } from "./frameRaster";
 import { breakLines, cleanText, fitText, measure } from "./frameText";
 
-/** Where the goldens live. */
 const GOLDENS = new URL("./frameGoldens/", import.meta.url);
 
-/** The generated font data, hashed into the manifest. */
-const FONT_DATA = new URL("./fonts/frameFontData.ts", import.meta.url);
-
-/** Budget (ms) for drawing and encoding the largest drawable screen (measured: about 150). */
 const LARGEST_BUDGET_MS = 1500;
 
 afterEach(() => {
@@ -74,33 +40,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/**
- * purpose: A golden case's state by name.
- * @param name: (string) The case.
- * @return: (DeviceState) Its state.
- */
 function caseState(name: string): DeviceState {
   const found = FRAME_CASES.find((c) => c.name === name);
   if (found === undefined) throw new Error(`no case ${name}`);
   return found.state;
 }
 
-/**
- * purpose: The file name of a golden.
- * @param name: (string) Case name.
- * @param page: (string) Page.
- * @param screen: (Screen) Screen.
- * @return: (string) The file name.
- */
 function goldenName(name: string, page: string, screen: Screen): string {
   return `${name}-${page}-${screen.width}x${screen.height}x${screen.greys}.png`;
 }
 
-/**
- * purpose: Inflate a zlib stream with the platform's DecompressionStream.
- * @param data: (Uint8Array) The stream.
- * @return: (Promise<Uint8Array>) The inflated bytes.
- */
 async function inflate(data: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([data as Uint8Array<ArrayBuffer>])
     .stream()
@@ -108,12 +57,6 @@ async function inflate(data: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/**
- * purpose: Decode a greyscale PNG made by encodePng back to levels, checking its structure.
- * @param png: (Uint8Array) The file.
- * @param greys: (number) The frame's grey count (to map 8-bit samples back to levels).
- * @return: (Promise<Frame>) The frame.
- */
 async function decodePng(png: Uint8Array, greys: number): Promise<Frame> {
   expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
@@ -159,11 +102,6 @@ async function decodePng(png: Uint8Array, greys: number): Promise<Frame> {
   return { width, height, greys, levels };
 }
 
-/**
- * purpose: CRC-32, written again here so the test does not trust the encoder's own.
- * @param data: (Uint8Array) Bytes.
- * @return: (number) The CRC.
- */
 function crc32(data: Uint8Array): number {
   let c = 0xffffffff;
   for (const byte of data) {
@@ -173,13 +111,6 @@ function crc32(data: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-/**
- * purpose: Expect two frames to be the same (size, greys, every level), compared as bytes
- *          because a deep comparison of 650,000 levels is very slow.
- * @param actual: (Frame) The frame made.
- * @param expected: (Frame) The frame wanted.
- * @return: (void)
- */
 function expectSameFrame(actual: Frame, expected: Frame): void {
   expect([actual.width, actual.height, actual.greys]).toEqual([
     expected.width,
@@ -189,11 +120,6 @@ function expectSameFrame(actual: Frame, expected: Frame): void {
   expect(Buffer.from(actual.levels).equals(Buffer.from(expected.levels))).toBe(true);
 }
 
-/**
- * purpose: SHA-256 of bytes, as hex.
- * @param data: (Uint8Array) The bytes.
- * @return: (Promise<string>) 64 hex characters.
- */
 async function sha256(data: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", data as Uint8Array<ArrayBuffer>);
   return Buffer.from(digest).toString("hex");
@@ -230,7 +156,7 @@ describe("goldens", () => {
   it("writes a preview of the multi-step task on its second step when asked", () => {
     if (preview === undefined) return;
     for (const screen of FRAME_SCREENS) {
-      const png = encodePng(renderFrame(caseState("steps"), screen, "now", 1));
+      const png = encodePng(renderFrame(stepsState(1), screen, "now"));
       writeFileSync(`${preview}/${goldenName("steps-second-step", "now", screen)}`, png);
     }
   });
@@ -245,7 +171,7 @@ describe("goldens", () => {
     const now = {
       rendererVersion: FRAME_RENDERER_VERSION,
       goldens: await sha256(all),
-      fontData: await sha256(readFileSync(FONT_DATA)),
+      fontData: await sha256(Buffer.from(JSON.stringify(FACE_DATA))),
     };
     const manifest = new URL("MANIFEST.json", GOLDENS);
     let stored: typeof now | null = null;
@@ -290,7 +216,7 @@ describe("the wall display's rules", () => {
       "none",
     ]);
     expect(state.rows[0]!.mark).toBe("now");
-    expect(frameDoneInstance(state)).toBeNull();
+    expect(frameDoneTarget(state)).toBeNull();
   });
 
   it("keeps an event that comes before the early task as Next up", () => {
@@ -340,9 +266,9 @@ describe("the wall display's rules", () => {
       now: { kind: "task", tab: "Now  \u00b7  8:00", label: "Morning pills", overdue: false },
       next: { title: "Walk around the block" },
     });
-    expect(frameDoneInstance(state)).toBe("pills-am");
-    expect(frameDoneInstance(caseState("snoozed"))).toBe("pills-am");
-    expect(frameDoneInstance(caseState("nothing-due"))).toBeNull();
+    expect(frameDoneTarget(state)).toEqual({ instanceId: "pills-am", early: false, step: 0 });
+    expect(frameDoneTarget(caseState("snoozed"))?.instanceId).toBe("pills-am");
+    expect(frameDoneTarget(caseState("nothing-due"))).toBeNull();
   });
 
   it("keeps a day with a missed task at nothing to do, never all done", () => {
@@ -387,9 +313,8 @@ describe("the wall display's rules", () => {
     });
   });
 
-  it("names a multi-step task on its tab, clamps the step, and keeps overdue for Talk", () => {
-    const state = caseState("steps");
-    expect(buildFrameModel(state, "now", 9)).toMatchObject({
+  it("names a multi-step task on its tab, draws the state's step, and keeps overdue for Talk", () => {
+    expect(buildFrameModel(stepsState(2), "now")).toMatchObject({
       now: {
         kind: "steps",
         tab: "Now  \u00b7  Getting ready to go out",
@@ -398,7 +323,7 @@ describe("the wall display's rules", () => {
         overdue: false,
       },
     });
-    expect(buildFrameModel(state, "now", -3)).toMatchObject({ now: { step: 0 } });
+    expect(buildFrameModel(caseState("steps"), "now")).toMatchObject({ now: { step: 0 } });
     expect(buildFrameModel(caseState("overdue-steps"), "now")).toMatchObject({
       now: { kind: "steps", overdue: true, tab: "Still to do  \u00b7  Getting ready to go out" },
     });
@@ -455,20 +380,10 @@ describe("layout: text stays in the Now card (generated cards)", () => {
     "quickly please pick up your keys gloves happy jelly gp extraordinarily Wolverhampton"
   ).split(" ");
   let seed = 7;
-  /**
-   * purpose: The next number of a fixed-seed Lehmer generator (deterministic; no Math.random).
-   * @param n: (number) Exclusive upper bound.
-   * @return: (number) 0 to n - 1.
-   */
   const rnd = (n: number): number => {
     seed = (seed * 48271) % 2147483647;
     return seed % n;
   };
-  /**
-   * purpose: A phrase of random words.
-   * @param count: (number) How many words.
-   * @return: (string) The phrase.
-   */
   const phrase = (count: number): string =>
     Array.from({ length: count }, () => words[rnd(words.length)]).join(" ");
   const screens = [
@@ -479,14 +394,6 @@ describe("layout: text stays in the Now card (generated cards)", () => {
     { width: DRAWABLE_SCREEN.minWidth, height: DRAWABLE_SCREEN.minHeight, greys: 2 },
     { width: 680, height: 960, greys: 4 },
   ];
-  /**
-   * purpose: A card's state: a one-step medication or a two-step checklist at 08:40.
-   * @param overdue: (boolean) Escalated (Talk line) or due.
-   * @param label: (string) The label.
-   * @param pill: (string | null) The pill description, or a step's text for a checklist.
-   * @param steps: (boolean) A multi-step checklist.
-   * @return: ({ overdue: boolean; state: DeviceState }) The card.
-   */
   const card = (
     overdue: boolean,
     label: string,
@@ -504,7 +411,6 @@ describe("layout: text stays in the Now card (generated cards)", () => {
     return { overdue, state: dayState("08:40", { tasks: [task] }) };
   };
   const cards = [
-    // The cards the review found colliding with the prompts rule.
     card(
       true,
       "glasses go please upright",
@@ -538,14 +444,6 @@ describe("layout: text stays in the Now card (generated cards)", () => {
         const { box, inner, promptsTop } = nowCardGeometry(screen, overdue ? 2 : 1);
         const scale = Math.min(screen.width / 1194, screen.height / 834);
         const paper = screen.greys - 1;
-        /**
-         * purpose: Whether a rectangle of pixels is all paper.
-         * @param x0: (number) First column.
-         * @param x1: (number) Column after the last.
-         * @param y0: (number) First row.
-         * @param y1: (number) Row after the last.
-         * @return: (boolean) True when blank.
-         */
         const blank = (x0: number, x1: number, y0: number, y1: number): boolean => {
           for (let y = y0; y < y1; y += 1) {
             for (let x = x0; x < x1; x += 1) {
@@ -616,11 +514,6 @@ describe("PNG", () => {
   });
 
   it("uses the bit depth that holds the levels exactly", () => {
-    /**
-     * purpose: The PNG bit depth written for a grey count.
-     * @param greys: (number) Grey levels.
-     * @return: (number) The IHDR bit depth.
-     */
     const depthOf = (greys: number): number =>
       encodePng(renderFrame(caseState("due"), { width: 500, height: 350, greys }, "now"))[24]!;
     expect([2, 3, 4, 16, 17, 256].map(depthOf)).toEqual([1, 8, 2, 4, 8, 8]);
@@ -728,11 +621,6 @@ describe("packed format", () => {
     const good = encodePacked(
       renderFrame(caseState("due"), { width: 500, height: 350, greys: 4 }, "now"),
     );
-    /**
-     * purpose: A copy of the good file with a change applied.
-     * @param patch: ((b: Uint8Array) => Uint8Array) The change.
-     * @return: (Uint8Array) The changed file.
-     */
     const broken = (patch: (b: Uint8Array) => Uint8Array): Uint8Array => patch(good.slice());
     expect(() => decodePacked(broken((b) => ((b[0] = 0), b)))).toThrow("not a packed frame");
     expect(() => decodePacked(broken((b) => ((b[4] = 2), b)))).toThrow("version");

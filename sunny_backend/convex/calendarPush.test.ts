@@ -1,16 +1,3 @@
-// calendarPush.test.ts
-// Purpose: Tests for the push action (calendarPush.ts). Google is mocked
-// (googleMocks.helpers.ts); the action runs directly through t.action. Covers: create, update
-// and delete paths and the link and lastSyncedAt records; the access token cache (stored
-// encrypted with its expiry, reused while valid, refreshed within 60 seconds of expiry,
-// refreshed once per burst of pushes, refreshed after a 401 and then rethrown on a second 401,
-// cleared on revoke and reconnect); revoked and deleted-calendar handling; non-retryable errors
-// ending quietly and retryable ones thrown; a paused household, an inactive connection, a
-// caregiver who left, another household's event and a removed row each ending without calling
-// Google.
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -51,22 +38,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Run the push action for the first sync row.
- * @param t: (TestConvex) Harness.
- * @return: The push outcome.
- */
 async function runPush(t: TestConvex) {
   const [row] = await syncRows(t);
   return await t.action(internal.calendarPush.push, { syncId: row!._id });
 }
 
-/**
- * purpose: Read a connection row.
- * @param t: (TestConvex) Harness.
- * @param id: (Id<"calendarConnections">) The connection id.
- * @return: The row.
- */
 async function connectionRow(t: TestConvex, id: Id<"calendarConnections">) {
   return await t.run(async (ctx) => await ctx.db.get(id));
 }

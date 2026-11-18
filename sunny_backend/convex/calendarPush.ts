@@ -1,26 +1,3 @@
-// calendarPush.ts
-// Purpose: The push of one Sunny event to one caregiver's Google calendar, ported from
-// jobs-run/calendar.ts (calendar_sync_event). The workpool runs `push` for a calendarSyncs row
-// (queueing and the row's state machine: lib/calendarSync.ts). `begin` marks the row running
-// and reads everything the push needs in one transaction, so an edit after it sets the row
-// dirty; `push` calls Google; `recordPush` stores the link; `onPushComplete` finishes the row.
-// Contracts worth knowing:
-// - A paused household, an inactive connection, a caregiver who left, or a missing event ends
-//   the push without touching Google (reason logged). Resuming a household re-pushes
-//   everything (households.update).
-// - The access token is cached encrypted on the connection and refreshed only when missing,
-//   within 60 s of expiry, or after a 401 (then one retry), so a backfill refreshes about once.
-// - Revoked access marks the connection revoked. A calendar Google confirms is gone, a
-//   permanent 403, or credentials Sunny can no longer decrypt mark it in error. One event's
-//   404 does not disable the connection. Other non-retryable Google errors end quietly with a
-//   logged reason. A permanent configuration error (missing env var) is a workpool
-//   NonRetryableError: no retries. Anything else is thrown so the workpool retries.
-// - When retries run out, the connection gets a caregiver-safe lastError and the row is tried
-//   once more after a delay; the next success clears the error. Google event ids derive from
-//   Sunny's, so a retried create replaces the event instead of duplicating it.
-//
-// Last modified: 2026-10-29
-
 import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -41,7 +18,6 @@ import {
 import { buildGoogleEvent, eventSyncPayload, googleEventId } from "./lib/googleEvent";
 import { SecretUnreadable, decryptSecret, encryptSecret } from "./lib/secretBox";
 
-/** Caregiver-readable reasons stored on a connection. */
 const REVOKED_MESSAGE = "Google access was revoked; reconnect Google Calendar.";
 const CALENDAR_MISSING_MESSAGE = "The Sunny calendar was deleted in Google; reconnect.";
 const UNREADABLE_MESSAGE =
@@ -50,17 +26,13 @@ const FORBIDDEN_MESSAGE =
   "Google denied Sunny access to the Sunny calendar; reconnect Google Calendar.";
 const SYNC_FAILED_MESSAGE = "Some events could not be synced to Google; Sunny will retry.";
 
-/** How long to wait before the one extra attempt after a push failed all its retries. */
 const FAILED_RETRY_DELAY_MS = 10 * 60 * 1000;
 
-/** Refresh an access token this long before it expires. */
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 
-/** What a push did, for logs and tests. */
 type PushOutcome =
   "created" | "updated" | "deleted" | "skipped" | "revoked" | "calendar_missing" | "failed";
 
-/** What `begin` found: nothing to do, or everything the push needs. */
 type BeginResult =
   | { kind: "skip"; reason: string }
   | {
@@ -75,14 +47,6 @@ type BeginResult =
       externalEventId: string | null;
     };
 
-/**
- * purpose: Mark a sync row running and gather what the push needs. Skips (without error)
- *          when the row, connection, member, household or event is gone, the connection is
- *          not active, the connection and event belong to different households, or the
- *          household is paused.
- * @param syncId: (Id<"calendarSyncs">) The row.
- * @return: (BeginResult) skip with a reason, or the work to do.
- */
 export const begin = internalMutation({
   args: { syncId: v.id("calendarSyncs") },
   handler: async (ctx, { syncId }): Promise<BeginResult> => {
@@ -120,14 +84,6 @@ export const begin = internalMutation({
   },
 });
 
-/**
- * purpose: Record the result of a push: store the event link and lastSyncedAt, or remove the
- *          link after a delete. Does nothing when the connection has been dropped.
- * @param connectionId: (Id<"calendarConnections">) Connection.
- * @param eventId: (Id<"events">) Event.
- * @param link: ({ externalEventId, etag } | null) The Google event, or null after a delete.
- * @return: (null)
- */
 export const recordPush = internalMutation({
   args: {
     connectionId: v.id("calendarConnections"),
@@ -153,14 +109,6 @@ export const recordPush = internalMutation({
   },
 });
 
-/**
- * purpose: Store a refreshed access token (encrypted) on the connection for later pushes.
- *          Does nothing when the connection has been dropped.
- * @param connectionId: (Id<"calendarConnections">) Connection.
- * @param accessToken: (string) The encrypted access token.
- * @param expiresAt: (number) Epoch ms the token expires.
- * @return: (null)
- */
 export const saveAccessToken = internalMutation({
   args: {
     connectionId: v.id("calendarConnections"),
@@ -175,14 +123,6 @@ export const saveAccessToken = internalMutation({
   },
 });
 
-/**
- * purpose: Mark a connection revoked or in error so the caregiver can reconnect. Also clears
- *          the cached access token.
- * @param connectionId: (Id<"calendarConnections">) Connection.
- * @param status: ("revoked" | "error") New status.
- * @param error: (string) Caregiver-readable reason.
- * @return: (null)
- */
 export const markConnection = internalMutation({
   args: {
     connectionId: v.id("calendarConnections"),
@@ -202,38 +142,21 @@ export const markConnection = internalMutation({
   },
 });
 
-/** Work: the "work" variant of BeginResult, i.e. the connection, event and household to push. */
 type Work = Extract<BeginResult, { kind: "work" }>;
 
-/** AccessToken: a usable access token (accessToken) and its expiry (expiresAt, epoch ms). */
 interface AccessToken {
   accessToken: string;
   expiresAt: number;
 }
 
-/**
- * purpose: Access tokens for one connection: the stored one while valid, else a refresh that is
- *          stored for later pushes.
- * @param work: (Work) The connection's stored tokens.
- * @param save: (Function) Persists a refreshed token (encrypted) with its expiry.
- */
 class AccessTokens {
   private current: AccessToken | null = null;
 
-  /**
-   * purpose: Build a token holder.
-   * @param work: (Work) The connection's stored tokens.
-   * @param save: (Function) Persists a refreshed token (encrypted) with its expiry.
-   */
   constructor(
     private readonly work: Work,
     private readonly save: (encrypted: string, expiresAt: number) => Promise<void>,
   ) {}
 
-  /**
-   * purpose: Load the stored access token, if there is one that can be decrypted.
-   * @return: (Promise<AccessTokens>) This holder.
-   */
   async load(): Promise<AccessTokens> {
     const { accessToken, accessTokenExpiresAt } = this.work;
     if (accessToken !== null && accessTokenExpiresAt !== null) {
@@ -243,17 +166,12 @@ class AccessTokens {
           expiresAt: accessTokenExpiresAt,
         };
       } catch {
-        this.current = null; // e.g. the key changed: refresh instead
+        this.current = null;
       }
     }
     return this;
   }
 
-  /**
-   * purpose: A usable access token, refreshed and stored when missing or within 60 s of expiry.
-   * @return: (Promise<string>) Access token.
-   * @raises GoogleAccessRevoked when the caregiver revoked access.
-   */
   async get(): Promise<string> {
     if (this.current && this.current.expiresAt - TOKEN_EXPIRY_MARGIN_MS > Date.now()) {
       return this.current.accessToken;
@@ -263,20 +181,11 @@ class AccessTokens {
     return this.current.accessToken;
   }
 
-  /**
-   * purpose: Forget the current token (Google rejected it) so the next get refreshes.
-   */
   invalidate(): void {
     this.current = null;
   }
 }
 
-/**
- * purpose: Write one event to Google, or delete it when cancelled.
- * @param work: (Work) The connection, event and household.
- * @param accessToken: (string) OAuth access token.
- * @return: (Promise<object>) The outcome and the link to record (null after a delete).
- */
 async function pushToGoogle(
   work: Work,
   accessToken: string,
@@ -299,12 +208,6 @@ async function pushToGoogle(
   };
 }
 
-/**
- * purpose: Run pushToGoogle, refreshing the access token once when Google answers 401.
- * @param work: (Work) The work to do.
- * @param tokens: (AccessTokens) Tokens for this connection.
- * @return: (Promise<{ outcome: PushOutcome; link: object | null }>) See pushToGoogle.
- */
 async function pushWithRefresh(
   work: Work,
   tokens: AccessTokens,
@@ -318,16 +221,6 @@ async function pushWithRefresh(
   }
 }
 
-/**
- * purpose: Handle an error from a push attempt: record what it means for the connection and
- *          return the outcome, or rethrow when the workpool should retry.
- * @param ctx: (ActionCtx) Action context.
- * @param work: (Work) The work being pushed.
- * @param tokens: (AccessTokens) Tokens for this connection.
- * @param e: (unknown) The error.
- * @return: (Promise<PushOutcome>) The outcome when the error is final.
- * @raises NonRetryableError for a configuration error; the original error when retryable.
- */
 async function settleError(
   ctx: ActionCtx,
   work: Work,
@@ -351,7 +244,6 @@ async function settleError(
     return "revoked";
   }
   if (e instanceof GoogleApiError && e.gone) {
-    // A 404 may be one event, not the calendar: only a missing calendar disables the connection.
     if (!(await calendarExists(await tokens.get(), work.calendarId))) {
       await mark("error", CALENDAR_MISSING_MESSAGE);
       return "calendar_missing";
@@ -370,13 +262,6 @@ async function settleError(
   throw e;
 }
 
-/**
- * purpose: The workpool action: push one event to one connection's Google calendar. Throws
- *          for errors worth retrying (the workpool retries with backoff); returns for
- *          everything else.
- * @param syncId: (Id<"calendarSyncs">) The row to work for.
- * @return: (PushOutcome) What happened.
- */
 export const push = internalAction({
   args: { syncId: v.id("calendarSyncs") },
   handler: async (ctx, { syncId }): Promise<PushOutcome> => {
@@ -406,17 +291,6 @@ export const push = internalAction({
   },
 });
 
-/**
- * purpose: Workpool completion handler. A row marked dirty while running is reset to queued
- *          and pushed again. A failed run (retries exhausted, or a non-retryable error)
- *          records a caregiver-safe lastError on the connection and is tried once more after
- *          FAILED_RETRY_DELAY_MS, then dropped unless the event changed meanwhile. Anything
- *          else deletes the row, including a canceled run.
- * @param workId: (string) The workpool work id.
- * @param context: ({ syncId }) The row the push worked for.
- * @param result: (RunResult) success, failed, or canceled.
- * @return: (null)
- */
 export const onPushComplete = internalMutation({
   args: vOnCompleteArgs(v.object({ syncId: v.id("calendarSyncs") })),
   handler: async (ctx, { context, result }): Promise<null> => {

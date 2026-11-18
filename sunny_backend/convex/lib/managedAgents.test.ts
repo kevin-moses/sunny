@@ -1,16 +1,3 @@
-// lib/managedAgents.test.ts
-// Purpose: Tests for the pure parts of lib/managedAgents.ts, ported from the behavior of
-// the former Supabase jobs-run agent function: pendingToolUses (calls without a result) and
-// finishedTurn (running while the session works or waits for tool results, replied at end of
-// turn with the joined agent text or "Done.", stopped for any other idle reason, and only the
-// turn after the latest user message counts), plus readAgentConfig (missing variables are
-// named, the session budget defaults to 100 cents and ignores invalid values), and
-// createSession, with the Anthropic SDK replaced by a recording double (the network boundary):
-// the session is created with the deployed model, system prompt and tools as an
-// agent_with_overrides of the configured agent.
-//
-// Last modified: 2026-11-01
-
 import { describe, expect, test, vi } from "vitest";
 import { AGENT_MODEL, AGENT_SYSTEM_PROMPT } from "./agentConfig";
 import { AGENT_TOOLS } from "./agentTools";
@@ -31,38 +18,18 @@ vi.mock("@anthropic-ai/sdk", () => ({
   },
 }));
 
-/**
- * purpose: A user.message event.
- * @param id: (string) Event id.
- * @return: (SessionEvent) The event.
- */
 function userMessage(id = "u1"): SessionEvent {
   return { id, type: "user.message" };
 }
 
-/**
- * purpose: An agent.custom_tool_use event.
- * @param id: (string) Event id (the tool use id).
- * @return: (SessionEvent) The event.
- */
 function toolUse(id: string): SessionEvent {
   return { id, type: "agent.custom_tool_use", name: "get_calendar", input: { from_date: "x" } };
 }
 
-/**
- * purpose: A user.custom_tool_result event answering a tool use.
- * @param toolUseId: (string) The answered tool use id.
- * @return: (SessionEvent) The event.
- */
 function toolResult(toolUseId: string): SessionEvent {
   return { id: `r_${toolUseId}`, type: "user.custom_tool_result", custom_tool_use_id: toolUseId };
 }
 
-/**
- * purpose: An agent.message event with text blocks.
- * @param texts: (string[]) Text blocks.
- * @return: (SessionEvent) The event.
- */
 function agentMessage(...texts: string[]): SessionEvent {
   return {
     id: `m_${texts.join("").length}_${texts[0] ?? ""}`,
@@ -71,12 +38,6 @@ function agentMessage(...texts: string[]): SessionEvent {
   };
 }
 
-/**
- * purpose: A session.status_idle event.
- * @param reason: (string) Stop reason type.
- * @param id: (string) Event id.
- * @return: (SessionEvent) The event.
- */
 function idle(reason: string, id = "i1"): SessionEvent {
   return { id, type: "session.status_idle", stop_reason: { type: reason } };
 }

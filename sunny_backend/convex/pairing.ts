@@ -1,52 +1,3 @@
-// convex/pairing.ts
-// Purpose: Device pairing over HTTP. A signed-out senior device POSTs a join code to /pair
-// (routed in http.ts) and gets back a Clerk sign-in ticket for a freshly created device
-// user. Flow: overall rate limit -> failed-attempt limit check -> check the code is a
-// redeemable device code (so bad codes never cost a Clerk call) -> create the Clerk user ->
-// households.pairDevice -> create a sign-in token. Any failure after the Clerk user exists
-// deletes it again, and a failure after pairing rolls the pairing back (a failing rollback is
-// logged and the Clerk user is still deleted). Also holds the best-effort action that
-// deletes a device's Clerk user on unpairing. Every /pair response carries
-// Cache-Control: no-store, and every Clerk call times out after 8 seconds.
-//
-// Lost response: the client may send a random `pairingNonce` (16 to 128 characters). It is
-// stored on the device row with the pairing time. If the response is lost and the client
-// retries with the same code and nonce within 10 minutes, /pair answers with a fresh sign-in
-// token for the same device user (same 200 body) instead of 404. If that user has no
-// username (created before the fix) one is patched on first: the user is read with GET and
-// only patched when the username is empty, so an existing username is never changed. A missing or different
-// nonce, a deleted device or a late retry keeps the 404.
-//
-// Rate limits: an overall bucket (300/min) is spent on every request. Failed code checks
-// spend a strict failed-attempt bucket (30/min global, 10/min per client IP when an IP is
-// known); once that bucket is empty /pair answers 429 before looking at the code. Convex
-// documents no client IP header for HTTP actions: clientIp reads the rightmost
-// x-forwarded-for entry, else x-real-ip, which may be absent or spoofable, so the global
-// failed-attempt bucket is the real limit and the per-IP bucket is only a courtesy. The IP
-// key is truncated to 64 characters.
-//
-// Clerk Backend API (Bearer CLERK_SECRET_KEY):
-//   POST   https://api.clerk.com/v1/users            create a user; fields used: public_metadata
-//          { sunny_kind: "device" }, external_id, skip_password_requirement, and a random
-//          username "device_<32 hex>". No email, phone or password. Clerk refuses to sign in
-//          with a ticket for a user that has no identifier at all, so the username is that
-//          identifier (optional usernames must be enabled on the Clerk instance). A 422
-//          "form_identifier_exists" (username taken) is retried once with a new username.
-//          See https://clerk.com/docs/reference/backend/user/create-user
-//   GET    https://api.clerk.com/v1/users/{user_id}  read a user (retry path: has a username?)
-//   PATCH  https://api.clerk.com/v1/users/{user_id}  { username } for device users created
-//          before the username fix, so a retrying device can finish pairing
-//   DELETE https://api.clerk.com/v1/users/{user_id}  delete a user
-//   POST   https://api.clerk.com/v1/sign_in_tokens   { user_id, expires_in_seconds }; the
-//          response token is the "ticket" for the app's ticket sign-in strategy. See
-//          https://clerk.com/docs/reference/backend/sign-in-tokens/create-sign-in-token
-//
-// Env: CLERK_SECRET_KEY (missing -> 500 from /pair).
-//
-// The shared response helpers (JSON, errors, no-store, 429, client IP) are lib/httpResponse.ts.
-//
-// Last modified: 2026-11-13
-
 import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
@@ -71,35 +22,24 @@ const CLERK_TIMEOUT_MS = 8000;
 const USERNAME_PREFIX = "device_";
 const USERNAME_TAKEN_CODE = "form_identifier_exists";
 
-/**
- * Requests per minute: every request spends pairOverall; only failed code checks spend the
- * failed-attempt buckets (global, and per client IP when one is known).
- */
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   pairOverall: { kind: "token bucket", rate: 300, period: MINUTE, capacity: 300 },
   pairFailedGlobal: { kind: "token bucket", rate: 30, period: MINUTE, capacity: 30 },
   pairFailedPerIp: { kind: "token bucket", rate: 10, period: MINUTE, capacity: 10 },
 });
 
-/** The JSON body /pair accepts. */
 interface PairRequest {
   code: string;
   name?: string;
   pairingNonce?: string;
 }
 
-/** The successful /pair body, apart from the ticket. */
 interface PairResult {
   householdId: Id<"households">;
   deviceId: Id<"devices">;
   kind: DeviceKind;
 }
 
-/**
- * purpose: Validate the JSON body of a /pair request.
- * @param request: (Request) The HTTP request.
- * @return: (Promise<PairRequest | string>) The parsed body, or an error message.
- */
 async function parsePairRequest(request: Request): Promise<PairRequest | string> {
   let body: unknown;
   try {
@@ -129,15 +69,6 @@ async function parsePairRequest(request: Request): Promise<PairRequest | string>
   return parsed;
 }
 
-/**
- * purpose: Call the Clerk Backend API.
- * @param secret: (string) Clerk secret key.
- * @param method: (string) HTTP method.
- * @param path: (string) Path under /v1.
- * @param body: (unknown, optional) JSON body.
- * @return: (Promise<Response>) The Clerk response.
- * @raises Error on a network failure or when Clerk does not answer within 8 seconds.
- */
 async function clerkFetch(
   secret: string,
   method: string,
@@ -152,22 +83,12 @@ async function clerkFetch(
   });
 }
 
-/**
- * purpose: A random device username valid under Clerk's rules (letters, digits, underscore,
- *          4 to 64 characters, not numeric only): "device_" plus 32 lowercase hex characters.
- * @return: (string) The username.
- */
 function newDeviceUsername(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   return `${USERNAME_PREFIX}${hex}`;
 }
 
-/**
- * purpose: Whether a Clerk response is the 422 "that username is taken" error.
- * @param res: (Response) The Clerk response (its body is read from a clone).
- * @return: (Promise<boolean>) True for a taken-identifier 422.
- */
 async function isUsernameTaken(res: Response): Promise<boolean> {
   if (res.status !== 422) return false;
   try {
@@ -178,11 +99,6 @@ async function isUsernameTaken(res: Response): Promise<boolean> {
   }
 }
 
-/**
- * purpose: One POST /users attempt for a device user with a fresh username.
- * @param secret: (string) Clerk secret key.
- * @return: (Promise<Response>) The Clerk response.
- */
 async function postDeviceUser(secret: string): Promise<Response> {
   return await clerkFetch(secret, "POST", "/users", {
     external_id: `device-${crypto.randomUUID()}`,
@@ -192,14 +108,6 @@ async function postDeviceUser(secret: string): Promise<Response> {
   });
 }
 
-/**
- * purpose: Create the Clerk user for a device: a random username (Clerk needs one identifier
- *          to issue a sign-in ticket), no email, phone or password, tagged sunny_kind "device".
- *          A taken username is retried once with a new one.
- * @param secret: (string) Clerk secret key.
- * @return: (Promise<string>) The new Clerk user id.
- * @raises Error when Clerk rejects the request.
- */
 async function createDeviceUser(secret: string): Promise<string> {
   let res = await postDeviceUser(secret);
   if (await isUsernameTaken(res)) res = await postDeviceUser(secret);
@@ -209,35 +117,6 @@ async function createDeviceUser(secret: string): Promise<string> {
   return user.id;
 }
 
-/**
- * purpose: Make sure a device's Clerk user has a username, so a sign-in ticket works. Users
- *          created before the username fix have none. The user is read first so an existing
- *          username is never overwritten; a taken new username is retried once.
- * @param secret: (string) Clerk secret key.
- * @param userId: (string) Clerk user id.
- * @return: (Promise<void>)
- * @raises Error when Clerk fails to read or patch the user.
- */
-async function ensureDeviceUsername(secret: string, userId: string): Promise<void> {
-  const path = `/users/${encodeURIComponent(userId)}`;
-  const got = await clerkFetch(secret, "GET", path);
-  if (!got.ok) throw new Error(`Clerk get user failed with status ${got.status}`);
-  const user = (await got.json()) as { username?: unknown };
-  if (typeof user.username === "string" && user.username !== "") return;
-  let res = await clerkFetch(secret, "PATCH", path, { username: newDeviceUsername() });
-  if (await isUsernameTaken(res)) {
-    res = await clerkFetch(secret, "PATCH", path, { username: newDeviceUsername() });
-  }
-  if (!res.ok) throw new Error(`Clerk set username failed with status ${res.status}`);
-}
-
-/**
- * purpose: Delete a Clerk user. A user that is already gone (404) counts as deleted.
- * @param secret: (string) Clerk secret key.
- * @param userId: (string) Clerk user id.
- * @return: (Promise<void>)
- * @raises Error when Clerk fails for another reason.
- */
 async function deleteUser(secret: string, userId: string): Promise<void> {
   const res = await clerkFetch(secret, "DELETE", `/users/${encodeURIComponent(userId)}`);
   if (!res.ok && res.status !== 404) {
@@ -245,13 +124,6 @@ async function deleteUser(secret: string, userId: string): Promise<void> {
   }
 }
 
-/**
- * purpose: Create a short-lived sign-in token for the app's ticket sign-in.
- * @param secret: (string) Clerk secret key.
- * @param userId: (string) Clerk user id.
- * @return: (Promise<string>) The ticket.
- * @raises Error when Clerk rejects the request.
- */
 async function createSignInToken(secret: string, userId: string): Promise<string> {
   const res = await clerkFetch(secret, "POST", "/sign_in_tokens", {
     user_id: userId,
@@ -263,13 +135,6 @@ async function createSignInToken(secret: string, userId: string): Promise<string
   return token.token;
 }
 
-/**
- * purpose: Delete a Clerk user during rollback, logging instead of throwing so the original
- *          error is the one reported.
- * @param secret: (string) Clerk secret key.
- * @param userId: (string) Clerk user id.
- * @return: (Promise<void>)
- */
 async function deleteUserQuietly(secret: string, userId: string): Promise<void> {
   try {
     await deleteUser(secret, userId);
@@ -278,23 +143,11 @@ async function deleteUserQuietly(secret: string, userId: string): Promise<void> 
   }
 }
 
-/**
- * purpose: Spend one request from the overall bucket.
- * @param ctx: (ActionCtx) Action context.
- * @return: (Promise<number | null>) Milliseconds to wait when limited, else null.
- */
 async function overallRetryAfter(ctx: ActionCtx): Promise<number | null> {
   const overall = await rateLimiter.limit(ctx, "pairOverall");
   return overall.ok ? null : overall.retryAfter;
 }
 
-/**
- * purpose: Check, without spending, whether the failed-attempt buckets (global and per-IP)
- *          still have room.
- * @param ctx: (ActionCtx) Action context.
- * @param key: (string | null) Per-IP key, or null when no IP is known.
- * @return: (Promise<number | null>) Milliseconds to wait when exhausted, else null.
- */
 async function failedAttemptRetryAfter(ctx: ActionCtx, key: string | null): Promise<number | null> {
   const global = await rateLimiter.check(ctx, "pairFailedGlobal");
   if (!global.ok) return global.retryAfter;
@@ -305,28 +158,11 @@ async function failedAttemptRetryAfter(ctx: ActionCtx, key: string | null): Prom
   return null;
 }
 
-/**
- * purpose: Spend one failed attempt from the global bucket and the per-IP bucket.
- * @param ctx: (ActionCtx) Action context.
- * @param key: (string | null) Per-IP key, or null when no IP is known.
- * @return: (Promise<void>)
- */
 async function recordFailedAttempt(ctx: ActionCtx, key: string | null): Promise<void> {
   await rateLimiter.limit(ctx, "pairFailedGlobal");
   if (key !== null) await rateLimiter.limit(ctx, "pairFailedPerIp", { key });
 }
 
-/**
- * purpose: Answer a /pair retry whose first response was lost: when the code was already
- *          redeemed by a device with the same pairingNonce within 10 minutes, mint a fresh
- *          sign-in token for that device's existing Clerk user (adding a username first when
- *          it has none). Creates no user or device.
- * @param ctx: (ActionCtx) Action context.
- * @param secret: (string) Clerk secret key.
- * @param parsed: (PairRequest) The request.
- * @return: (Promise<Response | null>) The 200 (or 502) response, or null when the request has
- *          no nonce or no recent pairing matches.
- */
 async function retryLostPairing(
   ctx: ActionCtx,
   secret: string,
@@ -339,7 +175,6 @@ async function retryLostPairing(
   });
   if (found === null) return null;
   try {
-    await ensureDeviceUsername(secret, found.userId);
     const ticket = await createSignInToken(secret, found.userId);
     const { userId: _userId, ...paired } = found;
     return jsonResponse({ ticket, ...paired });
@@ -349,16 +184,6 @@ async function retryLostPairing(
   }
 }
 
-/**
- * purpose: Undo a pairing after a sign-in token failure and delete the device's Clerk user.
- *          A failing rollback is logged and the Clerk user is deleted anyway.
- * @param ctx: (ActionCtx) Action context.
- * @param secret: (string) Clerk secret key.
- * @param code: (string) The redeemed code.
- * @param userId: (string) The device's Clerk user id.
- * @param deviceId: (Id<"devices">) The device row to remove.
- * @return: (Promise<void>)
- */
 async function undoPairing(
   ctx: ActionCtx,
   secret: string,
@@ -374,15 +199,6 @@ async function undoPairing(
   await deleteUserQuietly(secret, userId);
 }
 
-/**
- * purpose: Pair a device. Unauthenticated: POST { code, name?, pairingNonce? }. Responds 200
- *          { ticket, householdId, deviceId, kind }; 400 bad body; 404 invalid, used, expired
- *          or non-device code (unless a retry matches, see the file header); 429 rate
- *          limited (with Retry-After); 500 server not configured; 502 Clerk failure.
- * @param ctx: (ActionCtx) Action context.
- * @param request: (Request) The HTTP request.
- * @return: (Response) The JSON response.
- */
 export const pair = httpAction(async (ctx, request) => {
   const overall = await overallRetryAfter(ctx);
   if (overall !== null) return rateLimitedResponse(overall);
@@ -441,13 +257,6 @@ export const pair = httpAction(async (ctx, request) => {
   }
 });
 
-/**
- * purpose: Undo a pairing whose sign-in token could not be created: delete the device row and
- *          make the code redeemable again. Internal.
- * @param code: (string) The code that was redeemed.
- * @param deviceId: (Id<"devices">) The device row pairDevice created.
- * @return: (null)
- */
 export const rollbackPairing = internalMutation({
   args: { code: v.string(), deviceId: v.id("devices") },
   handler: async (ctx, args): Promise<null> => {
@@ -461,13 +270,6 @@ export const rollbackPairing = internalMutation({
   },
 });
 
-/**
- * purpose: Delete a device's Clerk user after the device is unpaired. Best effort: a missing
- *          secret or a Clerk failure is logged, never thrown (the device row is already gone,
- *          so the orphaned Clerk user cannot act as anything). Internal.
- * @param userId: (string) Clerk user id of the removed device.
- * @return: (null)
- */
 export const deleteClerkUser = internalAction({
   args: { userId: v.string() },
   handler: async (_ctx, args): Promise<null> => {

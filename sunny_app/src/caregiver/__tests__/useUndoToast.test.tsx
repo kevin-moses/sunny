@@ -1,22 +1,9 @@
-// sunny_app/src/caregiver/__tests__/useUndoToast.test.tsx
-//
-// Purpose: Tests for useUndoToast, rendering the real hook with react-test-renderer and fake
-// timers: the toast shows for the task, goes away after the duration, a newer tick replaces it
-// and restarts the timer (the older timer must not hide the newer toast), dismiss hides it at
-// once, unmounting clears the timer, and a show after unmount arms no timer.
-//
-// Last modified: 2026-11-01
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { UNDO_TOAST_MS, useUndoToast, type UndoToast } from '../useUndoToast';
 
-/**
- * purpose: Render the real hook and expose its latest return value.
- * @return: (object) A getter for the current toast state and the renderer.
- */
 function renderToast(): { get: () => UndoToast<string>; renderer: ReactTestRenderer } {
   let current!: UndoToast<string>;
   const Probe = (): null => {

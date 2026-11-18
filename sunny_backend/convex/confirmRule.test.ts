@@ -1,22 +1,3 @@
-// confirmRule.test.ts
-// Purpose: Tests that the day view's per-task `confirmable` flag and the confirm mutation agree
-// (they share lib/confirmRule.ts): an upcoming task 61, 60 and 59 minutes before its window,
-// due, escalated, missed (late), snoozed, already confirmed, and anytime. Also
-// confirmPressedTask (a confirm pressed offline and replayed later, sent with an age so device
-// clock skew cannot move the record): confirmedAt is now minus the age (also after the window
-// closed or the task escalated), clamped to now and to the early-confirm point, audited, marked
-// late with confirmReceivedAt (more than five minutes; the day view exposes its local time and
-// days later, so a press at 11:30 PM received after midnight reads as the next day); a replay
-// is judged as of its press time (refused if pressed before the early window or long after the
-// window, with an audit row) while a live press is refused at the server clock;
-// a press for a deleted task returns rejected with an audit row instead of throwing; another
-// household's instance, caregivers and non-finite or negative ages throw; allowed from a
-// display device; only the named instance confirmed; no second audit row on a repeat.
-// confirmReceivedAt is never set by caregiver mark-done or voice and is cleared by undo.
-// The clock is faked.
-//
-// Last modified: 2026-11-09
-
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -26,10 +7,8 @@ import { confirmInstance } from "./instances";
 import { receivedDaysLater } from "./lib/today";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/** The instance of the 08:00 task on 2027-03-14 starts at 12:00Z (New York, daylight time). */
 const WINDOW_START = Date.parse("2027-03-14T12:00:00Z");
 const HOUR = 3_600_000;
 
@@ -41,36 +20,21 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Set the faked clock.
- * @param iso: (string) UTC instant.
- * @return: (number) The same instant in epoch ms.
- */
 function at(iso: string): number {
   vi.setSystemTime(new Date(iso));
   return Date.parse(iso);
 }
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   return convexTest(schema, modules);
 }
 
-/** A household with Pat (primary), Max (member) and the paired phone "phone". */
 interface Fixture {
   t: ReturnType<typeof makeBackend>;
   householdId: Id<"households">;
   instanceId: Id<"taskInstances">;
 }
 
-/**
- * purpose: Build the fixture: a household at 09:00Z with one 08:00 medication task, whose
- *          instance is upcoming (the scheduler is not run, so states are forced by tests).
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   at("2027-03-14T09:00:00Z");
   const t = makeBackend();
@@ -98,35 +62,21 @@ async function setup(): Promise<Fixture> {
     grants: "home_display",
   });
   await t.mutation(internal.households.pairDevice, { code: display.code, userId: "display" });
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
   await pat.mutation(api.tasks.create, {
     householdId,
     type: "medication",
     title: "Morning pills",
     displayLabel: "Morning pills",
     times: ["08:00"],
-    escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
   });
   const rows = await t.run(async (ctx) => await ctx.db.query("taskInstances").collect());
   return { t, householdId, instanceId: rows[0]!._id };
 }
 
-/**
- * purpose: Force the instance's state and fields.
- * @param f: (Fixture) Fixture.
- * @param patch: (object) Fields to set.
- * @return: (Promise<void>)
- */
 async function force(f: Fixture, patch: Record<string, unknown>): Promise<void> {
   await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, patch));
 }
 
-/**
- * purpose: Read the phone's `confirmable` flag for the fixture's instance, then try the
- *          confirm mutation as the phone, both at the current faked time.
- * @param f: (Fixture) Fixture.
- * @return: (Promise<object>) The flag and whether the mutation was accepted.
- */
 async function flagAndConfirm(f: Fixture): Promise<{ flag: boolean; accepted: boolean }> {
   const asPhone = f.t.withIdentity({ subject: "phone" });
   const day = await asPhone.query(api.calendar.dayView, { householdId: f.householdId });
@@ -196,14 +146,8 @@ describe("confirmable flag and the confirm mutation agree", () => {
 });
 
 describe("confirmPressedTask (pressedAgoMs)", () => {
-  /**
-   * purpose: Confirm the instance through confirmPressedTask as the given identity at `iso`.
-   * @param f: (Fixture) Fixture.
-   * @param iso: (string) Server time of the call.
-   * @param pressedAgoMs: (number) The press age sent.
-   * @param options: ({ subject, via, instanceId }) Caller, surface and instance overrides.
-   * @return: (Promise<object>) The mutation's result.
-   */
+  let pressCount = 0;
+
   async function confirmAgo(
     f: Fixture,
     iso: string,
@@ -221,26 +165,16 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
         instanceId: options.instanceId ?? f.instanceId,
         via: options.via ?? "phone_app",
         pressedAgoMs,
+        pressId: `press${String((pressCount += 1)).padStart(12, "0")}`,
       });
   }
 
-  /**
-   * purpose: Confirm and return the instance, failing the test if the press was rejected.
-   * @param args: The same arguments as confirmAgo.
-   * @return: (Promise<Doc>) The instance after.
-   */
   async function confirmed(...args: Parameters<typeof confirmAgo>) {
     const result = await confirmAgo(...args);
-    if (result.status !== "confirmed") throw new Error(`rejected: ${result.reason}`);
+    if (result.status === "rejected") throw new Error(`rejected: ${result.reason}`);
     return result.instance;
   }
 
-  /**
-   * purpose: The audit rows of one action.
-   * @param f: (Fixture) Fixture.
-   * @param action: (string) The action name.
-   * @return: (Promise<object[]>) The rows.
-   */
   async function auditRows(f: Fixture, action: string) {
     const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
     return rows.filter((r) => r.action === action);
@@ -420,14 +354,12 @@ describe("confirmPressedTask (pressedAgoMs)", () => {
       timezone: "America/Chicago",
       caregiverDisplayName: "Xen",
     });
-    const policies = await xen.query(api.tasks.listPolicies, { householdId: other });
     await xen.mutation(api.tasks.create, {
       householdId: other,
       type: "medication",
       title: "Dad pills",
       displayLabel: "Dad pills",
       times: ["08:00"],
-      escalationPolicyId: policies.find((p) => p.systemKey === "medication")!._id,
     });
     const theirs = await f.t.run(
       async (ctx) =>

@@ -1,12 +1,3 @@
-// sunny_app/src/voice/__tests__/voiceToken.test.ts
-//
-// Purpose: Unit tests for the voice token source: the voice.livekitToken action arguments built from
-// the in-flight start's request, the response mapping, the reset of the request after the
-// fetch, cancellation, and that background fetches reuse the last response (or call through
-// when there is none) instead of calling the backend.
-//
-// Last modified: 2026-10-29
-
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import type { TaskInstanceId } from '../../backend/convexApi';

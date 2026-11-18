@@ -1,10 +1,3 @@
-// lib/voiceRouting.test.ts
-// Purpose: Unit tests for the pure parts of lib/voiceRouting.ts: the flag detail cap (one
-// line, the first two sentences, a hard character cap; decimals are not sentence ends) and
-// matching a spoken name to caregivers.
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, test } from "vitest";
 import type { Doc, Id } from "../_generated/dataModel";
 import { MAX_FLAG_DETAIL_LENGTH, flagDetail, membersNamed } from "./voiceRouting";
@@ -36,11 +29,6 @@ describe("flagDetail", () => {
 });
 
 describe("membersNamed", () => {
-  /**
-   * purpose: A member row with a display name.
-   * @param displayName: (string) The name.
-   * @return: (Doc<"householdMembers">) The row.
-   */
   const member = (displayName: string): Doc<"householdMembers"> =>
     ({
       _id: displayName as unknown as Id<"householdMembers">,

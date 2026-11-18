@@ -1,22 +1,9 @@
-// sunny_app/src/display/__tests__/model.test.ts
-//
-// Purpose: Unit tests for the home display's rules: the date wording, which task the Now card
-// shows and when it reads as overdue or multi-step, the Next up pick, and the Today rows
-// (marks and overflow). Fixtures fill only what the rules read.
-//
-// Last modified: 2026-11-14
-
 import { describe, expect, it } from '@jest/globals';
 
 import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import { fullDate, nextItem, nowCard, todayRows } from '../model';
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) An upcoming 08:00 medication unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
@@ -25,6 +12,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Morning pills',
     pillDescription: null,
     checklistItems: [],
+    step: null,
     scheduledTime: '08:00',
     state: 'upcoming',
     carriedOver: false,
@@ -32,11 +20,6 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/**
- * purpose: Build an event occurrence on the fixture day.
- * @param overrides: (Partial<Record<keyof EventOccurrence, unknown>>) Fields to set.
- * @return: (EventOccurrence) A 14:00 visit by Sarah unless overridden.
- */
 function makeEvent(
   overrides: Partial<Record<keyof EventOccurrence, unknown>> = {},
 ): EventOccurrence {
@@ -50,11 +33,6 @@ function makeEvent(
   } as EventOccurrence;
 }
 
-/**
- * purpose: Build a day view for Saturday 2026-11-07 at 09:30.
- * @param overrides: (Partial<DayViewData>) Fields to set.
- * @return: (DayViewData) An empty day unless overridden.
- */
 function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   return {
     localNow: '2026-11-07T09:30:00',
@@ -97,12 +75,16 @@ describe('nowCard', () => {
     expect(due.kind === 'task' && due.overdue).toBe(false);
   });
 
-  it('uses two or more checklist items as steps', () => {
+  it('shows the steps of a task the backend gives a current step', () => {
     const steps = ['Wash your hands', 'Tilt your head back'];
-    const multi = nowCard(makeDay({ tasks: [makeTask({ state: 'due', checklistItems: steps })] }));
+    const step = { index: 1, count: 2, text: 'Tilt your head back' };
+    const multi = nowCard(
+      makeDay({ tasks: [makeTask({ state: 'due', checklistItems: steps, step })] }),
+    );
     const single = nowCard(
       makeDay({ tasks: [makeTask({ state: 'due', checklistItems: ['Only one'] })] }),
     );
+    expect(multi.kind === 'task' && multi.task.step).toEqual(step);
     expect(multi.kind === 'task' && multi.steps).toEqual(steps);
     expect(single.kind === 'task' && single.steps).toBeNull();
   });

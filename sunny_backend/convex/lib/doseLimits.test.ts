@@ -1,20 +1,9 @@
-// lib/doseLimits.test.ts
-// Purpose: Unit tests for the as-needed label arithmetic (lib/doseLimits.ts): the maximum
-// applied to both the trailing 24 hours and the local calendar day (the stricter wins), the
-// hours-apart rule across midnight, the next time a dose is within the label (including the
-// 12:05 AM case after an evening at the maximum), judging a back-dated dose by its own day and
-// the 24 hours around it, and the count of days used in the last week. Local days here are
-// fixed 24-hour blocks from 0 (the arithmetic only needs a day-of function).
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, test } from "vitest";
 import { daysUsed, doseStatus, limitBreaches } from "./doseLimits";
 import type { DayOf } from "./doseLimits";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
-/** Local days are [n * 24h, (n + 1) * 24h). */
 const dayOf: DayOf = (t) => {
   const start = Math.floor(t / DAY) * DAY;
   return { start, end: start + DAY };
@@ -39,7 +28,6 @@ describe("doseStatus", () => {
     expect(status.takenToday).toEqual([]);
     expect(status.takenLast24h).toEqual(evening);
     expect(status.remainingToday).toBe(0);
-    // The first of the four leaves the trailing 24 hours at 6 PM the next day.
     expect(status.nextWithinLabelAt).toBe(DAY + 18 * HOUR);
   });
 
@@ -119,7 +107,6 @@ describe("limitBreaches", () => {
   });
 
   test("a back-dated dose is judged against its own day", () => {
-    // Said at 00:30 on day 1: "I took one an hour ago" (23:30 on day 0).
     const limits = { maxPerDay: 3, minHoursBetween: null };
     const result = limitBreaches(limits, [20 * HOUR, 21 * HOUR, 22 * HOUR], 23.5 * HOUR, dayOf);
     expect(result).toMatchObject({ overDailyMax: true, count: 4 });
@@ -142,7 +129,6 @@ describe("daysUsed", () => {
   test("counts distinct local days with a dose in the last 7, today included", () => {
     const now = 6 * DAY + 12 * HOUR;
     const doses = [-HOUR, 1 * HOUR, 3 * HOUR, DAY + HOUR, 3 * DAY, 6 * DAY + HOUR];
-    // Day -1 is outside; days 0, 1, 3 and 6 count.
     expect(daysUsed(doses, dayOf, now, 7)).toBe(4);
     expect(daysUsed(doses, dayOf, now, 1)).toBe(1);
   });

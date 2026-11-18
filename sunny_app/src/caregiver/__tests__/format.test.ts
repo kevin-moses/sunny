@@ -1,23 +1,3 @@
-// sunny_app/src/caregiver/__tests__/format.test.ts
-//
-// Purpose: Unit tests for the caregiver helpers: week strip days and markers, date labels,
-// alert detection (never for anytime tasks), messages and claim text, anytime rows listed last, leftover (carried-over) tasks,
-// the note input, the done detail line (who confirmed, surface), today's task rows (leftover
-// split, notes, checkboxState for editors, viewers, busy rows and reopenable done rows, the
-// row's reopenable flag, note visibility), the
-// events-only rows of any day (a separate row type from task rows), the planned task rows of a
-// selected future day (none for today, so today's tasks are not duplicated),
-// the selected-day title and fallback rule,
-// the later-this-week groups, transcript ordering, status lines and speaker attribution, and the
-// in-progress check, and the already-done message for a Mark done another person beat. Fixtures fill only the
-// fields the helpers read; the day is Thursday 2026-10-29 unless a test says otherwise. Also
-// digest posts in the transcript (time order, the "Daily summary" label with the day) and
-// posts never counting as in progress. Wording cards: one per task after a finished request's
-// reply or error and for a cancelled request, none while it runs, the "Also at" caption of a
-// task with more than one time, and what VoiceOver reads for one.
-//
-// Last modified: 2026-11-14
-
 import { describe, expect, it } from '@jest/globals';
 
 import type { DayTask, DayViewData, EventOccurrence, PlannedTask } from '../../day/types';
@@ -42,12 +22,14 @@ import {
   plannedTasksForDate,
   resolveSelectedDate,
   shouldSaveNote,
+  stepProgress,
   selectedDayTitle,
   todaysTasks,
   WORKING_TEXT,
   weekMonthLabel,
   weekRangeLabel,
   DIGEST_LABEL,
+  HIGH_PRIORITY_DETAIL,
   NOT_SPOKEN,
   otherTimesCaption,
   postLabel,
@@ -59,37 +41,19 @@ import {
   type TaskRowData,
 } from '../format';
 
-/** The day the fixtures are dated and the signed-in caregiver. */
 const TODAY = '2026-10-29';
 const USER = 'user_me';
-/** The household-local time the server reports for a confirmation (confirmedLocalTime). */
 const CONFIRMED_TIME = '14:05';
 
-/**
- * purpose: Build the event rows for a date the way the Home screen does.
- * @param day: (DayViewData) The day view.
- * @param date: (string) The selected local date.
- * @return: (EventRowData[]) The rows.
- */
 function eventsOf(day: DayViewData, date: string): EventRowData[] {
   return eventsForDate(day, date);
 }
 
-/**
- * purpose: Today's task rows (leftover and today) for a user, flattened in display order.
- * @param day: (DayViewData) The day view.
- * @return: (TaskRowData[]) The leftover rows followed by today's rows.
- */
 function taskRows(day: DayViewData): TaskRowData[] {
   const { leftover, today } = todaysTasks(day, USER);
   return [...leftover, ...today];
 }
 
-/**
- * purpose: Build an event occurrence.
- * @param overrides: (Partial<Record<keyof EventOccurrence, unknown>>) Fields to set.
- * @return: (EventOccurrence) An event on 2026-10-29 at 14:00 unless overridden.
- */
 function makeEvent(
   overrides: Partial<Record<keyof EventOccurrence, unknown>> = {},
 ): EventOccurrence {
@@ -106,17 +70,13 @@ function makeEvent(
   } as EventOccurrence;
 }
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) A due 08:00 task unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
     displayLabel: 'Take medication',
     localDate: '2026-10-29',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     carriedOver: false,
     confirmedAt: null,
@@ -130,15 +90,11 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     confirmedBy: null,
     confirmedByName: null,
     resolutionNote: null,
+    highPriority: false,
     ...overrides,
   } as DayTask;
 }
 
-/**
- * purpose: Build a day view dated Thursday 2026-10-29.
- * @param overrides: (Partial<DayViewData>) Fields to set.
- * @return: (DayViewData) An empty day unless overridden.
- */
 function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   return {
     seniorPreferredName: 'Margaret',
@@ -157,11 +113,6 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   };
 }
 
-/**
- * purpose: Build a digest post as agentRequests.transcript returns it.
- * @param overrides: (Partial<Record<keyof ChatPost, unknown>>) Fields to set.
- * @return: (ChatPost) A digest post for 2026-10-28 unless overridden.
- */
 function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): ChatPost {
   return {
     type: 'post',
@@ -174,11 +125,6 @@ function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): Cha
   } as ChatPost;
 }
 
-/**
- * purpose: Build an agent request as agentRequests.transcript returns it.
- * @param overrides: (Partial<Record<keyof AgentRequest, unknown>>) Fields to set.
- * @return: (AgentRequest) A succeeded request with a reply unless overridden.
- */
 function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {}): AgentRequest {
   return {
     type: 'request',
@@ -194,7 +140,6 @@ function makeRequest(overrides: Partial<Record<keyof AgentRequest, unknown>> = {
   } as AgentRequest;
 }
 
-/** A wording card's data as the transcript returns it. */
 const PILLS_WORDING: TaskWording = {
   taskId: 't1' as TaskWording['taskId'],
   label: 'Morning pills',
@@ -324,11 +269,6 @@ describe('alerts', () => {
   });
 });
 
-/**
- * purpose: Build a planned task.
- * @param overrides: (Partial<Record<keyof PlannedTask, unknown>>) Fields to set.
- * @return: (PlannedTask) An anytime task on 2026-11-02 unless overridden.
- */
 function makePlanned(overrides: Partial<Record<keyof PlannedTask, unknown>> = {}): PlannedTask {
   return {
     localDate: '2026-11-02',
@@ -1144,6 +1084,39 @@ describe('doneDetail', () => {
   });
 });
 
+describe('high priority detail', () => {
+  it('shows on an open high priority row and in its spoken label', () => {
+    const [row] = taskRows(makeDay({ tasks: [makeTask({ highPriority: true })] }));
+    expect(row.detail).toBe(HIGH_PRIORITY_DETAIL);
+    expect(row.accessibilityLabel).toBe('8:00 AM, Take medication. High priority');
+  });
+
+  it('is left off a row that is not high priority', () => {
+    const [row] = taskRows(makeDay({ tasks: [makeTask()] }));
+    expect(row.detail).toBeNull();
+  });
+
+  it('gives way to the done detail once the task is done', () => {
+    const task = makeTask({
+      highPriority: true,
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedByName: 'Pat',
+      confirmedBy: 'user_pat',
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    const [row] = taskRows(makeDay({ tasks: [task] }));
+    expect(row.detail).toBe('Marked done by Pat at 2:05 PM');
+  });
+
+  it('is not shown on a done row with no done detail', () => {
+    const [row] = taskRows(
+      makeDay({ tasks: [makeTask({ highPriority: true, state: 'confirmed' })] }),
+    );
+    expect(row.detail).toBeNull();
+  });
+});
+
 describe('alreadyDoneMessage', () => {
   it("is null when the returned confirmation is the signed-in caregiver's own", () => {
     expect(alreadyDoneMessage('user_me', 'user_me')).toBeNull();
@@ -1160,5 +1133,73 @@ describe('alreadyDoneMessage', () => {
 
   it('says already done when the signed-in user is unknown', () => {
     expect(alreadyDoneMessage('user_other', null)).toBe(ALREADY_DONE_MESSAGE);
+  });
+});
+
+describe('multi-step tasks', () => {
+  const STEPS = ['Put on your coat', 'Take your keys', 'Lock the door'];
+
+  function onStep(index: number, overrides: Partial<Record<keyof DayTask, unknown>> = {}) {
+    return makeTask({
+      checklistItems: STEPS,
+      step: { index, count: STEPS.length, text: STEPS[index] },
+      ...overrides,
+    });
+  }
+
+  it('shows Step N of M on an open task in progress', () => {
+    expect(stepProgress(onStep(1))).toBe('Step 2 of 3');
+    const [row] = taskRows(makeDay({ tasks: [onStep(2)] }));
+    expect(row).toMatchObject({ variant: 'open', detail: 'Step 3 of 3' });
+    expect(row!.accessibilityLabel).toBe('8:00 AM, Take medication. Step 3 of 3');
+  });
+
+  it('shows no step before the first Done or once the task is done', () => {
+    expect(stepProgress(onStep(0))).toBeNull();
+    expect(stepProgress(onStep(2, { state: 'confirmed' }))).toBeNull();
+    expect(stepProgress(makeTask())).toBeNull();
+  });
+
+  it('shows the step on the row from step 1 of an open task', () => {
+    const [row] = taskRows(makeDay({ tasks: [onStep(0)] }));
+    expect(row).toMatchObject({ variant: 'open', detail: 'Step 1 of 3' });
+    expect(row!.accessibilityLabel).toBe('8:00 AM, Take medication. Step 1 of 3');
+  });
+
+  it('joins high priority and the step on an open row', () => {
+    const [first] = taskRows(makeDay({ tasks: [onStep(0, { highPriority: true })] }));
+    expect(first!.detail).toBe('High priority · Step 1 of 3');
+    const [second] = taskRows(makeDay({ tasks: [onStep(1, { highPriority: true })] }));
+    expect(second!.detail).toBe('High priority · Step 2 of 3');
+    expect(second!.accessibilityLabel).toBe(
+      '8:00 AM, Take medication. High priority · Step 2 of 3',
+    );
+  });
+
+  it('keeps the step and high priority on a missed row', () => {
+    const [row] = taskRows(
+      makeDay({ tasks: [onStep(1, { highPriority: true, state: 'missed' })] }),
+    );
+    expect(row).toMatchObject({ variant: 'alert', detail: 'High priority · Step 2 of 3' });
+  });
+
+  it('gives a done multi-step row its done detail only', () => {
+    const task = onStep(2, {
+      highPriority: true,
+      state: 'resolved',
+      confirmedVia: 'caregiver',
+      confirmedByName: 'Pat',
+      confirmedBy: 'user_pat',
+      confirmedLocalTime: CONFIRMED_TIME,
+    });
+    expect(taskRows(makeDay({ tasks: [task] }))[0]!.detail).toBe('Marked done by Pat at 2:05 PM');
+    const confirmed = onStep(2, { highPriority: true, state: 'confirmed' });
+    expect(taskRows(makeDay({ tasks: [confirmed] }))[0]!.detail).toBeNull();
+  });
+
+  it('says the step in the alert', () => {
+    expect(alertMessage(onStep(1, { state: 'escalated', scheduledTime: '14:05' }))).toBe(
+      'Due at 2:05 PM. On step 2 of 3. Sunny has alerted the family.',
+    );
   });
 });

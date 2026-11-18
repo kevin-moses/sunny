@@ -1,12 +1,3 @@
-// sunny_app/src/notifications/__tests__/push.test.ts
-//
-// Purpose: Unit tests for unregisterStoredPushToken (unregisters and forgets the remembered
-// token, does nothing without one, never throws, gives up after a timeout and then keeps the
-// token remembered) and registerPushToken (remembers the token, unregisters the previous one
-// after a rotation).
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { registerPushToken, unregisterStoredPushToken } from '../push';

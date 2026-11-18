@@ -1,39 +1,3 @@
-// sunny_app/src/day/__tests__/useDoneAction.test.tsx
-//
-// Purpose: Tests for the phone's Done button. doneTarget (pure): due or escalated wins over an
-// earlier-listed upcoming task, otherwise the first upcoming task that is confirmable, never an
-// unconfirmable, missed or anytime task. The real useDoneAction hook over a real queue and the
-// real callMutation / toBackendError, with only convex.mutation (the network) and AsyncStorage
-// (in memory) stubbed, and expo-crypto's randomUUID counting up: a press is stored before its
-// one line ("<label> done.", the Undo line; offline with the "will be sent" note) shows and is
-// announced, and it is sent with via phone_app, the press time and its press id; offline it is
-// stored, not sent, and sent after the connection returns or the app restarts; a network
-// failure keeps the press while the senior still sees it done; presses inside the gap and while
-// being stored are ignored; the button is withdrawn for the settle period (two tasks due: a
-// doubting second press sends nothing, then the next task is offered); a storage failure says
-// so (that line clears after MESSAGE_MS) and keeps the task offered; a permanent rejection
-// shows nothing new; nothing happens after unmount and every timer the hook armed (the Undo
-// offer's included) is cleared. Undo on the phone: offered and announced after a press, gone 30
-// seconds (the literal) after the press itself (also when the press was stored late), replaced
-// by a newer press, never hiding another task's Done; tapping it withdraws the offer, keeps the
-// settle block until the undo is stored and then lifts it and announces "<label> is not done.";
-// a failed or timed-out undo store brings the offer back with the settle block, and a timed-out
-// write that lands later withdraws it and lifts the block; the undo is sent after the press with
-// the tap's age and the press's id, online, offline, and as press, Undo, press again (each press
-// with its own id); too_late and permanent failures drop it with a log and no message; a
-// network failure retries; a queued Undo survives a restart with its id (no offer after it); a
-// double tap queues one; a press stored late then pressed again gets an offer that names the
-// press actually queued; the offline note shows only while offline and the press is queued;
-// "is not done" is announced only when the screen shows the task open (not for a confirm by
-// another surface), and exactly once across later day-view re-renders. The harness gives the
-// hook the shown tasks the way the Today screen does.
-// usePendingConfirms: the queued entries follow the queue, load at
-// mount, replay at mount. DoneCard: label, due time for an early task, exactly one button with
-// its label, onPress, message only, nothing, the Undo line under another task's Done with its
-// label, and its large secondary look.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
@@ -115,45 +79,25 @@ let announceQueued: jest.SpiedFunction<
 >;
 const NOW = Date.parse('2026-11-09T08:00:00Z');
 
-/**
- * purpose: Build a task fixture.
- * @param overrides: (Partial<DayTask>) Fields to change.
- * @return: (DayTask) The task.
- */
 function task(overrides: Partial<DayTask> = {}): DayTask {
   return {
     instanceId: 'inst1',
     displayLabel: 'Morning pills',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     confirmable: true,
     ...overrides,
   } as unknown as DayTask;
 }
 
-/** A second due task. */
 const second = (): DayTask =>
   task({ instanceId: 'inst2' as never, displayLabel: 'Evening pills', scheduledTime: '09:00' });
 
-/**
- * purpose: A queue over the real send and the in-memory storage.
- * @return: (ConfirmQueue) The queue.
- */
 function makeQueue(): ConfirmQueue {
   return createConfirmQueue({ send: sendConfirm, now: () => Date.now() });
 }
 
-/**
- * purpose: Render the real hook and expose its latest return value; the target, offline flag
- *          and the server's day can be changed with rerender. Like the Today screen, the hook
- *          gets the tasks as shown: the server's tasks (by default just the target) after
- *          applyPending over the queue's entries.
- * @param queue: (ConfirmQueue) The queue presses go to.
- * @param target: (DayTask | null) The task Done confirms.
- * @param isOffline: (boolean) Whether the phone is offline.
- * @param server: (DayTask[] | undefined) The server's tasks; the target alone when omitted.
- * @return: (object) get (the current DoneAction), rerender and unmount.
- */
 function renderDone(
   queue: ConfirmQueue,
   target: DayTask | null,
@@ -168,11 +112,6 @@ function renderDone(
   const record = (value: DoneAction): void => {
     latest = value;
   };
-  /**
-   * purpose: Test component that runs the hook and records its latest return value.
-   * @param props: ({ t, off, day }) The target task, the offline flag and the server's tasks.
-   * @return: (null) Renders nothing.
-   */
   const Probe = ({ t, off, day }: { t: DayTask | null; off: boolean; day?: DayTask[] }): null => {
     const entries = useSyncExternalStore(queue.subscribe, queue.getEntries);
     const shown = applyPending(day ?? (t === null ? [] : [t]), entries);
@@ -192,32 +131,18 @@ function renderDone(
   };
 }
 
-/**
- * purpose: Press Done inside act and let promises settle.
- * @param h: (object) The rendered hook.
- * @return: (Promise<void>)
- */
 async function press(h: { get: () => DoneAction }): Promise<void> {
   await act(async () => {
     h.get().pressDone();
   });
 }
 
-/**
- * purpose: Advance fake time inside act.
- * @param ms: (number) Milliseconds.
- * @return: (Promise<void>)
- */
 async function advance(ms: number): Promise<void> {
   await act(async () => {
     await jest.advanceTimersByTimeAsync(ms);
   });
 }
 
-/**
- * purpose: The instance ids sent to the backend so far.
- * @return: (string[]) Ids in order.
- */
 function sentIds(): string[] {
   return mockMutation.mock.calls.map((c) => (c[1] as { instanceId: string }).instanceId);
 }
@@ -336,6 +261,7 @@ describe('useDoneAction', () => {
       via: 'phone_app',
       pressedAgoMs: 0,
       pressId: expect.stringMatching(/^press-\d{16}$/),
+      step: 0,
     });
     expect(JSON.parse(mockStore.get(STORAGE_KEY) ?? '[]')).toEqual([]);
   });
@@ -538,10 +464,6 @@ describe('useDoneAction', () => {
   });
 
   describe('when storing hangs', () => {
-    /**
-     * purpose: A queue whose first storage write waits for the returned release function.
-     * @return: (object) the queue and the release function.
-     */
     function gatedQueue(): { queue: ConfirmQueue; release: () => void } {
       let release!: () => void;
       mockWriteGate = new Promise<void>((resolve) => (release = resolve));
@@ -605,7 +527,6 @@ describe('useDoneAction', () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       expect(h.get().undo).not.toBeNull();
-      // The hook armed two timers: the settle block and the Undo offer's expiry.
       const before = jest.getTimerCount();
       h.unmount();
       expect(jest.getTimerCount()).toBe(before - 2);
@@ -643,30 +564,16 @@ describe('Undo on the phone', () => {
     jest.useRealTimers();
   });
 
-  /**
-   * purpose: What the server answers a call: undone for an undo, confirmed for a press.
-   * @param ref: (unknown) The mutation reference.
-   * @return: (object) The result.
-   */
   function serverAnswer(ref: unknown): { status: string } {
     return getFunctionName(ref as never) === 'instances:undoPressedTask'
       ? { status: 'undone' }
       : { status: 'confirmed' };
   }
 
-  /**
-   * purpose: The calls sent so far, as the mutation name and its arguments.
-   * @return: ([string, unknown][]) In order.
-   */
   function calls(): [string, unknown][] {
     return mockMutation.mock.calls.map((c) => [getFunctionName(c[0] as never), c[1]]);
   }
 
-  /**
-   * purpose: The press id the n-th press of this test got (the mocked CSPRNG counts up).
-   * @param n: (number) 1 for the first press of the test.
-   * @return: (string) The id.
-   */
   function pressId(n: number): string {
     return `press-${String(firstId + n).padStart(16, '0')}`;
   }
@@ -676,11 +583,6 @@ describe('Undo on the phone', () => {
     firstId = mockIdCounter;
   });
 
-  /**
-   * purpose: Tap Undo inside act and let promises settle.
-   * @param h: (object) The rendered hook.
-   * @return: (Promise<void>)
-   */
   async function tapUndo(h: { get: () => DoneAction }): Promise<void> {
     await act(async () => {
       h.get().pressUndo();
@@ -751,7 +653,7 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0, pressId: pressId(1) },
+        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 0, pressId: pressId(1), step: 0 },
       ],
       ['instances:undoPressedTask', { instanceId: 'inst1', undoneAgoMs: 0, pressId: pressId(1) }],
     ]);
@@ -895,7 +797,13 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 600_000, pressId: pressId(1) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 600_000,
+          pressId: pressId(1),
+          step: 0,
+        },
       ],
       [
         'instances:undoPressedTask',
@@ -920,7 +828,13 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 900_000, pressId: pressId(1) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 900_000,
+          pressId: pressId(1),
+          step: 0,
+        },
       ],
       [
         'instances:undoPressedTask',
@@ -928,7 +842,13 @@ describe('Undo on the phone', () => {
       ],
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 880_000, pressId: pressId(2) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 880_000,
+          pressId: pressId(2),
+          step: 0,
+        },
       ],
     ]);
   });
@@ -1015,7 +935,13 @@ describe('Undo on the phone', () => {
     expect(calls()).toEqual([
       [
         'instances:confirmPressedTask',
-        { instanceId: 'inst1', via: 'phone_app', pressedAgoMs: 60_000, pressId: pressId(1) },
+        {
+          instanceId: 'inst1',
+          via: 'phone_app',
+          pressedAgoMs: 60_000,
+          pressId: pressId(1),
+          step: 0,
+        },
       ],
       [
         'instances:undoPressedTask',
@@ -1100,20 +1026,11 @@ describe('usePendingConfirms', () => {
     jest.useRealTimers();
   });
 
-  /**
-   * purpose: Render the hook and expose the latest queued entries.
-   * @param queue: (ConfirmQueue) The queue.
-   * @return: (object) get.
-   */
   function renderPending(queue: ConfirmQueue) {
     let latest: readonly PendingEntry[] = [];
     const record = (value: readonly PendingEntry[]): void => {
       latest = value;
     };
-    /**
-     * purpose: Test component that records the hook's latest value.
-     * @return: (null) Renders nothing.
-     */
     const Probe = (): null => {
       record(usePendingConfirms(queue));
       return null;
@@ -1125,7 +1042,12 @@ describe('usePendingConfirms', () => {
   }
 
   it('shows ids stored before the app was closed and replays them at launch', async () => {
-    await makeQueue().enqueue({ instanceId: 'inst1' as never, label: 'Pills', pressedAt: NOW });
+    await makeQueue().enqueue({
+      instanceId: 'inst1' as never,
+      label: 'Pills',
+      pressedAt: NOW,
+      pressId: 'pid-0000000000000001',
+    });
     mockMutation.mockReturnValue(new Promise(() => {}));
     const h = renderPending(makeQueue());
     await advance(0);
@@ -1141,22 +1063,12 @@ describe('DoneCard', () => {
     });
   });
 
-  /**
-   * purpose: Whether a node is the outermost composite that carries the button role.
-   * @param node: (ReactTestInstance) The node.
-   * @return: (boolean) True for such a node.
-   */
   function isButton(node: ReactTestInstance): boolean {
     const own = (n: ReactTestInstance): boolean =>
       typeof n.type !== 'string' && n.props.accessibilityRole === 'button';
     return own(node) && !(node.parent !== null && own(node.parent));
   }
 
-  /**
-   * purpose: Render the card and report what it shows.
-   * @param props: (object) The task, message, press handler and Undo offer.
-   * @return: (object) texts, the buttons found, and whether nothing rendered.
-   */
   function render(props: {
     task: DayTask | null;
     message: string | null;
@@ -1254,5 +1166,111 @@ describe('DoneCard', () => {
     expect(style.minHeight).toBeGreaterThanOrEqual(60);
     expect(style.backgroundColor).not.toBe(colors.success);
     expect(style.backgroundColor).toBe(colors.surface);
+  });
+});
+
+describe('Done on a multi-step task', () => {
+  const STEPS = ['Put on your coat', 'Take your keys', 'Lock the door'];
+
+  function multi(index: number, overrides: Partial<DayTask> = {}): DayTask {
+    return task({
+      displayLabel: 'Going out',
+      checklistItems: STEPS,
+      step: { index, count: STEPS.length, text: STEPS[index]! },
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+    mockStore.clear();
+    mockFailWrites = false;
+    mockWriteGate = null;
+    mockConnected = false;
+    mockMutation.mockReset();
+    announce = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => {});
+    announceQueued = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibilityWithOptions')
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+    announce.mockRestore();
+    announceQueued.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('offline, each press shows the next step and only the last press shows the task done', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, multi(0), true);
+    await press(h);
+    expect(h.get().undo).toEqual({
+      label: 'Going out, step 1',
+      text: 'Going out, step 1 done. It will be sent when the internet is back.',
+    });
+    let shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'due', step: { index: 1, text: 'Take your keys' } });
+    await advance(SETTLE_MS);
+    h.rerender(shown[0]!, true, [multi(0)]);
+    await press(h);
+    shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'due', step: { index: 2, text: 'Lock the door' } });
+    await advance(SETTLE_MS);
+    h.rerender(shown[0]!, true, [multi(0)]);
+    await press(h);
+    expect(h.get().undo?.text).toBe('Going out done. It will be sent when the internet is back.');
+    shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'confirmed', confirmable: false });
+    expect(queue.getEntries().map((e) => (e.kind === 'undo' ? null : e.step))).toEqual([0, 1, 2]);
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it('Undo of a step press shows the step again and says that step is not done', async () => {
+    const queue = makeQueue();
+    const h = renderDone(queue, multi(0), true);
+    await press(h);
+    await act(async () => {
+      h.get().pressUndo();
+    });
+    const shown = applyPending([multi(0)], queue.getEntries());
+    expect(shown[0]).toMatchObject({ state: 'due', step: { index: 0, text: 'Put on your coat' } });
+    expect(announceQueued).toHaveBeenCalledWith('Going out, step 1 is not done.', {
+      queue: true,
+    });
+  });
+});
+
+describe('DoneCard with a step', () => {
+  afterEach(() => {
+    act(() => {
+      mounted.splice(0).forEach((renderer) => renderer.unmount());
+    });
+  });
+
+  it('shows the counter and the step text, and says them on the Done button', () => {
+    let renderer!: ReactTestRenderer;
+    const multi = task({
+      displayLabel: 'Going out',
+      checklistItems: ['Put on your coat', 'Take your keys'],
+      step: { index: 1, count: 2, text: 'Take your keys' },
+    });
+    act(() => {
+      renderer = create(<DoneCard task={multi} message={null} onPress={() => {}} />);
+      mounted.push(renderer);
+    });
+    const texts = renderer.root
+      .findAll((n) => (n.type as unknown) === 'Text')
+      .map((n) => String(n.props.children));
+    expect(texts).toEqual(['Going out', 'Step 2 of 2', 'Take your keys', 'Done']);
+    const button = renderer.root.find(
+      (n) => typeof n.type !== 'string' && n.props.accessibilityRole === 'button',
+    );
+    expect(button.props.accessibilityLabel).toBe('Done: Going out, step 2 of 2, Take your keys');
   });
 });

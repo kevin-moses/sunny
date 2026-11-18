@@ -1,32 +1,3 @@
-// digest.test.ts
-// Purpose: Tests for the daily digest (digest.ts, lib/digestFacts.ts, lib/digestText.ts). The
-// model call (composeWithClaude) and the providers are mocked, so nothing leaves the process.
-// Covers: timing from the scheduler tick (before and at digestTime, once per local date, the
-// next day again, a zone far from UTC, a DST day with digestTime in the skipped hour, paused
-// households, households created after the day's digest time, lastDigestDate remembered and
-// cleared by a timezone change); fact gathering (only the household's local day, every task
-// state including still open, who resolved or claimed, as-needed doses, unanswered and repeated
-// questions); the compose action (fixed not-done and alert lines first, then the model's lines;
-// invalid output, a number outside the facts and API errors falling back to the template; a
-// quiet day and a day with only fixed lines without a model call; recipients limited to
-// verified phones; no duplicate on a repeated run); reply validation, sanitizing of untrusted
-// text and the template as pure functions; the completion handler; and one end-to-end run
-// through the workpool. Questions are given by topic unless transcripts are shared.
-//
-// Also: a late-synced confirm reads "(phone app, sent at 11:00 AM)".
-// Chat thread (2026-11-14): a composed digest is posted once in the caregiver chat (also when
-// nobody can be reached, once per local day however often the tick runs, and once when
-// complete is called twice, with one set of outbox rows); recentPosts returns the newest posts
-// first, at most the limit; a caregiver with
-// only a push token gets a row, whose push reads "<name>'s day" while the texts keep "Sunny:
-// <name>'s day"; agentRequests.transcript merges requests and posts newest first with the limit
-// on the merged list; a viewer reads posts but not requests; a senior device, another
-// household's caregiver, a stranger and a signed-out caller cannot read it; another
-// household's posts never appear. A caregiver who turned the digest off
-// (householdMembers.digestOptOut) gets no push or text row but still reads the post.
-//
-// Last modified: 2026-11-14
-
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -57,9 +28,7 @@ vi.mock("./lib/digestText", async (original) => ({
   composeWithClaude: modelMock,
 }));
 
-/** 07:00 New York on Mon 2 Nov 2026 (EST): the household is created before its digest time. */
 const CREATED = Date.parse("2026-11-02T12:00:00Z");
-/** 19:00 New York that day: the default digestTime. */
 const DIGEST_TIME = Date.parse("2026-11-03T00:00:00Z");
 const GOOD_REPLY = "Morning pills were confirmed at 8:05 AM by voice.";
 
@@ -79,39 +48,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: A family household created at CREATED.
- * @return: (Promise<DeliveryFixture>) The fixture.
- */
 async function setup(): Promise<DeliveryFixture> {
   return await deliveryFixture(makeBackend());
 }
 
-/**
- * purpose: Run the household's scheduler pass at an instant.
- * @param f: (DeliveryFixture) Fixture.
- * @param iso: (number) Epoch ms.
- * @return: (Promise<void>) Resolves when the tick ran.
- */
 async function tick(f: DeliveryFixture, now: number): Promise<void> {
   await f.t.mutation(internal.scheduler.tickHousehold, { householdId: f.householdId, now });
 }
 
-/**
- * purpose: All digests rows.
- * @param f: (DeliveryFixture) Fixture.
- * @return: (Promise<Doc<"digests">[]>) The rows.
- */
 async function digests(f: DeliveryFixture): Promise<Doc<"digests">[]> {
   return await f.t.run(async (ctx) => await ctx.db.query("digests").collect());
 }
 
-/**
- * purpose: Insert a pending digest row for a local date.
- * @param f: (DeliveryFixture) Fixture.
- * @param localDate: (string) Local date.
- * @return: (Promise<Id<"digests">>) The digest.
- */
 async function pendingDigest(f: DeliveryFixture, localDate = "2026-11-02"): Promise<Id<"digests">> {
   return await f.t.run(
     async (ctx) =>
@@ -119,33 +67,15 @@ async function pendingDigest(f: DeliveryFixture, localDate = "2026-11-02"): Prom
   );
 }
 
-/**
- * purpose: Run the compose action.
- * @param f: (DeliveryFixture) Fixture.
- * @param digestId: (Id<"digests">) The digest.
- * @return: The outcome.
- */
 async function compose(f: DeliveryFixture, digestId: Id<"digests">) {
   return await f.t.action(internal.digest.compose, { digestId });
 }
 
-/**
- * purpose: Outbox rows of kind digest.
- * @param f: (DeliveryFixture) Fixture.
- * @return: (Promise<Doc<"notificationOutbox">[]>) The rows.
- */
 async function digestRows(f: DeliveryFixture): Promise<Doc<"notificationOutbox">[]> {
   const rows = await f.t.run(async (ctx) => await ctx.db.query("notificationOutbox").collect());
   return rows.filter((r) => r.kind === "digest");
 }
 
-/**
- * purpose: Insert a task instance on the digest's local day (2 Nov 2026).
- * @param f: (DeliveryFixture) Fixture.
- * @param label: (string) Task display label.
- * @param fields: (Parameters<typeof addInstance>[3]) Instance overrides.
- * @return: (Promise<Id<"taskInstances">>) The instance.
- */
 function addDayInstance(
   f: DeliveryFixture,
   label: string,
@@ -154,15 +84,6 @@ function addDayInstance(
   return addInstance(f.t, f.householdId, label, { localDate: "2026-11-02", ...fields });
 }
 
-/**
- * purpose: Insert a question the senior asked.
- * @param f: (DeliveryFixture) Fixture.
- * @param askedAt: (number) Epoch ms.
- * @param topic: (string) Topic.
- * @param outcome: (string) Outcome.
- * @param question: (string, optional) Question text.
- * @return: (Promise<void>) Resolves when inserted.
- */
 async function addQuestion(
   f: DeliveryFixture,
   askedAt: number,
@@ -182,12 +103,6 @@ async function addQuestion(
   });
 }
 
-/**
- * purpose: Load the digest inputs.
- * @param f: (DeliveryFixture) Fixture.
- * @param digestId: (Id<"digests">) The digest.
- * @return: The loaded inputs, or null.
- */
 async function load(f: DeliveryFixture, digestId: Id<"digests">) {
   return await f.t.query(internal.digest.load, { digestId });
 }
@@ -230,7 +145,6 @@ describe("timing", () => {
     vi.setSystemTime(Date.parse("2026-11-01T18:00:00Z"));
     const t = makeBackend();
     const f = await deliveryFixture(t, "Pacific/Auckland");
-    // 18:30 in Auckland (UTC+13) on 2 Nov is 05:30Z; 19:00 there is 06:00Z.
     await tick(f, Date.parse("2026-11-02T05:59:00Z"));
     expect(await digests(f)).toHaveLength(0);
     await tick(f, Date.parse("2026-11-02T06:00:00Z"));
@@ -238,14 +152,13 @@ describe("timing", () => {
   });
 
   test("a digestTime inside the skipped DST hour fires once, after the clocks jump", async () => {
-    // New York springs forward on 14 Mar 2027: 02:00 EST becomes 03:00 EDT.
     vi.setSystemTime(Date.parse("2027-03-13T12:00:00Z"));
     const f = await setup();
     await f.t.run(async (ctx) => await ctx.db.patch(f.householdId, { digestTime: "02:30" }));
     vi.setSystemTime(Date.parse("2027-03-13T12:00:01Z"));
-    await tick(f, Date.parse("2027-03-14T06:59:00Z")); // 01:59 EST
+    await tick(f, Date.parse("2027-03-14T06:59:00Z"));
     expect(await digests(f)).toHaveLength(0);
-    await tick(f, Date.parse("2027-03-14T07:00:00Z")); // 03:00 EDT
+    await tick(f, Date.parse("2027-03-14T07:00:00Z"));
     await tick(f, Date.parse("2027-03-14T07:01:00Z"));
     const rows = await digests(f);
     expect(rows).toHaveLength(1);
@@ -267,7 +180,6 @@ describe("timing", () => {
     await tick(f, DIGEST_TIME);
     const household = await f.t.run(async (ctx) => await ctx.db.get(f.householdId));
     expect(household?.lastDigestDate).toBe("2026-11-02");
-    // With the digest row gone, only lastDigestDate stops a second one being recorded.
     await f.t.run(async (ctx) => {
       for (const d of await ctx.db.query("digests").collect()) await ctx.db.delete(d._id);
     });
@@ -296,7 +208,6 @@ describe("timing", () => {
 describe("facts", () => {
   test("only the household's local day is included", async () => {
     const f = await setup();
-    // Local 2 Nov (EST) runs from 05:00Z on the 2nd to 05:00Z on the 3rd.
     await addQuestion(f, Date.parse("2026-11-03T04:30:00Z"), "in the day");
     await addQuestion(f, Date.parse("2026-11-03T05:30:00Z"), "next day");
     await addQuestion(f, Date.parse("2026-11-02T04:30:00Z"), "previous day");
@@ -374,7 +285,7 @@ describe("facts", () => {
       scheduledTime: "18:00",
       windowStart: 3,
       state: "missed",
-      firedSteps: [{ stepId: "s2", action: "alert_on_call", firedAt: 1, notified: true }],
+      firedSteps: [{ stepId: "s2", action: "alert_all_caregivers", firedAt: 1, notified: true }],
       claimedBy: "pat",
     });
     await addDayInstance(f, "Walk", {
@@ -396,18 +307,21 @@ describe("facts", () => {
         createdByKind: "caregiver",
         active: true,
         scheduleChangedAt: 0,
+        highPriority: false,
       });
       await ctx.db.insert("doseLog", {
         householdId: f.householdId,
         taskId,
         takenAt: Date.parse("2026-11-02T19:00:00Z"),
         reportedVia: "voice",
+        loggedAt: Date.now(),
       });
       await ctx.db.insert("doseLog", {
         householdId: f.householdId,
         taskId,
         takenAt: Date.parse("2026-11-01T19:00:00Z"),
         reportedVia: "voice",
+        loggedAt: Date.now(),
       });
     });
     const at = Date.parse("2026-11-02T20:00:00Z");
@@ -420,7 +334,6 @@ describe("facts", () => {
       "Caregiver alerts sent for: Evening pills (claimed by Pat).",
       "Confirmed: Morning pills at 8:05 AM (voice); Lunch pills at 12:10 PM (marked done by Pat).",
       "As-needed doses: Tylenol at 2:00 PM.",
-      // Transcripts are not shared, so questions are reported by topic.
       "5 questions asked. Unanswered: bank card. Passed to family: doctor. Repeated: sarah visit (3 times).",
     ]);
     expect(input?.quiet).toBe(false);
@@ -464,11 +377,6 @@ describe("facts", () => {
 });
 
 describe("compose", () => {
-  /**
-   * purpose: Give the day something to report so it is not a quiet day.
-   * @param f: (DeliveryFixture) Fixture.
-   * @return: (Promise<void>) Resolves when added.
-   */
   async function addActivity(f: DeliveryFixture): Promise<void> {
     await addDayInstance(f, "Morning pills", {
       scheduledTime: "08:00",
@@ -636,11 +544,6 @@ describe("compose", () => {
 });
 
 describe("chat thread", () => {
-  /**
-   * purpose: Compose a digest for 2 Nov with a confirmed task, so it uses GOOD_REPLY.
-   * @param f: (DeliveryFixture) Fixture.
-   * @return: (Promise<Id<"digests">>) The digest.
-   */
   async function composeDay(f: DeliveryFixture): Promise<Id<"digests">> {
     await addDayInstance(f, "Morning pills", {
       scheduledTime: "08:00",
@@ -654,21 +557,10 @@ describe("chat thread", () => {
     return digestId;
   }
 
-  /**
-   * purpose: The household's chat posts.
-   * @param f: (DeliveryFixture) Fixture.
-   * @return: (Promise<Doc<"chatPosts">[]>) The rows.
-   */
   async function posts(f: DeliveryFixture): Promise<Doc<"chatPosts">[]> {
     return await f.t.run(async (ctx) => await ctx.db.query("chatPosts").collect());
   }
 
-  /**
-   * purpose: Read the chat transcript as a user.
-   * @param f: (DeliveryFixture) Fixture.
-   * @param subject: (string) Who reads it.
-   * @return: The transcript items, newest first.
-   */
   async function transcriptAs(f: DeliveryFixture, subject: string) {
     return await f.t
       .withIdentity({ subject })
@@ -715,11 +607,6 @@ describe("chat thread", () => {
         source: "template",
       });
     }
-    /**
-     * purpose: Read the household's newest posts.
-     * @param limit: (number) How many at most.
-     * @return: (Promise<ChatPostView[]>) The posts, newest first.
-     */
     const read = async (limit: number) =>
       await f.t.run(async (ctx) => await recentPosts(ctx, f.householdId, limit));
     expect((await read(10)).map((p) => p.localDate)).toEqual([
@@ -747,18 +634,17 @@ describe("chat thread", () => {
     expect((await posts(f)).map((p) => p.localDate)).toEqual(["2026-11-02"]);
   });
 
-  test("a caregiver who turned the digest off gets no push or text but still sees the post", async () => {
+  test("every reachable caregiver, a viewer too, gets the push or text and sees the post", async () => {
     const f = await setup();
     await f.t.run(async (ctx) => {
       await ctx.db.insert("pushTokens", { userId: "val", token: "val-1" });
-      for (const m of await ctx.db.query("householdMembers").collect()) {
-        if (m.userId === "max" || m.userId === "val") {
-          await ctx.db.patch(m._id, { digestOptOut: true });
-        }
-      }
     });
     await composeDay(f);
-    expect((await digestRows(f)).map((r) => r.recipientUserId)).toEqual(["pat"]);
+    expect((await digestRows(f)).map((r) => r.recipientUserId).sort()).toEqual([
+      "max",
+      "pat",
+      "val",
+    ]);
     expect(await posts(f)).toHaveLength(1);
     const items = await transcriptAs(f, "max");
     expect(items).toEqual([expect.objectContaining({ type: "post", body: GOOD_REPLY })]);
@@ -964,16 +850,10 @@ describe("text", () => {
     unanswered: [],
     routed: [],
     repeats: [],
+    listAdded: [],
   };
   const FACTS_MESSAGE = "<facts>\nTask: Morning pills at 8:05 AM\nQuestions asked: 4\n</facts>";
 
-  /**
-   * purpose: A task fact for the text tests.
-   * @param label: (string) Task label.
-   * @param outcome: (TaskFact["outcome"]) How it stands.
-   * @param extra: (Partial<TaskFact>) Overrides.
-   * @return: (TaskFact) The fact.
-   */
   function task(
     label: string,
     outcome: TaskFact["outcome"],

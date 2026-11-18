@@ -1,21 +1,3 @@
-# weather.py
-# Purpose: Current conditions and today's hourly forecast for the household's weather location,
-# from Open-Meteo (geocoding plus forecast; no API key), phrased as plain text for the voice
-# agent's get_weather tool. The location is the free-text households.weatherLocation a caregiver
-# sets, e.g. "Brooklyn, NY": the part before the first comma is searched by name and the next
-# part (a US state abbreviation or name, a region, a country or a country code) picks among the
-# matches; with no such part the first match is used, and a part that matches nothing finds no
-# place rather than a namesake elsewhere. A US location gets Fahrenheit and mph, anywhere else
-# Celsius and km/h. The hourly lines run from the current local hour to the end of the
-# household's day, so a question like "Do I need an umbrella for my walk at 2?" can be
-# answered from the hour of the walk.
-#
-# No LiveKit imports; Assistant.get_weather in agent.py calls lookup_place and weather_report.
-# Every network call has a short timeout; failures raise WeatherError, which the tool turns
-# into a plain spoken sentence.
-#
-# Last modified: 2026-11-09
-
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -30,7 +12,6 @@ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _TIMEOUT = httpx.Timeout(6.0, connect=3.0)
 _GEOCODE_CANDIDATES = 10
 
-# WMO weather interpretation codes used by Open-Meteo, in plain words.
 _WEATHER_CODES: dict[int, str] = {
     0: "clear sky",
     1: "mainly clear",
@@ -118,17 +99,11 @@ _US_STATES: dict[str, str] = {
 
 
 class WeatherError(Exception):
-    """
-    purpose: Raised when Open-Meteo cannot be reached or answers with something unusable.
-    """
+    pass
 
 
 @dataclass(frozen=True)
 class Place:
-    """
-    purpose: A geocoded place the forecast is fetched for.
-    """
-
     name: str
     latitude: float
     longitude: float
@@ -136,13 +111,6 @@ class Place:
 
 
 def _matches_qualifier(result: dict[str, Any], qualifier: str) -> bool:
-    """
-    purpose: Whether a geocoding result fits the words after the comma ("NY", "New York",
-             "UK", "Ontario").
-    @param result: (dict) One Open-Meteo geocoding result.
-    @param qualifier: (str) Lower-cased qualifier; "" matches everything.
-    @return: (bool) True when the qualifier names the result's region, country or code.
-    """
     if not qualifier:
         return True
     names = {
@@ -155,15 +123,7 @@ def _matches_qualifier(result: dict[str, Any], qualifier: str) -> bool:
 async def lookup_place(
     location: str, transport: httpx.AsyncBaseTransport | None = None
 ) -> Place | None:
-    """
-    purpose: Geocode a free-text location such as "Brooklyn, NY".
-    @param location: (str) The household's weather location.
-    @param transport: (httpx.AsyncBaseTransport | None) Override for tests.
-    @return: (Place | None) The best match, or None when nothing matches.
-    @raises: WeatherError when the geocoding service fails or answers with a malformed result.
-    """
     name, _, rest = location.partition(",")
-    # Only the first qualifier is used: "Brooklyn, NY, USA" is matched on "NY".
     qualifier = " ".join(rest.split(",")[0].split()).lower()
     if not name.strip():
         return None
@@ -194,15 +154,6 @@ async def weather_report(
     now: datetime | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
-    """
-    purpose: Current conditions and the rest of today by hour, as text for the agent.
-    @param place: (Place) Where.
-    @param tz: (str) The household's IANA timezone (the forecast's hours are local to it).
-    @param now: (datetime | None) Current time; defaults to the clock in tz.
-    @param transport: (httpx.AsyncBaseTransport | None) Override for tests.
-    @return: (str) e.g. "Weather for Brooklyn now: 54 degrees Fahrenheit, light rain, ...".
-    @raises: WeatherError when the forecast service fails.
-    """
     us = place.country_code == "US"
     params: dict[str, str | int | float] = {
         "latitude": place.latitude,
@@ -223,15 +174,6 @@ async def weather_report(
 
 
 def describe_forecast(name: str, data: dict[str, Any], now: datetime, us: bool) -> str:
-    """
-    purpose: Phrase an Open-Meteo forecast response for the agent.
-    @param name: (str) Place name.
-    @param data: (dict) Forecast JSON with "current" and "hourly".
-    @param now: (datetime) Local now; hours before its hour are left out.
-    @param us: (bool) Fahrenheit and mph when True, Celsius and km/h otherwise.
-    @return: (str) Current conditions, then one entry per remaining hour of today.
-    @raises: KeyError, TypeError or ValueError on a malformed response.
-    """
     unit = "Fahrenheit" if us else "Celsius"
     wind_unit = "miles per hour" if us else "kilometers per hour"
     current = data["current"]
@@ -259,11 +201,6 @@ def describe_forecast(name: str, data: dict[str, Any], now: datetime, us: bool) 
 
 
 def _condition(code: Any) -> str:
-    """
-    purpose: Plain words for a WMO weather code.
-    @param code: (Any) The code, possibly missing.
-    @return: (str) e.g. "light rain"; "unknown conditions" for an unknown code.
-    """
     try:
         return _WEATHER_CODES.get(int(code), "unknown conditions")
     except (TypeError, ValueError):
@@ -273,14 +210,6 @@ def _condition(code: Any) -> str:
 async def _get_json(
     url: str, params: dict[str, Any], transport: httpx.AsyncBaseTransport | None
 ) -> dict[str, Any]:
-    """
-    purpose: GET a JSON object from Open-Meteo.
-    @param url: (str) Endpoint.
-    @param params: (dict) Query parameters.
-    @param transport: (httpx.AsyncBaseTransport | None) Override for tests.
-    @return: (dict) The decoded body.
-    @raises: WeatherError on a transport error, a non-2xx status or a body that is not an object.
-    """
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT, transport=transport) as http:
             response = await http.get(url, params=params)

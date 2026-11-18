@@ -1,24 +1,7 @@
-// tasks.test.ts
-// Purpose: Tests for tasks.ts: task create, update, list and hard delete with the validation
-// the SQL CHECK constraints performed, the default spoken prompt, null-clearing of optional
-// fields, audit rows, and escalation policy list, create, rename, step edits and delete
-// (seeded policies protected, deleting a custom policy clears it from tasks). One access test
-// per public function: outsiders forbidden, viewers read but cannot write, devices read only.
-// Also: policy step ids (assigned on create, kept or renewed on update), policy size and name
-// limits, and background purging of a deleted task's rows.
-// Default policy on create (medication vs prompt_only, explicit wins, missing seed), the policy
-// switch on a type change across the medication boundary (seeded policies move, custom ones
-// stay), size caps that apply only to written values (a legacy long label stays editable), and
-// the backfillDefaultPolicies maintenance mutation. No policy writer accepts the legacy
-// "alert_on_call" action (2026-11-14).
-//
-// Last modified: 2026-11-14
-
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import type { EscalationStepInput } from "./lib/validators";
 import schema from "./schema";
 
 beforeEach(() => {
@@ -29,31 +12,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   return convexTest(schema, modules);
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** Household with Pat (primary), Max (member), Val (viewer) and a paired device. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
-  medication: Id<"escalationPolicies">;
 }
 
-/**
- * purpose: Build the standard fixture.
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const pat = t.withIdentity({ subject: "pat" });
@@ -74,11 +45,9 @@ async function setup(): Promise<Fixture> {
       await t.withIdentity({ subject: user }).mutation(api.households.redeemJoinCode, { code });
     }
   }
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
-  return { t, householdId, medication: policies.find((p) => p.systemKey === "medication")!._id };
+  return { t, householdId };
 }
 
-/** Minimal valid arguments for tasks.create. */
 function base(f: Fixture) {
   return {
     householdId: f.householdId,
@@ -98,7 +67,6 @@ describe("tasks.create", () => {
       title: "  Morning pills (lisinopril)  ",
       displayLabel: "Morning pills",
       type: "medication",
-      escalationPolicyId: f.medication,
     });
     const tasks = await pat.query(api.tasks.list, { householdId: f.householdId });
     expect(tasks).toHaveLength(1);
@@ -111,7 +79,7 @@ describe("tasks.create", () => {
       active: true,
       createdByKind: "caregiver",
       createdBy: "pat",
-      escalationPolicyId: f.medication,
+      highPriority: false,
     });
   });
 
@@ -194,20 +162,12 @@ describe("tasks.create", () => {
     ).resolves.toBeDefined();
   });
 
-  test("rejects a policy from another household", async () => {
+  test("stores high priority when given", async () => {
     const f = await setup();
-    const xen = f.t.withIdentity({ subject: "xen" });
-    const other = await xen.mutation(api.households.create, {
-      seniorPreferredName: "Dad",
-      timezone: "America/Chicago",
-      caregiverDisplayName: "Xen",
-    });
-    const [policy] = await xen.query(api.tasks.listPolicies, { householdId: other });
-    await expect(
-      f.t
-        .withIdentity({ subject: "pat" })
-        .mutation(api.tasks.create, { ...base(f), escalationPolicyId: policy!._id }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
+    const pat = f.t.withIdentity({ subject: "pat" });
+    const id = await pat.mutation(api.tasks.create, { ...base(f), highPriority: true });
+    const task = await f.t.run(async (ctx) => await ctx.db.get(id));
+    expect(task!.highPriority).toBe(true);
   });
 
   test("access: outsiders, viewers and devices cannot create; members can", async () => {
@@ -249,7 +209,7 @@ describe("tasks.update", () => {
       daysOfWeek: [1, 3],
       pillDescription: "small white",
       asNeededMaxPerDay: 2,
-      escalationPolicyId: f.medication,
+      highPriority: true,
     });
     await pat.mutation(api.tasks.update, {
       householdId: f.householdId,
@@ -258,14 +218,35 @@ describe("tasks.update", () => {
       daysOfWeek: null,
       pillDescription: null,
       asNeededMaxPerDay: null,
-      escalationPolicyId: null,
     });
     const [task] = await pat.query(api.tasks.list, { householdId: f.householdId });
     expect(task).toMatchObject({ title: "Walk", displayLabel: "Stroll", times: ["09:00"] });
     expect(task!.daysOfWeek).toBeUndefined();
     expect(task!.pillDescription).toBeUndefined();
     expect(task!.asNeededMaxPerDay).toBeUndefined();
-    expect(task!.escalationPolicyId).toBeUndefined();
+    expect(task!.highPriority).toBe(true);
+  });
+
+  test("turns high priority on and off", async () => {
+    const f = await setup();
+    const pat = f.t.withIdentity({ subject: "pat" });
+    const taskId = await pat.mutation(api.tasks.create, base(f));
+    const priority = async () =>
+      (await f.t.run(async (ctx) => await ctx.db.get(taskId)))!.highPriority;
+    await pat.mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId,
+      highPriority: true,
+    });
+    expect(await priority()).toBe(true);
+    await pat.mutation(api.tasks.update, { householdId: f.householdId, taskId, title: "Stroll" });
+    expect(await priority()).toBe(true);
+    await pat.mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId,
+      highPriority: false,
+    });
+    expect(await priority()).toBe(false);
   });
 
   test("a blank spoken prompt is restored from the label", async () => {
@@ -382,430 +363,11 @@ describe("tasks.remove", () => {
   });
 });
 
-describe("escalation policies", () => {
-  const steps = [
-    { offsetMinutes: 0, action: "prompt_senior" as const, skipIfClaimed: false },
-    { offsetMinutes: 20, action: "alert_all_caregivers" as const, skipIfClaimed: false },
-  ];
-
-  test("no policy writer accepts the legacy on-call action", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const legacy = [{ offsetMinutes: 20, action: "alert_on_call", skipIfClaimed: false }];
-    await expect(
-      pat.mutation(api.tasks.createPolicy, {
-        householdId: f.householdId,
-        name: "Old",
-        steps: legacy as unknown as typeof steps,
-      }),
-    ).rejects.toThrow();
-    await expect(
-      pat.mutation(api.tasks.updatePolicy, {
-        householdId: f.householdId,
-        policyId: f.medication,
-        steps: legacy as unknown as typeof steps,
-      }),
-    ).rejects.toThrow();
-  });
-
-  test("listPolicies returns the two seeded policies to every reader", async () => {
-    const f = await setup();
-    for (const subject of ["pat", "val", "phone"]) {
-      const rows = await f.t
-        .withIdentity({ subject })
-        .query(api.tasks.listPolicies, { householdId: f.householdId });
-      expect(rows.map((p) => p.name).sort(), subject).toEqual(["Medication", "Prompt only"]);
-    }
-    await expect(
-      f.t
-        .withIdentity({ subject: "nobody" })
-        .query(api.tasks.listPolicies, { householdId: f.householdId }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
-  });
-
-  test("creates a custom policy and rejects blank, duplicate and invalid-offset input", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await pat.mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: " Gentle ",
-      steps,
-    });
-    const rows = await pat.query(api.tasks.listPolicies, { householdId: f.householdId });
-    expect(rows.find((p) => p._id === id)).toMatchObject({ name: "Gentle", steps });
-    const cases: Array<[string, { name: string; steps: typeof steps }]> = [
-      ["blank", { name: " ", steps }],
-      ["duplicate", { name: "Medication", steps }],
-      ["negative offset", { name: "A", steps: [{ ...steps[0]!, offsetMinutes: -1 }] }],
-      ["fractional offset", { name: "B", steps: [{ ...steps[0]!, offsetMinutes: 1.5 }] }],
-    ];
-    for (const [name, bad] of cases) {
-      await expect(
-        pat.mutation(api.tasks.createPolicy, { householdId: f.householdId, ...bad }),
-        name,
-      ).rejects.toMatchObject({ data: { code: "invalid" } });
-    }
-  });
-
-  test("rejects names over 80 characters, more than 10 steps and offsets outside 0..1440", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const step = steps[0]!;
-    const cases: Array<[string, { name: string; steps: typeof steps }]> = [
-      ["long name", { name: "n".repeat(81), steps }],
-      ["eleven steps", { name: "A", steps: Array.from({ length: 11 }, () => step) }],
-      ["offset too large", { name: "B", steps: [{ ...step, offsetMinutes: 1441 }] }],
-      ["offset NaN", { name: "C", steps: [{ ...step, offsetMinutes: Number.NaN }] }],
-      ["offset infinite", { name: "D", steps: [{ ...step, offsetMinutes: Infinity }] }],
-    ];
-    for (const [label, bad] of cases) {
-      await expect(
-        pat.mutation(api.tasks.createPolicy, { householdId: f.householdId, ...bad }),
-        label,
-      ).rejects.toMatchObject({ data: { code: "invalid" } });
-    }
-    await expect(
-      pat.mutation(api.tasks.createPolicy, {
-        householdId: f.householdId,
-        name: "n".repeat(80),
-        steps: Array.from({ length: 10 }, () => ({ ...step, offsetMinutes: 1440 })),
-      }),
-    ).resolves.toBeDefined();
-    await expect(
-      pat.mutation(api.tasks.updatePolicy, {
-        householdId: f.householdId,
-        policyId: f.medication,
-        name: "n".repeat(81),
-      }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
-  });
-
-  test("createPolicy assigns unique ids and ignores any id sent", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await pat.mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: "Ids",
-      steps: [
-        { ...steps[0]!, id: "mine" },
-        { ...steps[1]!, id: "mine" },
-      ],
-    });
-    const row = (await pat.query(api.tasks.listPolicies, { householdId: f.householdId })).find(
-      (p) => p._id === id,
-    )!;
-    const ids = row.steps.map((s) => s.id);
-    expect(new Set(ids).size).toBe(2);
-    expect(ids).not.toContain("mine");
-  });
-
-  test("updatePolicy keeps ids passed back, renews missing or unknown ones and rejects duplicates", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const read = async () =>
-      (await pat.query(api.tasks.listPolicies, { householdId: f.householdId })).find(
-        (p) => p._id === f.medication,
-      )!;
-    // The seeded steps hold only the actions a client may send (no legacy on-call step).
-    const [s0, s1, s2] = (await read()).steps as EscalationStepInput[];
-    await pat.mutation(api.tasks.updatePolicy, {
-      householdId: f.householdId,
-      policyId: f.medication,
-      steps: [
-        s2!,
-        { ...s1!, id: "forged" },
-        { offsetMinutes: 50, action: "prompt_senior", skipIfClaimed: false },
-        s0!,
-      ],
-    });
-    const after = (await read()).steps;
-    expect(after[0]!.id).toBe(s2!.id);
-    expect(after[3]!.id).toBe(s0!.id);
-    const fresh = [after[1]!.id, after[2]!.id];
-    expect(new Set([...fresh, s0!.id, s1!.id, s2!.id]).size).toBe(5);
-    await expect(
-      pat.mutation(api.tasks.updatePolicy, {
-        householdId: f.householdId,
-        policyId: f.medication,
-        steps: [s2!, s2!],
-      }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
-  });
-
-  test("a policy may be created with no steps", async () => {
-    const f = await setup();
-    await expect(
-      f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.createPolicy, {
-        householdId: f.householdId,
-        name: "Silent",
-        steps: [],
-      }),
-    ).resolves.toBeDefined();
-  });
-
-  test("seeded policies may be renamed and tuned but keep their systemKey", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    await pat.mutation(api.tasks.updatePolicy, {
-      householdId: f.householdId,
-      policyId: f.medication,
-      name: "Pills",
-      steps,
-    });
-    const row = (await pat.query(api.tasks.listPolicies, { householdId: f.householdId })).find(
-      (p) => p._id === f.medication,
-    );
-    expect(row).toMatchObject({ name: "Pills", systemKey: "medication", steps });
-  });
-
-  test("renaming to another policy's name is rejected; keeping its own name is fine", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    await expect(
-      pat.mutation(api.tasks.updatePolicy, {
-        householdId: f.householdId,
-        policyId: f.medication,
-        name: "Prompt only",
-      }),
-    ).rejects.toMatchObject({ data: { code: "invalid" } });
-    await expect(
-      pat.mutation(api.tasks.updatePolicy, {
-        householdId: f.householdId,
-        policyId: f.medication,
-        name: "Medication",
-      }),
-    ).resolves.toBeNull();
-  });
-
-  test("seeded policies cannot be deleted", async () => {
-    const f = await setup();
-    await expect(
-      f.t
-        .withIdentity({ subject: "pat" })
-        .mutation(api.tasks.removePolicy, { householdId: f.householdId, policyId: f.medication }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
-  });
-
-  test("deleting a custom policy clears it from the tasks that used it", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const policyId = await pat.mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: "Gentle",
-      steps,
-    });
-    const taskId = await pat.mutation(api.tasks.create, {
-      ...base(f),
-      escalationPolicyId: policyId,
-    });
-    await pat.mutation(api.tasks.removePolicy, { householdId: f.householdId, policyId });
-    const [task] = await pat.query(api.tasks.list, { householdId: f.householdId });
-    expect(task!._id).toBe(taskId);
-    expect(task!.escalationPolicyId).toBeUndefined();
-    const rows = await pat.query(api.tasks.listPolicies, { householdId: f.householdId });
-    expect(rows.some((p) => p._id === policyId)).toBe(false);
-  });
-
-  test("a policy of another household is not found", async () => {
-    const f = await setup();
-    const xen = f.t.withIdentity({ subject: "xen" });
-    const other = await xen.mutation(api.households.create, {
-      seniorPreferredName: "Dad",
-      timezone: "America/Chicago",
-      caregiverDisplayName: "Xen",
-    });
-    await expect(
-      xen.mutation(api.tasks.removePolicy, { householdId: other, policyId: f.medication }),
-    ).rejects.toMatchObject({ data: { code: "not_found" } });
-  });
-
-  test("access: outsiders, viewers and devices cannot write policies", async () => {
-    const f = await setup();
-    for (const subject of ["nobody", "val", "phone"]) {
-      const as = f.t.withIdentity({ subject });
-      const args = { householdId: f.householdId };
-      await expect(
-        as.mutation(api.tasks.createPolicy, { ...args, name: "x", steps }),
-        `${subject} create`,
-      ).rejects.toMatchObject({ data: { code: "forbidden" } });
-      await expect(
-        as.mutation(api.tasks.updatePolicy, { ...args, policyId: f.medication, name: "x" }),
-        `${subject} update`,
-      ).rejects.toMatchObject({ data: { code: "forbidden" } });
-      await expect(
-        as.mutation(api.tasks.removePolicy, { ...args, policyId: f.medication }),
-        `${subject} remove`,
-      ).rejects.toMatchObject({ data: { code: "forbidden" } });
-    }
-  });
-});
-
-describe("default escalation policy", () => {
-  /**
-   * purpose: The prompt_only policy id of the fixture's household.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<Id<"escalationPolicies">>) The policy.
-   */
-  async function promptOnlyId(f: Fixture): Promise<Id<"escalationPolicies">> {
-    const rows = await f.t
-      .withIdentity({ subject: "pat" })
-      .query(api.tasks.listPolicies, { householdId: f.householdId });
-    return rows.find((p) => p.systemKey === "prompt_only")!._id;
-  }
-
-  /**
-   * purpose: Read a task's policy.
-   * @param f: (Fixture) Fixture.
-   * @param id: (Id<"tasks">) Task.
-   * @return: (Promise<Id<"escalationPolicies"> | undefined>) Its policy.
-   */
-  async function policyOf(f: Fixture, id: Id<"tasks">) {
-    return (await f.t.run(async (ctx) => await ctx.db.get(id)))!.escalationPolicyId;
-  }
-
-  test("a medication task with no policy gets the medication policy", async () => {
-    const f = await setup();
-    const id = await f.t
-      .withIdentity({ subject: "pat" })
-      .mutation(api.tasks.create, { ...base(f), type: "medication" });
-    expect(await policyOf(f, id)).toBe(f.medication);
-  });
-
-  test("every other type gets the prompt_only policy", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const promptOnly = await promptOnlyId(f);
-    for (const type of ["appointment", "routine", "checklist", "reminder"] as const) {
-      const id = await pat.mutation(api.tasks.create, { ...base(f), type });
-      expect(await policyOf(f, id)).toBe(promptOnly);
-    }
-  });
-
-  test("an explicit policy wins over the default", async () => {
-    const f = await setup();
-    const id = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
-      ...base(f),
-      type: "routine",
-      escalationPolicyId: f.medication,
-    });
-    expect(await policyOf(f, id)).toBe(f.medication);
-  });
-
-  test("a household without seeded policies still creates the task, with no policy", async () => {
-    const f = await setup();
-    await f.t.run(async (ctx) => {
-      for (const p of await ctx.db.query("escalationPolicies").collect())
-        await ctx.db.delete(p._id);
-    });
-    const id = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, base(f));
-    expect(await policyOf(f, id)).toBeUndefined();
-  });
-
-  test("changing to medication switches a seeded prompt_only policy to the medication one", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await pat.mutation(api.tasks.create, base(f));
-    expect(await policyOf(f, id)).toBe(await promptOnlyId(f));
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      type: "medication",
-    });
-    expect(await policyOf(f, id)).toBe(f.medication);
-  });
-
-  test("changing from medication switches the seeded medication policy to prompt_only", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await pat.mutation(api.tasks.create, { ...base(f), type: "medication" });
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      type: "reminder",
-    });
-    expect(await policyOf(f, id)).toBe(await promptOnlyId(f));
-  });
-
-  test("a type change on the same side of the boundary keeps the policy", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await pat.mutation(api.tasks.create, base(f));
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      type: "reminder",
-    });
-    expect(await policyOf(f, id)).toBe(await promptOnlyId(f));
-  });
-
-  test("a custom policy is left alone on a type change", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const custom = await pat.mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: "Custom",
-      steps: [],
-    });
-    const id = await pat.mutation(api.tasks.create, { ...base(f), escalationPolicyId: custom });
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      type: "medication",
-    });
-    expect(await policyOf(f, id)).toBe(custom);
-  });
-
-  test("a policy given in the same update wins over the type default", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await pat.mutation(api.tasks.create, base(f));
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      type: "medication",
-      escalationPolicyId: await promptOnlyId(f),
-    });
-    expect(await policyOf(f, id)).toBe(await promptOnlyId(f));
-  });
-});
-
-describe("size caps apply to written values only", () => {
-  /**
-   * purpose: Insert a task directly with a label longer than today's cap, as older data has.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<Id<"tasks">>) The task.
-   */
-  async function legacyTask(f: Fixture): Promise<Id<"tasks">> {
-    const id = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, base(f));
-    await f.t.run(async (ctx) => {
-      await ctx.db.patch(id, { displayLabel: "L".repeat(100), title: "T".repeat(300) });
-    });
-    return id;
-  }
-
-  test("a task with an older long label and title can be stopped, rescheduled and edited", async () => {
-    const f = await setup();
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await legacyTask(f);
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      times: ["10:00"],
-    });
-    await pat.mutation(api.tasks.update, {
-      householdId: f.householdId,
-      taskId: id,
-      windowMinutes: 30,
-    });
-    await pat.mutation(api.tasks.update, { householdId: f.householdId, taskId: id, active: false });
-    const task = await f.t.run(async (ctx) => await ctx.db.get(id));
-    expect(task).toMatchObject({ times: ["10:00"], windowMinutes: 30, active: false });
-  });
-
+describe("size caps", () => {
   test("renaming to a label over 60 or a title over 200 is refused", async () => {
     const f = await setup();
     const pat = f.t.withIdentity({ subject: "pat" });
-    const id = await legacyTask(f);
+    const id = await pat.mutation(api.tasks.create, base(f));
     await expect(
       pat.mutation(api.tasks.update, {
         householdId: f.householdId,
@@ -868,102 +430,5 @@ describe("size caps apply to written values only", () => {
         spokenPrompt: "x".repeat(301),
       }),
     ).rejects.toMatchObject({ data: { code: "invalid" } });
-  });
-});
-
-describe("tasks.backfillDefaultPolicies", () => {
-  /**
-   * purpose: Insert a task row directly, as old data has (optionally without a policy).
-   * @param f: (Fixture) Fixture.
-   * @param type: The task type.
-   * @param policy: (Id<"escalationPolicies">, optional) Policy to set.
-   * @return: (Promise<Id<"tasks">>) The task.
-   */
-  async function legacyTask(
-    f: Fixture,
-    type: "medication" | "routine",
-    policy?: Id<"escalationPolicies">,
-  ): Promise<Id<"tasks">> {
-    return await f.t.run(
-      async (ctx) =>
-        await ctx.db.insert("tasks", {
-          householdId: f.householdId,
-          type,
-          title: "Old",
-          displayLabel: "Old",
-          spokenPrompt: "Time for Old.",
-          checklistItems: [],
-          times: [],
-          windowMinutes: 60,
-          escalationPolicyId: policy,
-          createdByKind: "caregiver",
-          active: true,
-          scheduleChangedAt: 0,
-        }),
-    );
-  }
-
-  /**
-   * purpose: Run the backfill and every function it schedules.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<void>)
-   */
-  async function runBackfill(f: Fixture): Promise<void> {
-    await f.t.mutation(internal.tasks.backfillDefaultPolicies, {});
-    await f.t.finishAllScheduledFunctions(vi.runAllTimers);
-  }
-
-  /**
-   * purpose: Read a task's policy.
-   * @param f: (Fixture) Fixture.
-   * @param id: (Id<"tasks">) Task.
-   * @return: (Promise<Id<"escalationPolicies"> | undefined>) Its policy.
-   */
-  async function policyOf(f: Fixture, id: Id<"tasks">) {
-    return (await f.t.run(async (ctx) => await ctx.db.get(id)))!.escalationPolicyId;
-  }
-
-  /**
-   * purpose: Count audit rows.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<number>) The number of rows.
-   */
-  async function auditCount(f: Fixture): Promise<number> {
-    return (await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect())).length;
-  }
-
-  test("assigns the type default only where a policy is missing", async () => {
-    const f = await setup();
-    const policies = await f.t
-      .withIdentity({ subject: "pat" })
-      .query(api.tasks.listPolicies, { householdId: f.householdId });
-    const promptOnly = policies.find((p) => p.systemKey === "prompt_only")!._id;
-    const med = await legacyTask(f, "medication");
-    const routine = await legacyTask(f, "routine");
-    const custom = await legacyTask(f, "medication", promptOnly);
-    await runBackfill(f);
-    expect(await policyOf(f, med)).toBe(f.medication);
-    expect(await policyOf(f, routine)).toBe(promptOnly);
-    expect(await policyOf(f, custom)).toBe(promptOnly);
-  });
-
-  test("is idempotent: a second run changes nothing and writes no audit rows", async () => {
-    const f = await setup();
-    await legacyTask(f, "medication");
-    await runBackfill(f);
-    const first = await auditCount(f);
-    await runBackfill(f);
-    expect(await auditCount(f)).toBe(first);
-  });
-
-  test("skips tasks whose household lacks the policy", async () => {
-    const f = await setup();
-    await f.t.run(async (ctx) => {
-      for (const p of await ctx.db.query("escalationPolicies").collect())
-        await ctx.db.delete(p._id);
-    });
-    const id = await legacyTask(f, "routine");
-    await runBackfill(f);
-    expect(await policyOf(f, id)).toBeUndefined();
   });
 });

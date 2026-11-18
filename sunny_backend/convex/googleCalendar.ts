@@ -1,32 +1,6 @@
-// googleCalendar.ts
-// Purpose: A caregiver's Google Calendar connection, ported from the google-oauth Edge
-// Function and the connection RPCs. `connectUrl` (a public action, member caregivers only,
-// never a device) returns Google's consent URL carrying a signed state naming the caregiver,
-// the household and a single-use nonce (stored in oauthStates, 10 minute TTL, swept hourly).
-// Google redirects the browser to GET /google/callback (routed in http.ts): `callback`
-// verifies the state, consumes the nonce (a second use shows the "link expired" page),
-// exchanges the code, requires CALENDAR_SCOPE, reuses the caregiver's existing Sunny calendar
-// if it still exists (else creates one), encrypts the refresh token, saves the connection
-// through the internal `saveConnection` mutation (which reactivates it and schedules a
-// chunked push of the events that can still occur, plus cancelled events still linked), and
-// answers with a small HTML page. Every failure, including misconfiguration, ends on a page.
-// A grant that ends up unused (rejected callback, replaced or dropped connection) is revoked
-// at Google by `revokeGrant`, best effort. `myConnections` lists the caller's own connections
-// without any token field; `disconnect` removes the caller's own connection, its links and
-// pending syncs, and leaves the Google calendar as it is.
-// Known residue: the state is not bound to the browser that started the flow, so someone who
-// is handed a fresh consent link and completes it connects their Google account to the
-// caregiver who created the link; the nonce limits that to one use inside 10 minutes.
-// The refresh token is encrypted in the callback action (lib/secretBox.ts) and the mutation
-// stores the box: mutations must be deterministic and cannot rely on WebCrypto.
-// Env (read by lib/google.ts): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
-// GOOGLE_OAUTH_STATE_SECRET; CALENDAR_TOKEN_KEY (read by lib/secretBox.ts).
-//
-// Last modified: 2026-11-04
-
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   action,
   httpAction,
@@ -36,6 +10,7 @@ import {
   mutation,
   query,
 } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import {
   isDeviceIdentity,
   loadHousehold,
@@ -43,7 +18,6 @@ import {
   requireCaregiverMember,
   SYSTEM_ACTOR,
 } from "./lib/access";
-import { toBase64Url } from "./lib/base64";
 import { audit } from "./lib/audit";
 import {
   deleteLinks,
@@ -51,7 +25,7 @@ import {
   queueConnectionBackfill,
   scheduleGrantRevoke,
 } from "./lib/calendarSync";
-import { appError, isAppError } from "./lib/errors";
+import { appError, errorText, isAppError } from "./lib/errors";
 import {
   CALENDAR_SCOPE,
   calendarExists,
@@ -60,12 +34,21 @@ import {
   exchangeCode,
   revokeRefreshToken,
   signState,
+  startUrl,
   verifyState,
 } from "./lib/google";
-import { decryptSecret, encryptSecret } from "./lib/secretBox";
+import {
+  OAUTH_FLOW_TTL_MS,
+  OAUTH_TICKET_TTL_MS,
+  clearedFlowCookie,
+  flowCookie,
+  readFlowCookie,
+  sha256Base64Url,
+} from "./lib/oauthFlow";
+import { NO_STORE } from "./lib/httpResponse";
+import { constantTimeEqual, decryptSecret, encryptSecret, randomToken } from "./lib/secretBox";
 import type { CalendarConnectionStatus } from "./lib/validators";
 
-/** A connection as shown to its owner; no token fields. */
 interface ConnectionView {
   lastError: string | null;
   id: Id<"calendarConnections">;
@@ -75,20 +58,12 @@ interface ConnectionView {
   lastSyncedAt: number | null;
 }
 
-/** What the callback needs to know before it talks to Google. */
 interface CallbackContext {
   seniorPreferredName: string;
   timezone: string;
   existingCalendarId: string | null;
 }
 
-/**
- * purpose: Check that a user is a caregiver (not a device) of the household.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Clerk user id.
- * @return: (null)
- * @raises forbidden for a device or a non-member.
- */
 export const assertCaregiver = internalQuery({
   args: { householdId: v.id("households"), userId: v.string() },
   handler: async (ctx, { householdId, userId }): Promise<null> => {
@@ -97,12 +72,6 @@ export const assertCaregiver = internalQuery({
   },
 });
 
-/**
- * purpose: Start the Google connect flow for the signed-in caregiver.
- * @param householdId: (Id<"households">) Household to connect.
- * @return: (string) Google's consent URL, with a signed state valid for 15 minutes.
- * @raises unauthenticated when signed out; forbidden for a device or a non-member.
- */
 export const connectUrl = action({
   args: { householdId: v.id("households") },
   handler: async (ctx, { householdId }): Promise<string> => {
@@ -115,67 +84,127 @@ export const connectUrl = action({
       householdId,
       userId: identity.subject,
     });
-    const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(24)));
-    await ctx.runMutation(internal.googleCalendar.createOauthState, {
-      nonce,
+    const ticket = randomToken();
+    const url = startUrl(ticket);
+    await ctx.runMutation(internal.googleCalendar.createOauthFlow, {
+      ticketHash: await sha256Base64Url(ticket),
       userId: identity.subject,
       householdId,
     });
-    return consentUrl(await signState(identity.subject, householdId, nonce));
+    return url;
   },
 });
 
-/** How long a started connect flow stays valid. */
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-
-/** Expired oauthStates rows deleted per sweep. */
 const OAUTH_SWEEP_BATCH = 200;
 
-/**
- * purpose: Remember a single-use OAuth nonce for a connect flow that is starting.
- * @param nonce: (string) Random value signed into the state.
- * @param userId: (string) Caregiver who started the flow.
- * @param householdId: (Id<"households">) Household being connected.
- * @return: (null)
- */
-export const createOauthState = internalMutation({
-  args: { nonce: v.string(), userId: v.string(), householdId: v.id("households") },
+type ConnectRefusal =
+  | "ticket_reused"
+  | "ticket_expired"
+  | "flow_used"
+  | "flow_expired"
+  | "flow_not_started"
+  | "no_browser_cookie"
+  | "wrong_browser"
+  | "code_rejected";
+
+interface ClaimedFlow {
+  userId: string;
+  householdId: Id<"households">;
+  codeVerifier: string;
+}
+
+async function auditRefusal(
+  ctx: MutationCtx,
+  flow: { householdId: Id<"households">; userId: string },
+  reason: ConnectRefusal,
+): Promise<void> {
+  await audit(ctx, {
+    householdId: flow.householdId,
+    actor: SYSTEM_ACTOR,
+    action: "connect_refused",
+    entity: "calendarConnection",
+    detail: { userId: flow.userId, reason },
+  });
+}
+
+function checkClaim(
+  flow: Doc<"oauthFlows">,
+  browserHash: string | null,
+  now: number,
+): { codeVerifier: string } | { refused: ConnectRefusal } {
+  if (flow.consumedAt !== undefined) return { refused: "flow_used" };
+  if (flow.expiresAt < now) return { refused: "flow_expired" };
+  if (!flow.started) return { refused: "flow_not_started" };
+  if (browserHash === null) return { refused: "no_browser_cookie" };
+  if (!constantTimeEqual(flow.started.browserHash, browserHash)) {
+    return { refused: "wrong_browser" };
+  }
+  return { codeVerifier: flow.started.codeVerifier };
+}
+
+export const createOauthFlow = internalMutation({
+  args: { ticketHash: v.string(), userId: v.string(), householdId: v.id("households") },
   handler: async (ctx, args): Promise<null> => {
-    await ctx.db.insert("oauthStates", { ...args, expiresAt: Date.now() + OAUTH_STATE_TTL_MS });
+    await ctx.db.insert("oauthFlows", { ...args, expiresAt: Date.now() + OAUTH_TICKET_TTL_MS });
     return null;
   },
 });
 
-/**
- * purpose: Use up an OAuth nonce: deletes it and says whether it was valid, i.e. it exists, has
- *          not expired, and was issued to this caregiver for this household.
- * @param nonce: (string) Nonce from the verified state.
- * @param userId: (string) Caregiver named in the state.
- * @param householdId: (Id<"households">) Household named in the state.
- * @return: (boolean) True the first time within the TTL, false otherwise.
- */
-export const consumeOauthState = internalMutation({
-  args: { nonce: v.string(), userId: v.string(), householdId: v.id("households") },
-  handler: async (ctx, { nonce, userId, householdId }): Promise<boolean> => {
-    const row = await ctx.db
-      .query("oauthStates")
-      .withIndex("by_nonce", (q) => q.eq("nonce", nonce))
+export const startOauthFlow = internalMutation({
+  args: { ticketHash: v.string(), browserHash: v.string(), codeVerifier: v.string() },
+  handler: async (ctx, { ticketHash, ...started }): Promise<Id<"oauthFlows"> | null> => {
+    const flow = await ctx.db
+      .query("oauthFlows")
+      .withIndex("by_ticket", (q) => q.eq("ticketHash", ticketHash))
       .unique();
-    if (!row) return false;
-    await ctx.db.delete(row._id);
-    return row.userId === userId && row.householdId === householdId && row.expiresAt >= Date.now();
+    if (!flow) return null;
+    const now = Date.now();
+    if (flow.started) {
+      await auditRefusal(ctx, flow, "ticket_reused");
+      return null;
+    }
+    if (flow.expiresAt < now) {
+      await auditRefusal(ctx, flow, "ticket_expired");
+      return null;
+    }
+    await ctx.db.patch(flow._id, { started, expiresAt: now + OAUTH_FLOW_TTL_MS });
+    return flow._id;
   },
 });
 
-/**
- * purpose: Cron entry: delete expired OAuth nonces (one batch per run).
- * @return: (number) Rows deleted.
- */
-export const sweepOauthStates = internalMutation({
+export const consumeOauthFlow = internalMutation({
+  args: { flowId: v.string(), browserHash: v.union(v.null(), v.string()) },
+  handler: async (ctx, { flowId, browserHash }): Promise<ClaimedFlow | null> => {
+    const id = ctx.db.normalizeId("oauthFlows", flowId);
+    const flow = id === null ? null : await ctx.db.get(id);
+    if (!flow) {
+      console.warn("google callback: refused a flow that no longer exists");
+      return null;
+    }
+    const now = Date.now();
+    if (flow.consumedAt === undefined) await ctx.db.patch(flow._id, { consumedAt: now });
+    const result = checkClaim(flow, browserHash, now);
+    if ("refused" in result) {
+      await auditRefusal(ctx, flow, result.refused);
+      return null;
+    }
+    return { userId: flow.userId, householdId: flow.householdId, ...result };
+  },
+});
+
+export const recordCodeRejected = internalMutation({
+  args: { householdId: v.id("households"), userId: v.string() },
+  handler: async (ctx, flow): Promise<null> => {
+    await auditRefusal(ctx, flow, "code_rejected");
+    return null;
+  },
+});
+
+export const sweepOauthFlows = internalMutation({
   args: {},
   handler: async (ctx): Promise<number> => {
     const expired = await ctx.db
-      .query("oauthStates")
+      .query("oauthFlows")
       .withIndex("by_expires", (q) => q.lt("expiresAt", Date.now()))
       .take(OAUTH_SWEEP_BATCH);
     for (const row of expired) await ctx.db.delete(row._id);
@@ -183,33 +212,18 @@ export const sweepOauthStates = internalMutation({
   },
 });
 
-/**
- * purpose: Revoke a Google grant (best effort): decrypts the stored refresh token and asks
- *          Google to revoke it. Never throws; failures are logged.
- * @param refreshToken: (string) The encrypted refresh token of a dropped or replaced connection.
- * @return: (boolean) Whether Google accepted the revocation.
- */
 export const revokeGrant = internalAction({
   args: { refreshToken: v.string() },
   handler: async (_ctx, { refreshToken }): Promise<boolean> => {
     try {
       return await revokeRefreshToken(await decryptSecret(refreshToken));
     } catch (e) {
-      console.error(`Could not revoke Google grant: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`Could not revoke Google grant: ${errorText(e)}`);
       return false;
     }
   },
 });
 
-/**
- * purpose: The facts the callback needs: the household's name and zone, and the caregiver's
- *          existing Sunny calendar id.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Caregiver.
- * @return: (CallbackContext) The facts.
- * @raises forbidden when the user is no longer a caregiver of the household (a state token
- *         outlives membership by up to 15 minutes); not_found when the household is gone.
- */
 export const callbackContext = internalQuery({
   args: { householdId: v.id("households"), userId: v.string() },
   handler: async (ctx, { householdId, userId }): Promise<CallbackContext> => {
@@ -227,19 +241,6 @@ export const callbackContext = internalQuery({
   },
 });
 
-/**
- * purpose: Save a caregiver's Google connection after OAuth (the port of
- *          save_calendar_connection): create it or reactivate the existing one with the new
- *          token and calendar, and queue a push of every live event (and of cancelled events
- *          still linked to it). A different calendar than before drops the old links.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Caregiver (must be a member).
- * @param accountEmail: (string | null) Google account shown to the caregiver.
- * @param externalCalendarId: (string) The Sunny calendar in the caregiver's account.
- * @param refreshToken: (string) The refresh token, already encrypted (lib/secretBox.ts).
- * @return: (Id<"calendarConnections">) The connection.
- * @raises forbidden when the user is not a member.
- */
 export const saveConnection = internalMutation({
   args: {
     householdId: v.id("households"),
@@ -256,7 +257,6 @@ export const saveConnection = internalMutation({
       refreshToken: args.refreshToken,
       status: "active" as const,
       error: undefined,
-      // A new grant: the cached access token belongs to the old one.
       accessToken: undefined,
       accessTokenExpiresAt: undefined,
     };
@@ -268,13 +268,11 @@ export const saveConnection = internalMutation({
       .unique();
     let connectionId: Id<"calendarConnections">;
     if (existing) {
-      // A different calendar means the old links point nowhere.
       if (existing.externalCalendarId !== args.externalCalendarId) {
         await deleteLinks(ctx, existing._id);
       }
       await ctx.db.patch(existing._id, fields);
       if (existing.refreshToken !== args.refreshToken) {
-        // The new grant replaces the old one, which would otherwise stay valid at Google.
         await scheduleGrantRevoke(ctx, existing.refreshToken);
       }
       connectionId = existing._id;
@@ -299,22 +297,16 @@ export const saveConnection = internalMutation({
   },
 });
 
-/**
- * purpose: Escape text for HTML.
- * @param text: (string) Plain text.
- * @return: (string) Text safe inside an element or double-quoted attribute.
- */
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-/**
- * purpose: A minimal HTML page for the end of the browser flow.
- * @param title: (string) Heading.
- * @param message: (string) One sentence for the caregiver.
- * @param status: (number) HTTP status.
- * @return: (Response) HTML response.
- */
+const SECURITY_HEADERS = {
+  ...NO_STORE,
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+};
+
 function page(title: string, message: string, status = 200): Response {
   const body =
     `<!doctype html><html><head><meta charset="utf-8">` +
@@ -324,21 +316,49 @@ function page(title: string, message: string, status = 200): Response {
     `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
   return new Response(body, {
     status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-      "Referrer-Policy": "no-referrer",
-      "X-Content-Type-Options": "nosniff",
-    },
+    headers: { "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS },
   });
 }
 
-/**
- * purpose: Finish the connect flow after Google redirects back (GET /google/callback, public).
- * @param request: (Request) Callback request with code and state (or error) query parameters.
- * @return: (Response) An HTML page saying whether it worked.
- */
-export const callback = httpAction(async (ctx, request) => {
+function expiredPage(): Response {
+  return page("Link expired", "This link has expired. Start again from the Sunny app.", 400);
+}
+
+function errorPage(): Response {
+  return page(
+    "Something went wrong",
+    "Google Calendar could not be connected. Please try again.",
+    500,
+  );
+}
+
+export const start = httpAction(async (ctx, request) => {
+  const ticket = new URL(request.url).searchParams.get("ticket");
+  if (!ticket) return expiredPage();
+  try {
+    const browserSecret = randomToken();
+    const codeVerifier = randomToken();
+    const flowId = await ctx.runMutation(internal.googleCalendar.startOauthFlow, {
+      ticketHash: await sha256Base64Url(ticket),
+      browserHash: await sha256Base64Url(browserSecret),
+      codeVerifier: await encryptSecret(codeVerifier),
+    });
+    if (!flowId) return expiredPage();
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: consentUrl(await signState(flowId), await sha256Base64Url(codeVerifier)),
+        "Set-Cookie": flowCookie(browserSecret),
+        ...SECURITY_HEADERS,
+      },
+    });
+  } catch (e) {
+    console.error(`google start failed: ${errorText(e)}`);
+    return errorPage();
+  }
+});
+
+async function finishConnect(ctx: ActionCtx, request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.searchParams.get("error")) {
     return page(
@@ -347,25 +367,25 @@ export const callback = httpAction(async (ctx, request) => {
       400,
     );
   }
-  // A refresh token issued by Google that this request does not end up saving.
   let unusedGrant: string | null = null;
   try {
-    const state = await verifyState(url.searchParams.get("state") ?? "");
+    const flowId = await verifyState(url.searchParams.get("state") ?? "");
     const code = url.searchParams.get("code");
-    if (!state || !code) {
-      return page("Link expired", "This link has expired. Start again from the Sunny app.", 400);
-    }
-    const householdId = state.householdId as Id<"households">;
-    const fresh = await ctx.runMutation(internal.googleCalendar.consumeOauthState, {
-      nonce: state.nonce,
-      userId: state.userId,
-      householdId,
+    if (!flowId) console.warn("google callback: refused a state that did not verify");
+    if (!flowId || !code) return expiredPage();
+    const browserSecret = readFlowCookie(request);
+    const flow = await ctx.runMutation(internal.googleCalendar.consumeOauthFlow, {
+      flowId,
+      browserHash: browserSecret === null ? null : await sha256Base64Url(browserSecret),
     });
-    if (!fresh) {
-      return page("Link expired", "This link has expired. Start again from the Sunny app.", 400);
-    }
+    if (!flow) return expiredPage();
+    const { householdId, userId } = flow;
 
-    const tokens = await exchangeCode(code);
+    const tokens = await exchangeCode(code, await decryptSecret(flow.codeVerifier));
+    if (!tokens) {
+      await ctx.runMutation(internal.googleCalendar.recordCodeRejected, { householdId, userId });
+      return expiredPage();
+    }
     unusedGrant = tokens.refreshToken;
     if (!tokens.scopes.includes(CALENDAR_SCOPE)) {
       await revokeRefreshToken(tokens.refreshToken);
@@ -378,7 +398,7 @@ export const callback = httpAction(async (ctx, request) => {
     }
     const known = await ctx.runQuery(internal.googleCalendar.callbackContext, {
       householdId,
-      userId: state.userId,
+      userId,
     });
     const calendarId =
       known.existingCalendarId &&
@@ -387,7 +407,7 @@ export const callback = httpAction(async (ctx, request) => {
         : await createSunnyCalendar(tokens.accessToken, known.seniorPreferredName, known.timezone);
     await ctx.runMutation(internal.googleCalendar.saveConnection, {
       householdId,
-      userId: state.userId,
+      userId,
       accountEmail: tokens.email,
       externalCalendarId: calendarId,
       refreshToken: await encryptSecret(tokens.refreshToken),
@@ -402,22 +422,17 @@ export const callback = httpAction(async (ctx, request) => {
     if (isAppError(e, "forbidden") || isAppError(e, "not_found")) {
       return page("Not allowed", "You are not a caregiver in this household.", 403);
     }
-    console.error(`google callback failed: ${e instanceof Error ? e.message : String(e)}`);
-    return page(
-      "Something went wrong",
-      "Google Calendar could not be connected. Please try again.",
-      500,
-    );
+    console.error(`google callback failed: ${errorText(e)}`);
+    return errorPage();
   }
+}
+
+export const callback = httpAction(async (ctx, request) => {
+  const response = await finishConnect(ctx, request);
+  response.headers.append("Set-Cookie", clearedFlowCookie());
+  return response;
 });
 
-/**
- * purpose: The signed-in caregiver's own Google connections in a household. Token fields are
- *          never returned.
- * @param householdId: (Id<"households">) Household.
- * @return: (ConnectionView[]) The caller's connections (at most one per household).
- * @raises forbidden for a device or a non-member.
- */
 export const myConnections = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, { householdId }): Promise<ConnectionView[]> => {
@@ -438,13 +453,6 @@ export const myConnections = query({
   },
 });
 
-/**
- * purpose: Disconnect the caller's own Google connection: deletes it with its stored token,
- *          event links and pending syncs. The Sunny calendar in Google is left as it is.
- * @param connectionId: (Id<"calendarConnections">) Connection to remove.
- * @return: (null)
- * @raises not_found when it does not exist or belongs to someone else.
- */
 export const disconnect = mutation({
   args: { connectionId: v.id("calendarConnections") },
   handler: async (ctx, { connectionId }): Promise<null> => {

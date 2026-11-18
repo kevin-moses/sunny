@@ -1,44 +1,3 @@
-// households.ts
-// Purpose: Household identity, ported from the Supabase households migration: creating a
-// household, its settings, caregiver members and roles, one-time join codes (invite a
-// caregiver, pair a device), paired devices, and push tokens. Access rules that RLS
-// enforced are enforced here with lib/access (viewers read only, editors change data,
-// primaries manage members). Device codes are checked by the internal checkDeviceCode query
-// and redeemed by the internal pairDevice mutation, both called from the /pair HTTP action
-// (pairing.ts) around the creation of the device's Clerk user. Removing a device also drops
-// its push tokens and schedules deletion of its Clerk user. A push token may be taken over
-// from an orphaned previous owner, and from another caregiver (the newest caregiver to register
-// a phone's token holds it); a paired device's token never moves and a device never takes a
-// live caregiver's (see registerPushToken, mayTakeOverToken). pairDevice stores the pairing time
-// and the client's retry nonce on the device row so /pair can answer a retry whose first
-// response was lost (findRecentPairing); listDevices never returns the nonce or the device
-// token's hash (deviceApi.ts). Removing a device deletes its row, which revokes its device
-// token at once; revokeDeviceToken revokes only the token and keeps the device paired.
-// Google Calendar: update schedules a re-push of the events (lib/calendarSync.ts, chunked, not
-// inline) when the timezone, event notice time or senior's preferred name actually changes or
-// a pause ends; removeMember drops the removed caregiver's Google connections, links and
-// pending syncs and revokes their grants.
-// Phone numbers: setMyPhone, confirmMyPhone, clearMyPhone and myPhoneStatus (phone.ts) are re-exported here; listMembers
-// reports phoneVerified and hides numbers from paired devices.
-//
-// mine returns the signed-in account's kind (device, caregiver or signed out, using the same rule
-// as requireCaregiverAccount) together with its households, so the app can route before any
-// household exists.
-//
-// One household per caregiver: create and redeemJoinCode reject a caregiver who already has a
-// householdMembers row (insertMembership, the only place a membership is inserted). A caregiver
-// removed by removeMember can then join or create another household.
-//
-// update also sets weatherLocation, the place the voice agent's weather tool looks up (blank
-// clears it). Its rules live in lib/householdSettings.ts updateHouseholdCore, which the
-// household agent's settings tools (lib/agentSetupTools.ts) call too, so a setting changed in
-// chat passes the same checks; a change that alters something is audited (update_settings)
-// under the caregiver who made it. There is no on-call caregiver (2026-11-14): every caregiver
-// gets a task's alert at once, so households no longer have an on-call setting; the stored
-// onCallUserId field is deprecated (never read or written; migrations.removeOnCall clears it).
-//
-// Last modified: 2026-11-14
-
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
@@ -62,7 +21,6 @@ import {
 import { audit } from "./lib/audit";
 import { dropMemberConnections } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
-import { seedDefaultPolicies } from "./lib/policies";
 import {
   householdSettingsFields,
   requireTimezone,
@@ -78,10 +36,8 @@ const CODE_LENGTH = 8;
 const CODE_TTL_MS = 24 * 60 * 60 * 1000;
 const CODE_ATTEMPTS = 10;
 const DEFAULT_CAREGIVER_NAME = "Caregiver";
-/** How long after pairing a retry with the same nonce is answered with a fresh ticket. */
 export const PAIRING_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
-/** A household member as listMembers returns it, with the phone fields gated by who asks. */
 export type MemberView = Omit<
   Doc<"householdMembers">,
   "phone" | "phoneVerifiedAt" | "pendingPhone"
@@ -90,22 +46,12 @@ export type MemberView = Omit<
     phoneVerified: boolean;
   };
 
-/**
- * purpose: Draw a random join code from the unambiguous alphabet.
- * @return: (string) Eight characters. The alphabet has 32 letters, so byte % 32 is unbiased.
- */
 function randomCode(): string {
   const bytes = new Uint8Array(CODE_LENGTH);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
 }
 
-/**
- * purpose: Find a join code row; the code is trimmed and upper-cased here.
- * @param ctx: (QueryCtx) Context.
- * @param code: (string) Code as typed or stored.
- * @return: (Doc<"joinCodes"> | null) The row, or null.
- */
 async function findJoinCode(ctx: QueryCtx, code: string): Promise<Doc<"joinCodes"> | null> {
   return await ctx.db
     .query("joinCodes")
@@ -113,14 +59,6 @@ async function findJoinCode(ctx: QueryCtx, code: string): Promise<Doc<"joinCodes
     .unique();
 }
 
-/**
- * purpose: Load a join code that can still be redeemed.
- * @param ctx: (QueryCtx) Context.
- * @param rawCode: (string) Code as typed.
- * @param now: (number) Epoch ms.
- * @return: (Doc<"joinCodes">) The redeemable row.
- * @raises not_found when the code does not exist, was used, or has expired.
- */
 async function loadRedeemableCode(
   ctx: QueryCtx,
   rawCode: string,
@@ -131,32 +69,14 @@ async function loadRedeemableCode(
   return row;
 }
 
-/**
- * purpose: The one error for every unredeemable code (unknown, used, expired, or the wrong
- *          kind for the unauthenticated device path), so a code's kind is never revealed there.
- * @return: (Error) A not_found app error.
- */
 function invalidCodeError(): Error {
   return appError("not_found", "This code is invalid or has expired");
 }
 
-/**
- * purpose: Whether a join grant adds a senior device rather than a caregiver.
- * @param grant: (JoinGrant) The grant on a code.
- * @return: (boolean) True for senior_phone and home_display.
- */
 function isDeviceGrant(grant: JoinGrant): grant is DeviceKind {
   return grant === "senior_phone" || grant === "home_display";
 }
 
-/**
- * purpose: Create a household with the caller as its primary caregiver.
- * @param seniorPreferredName: (string) What the senior likes to be called.
- * @param timezone: (string) IANA zone of the household.
- * @param caregiverDisplayName: (string) The caller's display name.
- * @return: (Id<"households">) The new household.
- * @raises invalid when the caller already belongs to a household (one household per caregiver).
- */
 export const create = mutation({
   args: {
     seniorPreferredName: v.string(),
@@ -179,22 +99,12 @@ export const create = mutation({
       backgroundPaused: false,
     });
     await insertMembership(ctx, { householdId, userId, role: "primary", displayName });
-    await seedDefaultPolicies(ctx, householdId);
     return householdId;
   },
 });
 
-/** The role of a signed-in account: a senior device or a caregiver. */
 type AccountKind = "device" | "caregiver";
 
-/**
- * purpose: The signed-in account's kind and the households it belongs to, as a caregiver (with
- *          role) or as a paired device. The kind uses the same rule as requireCaregiverAccount
- *          (isDeviceAccount), so the app can route before any household exists.
- * @return: ({accountKind, households}) accountKind is null when signed out. Each household
- *          entry has role null for a device and deviceKind null for a caregiver. households is
- *          empty when signed out.
- */
 export const mine = query({
   args: {},
   handler: async (
@@ -230,11 +140,6 @@ export const mine = query({
   },
 });
 
-/**
- * purpose: One household's settings.
- * @param householdId: (Id<"households">) Household.
- * @return: (Doc<"households">) The household. Readers only.
- */
 export const get = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<Doc<"households">> => {
@@ -243,21 +148,6 @@ export const get = query({
   },
 });
 
-/**
- * purpose: Change household settings; fields left out are unchanged. Editors only. See
- *          updateHouseholdCore.
- * @param householdId: (Id<"households">) Household.
- * @param seniorPreferredName: (string, optional) Non-blank name.
- * @param seniorFullName: (string, optional) Full name.
- * @param timezone: (string, optional) IANA zone.
- * @param digestTime: (string, optional) Local "HH:MM".
- * @param eventNoticeTime: (string, optional) Local "HH:MM".
- * @param shareTranscripts: (boolean, optional) Whether caregivers see full transcripts.
- * @param backgroundPaused: (boolean, optional) Caregiver "stop" switch.
- * @param weatherLocation: (string, optional) Place for the voice agent's weather, e.g.
- *        "Brooklyn, NY"; trimmed, at most 100 characters; blank clears it.
- * @return: (null)
- */
 export const update = mutation({
   args: { householdId: v.id("households"), ...householdSettingsFields },
   handler: async (ctx, args): Promise<null> => {
@@ -268,13 +158,6 @@ export const update = mutation({
   },
 });
 
-/**
- * purpose: The household's caregivers.
- * @param householdId: (Id<"households">) Household.
- * @return: (MemberView[]) Members, each with phoneVerified (true only for a verified number).
- *          The number itself (phone, pendingPhone, phoneVerifiedAt) is left out for a paired
- *          device. Readers only.
- */
 export const listMembers = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<MemberView[]> => {
@@ -292,17 +175,8 @@ export const listMembers = query({
   },
 });
 
-/** Caregiver phone verification, implemented in phone.ts. */
 export { clearMyPhone, confirmMyPhone, myPhoneStatus, setMyPhone } from "./phone";
 
-/**
- * purpose: Reject a change that would leave the household without a primary caregiver. Call
- *          it only when the member being demoted or removed is a primary.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<void>)
- * @raises invalid when that primary is the only one.
- */
 async function assertNotLastPrimary(ctx: QueryCtx, householdId: Id<"households">): Promise<void> {
   const members = await ctx.db
     .query("householdMembers")
@@ -313,14 +187,6 @@ async function assertNotLastPrimary(ctx: QueryCtx, householdId: Id<"households">
   }
 }
 
-/**
- * purpose: Change a caregiver's role. Primaries only. The household's last primary cannot
- *          be demoted (an intentional improvement over the SQL).
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Member to change.
- * @param role: (MemberRole) New role.
- * @return: (null)
- */
 export const updateMemberRole = mutation({
   args: { householdId: v.id("households"), userId: v.string(), role: memberRole },
   handler: async (ctx, args): Promise<null> => {
@@ -335,13 +201,6 @@ export const updateMemberRole = mutation({
   },
 });
 
-/**
- * purpose: Remove a caregiver. A primary may remove anyone; any member may remove themselves.
- *          The last primary cannot be removed.
- * @param householdId: (Id<"households">) Household.
- * @param userId: (string) Member to remove.
- * @return: (null)
- */
 export const removeMember = mutation({
   args: { householdId: v.id("households"), userId: v.string() },
   handler: async (ctx, args): Promise<null> => {
@@ -355,19 +214,11 @@ export const removeMember = mutation({
     if (!member) throw appError("not_found", "Member not found");
     if (member.role === "primary") await assertNotLastPrimary(ctx, args.householdId);
     await ctx.db.delete(member._id);
-    // Their Google connection (and token) goes with them.
     await dropMemberConnections(ctx, args.householdId, args.userId);
     return null;
   },
 });
 
-/**
- * purpose: Generate a one-time code (valid 24 hours) to pair a device or invite a caregiver.
- *          Editors only; only primaries may invite another primary.
- * @param householdId: (Id<"households">) Household.
- * @param grants: (JoinGrant) What the code grants.
- * @return: ({code, grants, expiresAt}) The new code.
- */
 export const createJoinCode = mutation({
   args: { householdId: v.id("households"), grants: joinGrant },
   handler: async (ctx, args): Promise<{ code: string; grants: JoinGrant; expiresAt: number }> => {
@@ -392,12 +243,6 @@ export const createJoinCode = mutation({
   },
 });
 
-/**
- * purpose: The household's open join codes: unredeemed and unexpired (filtered in memory
- *          after the by_household index). Editors only.
- * @param householdId: (Id<"households">) Household.
- * @return: (Doc<"joinCodes">[]) Open codes.
- */
 export const listJoinCodes = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<Doc<"joinCodes">[]> => {
@@ -411,12 +256,6 @@ export const listJoinCodes = query({
   },
 });
 
-/**
- * purpose: Delete a join code (for example to revoke an unused invite). Editors only.
- * @param householdId: (Id<"households">) Household that owns the code.
- * @param code: (string) The code.
- * @return: (null)
- */
 export const deleteJoinCode = mutation({
   args: { householdId: v.id("households"), code: v.string() },
   handler: async (ctx, args): Promise<null> => {
@@ -430,20 +269,6 @@ export const deleteJoinCode = mutation({
   },
 });
 
-/**
- * purpose: Join a household as a caregiver using an invite code. Device codes are redeemed
- *          by pairDevice instead; a signed-in caregiver who enters one gets a specific
- *          "invalid" error pointing them to a caregiver invite code. That message is revealed
- *          only to signed-in caregiver accounts: any Clerk caregiver account can tell a live
- *          device code from an unknown, used or expired one, which is acceptable given the
- *          32^8 code space and that /pair already accepts a correct guess. Unknown, used and
- *          expired codes give the generic not_found error.
- * @param code: (string) The code; trimmed and case-insensitive.
- * @param displayName: (string, optional) Display name; defaults to "Caregiver".
- * @return: (Id<"households">) The joined household.
- * @raises invalid when the code is for a senior's device or the caller already belongs to a
- *          household ("already a member" if it is this one); not_found when it cannot be redeemed.
- */
 export const redeemJoinCode = mutation({
   args: { code: v.string(), displayName: v.optional(v.string()) },
   handler: async (ctx, args): Promise<Id<"households">> => {
@@ -470,14 +295,6 @@ export const redeemJoinCode = mutation({
   },
 });
 
-/**
- * purpose: Check that a code can be redeemed by a device, without redeeming it. Internal: the
- *          /pair HTTP action calls it before creating a Clerk user, so bad codes never cost a
- *          Clerk call. Unknown, used, expired and caregiver codes all give the same error.
- * @param code: (string) The code; trimmed and case-insensitive.
- * @return: (null)
- * @raises not_found when the code cannot be redeemed by a device.
- */
 export const checkDeviceCode = internalQuery({
   args: { code: v.string() },
   handler: async (ctx, args): Promise<null> => {
@@ -487,15 +304,6 @@ export const checkDeviceCode = internalQuery({
   },
 });
 
-/**
- * purpose: Pair a device using a device code. Internal: the /pair HTTP action calls it after
- *          creating the device's Clerk user.
- * @param code: (string) The code; trimmed and case-insensitive.
- * @param userId: (string) Clerk user id created for the device.
- * @param name: (string, optional) Device name.
- * @param pairingNonce: (string, optional) Client retry nonce, stored for findRecentPairing.
- * @return: ({householdId, deviceId, kind}) The pairing.
- */
 export const pairDevice = internalMutation({
   args: {
     code: v.string(),
@@ -529,16 +337,6 @@ export const pairDevice = internalMutation({
   },
 });
 
-/**
- * purpose: Find the device that already redeemed a code, for a /pair retry whose first
- *          response was lost. Matches only when the code was redeemed by a device that still
- *          exists, whose stored pairingNonce equals the one given, and which was paired within
- *          PAIRING_RETRY_WINDOW_MS. Internal.
- * @param code: (string) The code; trimmed and case-insensitive.
- * @param pairingNonce: (string) The nonce the client sent.
- * @param now: (number, optional) Epoch ms; defaults to the current time.
- * @return: ({userId, householdId, deviceId, kind} | null) The pairing, or null.
- */
 export const findRecentPairing = internalQuery({
   args: { code: v.string(), pairingNonce: v.string(), now: v.optional(v.number()) },
   handler: async (
@@ -569,15 +367,8 @@ export const findRecentPairing = internalQuery({
   },
 });
 
-/** A device as clients see it: without the pairing retry nonce and the device token's hash. */
 export type DeviceView = Omit<Doc<"devices">, "pairingNonce" | "tokenHash">;
 
-/**
- * purpose: The household's paired devices.
- * @param householdId: (Id<"households">) Household.
- * @return: (DeviceView[]) Devices, without the pairing retry nonce and the device token's hash
- *          (tokenIssuedAt says whether and when a token was issued). Readers only.
- */
 export const listDevices = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<DeviceView[]> => {
@@ -590,15 +381,6 @@ export const listDevices = query({
   },
 });
 
-/**
- * purpose: Unpair a device. Editors only. Deleting the row revokes its device token at once
- *          (the HTTP device API resolves the token through the row). Also deletes the device's
- *          push tokens and schedules deletion of its Clerk user (best effort, see
- *          pairing.deleteClerkUser).
- * @param householdId: (Id<"households">) Household.
- * @param deviceId: (Id<"devices">) Device to remove.
- * @return: (null)
- */
 export const removeDevice = mutation({
   args: { householdId: v.id("households"), deviceId: v.id("devices") },
   handler: async (ctx, args): Promise<null> => {
@@ -618,16 +400,6 @@ export const removeDevice = mutation({
   },
 });
 
-/**
- * purpose: Revoke a device's token for the HTTP device API without unpairing it: the token stops
- *          working at once and the device keeps its Clerk sign-in (it can issue a new token with
- *          deviceApi.issueToken). Editors only. Audited as revoke_device_token.
- * @param householdId: (Id<"households">) Household.
- * @param deviceId: (Id<"devices">) The device.
- * @return: (null)
- * @raises forbidden for a viewer, a device or a caregiver of another household; not_found when
- *         the device is not in the household.
- */
 export const revokeDeviceToken = mutation({
   args: { householdId: v.id("households"), deviceId: v.id("devices") },
   handler: async (ctx, args): Promise<null> => {
@@ -649,31 +421,11 @@ export const revokeDeviceToken = mutation({
   },
 });
 
-/**
- * purpose: Whether a user no longer belongs to any household: no devices row and no
- *          householdMembers rows.
- * @param ctx: (QueryCtx) Context.
- * @param userId: (string) User id.
- * @return: (Promise<boolean>) True when the user is orphaned.
- */
 async function isOrphanedUser(ctx: QueryCtx, userId: string): Promise<boolean> {
   if (await findDevice(ctx, userId)) return false;
   return !(await hasMembership(ctx, userId));
 }
 
-/**
- * purpose: Whether a token registered to another user may move to the caller. An orphaned
- *          owner's token always may (no device row and no memberships: re-pairing creates a new
- *          Clerk user, and an unpaired device cannot always clean up its old token). Between
- *          two caregivers it may too: the phone holds one token, so the newest caregiver to
- *          register it holds the phone (an earlier caregiver whose sign-out could not
- *          unregister must not keep receiving that household's alerts there). A paired device's
- *          token never moves, and a device never takes a live caregiver's token.
- * @param ctx: (QueryCtx) Context.
- * @param ownerId: (string) The token's current owner.
- * @param callerId: (string) The signed-in user registering it.
- * @return: (Promise<boolean>) True when the token may move to the caller.
- */
 async function mayTakeOverToken(
   ctx: QueryCtx,
   ownerId: string,
@@ -685,16 +437,6 @@ async function mayTakeOverToken(
   return !isDeviceAccount(identity, await findDevice(ctx, callerId));
 }
 
-/**
- * purpose: Register a push token for the signed-in user. Re-registering one's own token is a
- *          no-op. A token registered to another user moves to the caller when mayTakeOverToken
- *          allows it (an orphaned owner, or one caregiver after another on the same phone);
- *          otherwise it is rejected.
- * @param token: (string) Push token (64 to 200 hex characters).
- * @return: (null)
- * @raises invalid for a token that is not hex of that length; forbidden when the token belongs
- *         to a paired device, or to a live caregiver and the caller is a device.
- */
 export const registerPushToken = mutation({
   args: { token: v.string() },
   handler: async (ctx, args): Promise<null> => {
@@ -717,11 +459,6 @@ export const registerPushToken = mutation({
   },
 });
 
-/**
- * purpose: Remove one of the signed-in user's own push tokens.
- * @param token: (string) Push token.
- * @return: (null)
- */
 export const unregisterPushToken = mutation({
   args: { token: v.string() },
   handler: async (ctx, args): Promise<null> => {

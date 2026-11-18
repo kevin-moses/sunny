@@ -1,14 +1,3 @@
-// convex/lists.test.ts
-// Purpose: Tests for the household list: the caregiver and device functions (lists.ts) by role
-// (readers read, editors add / untick / remove, editors and devices tick, viewers and devices
-// change nothing else), household isolation and by-id ownership, the rules in
-// lib/householdList.ts (one line, length cap, open-item cap, case-insensitive duplicates,
-// audit rows), the voice agent's functions (agent.addListItems, listItems, tickListItem and the
-// context summary), and the digest line for items the senior added that day. The clock is
-// frozen.
-//
-// Last modified: 2026-11-09
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -19,7 +8,6 @@ import { createFamilyHousehold, createHousehold, makeBackend } from "./testing.h
 import type { TestConvex } from "./testing.helpers";
 
 const KEY = "agent-secret-key";
-/** Wednesday 2027-03-10 10:00 in New York. */
 const NOW = Date.parse("2027-03-10T15:00:00Z");
 
 let savedKey: string | undefined;
@@ -37,17 +25,12 @@ afterEach(() => {
   else process.env.SUNNY_AGENT_KEY = savedKey;
 });
 
-/** A family household (Pat primary, Max member, Val viewer, device "phone") and an outsider. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
   otherId: Id<"households">;
 }
 
-/**
- * purpose: Build the fixture: the family household and a second household of user "zed".
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(): Promise<Fixture> {
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
@@ -61,23 +44,10 @@ async function setup(): Promise<Fixture> {
   return { t, householdId, otherId };
 }
 
-/**
- * purpose: Add an item as a user.
- * @param f: (Fixture) Fixture.
- * @param subject: (string) Who adds.
- * @param text: (string) The item.
- * @param householdId: (Id<"households">, optional) Household; defaults to the family's.
- * @return: (Promise<{status, itemId}>) The result.
- */
 async function addAs(f: Fixture, subject: string, text: string, householdId = f.householdId) {
   return await f.t.withIdentity({ subject }).mutation(api.lists.add, { householdId, text });
 }
 
-/**
- * purpose: The household's audit rows with a list action.
- * @param f: (Fixture) Fixture.
- * @return: (Promise<Doc<"auditLog">[]>) Rows in order.
- */
 async function listAudits(f: Fixture): Promise<Doc<"auditLog">[]> {
   const rows = await f.t.run(async (ctx) => await ctx.db.query("auditLog").collect());
   return rows.filter((r) => r.action.startsWith("list_"));
@@ -202,7 +172,6 @@ describe("list rules", () => {
       status: "already_on_list",
       itemId: first.itemId,
     });
-    // Once ticked it can be added again.
     await f.t.withIdentity({ subject: "pat" }).mutation(api.lists.tick, { itemId: first.itemId });
     expect((await addAs(f, "pat", "Whole milk")).status).toBe("added");
   });
@@ -269,11 +238,6 @@ describe("voice agent list functions", () => {
       householdId: f.householdId,
       items: ["whole milk", "oat milk", "bread"],
     });
-    /**
-     * purpose: Tick by words.
-     * @param item: (string) The words.
-     * @return: (Promise<object>) The result.
-     */
     const tick = (item: string) =>
       f.t.mutation(api.agent.tickListItem, { agentKey: KEY, householdId: f.householdId, item });
     expect(await tick("milk")).toEqual({
@@ -308,10 +272,6 @@ describe("voice agent list functions", () => {
 
   test("the context lists a short list and only counts a long one", async () => {
     const f = await setup();
-    /**
-     * purpose: The context's list summary.
-     * @return: (Promise<object>) The summary.
-     */
     const summary = async () =>
       (await f.t.query(api.agent.getContext, { agentKey: KEY, householdId: f.householdId })).list;
     await f.t.mutation(api.agent.addListItems, {

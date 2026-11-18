@@ -1,28 +1,3 @@
-// convex/sms.ts
-// Purpose: Sunny's inbound SMS channel on Twilio (outbound sending: lib/twilio.ts, called
-// directly by the delivery and phone actions). A caregiver can answer an escalation alert from
-// the phone.
-//
-// Inbound: POST /twilio/sms (http.ts) refuses (503) unless TWILIO_AUTH_TOKEN and
-// TWILIO_WEBHOOK_URL are set (the URL must equal, character for character, the webhook URL in
-// the Twilio console), refuses (403) a request with no valid X-Twilio-Signature before reading
-// anything, then handleInbound decides the reply, which goes back as TwiML. A MessageSid is
-// handled once: a retry gets the stored reply and claims nothing again (records swept hourly).
-// Only verified member numbers (phone.ts) are recognised; an unknown number, and Twilio's own
-// opt-out and help keywords (STOP, HELP, ...), get an empty response.
-//
-// Reply "1" or "on it" acts on exactly one alert: the newest caregiver_alert that was actually
-// texted (state sent, channel sms) to the member in the last 24 hours, across the households
-// the number belongs to. If its task is open it is claimed through the same claimInstance the
-// app uses, with an extra audit row "claim_via sms"; otherwise the reply says who is on it or
-// that it is closed. Older alerts are never used instead. Viewers cannot claim. When the newest
-// text was a voice agent flag or a family message (newer than any alert), the "1" answers that
-// text: nothing is claimed and the reply says so (MESSAGE_REPLY).
-//
-// Env: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, TWILIO_WEBHOOK_URL.
-//
-// Last modified: 2026-11-09
-
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
@@ -41,20 +16,14 @@ const ALERTS_PER_MEMBER = 20;
 const MAX_COMMAND_LENGTH = 100;
 const HANDLED_TTL_MS = 24 * 60 * 60 * 1000;
 const SWEEP_BATCH = 200;
-/** Reply to "1" when nothing is open for the member. */
 export const NOTHING_OPEN_REPLY =
   "Nothing needs claiming right now. When Sunny alerts you about a task, reply 1 to say you're on it.";
-/** Reply to "1" when the newest text was a flag or a family message, not a task alert. */
 export const MESSAGE_REPLY = "Thanks. Nothing needs claiming for that message.";
-/** Reply to a message that is not a command. */
 export const HELP_REPLY =
   "Reply 1 when you're on it for a task Sunny alerted you about. Reply STOP to opt out.";
-/** Reply when the newest alert's task is no longer open and nobody is on it. */
 export const CLOSED_REPLY = "That one is already closed";
-/** Reply when every matching account is a viewer. */
 export const VIEWER_REPLY = "Your Sunny account can view tasks but not claim them.";
 
-/** Keywords Twilio answers itself; Sunny must not reply to them. */
 const TWILIO_KEYWORDS = new Set([
   "stop",
   "stopall",
@@ -69,15 +38,8 @@ const TWILIO_KEYWORDS = new Set([
   "info",
 ]);
 
-/** What an inbound message asks for. */
 export type SmsCommand = "claim" | "twilio_keyword" | "other";
 
-/**
- * purpose: Classify an inbound message body.
- * @param body: (string) Message text.
- * @return: (SmsCommand) "claim" for "1" or "on it" (case-insensitive, trailing . or !
- *          ignored), "twilio_keyword" for STOP, HELP and the like, otherwise "other".
- */
 export function parseCommand(body: string): SmsCommand {
   const text = body
     .slice(0, MAX_COMMAND_LENGTH)
@@ -88,23 +50,12 @@ export function parseCommand(body: string): SmsCommand {
   return TWILIO_KEYWORDS.has(text) ? "twilio_keyword" : "other";
 }
 
-/** The newest alert texted to a member, with the task instance it is about. */
 interface SentAlert {
   member: Doc<"householdMembers">;
   instance: Doc<"taskInstances">;
   alertAt: number;
 }
 
-/**
- * purpose: The newest caregiver alert actually texted to a member (state sent, channel sms) in
- *          the last 24 hours. The lookup is by recipient and kind, so other kinds of rows never
- *          push alerts out of reach. Only that one alert counts: if its instance is gone the
- *          answer is null, not an older alert.
- * @param ctx: (MutationCtx) Context.
- * @param member: (Doc<"householdMembers">) The member.
- * @param now: (number) Epoch ms.
- * @return: (Promise<SentAlert | null>) The alert, or null.
- */
 async function newestSentAlert(
   ctx: MutationCtx,
   member: Doc<"householdMembers">,
@@ -132,23 +83,10 @@ async function newestSentAlert(
   return instance ? { member, instance, alertAt: row._creationTime } : null;
 }
 
-/**
- * Texts a caregiver may answer with "1" that are not task alerts (lib/delivery SMS_KIND_POLICY
- * hidesOlderAlert: the voice agent's flags and the senior's family messages). A "1" after one of
- * them claims nothing.
- */
 const NOT_ALERT_KINDS = (Object.keys(SMS_KIND_POLICY) as NotificationKind[]).filter(
   (kind) => SMS_KIND_POLICY[kind].hidesOlderAlert,
 );
 
-/**
- * purpose: When the member was last texted a voice agent flag or a family message by SMS in the
- *          last 24 hours, so a "1" after it answers that text, not an older alert.
- * @param ctx: (MutationCtx) Context.
- * @param member: (Doc<"householdMembers">) The member.
- * @param now: (number) Epoch ms.
- * @return: (Promise<number | null>) The newest such text's creation time, or null.
- */
 async function newestMessageTextAt(
   ctx: MutationCtx,
   member: Doc<"householdMembers">,
@@ -174,28 +112,12 @@ async function newestMessageTextAt(
   return newest;
 }
 
-/**
- * purpose: The sentence naming a task and the senior, for replies.
- * @param ctx: (MutationCtx) Context.
- * @param instance: (Doc<"taskInstances">) The instance.
- * @return: (Promise<string>) For example "Morning pills for Margaret".
- */
 async function describeTask(ctx: MutationCtx, instance: Doc<"taskInstances">): Promise<string> {
   const task = await ctx.db.get(instance.taskId);
   const household = await ctx.db.get(instance.householdId);
   return `${task?.displayLabel ?? "a task"} for ${household?.seniorPreferredName ?? "your family member"}`;
 }
 
-/**
- * purpose: Answer "1" for the members behind a phone number: act on the single newest alert
- *          texted to any of them. Open and unclaimed: claim it. Otherwise say who is on it, or
- *          that it is closed. Never falls back to an older alert. When a flag or family
- *          message was texted after that alert (or with no alert), nothing is claimed.
- * @param ctx: (MutationCtx) Context.
- * @param editors: (Doc<"householdMembers">[]) Verified members with this number who may claim.
- * @param now: (number) Epoch ms.
- * @return: (Promise<string>) The reply text.
- */
 async function claimForMembers(
   ctx: MutationCtx,
   editors: Doc<"householdMembers">[],
@@ -245,14 +167,6 @@ async function claimForMembers(
   return `${CLOSED_REPLY}: ${task}.`;
 }
 
-/**
- * purpose: Work out the reply to one inbound SMS and apply any claim. A number that is not a
- *          verified member gets no reply, and reveals nothing about any household.
- * @param ctx: (MutationCtx) Context.
- * @param from: (string) Sender, E.164.
- * @param body: (string) Message text.
- * @return: (Promise<string | null>) The reply text, or null for an empty response.
- */
 async function replyTo(ctx: MutationCtx, from: string, body: string): Promise<string | null> {
   const command = parseCommand(body);
   if (command === "twilio_keyword") return null;
@@ -271,14 +185,6 @@ async function replyTo(ctx: MutationCtx, from: string, body: string): Promise<st
   return await claimForMembers(ctx, editors, Date.now());
 }
 
-/**
- * purpose: Handle one inbound SMS once. A MessageSid already handled gets the stored reply and
- *          changes nothing, so Twilio's retries are safe.
- * @param from: (string) Sender, E.164 (Twilio's From).
- * @param body: (string) Message text.
- * @param messageSid: (string) Twilio's MessageSid; empty skips the once-only check.
- * @return: ({reply}) The reply text, or null for an empty response.
- */
 export const handleInbound = internalMutation({
   args: { from: v.string(), body: v.string(), messageSid: v.string() },
   handler: async (ctx, args): Promise<{ reply: string | null }> => {
@@ -301,10 +207,6 @@ export const handleInbound = internalMutation({
   },
 });
 
-/**
- * purpose: Delete handled-message records past their expiry (hourly cron). Internal.
- * @return: (number) Rows deleted (at most one batch per run).
- */
 export const sweepInbound = internalMutation({
   args: {},
   handler: async (ctx): Promise<number> => {
@@ -317,16 +219,8 @@ export const sweepInbound = internalMutation({
   },
 });
 
-/** Response headers for TwiML. */
 const XML_HEADERS = { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" };
 
-/**
- * purpose: POST /twilio/sms, Twilio's inbound SMS webhook. Answers 503 (and logs) when the auth
- *          token or TWILIO_WEBHOOK_URL is not set, 403 for a missing or invalid
- *          X-Twilio-Signature (checked before the body is read), otherwise TwiML.
- * @param request: (Request) Twilio's form-encoded request.
- * @return: (Response) TwiML 200; 403 for a bad or missing signature; 503 when not configured.
- */
 export const inbound = httpAction(async (ctx, request) => {
   const authToken = process.env["TWILIO_AUTH_TOKEN"];
   const url = webhookUrl();

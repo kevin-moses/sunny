@@ -1,17 +1,9 @@
-// googleCalendar.test.ts
-// Purpose: Tests for googleCalendar.ts: the OAuth callback (happy path with an encrypted token
-// and queued pushes, reusing or replacing the calendar, bad or expired state, a missing scope,
-// Google errors, a caregiver who left, escaped output, and a reconnect clearing the cached
-// access token), connectUrl permissions (devices, non-members, signed-out), myConnections
-// (own connections only, no token fields) and disconnect (own connection only, links and syncs
-// removed). Google is mocked (googleMocks.helpers.ts).
-//
-// Last modified: 2026-10-29
-
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { googleMocks, resetGoogleMocks } from "./googleMocks.helpers";
+import { signState } from "./lib/google";
+import { FLOW_COOKIE, sha256Base64Url } from "./lib/oauthFlow";
 import {
   addCalendarEvent,
   addConnection,
@@ -33,66 +25,262 @@ vi.mock("./lib/secretBox", async (original) =>
   (await import("./googleMocks.helpers")).secretBoxMock(await original()),
 );
 
+const TEST_ENV: Record<string, string> = {
+  GOOGLE_CLIENT_ID: "client-id",
+  GOOGLE_REDIRECT_URI: "https://sunny.test/google/callback",
+  GOOGLE_OAUTH_STATE_SECRET: "state-secret",
+};
+const savedEnv: Record<string, string | undefined> = {};
+
 beforeEach(() => {
   vi.useFakeTimers();
   resetGoogleMocks();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  for (const [name, value] of Object.entries(TEST_ENV)) {
+    savedEnv[name] = process.env[name];
+    process.env[name] = value;
+  }
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+  for (const name of Object.keys(TEST_ENV)) {
+    if (savedEnv[name] === undefined) delete process.env[name];
+    else process.env[name] = savedEnv[name];
+  }
 });
 
-/**
- * purpose: Store a single-use OAuth nonce as connectUrl would.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param nonce: (string) The nonce.
- * @param userId: (string) Caregiver it was issued to.
- * @return: (Promise<void>) Resolves when stored.
- */
-async function issueNonce(
+interface StartedFlow {
+  res: Response;
+  setCookie: string;
+  cookie: string;
+  secret: string;
+  state: string;
+  flowId: string;
+  challenge: string;
+}
+
+async function connectUrl(
   t: TestConvex,
   householdId: Id<"households">,
-  nonce: string,
   userId = "user_a",
-): Promise<void> {
-  await t.run(async (ctx) => {
-    await ctx.db.insert("oauthStates", {
-      nonce,
-      userId,
-      householdId,
-      expiresAt: Date.now() + 600_000,
-    });
+): Promise<URL> {
+  return new URL(
+    await t
+      .withIdentity({ subject: userId })
+      .action(api.googleCalendar.connectUrl, { householdId }),
+  );
+}
+
+async function connectPath(
+  t: TestConvex,
+  householdId: Id<"households">,
+  userId = "user_a",
+): Promise<string> {
+  const url = await connectUrl(t, householdId, userId);
+  return `${url.pathname}${url.search}`;
+}
+
+function startedFrom(res: Response): StartedFlow {
+  expect(res.status).toBe(302);
+  const consent = new URL(res.headers.get("Location")!);
+  const setCookie = res.headers.get("Set-Cookie")!;
+  const cookie = setCookie.split(";")[0]!;
+  const state = consent.searchParams.get("state")!;
+  return {
+    res,
+    setCookie,
+    cookie,
+    secret: cookie.slice(FLOW_COOKIE.length + 1),
+    state,
+    flowId: state.split(".")[0]!,
+    challenge: consent.searchParams.get("code_challenge")!,
+  };
+}
+
+async function startFlow(
+  t: TestConvex,
+  householdId: Id<"households">,
+  userId = "user_a",
+): Promise<StartedFlow> {
+  return startedFrom(await t.fetch(await connectPath(t, householdId, userId)));
+}
+
+function finish(
+  t: TestConvex,
+  flow: { state: string; cookie: string | null },
+  code = "c",
+): Promise<Response> {
+  return t.fetch(`/google/callback?code=${code}&state=${encodeURIComponent(flow.state)}`, {
+    headers: flow.cookie === null ? {} : { Cookie: flow.cookie },
   });
 }
 
-describe("OAuth callback", () => {
-  /**
-   * purpose: Set up the mocks for a successful callback and return the household.
-   * @param t: (TestConvex) Harness.
-   * @param seniorName: (string) The household's senior name.
-   * @return: The household id.
-   */
-  async function readyHousehold(t: TestConvex, seniorName = "Margaret") {
-    const householdId = await createHousehold(t, { seniorName });
-    // States "good" and "good2" carry single-use nonces n1 and n2, both issued to user_a.
-    const nonces: Record<string, string> = { good: "n1", good2: "n2" };
-    googleMocks.verifyState.mockImplementation(async (state: string) =>
-      nonces[state] ? { userId: "user_a", householdId, nonce: nonces[state] } : null,
-    );
-    for (const nonce of ["n1", "n2"]) await issueNonce(t, householdId, nonce);
-    googleMocks.exchangeCode.mockResolvedValue({
-      accessToken: "acc",
-      refreshToken: "refresh-new",
-      scopes: ["https://www.googleapis.com/auth/calendar.app.created"],
-      email: "anna@example.com",
-    });
-    googleMocks.createSunnyCalendar.mockResolvedValue("cal-new");
-    return householdId;
-  }
+async function refusals(t: TestConvex): Promise<unknown[]> {
+  const rows = await t.run(async (ctx) => await ctx.db.query("auditLog").collect());
+  return rows.filter((r) => r.action === "connect_refused").map((r) => r.detail.reason);
+}
 
+async function storedState(t: TestConvex) {
+  return await t.run(async (ctx) => ({
+    connections: await ctx.db.query("calendarConnections").collect(),
+    flows: await ctx.db.query("oauthFlows").collect(),
+  }));
+}
+
+async function expectBurnedFlowAndNothingSaved(t: TestConvex): Promise<void> {
+  const { connections, flows } = await storedState(t);
+  expect(connections).toHaveLength(0);
+  expect(flows.every((f) => f.consumedAt !== undefined)).toBe(true);
+}
+
+function expectExpiresIn(expiresAt: number, ms: number): void {
+  expect(expiresAt - Date.now()).toBeGreaterThanOrEqual(ms);
+  expect(expiresAt - Date.now()).toBeLessThan(ms + 1000);
+}
+
+async function expectRefused(res: Response): Promise<void> {
+  expect(res.status).toBe(400);
+  expect(await res.text()).toContain("Link expired");
+}
+
+async function readyHousehold(t: TestConvex, seniorName = "Margaret") {
+  const householdId = await createHousehold(t, { seniorName });
+  googleMocks.exchangeCode.mockResolvedValue({
+    accessToken: "acc",
+    refreshToken: "refresh-new",
+    scopes: ["https://www.googleapis.com/auth/calendar.app.created"],
+    email: "anna@example.com",
+  });
+  googleMocks.createSunnyCalendar.mockResolvedValue("cal-new");
+  return householdId;
+}
+
+describe("Starting the Google flow", () => {
+  test("connectUrl gives a start link on the callback host and stores only the ticket's hash", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const link = await connectUrl(t, householdId);
+    expect(link.origin + link.pathname).toBe("https://sunny.test/google/start");
+    const ticket = link.searchParams.get("ticket")!;
+    expect(ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const { flows } = await storedState(t);
+    expect(flows).toHaveLength(1);
+    expect(flows[0]).toMatchObject({
+      ticketHash: await sha256Base64Url(ticket),
+      userId: "user_a",
+      householdId,
+    });
+    expectExpiresIn(flows[0]!.expiresAt, 5 * 60_000);
+    expect(JSON.stringify(flows)).not.toContain(ticket);
+    const again = await connectUrl(t, householdId);
+    expect(again.searchParams.get("ticket")).not.toBe(ticket);
+  });
+
+  test("the start route sets the browser cookie and redirects to Google with an S256 challenge", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const flow = await startFlow(t, householdId);
+    const consent = new URL(flow.res.headers.get("Location")!);
+    expect(consent.origin + consent.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(consent.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(flow.setCookie.startsWith(`${FLOW_COOKIE}=`)).toBe(true);
+    for (const attribute of ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"]) {
+      expect(flow.setCookie).toContain(attribute);
+    }
+    expect(flow.setCookie).not.toContain("Domain");
+    const [row] = (await storedState(t)).flows;
+    expect(flow.flowId).toBe(row!._id);
+    expect(flow.state).toBe(await signState(row!._id));
+    expect(row!.started?.browserHash).toBe(await sha256Base64Url(flow.secret));
+    expect(row!.started?.codeVerifier).toMatch(/^box:/);
+    expect(await sha256Base64Url(row!.started!.codeVerifier.slice(4))).toBe(flow.challenge);
+    expectExpiresIn(row!.expiresAt, 10 * 60_000);
+  });
+
+  test("a ticket works once: a second start is refused and audited", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const link = await connectPath(t, householdId);
+    expect((await t.fetch(link)).status).toBe(302);
+    const again = await t.fetch(link);
+    await expectRefused(again);
+    expect(again.headers.get("Set-Cookie")).toBeNull();
+    expect(await refusals(t)).toEqual(["ticket_reused"]);
+  });
+
+  test("a ticket older than five minutes is refused and audited", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const link = await connectPath(t, householdId);
+    vi.advanceTimersByTime(6 * 60_000);
+    await expectRefused(await t.fetch(link));
+    expect(await refusals(t)).toEqual(["ticket_expired"]);
+    expect((await storedState(t)).flows[0]?.started).toBeUndefined();
+  });
+
+  test.each([
+    ["an unknown ticket", "/google/start?ticket=nope"],
+    ["no ticket", "/google/start"],
+  ])("%s is refused", async (_label, path) => {
+    const t = makeBackend();
+    await createHousehold(t);
+    const res = await t.fetch(path);
+    await expectRefused(res);
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  test("a device is refused, with or without the device claim", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("devices", { householdId, userId: "dev_1", kind: "home_display" });
+    });
+    await expect(
+      t
+        .withIdentity({ subject: "dev_1", sunny_kind: "device" })
+        .action(api.googleCalendar.connectUrl, { householdId }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    await expect(
+      t.withIdentity({ subject: "dev_1" }).action(api.googleCalendar.connectUrl, { householdId }),
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+  });
+
+  test("connectUrl stores nothing when the redirect URI is not configured", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    delete process.env.GOOGLE_REDIRECT_URI;
+    await expect(connectUrl(t, householdId)).rejects.toThrow("GOOGLE_REDIRECT_URI");
+    expect((await storedState(t)).flows).toHaveLength(0);
+  });
+
+  test("a non-member and a signed-out caller are refused", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await expect(connectUrl(t, householdId, "stranger")).rejects.toMatchObject({
+      data: { code: "forbidden" },
+    });
+    await expect(t.action(api.googleCalendar.connectUrl, { householdId })).rejects.toMatchObject({
+      data: { code: "unauthenticated" },
+    });
+    expect((await storedState(t)).flows).toHaveLength(0);
+  });
+
+  test("a misconfiguration while starting shows the generic error page and sets no cookie", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const link = await connectPath(t, householdId);
+    delete process.env.GOOGLE_OAUTH_STATE_SECRET;
+    const res = await t.fetch(link);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+    expect(await res.text()).not.toContain("GOOGLE_OAUTH_STATE_SECRET");
+  });
+});
+
+describe("OAuth callback", () => {
   test("saves an encrypted connection and queues every live event and linked cancelled one", async () => {
     const t = makeBackend();
     const householdId = await readyHousehold(t);
@@ -103,7 +291,7 @@ describe("OAuth callback", () => {
     await asA.mutation(api.calendar.cancelEvent, { householdId, eventId: unlinkedCancelled });
     await asA.mutation(api.calendar.cancelEvent, { householdId, eventId: linkedCancelled });
 
-    const res = await t.fetch("/google/callback?code=c1&state=good");
+    const res = await finish(t, await startFlow(t, householdId));
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Google Calendar connected");
     expect(googleMocks.createSunnyCalendar).toHaveBeenCalledWith(
@@ -112,9 +300,8 @@ describe("OAuth callback", () => {
       "America/New_York",
     );
 
-    const connection = await t.run(
-      async (ctx) => (await ctx.db.query("calendarConnections").collect())[0],
-    );
+    const { connections, flows } = await storedState(t);
+    const connection = connections[0];
     expect(connection).toMatchObject({
       userId: "user_a",
       householdId,
@@ -123,14 +310,13 @@ describe("OAuth callback", () => {
       status: "active",
       refreshToken: "box:refresh-new",
     });
-    // The backfill is scheduled, not run inside the callback.
+    expect(flows[0]?.consumedAt).toBeDefined();
+    expect(await refusals(t)).toEqual([]);
     expect(await syncRows(t)).toHaveLength(0);
     expect(await pendingScheduled(t)).toContain("calendarFanOut:chunk");
     await runFanOut(t, householdId, connection!._id);
-    // Both cancelled events are unlinked, so only the live one is queued.
     expect((await syncRows(t)).map((s) => s.eventId)).toEqual([live]);
 
-    // Link one cancelled event, then connect again: it is queued too.
     await t.run(async (ctx) =>
       ctx.db.insert("calendarEventLinks", {
         eventId: linkedCancelled,
@@ -140,11 +326,136 @@ describe("OAuth callback", () => {
       }),
     );
     googleMocks.calendarExists.mockResolvedValue(true);
-    await t.fetch("/google/callback?code=c2&state=good2");
+    await finish(t, await startFlow(t, householdId), "c2");
     await runFanOut(t, householdId, connection!._id);
     const queued = (await syncRows(t)).map((s) => s.eventId).sort();
     expect(queued).toEqual([live, linkedCancelled].sort());
     expect(googleMocks.createSunnyCalendar).toHaveBeenCalledTimes(1);
+  });
+
+  test("the code is exchanged with the verifier behind the challenge sent to Google", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    expect((await finish(t, flow, "the-code")).status).toBe(200);
+    expect(googleMocks.exchangeCode).toHaveBeenCalledTimes(1);
+    const [code, verifier] = googleMocks.exchangeCode.mock.calls[0]!;
+    expect(code).toBe("the-code");
+    expect(verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await sha256Base64Url(verifier)).toBe(flow.challenge);
+  });
+
+  test("every callback answer clears the browser cookie", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    for (const res of [
+      await finish(t, flow),
+      await finish(t, flow),
+      await t.fetch("/google/callback?error=denied"),
+    ]) {
+      const cleared = res.headers.get("Set-Cookie")!;
+      expect(cleared.startsWith(`${FLOW_COOKIE}=;`)).toBe(true);
+      expect(cleared).toContain("Max-Age=0");
+    }
+  });
+
+  test("a callback without the browser cookie is refused, audited and burns the flow", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    await expectRefused(await finish(t, { state: flow.state, cookie: null }));
+    await expectRefused(await finish(t, flow));
+    expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
+    await expectBurnedFlowAndNothingSaved(t);
+    expect(await refusals(t)).toEqual(["no_browser_cookie", "flow_used"]);
+  });
+
+  test("a callback carrying another browser's cookie is refused and audited", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const victim = await startFlow(t, householdId);
+    const attacker = await startFlow(t, householdId);
+    await expectRefused(await finish(t, { state: victim.state, cookie: attacker.cookie }));
+    await expectRefused(await finish(t, { state: victim.state, cookie: `${FLOW_COOKIE}=forged` }));
+    expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
+    expect((await storedState(t)).connections).toHaveLength(0);
+    expect(await refusals(t)).toEqual(["wrong_browser", "flow_used"]);
+  });
+
+  test("a replayed callback is refused and audited", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    expect((await finish(t, flow)).status).toBe(200);
+    await expectRefused(await finish(t, flow));
+    expect(googleMocks.exchangeCode).toHaveBeenCalledTimes(1);
+    expect(await refusals(t)).toEqual(["flow_used"]);
+  });
+
+  test("a flow older than ten minutes is refused and audited", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    vi.advanceTimersByTime(11 * 60_000);
+    await expectRefused(await finish(t, flow));
+    expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
+    await expectBurnedFlowAndNothingSaved(t);
+    expect(await refusals(t)).toEqual(["flow_expired"]);
+  });
+
+  test("a callback for a flow never started in a browser is refused", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    await connectPath(t, householdId);
+    const [row] = (await storedState(t)).flows;
+    await expectRefused(
+      await finish(t, { state: await signState(row!._id), cookie: `${FLOW_COOKIE}=x` }),
+    );
+    expect(await refusals(t)).toEqual(["flow_not_started"]);
+  });
+
+  test("a signed state for a flow that no longer exists is refused", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    await t.run(async (ctx) => {
+      const rows = await ctx.db.query("oauthFlows").collect();
+      for (const row of rows) await ctx.db.delete(row._id);
+    });
+    await expectRefused(await finish(t, flow));
+    expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
+  });
+
+  test("Google rejecting the code or verifier is refused, audited and stores nothing", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    googleMocks.exchangeCode.mockResolvedValue(null);
+    await expectRefused(await finish(t, await startFlow(t, householdId)));
+    await expectBurnedFlowAndNothingSaved(t);
+    expect(await refusals(t)).toEqual(["code_rejected"]);
+    expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("the code, verifier, cookie and tokens never reach the logs", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const logged: unknown[] = [];
+    for (const level of ["log", "info", "warn", "error"] as const) {
+      vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+        logged.push(...args);
+      });
+    }
+    googleMocks.createSunnyCalendar.mockRejectedValue(new Error("calendar api down"));
+    const flow = await startFlow(t, householdId);
+    await finish(t, flow, "secret-code");
+    await finish(t, { state: "x.y", cookie: null });
+    const verifier = String(googleMocks.exchangeCode.mock.calls[0]![1]);
+    const text = logged.map(String).join("\n");
+    expect(text).toContain("calendar api down");
+    for (const secret of ["secret-code", verifier, flow.secret, "refresh-new"]) {
+      expect(text).not.toContain(secret);
+    }
   });
 
   test("reuses the existing calendar when it still exists and keeps the links", async () => {
@@ -164,7 +475,7 @@ describe("OAuth callback", () => {
       }),
     );
     googleMocks.calendarExists.mockResolvedValue(true);
-    const res = await t.fetch("/google/callback?code=c&state=good");
+    const res = await finish(t, await startFlow(t, householdId));
     expect(res.status).toBe(200);
     const state = await t.run(async (ctx) => ({
       connections: await ctx.db.query("calendarConnections").collect(),
@@ -195,7 +506,7 @@ describe("OAuth callback", () => {
       }),
     );
     googleMocks.calendarExists.mockResolvedValue(false);
-    await t.fetch("/google/callback?code=c&state=good");
+    await finish(t, await startFlow(t, householdId));
     const state = await t.run(async (ctx) => ({
       connection: await ctx.db.get(connectionId),
       links: await ctx.db.query("calendarEventLinks").collect(),
@@ -212,7 +523,7 @@ describe("OAuth callback", () => {
       ctx.db.patch(connectionId, { accessToken: "box:old", accessTokenExpiresAt: 99 }),
     );
     googleMocks.calendarExists.mockResolvedValue(true);
-    await t.fetch("/google/callback?code=c&state=good");
+    await finish(t, await startFlow(t, householdId));
     const connection = await t.run(async (ctx) => await ctx.db.get(connectionId));
     expect(connection?.accessToken).toBeUndefined();
     expect(connection?.accessTokenExpiresAt).toBeUndefined();
@@ -220,34 +531,31 @@ describe("OAuth callback", () => {
   });
 
   test.each([
-    ["a bad state", "/google/callback?code=c&state=bad"],
-    ["a missing state", "/google/callback?code=c"],
-    ["a missing code", "/google/callback?state=good"],
+    ["a bad state", (state: string) => `/google/callback?code=c&state=bad${state}`],
+    ["a missing state", () => "/google/callback?code=c"],
+    ["a missing code", (state: string) => `/google/callback?state=${encodeURIComponent(state)}`],
   ])("%s answers a link expired page and saves nothing", async (_label, path) => {
     const t = makeBackend();
-    await readyHousehold(t);
-    const res = await t.fetch(path);
-    expect(res.status).toBe(400);
-    expect(await res.text()).toContain("Link expired");
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    await expectRefused(await t.fetch(path(flow.state), { headers: { Cookie: flow.cookie } }));
     expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
   });
 
   test("a grant without the calendar scope is refused", async () => {
     const t = makeBackend();
-    await readyHousehold(t);
+    const householdId = await readyHousehold(t);
     googleMocks.exchangeCode.mockResolvedValue({
       accessToken: "acc",
       refreshToken: "r",
       scopes: ["openid"],
       email: null,
     });
-    const res = await t.fetch("/google/callback?code=c&state=good");
+    const res = await finish(t, await startFlow(t, householdId));
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("Permission needed");
     expect(googleMocks.revokeRefreshToken).toHaveBeenCalledWith("r");
-    expect(
-      await t.run(async (ctx) => await ctx.db.query("calendarConnections").collect()),
-    ).toHaveLength(0);
+    expect((await storedState(t)).connections).toHaveLength(0);
   });
 
   test("Google reporting an error answers a not connected page", async () => {
@@ -258,11 +566,25 @@ describe("OAuth callback", () => {
     expect(await res.text()).toContain("Not connected");
   });
 
+  test("Google reporting an error leaves the flow unconsumed and unaudited", async () => {
+    const t = makeBackend();
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    const res = await t.fetch(
+      `/google/callback?error=access_denied&state=${encodeURIComponent(flow.state)}`,
+      { headers: { Cookie: flow.cookie } },
+    );
+    expect(res.status).toBe(400);
+    expect((await storedState(t)).flows[0]?.consumedAt).toBeUndefined();
+    expect(await refusals(t)).toEqual([]);
+    expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
+  });
+
   test("a failed code exchange answers a generic error page", async () => {
     const t = makeBackend();
-    await readyHousehold(t);
+    const householdId = await readyHousehold(t);
     googleMocks.exchangeCode.mockRejectedValue(new Error("secret detail"));
-    const res = await t.fetch("/google/callback?code=c&state=good");
+    const res = await finish(t, await startFlow(t, householdId));
     expect(res.status).toBe(500);
     const body = await res.text();
     expect(body).toContain("Something went wrong");
@@ -272,51 +594,29 @@ describe("OAuth callback", () => {
   test("a caregiver who left the household is refused", async () => {
     const t = makeBackend();
     const householdId = await readyHousehold(t);
-    await issueNonce(t, householdId, "n3", "user_gone");
-    googleMocks.verifyState.mockResolvedValue({ userId: "user_gone", householdId, nonce: "n3" });
-    const res = await t.fetch("/google/callback?code=c&state=good");
+    await addMember(t, householdId, "user_gone");
+    const flow = await startFlow(t, householdId, "user_gone");
+    await t.run(async (ctx) => {
+      const rows = await ctx.db.query("householdMembers").collect();
+      await ctx.db.delete(rows.find((r) => r.userId === "user_gone")!._id);
+    });
+    const res = await finish(t, flow);
     expect(res.status).toBe(403);
     expect(googleMocks.createSunnyCalendar).not.toHaveBeenCalled();
-    // Google issued a grant for this request; it is not kept, so it is revoked.
     expect(googleMocks.revokeRefreshToken).toHaveBeenCalledWith("refresh-new");
   });
 
-  test("a state can be used once: a replay shows the link expired page", async () => {
-    const t = makeBackend();
-    await readyHousehold(t);
-    expect((await t.fetch("/google/callback?code=c&state=good")).status).toBe(200);
-    const replay = await t.fetch("/google/callback?code=c&state=good");
-    expect(replay.status).toBe(400);
-    expect(await replay.text()).toContain("Link expired");
-    expect(googleMocks.exchangeCode).toHaveBeenCalledTimes(1);
-  });
-
-  test("a nonce issued to someone else, an expired one and an unknown one are refused", async () => {
+  test("pages and the redirect carry no-store, no-referrer and nosniff headers", async () => {
     const t = makeBackend();
     const householdId = await readyHousehold(t);
-    await issueNonce(t, householdId, "n-other", "someone_else");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("oauthStates", {
-        nonce: "n-old",
-        userId: "user_a",
-        householdId,
-        expiresAt: Date.now() - 1,
-      });
-    });
-    for (const nonce of ["n-other", "n-old", "n-unknown"]) {
-      googleMocks.verifyState.mockResolvedValue({ userId: "user_a", householdId, nonce });
-      const res = await t.fetch("/google/callback?code=c&state=x");
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain("Link expired");
-    }
-    expect(googleMocks.exchangeCode).not.toHaveBeenCalled();
-  });
-
-  test("pages carry no-store, no-referrer and nosniff headers", async () => {
-    const t = makeBackend();
-    await readyHousehold(t);
-    for (const path of ["/google/callback?code=c&state=good", "/google/callback?error=denied"]) {
-      const res = await t.fetch(path);
+    const link = await connectPath(t, householdId);
+    const flow = startedFrom(await t.fetch(link));
+    for (const res of [
+      flow.res,
+      await t.fetch(link),
+      await finish(t, flow),
+      await t.fetch("/google/callback?error=denied"),
+    ]) {
       expect(res.headers.get("Cache-Control")).toBe("no-store");
       expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
       expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
@@ -325,11 +625,10 @@ describe("OAuth callback", () => {
 
   test("a misconfiguration while verifying the state shows the generic error page", async () => {
     const t = makeBackend();
-    await readyHousehold(t);
-    googleMocks.verifyState.mockRejectedValue(
-      new Error("Missing env var GOOGLE_OAUTH_STATE_SECRET"),
-    );
-    const res = await t.fetch("/google/callback?code=c&state=good");
+    const householdId = await readyHousehold(t);
+    const flow = await startFlow(t, householdId);
+    delete process.env.GOOGLE_OAUTH_STATE_SECRET;
+    const res = await finish(t, flow);
     expect(res.status).toBe(500);
     const body = await res.text();
     expect(body).toContain("Something went wrong");
@@ -338,9 +637,9 @@ describe("OAuth callback", () => {
 
   test("a grant that could not be saved is revoked", async () => {
     const t = makeBackend();
-    await readyHousehold(t);
+    const householdId = await readyHousehold(t);
     googleMocks.createSunnyCalendar.mockRejectedValue(new Error("calendar api down"));
-    const res = await t.fetch("/google/callback?code=c&state=good");
+    const res = await finish(t, await startFlow(t, householdId));
     expect(res.status).toBe(500);
     expect(googleMocks.revokeRefreshToken).toHaveBeenCalledWith("refresh-new");
   });
@@ -350,68 +649,20 @@ describe("OAuth callback", () => {
     const householdId = await readyHousehold(t);
     await addConnection(t, householdId, { calendarId: "cal-old" });
     googleMocks.calendarExists.mockResolvedValue(true);
-    await t.fetch("/google/callback?code=c&state=good");
+    await finish(t, await startFlow(t, householdId));
     expect(await pendingScheduled(t)).toContain("googleCalendar:revokeGrant");
   });
 
   test("the senior's name is escaped in the success page", async () => {
     const t = makeBackend();
-    await readyHousehold(t, "Mom <script>alert(1)</script>");
-    const body = await (await t.fetch("/google/callback?code=c&state=good")).text();
+    const householdId = await readyHousehold(t, "Mom <script>alert(1)</script>");
+    const body = await (await finish(t, await startFlow(t, householdId))).text();
     expect(body).not.toContain("<script>");
     expect(body).toContain("&#60;script&#62;");
   });
 });
 
-describe("connectUrl, myConnections and disconnect", () => {
-  test("a member caregiver gets a consent URL with a signed state", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const url = await t
-      .withIdentity({ subject: "user_a" })
-      .action(api.googleCalendar.connectUrl, { householdId });
-    const nonce = url.split("~")[2]!;
-    expect(url).toBe(`https://consent.test/?state=user_a~${householdId}~${nonce}`);
-    const rows = await t.run(async (ctx) => await ctx.db.query("oauthStates").collect());
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ nonce, userId: "user_a", householdId });
-    expect(rows[0]!.expiresAt).toBe(Date.now() + 10 * 60_000);
-    // Two flows get two different nonces.
-    const second = await t
-      .withIdentity({ subject: "user_a" })
-      .action(api.googleCalendar.connectUrl, { householdId });
-    expect(second.split("~")[2]).not.toBe(nonce);
-  });
-
-  test("a device is refused, with or without the device claim", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("devices", { householdId, userId: "dev_1", kind: "home_display" });
-    });
-    await expect(
-      t
-        .withIdentity({ subject: "dev_1", sunny_kind: "device" })
-        .action(api.googleCalendar.connectUrl, { householdId }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
-    await expect(
-      t.withIdentity({ subject: "dev_1" }).action(api.googleCalendar.connectUrl, { householdId }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
-  });
-
-  test("a non-member and a signed-out caller are refused", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    await expect(
-      t
-        .withIdentity({ subject: "stranger" })
-        .action(api.googleCalendar.connectUrl, { householdId }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
-    await expect(t.action(api.googleCalendar.connectUrl, { householdId })).rejects.toMatchObject({
-      data: { code: "unauthenticated" },
-    });
-  });
-
+describe("myConnections and disconnect", () => {
   test("myConnections returns only the caller's connections without token fields", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
@@ -486,22 +737,17 @@ describe("connectUrl, myConnections and disconnect", () => {
   });
 });
 
-describe("OAuth state housekeeping and grant revocation", () => {
-  test("the sweeper deletes only expired nonces", async () => {
+describe("OAuth flow housekeeping and grant revocation", () => {
+  test("the sweeper deletes only expired flows", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
-    await issueNonce(t, householdId, "fresh");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("oauthStates", {
-        nonce: "old",
-        userId: "user_a",
-        householdId,
-        expiresAt: Date.now() - 1,
-      });
-    });
-    expect(await t.mutation(internal.googleCalendar.sweepOauthStates, {})).toBe(1);
-    const left = await t.run(async (ctx) => await ctx.db.query("oauthStates").collect());
-    expect(left.map((r) => r.nonce)).toEqual(["fresh"]);
+    await connectPath(t, householdId);
+    vi.advanceTimersByTime(6 * 60_000);
+    await startFlow(t, householdId);
+    expect(await t.mutation(internal.googleCalendar.sweepOauthFlows, {})).toBe(1);
+    const left = (await storedState(t)).flows;
+    expect(left).toHaveLength(1);
+    expect(left[0]?.started).toBeDefined();
   });
 
   test("revokeGrant decrypts the stored token and revokes it at Google", async () => {

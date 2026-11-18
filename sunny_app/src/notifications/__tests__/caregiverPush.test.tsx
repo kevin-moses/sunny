@@ -1,26 +1,3 @@
-// sunny_app/src/notifications/__tests__/caregiverPush.test.tsx
-//
-// Purpose: Tests for caregiver push (caregiverPush.ts) through the real CaregiverApp, rendered
-// with react-test-renderer. Only the boundaries are mocked: expo-notifications (the native
-// module), the network (callMutation, the Convex query hook and connection state), Clerk's
-// useAuth, AsyncStorage, the native symbol and safe-area views, and the audio and speech modules
-// the Chat tab's wording player loads. Covers: the "I'm on it"
-// category registered with a foreground action; permission asked only while undetermined, the
-// APNs token registered when granted and again when the OS rotates it; nothing registered and no
-// error when permission is denied; notifications turned off in Settings unregister the token
-// when the app returns to the foreground (and turned on again re-register it); no permission
-// prompt on onboarding (no household yet), where a stale tap is discarded; a digest tap opening
-// Chat, an alert's body and other kinds opening Home; "I'm on it" claiming the push's task and
-// showing Home, also on a cold start (the launch tap, read once and cleared); a claim call that
-// fails showing a short alert, while someone else on it or a task already done shows nothing;
-// a tap made while signed out (SignedOutFlow) discarded so it never claims after sign-in; no
-// claim for a viewer, another household or a dismiss; a response handled once even when seen
-// twice; and sign-out unregistering the token before Clerk's session ends. Plus
-// routeCaregiverResponse as a pure function. The native module keeps a last response that
-// clearLastNotificationResponse empties, as the real one does.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName } from 'convex/server';
 import type * as NotificationsTypes from 'expo-notifications';
@@ -36,7 +13,6 @@ import { CaregiverOnboardingScreen } from '../../screens/CaregiverOnboardingScre
 import { SignedOutFlow } from '../../screens/SignedOutFlow';
 import { CLAIM_ACTION, routeCaregiverResponse } from '../caregiverPush';
 
-/** expo-notifications' identifier for a tap on the notification body. */
 const DEFAULT_ACTION = 'expo.modules.notifications.actions.DEFAULT';
 
 jest.mock('expo-notifications', () => ({
@@ -52,7 +28,6 @@ jest.mock('expo-notifications', () => ({
   DEFAULT_ACTION_IDENTIFIER: 'expo.modules.notifications.actions.DEFAULT',
 }));
 
-/** The mocked native module, typed for the calls the tests script. */
 const mockNotifications = jest.requireMock('expo-notifications') as {
   setNotificationCategoryAsync: jest.Mock<(...a: unknown[]) => Promise<unknown>>;
   getPermissionsAsync: jest.Mock<() => Promise<unknown>>;
@@ -105,7 +80,6 @@ jest.mock('react-native-safe-area-context', () => ({
 
 jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
 
-// The Chat tab's wording player (useWordingPlayer) loads the native audio and speech modules.
 jest.mock('expo-audio', () => ({ setAudioModeAsync: () => Promise.resolve() }));
 jest.mock('expo-speech', () => ({ speak: jest.fn(), stop: jest.fn() }));
 
@@ -130,21 +104,11 @@ const mockCall = callMutation as unknown as jest.Mock<(...a: unknown[]) => Promi
 const HOUSEHOLD = 'household_1' as HouseholdId;
 const TOKEN = 'a'.repeat(64);
 
-/** The listener the app registered for notification responses (the warm path). */
 let responseListener: ((r: NotificationsTypes.NotificationResponse) => void) | null = null;
-/** The listener the app registered for token rotations. */
 let tokenListener: ((t: { data: unknown }) => void) | null = null;
-/** A fresh notification identifier per response, since handled responses are remembered. */
 let nextId = 0;
-/** The response the OS keeps as the last one (the launch tap), as the native module would. */
 let lastResponse: NotificationsTypes.NotificationResponse | null = null;
 
-/**
- * purpose: Build a notification response as expo-notifications delivers it.
- * @param action: (string) The action identifier (DEFAULT_ACTION for a tap on the body).
- * @param data: (Record<string, unknown>) The push's custom keys.
- * @return: (NotificationsTypes.NotificationResponse) The response.
- */
 function response(
   action: string,
   data: Record<string, unknown>,
@@ -156,7 +120,6 @@ function response(
   } as unknown as NotificationsTypes.NotificationResponse;
 }
 
-/** An escalation alert's data for this household. */
 const ALERT = {
   notification_id: 'out1',
   kind: 'caregiver_alert',
@@ -164,29 +127,16 @@ const ALERT = {
   task_instance_id: 'inst_1',
 };
 
-/**
- * purpose: The function names of every mutation the app called, in order.
- * @return: (string[]) For example ["households:registerPushToken"].
- */
 function calledMutations(): string[] {
   return mockCall.mock.calls.map((c) => getFunctionName(c[0] as never));
 }
 
-/**
- * purpose: Let pending promises (permission, token, mutation) settle inside act.
- * @return: (Promise<void>) Resolves after the microtasks ran.
- */
 async function flush(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 10; i++) await Promise.resolve();
   });
 }
 
-/**
- * purpose: Render the caregiver app and let its startup work settle.
- * @param role: ('primary' | 'member' | 'viewer') The caregiver's role.
- * @return: (Promise<ReactTestRenderer>) The renderer.
- */
 async function renderApp(
   role: 'primary' | 'member' | 'viewer' = 'member',
 ): Promise<ReactTestRenderer> {
@@ -199,23 +149,12 @@ async function renderApp(
   return renderer!;
 }
 
-/** Renderers to unmount after each test, so the day view's minute timer stops. */
 const mounted: ReactTestRenderer[] = [];
 
-/**
- * purpose: The tab the caregiver app shows.
- * @param renderer: (ReactTestRenderer) The rendered app.
- * @return: (string) home, chat or about.
- */
 function activeTab(renderer: ReactTestRenderer): string {
   return renderer.root.findByType(CaregiverTabBar).props.active as string;
 }
 
-/**
- * purpose: Deliver a response through the app's listener (a tap while the app runs).
- * @param r: (NotificationsTypes.NotificationResponse) The response.
- * @return: (Promise<void>) Resolves when handled.
- */
 async function tap(r: NotificationsTypes.NotificationResponse): Promise<void> {
   await act(async () => {
     responseListener?.(r);
@@ -391,7 +330,6 @@ describe('taps', () => {
     expect(calledMutations()).toContain('instances:claimTaskInstance');
     expect(mockNotifications.clearLastNotificationResponse).toHaveBeenCalled();
     expect(activeTab(renderer)).toBe('home');
-    // The same response arriving again through the listener is not handled twice.
     await tap(launch);
     expect(calledMutations().filter((n) => n === 'instances:claimTaskInstance')).toHaveLength(1);
   });
@@ -439,7 +377,6 @@ describe('taps', () => {
     await act(async () => {
       signedOut = create(<SignedOutFlow />);
     });
-    // A tap arriving while the welcome screen shows is discarded as well.
     const later = response(CLAIM_ACTION, ALERT);
     await act(async () => {
       lastResponse = later;
@@ -518,12 +455,6 @@ describe('routeCaregiverResponse', () => {
   });
 
   it('routes a digest to Chat and everything else to Home; ignores other actions', () => {
-    /**
-     * purpose: Route a response for this household as an editor.
-     * @param data: (Record<string, unknown>) The push's custom keys.
-     * @param action: (string) The action identifier; a body tap by default.
-     * @return: (CaregiverPushRoute | null) The route.
-     */
     const route = (data: Record<string, unknown>, action = DEFAULT_ACTION) =>
       routeCaregiverResponse(response(action, data), HOUSEHOLD, true);
     expect(route({ kind: 'digest' })).toEqual({ tab: 'chat', claimInstanceId: null });

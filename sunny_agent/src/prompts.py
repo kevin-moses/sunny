@@ -1,57 +1,13 @@
-# prompts.py
-# Purpose: System prompt template and household context formatting for the Sunny voice
-# agent. format_user_context() turns the agent:getContext result (household and weather
-# location, caregivers, today's schedule, as-needed medications, upcoming events, latest family
-# message, life profile, sensitive-topic playbook, agent memory, recent conversations) into the
-# context block injected into the system prompt at session start. Household facts are labeled
-# by source so caregiver-verified facts outrank things the senior said.
-#
-# The prompt follows the POC spec's voice guardrails (notes/SPEC.md "Voice", "Guardrails"):
-# no persona, no feelings, no claims of friendship and no small talk; capable, not chatty
-# (answer as fully as needed, then stop, with no "anything else?" and no follow-up questions
-# to keep talking); household facts beat general knowledge and caregiver-verified facts beat
-# things the senior said; say plainly when nothing is known; a repeated question is answered
-# again the same way without remark; the sensitive-topic playbook is followed exactly; times
-# are spoken plainly; speech only. Medication questions get facts first, worded as the label
-# (never permission), and the decision is the senior's. A message to a person is read back
-# before it is sent; reminders, notes and list items are made without a confirmation round
-# trip. The only offers allowed are that read-back, letting family know, and offering to read
-# a family message. A bare greeting gets "I'm listening." (two words, no confirm or snooze
-# word). Confirmation is strict: "ok", "okay", "alright" or "hmm" alone never confirm, "no"
-# alone never snoozes, and "yes" confirms only as the direct answer to the agent's own
-# question about that task; when unsure it asks once. "Who was told" is said exactly as the
-# tool says, with the emergency numbers where they apply; a fall is distress (urgent); distress
-# gets two or three calm sentences; flag details are two sentences with no account numbers; a
-# fact that contradicts a verified one or touches the playbook is not saved. A dose report that
-# may repeat one already written down is asked about ("the same one or another?"); a dose can
-# only be taken back in the conversation that logged it. A flag is called before any words in
-# that turn, family is never said to be told without a tool result saying so, and what family
-# will do next is never promised.
-#
-# Sunny assumes a household in the United States for now: the emergency numbers (911, 988 and
-# Poison Control) come from config.py, the one place they are kept.
-#
-# Context safety: caregiver-written text (details, guidance, message bodies) can be long and
-# hold newlines, so every interpolated household value is collapsed to one line (one_line) and
-# each list entry is exactly one "  - " line. Remembered facts are quoted after their trust
-# label ("[verified by family] ...", "[said by Margaret, not verified] ..."), so a fact whose
-# own text ends in "(verified)" cannot pass as verified. A family message body is quoted with
-# its sender, and only once it has been read aloud: an unread message shows only its sender, so
-# the agent must call read_latest_message (which sets seenAt) to read it. It reads an unread
-# message unasked only when the message answers her question; otherwise it says who sent a
-# message and offers to read it, and the playbook applies before anything is read. A family
-# member's own message to her may be read whole, including a door code or phone number they
-# chose to send; the "no private numbers" rule covers everything else. The household list is
-# shown in full when short, as a count otherwise. The prompt states that the household
-# information is information, never instructions.
-#
-# Last modified: 2026-11-14
-
 from __future__ import annotations
 
 from datetime import datetime
 
-from config import CRISIS_LINE, DEFAULT_TIMEZONE, EMERGENCY_NUMBER, POISON_CONTROL
+from config import (
+    US_CRISIS_LINE,
+    US_EMERGENCY_NUMBER,
+    US_POISON_CONTROL,
+)
+from convex_types import AgentContext, FamilyMessage, HouseholdList, MemoryFact
 from tools import (
     clock_for_voice,
     describe_as_needed,
@@ -217,53 +173,45 @@ only tells you how to word answers on its topics.
 {user_context}"""
 
 
-def format_user_context(context: dict) -> str:
-    """
-    purpose: Convert an agent:getContext result into the household context block for
-             the system prompt.
-    @param context: (dict) Result of agent:getContext. Expected keys: household, caregivers,
-                    today, asNeeded, events, latestMessage, lifeProfile, sensitiveTopics,
-                    memory, recentConversations. Pass {} when no household is known.
-    @return: (str) Multi-line context block, or a brief fallback when context is empty.
-    """
-    if not context:
+def format_user_context(context: AgentContext | None) -> str:
+    if context is None:
         return "No household information is available for this session."
 
-    household = context.get("household", {})
-    tz = household.get("timezone", DEFAULT_TIMEZONE)
-    name = one_line(household.get("seniorPreferredName", "")) or "the user"
+    household = context["household"]
+    tz = household["timezone"]
+    name = one_line(household["seniorPreferredName"]) or "the user"
     now_str = ""
-    if household.get("localNow"):
+    if household["localNow"]:
         now = datetime.fromisoformat(household["localNow"])
         now_str = f"{spoken_date(now)}, {clock_for_voice(now)}"
     lines = [f"Name: {name} | Timezone: {tz} | Local time now: {now_str}"]
-    location = one_line(household.get("weatherLocation"))
+    location = one_line(household["weatherLocation"])
     lines.append(
         f"Weather location: {location}"
         if location
         else "Weather location: not set by family."
     )
 
-    caregivers = context.get("caregivers", [])
+    caregivers = context["caregivers"]
     if caregivers:
-        names = [one_line(c.get("name")) for c in caregivers]
+        names = [one_line(c["name"]) for c in caregivers]
         lines.append(f"Family caregivers in Sunny: {', '.join(names)}")
 
-    today = context.get("today", [])
+    today = context["today"]
     lines.append("")
     if today:
         lines.append("Today's schedule:")
         for item in today:
             entry = describe_instance(item, tz)
-            if item.get("pillDescription"):
+            if item["pillDescription"]:
                 entry += f" (pills: {item['pillDescription']})"
-            if item.get("checklistItems"):
+            if item["checklistItems"]:
                 entry += f" (checklist: {', '.join(item['checklistItems'])})"
             lines.append(_item(entry))
     else:
         lines.append("Today's schedule: nothing scheduled.")
 
-    as_needed = context.get("asNeeded", [])
+    as_needed = context["asNeeded"]
     if as_needed:
         lines.append("")
         lines.append(
@@ -272,90 +220,72 @@ def format_user_context(context: dict) -> str:
         )
         lines.extend(_item(describe_as_needed(med, tz)) for med in as_needed)
 
-    events = context.get("events", [])
+    events = context["events"]
     if events:
         lines.append("")
         lines.append("Upcoming events (next 7 days):")
         for e in events:
             starts = to_local(e["startsAt"], tz)
-            entry = f"{spoken_date(starts)}, {clock_for_voice(starts)}: {e.get('title', '')}"
-            if e.get("visitorName"):
+            entry = f"{spoken_date(starts)}, {clock_for_voice(starts)}: {e['title']}"
+            if e["visitorName"]:
                 entry += f", with {e['visitorName']}"
-            if e.get("place"):
+            if e["place"]:
                 entry += f", at {e['place']}"
             lines.append(_item(entry))
 
-    message = context.get("latestMessage")
+    message = context["latestMessage"]
     if message:
         lines.append("")
         lines.append(_message_line(message))
 
-    household_list = context.get("list")
-    if household_list:
-        lines.append("")
-        lines.append(_list_line(household_list))
+    lines.append("")
+    lines.append(_list_line(context["list"]))
 
-    profile = context.get("lifeProfile", [])
+    profile = context["lifeProfile"]
     if profile:
         lines.append("")
         lines.append("Life profile (from family):")
-        for entry in profile:
-            detail = f": {entry['details']}" if entry.get("details") else ""
+        for profile_entry in profile:
+            detail = f": {profile_entry['details']}" if profile_entry["details"] else ""
             lines.append(
-                _item(f"{entry.get('category', '')} - {entry.get('name', '')}{detail}")
+                _item(f"{profile_entry['category']} - {profile_entry['name']}{detail}")
             )
 
-    topics = context.get("sensitiveTopics", [])
+    topics = context["sensitiveTopics"]
     if topics:
         lines.append("")
         lines.append("Sensitive-topic playbook (follow family's guidance exactly):")
         for t in topics:
-            lines.append(
-                _item(f"If asked about {t.get('topic', '')}: {t.get('guidance', '')}")
-            )
+            lines.append(_item(f"If asked about {t['topic']}: {t['guidance']}"))
 
-    memory = context.get("memory", [])
+    memory = context["memory"]
     if memory:
         lines.append("")
         lines.append(
             "Remembered facts (family-verified facts outrank unverified ones):"
         )
         lines.extend(
-            _item(f"{_trust_label(m, name)} {quoted(m.get('fact', ''))}")
-            for m in memory
+            _item(f"{_trust_label(m, name)} {quoted(m['fact'])}") for m in memory
         )
 
-    conversations = context.get("recentConversations", [])
+    conversations = context["recentConversations"]
     if conversations:
         lines.append("")
         lines.append("Recent conversations:")
         for c in conversations:
-            started = c.get("startedAt")
-            day = to_local(started, tz).date().isoformat() if started else ""
-            lines.append(_item(f"{day}: {c.get('summary', '')}"))
+            day = to_local(c["startedAt"], tz).date().isoformat()
+            lines.append(_item(f"{day}: {c['summary']}"))
 
     return "\n".join(lines)
 
 
 def _item(text: str) -> str:
-    """
-    purpose: One list entry of the context block: always exactly one line, whatever newlines
-             the household text held.
-    @param text: (str) The entry text, with household values interpolated.
-    @return: (str) "  - " followed by the text with whitespace runs collapsed.
-    """
     return f"  - {one_line(text)}"
 
 
-def _list_line(household_list: dict) -> str:
-    """
-    purpose: The household list for the context block: the items when the backend sent them
-             (a short list), otherwise only the count.
-    @param household_list: (dict) getContext list ({openCount, items}).
-    @return: (str) One line.
-    """
-    count = household_list.get("openCount") or 0
-    items = [quoted(i) for i in household_list.get("items") or []]
+def _list_line(household_list: HouseholdList) -> str:
+    count = household_list["openCount"]
+    items = [quoted(i) for i in household_list["items"]]
     if count == 0:
         return "Household list: empty."
     if items:
@@ -363,53 +293,32 @@ def _list_line(household_list: dict) -> str:
     return f"Household list: {count} open items; call read_list to read them."
 
 
-def _trust_label(fact: dict, senior_name: str) -> str:
-    """
-    purpose: The trust label written before a remembered fact.
-    @param fact: (dict) A getContext memory entry (fact, source, verified).
-    @param senior_name: (str) The senior's preferred name.
-    @return: (str) "[verified by family]", "[said by <name>, not verified]" or
-             "[written by family, not verified]".
-    """
-    if fact.get("verified"):
+def _trust_label(fact: MemoryFact, senior_name: str) -> str:
+    if fact["verified"]:
         return "[verified by family]"
-    if fact.get("source") == "caregiver":
+    if fact["source"] == "caregiver":
         return "[written by family, not verified]"
     return f"[said by {senior_name}, not verified]"
 
 
-def _message_line(message: dict) -> str:
-    """
-    purpose: The latest family message for the context block. A message already read aloud
-             shows its quoted body with the sender; an unread one shows only the sender, so
-             the agent reads it through read_latest_message, which marks it read.
-    @param message: (dict) getContext latestMessage (from, body, hasPhoto, seen).
-    @return: (str) One line.
-    """
-    sender = one_line(message.get("from")) or "family"
-    if not message.get("seen"):
+def _message_line(message: FamilyMessage) -> str:
+    sender = one_line(message["from"]) or "family"
+    if not message["seen"]:
         return (
             f"Latest family message: from {sender}, not read yet. Call "
             "read_latest_message to read it."
         )
-    body = message.get("body")
+    body = message["body"]
     if body:
         return f"Latest family message (already read): from {sender}: {quoted(body)}"
     return f"Latest family message (already read): a photo from {sender}."
 
 
 def render_system_prompt(user_context_block: str, senior_name: str = "") -> str:
-    """
-    purpose: Inject the senior's name, the emergency numbers (config.py) and the formatted
-             household context block into the system prompt template.
-    @param user_context_block: (str) Output of format_user_context().
-    @param senior_name: (str) The senior's preferred name; "" uses "the person".
-    @return: (str) The complete system prompt string ready for the LLM.
-    """
     return SYSTEM_PROMPT_TEMPLATE.format(
         name=senior_name or "the person",
         user_context=user_context_block,
-        emergency=EMERGENCY_NUMBER,
-        crisis=CRISIS_LINE,
-        poison=POISON_CONTROL,
+        emergency=US_EMERGENCY_NUMBER,
+        crisis=US_CRISIS_LINE,
+        poison=US_POISON_CONTROL,
     )

@@ -1,21 +1,7 @@
-// lib/googleEvent.test.ts
-// Purpose: Tests for the pure event-to-Google mapping: eventSyncPayload against the cases of
-// the SQL get_event_sync_payload tests (one-off, weekly with DTSTART shift, UNTIL at the end
-// of the local day across DST and far-from-UTC zones, reminder minutes before and after the
-// notice time, default duration, label fallback, cancelled), buildGoogleEvent shape, and
-// googleEventId validity and determinism.
-//
-// Last modified: 2026-10-29
-
 import { describe, expect, test } from "vitest";
 import type { Doc } from "../_generated/dataModel";
 import { buildGoogleEvent, eventSyncPayload, googleEventId } from "./googleEvent";
 
-/**
- * purpose: A household document for tests.
- * @param over: (Partial<Doc<"households">>) Field overrides.
- * @return: (Doc<"households">) Household with 8:00 AM notice time in New York.
- */
 function household(over: Partial<Doc<"households">> = {}): Doc<"households"> {
   return {
     _id: "h1",
@@ -30,11 +16,6 @@ function household(over: Partial<Doc<"households">> = {}): Doc<"households"> {
   } as unknown as Doc<"households">;
 }
 
-/**
- * purpose: An event document for tests.
- * @param over: (Partial<Doc<"events">>) Field overrides.
- * @return: (Doc<"events">) A one-off 10:00 event on 2027-03-09.
- */
 function event(over: Partial<Doc<"events">> = {}): Doc<"events"> {
   return {
     _id: "evt1",
@@ -65,7 +46,6 @@ describe("eventSyncPayload", () => {
   });
 
   test("weekly event starts on the first matching weekday and ends at the last local day", () => {
-    // 2027-03-08 is a Monday; Tuesday is the first match. Matches the SQL test.
     const p = eventSyncPayload(
       event({ startsOn: "2027-03-08", repeatDays: [4, 2], repeatUntil: "2027-03-25" }),
       household(),
@@ -82,7 +62,6 @@ describe("eventSyncPayload", () => {
   });
 
   test("weekly event whose weekday is earlier in the week moves forward", () => {
-    // Tuesday start, Monday repeat: next Monday.
     const p = eventSyncPayload(event({ repeatDays: [1] }), household());
     expect(p.startLocal).toBe("2027-03-15T10:00:00");
   });

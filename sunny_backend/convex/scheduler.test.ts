@@ -1,28 +1,3 @@
-// scheduler.test.ts
-// Purpose: Tests for the scheduler (scheduler.ts, lib/schedule.ts), ported from the scheduler
-// half of the former Supabase scheduler tests: expansion across the March 2027 and November
-// 2026 New York DST changes, idempotence, no back-fill, the escalation ladder (prompt,
-// reprompt, then one alert to every caregiver at once; no on-call caregiver), missed windows,
-// audit of every state change, snooze, tasks added mid-window, bursts after a gap, inactive
-// tasks, a legacy "alert_on_call" step read as an alert to every caregiver, an unmigrated
-// two-alert ladder (everyone at +30, everyone again at +45 unless claimed, the second body
-// saying no one has claimed it), an instance whose +30 on-call alert fired under the old code
-// still reaching everyone at +45, schedule edits and deactivation, and the household timezone
-// resync. A window that closes before any caregiver was alerted (a short window, a task added
-// late, a window as long as the alert offset, a downtime) alerts every caregiver once as it is
-// marked missed ("Its time has now passed."), the alert can be claimed and is not stale for
-// delivery; nothing is sent when caregivers were already alerted, a claim holds the only alert,
-// the ladder is digest-only, the instance is anytime, the task is inactive, the instance was
-// created after its window ended, or the window ended more than an hour before the tick (59
-// minutes alerts, 61 does not). Also: the tick fans out one tickHousehold per household (with
-// paging), editing a policy mid-ladder neither re-fires nor skips steps (stable step ids), windows
-// that cross midnight stay listed and confirmable, and deleting a task purges its rows in bounded
-// batches while orphaned instances are harmless. The clock is driven by passing `now` to the
-// internal functions and by faking timers for the public functions and scheduled functions. A task
-// created with no policy gets the type default and so is prompted on the tick.
-//
-// Last modified: 2026-11-14
-
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -32,34 +7,25 @@ import { resolveRoute } from "./lib/delivery";
 import { gatherDigestFacts } from "./lib/digestFacts";
 import { fixedLines } from "./lib/digestText";
 import { purgeTaskBatch } from "./lib/schedule";
-import type { EscalationStepInput } from "./lib/validators";
+import { ESCALATION_LADDER } from "./lib/escalation";
 import type { TickResult } from "./scheduler";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const MORNING_PROMPT = "It's 8 o'clock. Time for your morning pills, the small white ones.";
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   const t = convexTest(schema, modules);
   workpoolTest.register(t, "deliveryPool");
   return t;
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** A household with Pat (primary), Max (member), Val (viewer) and one device. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
-  medication: Id<"escalationPolicies">;
-  promptOnly: Id<"escalationPolicies">;
   deviceId: Id<"devices">;
 }
 
@@ -71,21 +37,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Set the faked clock used by public functions.
- * @param iso: (string) UTC instant.
- * @return: (number) The same instant in epoch ms.
- */
 function at(iso: string): number {
   vi.setSystemTime(new Date(iso));
   return Date.parse(iso);
 }
 
-/**
- * purpose: Build the standard household (New York) at the given faked time.
- * @param iso: (string) UTC instant to start the clock at.
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(iso: string): Promise<Fixture> {
   at(iso);
   const t = makeBackend();
@@ -107,61 +63,32 @@ async function setup(iso: string): Promise<Fixture> {
     grants: "senior_phone",
   });
   const { deviceId } = await t.mutation(internal.households.pairDevice, { code, userId: "phone" });
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
-  return {
-    t,
-    householdId,
-    medication: policies.find((p) => p.systemKey === "medication")!._id,
-    promptOnly: policies.find((p) => p.systemKey === "prompt_only")!._id,
-    deviceId,
-  };
+  return { t, householdId, deviceId };
 }
 
-/**
- * purpose: Create a medication task as Pat on the medication policy. A null policy override
- *          strips the policy after creation (creation itself would assign the type default).
- * @param f: (Fixture) Fixture.
- * @param fields: (object) Overrides: title, times, spokenPrompt, policy and more.
- * @return: (Promise<Id<"tasks">>) The task.
- */
 async function makeTask(
   f: Fixture,
   fields: Partial<{
     title: string;
     times: string[];
     spokenPrompt: string;
-    escalationPolicyId: Id<"escalationPolicies"> | null;
+    highPriority: boolean;
     windowMinutes: number;
     type: "medication" | "routine" | "reminder";
     asNeededMaxPerDay: number;
   }> = {},
 ): Promise<Id<"tasks">> {
-  const { escalationPolicyId, title = "Morning pills", ...rest } = fields;
-  const taskId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
+  const { title = "Morning pills", ...rest } = fields;
+  return await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
     householdId: f.householdId,
     type: "medication",
     title,
     displayLabel: title,
     times: ["08:00"],
-    escalationPolicyId:
-      escalationPolicyId === null ? undefined : (escalationPolicyId ?? f.medication),
     ...rest,
   });
-  if (escalationPolicyId === null) {
-    await f.t.run(async (ctx) => {
-      await ctx.db.patch(taskId, { escalationPolicyId: undefined });
-    });
-  }
-  return taskId;
 }
 
-/**
- * purpose: Run the scheduler at an instant: tickHousehold for every household, with counts
- *          summed (what the cron's fan-out does, with an explicit clock).
- * @param t: (TestConvex) Harness.
- * @param iso: (string) UTC instant.
- * @return: (Promise<TickResult>) The summed tick counts.
- */
 async function tick(t: TestConvex, iso: string): Promise<TickResult> {
   const now = Date.parse(iso);
   const ids = await t.run(async (ctx) =>
@@ -182,24 +109,8 @@ async function tick(t: TestConvex, iso: string): Promise<TickResult> {
   return total;
 }
 
-/**
- * purpose: The step ids of a policy, in order.
- * @param t: (TestConvex) Harness.
- * @param policyId: (Id<"escalationPolicies">) Policy.
- * @return: (Promise<string[]>) Step ids.
- */
-async function stepIds(t: TestConvex, policyId: Id<"escalationPolicies">): Promise<string[]> {
-  const policy = await t.run(async (ctx) => await ctx.db.get(policyId));
-  return policy!.steps.map((s) => s.id);
-}
+const ids = ESCALATION_LADDER.map((s) => s.id);
 
-/**
- * purpose: A task's instance on a local date.
- * @param t: (TestConvex) Harness.
- * @param taskId: (Id<"tasks">) Task.
- * @param date: (string) Local date.
- * @return: (Promise<Doc<"taskInstances">>) The instance (throws if missing).
- */
 async function instanceOn(
   t: TestConvex,
   taskId: Id<"tasks">,
@@ -216,22 +127,10 @@ async function instanceOn(
   return rows[0]!;
 }
 
-/**
- * purpose: Reload an instance.
- * @param t: (TestConvex) Harness.
- * @param id: (Id<"taskInstances">) Instance.
- * @return: (Promise<Doc<"taskInstances">>) Current row.
- */
 async function reload(t: TestConvex, id: Id<"taskInstances">): Promise<Doc<"taskInstances">> {
   return (await t.run(async (ctx) => await ctx.db.get(id)))!;
 }
 
-/**
- * purpose: Outbox rows of an instance.
- * @param t: (TestConvex) Harness.
- * @param id: (Id<"taskInstances">) Instance.
- * @return: (Promise<Doc<"notificationOutbox">[]>) Rows.
- */
 async function outbox(
   t: TestConvex,
   id: Id<"taskInstances">,
@@ -331,7 +230,6 @@ describe("expansion", () => {
     const f = await setup("2027-03-13T11:00:00Z");
     const pat = f.t.withIdentity({ subject: "pat" });
     const base = { householdId: f.householdId, type: "routine" as const, times: ["09:00"] };
-    // 2027-03-13 is a Saturday (6); 2027-03-14 a Sunday (7).
     const weekdays = await pat.mutation(api.tasks.create, {
       ...base,
       title: "Weekdays",
@@ -395,7 +293,6 @@ describe("escalation ladder", () => {
     const opened = await tick(f.t, "2027-03-13T13:00:00Z");
     expect(opened).toMatchObject({ opened: 1, stepsFired: 1, escalated: 0, missed: 0 });
     expect((await reload(f.t, i1)).state).toBe("due");
-    const ids = await stepIds(f.t, f.medication);
     const first = await outbox(f.t, i1);
     expect(first).toHaveLength(1);
     expect(first[0]).toMatchObject({
@@ -558,7 +455,6 @@ describe("escalation ladder", () => {
     const i5 = (await instanceOn(f.t, taskId, "2027-03-21"))._id;
     const result = await tick(f.t, "2027-03-21T16:50:00Z");
     expect(result.stepsFired).toBe(2);
-    const ids = await stepIds(f.t, f.medication);
     const fired = (await reload(f.t, i5)).firedSteps;
     expect(fired.map((s) => [ids.indexOf(s.stepId), s.notified])).toEqual([
       [0, false],
@@ -568,26 +464,6 @@ describe("escalation ladder", () => {
     const steps = new Set((await outbox(f.t, i5)).map((o) => o.payload["step"]));
     expect([...steps].sort()).toEqual([ids[1], ids[2]].sort());
   });
-
-  /**
-   * purpose: Give the household's medication policy the ladder from before 2026-11-14 (an
-   *          on-call alert at 30 minutes, every caregiver at 45 unless claimed), as stored on a
-   *          deployment the migration has not reached.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<void>) Resolves when written.
-   */
-  async function legacyLadder(f: Fixture): Promise<void> {
-    await f.t.run(async (ctx) => {
-      await ctx.db.patch(f.medication, {
-        steps: [
-          { id: "p0", offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-          { id: "p15", offsetMinutes: 15, action: "prompt_senior", skipIfClaimed: false },
-          { id: "a30", offsetMinutes: 30, action: "alert_on_call", skipIfClaimed: false },
-          { id: "a45", offsetMinutes: 45, action: "alert_all_caregivers", skipIfClaimed: true },
-        ],
-      });
-    });
-  }
 
   test("the alert reaches every caregiver at once, viewers included", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
@@ -599,123 +475,43 @@ describe("escalation ladder", () => {
     expect(alerts[0]!.body).toBe("Due at 8:00 AM.");
   });
 
-  test("a legacy on-call step alerts every caregiver, exactly as an all-caregivers step", async () => {
+  test("any other task is prompted once at its time and never alerts a caregiver", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    await legacyLadder(f);
-    const taskId = await makeTask(f);
+    const taskId = await makeTask(f, { type: "routine", title: "Walk" });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:30:00Z");
-    const alerts = (await outbox(f.t, i1)).filter((o) => o.kind === "caregiver_alert");
-    expect(alerts.map((a) => a.recipientUserId).sort()).toEqual(["max", "pat", "val"]);
-    expect(alerts.map((a) => a.body)).toEqual(Array(3).fill("Due at 8:00 AM."));
-    expect((await reload(f.t, i1)).state).toBe("escalated");
-  });
-
-  /**
-   * purpose: The caregiver alerts of an instance as [step, recipient, body], sorted.
-   * @param f: (Fixture) Fixture.
-   * @param instanceId: (Id<"taskInstances">) The instance.
-   * @return: (Promise<string[][]>) One triple per outbox row.
-   */
-  async function alertRows(f: Fixture, instanceId: Id<"taskInstances">): Promise<string[][]> {
-    return (await outbox(f.t, instanceId))
-      .filter((o) => o.kind === "caregiver_alert")
-      .map((o) => [String(o.payload["step"]), String(o.recipientUserId), o.body])
-      .sort();
-  }
-
-  test("an unmigrated ladder alerts everyone at +30 and again at +45 when nobody claimed", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    await legacyLadder(f);
-    const taskId = await makeTask(f);
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:00:00Z");
+    expect(await tick(f.t, "2027-03-13T13:00:00Z")).toMatchObject({ stepsFired: 1 });
     await tick(f.t, "2027-03-13T13:15:00Z");
-    await tick(f.t, "2027-03-13T13:30:00Z");
-    const late = await tick(f.t, "2027-03-13T13:45:00Z");
-    expect(late.stepsFired).toBe(1);
-    const unclaimed = "Due at 8:00 AM. No one has claimed it yet.";
-    expect(await alertRows(f, i1)).toEqual([
-      ["a30", "max", "Due at 8:00 AM."],
-      ["a30", "pat", "Due at 8:00 AM."],
-      ["a30", "val", "Due at 8:00 AM."],
-      ["a45", "max", unclaimed],
-      ["a45", "pat", unclaimed],
-      ["a45", "val", unclaimed],
-    ]);
-  });
-
-  test("an unmigrated ladder sends nothing at +45 once someone claimed", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    await legacyLadder(f);
-    const taskId = await makeTask(f);
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:30:00Z");
-    at("2027-03-13T13:31:00Z");
-    await f.t
-      .withIdentity({ subject: "max" })
-      .mutation(api.instances.claimTaskInstance, { instanceId: i1 });
-    await tick(f.t, "2027-03-13T13:45:00Z");
-    expect((await alertRows(f, i1)).map((r) => r[0])).toEqual(["a30", "a30", "a30"]);
-  });
-
-  test("an on-call alert fired under the old code is followed by +45 to every caregiver", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    await legacyLadder(f);
-    const taskId = await makeTask(f);
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:15:00Z");
-    // The old code fired +30 to the on-call caregiver only; firedSteps cannot tell.
-    await f.t.run(async (ctx) => {
-      const instance = (await ctx.db.get(i1))!;
-      await ctx.db.patch(i1, {
-        state: "escalated",
-        firedSteps: [
-          ...instance.firedSteps,
-          {
-            stepId: "a30",
-            action: "alert_on_call",
-            firedAt: Date.parse("2027-03-13T13:30:00Z"),
-            notified: true,
-          },
-        ],
-      });
+    expect(await tick(f.t, "2027-03-13T13:30:00Z")).toMatchObject({
+      stepsFired: 0,
+      escalated: 0,
     });
-    await tick(f.t, "2027-03-13T13:45:00Z");
-    expect(await alertRows(f, i1)).toEqual(
-      ["max", "pat", "val"].map((u) => ["a45", u, "Due at 8:00 AM. No one has claimed it yet."]),
-    );
-  });
-
-  test("a task with no policy never fires but still opens and closes", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, { escalationPolicyId: null });
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:30:00Z");
-    expect(await outbox(f.t, i1)).toHaveLength(0);
+    const rows = await outbox(f.t, i1);
+    expect(rows.map((r) => [r.kind, r.payload["step"]])).toEqual([["senior_prompt", ids[0]]]);
     expect((await reload(f.t, i1)).state).toBe("due");
     await tick(f.t, "2027-03-13T14:00:00Z");
     expect((await reload(f.t, i1)).state).toBe("missed");
+    expect(await outbox(f.t, i1)).toHaveLength(1);
   });
 
-  test("a task created with no policy gets the type default and is prompted on the tick", async () => {
+  test("a high priority task walks the medication ladder", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
-      householdId: f.householdId,
-      type: "routine",
-      title: "Walk",
-      displayLabel: "Walk",
-      times: ["08:00"],
-    });
-    const task = await f.t.run(async (ctx) => await ctx.db.get(taskId));
-    expect(task!.escalationPolicyId).toBe(f.promptOnly);
+    const taskId = await makeTask(f, { type: "routine", title: "Walk", highPriority: true });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    const result = await tick(f.t, "2027-03-13T13:00:00Z");
-    expect(result.stepsFired).toBe(1);
-    const prompts = (await outbox(f.t, i1)).filter(
-      (o) => (o.payload["action"] as string) === "prompt_senior",
-    );
-    expect(prompts).toHaveLength(1);
+    await tick(f.t, "2027-03-13T13:00:00Z");
+    await tick(f.t, "2027-03-13T13:15:00Z");
+    expect(await tick(f.t, "2027-03-13T13:30:00Z")).toMatchObject({ escalated: 1 });
+    const rows = await outbox(f.t, i1);
+    expect(rows.filter((r) => r.kind === "senior_prompt")).toHaveLength(2);
+    expect(rows.filter((r) => r.kind === "caregiver_alert")).toHaveLength(3);
+    expect((await reload(f.t, i1)).firedSteps.map((s) => s.stepId)).toEqual(ids);
+  });
+
+  test("a medication alerts caregivers whatever its high priority flag", async () => {
+    const f = await setup("2027-03-13T11:00:00Z");
+    const taskId = await makeTask(f, { highPriority: false });
+    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
+    expect(await tick(f.t, "2027-03-13T13:30:00Z")).toMatchObject({ escalated: 1 });
+    expect((await outbox(f.t, i1)).filter((r) => r.kind === "caregiver_alert")).toHaveLength(3);
   });
 
   test("an inactive task never fires", async () => {
@@ -731,7 +527,6 @@ describe("escalation ladder", () => {
   });
 
   test("a downtime that spans the whole window prompts nobody but still alerts the caregivers", async () => {
-    // The instance existed before its window, so the senior's own devices could prompt it.
     const f = await setup("2027-03-13T11:00:00Z");
     const taskId = await makeTask(f);
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
@@ -944,44 +739,7 @@ describe("tick fan-out", () => {
   });
 });
 
-describe("editing a policy mid-ladder", () => {
-  test("removing a fired step neither re-sends it nor skips the step after it", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f);
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:00:00Z");
-    await tick(f.t, "2027-03-13T13:15:00Z");
-    const ids = await stepIds(f.t, f.medication);
-    expect((await reload(f.t, i1)).firedSteps.map((s) => s.stepId)).toEqual(ids.slice(0, 2));
-
-    const pat = f.t.withIdentity({ subject: "pat" });
-    const policy = (await pat.query(api.tasks.listPolicies, { householdId: f.householdId })).find(
-      (p) => p._id === f.medication,
-    )!;
-    await pat.mutation(api.tasks.updatePolicy, {
-      householdId: f.householdId,
-      policyId: f.medication,
-      steps: policy.steps.filter((_, index) => index !== 1) as EscalationStepInput[],
-    });
-    expect(await stepIds(f.t, f.medication)).toEqual([ids[0], ids[2]]);
-
-    const early = await tick(f.t, "2027-03-13T13:29:00Z");
-    expect(early.stepsFired).toBe(0);
-    const late = await tick(f.t, "2027-03-13T13:30:00Z");
-    expect(late.stepsFired).toBe(1);
-    const rows = await outbox(f.t, i1);
-    expect(rows.filter((r) => r.payload["step"] === ids[1])).toHaveLength(1);
-    expect(rows.filter((r) => r.payload["step"] === ids[2])).toHaveLength(3);
-    expect((await reload(f.t, i1)).firedSteps.map((s) => s.stepId)).toEqual(ids);
-  });
-});
-
 describe("windows that cross midnight", () => {
-  /**
-   * purpose: A household with a 23:30 task (120 minute window) and a 00:05 task, with the
-   *          clock at 00:10 local on 2027-03-16 (New York) and the 23:30 window still open.
-   * @return: (Promise<Fixture & {late: Id<"tasks">}>) The fixture and the late task.
-   */
   async function atMidnightCrossing() {
     const f = await setup("2027-03-15T20:00:00Z");
     const late = await makeTask(f, { title: "Night pills", times: ["23:30"], windowMinutes: 120 });
@@ -996,7 +754,6 @@ describe("windows that cross midnight", () => {
     const f = await atMidnightCrossing();
     const pat = f.t.withIdentity({ subject: "pat" });
     const today = await pat.query(api.instances.today, { householdId: f.householdId });
-    // Yesterday's open instance first, then today's own (the daily task's 23:30 is upcoming).
     expect(today.map((e) => [e.displayLabel, e.scheduledTime, e.state])).toEqual([
       ["Night pills", "23:30", "escalated"],
       ["Early walk", "00:05", "due"],
@@ -1046,14 +803,6 @@ describe("windows that cross midnight", () => {
 });
 
 describe("bounded task deletion", () => {
-  /**
-   * purpose: Give a task many instances (some with notifications) and dose log rows directly.
-   * @param f: (Fixture) Fixture.
-   * @param taskId: (Id<"tasks">) Task.
-   * @param instances: (number) Instances to insert.
-   * @param doses: (number) Dose log rows to insert.
-   * @return: (Promise<void>)
-   */
   async function bulkUp(f: Fixture, taskId: Id<"tasks">, instances: number, doses: number) {
     await f.t.run(async (ctx) => {
       for (let i = 0; i < instances; i += 1) {
@@ -1087,16 +836,12 @@ describe("bounded task deletion", () => {
           taskId,
           takenAt: i,
           reportedVia: "phone_app",
+          loggedAt: Date.now(),
         });
       }
     });
   }
 
-  /**
-   * purpose: Row counts for a deleted-task check.
-   * @param f: (Fixture) Fixture.
-   * @return: (Promise<object>) Instances, notifications, doses.
-   */
   async function counts(f: Fixture) {
     return await f.t.run(async (ctx) => ({
       instances: (await ctx.db.query("taskInstances").collect()).length,
@@ -1161,12 +906,6 @@ describe("bounded task deletion", () => {
 describe("a window that closes before the caregivers were alerted", () => {
   const PASSED = "Due at 8:00 AM. Its time has now passed.";
 
-  /**
-   * purpose: The caregiver alerts of an instance as [step, recipient, body], sorted.
-   * @param f: (Fixture) Fixture.
-   * @param instanceId: (Id<"taskInstances">) The instance.
-   * @return: (Promise<string[][]>) One triple per outbox row.
-   */
   async function alerts(f: Fixture, instanceId: Id<"taskInstances">): Promise<string[][]> {
     return (await outbox(f.t, instanceId))
       .filter((o) => o.kind === "caregiver_alert")
@@ -1174,14 +913,6 @@ describe("a window that closes before the caregivers were alerted", () => {
       .sort();
   }
 
-  /**
-   * purpose: Claim an instance as a caregiver at an instant.
-   * @param f: (Fixture) Fixture.
-   * @param instanceId: (Id<"taskInstances">) The instance.
-   * @param iso: (string) UTC instant.
-   * @param subject: (string) The caregiver (default max).
-   * @return: (Promise<void>) Resolves when claimed.
-   */
   async function claim(
     f: Fixture,
     instanceId: Id<"taskInstances">,
@@ -1201,7 +932,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     expect(await alerts(f, i1)).toEqual([]);
     const closing = await tick(f.t, "2027-03-13T13:20:00Z");
     expect(closing).toMatchObject({ missed: 1, stepsFired: 0 });
-    const ids = await stepIds(f.t, f.medication);
     expect(await alerts(f, i1)).toEqual(["max", "pat", "val"].map((u) => [ids[2], u, PASSED]));
     const rows = (await outbox(f.t, i1)).filter((o) => o.kind === "caregiver_alert");
     expect(rows[0]).toMatchObject({
@@ -1213,7 +943,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     expect(after.firedSteps.at(-1)).toMatchObject({ stepId: ids[2], notified: true });
     await tick(f.t, "2027-03-13T13:30:00Z");
     expect(await alerts(f, i1)).toHaveLength(3);
-    // The digest reports it as missed, with the caregiver alert that went out.
     const lines = await f.t.run(async (ctx) =>
       fixedLines(await gatherDigestFacts(ctx, (await ctx.db.get(f.householdId))!, "2027-03-13")),
     );
@@ -1224,7 +953,6 @@ describe("a window that closes before the caregivers were alerted", () => {
   });
 
   test("a task added late in its window alerts as the window closes", async () => {
-    // Added at 8:45 for 8:00 with a 60-minute window: the alert would be due at 9:15.
     const f = await setup("2027-03-13T13:45:00Z");
     const taskId = await makeTask(f);
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
@@ -1258,45 +986,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     expect((await alerts(f, i1)).map((r) => r[2])).toEqual(Array(3).fill("Due at 8:00 AM."));
   });
 
-  test("an alerted instance whose second alert step is still unfired gets no alert at close", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    const policyId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: "Twice",
-      steps: [
-        { offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-        { offsetMinutes: 30, action: "alert_all_caregivers", skipIfClaimed: false },
-        { offsetMinutes: 45, action: "alert_all_caregivers", skipIfClaimed: true },
-      ],
-    });
-    const taskId = await makeTask(f, { windowMinutes: 40, escalationPolicyId: policyId });
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:30:00Z");
-    expect(await tick(f.t, "2027-03-13T13:40:00Z")).toMatchObject({
-      missed: 1,
-    });
-    expect((await alerts(f, i1)).map((r) => r[2])).toEqual(Array(3).fill("Due at 8:00 AM."));
-  });
-
-  test("a claim holds a skipIfClaimed-only alert: nothing is sent", async () => {
-    const f = await setup("2027-03-13T11:00:00Z");
-    const policyId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.createPolicy, {
-      householdId: f.householdId,
-      name: "Unless claimed",
-      steps: [
-        { offsetMinutes: 0, action: "prompt_senior", skipIfClaimed: false },
-        { offsetMinutes: 30, action: "alert_all_caregivers", skipIfClaimed: true },
-      ],
-    });
-    const taskId = await makeTask(f, { windowMinutes: 20, escalationPolicyId: policyId });
-    const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
-    await tick(f.t, "2027-03-13T13:00:00Z");
-    await claim(f, i1, "2027-03-13T13:05:00Z");
-    expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({ missed: 1 });
-    expect(await alerts(f, i1)).toEqual([]);
-    expect((await reload(f.t, i1)).state).toBe("missed");
-  });
-
   test("a claim does not hold the default ladder's alert: it still goes, as at +30", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
     const taskId = await makeTask(f, { windowMinutes: 20 });
@@ -1307,13 +996,9 @@ describe("a window that closes before the caregivers were alerted", () => {
     expect(await alerts(f, i1)).toHaveLength(3);
   });
 
-  test("a digest-only ladder sends nothing when its window closes", async () => {
+  test("a task that is not high priority sends nothing when its window closes", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, {
-      type: "routine",
-      windowMinutes: 20,
-      escalationPolicyId: f.promptOnly,
-    });
+    const taskId = await makeTask(f, { type: "routine", windowMinutes: 20 });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:00:00Z");
     expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({
@@ -1324,11 +1009,7 @@ describe("a window that closes before the caregivers were alerted", () => {
 
   test("an anytime instance sends nothing when its window closes", async () => {
     const f = await setup("2027-03-13T11:00:00Z");
-    const taskId = await makeTask(f, {
-      type: "routine",
-      times: [],
-      escalationPolicyId: f.medication,
-    });
+    const taskId = await makeTask(f, { type: "routine", times: [], highPriority: true });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:00:00Z");
     expect((await reload(f.t, i1)).state).toBe("due");
@@ -1342,7 +1023,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     const taskId = await makeTask(f, { windowMinutes: 20 });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:00:00Z");
-    // Stopped without the resync that would remove the open instance.
     await f.t.run(async (ctx) => await ctx.db.patch(taskId, { active: false }));
     expect(await tick(f.t, "2027-03-13T13:20:00Z")).toMatchObject({ missed: 1 });
     expect(await alerts(f, i1)).toEqual([]);
@@ -1352,7 +1032,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     const f = await setup("2027-03-13T11:00:00Z");
     const taskId = await makeTask(f);
     const first = await instanceOn(f.t, taskId, "2027-03-13");
-    // As after an outage: today's instance did not exist until the next tick, at 9:30 local.
     await f.t.run(async (ctx) => await ctx.db.delete(first._id));
     const result = await tick(f.t, "2027-03-13T14:30:00Z");
     expect(result).toMatchObject({ created: 1, opened: 1, missed: 1 });
@@ -1367,7 +1046,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     const taskId = await makeTask(f, { windowMinutes: 20 });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:00:00Z");
-    // The window ended at 13:20; the scheduler next runs at 14:19.
     await tick(f.t, "2027-03-13T14:19:00Z");
     expect((await alerts(f, i1)).map((r) => r[2])).toEqual([PASSED, PASSED, PASSED]);
     expect((await reload(f.t, i1)).state).toBe("missed");
@@ -1378,7 +1056,6 @@ describe("a window that closes before the caregivers were alerted", () => {
     const taskId = await makeTask(f, { windowMinutes: 20 });
     const i1 = (await instanceOn(f.t, taskId, "2027-03-13"))._id;
     await tick(f.t, "2027-03-13T13:00:00Z");
-    // The scheduler was down: it next runs at 14:21, 61 minutes after the window ended.
     expect(await tick(f.t, "2027-03-13T14:21:00Z")).toMatchObject({ missed: 1 });
     expect(await alerts(f, i1)).toEqual([]);
     expect((await reload(f.t, i1)).state).toBe("missed");

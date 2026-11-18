@@ -1,29 +1,4 @@
-// agentSetupTools.test.ts
-// Purpose: Tests for the household agent's setup tools (lib/agentSetupTools.ts) and the chat's
-// wording cards (agentRequests.transcript), with convex-test and frozen clocks. Knowledge:
-// add_knowledge for each kind stores through the About tab's cores (same rows, same cleaning,
-// same error text, same limits, audit rows under the requesting caregiver with the request id),
-// reports added, already_stored, already_stored_differently and confirmed, and returns the item
-// as stored; update_knowledge corrects, clears, confirms and refuses bad changes;
-// remove_knowledge names what it removed; get_knowledge lists all three kinds or one. The
-// memory rule: a fact the senior said never overwrites one a caregiver stored by chat, and a
-// correction by chat keeps the senior source while verifying it. Settings: get_settings shape;
-// update_settings for the digest time (a bad time is refused with households.update's error),
-// no on-call setting (the field is refused), sharing, the weather place (set and cleared, the
-// clearing audited as null) and its audit row, and no audit row for a change that changes
-// nothing; updateHouseholdCore returns the row read back (a timezone change clears
-// lastDigestDate); set_digest_delivery changes only the requester's own delivery, takes no name,
-// and writes nothing when already so. Scoping: every tool acts on the request's household only
-// (another household's knowledge_id is not found, a model-supplied household id is an unknown
-// field), and through the runtime a viewer's request runs no tool. Wording cards: a request's
-// add_task and update_task calls are recorded on the request row (changedTaskIds: each task once,
-// in order of first change, at most MAX_CHANGED_TASKS) and give one card per task with the live
-// label, the display's time, every time and the sentence the display speaks; a written prompt is
-// used as is; an anytime task has no sentence; a stopped task, a failed call and a task of another
-// household (put on the row directly) have no card; viewers get no requests and so no cards.
-//
-// Last modified: 2026-11-14
-
+import type { JSONValue } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -39,17 +14,14 @@ import {
   type TestConvex,
 } from "./testing.helpers";
 
-/** Monday 2027-03-01, 07:00 in New York (EST). */
 const NOW = Date.parse("2027-03-01T12:00:00Z");
 
-/** A household (Pat primary, Max member, Val viewer) and another one (Ben). */
 interface World {
   t: TestConvex;
   home: Id<"households">;
   other: Id<"households">;
 }
 
-/** Result of a tool call. */
 interface ToolResult {
   text: string;
   isError: boolean;
@@ -64,10 +36,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Create the two households through the real mutations.
- * @return: (Promise<World>) Harness and household ids.
- */
 async function makeWorld(): Promise<World> {
   const t = makeBackend();
   const home = await createHousehold(t, {
@@ -81,16 +49,6 @@ async function makeWorld(): Promise<World> {
   return { t, home, other };
 }
 
-/**
- * purpose: Run a tool as the runtime does: the household agent acting for a caregiver.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) The request's household.
- * @param name: (string) Tool name.
- * @param input: (Record<string, unknown>) Tool input.
- * @param requestedBy: (string) The requesting caregiver (default pat).
- * @param requestId: (Id<"agentRequests">, optional) The request, recorded on audit rows.
- * @return: (Promise<ToolResult>) The result.
- */
 async function tool(
   t: TestConvex,
   householdId: Id<"households">,
@@ -105,32 +63,39 @@ async function tool(
   );
 }
 
-/**
- * purpose: Run a tool and parse its successful result.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param name: (string) Tool name.
- * @param input: (Record<string, unknown>) Tool input.
- * @return: (Promise<any>) The parsed result.
- * @raises when the tool returned an error.
- */
+type JsonObject = { [key: string]: JSONValue };
+
+function objectOf(value: JSONValue | undefined): JsonObject {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Expected a JSON object, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function listOf(value: JSONValue | undefined): JSONValue[] {
+  if (!Array.isArray(value)) throw new Error(`Expected a JSON array, got ${JSON.stringify(value)}`);
+  return value;
+}
+
 async function ok(
   t: TestConvex,
   householdId: Id<"households">,
   name: string,
-  input: object,
-): Promise<any> {
-  const result = await tool(t, householdId, name, input as Record<string, unknown>);
+  input: Record<string, unknown>,
+): Promise<JsonObject> {
+  const result = await tool(t, householdId, name, input);
   if (result.isError) throw new Error(result.text);
-  return JSON.parse(result.text);
+  return objectOf(JSON.parse(result.text));
 }
 
-/**
- * purpose: Read every row of a table.
- * @param t: (TestConvex) Harness.
- * @param table: (T) The table.
- * @return: (Promise<Doc<T>[]>) The rows.
- */
+async function added(
+  t: TestConvex,
+  householdId: Id<"households">,
+  input: Record<string, unknown>,
+): Promise<JsonObject> {
+  return objectOf((await ok(t, householdId, "add_knowledge", input)).stored);
+}
+
 async function rows<
   T extends
     | "lifeProfileEntries"
@@ -143,12 +108,6 @@ async function rows<
   return (await t.run(async (ctx) => await ctx.db.query(table).collect())) as Doc<T>[];
 }
 
-/**
- * purpose: The household row.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<"households">>) The row.
- */
 async function household(t: TestConvex, householdId: Id<"households">): Promise<Doc<"households">> {
   return (await t.run(async (ctx) => await ctx.db.get(householdId)))!;
 }
@@ -163,11 +122,11 @@ describe("tool list", () => {
       "remove_knowledge",
       "get_settings",
       "update_settings",
-      "set_digest_delivery",
       "add_task",
     ]) {
       expect(names).toContain(name);
     }
+    expect(names).not.toContain("set_digest_delivery");
   });
 });
 
@@ -342,7 +301,7 @@ describe("add_knowledge", () => {
 describe("update_knowledge and remove_knowledge", () => {
   test("an entry is corrected, its details cleared, and the change audited with the previous text", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", {
+    const stored = await added(t, home, {
       kind: "profile",
       category: "doctor",
       name: "Dr. Patel",
@@ -398,7 +357,7 @@ describe("update_knowledge and remove_knowledge", () => {
 
   test("remove_knowledge deletes the item and names what it removed", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", {
+    const stored = await added(t, home, {
       kind: "topic",
       topic: "money",
       guidance: "Say Pat handles it.",
@@ -416,7 +375,7 @@ describe("update_knowledge and remove_knowledge", () => {
 
   test("an id of the wrong kind is refused", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", { kind: "fact", fact: "Likes jazz" });
+    const stored = await added(t, home, { kind: "fact", fact: "Likes jazz" });
     expect(
       (
         await tool(t, home, "remove_knowledge", {
@@ -438,9 +397,9 @@ describe("get_knowledge", () => {
     });
     await ok(t, home, "add_knowledge", { kind: "fact", fact: "Likes jazz" });
     const all = await ok(t, home, "get_knowledge", {});
-    expect(all.profile.map((e: { name: string }) => e.name)).toEqual(["Riverside Park"]);
+    expect(listOf(all.profile).map((e) => objectOf(e).name)).toEqual(["Riverside Park"]);
     expect(all.topics).toEqual([]);
-    expect(all.facts.map((f: { fact: string }) => f.fact)).toEqual(["Likes jazz"]);
+    expect(listOf(all.facts).map((f) => objectOf(f).fact)).toEqual(["Likes jazz"]);
     expect(all.older_unverified_facts).toBe(0);
     expect(Object.keys(await ok(t, home, "get_knowledge", { kind: "topic" }))).toEqual(["topics"]);
   });
@@ -449,7 +408,7 @@ describe("get_knowledge", () => {
 describe("memory rule", () => {
   test("what the senior says never overwrites a fact a caregiver stored by chat", async () => {
     const { t, home } = await makeWorld();
-    const { stored } = await ok(t, home, "add_knowledge", {
+    const stored = await added(t, home, {
       kind: "fact",
       fact: "Her cat is called Biscuit",
     });
@@ -485,9 +444,9 @@ describe("settings", () => {
       share_transcripts: false,
       weather_location: null,
       caregivers: [
-        { name: "Max", role: "member", receives_digest: true, reachable: true },
-        { name: "Pat", role: "primary", receives_digest: true, reachable: false },
-        { name: "Val", role: "viewer", receives_digest: true, reachable: false },
+        { name: "Max", role: "member", reachable: true },
+        { name: "Pat", role: "primary", reachable: false },
+        { name: "Val", role: "viewer", reachable: false },
       ],
     });
   });
@@ -578,44 +537,12 @@ describe("settings", () => {
     );
     expect((await tool(t, home, "update_settings", {})).text).toBe("Error: Nothing to change");
   });
-
-  test("set_digest_delivery turns the requester's own digest off and on, no one else's", async () => {
-    const { t, home } = await makeWorld();
-    // Pat is not the first caregiver by user id (Max is), so "the first member" cannot pass.
-    const off = await tool(t, home, "set_digest_delivery", { receives: false }, "pat");
-    expect(JSON.parse(off.text)).toEqual({
-      name: "Pat",
-      role: "primary",
-      receives_digest: false,
-      reachable: false,
-    });
-    const optedOut = (await rows(t, "householdMembers")).filter((m) => m.digestOptOut === true);
-    expect(optedOut.map((m) => m.userId)).toEqual(["pat"]);
-    const audit = (await rows(t, "auditLog")).find((r) => r.action === "digest_delivery")!;
-    expect(audit).toMatchObject({ actorUserId: "pat", detail: { userId: "pat", receives: false } });
-    expect(
-      (await tool(t, home, "set_digest_delivery", { caregiver: "Val", receives: false })).text,
-    ).toBe("Error: Unknown field caregiver");
-    const on = await tool(t, home, "set_digest_delivery", { receives: true }, "pat");
-    expect(JSON.parse(on.text).receives_digest).toBe(true);
-    expect((await rows(t, "householdMembers")).every((m) => m.digestOptOut === undefined)).toBe(
-      true,
-    );
-  });
-
-  test("set_digest_delivery writes and audits nothing when the setting is already so", async () => {
-    const { t, home } = await makeWorld();
-    expect((await ok(t, home, "set_digest_delivery", { receives: true })).receives_digest).toBe(
-      true,
-    );
-    expect((await rows(t, "auditLog")).some((r) => r.action === "digest_delivery")).toBe(false);
-  });
 });
 
 describe("household scoping", () => {
   test("a knowledge_id of another household is not found and nothing changes", async () => {
     const { t, home, other } = await makeWorld();
-    const { stored } = await ok(t, other, "add_knowledge", {
+    const stored = await added(t, other, {
       kind: "fact",
       fact: "Walter likes chess",
     });
@@ -676,14 +603,6 @@ describe("household scoping", () => {
 });
 
 describe("wording cards", () => {
-  /**
-   * purpose: Run tool calls for a new running request, through the runtime step.
-   * @param t: (TestConvex) Harness.
-   * @param home: (Id<"households">) Household.
-   * @param calls: (Array<[string, object]>) Tool names and inputs.
-   * @param requestedBy: (string) The requesting caregiver (default pat).
-   * @return: (Promise<Id<"agentRequests">>) The request (left succeeded, with a reply).
-   */
   async function runRequest(
     t: TestConvex,
     home: Id<"households">,
@@ -705,14 +624,6 @@ describe("wording cards", () => {
     return requestId;
   }
 
-  /**
-   * purpose: The wording of one request in the transcript, as a caregiver reads it.
-   * @param t: (TestConvex) Harness.
-   * @param home: (Id<"households">) Household.
-   * @param requestId: (Id<"agentRequests">) The request.
-   * @param subject: (string) Who reads it (default pat).
-   * @return: (Promise<unknown[] | undefined>) Its cards; undefined when the request is not there.
-   */
   async function wordingOf(
     t: TestConvex,
     home: Id<"households">,

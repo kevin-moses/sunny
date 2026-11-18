@@ -1,78 +1,3 @@
-// convex/profile.ts
-// Purpose: The caregiver write path for what the voice agent knows about the senior's life:
-// life profile entries (people, places, doctors, habits, interests, preferences), the
-// sensitive-topic playbook (how to answer hard questions), agent memory (facts, each with a
-// source and a verified state) and family messages. agent.getContext reads all four tables
-// into the voice agent's context; this module is the only place caregivers change them.
-//
-// Two front doors, one core: the About tab calls the public queries and mutations below, and
-// the household agent's chat tools (lib/agentSetupTools.ts: get_knowledge, add_knowledge,
-// update_knowledge, remove_knowledge) call the exported *Core functions the mutations
-// themselves call (addEntryCore, updateEntryCore, removeEntryCore, listTopicsCore, addTopicCore,
-// updateTopicCore, removeTopicCore, listMemoryCore, addFactCore, verifyFactCore,
-// correctFactCore, removeFactCore). So validation, limits, duplicates, the audit log and the
-// memory rule are identical whichever way a caregiver changes them. Every write core returns the
-// row as stored (an add core with its AddResult, as AddOutcome; a remove core the row as it was),
-// so the chat can show exactly what was stored. A core takes the actor and
-// the household and assumes the caller has already checked that the actor may edit it: the
-// mutations use requireEditor, the agent runtime re-checks that the requesting caregiver is
-// still an editor before any tool runs (agentRuntime.executeToolCalls). The household agent's
-// changes are recorded under the caregiver it acts for (createdBy, verifiedBy and the audit
-// row's user) with the request id in the audit detail (lib/audit.ts).
-//
-// Access: every list is caregiver only (requireCaregiverReader: any role, never a device),
-// because what it holds is written about the senior (a spouse's death, guidance for hard
-// questions) and nothing on the senior's screens uses it. Every write uses requireEditor
-// (primary and member caregivers; viewers and devices cannot write) and records an auditLog row;
-// an update's row also keeps the previous text, so a replaced value can be recovered. A row of
-// another household is "not found", in the mutations and the cores alike.
-//
-// Text: every field is trimmed and capped server-side. Names, topics, facts, details and guidance
-// are single paragraphs (inner whitespace, line breaks included, collapsed to one space: the
-// voice prompt flattens them anyway, and the app's Return key means "done" in those fields);
-// message bodies keep their line breaks. Counts are capped too, because getContext loads every
-// life profile entry and every topic into each conversation, and loads at most 50 memory facts
-// (verified first, then newest). MAX_VERIFIED_FACTS is 40, so at least 10 places of that window
-// are left for things the senior said. The memory limits are in lib/memoryLimits.ts; entry and
-// fact ordering, the memory reads and the fact duplicate check are lib/profileReads.ts, shared
-// with the voice agent's getContext and rememberFact, so this module lists things in the order
-// the agent sees them.
-//
-// Duplicates: adding an entry whose category and name, a topic whose wording, or a fact whose
-// text already exists (compared case-insensitively, whitespace collapsed) inserts nothing and
-// returns the existing row with created = false and same = whether the stored text equals what
-// was sent. "Same" compares exactly (so a name that differs only in case is not the same): for an
-// entry its name, and its details when details were sent; for a topic its wording and guidance;
-// facts match on their text, so same is always true. Nothing is changed when it differs: the
-// caller decides whether to update it (the app says it is already listed; the bulk loader's
-// --update uses the update mutations; the chat tool tells the agent). Adding a fact that matches
-// an unverified senior-stated fact verifies that fact (confirmed = true). Renaming onto an
-// existing key is rejected.
-//
-// Memory reads are bounded: verified facts are read newest first through the
-// by_household_verified index (at most VERIFIED_READ_LIMIT), the newest unverified ones the same
-// way, and the duplicate check for a fact looks at the verified facts plus the newest
-// DUPLICATE_SCAN unverified ones (a senior fact older than that is not detected as a duplicate).
-//
-// Memory rule (SPEC "Memory hygiene"): things the senior says never overwrite caregiver-verified
-// facts. Senior facts are inserted unverified by the voice agent (agent tools, not here); only
-// an editor caregiver, in the app or through Sunny in the chat, can verify a fact (verifyFact
-// keeps the first verifier), correct its text (correctFact, which also verifies it, keeping its
-// source) or remove it.
-//
-// Messages: sendMessage stores a caregiver's text message to the senior (no photo or audio in
-// this pass); listMessages returns the newest messages, including those the senior sent through
-// the voice agent, with seen state, and says which are the caller's own (no member ids).
-//
-// Views: list results use null for absent optional values, and carry household-local dates and
-// times ("YYYY-MM-DD", "HH:MM") so clients do no timezone conversion.
-//
-// Functions: listEntries, addEntry, updateEntry, removeEntry; listTopics, addTopic, updateTopic,
-// removeTopic; listMemory, addFact, verifyFact, correctFact, removeFact; listMessages,
-// sendMessage.
-//
-// Last modified: 2026-11-14
-
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -101,37 +26,23 @@ import { cleanOptional, oneLine, requireMaxLength, requireNonBlank, textKey } fr
 import { localDate, localTime } from "./lib/time";
 import { lifeCategory } from "./lib/validators";
 
-/** Longest name of a life profile entry. */
 export const MAX_NAME = 120;
-/** Longest details of a life profile entry. */
 export const MAX_DETAILS = 600;
-/** Longest sensitive topic wording. */
 export const MAX_TOPIC = 200;
-/** Longest guidance for a sensitive topic. */
 export const MAX_GUIDANCE = 1500;
-/** Longest family message body. */
 export const MAX_MESSAGE = 1000;
-/** Most life profile entries a household may have (all are in every conversation). */
 export const MAX_ENTRIES = 150;
-/** Most sensitive topics a household may have (all are in every conversation). */
 export const MAX_TOPICS = 30;
-/** Unverified facts listMemory returns (newest first); older ones are only counted. */
 export const UNVERIFIED_SHOWN = 50;
-/** listMemory counts older unverified facts up to this many. */
 export const OLDER_COUNT_LIMIT = 500;
-/** The memory limits, shared with the voice agent (lib/memoryLimits.ts). */
 export { DUPLICATE_SCAN, MAX_FACT, MAX_VERIFIED_FACTS } from "./lib/memoryLimits";
-/** Messages listMessages returns by default, and at most. */
 const DEFAULT_MESSAGE_LIMIT = 30;
 const MAX_MESSAGE_LIMIT = 100;
 
-/** The tables this module adds rows to and lists. */
 type ProfileTable = "lifeProfileEntries" | "sensitiveTopics" | "agentMemory";
 
-/** A life profile category. */
 export type LifeCategory = Infer<typeof lifeCategory>;
 
-/** One life profile entry as the caregiver app shows it. */
 export interface EntryView {
   id: Id<"lifeProfileEntries">;
   category: LifeCategory;
@@ -139,133 +50,83 @@ export interface EntryView {
   details: string | null;
 }
 
-/** One sensitive topic as the caregiver app shows it. */
 export interface TopicView {
   id: Id<"sensitiveTopics">;
   topic: string;
   guidance: string;
 }
 
-/** One memory fact as the caregiver app shows it. */
 export interface FactView {
   id: Id<"agentMemory">;
   fact: string;
   source: "caregiver" | "senior";
   verified: boolean;
-  /** Display name of the caregiver who verified it; null when unverified or no longer a member. */
   verifiedByName: string | null;
-  /** Household-local date the fact was noted, "YYYY-MM-DD". */
   notedOn: string;
-  /** Household-local date it was verified; null when unverified. */
   verifiedOn: string | null;
 }
 
-/** What listMemory returns. */
 export interface MemoryView {
-  /** Verified facts (newest first), then the newest UNVERIFIED_SHOWN unverified ones. */
   facts: FactView[];
-  /** How many older unverified facts are not in facts, counted up to OLDER_COUNT_LIMIT. */
   olderUnverified: number;
 }
 
-/** One family message as the caregiver app shows it. */
 export interface MessageView {
   id: Id<"familyMessages">;
   senderKind: "caregiver" | "senior";
-  /** Whether the signed-in caregiver sent it. */
   mine: boolean;
-  /** The caregiver's display name or the senior's preferred name; "Family" for a former member. */
   senderName: string;
   body: string | null;
   hasPhoto: boolean;
   hasAudio: boolean;
-  /** Epoch ms. */
   sentAt: number;
-  /** Household-local date and time sent, "YYYY-MM-DD" and "HH:MM". */
   sentDate: string;
   sentTime: string;
-  /** Epoch ms the senior saw it (caregiver messages), or null. */
   seenAt: number | null;
 }
 
-/** What an add returns. */
 export interface AddResult<T extends ProfileTable> {
-  /** The new row, or the existing one with the same key. */
   id: Id<T>;
-  /** True when a row was inserted. */
   created: boolean;
-  /** True when the stored text equals what was sent (always true when created). */
   same: boolean;
-  /** True when the add verified an existing unverified fact (addFact only). */
   confirmed: boolean;
 }
 
-/** What an add core returns: the AddResult plus the row as it is now stored. */
 export interface AddOutcome<T extends ProfileTable> extends AddResult<T> {
-  /** The new row, or the existing one with the same key, as stored after the call. */
   row: Doc<T>;
 }
 
-/**
- * purpose: The public mutations' result of an add: the outcome without its row (the app reads
- *          the lists for rows).
- * @param outcome: (AddOutcome<T>) What the add core returned.
- * @return: (AddResult<T>) id, created, same and confirmed.
- */
 function addResult<T extends ProfileTable>(outcome: AddOutcome<T>): AddResult<T> {
   const { id, created, same, confirmed } = outcome;
   return { id, created, same, confirmed };
 }
 
-/** The fields of a new life profile entry. */
 export interface EntryFields {
   category: LifeCategory;
   name: string;
   details?: string;
 }
 
-/** Changes to a life profile entry: absent is unchanged; details null (or blank) clears them. */
 export interface EntryChanges {
   category?: LifeCategory;
   name?: string;
   details?: string | null;
 }
 
-/** Changes to a sensitive topic: absent is unchanged. */
 export interface TopicChanges {
   topic?: string;
   guidance?: string;
 }
 
-/** The household's memory as getContext orders it, with the count of older unverified facts. */
 export interface MemoryRows {
-  /** Verified facts (newest first), then the newest UNVERIFIED_SHOWN unverified ones. */
   facts: Doc<"agentMemory">[];
-  /** How many older unverified facts are not in facts, counted up to OLDER_COUNT_LIMIT. */
   olderUnverified: number;
 }
 
-/**
- * purpose: Clean a single-paragraph text field: trim, collapse all whitespace (line breaks
- *          included) to one space, require text, cap.
- * @param value: (string) Raw text.
- * @param max: (number) Maximum length after cleaning.
- * @param label: (string) Field name for the error message.
- * @return: (string) The cleaned text.
- * @raises invalid when blank or too long.
- */
 function singleLine(value: string, max: number, label: string): string {
   return requireMaxLength(oneLine(requireNonBlank(value, label)), max, label);
 }
 
-/**
- * purpose: Clean an optional single-paragraph field: blank becomes absent.
- * @param value: (string | null | undefined) Raw text.
- * @param max: (number) Maximum length after cleaning.
- * @param label: (string) Field name for the error message.
- * @return: (string | undefined) The cleaned text, or undefined when blank or absent.
- * @raises invalid when too long.
- */
 function optionalLine(
   value: string | null | undefined,
   max: number,
@@ -278,56 +139,17 @@ function optionalLine(
   );
 }
 
-/**
- * purpose: Load a row of one of this module's tables and check it belongs to the household.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param id: (Id<T>) Row id.
- * @param label: (string) What the row is, for the not-found message.
- * @return: (Promise<Doc<T>>) The row.
- * @raises not_found when it does not exist or belongs to another household.
- */
 async function loadOwned<T extends ProfileTable>(
   ctx: QueryCtx,
   householdId: Id<"households">,
   id: Id<T>,
   label: string,
 ): Promise<Doc<T>> {
-  const row = (await ctx.db.get(id)) as Doc<T> | null;
+  const row = await ctx.db.get(id);
   if (!row || row.householdId !== householdId) throw appError("not_found", `${label} not found`);
   return row;
 }
 
-/**
- * purpose: Every entry or topic of a household (each table is capped by its add mutation).
- * @param ctx: (QueryCtx) Context.
- * @param table: ("lifeProfileEntries" | "sensitiveTopics") The table.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<T>[]>) The rows, in creation order (the agent's order for topics).
- */
-async function householdRows<T extends "lifeProfileEntries" | "sensitiveTopics">(
-  ctx: QueryCtx,
-  table: T,
-  householdId: Id<"households">,
-): Promise<Doc<T>[]> {
-  // Both tables have the same by_household index on householdId; TypeScript cannot resolve the
-  // index field through the generic table name, hence the cast on the value.
-  return (await ctx.db
-    .query(table)
-    .withIndex("by_household", (q) => q.eq("householdId", householdId as never))
-    .collect()) as Doc<T>[];
-}
-
-/**
- * purpose: Reject a change when another row already has the changed row's key.
- * @param rows: ((K & { _id: string })[]) The rows to compare with.
- * @param key: ((row: K) => string) The duplicate key of a row.
- * @param next: (K) The changed row's new values.
- * @param selfId: (string) The changed row, which may keep its own key.
- * @param message: (string) Error message.
- * @return: (void)
- * @raises invalid when another row has that key.
- */
 function rejectDuplicate<K>(
   rows: (K & { _id: string })[],
   key: (row: K) => string,
@@ -339,17 +161,6 @@ function rejectDuplicate<K>(
   if (rows.some((r) => r._id !== selfId && key(r) === wanted)) throw appError("invalid", message);
 }
 
-/**
- * purpose: Record an audit row for a change in this module.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) Who changed it: an editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the change belongs to.
- * @param action: (string) "insert", "update", "delete", "verify" or "correct".
- * @param entity: (string) "lifeProfileEntry", "sensitiveTopic", "agentMemory" or "familyMessage".
- * @param entityId: (string) The row.
- * @param detail: (Record<string, unknown>) What to record.
- * @return: (Promise<void>) Resolves when written.
- */
 async function record(
   ctx: MutationCtx,
   actor: Actor,
@@ -362,15 +173,6 @@ async function record(
   await audit(ctx, { householdId, actor, action, entity, entityId, detail });
 }
 
-/**
- * purpose: Delete one of the household's rows and audit what it was.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor (or the agent acting for one) removing it.
- * @param row: (Doc<ProfileTable>) The row, already loaded through loadOwned.
- * @param entity: (string) Audit entity name.
- * @param detail: (Record<string, unknown>) What the row held.
- * @return: (Promise<void>) Resolves when deleted and audited.
- */
 async function removeRow(
   ctx: MutationCtx,
   actor: Actor,
@@ -382,38 +184,16 @@ async function removeRow(
   await record(ctx, actor, row.householdId, "delete", entity, row._id, detail);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Life profile entries
-// ---------------------------------------------------------------------------------------------
-
-/**
- * purpose: The duplicate key of an entry: its category and its name's text key.
- * @param row: (Pick<Doc<"lifeProfileEntries">, "category" | "name">) The entry.
- * @return: (string) The key.
- */
 function entryKey(row: Pick<Doc<"lifeProfileEntries">, "category" | "name">): string {
   return `${row.category}:${textKey(row.name)}`;
 }
 
-/**
- * purpose: What an entry's audit row records.
- * @param entry: (Pick<Doc<"lifeProfileEntries">, "category" | "name" | "details">) The entry.
- * @return: (Record<string, unknown>) Its category, name and details (null when none).
- */
 function entryDetail(
   entry: Pick<Doc<"lifeProfileEntries">, "category" | "name" | "details">,
 ): Record<string, unknown> {
   return { category: entry.category, name: entry.name, details: entry.details ?? null };
 }
 
-/**
- * purpose: The household's life profile: by category (the lifeCategory order: person, place,
- *          doctor, habit, interest, preference, other, as the agent groups it), then by name,
- *          case-insensitively. Caregivers of any role only.
- * @param householdId: (Id<"households">) Household.
- * @return: (EntryView[]) The entries.
- * @raises forbidden for a device or a non-member.
- */
 export const listEntries = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<EntryView[]> => {
@@ -428,21 +208,6 @@ export const listEntries = query({
   },
 });
 
-/**
- * purpose: Core of addEntry, shared with the chat tool add_knowledge: add a life profile
- *          entry. When an entry with the same category and name exists, nothing changes and
- *          that entry is returned with created = false and same = whether its name, and its
- *          details when details were sent, equal what was sent. The caller has checked that the
- *          actor may edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household.
- * @param args: (EntryFields) Category, name (at most 120 characters) and optional details
- *        (at most 600).
- * @return: (Promise<AddOutcome<"lifeProfileEntries">>) The entry's id, created, same,
- *          confirmed (false) and the entry as stored.
- * @raises invalid for blank or too long text; limit when the household has 150 entries.
- */
 export async function addEntryCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -451,7 +216,7 @@ export async function addEntryCore(
 ): Promise<AddOutcome<"lifeProfileEntries">> {
   const name = singleLine(args.name, MAX_NAME, "Name");
   const details = optionalLine(args.details, MAX_DETAILS, "Details");
-  const rows = await householdRows(ctx, "lifeProfileEntries", householdId);
+  const rows = await entriesInOrder(ctx, householdId);
   const wanted = entryKey({ category: args.category, name });
   const existing = rows.find((r) => entryKey(r) === wanted);
   if (existing) {
@@ -473,15 +238,6 @@ export async function addEntryCore(
   return { id, created: true, same: true, confirmed: false, row };
 }
 
-/**
- * purpose: Add a life profile entry. Editors only. See addEntryCore.
- * @param householdId: (Id<"households">) Household.
- * @param category: (LifeCategory) person, place, doctor, habit, interest, preference or other.
- * @param name: (string) Who or what, for example "Sarah"; at most 120 characters.
- * @param details: (string, optional) For example "Daughter, lives in Boston"; at most 600.
- * @return: (AddResult<"lifeProfileEntries">) The entry, created, same and confirmed (false).
- * @raises invalid for blank or too long text; limit when the household has 150 entries.
- */
 export const addEntry = mutation({
   args: {
     householdId: v.id("households"),
@@ -496,21 +252,6 @@ export const addEntry = mutation({
   },
 });
 
-/**
- * purpose: Core of updateEntry, shared with the chat tool update_knowledge: change a life
- *          profile entry; fields left out are unchanged and details = null (or blank) clears
- *          the details. A change that leaves every field as it was writes nothing; otherwise the
- *          audit row also keeps the previous values. The caller has checked that the actor may
- *          edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param entryId: (Id<"lifeProfileEntries">) Entry to change.
- * @param changes: (EntryChanges) New category, name or details.
- * @return: (Promise<Doc<"lifeProfileEntries">>) The entry as stored after the change.
- * @raises not_found for another household's entry; invalid for bad text or when another entry
- *         already has that category and name.
- */
 export async function updateEntryCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -535,7 +276,7 @@ export async function updateEntryCore(
     return entry;
   }
   rejectDuplicate(
-    await householdRows(ctx, "lifeProfileEntries", householdId),
+    await entriesInOrder(ctx, householdId),
     entryKey,
     next,
     entry._id,
@@ -549,18 +290,6 @@ export async function updateEntryCore(
   return { ...entry, ...next };
 }
 
-/**
- * purpose: Change a life profile entry; fields left out are unchanged and details = null (or
- *          blank) clears the details. Editors only. See updateEntryCore.
- * @param householdId: (Id<"households">) Household.
- * @param entryId: (Id<"lifeProfileEntries">) Entry to change.
- * @param category: (LifeCategory, optional) New category.
- * @param name: (string, optional) New name.
- * @param details: (string | null, optional) New details; null or blank clears them.
- * @return: (null)
- * @raises not_found for another household's entry; invalid for bad text or when another entry
- *         already has that category and name.
- */
 export const updateEntry = mutation({
   args: {
     householdId: v.id("households"),
@@ -577,17 +306,6 @@ export const updateEntry = mutation({
   },
 });
 
-/**
- * purpose: Core of removeEntry, shared with the chat tool remove_knowledge: delete a life
- *          profile entry and audit what it held. The caller has checked that the actor may edit
- *          the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param entryId: (Id<"lifeProfileEntries">) Entry to delete.
- * @return: (Promise<Doc<"lifeProfileEntries">>) The removed entry.
- * @raises not_found for another household's entry.
- */
 export async function removeEntryCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -599,13 +317,6 @@ export async function removeEntryCore(
   return entry;
 }
 
-/**
- * purpose: Delete a life profile entry. Editors only.
- * @param householdId: (Id<"households">) Household.
- * @param entryId: (Id<"lifeProfileEntries">) Entry to delete.
- * @return: (null)
- * @raises not_found for another household's entry.
- */
 export const removeEntry = mutation({
   args: { householdId: v.id("households"), entryId: v.id("lifeProfileEntries") },
   handler: async (ctx, args): Promise<null> => {
@@ -615,40 +326,20 @@ export const removeEntry = mutation({
   },
 });
 
-// ---------------------------------------------------------------------------------------------
-// Sensitive topics
-// ---------------------------------------------------------------------------------------------
-
-/**
- * purpose: The duplicate key of a topic: its wording's text key.
- * @param row: (Pick<Doc<"sensitiveTopics">, "topic">) The topic.
- * @return: (string) The key.
- */
 function topicKey(row: Pick<Doc<"sensitiveTopics">, "topic">): string {
   return textKey(row.topic);
 }
 
-/**
- * purpose: Core of listTopics, shared with the chat tool get_knowledge: the household's
- *          sensitive-topic playbook in the order the agent reads it (creation order).
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<Doc<"sensitiveTopics">[]>) The topics (at most MAX_TOPICS).
- */
 export async function listTopicsCore(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<Doc<"sensitiveTopics">[]> {
-  return await householdRows(ctx, "sensitiveTopics", householdId);
+  return await ctx.db
+    .query("sensitiveTopics")
+    .withIndex("by_household", (q) => q.eq("householdId", householdId))
+    .collect();
 }
 
-/**
- * purpose: The household's sensitive-topic playbook, in the order the agent reads it (creation
- *          order). Caregivers of any role only.
- * @param householdId: (Id<"households">) Household.
- * @return: (TopicView[]) The topics.
- * @raises forbidden for a device or a non-member.
- */
 export const listTopics = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<TopicView[]> => {
@@ -658,20 +349,6 @@ export const listTopics = query({
   },
 });
 
-/**
- * purpose: Core of addTopic, shared with the chat tool add_knowledge: add a sensitive topic and
- *          how to handle it. When a topic with the same wording exists, nothing changes and it
- *          is returned with created = false and same = whether its wording and guidance equal
- *          what was sent. The caller has checked that the actor may edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household.
- * @param args: ({ topic, guidance }) The wording (at most 200 characters; the agent reads it as
- *        "If asked about <topic>: <guidance>") and how to answer (at most 1500).
- * @return: (Promise<AddOutcome<"sensitiveTopics">>) The topic's id, created, same, confirmed
- *          (false) and the topic as stored.
- * @raises invalid for blank or too long text; limit when the household has 30 topics.
- */
 export async function addTopicCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -701,15 +378,6 @@ export async function addTopicCore(
   return { id, created: true, same: true, confirmed: false, row };
 }
 
-/**
- * purpose: Add a sensitive topic and how to handle it. Editors only. See addTopicCore.
- * @param householdId: (Id<"households">) Household.
- * @param topic: (string) What the senior may ask about, for example "her husband Robert"; at
- *        most 200 characters. The agent reads it as "If asked about <topic>: <guidance>".
- * @param guidance: (string) How to answer; at most 1500 characters.
- * @return: (AddResult<"sensitiveTopics">) The topic, created, same and confirmed (false).
- * @raises invalid for blank or too long text; limit when the household has 30 topics.
- */
 export const addTopic = mutation({
   args: { householdId: v.id("households"), topic: v.string(), guidance: v.string() },
   handler: async (ctx, args): Promise<AddResult<"sensitiveTopics">> => {
@@ -719,20 +387,6 @@ export const addTopic = mutation({
   },
 });
 
-/**
- * purpose: Core of updateTopic, shared with the chat tool update_knowledge: change a sensitive
- *          topic's wording or guidance; fields left out are unchanged. A change that leaves both
- *          as they were writes nothing; otherwise the audit row also keeps the previous wording
- *          and guidance. The caller has checked that the actor may edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param topicId: (Id<"sensitiveTopics">) Topic to change.
- * @param changes: (TopicChanges) New wording or guidance.
- * @return: (Promise<Doc<"sensitiveTopics">>) The topic as stored after the change.
- * @raises not_found for another household's topic; invalid for blank or too long text or when
- *         another topic already has that wording.
- */
 export async function updateTopicCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -764,17 +418,6 @@ export async function updateTopicCore(
   return { ...row, ...next };
 }
 
-/**
- * purpose: Change a sensitive topic's wording or guidance; fields left out are unchanged.
- *          Editors only. See updateTopicCore.
- * @param householdId: (Id<"households">) Household.
- * @param topicId: (Id<"sensitiveTopics">) Topic to change.
- * @param topic: (string, optional) New wording.
- * @param guidance: (string, optional) New guidance.
- * @return: (null)
- * @raises not_found for another household's topic; invalid for blank or too long text or when
- *         another topic already has that wording.
- */
 export const updateTopic = mutation({
   args: {
     householdId: v.id("households"),
@@ -790,17 +433,6 @@ export const updateTopic = mutation({
   },
 });
 
-/**
- * purpose: Core of removeTopic, shared with the chat tool remove_knowledge: delete a sensitive
- *          topic and audit its wording. The caller has checked that the actor may edit the
- *          household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param topicId: (Id<"sensitiveTopics">) Topic to delete.
- * @return: (Promise<Doc<"sensitiveTopics">>) The removed topic.
- * @raises not_found for another household's topic.
- */
 export async function removeTopicCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -812,13 +444,6 @@ export async function removeTopicCore(
   return row;
 }
 
-/**
- * purpose: Delete a sensitive topic. Editors only.
- * @param householdId: (Id<"households">) Household.
- * @param topicId: (Id<"sensitiveTopics">) Topic to delete.
- * @return: (null)
- * @raises not_found for another household's topic.
- */
 export const removeTopic = mutation({
   args: { householdId: v.id("households"), topicId: v.id("sensitiveTopics") },
   handler: async (ctx, args): Promise<null> => {
@@ -828,17 +453,6 @@ export const removeTopic = mutation({
   },
 });
 
-// ---------------------------------------------------------------------------------------------
-// Agent memory
-// ---------------------------------------------------------------------------------------------
-
-/**
- * purpose: Refuse to verify one more fact when the household already has MAX_VERIFIED_FACTS
- *          verified facts (more would crowd the senior's own facts out of the agent's window).
- * @param verified: (Doc<"agentMemory">[]) The household's verified facts (verifiedFacts).
- * @return: (void)
- * @raises limit when the cap is reached.
- */
 function requireVerifiedRoom(verified: Doc<"agentMemory">[]): void {
   if (verified.length >= MAX_VERIFIED_FACTS) {
     throw appError(
@@ -848,14 +462,6 @@ function requireVerifiedRoom(verified: Doc<"agentMemory">[]): void {
   }
 }
 
-/**
- * purpose: Mark a fact verified by the caregiver (for the household agent, the caregiver it acts
- *          for), now, and audit it.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The verifying caregiver, or the household agent acting for one.
- * @param fact: (Doc<"agentMemory">) An unverified fact.
- * @return: (Promise<Doc<"agentMemory">>) The fact as stored after verifying.
- */
 async function markVerified(
   ctx: MutationCtx,
   actor: Actor,
@@ -870,15 +476,6 @@ async function markVerified(
   return { ...fact, ...patch };
 }
 
-/**
- * purpose: Core of listMemory, shared with the chat tool get_knowledge: what the agent
- *          remembers, in the order getContext reads it: verified facts first (newest first),
- *          then the newest UNVERIFIED_SHOWN unverified facts, with a count of the older
- *          unverified ones.
- * @param ctx: (QueryCtx) Context.
- * @param householdId: (Id<"households">) Household.
- * @return: (Promise<MemoryRows>) The facts and olderUnverified (counted up to OLDER_COUNT_LIMIT).
- */
 export async function listMemoryCore(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -893,14 +490,6 @@ export async function listMemoryCore(
   };
 }
 
-/**
- * purpose: What the agent remembers, in the order getContext reads it (see listMemoryCore),
- *          with names and household-local dates. Caregivers of any role only.
- * @param householdId: (Id<"households">) Household.
- * @return: (MemoryView) The facts, with source, verified state and household-local dates, and
- *          olderUnverified (counted up to OLDER_COUNT_LIMIT).
- * @raises forbidden for a device or a non-member.
- */
 export const listMemory = query({
   args: { householdId: v.id("households") },
   handler: async (ctx, args): Promise<MemoryView> => {
@@ -923,21 +512,6 @@ export const listMemory = query({
   },
 });
 
-/**
- * purpose: Core of addFact, shared with the chat tool add_knowledge: add a fact a caregiver
- *          knows; it is verified at once (source caregiver). When the same fact is stored (same
- *          text, ignoring case and spacing), nothing is added and that fact is returned with
- *          created = false and same = true; if it was an unverified senior-stated fact it is
- *          verified now (confirmed = true). The caller has checked that the actor may edit the
- *          household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household.
- * @param text: (string) For example "Her cat is called Biscuit"; at most 300 characters.
- * @return: (Promise<AddOutcome<"agentMemory">>) The fact's id, created, same, confirmed and
- *          the fact as stored.
- * @raises invalid for blank or too long text; limit at 40 verified facts.
- */
 export async function addFactCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -970,13 +544,6 @@ export async function addFactCore(
   return { id, created: true, same: true, confirmed: false, row };
 }
 
-/**
- * purpose: Add a fact a caregiver knows; it is verified at once. Editors only. See addFactCore.
- * @param householdId: (Id<"households">) Household.
- * @param fact: (string) For example "Her cat is called Biscuit"; at most 300 characters.
- * @return: (AddResult<"agentMemory">) The fact, created, same and confirmed.
- * @raises invalid for blank or too long text; limit at 40 verified facts.
- */
 export const addFact = mutation({
   args: { householdId: v.id("households"), fact: v.string() },
   handler: async (ctx, args): Promise<AddResult<"agentMemory">> => {
@@ -985,17 +552,6 @@ export const addFact = mutation({
   },
 });
 
-/**
- * purpose: Core of verifyFact, shared with the chat tool update_knowledge: confirm a fact
- *          (typically one the senior said). An already verified fact is left as it was, keeping
- *          its first verifier. The caller has checked that the actor may edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param factId: (Id<"agentMemory">) Fact to verify.
- * @return: (Promise<Doc<"agentMemory">>) The fact as stored after the call.
- * @raises not_found for another household's fact; limit at 40 verified facts.
- */
 export async function verifyFactCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -1008,13 +564,6 @@ export async function verifyFactCore(
   return await markVerified(ctx, actor, fact);
 }
 
-/**
- * purpose: Confirm a fact (typically one the senior said). Editors only. See verifyFactCore.
- * @param householdId: (Id<"households">) Household.
- * @param factId: (Id<"agentMemory">) Fact to verify.
- * @return: (null)
- * @raises not_found for another household's fact; limit at 40 verified facts.
- */
 export const verifyFact = mutation({
   args: { householdId: v.id("households"), factId: v.id("agentMemory") },
   handler: async (ctx, args): Promise<null> => {
@@ -1024,20 +573,6 @@ export const verifyFact = mutation({
   },
 });
 
-/**
- * purpose: Core of correctFact, shared with the chat tool update_knowledge: correct a fact's
- *          text. A caregiver's correction verifies the fact under their name (its source is
- *          kept). Saving the same text verifies an unverified fact and leaves a verified one
- *          unchanged. The caller has checked that the actor may edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param factId: (Id<"agentMemory">) Fact to correct.
- * @param text: (string) The corrected text; at most 300 characters.
- * @return: (Promise<Doc<"agentMemory">>) The fact as stored after the call.
- * @raises not_found for another household's fact; invalid for blank or too long text or when
- *         another fact already says the same; limit at 40 verified facts.
- */
 export async function correctFactCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -1064,16 +599,6 @@ export async function correctFactCore(
   return { ...row, ...patch };
 }
 
-/**
- * purpose: Correct a fact's text; it becomes verified under the caller's name. Editors only.
- *          See correctFactCore.
- * @param householdId: (Id<"households">) Household.
- * @param factId: (Id<"agentMemory">) Fact to correct.
- * @param fact: (string) The corrected text; at most 300 characters.
- * @return: (null)
- * @raises not_found for another household's fact; invalid for blank or too long text or when
- *         another fact already says the same; limit at 40 verified facts.
- */
 export const correctFact = mutation({
   args: { householdId: v.id("households"), factId: v.id("agentMemory"), fact: v.string() },
   handler: async (ctx, args): Promise<null> => {
@@ -1083,17 +608,6 @@ export const correctFact = mutation({
   },
 });
 
-/**
- * purpose: Core of removeFact, shared with the chat tool remove_knowledge: delete a fact,
- *          verified or not, and audit what it said. The caller has checked that the actor may
- *          edit the household.
- * @param ctx: (MutationCtx) Context.
- * @param actor: (Actor) The editor caregiver, or the household agent acting for one.
- * @param householdId: (Id<"households">) Household the caller acts in.
- * @param factId: (Id<"agentMemory">) Fact to delete.
- * @return: (Promise<Doc<"agentMemory">>) The removed fact.
- * @raises not_found for another household's fact.
- */
 export async function removeFactCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -1105,13 +619,6 @@ export async function removeFactCore(
   return row;
 }
 
-/**
- * purpose: Delete a fact, verified or not. Editors only.
- * @param householdId: (Id<"households">) Household.
- * @param factId: (Id<"agentMemory">) Fact to delete.
- * @return: (null)
- * @raises not_found for another household's fact.
- */
 export const removeFact = mutation({
   args: { householdId: v.id("households"), factId: v.id("agentMemory") },
   handler: async (ctx, args): Promise<null> => {
@@ -1121,20 +628,6 @@ export const removeFact = mutation({
   },
 });
 
-// ---------------------------------------------------------------------------------------------
-// Family messages
-// ---------------------------------------------------------------------------------------------
-
-/**
- * purpose: The household's newest family messages, from caregivers and from the senior (sent
- *          through the voice agent), newest first, with who sent them (mine for the caller's
- *          own; no member ids are returned) and whether the senior has seen them. Caregivers of
- *          any role only.
- * @param householdId: (Id<"households">) Household.
- * @param limit: (number, optional) How many, 1 to 100; default 30.
- * @return: (MessageView[]) The messages, newest first.
- * @raises forbidden for a device or a non-member; invalid for a limit outside 1 to 100.
- */
 export const listMessages = query({
   args: { householdId: v.id("households"), limit: v.optional(v.number()) },
   handler: async (ctx, args): Promise<MessageView[]> => {
@@ -1171,14 +664,6 @@ export const listMessages = query({
   },
 });
 
-/**
- * purpose: Send the senior a text message from the signed-in caregiver. Editors only. The
- *          voice agent reads the newest caregiver message ("What did Sarah send?").
- * @param householdId: (Id<"households">) Household.
- * @param body: (string) The message; trimmed, 1 to 1000 characters, line breaks kept.
- * @return: (Id<"familyMessages">) The new message.
- * @raises invalid for blank or too long text.
- */
 export const sendMessage = mutation({
   args: { householdId: v.id("households"), body: v.string() },
   handler: async (ctx, args): Promise<Id<"familyMessages">> => {

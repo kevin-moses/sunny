@@ -1,30 +1,3 @@
-// delivery.ts
-// Purpose: Delivery of notificationOutbox rows (routing: lib/delivery.ts). The workpool runs
-// `deliver` for each inserted row: `begin` re-checks the row and returns the route, the action
-// calls APNs or SMS, `record` stores the outcome. Contracts worth knowing:
-// - APNs counts a row as sent when any token was accepted; only tokens APNs reports unregistered
-//   are deleted. A retryable failure is thrown so the workpool retries with backoff; other
-//   failures end the row as failed.
-// - A caregiver who would have been texted before push existed is never left with nothing. A
-//   caregiver's push (an apns route with smsFallback) is sent as that SMS in the same run when
-//   APNs is not configured or no token took it with nothing worth retrying (every token
-//   unregistered or refused for good); the row then settles as the SMS path settles it (channel
-//   sms when sent). A retryable push failure is retried, not texted, and marks the row
-//   (pushState "retrying"); when the workpool's retries run out, onDeliveryComplete sets
-//   "gave_up" and enqueues the row once more, and the route is then the member's SMS
-//   (lib/delivery textAfterPushGaveUp). Without a verified phone the row ends skipped or failed
-//   as a device push would.
-// - A configuration problem returned by a sender with no fallback leaves the row pending with
-//   the detail recorded, so the sweeper retries after the configuration is fixed (bounded by
-//   MAX_ATTEMPTS).
-// - An SMS that timed out is retried only for a caregiver_alert or an agent_flag (the voice
-//   agent asking a caregiver to look in); for other kinds the text may already have been
-//   delivered, so the row is failed rather than risk a duplicate.
-// - begin stamps attemptStartedAt (a lease the sweeper respects). Retries exhausted ends the row
-//   as failed (onDeliveryComplete). A settled row is never delivered again.
-//
-// Last modified: 2026-11-14
-
 import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -43,20 +16,11 @@ import type { ApnsRoute, SendRoute, SmsRoute } from "./lib/delivery";
 import { sendSmsFromEnv } from "./lib/twilio";
 import { deliveryChannel } from "./lib/validators";
 
-/** The outcome of a delivery run, returned by the action. */
 export type DeliveryOutcome = "sent" | "skipped" | "failed" | "config" | "settled" | "missing";
 
-/** What `begin` tells the action to do. */
 export type BeginResult =
   { kind: "done"; outcome: DeliveryOutcome } | { kind: "send"; route: SendRoute };
 
-/**
- * purpose: Finish a row: set its final state and the time.
- * @param ctx: (MutationCtx) Context.
- * @param row: (Doc<"notificationOutbox">) The row.
- * @param patch: (object) The final state, and the channel (sent) or detail (skipped, failed).
- * @return: (Promise<void>) Resolves when written.
- */
 async function settle(
   ctx: MutationCtx,
   row: Doc<"notificationOutbox">,
@@ -66,13 +30,6 @@ async function settle(
   await ctx.db.patch(row._id, { ...patch, settledAt: Date.now() });
 }
 
-/**
- * purpose: Start a delivery run: stop at once for a missing or settled row, fail a row that
- *          has used up MAX_ATTEMPTS, skip a row with no reachable address, otherwise count the
- *          attempt, take the lease and return the route.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @return: (BeginResult) done with the outcome, or send with the route.
- */
 export const begin = internalMutation({
   args: { outboxId: v.id("notificationOutbox") },
   handler: async (ctx, { outboxId }): Promise<BeginResult> => {
@@ -94,19 +51,6 @@ export const begin = internalMutation({
   },
 });
 
-/**
- * purpose: Record the result of a delivery run. "sent", "skipped" and "failed" settle the row;
- *          "retry" only stores the error for the next run, and marks whether the failure was a
- *          push that has a text to fall back on (pushState "retrying"; any other failure clears
- *          that mark, and a row already texting after its push gave up keeps "gave_up").
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param outcome: ("sent" | "retry" | "failed" | "skipped") What happened.
- * @param channel: (DeliveryChannel, optional) The channel a sent row went out on.
- * @param detail: (string, optional) Skip reason or internal error.
- * @param pushFailed: (boolean, optional) For "retry": the push step of a row with an SMS
- *        fallback failed.
- * @return: (null)
- */
 export const record = internalMutation({
   args: {
     outboxId: v.id("notificationOutbox"),
@@ -138,27 +82,11 @@ export const record = internalMutation({
   },
 });
 
-/**
- * purpose: A short internal description of an APNs failure for the row's detail.
- * @param results: (ApnsResult[]) Per-token results.
- * @return: (string) E.g. "429 TooManyRequests".
- */
 function apnsDetail(results: ApnsResult[]): string {
   const bad = results.find((r) => r.outcome === "failed");
   return bad ? `${bad.status} ${bad.reason ?? "unknown"}` : "no result from APNs";
 }
 
-/**
- * purpose: Send a row by APNs and record the result, deleting unregistered tokens. When APNs is
- *          not configured, or no token took the push and no failure is worth retrying (every
- *          token unregistered or refused for good), a member's row is handed back as its SMS
- *          fallback for runRoute to send instead.
- * @param ctx: (ActionCtx) Context.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (ApnsRoute) An apns route.
- * @return: (Promise<DeliveryOutcome | SmsRoute>) The outcome, or the text to send instead.
- * @raises Error for a retryable failure.
- */
 async function sendApns(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
@@ -211,15 +139,6 @@ async function sendApns(
   return "failed";
 }
 
-/**
- * purpose: Send a row by SMS and record the result. A configuration problem leaves the row
- *          pending; a timeout is retried only when the route allows it.
- * @param ctx: (ActionCtx) Context.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (SmsRoute) An sms route (a member's own, or an apns route's fallback).
- * @return: (Promise<DeliveryOutcome>) The outcome.
- * @raises Error for a retryable failure.
- */
 async function sendSms(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
@@ -248,17 +167,6 @@ async function sendSms(
   return "failed";
 }
 
-/**
- * purpose: Run one send step, recording an error before rethrowing it so the workpool retries
- *          and the row shows why. A failed push that has a text to fall back on marks the row
- *          (pushState "retrying"), so the text goes out if the push retries run out.
- * @param ctx: (ActionCtx) Context.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param pushWithFallback: (boolean) True for the push step of a row with an SMS fallback.
- * @param step: (() => Promise<T>) The send.
- * @return: (Promise<T>) What the send returned.
- * @raises The original error when worth retrying.
- */
 async function attempt<T>(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
@@ -279,15 +187,6 @@ async function attempt<T>(
   }
 }
 
-/**
- * purpose: Run the route returned by begin: an SMS, or a push followed by its text when the
- *          push hands one back (sendApns).
- * @param ctx: (ActionCtx) Context.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @param route: (SendRoute) An apns or sms route.
- * @return: (Promise<DeliveryOutcome>) The outcome.
- * @raises The original error when worth retrying.
- */
 async function runRoute(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
@@ -303,12 +202,6 @@ async function runRoute(
   return await attempt(ctx, outboxId, false, () => sendSms(ctx, outboxId, text));
 }
 
-/**
- * purpose: The workpool action: deliver one outbox row. Throws for errors worth retrying (the
- *          workpool retries with backoff); returns for everything else.
- * @param outboxId: (Id<"notificationOutbox">) The row.
- * @return: (DeliveryOutcome) What happened.
- */
 export const deliver = internalAction({
   args: { outboxId: v.id("notificationOutbox") },
   handler: async (ctx, { outboxId }): Promise<DeliveryOutcome> => {
@@ -318,17 +211,6 @@ export const deliver = internalAction({
   },
 });
 
-/**
- * purpose: Workpool completion handler. A run that failed (retries exhausted) fails a row
- *          that is still pending, with the error as detail, except a caregiver's push whose
- *          retries ran out while they have a verified phone: that row is texted instead, once
- *          (textAfterPushGaveUp). Success and cancellation change nothing: the action settles
- *          its own rows.
- * @param workId: (string) The workpool work id.
- * @param context: ({ outboxId }) The row the run worked for.
- * @param result: (RunResult) success, failed, or canceled.
- * @return: (null)
- */
 export const onDeliveryComplete = internalMutation({
   args: vOnCompleteArgs(v.object({ outboxId: v.id("notificationOutbox") })),
   handler: async (ctx, { context, result }): Promise<null> => {
@@ -342,10 +224,6 @@ export const onDeliveryComplete = internalMutation({
   },
 });
 
-/**
- * purpose: Cron entry: enqueue again the rows and digests pending for 15 minutes or more.
- * @return: (number) Rows and digests re-enqueued.
- */
 export const sweepStuck = internalMutation({
   args: {},
   handler: async (ctx): Promise<number> => {

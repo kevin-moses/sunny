@@ -1,24 +1,3 @@
-// instances.test.ts
-// Purpose: Tests for instances.ts, ported from the instance half of
-// the former Supabase scheduler tests: confirm (device, caregiver, agent, early and late, the
-// already-done guard), snooze, claim, today, confirmDueTask ("Done": no label, label,
-// ambiguous, not found, already done, not due yet, prefer what is due now), senior reminders
-// (create, recurring, cancel, blank query, past date) and dose logging. Also one access test
-// per public function (outsider forbidden, viewer cannot write, device and caregiver rules
-// differ), standing in for the former Supabase grant and RLS checks. Also: non-finite dose times and
-// over-long reminder titles are rejected. Also: the resolution note is trimmed (blank is
-// stored as absent, over 500 characters rejected) and only an editor caregiver may use
-// via "caregiver"; an editor may resolve an open task of today or earlier (not a later day;
-// a device only within 60 minutes), and the scheduler leaves it resolved. Also: undoResolve (the same
-// caregiver within 30 seconds restores the pre-resolve state and the scheduler carries on;
-// others, late undos, devices and viewers are refused) and an unchanged note writes and
-// audits nothing. Transport: a confirm through confirmTaskInstance or the public confirmDueTask
-// records transport app in its audit detail, and the voice agent's Done records no transport
-// key. The clock is driven by faking Date
-// for public functions and by passing `now` to the exported core helpers.
-//
-// Last modified: 2026-11-14
-
 import workpoolTest from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -31,33 +10,24 @@ import {
   logDoseCore,
   snoozeInstance,
 } from "./instances";
+import { executeAgentTool } from "./lib/agentTools";
 import schema from "./schema";
 
-/** Every non-test module in the backend, for the convex-test harness. */
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-/** The backend actor used where a test passes an exact `now` to a core helper. */
 const AGENT = { kind: "agent" } as const;
 
-/**
- * purpose: A fresh in-memory backend.
- * @return: The convex-test harness typed with the schema.
- */
 function makeBackend() {
   const t = convexTest(schema, modules);
   workpoolTest.register(t, "deliveryPool");
   return t;
 }
 
-/** The convex-test harness type. */
 type TestConvex = ReturnType<typeof makeBackend>;
 
-/** Household for Mom with Pat (primary), Max (member), Val (viewer) and two devices. */
 interface Fixture {
   t: TestConvex;
   householdId: Id<"households">;
-  medication: Id<"escalationPolicies">;
-  promptOnly: Id<"escalationPolicies">;
   phone: Id<"devices">;
   display: Id<"devices">;
 }
@@ -70,25 +40,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/**
- * purpose: Set the faked clock used by public functions.
- * @param iso: (string) UTC instant.
- * @return: (number) The same instant in epoch ms.
- */
 function at(iso: string): number {
   vi.setSystemTime(new Date(iso));
   return Date.parse(iso);
 }
 
-/**
- * purpose: Pair a device through a join code.
- * @param t: (TestConvex) Harness.
- * @param householdId: (Id<"households">) Household.
- * @param asOwner: Identity-bound harness of a primary caregiver of that household.
- * @param userId: (string) Device user id.
- * @param grants: (string) Device kind.
- * @return: (Promise<Id<"devices">>) The device.
- */
 async function pair(
   t: TestConvex,
   householdId: Id<"households">,
@@ -100,11 +56,6 @@ async function pair(
   return (await t.mutation(internal.households.pairDevice, { code, userId })).deviceId;
 }
 
-/**
- * purpose: Build the standard fixture at a faked time.
- * @param iso: (string) UTC instant to start the clock at.
- * @return: (Promise<Fixture>) The fixture.
- */
 async function setup(iso: string): Promise<Fixture> {
   at(iso);
   const t = makeBackend();
@@ -123,47 +74,19 @@ async function setup(iso: string): Promise<Fixture> {
   }
   const phone = await pair(t, householdId, pat, "phone", "senior_phone");
   const display = await pair(t, householdId, pat, "display", "home_display");
-  const policies = await pat.query(api.tasks.listPolicies, { householdId });
-  return {
-    t,
-    householdId,
-    medication: policies.find((p) => p.systemKey === "medication")!._id,
-    promptOnly: policies.find((p) => p.systemKey === "prompt_only")!._id,
-    phone,
-    display,
-  };
+  return { t, householdId, phone, display };
 }
 
-/**
- * purpose: Create a task as Pat.
- * @param f: (Fixture) Fixture.
- * @param title: (string) Title and display label.
- * @param times: (string[]) Local times.
- * @param policy: (Id<"escalationPolicies">, optional) Policy; defaults to Medication.
- * @return: (Promise<Id<"tasks">>) The task.
- */
-async function makeTask(
-  f: Fixture,
-  title: string,
-  times: string[],
-  policy?: Id<"escalationPolicies">,
-): Promise<Id<"tasks">> {
+async function makeTask(f: Fixture, title: string, times: string[]): Promise<Id<"tasks">> {
   return await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {
     householdId: f.householdId,
     type: "medication",
     title,
     displayLabel: title,
     times,
-    escalationPolicyId: policy ?? f.medication,
   });
 }
 
-/**
- * purpose: Instances of a household on a local date, ordered by window start.
- * @param f: (Fixture) Fixture.
- * @param date: (string) Local date.
- * @return: (Promise<Doc[]>) The instances.
- */
 async function instancesOn(f: Fixture, date: string) {
   const rows = await f.t.run(
     async (ctx) =>
@@ -177,12 +100,6 @@ async function instancesOn(f: Fixture, date: string) {
   return rows.sort((a, b) => a.windowStart - b.windowStart);
 }
 
-/**
- * purpose: Run the scheduler at an instant: tickHousehold for every household, in order.
- * @param t: (TestConvex) Harness.
- * @param iso: (string) UTC instant.
- * @return: (Promise<void>)
- */
 async function tick(t: TestConvex, iso: string): Promise<void> {
   const ids = await t.run(async (ctx) =>
     (await ctx.db.query("households").collect()).map((h) => h._id),
@@ -195,13 +112,6 @@ async function tick(t: TestConvex, iso: string): Promise<void> {
   }
 }
 
-/**
- * purpose: The detail of an instance's confirm audit row: its state_change to confirmed or
- *          resolved (earlier state changes, such as the scheduler's upcoming to due, are skipped).
- * @param f: (Fixture) Fixture.
- * @param instanceId: (Id<"taskInstances">) The instance.
- * @return: (Promise<Record<string, unknown> | undefined>) The detail, if the row exists.
- */
 async function confirmDetail(
   f: Fixture,
   instanceId: Id<"taskInstances">,
@@ -625,12 +535,6 @@ describe("setTaskNote unchanged", () => {
 });
 
 describe("undoResolve", () => {
-  /**
-   * purpose: Resolve the day's only instance as Max at an instant and return its id.
-   * @param f: (Fixture) Fixture with one task at 08:00 on 2027-03-14.
-   * @param iso: (string) UTC instant to resolve at.
-   * @return: (Promise<Id<"taskInstances">>) The instance.
-   */
   async function resolveAt(f: Fixture, iso: string): Promise<Id<"taskInstances">> {
     const [instance] = await instancesOn(f, "2027-03-14");
     at(iso);
@@ -1093,7 +997,6 @@ describe("today", () => {
     const f = await setup("2027-03-14T11:00:00Z");
     await makeTask(f, "Late pills", ["23:30"]);
     await makeTask(f, "Morning pills", ["08:00"]);
-    // 2027-03-15 00:10 in New York (EDT, UTC-4) is 04:10Z: the 23:30 instance is still open.
     await tick(f.t, "2027-03-15T03:35:00Z");
     at("2027-03-15T04:10:00Z");
     const entries = await f.t
@@ -1161,7 +1064,6 @@ describe("today", () => {
 });
 
 describe("confirmDueTask", () => {
-  /** Morning 08:00, Lunch 12:00 (blank prompt) and Evening 21:00 on 2027-03-20 (EDT). */
   async function dayFixture(): Promise<Fixture> {
     const f = await setup("2027-03-20T11:00:00Z");
     await makeTask(f, "Morning pills", ["08:00"]);
@@ -1172,7 +1074,6 @@ describe("confirmDueTask", () => {
     return f;
   }
 
-  /** Press Done as the backend at an exact instant. */
   async function done(f: Fixture, iso: string, label?: string, via: "button" | "voice" = "button") {
     return await f.t.run(
       async (ctx) =>
@@ -1301,18 +1202,11 @@ describe("confirmDueTask", () => {
 });
 
 describe("senior reminders", () => {
-  /** Fixture where the prompt-only policy was renamed, at 2027-03-20 12:00Z. */
   async function reminderFixture(): Promise<Fixture> {
-    const f = await setup("2027-03-20T12:00:00Z");
-    await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.updatePolicy, {
-      householdId: f.householdId,
-      policyId: f.promptOnly,
-      name: "Gentle nudge",
-    });
-    return f;
+    return await setup("2027-03-20T12:00:00Z");
   }
 
-  test("the device creates a one-off reminder on the prompt-only policy, even after a rename", async () => {
+  test("the device creates a one-off reminder that is not high priority", async () => {
     const f = await reminderFixture();
     const task = await f.t
       .withIdentity({ subject: "phone" })
@@ -1330,7 +1224,7 @@ describe("senior reminders", () => {
       createdBy: "phone",
       onceOn: "2027-03-22",
       windowMinutes: 30,
-      escalationPolicyId: f.promptOnly,
+      highPriority: false,
       active: true,
     });
     expect(task.daysOfWeek).toBeUndefined();
@@ -1386,6 +1280,69 @@ describe("senior reminders", () => {
     await expect(
       asPhone.mutation(api.instances.createSeniorReminder, { ...base, title: "x".repeat(200) }),
     ).resolves.toBeDefined();
+  });
+
+  test("a long spoken reminder keeps its title and gets a label a caregiver can save", async () => {
+    const f = await reminderFixture();
+    const title = "call the pharmacy about refilling my blood pressure pills before saturday";
+    expect(title).toHaveLength(73);
+    const task = await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.createSeniorReminder, {
+        householdId: f.householdId,
+        title,
+        time: "10:00",
+      });
+    expect(task).toMatchObject({
+      title,
+      displayLabel: "Call the pharmacy about refilling my blood pressure pills…",
+      spokenPrompt: `Reminder: ${title}.`,
+    });
+    const pat = f.t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: task._id,
+      times: ["11:30"],
+      highPriority: true,
+    });
+    const stopped = await f.t.run(
+      async (ctx) =>
+        await executeAgentTool(
+          ctx,
+          {
+            householdId: f.householdId,
+            actor: { kind: "agent", onBehalfOf: "pat" },
+            now: Date.now(),
+          },
+          { name: "stop_task", input: { task_id: task._id } },
+        ),
+    );
+    expect(stopped.isError).toBe(false);
+    const saved = await f.t.run(async (ctx) => await ctx.db.get(task._id));
+    expect(saved).toMatchObject({ times: ["11:30"], highPriority: true, active: false, title });
+  });
+
+  test("a reminder saved earlier with a label over the cap can still be changed", async () => {
+    const f = await reminderFixture();
+    const label = "Call the pharmacy about refilling my blood pressure pills before saturday";
+    const task = await f.t
+      .withIdentity({ subject: "phone" })
+      .mutation(api.instances.createSeniorReminder, {
+        householdId: f.householdId,
+        title: label.toLowerCase(),
+        time: "10:00",
+      });
+    await f.t.run(async (ctx) => await ctx.db.patch(task._id, { displayLabel: label }));
+    await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: task._id,
+      times: ["11:00"],
+    });
+    const saved = await f.t.run(async (ctx) => await ctx.db.get(task._id));
+    expect(saved).toMatchObject({
+      times: ["11:00"],
+      displayLabel: "Call the pharmacy about refilling my blood pressure pills…",
+    });
   });
 
   test("a today reminder is allowed", async () => {
@@ -1473,7 +1430,6 @@ describe("senior reminders", () => {
 });
 
 describe("logDose", () => {
-  /** An as-needed task (no times). */
   async function doseFixture() {
     const f = await setup("2027-03-20T12:00:00Z");
     const taskId = await f.t.withIdentity({ subject: "pat" }).mutation(api.tasks.create, {

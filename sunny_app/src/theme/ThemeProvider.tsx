@@ -1,12 +1,3 @@
-// sunny_app/src/theme/ThemeProvider.tsx
-//
-// Purpose: Runtime-adjustable design parameters for the Sunny UI: accent color, body and
-// button font sizes, and corner radius. Values are persisted in AsyncStorage when changed,
-// clamped to their allowed ranges, and can be reset to defaults. Read them with useTheme();
-// the dev settings sheet changes them.
-//
-// Last modified: 2026-10-28
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createContext,
@@ -22,12 +13,10 @@ import { PALETTE } from './colors';
 
 const STORAGE_KEY = 'sunny.theme';
 
-/** Allowed ranges for the numeric settings: [min, max]. */
 export const BODY_FONT_RANGE: readonly [number, number] = [14, 24];
 export const BUTTON_FONT_RANGE: readonly [number, number] = [15, 28];
 export const CORNER_RADIUS_RANGE: readonly [number, number] = [4, 32];
 
-/** The persisted, user-adjustable settings. */
 interface ThemeSettings {
   accentColorIndex: number;
   bodyFontSize: number;
@@ -42,7 +31,6 @@ const DEFAULTS: ThemeSettings = {
   cornerRadius: 12,
 };
 
-/** What useTheme() returns: current values, derived colors and setters. */
 interface Theme extends ThemeSettings {
   accentColor: string;
   accentColorName: string;
@@ -55,23 +43,11 @@ interface Theme extends ThemeSettings {
 
 const ThemeContext = createContext<Theme | null>(null);
 
-/**
- * purpose: Clamp a number into a range, falling back when it is not a finite number.
- * @param value: (unknown) The candidate value.
- * @param range: (readonly [number, number]) Allowed [min, max].
- * @param fallback: (number) Value used when `value` is not a finite number.
- * @return: (number) The clamped, rounded value.
- */
 function clamp(value: unknown, range: readonly [number, number], fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.min(range[1], Math.max(range[0], Math.round(value)));
 }
 
-/**
- * purpose: Turn arbitrary stored data into valid settings, using defaults for bad fields.
- * @param raw: (unknown) A parsed JSON value.
- * @return: (ThemeSettings) Valid settings.
- */
 function sanitizeSettings(raw: unknown): ThemeSettings {
   const source = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
   const index = source.accentColorIndex;
@@ -85,10 +61,6 @@ function sanitizeSettings(raw: unknown): ThemeSettings {
   };
 }
 
-/**
- * purpose: Load the saved settings from AsyncStorage.
- * @return: (Promise<ThemeSettings>) Saved settings, or defaults when none or unreadable.
- */
 async function loadSettings(): Promise<ThemeSettings> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -98,11 +70,6 @@ async function loadSettings(): Promise<ThemeSettings> {
   }
 }
 
-/**
- * purpose: Provide the theme to the component tree and persist changes.
- * @param props: ({ children: ReactNode }) The subtree that reads useTheme().
- * @return: (JSX.Element) The provider.
- */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<ThemeSettings>(DEFAULTS);
 
@@ -116,22 +83,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  /**
-   * purpose: Apply new settings and save them.
-   * @param next: (ThemeSettings) The settings to use from now on.
-   * @return: (void)
-   */
   const commit = useCallback((next: ThemeSettings): void => {
     setSettings(next);
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => undefined);
   }, []);
 
   const theme = useMemo<Theme>(() => {
-    /**
-     * purpose: Merge a partial change into the settings, sanitize it and save it.
-     * @param patch: (Partial<ThemeSettings>) the settings to change
-     * @return: (void)
-     */
     const update = (patch: Partial<ThemeSettings>): void =>
       commit(sanitizeSettings({ ...settings, ...patch }));
     return {
@@ -149,11 +106,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>;
 }
 
-/**
- * purpose: Read the current theme.
- * @return: (Theme) Current values, derived accent colors and setters.
- * @raises: Error when used outside a ThemeProvider.
- */
 export function useTheme(): Theme {
   const theme = useContext(ThemeContext);
   if (theme === null) throw new Error('useTheme must be used inside a ThemeProvider');

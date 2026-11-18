@@ -1,14 +1,3 @@
-// sunny_app/src/display/__tests__/cue.test.ts
-//
-// Purpose: Unit tests for the due cue rules (cue.ts): which tasks are owed a cue (due timed
-// tasks, once per sent prompt and per snooze end, never anytime or finished ones; snoozed
-// ones kept owed; only a prompt around an already-cued snooze end absorbed),
-// how the remembered keys are
-// kept to today's instances, the spoken time, and the words spoken (the caregiver's prompt,
-// or the fixed template when the prompt is the backend's default).
-//
-// Last modified: 2026-11-09
-
 import { describe, expect, it } from '@jest/globals';
 
 import type { DayTask } from '../../day/types';
@@ -22,11 +11,6 @@ import {
   spokenTime,
 } from '../cue';
 
-/**
- * purpose: Build a task.
- * @param overrides: (Partial<Record<keyof DayTask, unknown>>) Fields to set.
- * @return: (DayTask) A due 08:00 medication with the default prompt unless overridden.
- */
 function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayTask {
   return {
     instanceId: 't1',
@@ -34,6 +18,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     displayLabel: 'Morning pills',
     spokenPrompt: 'Time for Morning pills.',
     scheduledTime: '08:00',
+    step: null,
     state: 'due',
     seniorPrompts: 0,
     snoozed: false,
@@ -42,15 +27,8 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
   } as DayTask;
 }
 
-/** Spacing with no earlier cues. */
 const NO_SPACING = { lastCueAt: new Map<string, number>(), now: 0, minGapMs: 120_000 };
 
-/**
- * purpose: The tasks a cue plays for now.
- * @param tasks: (DayTask[]) The day view's tasks.
- * @param cued: (ReadonlySet<string>) Keys already played.
- * @return: (DayTask[]) The tasks to play.
- */
 function tasksToCue(tasks: DayTask[], cued: ReadonlySet<string>): DayTask[] {
   return cueChoice(tasks, cued, NO_SPACING).play;
 }
@@ -113,7 +91,6 @@ describe('cueChoice', () => {
   });
 
   it('absorbs the backend prompt around a snooze end that was already cued', () => {
-    // The snooze ended at 50 s and its cue played at 51 s.
     const lastCueAt = new Map([['t1', 51_000]]);
     const task = makeTask({ seniorPrompts: 2, snoozedUntil: 50_000 });
     const cued = new Set(['t1:1:50000']);
@@ -121,7 +98,6 @@ describe('cueChoice', () => {
       play: [],
       absorb: [task],
     });
-    // A prompt long after the snooze end is a cue of its own.
     expect(cueChoice([task], cued, { lastCueAt, now: 200_000, minGapMs: 120_000 }).play).toEqual([
       task,
     ]);
@@ -136,7 +112,6 @@ describe('cueChoice', () => {
   });
 
   it('plays the snooze-end cue when the backend prompt arrives at the same moment', () => {
-    // No cue since the snooze ended: the combined update plays once.
     const lastCueAt = new Map([['t1', 1_000]]);
     const task = makeTask({ seniorPrompts: 2, snoozedUntil: 50_000 });
     expect(
@@ -205,6 +180,18 @@ describe('cueSpeech', () => {
       scheduledTime: '15:30',
     });
     expect(cueSpeech(task)).toBe('Time for Walk, at 3:30. Press Done when you have finished.');
+  });
+
+  it("reads the backend's current step after the prompt", () => {
+    const task = makeTask({
+      type: 'checklist',
+      displayLabel: 'Going out',
+      spokenPrompt: 'Time to get ready to go out.',
+      step: { index: 1, count: 3, text: 'Take your keys' },
+    });
+    expect(cueSpeech(task)).toBe('Time to get ready to go out. Step 2 of 3: Take your keys.');
+    const asked = makeTask({ step: { index: 0, count: 2, text: 'Is the stove off?' } });
+    expect(cueSpeech(asked)).toMatch(/Step 1 of 2: Is the stove off\?$/);
   });
 });
 

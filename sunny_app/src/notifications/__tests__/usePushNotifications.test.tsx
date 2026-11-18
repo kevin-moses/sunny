@@ -1,14 +1,3 @@
-// sunny_app/src/notifications/__tests__/usePushNotifications.test.tsx
-//
-// Purpose: Guards the paired senior device's push behaviour (push.ts usePushNotifications, which
-// VoiceProvider mounts) against the caregiver push work: permission is still requested about a
-// second after mounting and the token registered; a tap on the body (warm or the launch tap)
-// still calls onTap with the push's task instance, which starts a voice session; an "I'm on it"
-// action never reaches a senior device's onTap; and the senior path registers no notification
-// category. expo-notifications (native), the network (callMutation) and AsyncStorage are mocked.
-//
-// Last modified: 2026-11-14
-
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type * as NotificationsTypes from 'expo-notifications';
 import React from 'react';
@@ -45,7 +34,6 @@ jest.mock('../../logging/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
 
-/** The mocked native module, typed for the calls the tests script. */
 const mockNotifications = jest.requireMock('expo-notifications') as {
   setNotificationCategoryAsync: jest.Mock<() => Promise<unknown>>;
   getPermissionsAsync: jest.Mock<() => Promise<unknown>>;
@@ -63,12 +51,6 @@ const TOKEN = 'c'.repeat(64);
 let listener: ((r: NotificationsTypes.NotificationResponse) => void) | null = null;
 let renderer: ReactTestRenderer | null = null;
 
-/**
- * purpose: Build a notification response.
- * @param action: (string) The action identifier.
- * @param data: (Record<string, unknown>) The push's custom keys.
- * @return: (NotificationsTypes.NotificationResponse) The response.
- */
 function response(
   action: string,
   data: Record<string, unknown>,
@@ -79,21 +61,11 @@ function response(
   } as unknown as NotificationsTypes.NotificationResponse;
 }
 
-/**
- * purpose: A component that mounts the senior device's push hook.
- * @param props: ({ onTap }) The tap callback.
- * @return: (null) Renders nothing.
- */
 function SeniorPush({ onTap }: { onTap: (tap: NotificationTap) => void }) {
   usePushNotifications(onTap);
   return null;
 }
 
-/**
- * purpose: Mount the hook.
- * @param onTap: ((tap: NotificationTap) => void) The tap callback.
- * @return: (Promise<void>) Resolves when mounted.
- */
 async function mount(onTap: (tap: NotificationTap) => void): Promise<void> {
   await act(async () => {
     renderer = create(<SeniorPush onTap={onTap} />);
