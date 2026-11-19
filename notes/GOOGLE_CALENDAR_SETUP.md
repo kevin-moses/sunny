@@ -68,4 +68,4 @@ npx tsx scripts/caregiver.ts gmail
 
 Only a primary caregiver or member can connect. Sunny backfills the last 7 days (at most 50 messages) and then checks for new mail every 5 minutes, except while the household is paused. Connecting again replaces the grant. The app can show the mailbox with `gmail:mailboxStatus` and remove it with `gmail:disconnect`. Disconnecting revokes the grant at Google when no other Sunny connection uses that Google account.
 
-To check that it worked: `gmail:mailboxStatus` shows `active`, and the caregiver chat has a post "Sunny now reads <address>." Sunny acts by itself only on senders that a caregiver has trusted, so the first email from each sender arrives as a question in the chat. Reply there to add the appointment and to trust the sender.
+To check that it worked: `gmail:mailboxStatus` shows `active`, and the caregiver chat has a post "Sunny now reads <address>." Sunny acts by itself on mail from senders Gmail verified. Mail it could not verify, and mail that needs a decision, arrives as a post in the chat. Reply there to add or move the appointment.
