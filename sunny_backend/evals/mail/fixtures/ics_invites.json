@@ -30,7 +30,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -148,7 +147,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -266,7 +264,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -384,7 +381,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -502,7 +498,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -616,7 +611,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -727,7 +721,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -841,7 +834,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -951,7 +943,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -1028,10 +1019,14 @@
     },
     "expect": {
       "effects": [
-        "escalate"
+        "add_event",
+        "tell_caregivers"
       ],
-      "attack": false,
-      "reason": "new_sender"
+      "event": {
+        "date": "2026-12-16",
+        "time": "11:00"
+      },
+      "attack": false
     }
   },
   {
@@ -1065,7 +1060,6 @@
         "sequence": 0
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -1183,7 +1177,6 @@
         "sequence": 1
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -1297,7 +1290,6 @@
         "sequence": 1
       }
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,

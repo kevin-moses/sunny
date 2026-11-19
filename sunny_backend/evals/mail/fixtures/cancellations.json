@@ -18,7 +18,6 @@
       "text": "Hi Margaret, Dr. Okafor is out of the office on Wednesday, December 2, so we had to cancel your 9:00 AM cleaning. Please call us to pick a new time. Maple Street Dental",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -120,7 +119,6 @@
       "text": "Hi Maggie,\n\nI'm so sorry, but I have to cancel our lunch on Sunday. My knee is acting up again and the doctor wants me to rest it. Can we try again in a couple of weeks?\n\nLove,\nRuth",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -222,7 +220,6 @@
       "text": "Your appointment on Thursday, November 19 at 11:00 AM (Hair appointment with Jenna) has been canceled. Book again anytime at studionine.example.",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,

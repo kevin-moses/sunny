@@ -18,7 +18,6 @@
       "text": "Dear Margaret Ellis,\n\nYour November bill is ready.\nAmount due: $86.41\nDue date: December 4, 2026\nAccount ending in 4471\n\nView and pay your bill at https://harborelectric.example/account. If you are enrolled in AutoPay, no action is needed.\n\nHarbor Electric",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -120,7 +119,6 @@
       "text": "Dear Property Owner,\n\nThe second half of your 2026 property tax for 8 Willow Court is due on December 15, 2026. Amount due: $1,942.00. Payments can be made online, by mail or in person at City Hall.\n\nIf you have an escrow account with your mortgage lender, your lender pays this bill.\n\nCity of Brookfield Tax Office",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -221,7 +219,6 @@
       "text": "Your 2027 cost-of-living adjustment notice is now available in your my Social Security message center. Sign in to your account to view it. We will never ask you for personal information by email.",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -322,7 +319,6 @@
       "text": "Margaret, you have new test results from Brookfield Lab Services in your patient portal. Sign in to view them. Your care team will contact you if any follow-up is needed.\nThis message was sent to the email address on file. Please do not reply to this email; the mailbox is not monitored.\nTo update your communication preferences, sign in to the patient portal.",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -424,7 +420,6 @@
       "text": "The password for your Granite Savings online banking was changed on November 18, 2026 at 7:52 AM. If you made this change, no action is needed. If you did not, call the number on the back of your card right away.",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -525,7 +520,6 @@
       "text": "You have been selected for jury service on January 19, 2027. You may request an exemption based on age or medical condition by completing the online questionnaire within 10 days. Juror number 20441.",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -627,7 +621,6 @@
       "text": "Hello Margaret, Dr. Chen reviewed your recent blood work and would like to talk with you about the results. Please call the office or reply through the patient portal to set up a time.",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -729,7 +722,6 @@
       "text": "Your Medicare Advantage plan renews on January 1, 2027. Some copays and the drug list change next year. Review your Annual Notice of Change and compare plans before December 7, the end of open enrollment.",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,

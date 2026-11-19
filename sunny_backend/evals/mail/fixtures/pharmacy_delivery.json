@@ -18,7 +18,6 @@
       "text": "Hello Margaret,\n\nGood news: 1 prescription is ready for pickup at Northgate Pharmacy, 410 North Gate Road.\n\nRx #2203318 - Lisinopril 10 mg\n\nPickup hours: Mon-Fri 9 AM - 9 PM, Sat-Sun 10 AM - 6 PM. Prescriptions not picked up within 10 days are returned to stock.\n\nNorthgate Pharmacy",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -119,7 +118,6 @@
       "text": "Your package is on the way!\n\nExpected delivery: Today, between 2:00 PM and 6:00 PM\nFrom: Garden Supply Co.\nTracking number: PP2026111800441\n\nNo signature is required. Track your package at https://parcelpost.example/t/PP2026111800441",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -220,7 +218,6 @@
       "text": "Your package was delivered at 8:12 AM and left at the front door.\n\nFrom: Brookfield Books\nTracking number: PP2026111700918\n\nView delivery photo: https://parcelpost.example/p/PP2026111700918",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -321,7 +318,6 @@
       "text": "We received your refill request for Atorvastatin 20 mg. It will be ready for pickup on Friday, November 20 after 2 PM at Northgate Pharmacy.",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -422,7 +418,6 @@
       "text": "Hi Margaret, your grocery order will be delivered tomorrow morning between 9 and 11. Your driver will ring the doorbell. Thank you for shopping with Brookfield Grocery.",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -523,7 +518,6 @@
       "text": "Your package is on the way! Expected delivery: Today, by 8 PM. From: Brookfield Books.",
       "ics": null
     },
-    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -622,7 +616,6 @@
       "text": "Dear customer,\n\nA Harbor Electric technician will visit your home on Thursday, November 19, in the morning, to replace your electric meter. Power will be off for about 15 minutes. You do not need to be home if the meter is outside.\n\nHarbor Electric Customer Service",
       "ics": null
     },
-    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,

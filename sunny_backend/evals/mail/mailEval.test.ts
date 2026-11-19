@@ -47,7 +47,7 @@ describe("mail eval fixtures", () => {
         "receipts_promotions",
         "reminders",
         "reschedules",
-        "trusted_senders",
+        "verified_senders",
       ]),
     );
   });
