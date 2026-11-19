@@ -512,7 +512,7 @@ Backend (Convex):
 - Clerk: the JWT template is named `convex` and maps `sunny_kind`. Device users need usernames (optional usernames enabled on the instance). A 422 `form_identifier_exists` is retried once.
 - Google Calendar: event ids are base32hex, so Convex ids are hex-encoded into them. A deleted id stays reserved, and an upsert restores that event. A 403 can be a rate limit, a 409 can be a concurrent create, and a 404 may mean the event rather than the calendar. End times are wall-clock arithmetic. `UNTIL` is the end of the last local day, in UTC.
 - Limits: "up to N a day" on a dose applies to both the trailing 24 hours and the local day. Digest lines fit in 600 characters (`LINE_MAX` x `MAX_LINES`).
-- Tests run in vitest's edge-runtime, to match Convex.
+- Tests run in vitest's edge-runtime, to match Convex. The phone tests mock `./apns` with an async factory. When two scheduled functions import that module for the first time at the same moment, one of them gets the real module and answers "APNs is not configured". `phoneHousehold` in `phoneHarness.helpers.ts` therefore imports `./apns` before anything is scheduled. `settle(t, ms)` moves the fake clock forward by exactly `ms`, one timer at a time, and waits after each timer until every scheduled function that started has finished. It throws if that wait takes more than 4 seconds of real time, which is below vitest's 5-second test timeout.
 
 App (sunny_app):
 - `registerGlobals` runs before any LiveKit use. Provider order: SafeArea, Theme, Tuning, Clerk, ConvexProviderWithClerk, Voice.

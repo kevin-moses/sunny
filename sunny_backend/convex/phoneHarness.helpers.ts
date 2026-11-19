@@ -24,9 +24,9 @@ export const WIDGET_TOKEN = "d4".repeat(40);
 
 export const ALERT_TOKEN = "e5".repeat(32);
 
-const SETTLE_STEP_MS = 100;
-
 const SETTLE_MS = 5_000;
+
+const SETTLE_REAL_CAP_MS = 4_000;
 
 export function local(hhmm: string, date: string = DAY): number {
   return Date.parse(`${date}T${hhmm}:00-05:00`);
@@ -76,7 +76,12 @@ async function issueToken(t: PhoneBackend, subject: string): Promise<string> {
   return deviceToken;
 }
 
+async function loadApnsBeforeConcurrentUse(): Promise<void> {
+  await import("./apns");
+}
+
 export async function phoneHousehold(t: PhoneBackend, prefix = ""): Promise<PhoneFixture> {
+  await loadApnsBeforeConcurrentUse();
   const pat = t.withIdentity({ subject: `${prefix}pat` });
   const householdId = await pat.mutation(api.households.create, {
     seniorPreferredName: "Mom",
@@ -155,15 +160,31 @@ export async function tick(f: PhoneFixture, now: number): Promise<void> {
   await f.t.mutation(internal.scheduler.tickHousehold, { householdId: f.householdId, now });
 }
 
+async function finishRunning(t: PhoneBackend, realDeadline: number): Promise<void> {
+  let finished = false;
+  void t.finishInProgressScheduledFunctions().then(() => {
+    finished = true;
+  });
+  while (!finished) {
+    if (vi.getRealSystemTime() > realDeadline) {
+      throw new Error(
+        `settle: scheduled functions were still running after ${SETTLE_REAL_CAP_MS} ms of real time`,
+      );
+    }
+    await vi.advanceTimersByTimeAsync(0);
+  }
+}
+
 export async function settle(t: PhoneBackend, ms = SETTLE_MS): Promise<void> {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    let finished = false;
-    void t.finishInProgressScheduledFunctions().then(() => {
-      finished = true;
-    });
-    while (!finished) await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(SETTLE_STEP_MS);
+  const realDeadline = vi.getRealSystemTime() + SETTLE_REAL_CAP_MS;
+  let reached = false;
+  setTimeout(() => {
+    reached = true;
+  }, ms);
+  await finishRunning(t, realDeadline);
+  while (!reached) {
+    await vi.advanceTimersToNextTimerAsync();
+    await finishRunning(t, realDeadline);
   }
 }
 
