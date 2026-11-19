@@ -9,6 +9,7 @@ import { seniorPromptWords } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
 import {
   activitiesOfInstance,
+  canShowAgain,
   endActivity,
   findPhonePush,
   loadActivityView,
@@ -70,15 +71,15 @@ function wasPrompted(instance: Pick<Doc<"taskInstances">, "firedSteps">): boolea
 async function queueReshow(
   ctx: MutationCtx,
   instance: Doc<"taskInstances">,
-  deviceId: Id<"devices">,
+  device: Doc<"devices">,
 ): Promise<void> {
   const task = await ctx.db.get(instance.taskId);
-  if (task === null) return;
+  if (task === null || !(await canShowAgain(ctx, instance._id, device, Date.now()))) return;
   await insertNotification(ctx, {
     householdId: instance.householdId,
     kind: "senior_reshow",
     taskInstanceId: instance._id,
-    recipientDeviceId: deviceId,
+    recipientDeviceId: device._id,
     ...seniorPromptWords(task, instance),
     payload: { taskId: task._id, localDate: instance.localDate },
   });
@@ -90,8 +91,10 @@ export async function reshowIfDue(
   deviceId: Id<"devices">,
 ): Promise<void> {
   const instance = await ctx.db.get(instanceId);
-  if (instance === null || !isDueEntry(instance) || !wasPrompted(instance)) return;
-  await queueReshow(ctx, instance, deviceId);
+  const device = await ctx.db.get(deviceId);
+  if (instance === null || device === null) return;
+  if (!isDueEntry(instance) || !wasPrompted(instance)) return;
+  await queueReshow(ctx, instance, device);
 }
 
 async function seniorPhones(
@@ -121,7 +124,7 @@ export async function instanceChanged(
   await syncActivities(ctx, after._id, Date.now(), phonePressedOn(actor));
   if (isDoneState(before.state) && isDueEntry(after) && wasPrompted(after)) {
     for (const phone of await seniorPhones(ctx, after.householdId)) {
-      await queueReshow(ctx, after, phone._id);
+      await queueReshow(ctx, after, phone);
     }
   }
 }

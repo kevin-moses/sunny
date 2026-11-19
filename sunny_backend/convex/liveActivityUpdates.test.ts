@@ -820,9 +820,33 @@ describe("a task that comes back after it was done", () => {
     await settle(f.t);
     expect(alertsSent()).toHaveLength(1);
     expect(activityPushes()).toEqual([]);
-    expect((await outbox(f, instanceId)).map((row) => [row.kind, row.state, row.detail])).toEqual([
-      ["senior_prompt", "sent", undefined],
-      ["senior_reshow", "skipped", "no_live_activity"],
+    expect((await outbox(f, instanceId)).map((row) => [row.kind, row.state])).toEqual([
+      ["senior_prompt", "sent"],
+    ]);
+  });
+
+  test("a task done and reopened before the end push went out keeps its activity", async () => {
+    const { f, instanceId, activityId } = await live();
+    await confirmOnDisplay(f, instanceId);
+    await reopen(f, instanceId);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect(ends()).toEqual([]);
+    expect((await activity(f, activityId)).phase.kind).toBe("live");
+    expect((await outbox(f, instanceId)).map((row) => row.kind)).toEqual(["senior_prompt"]);
+  });
+
+  test("a blind phone gets no reshow row", async () => {
+    const { f, instanceId } = await shownOnPhone();
+    await settle(f.t, PROOF_WAIT_MS);
+    expect((await phonePushRow(f))!.blindSince).toBeDefined();
+    await confirmOnDisplay(f, instanceId);
+    await reopen(f, instanceId);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect((await outbox(f, instanceId)).map((row) => row.kind)).toEqual([
+      "senior_prompt",
+      "senior_prompt",
     ]);
   });
 
@@ -851,6 +875,7 @@ describe("a task that comes back after it was done", () => {
     await settle(f.t);
     expect(starts()).toHaveLength(1);
     expect(await activities(f)).toHaveLength(1);
+    expect((await outbox(f, instanceId)).map((row) => row.kind)).toEqual(["senior_prompt"]);
   });
 
   test("a task confirmed early and reopened is opened by its own due cue, with sound", async () => {

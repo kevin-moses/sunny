@@ -442,26 +442,31 @@ function isStartOf(row: Doc<"liveActivities">, outboxId: Id<"notificationOutbox"
   return row.phase.kind === "starting" && row.phase.outboxId === outboxId;
 }
 
-export async function planStart(
+interface StartCue {
+  instanceId: Id<"taskInstances">;
+  outboxId: Id<"notificationOutbox"> | null;
+  quiet: boolean;
+}
+
+async function planStartOf(
   ctx: QueryCtx,
-  row: Doc<"notificationOutbox">,
+  cue: StartCue,
   device: Doc<"devices">,
   now: number,
 ): Promise<StartPlan | null> {
-  if (!isActivityCue(row) || device.kind !== "senior_phone") return null;
-  if (device.tokenHash === undefined) return null;
+  if (device.kind !== "senior_phone" || device.tokenHash === undefined) return null;
   const push = await findPhonePush(ctx, device._id);
   if (push === null || push.liveActivityStart === undefined || push.blindSince !== undefined) {
     return null;
   }
-  const instance = await ctx.db.get(row.taskInstanceId);
+  const instance = await ctx.db.get(cue.instanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
   if (instance === null || task === null) return null;
   const rows = await activitiesFor(ctx, instance._id, device._id);
-  const resume = rows.find((r) => isStartOf(r, row._id)) ?? null;
+  const { outboxId } = cue;
+  const resume = outboxId === null ? null : (rows.find((r) => isStartOf(r, outboxId)) ?? null);
   const earlier = rows.filter((r) => r !== resume);
-  const blocked =
-    row.kind === "senior_reshow" ? earlier.some((r) => isOpenPhase(r.phase)) : earlier.length > 0;
+  const blocked = cue.quiet ? earlier.some((r) => isOpenPhase(r.phase)) : earlier.length > 0;
   if (blocked) return null;
   const open = (await openActivitiesOf(ctx, device._id)).filter((r) => r._id !== resume?._id);
   if (open.length >= MAX_OPEN_ACTIVITIES) return null;
@@ -479,12 +484,37 @@ export async function planStart(
     content: view.content,
     staleAt: view.staleAt,
     relevance: view.relevance,
-    quiet: row.kind === "senior_reshow",
+    quiet: cue.quiet,
     instanceId: instance._id,
     windowEnd: instance.windowEnd,
     resume: resume?._id ?? null,
     timestamp: nextPushTimestamp(resume, now),
   };
+}
+
+export async function planStart(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+  device: Doc<"devices">,
+  now: number,
+): Promise<StartPlan | null> {
+  if (!isActivityCue(row)) return null;
+  const cue = {
+    instanceId: row.taskInstanceId,
+    outboxId: row._id,
+    quiet: row.kind === "senior_reshow",
+  };
+  return await planStartOf(ctx, cue, device, now);
+}
+
+export async function canShowAgain(
+  ctx: QueryCtx,
+  instanceId: Id<"taskInstances">,
+  device: Doc<"devices">,
+  now: number,
+): Promise<boolean> {
+  const cue = { instanceId, outboxId: null, quiet: true };
+  return (await planStartOf(ctx, cue, device, now)) !== null;
 }
 
 export async function openActivity(
