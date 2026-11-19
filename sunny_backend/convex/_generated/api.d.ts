@@ -67,6 +67,7 @@ import type * as lib_google from "../lib/google.js";
 import type * as lib_googleEvent from "../lib/googleEvent.js";
 import type * as lib_googleTokens from "../lib/googleTokens.js";
 import type * as lib_mailEffects from "../lib/mailEffects.js";
+import type * as lib_mailJudge from "../lib/mailJudge.js";
 import type * as lib_mailPool from "../lib/mailPool.js";
 import type * as lib_householdList from "../lib/householdList.js";
 import type * as lib_householdSettings from "../lib/householdSettings.js";
@@ -169,6 +170,7 @@ declare const fullApi: ApiFromModules<{
   "lib/googleEvent": typeof lib_googleEvent;
   "lib/googleTokens": typeof lib_googleTokens;
   "lib/mailEffects": typeof lib_mailEffects;
+  "lib/mailJudge": typeof lib_mailJudge;
   "lib/mailPool": typeof lib_mailPool;
   "lib/householdList": typeof lib_householdList;
   "lib/householdSettings": typeof lib_householdSettings;
