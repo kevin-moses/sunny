@@ -393,11 +393,23 @@ describe('useDoneAction', () => {
       expect(sentIds()).toEqual(['inst1']);
     });
 
-    it('offers the next task after the settle period; its press replaces the Undo line', async () => {
+    it('after Done on a task with no further step, holds Noted and Undo for the whole Undo window', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(second());
-      await advance(SETTLE_MS + 1);
+      await advance(UNDO_MS - 1);
+      expect(h.get().task).toBeNull();
+      expect(h.get().undo?.text).toBe('Morning pills done.');
+      await advance(1);
+      expect(h.get().task?.instanceId).toBe('inst2');
+      expect(h.get().undo).toBeNull();
+    });
+
+    it('offers the next task once the Undo window is over; its press makes a new Undo offer', async () => {
+      const h = renderDone(makeQueue(), task());
+      await press(h);
+      h.rerender(second());
+      await advance(UNDO_MS);
       expect(h.get().task?.instanceId).toBe('inst2');
       expect(h.get().message).toBeNull();
       await press(h);
@@ -415,14 +427,14 @@ describe('useDoneAction', () => {
         state: 'upcoming',
       });
 
-    it('does not offer the early task until MESSAGE_MS after the press', async () => {
+    it('does not offer the early task until the Undo window is over', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(early());
-      await advance(SETTLE_MS + 1);
+      await advance(MESSAGE_MS + 1);
       expect(h.get().task).toBeNull();
       expect(h.get().undo?.text).toBe('Morning pills done.');
-      await advance(MESSAGE_MS - SETTLE_MS);
+      await advance(UNDO_MS - MESSAGE_MS - 1);
       expect(h.get().task?.instanceId).toBe('early1');
       expect(h.get().message).toBeNull();
     });
@@ -440,11 +452,11 @@ describe('useDoneAction', () => {
       expect(sentIds()).toEqual(['inst1']);
     });
 
-    it('still offers a due task after the normal settle period', async () => {
+    it('offers a due task as soon as the Undo window is over', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(second());
-      await advance(SETTLE_MS + 1);
+      await advance(UNDO_MS);
       expect(h.get().task?.instanceId).toBe('inst2');
     });
 
@@ -455,7 +467,7 @@ describe('useDoneAction', () => {
       await advance(SETTLE_MS + 1);
       await press(h);
       expect(sentIds()).toEqual(['inst1']);
-      await advance(MESSAGE_MS);
+      await advance(UNDO_MS);
       await press(h);
       expect(sentIds()).toEqual(['inst1', 'early1']);
     });
@@ -490,7 +502,7 @@ describe('useDoneAction', () => {
       expect(h.get().message).toBeNull();
       expect(h.get().undo?.text).toBe('Morning pills done.');
       expect(h.get().task).toBeNull();
-      await advance(SETTLE_MS + 1);
+      await advance(UNDO_MS - STORE_TIMEOUT_MS - 1);
       h.rerender(second());
       expect(h.get().task?.instanceId).toBe('inst2');
     });
@@ -631,22 +643,32 @@ describe('Undo on the phone', () => {
     expect(h.get().undo).toBeNull();
   });
 
+  function stepOf(index: number): DayTask {
+    const steps = ['Put on your coat', 'Lock the door'];
+    return task({
+      displayLabel: 'Going out',
+      checklistItems: steps,
+      step: { index, count: steps.length, text: steps[index]! },
+    });
+  }
+
   it('a new press replaces the offer; only the latest press has one', async () => {
-    const h = renderDone(makeQueue(), task());
+    const h = renderDone(makeQueue(), stepOf(0));
     await press(h);
-    h.rerender(second());
+    expect(h.get().undo?.label).toBe('Going out, step 1');
+    h.rerender(stepOf(1));
     await advance(SETTLE_MS + 1);
     await press(h);
-    expect(h.get().undo?.label).toBe('Evening pills');
+    expect(h.get().undo?.label).toBe('Going out');
   });
 
-  it('does not hide the Done button of another due task', async () => {
-    const h = renderDone(makeQueue(), task());
+  it('shows the next step on the Done key beside the Undo offer of the step before', async () => {
+    const h = renderDone(makeQueue(), stepOf(0));
     await press(h);
-    h.rerender(second());
+    h.rerender(stepOf(1));
     await advance(SETTLE_MS + 1);
-    expect(h.get().task?.instanceId).toBe('inst2');
-    expect(h.get().undo?.label).toBe('Morning pills');
+    expect(h.get().task?.step?.index).toBe(1);
+    expect(h.get().undo?.label).toBe('Going out, step 1');
   });
 
   it('online: withdraws the offer, sends the undo after the press with the tap age and the id', async () => {
@@ -685,19 +707,22 @@ describe('Undo on the phone', () => {
     expect(h.get().task?.instanceId).toBe('inst2');
   });
 
-  it('re-enters the settle block when the undo cannot be stored, beside the offer again', async () => {
+  it('holds Noted and the offer again when the undo cannot be stored, until the window is over', async () => {
     const queue = makeQueue();
     const h = renderDone(queue, task(), true);
     await press(h);
     h.rerender(second(), true);
     await advance(SETTLE_MS + 1);
-    expect(h.get().task?.instanceId).toBe('inst2');
+    expect(h.get().task).toBeNull();
     mockFailWrites = true;
     await tapUndo(h);
     await advance(0);
     expect(h.get().undo?.label).toBe('Morning pills');
     expect(h.get().task).toBeNull();
     expect(h.get().message).toBeNull();
+    await advance(UNDO_MS - SETTLE_MS - 1);
+    expect(h.get().undo).toBeNull();
+    expect(h.get().task?.instanceId).toBe('inst2');
     expect(queue.getEntries()).toHaveLength(1);
     expect(logger.warning).toHaveBeenCalledWith(
       'DoneAction',

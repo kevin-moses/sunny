@@ -324,6 +324,33 @@ describe('TodayScreen states', () => {
     ]);
   });
 
+  it('holds Noted with Undo for the 30 seconds of the Undo window before the next task', async () => {
+    mockMutation.mockReturnValue(new Promise(() => {}));
+    const evening = task({
+      instanceId: 'evening' as never,
+      displayLabel: 'Evening pills',
+      screenSentence: null,
+      pillDescription: null,
+      scheduledTime: '09:35',
+    });
+    const root = render(dayView([task(), evening]));
+    await act(async () => {
+      root
+        .find(
+          (n) =>
+            typeof n.props.style === 'function' &&
+            n.props.accessibilityLabel === 'Done: Morning pills',
+        )
+        .props.onPress();
+      await jest.advanceTimersByTimeAsync(29_999);
+    });
+    expect(buttonLabels(root)).toEqual(['Undo Morning pills done', 'Talk to Sunny']);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
+    });
+    expect(buttonLabels(root)).toEqual(['Done: Evening pills', 'Talk to Sunny']);
+  });
+
   it('with nothing due says so and names the next item', () => {
     const root = render(dayView([BREAKFAST, LUNCH]));
     expect(words(root).slice(0, 2)).toEqual([
