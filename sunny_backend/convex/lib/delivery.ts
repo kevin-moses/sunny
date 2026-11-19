@@ -115,7 +115,7 @@ async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promi
 
 const MAX_TOKENS_PER_USER = 20;
 
-async function userPushTokens(ctx: QueryCtx, userId: string): Promise<string[]> {
+export async function userPushTokens(ctx: QueryCtx, userId: string): Promise<string[]> {
   const rows = await ctx.db
     .query("pushTokens")
     .withIndex("by_user", (q) => q.eq("userId", userId))

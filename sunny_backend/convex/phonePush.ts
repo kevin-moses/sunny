@@ -18,6 +18,7 @@ import {
   widgetReloadMessage,
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
+import { userPushTokens } from "./lib/delivery";
 import { errorResponse, jsonResponse } from "./lib/httpResponse";
 import { applyActivityReport, findPhonePush } from "./lib/liveActivity";
 import type { ActivityDirective } from "./lib/liveActivity";
@@ -29,8 +30,6 @@ import type { PushStateReport, ReportedActivity, ReportedActivityState } from ".
 export const MAX_REPORTED_ACTIVITIES = 8;
 
 const MAX_ACTIVITY_KEY_LENGTH = 64;
-
-const MAX_REFRESH_TOKENS = 20;
 
 interface RefreshTarget {
   kind: "widgets" | "background";
@@ -227,11 +226,7 @@ export const refreshTarget = internalQuery({
     if (!args.wakesApp && row.widgetPush !== undefined) {
       return { kind: "widgets", tokens: [row.widgetPush.token] };
     }
-    const alertTokens = await ctx.db
-      .query("pushTokens")
-      .withIndex("by_user", (q) => q.eq("userId", device.userId))
-      .take(MAX_REFRESH_TOKENS);
-    return { kind: "background", tokens: alertTokens.map((t) => t.token) };
+    return { kind: "background", tokens: await userPushTokens(ctx, device.userId) };
   },
 });
 
