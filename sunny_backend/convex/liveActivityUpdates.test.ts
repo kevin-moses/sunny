@@ -210,7 +210,35 @@ describe("a task confirmed on another surface", () => {
     expect((await activities(f)).map((row) => row.phase.kind)).toEqual(["ended", "ended"]);
   });
 
-  test("a press on the phone itself ends its activity without a token and sends it no wake", async () => {
+  test.each(["live_activity", "phone_app"] as const)(
+    "a %s press on the phone ends its activity without a token and sends it no wake",
+    async (via) => {
+      const { f, instanceId, activityId } = await shownOnPhone();
+      await proveStarts(f);
+      resetProviderMocks();
+      if (via === "phone_app") {
+        await f.t
+          .withIdentity({ subject: f.phoneUser })
+          .mutation(api.instances.confirmPressedTask, {
+            instanceId,
+            via,
+            pressedAgoMs: 0,
+            pressId: "pressAAAAAAAAAAAAAAA",
+          });
+      } else {
+        const response = await postConfirm(f, f.deviceToken, { instanceId, pressedAgoMs: 0, via });
+        expect(((await response.json()) as { status: string }).status).toBe("confirmed");
+      }
+      await settle(f.t);
+      expect((await activity(f, activityId)).phase).toMatchObject({
+        kind: "ended",
+        reason: "confirmed",
+      });
+      expect(pushesSent()).toEqual([]);
+    },
+  );
+
+  test("a widget press on the phone wakes it, because the widget cannot end the activity", async () => {
     const { f, instanceId, activityId } = await shownOnPhone();
     await proveStarts(f);
     resetProviderMocks();
@@ -225,7 +253,7 @@ describe("a task confirmed on another surface", () => {
       kind: "ended",
       reason: "confirmed",
     });
-    expect(pushesSent()).toEqual([]);
+    expect(backgroundPushes().map((push) => push.tokens)).toEqual([[ALERT_TOKEN]]);
   });
 
   test("three ended activities without tokens leave room for the next task's start", async () => {

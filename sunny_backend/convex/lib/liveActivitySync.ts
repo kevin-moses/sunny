@@ -17,7 +17,7 @@ import {
   openActivitiesOf,
 } from "./liveActivity";
 import { DAY_MS } from "./time";
-import type { ActivityEndReason } from "./validators";
+import type { ActivityEndReason, ConfirmVia } from "./validators";
 import { phonePressedOn, requestWidgetRefresh, wakePhoneToReport } from "./widgetRefresh";
 
 export const ENDED_KEPT_MS = 7 * DAY_MS;
@@ -36,17 +36,28 @@ const ENDS_THE_PHONE_CANNOT_PREDICT: ReadonlySet<ActivityEndReason> = new Set([
   "instance_gone",
 ]);
 
+const VIAS_THAT_CHANGE_THE_ACTIVITY_ON_THE_PHONE: ReadonlySet<ConfirmVia> = new Set([
+  "live_activity",
+  "phone_app",
+]);
+
+function changedOnPhone(actor: Actor, after: Doc<"taskInstances">): Id<"devices"> | null {
+  const via = after.confirmedVia;
+  if (via === undefined || !VIAS_THAT_CHANGE_THE_ACTIVITY_ON_THE_PHONE.has(via)) return null;
+  return phonePressedOn(actor);
+}
+
 export async function endTokenlessIfOver(
   ctx: MutationCtx,
   row: Doc<"liveActivities">,
   now: number,
-  pressedOn: Id<"devices"> | null = null,
+  changedOn: Id<"devices"> | null = null,
 ): Promise<boolean> {
   if (row.phase.kind !== "started" || row.phase.proof === "awaited") return false;
   const view = await loadActivityView(ctx, row, now);
   if (view.kind !== "end") return false;
   await endActivity(ctx, row, view.reason, now, view.content);
-  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== pressedOn) {
+  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== changedOn) {
     await wakePhoneToReport(ctx, row.deviceId, now);
   }
   return true;
@@ -56,11 +67,11 @@ async function syncActivities(
   ctx: MutationCtx,
   instanceId: Id<"taskInstances">,
   now: number,
-  pressedOn: Id<"devices"> | null,
+  changedOn: Id<"devices"> | null,
 ): Promise<void> {
   for (const row of await activitiesOfInstance(ctx, instanceId)) {
     if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
-    else await endTokenlessIfOver(ctx, row, now, pressedOn);
+    else await endTokenlessIfOver(ctx, row, now, changedOn);
   }
 }
 
@@ -121,7 +132,7 @@ export async function instanceChanged(
   if (actor.kind === "system") return;
   if (before.state === after.state && stepOf(before) === stepOf(after)) return;
   await requestWidgetRefresh(ctx, actor, after.householdId);
-  await syncActivities(ctx, after._id, Date.now(), phonePressedOn(actor));
+  await syncActivities(ctx, after._id, Date.now(), changedOnPhone(actor, after));
   if (isDoneState(before.state) && isDueEntry(after) && wasPrompted(after)) {
     for (const phone of await seniorPhones(ctx, after.householdId)) {
       await queueReshow(ctx, after, phone);
