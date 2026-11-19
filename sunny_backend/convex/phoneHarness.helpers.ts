@@ -111,6 +111,26 @@ export async function displayToken(f: PhoneFixture): Promise<string> {
   return await issueToken(f.t, f.displayUser);
 }
 
+export async function secondPhone(f: PhoneFixture, alertToken: string): Promise<PhoneFixture> {
+  const { code } = await f.t
+    .withIdentity({ subject: f.caregiver })
+    .mutation(api.households.createJoinCode, {
+      householdId: f.householdId,
+      grants: "senior_phone",
+    });
+  const phoneUser = `${f.phoneUser}-2`;
+  const paired = await f.t.mutation(internal.households.pairDevice, { code, userId: phoneUser });
+  await f.t.run(async (ctx) => {
+    await ctx.db.insert("pushTokens", { userId: phoneUser, token: alertToken });
+  });
+  return {
+    ...f,
+    phoneId: paired.deviceId,
+    phoneUser,
+    deviceToken: await issueToken(f.t, phoneUser),
+  };
+}
+
 export async function addTask(f: PhoneFixture, spec: TaskSpec): Promise<Id<"taskInstances">> {
   const { title, time, ...rest } = spec;
   const taskId = await f.t.withIdentity({ subject: f.caregiver }).mutation(api.tasks.create, {
@@ -142,7 +162,7 @@ export async function settle(t: PhoneBackend, ms = SETTLE_MS): Promise<void> {
     void t.finishInProgressScheduledFunctions().then(() => {
       finished = true;
     });
-    while (!finished) await vi.advanceTimersByTimeAsync(1);
+    while (!finished) await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(SETTLE_STEP_MS);
   }
 }

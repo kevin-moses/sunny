@@ -89,6 +89,7 @@ import type * as lib_validators from "../lib/validators.js";
 import type * as lib_voiceDoses from "../lib/voiceDoses.js";
 import type * as lib_voiceRouting from "../lib/voiceRouting.js";
 import type * as lib_voiceTasks from "../lib/voiceTasks.js";
+import type * as lib_widgetRefresh from "../lib/widgetRefresh.js";
 import type * as lists from "../lists.js";
 import type * as liveActivity from "../liveActivity.js";
 import type * as pairing from "../pairing.js";
@@ -188,6 +189,7 @@ declare const fullApi: ApiFromModules<{
   "lib/voiceDoses": typeof lib_voiceDoses;
   "lib/voiceRouting": typeof lib_voiceRouting;
   "lib/voiceTasks": typeof lib_voiceTasks;
+  "lib/widgetRefresh": typeof lib_widgetRefresh;
   lists: typeof lists;
   liveActivity: typeof liveActivity;
   pairing: typeof pairing;

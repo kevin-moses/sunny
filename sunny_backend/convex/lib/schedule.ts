@@ -7,6 +7,7 @@ import { audit } from "./audit";
 import { isDoneState, withTakenBackPressIds } from "./confirmRule";
 import { instanceChanged, instanceGone, taskTextChanged } from "./liveActivitySync";
 import { hasStepProgress, stepPressIds } from "./taskSteps";
+import { requestWidgetRefresh } from "./widgetRefresh";
 import { shownOn } from "./today";
 import { addDays, isoWeekday, localDate, minutes, zonedInstant } from "./time";
 
@@ -329,6 +330,7 @@ export async function insertTask(
   const taskId = await ctx.db.insert("tasks", row);
   await auditTask(ctx, actor, "insert", taskId, row);
   await expandTasks(ctx, now, { taskId });
+  await requestWidgetRefresh(ctx, actor, row.householdId);
   return taskId;
 }
 
@@ -348,6 +350,7 @@ export async function patchTask(
   if (!sameItems(task.checklistItems, updated.checklistItems)) {
     await restartStepsShownToday(ctx, actor, updated, now);
   }
+  await requestWidgetRefresh(ctx, actor, updated.householdId);
   return updated;
 }
 
@@ -358,6 +361,7 @@ export async function deleteTask(
 ): Promise<void> {
   await ctx.db.delete(task._id);
   await auditTask(ctx, actor, "delete", task._id, task);
+  await requestWidgetRefresh(ctx, actor, task.householdId);
   await ctx.scheduler.runAfter(0, internal.tasks.purgeTaskData, {
     householdId: task.householdId,
     taskId: task._id,

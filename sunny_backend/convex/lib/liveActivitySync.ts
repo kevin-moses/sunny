@@ -15,6 +15,7 @@ import {
   nextCommand,
 } from "./liveActivity";
 import { DAY_MS } from "./time";
+import { requestWidgetRefresh } from "./widgetRefresh";
 
 export const ENDED_KEPT_MS = 7 * DAY_MS;
 
@@ -100,6 +101,7 @@ export async function instanceChanged(
 ): Promise<void> {
   if (actor.kind === "system") return;
   if (before.state === after.state && stepOf(before) === stepOf(after)) return;
+  await requestWidgetRefresh(ctx, actor, after.householdId);
   await pushLiveActivities(ctx, after._id);
   if (isDoneState(before.state) && isDueEntry(after) && wasPrompted(after)) {
     for (const phone of await seniorPhones(ctx, after.householdId)) {

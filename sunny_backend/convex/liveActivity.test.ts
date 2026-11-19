@@ -234,7 +234,8 @@ describe("the due cue on a phone that reported a start token", () => {
     await tick(f, EIGHT);
     await f.t.run(async (ctx) => await ctx.db.patch(instanceId, { state: "confirmed" }));
     await settle(f.t);
-    expect(providerMocks.apnsSend).not.toHaveBeenCalled();
+    expect(activityPushes()).toEqual([]);
+    expect(alertsSent()).toEqual([]);
     expect(await activities(f)).toEqual([]);
     expect(await outbox(f, instanceId)).toEqual([
       expect.objectContaining({ state: "skipped", detail: "instance_closed" }),

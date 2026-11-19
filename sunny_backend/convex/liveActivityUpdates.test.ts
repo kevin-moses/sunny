@@ -177,15 +177,12 @@ describe("a task confirmed on another surface", () => {
 
   test("a retryable failure is retried by the pool until the end is accepted", async () => {
     const { f, instanceId, activityId } = await live();
-    providerMocks.apnsSend.mockResolvedValueOnce([
-      {
-        token: UPDATE_TOKEN,
-        outcome: "failed",
-        status: 503,
-        reason: "ServiceUnavailable",
-        retryable: true,
-      },
-    ]);
+    let refusals = 1;
+    answerEachToken((token) => {
+      if (token !== UPDATE_TOKEN || refusals === 0) return APNS_SENT;
+      refusals -= 1;
+      return { outcome: "failed", status: 503, reason: "ServiceUnavailable", retryable: true };
+    });
     await confirmOnDisplay(f, instanceId);
     await settle(f.t, 20_000);
     expect(ends()).toHaveLength(2);
