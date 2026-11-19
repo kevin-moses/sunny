@@ -1,4 +1,5 @@
 import { SymbolView } from 'expo-symbols';
+import { memo } from 'react';
 import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { SPOKEN } from '../day/format';
@@ -182,7 +183,19 @@ function RowMark({ row, color }: { row: DayRow; color: string }) {
   }
 }
 
-function DayRowView({ row, scale }: { row: DayRow; scale: number }) {
+interface DayRowProps {
+  row: DayRow;
+  scale: number;
+}
+
+function sameRow(before: DayRowProps, after: DayRowProps): boolean {
+  const fields = Object.keys(after.row) as (keyof DayRow)[];
+  return (
+    before.scale === after.scale && fields.every((field) => before.row[field] === after.row[field])
+  );
+}
+
+const DayRowView = memo(function DayRowView({ row, scale }: DayRowProps) {
   const strong = row.tone === 'now' || row.tone === 'early';
   const color = row.tone === 'grey' ? paper.grey : paper.ink;
   const colorStyle = { color };
@@ -212,7 +225,7 @@ function DayRowView({ row, scale }: { row: DayRow; scale: number }) {
       </PaperText>
     </View>
   );
-}
+}, sameRow);
 
 export function DayList({ rows }: { rows: readonly DayRow[] }) {
   const { fontScale } = useWindowDimensions();

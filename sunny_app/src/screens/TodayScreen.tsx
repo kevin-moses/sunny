@@ -69,6 +69,8 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const stale = day !== null && !dayIsCurrent(day, now);
   const target = stale ? null : doneTarget(tasks, isWebSocketConnected);
   const done = useDoneAction(target, isOffline, confirmQueue, tasks);
+  const shown = day === null ? null : done.task;
+  const rows = useMemo(() => dayRows(agenda, shown, now), [agenda, shown, now]);
 
   if (!fontsReady) {
     return (
@@ -89,7 +91,6 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
           next: stale ? null : nextLine(day, agenda, done.task?.instanceId ?? null),
           timezone: day.timezone,
         });
-  const shown = mode?.kind === 'task' ? mode.task : null;
 
   return (
     <Page>
@@ -99,7 +100,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         <>
           <HeadlineSlot mode={mode} onUndo={done.pressUndo} />
           <DoneSlot mode={mode} onDone={done.pressDone} />
-          <DayList rows={dayRows(agenda, shown, now)} />
+          <DayList rows={rows} />
         </>
       ) : (
         <Waiting message={errorMessage} />
