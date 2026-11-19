@@ -292,6 +292,28 @@ final class ActivityPressTests: XCTestCase {
         XCTAssertEqual(store.calls, [])
     }
 
+    func testAPressThatCouldNotBeStoredShowsTheReceiptOnceTheServerConfirmedIt() async throws {
+        try Data().write(to: directory.appendingPathComponent("marks"))
+        let store = pills()
+        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+        XCTAssertEqual(result, .clean)
+        XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
+    }
+
+    func testAPressThatCouldNotBeStoredShowsNoReceiptWhenTheServerRefusedOrCouldNotReadIt() async throws {
+        let refused = try Fixture.json(["status": "rejected", "reason": "This task is not due yet", "state": NSNull()])
+        for (status, body) in [(200, refused), (400, Data())] {
+            directory = try temporaryDirectory()
+            try Data().write(to: directory.appendingPathComponent("marks"))
+            let store = pills()
+            transport.queueConfirm(status, body: body)
+            let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+            XCTAssertEqual(result, .clean)
+            XCTAssertEqual(store.calls, [], "a receipt after a \(status) answer that did not confirm the task")
+        }
+    }
+
     func testAnUnauthorizedPressEndsEveryActivity() async throws {
         let store = FakeActivityStore([
             shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-pills"))),

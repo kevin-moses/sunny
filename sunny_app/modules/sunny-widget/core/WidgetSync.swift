@@ -72,24 +72,26 @@ public struct WidgetSync: Sendable {
         instanceId: String,
         step: Int,
         via: PressVia,
-        whenKept: (Date) async -> Void = { _ in }
+        showPress: (Date) async -> Void = { _ in }
     ) async -> FlushResult {
         let press = Press(instanceId: instanceId, step: step, via: via, pressedAt: clock())
         do {
             try storage.presses.append(press)
         } catch {
-            return await sendUnqueued(press, whenKept: whenKept)
+            return await sendUnqueued(press, showPress: showPress)
         }
-        await whenKept(press.pressedAt)
+        await showPress(press.pressedAt)
         return await replayPresses(timeout: Self.pressTimeout)
     }
 
-    private func sendUnqueued(_ press: Press, whenKept: (Date) async -> Void) async -> FlushResult {
+    private func sendUnqueued(_ press: Press, showPress: (Date) async -> Void) async -> FlushResult {
         guard let client = client() else { return .noCredentials }
         let outcome = await client.confirm(press, at: clock(), timeout: Self.pressTimeout)
         switch PressReplay.decision(for: outcome) {
         case .drop:
-            await whenKept(press.pressedAt)
+            if outcome == .answered(.confirmed) || outcome == .answered(.advanced) {
+                await showPress(press.pressedAt)
+            }
             return .clean
         case .keepAndHoldTask, .keepAndStop: return .pending
         case .keepAndStopUnauthorized:
