@@ -279,6 +279,15 @@ function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
   ];
 }
 
+function notMoved(
+  match: CalendarEventFact,
+  fields: Appointment,
+  because: string,
+  ask: string,
+): string {
+  return `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(fields.date, fields.time)}, because ${because}. Tell Sunny in chat to move it${ask}.`;
+}
+
 function only(matches: CalendarEventFact[]): CalendarEventFact | null {
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
@@ -429,7 +438,12 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           escalate(
             c,
             confirms.reason,
-            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(s.fields.date, s.fields.time)}, because ${confirms.because}. Tell Sunny in chat to move it once you have checked ${confirms.checked}.`,
+            notMoved(
+              match,
+              s.fields,
+              confirms.because,
+              ` once you have checked ${confirms.checked}`,
+            ),
             match.eventId,
             s.fields,
           ),
@@ -445,7 +459,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           escalate(
             c,
             "daily_limit",
-            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(s.fields.date, s.fields.time)}, because ${DAILY_LIMIT}. Tell Sunny in chat to move it.`,
+            notMoved(match, s.fields, DAILY_LIMIT, ""),
             match.eventId,
             s.fields,
           ),
@@ -534,11 +548,8 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function matchesFor(
-  ref: AppointmentRef | null,
-  linked: LinkedEvent | null,
-  facts: PolicyFacts,
-): CalendarEventFact[] {
+function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
+  const { linked } = facts;
   if (linked !== null) return facts.events.filter((e) => e.eventId === linked.eventId);
   return ref === null ? [] : matchEvent(ref, facts.events);
 }
@@ -557,12 +568,9 @@ function linkedFor(verdict: MailVerdict, facts: PolicyFacts): LinkedEvent | null
     : null;
 }
 
-function newSituation(
-  appointment: Appointment,
-  linked: LinkedEvent | null,
-  facts: PolicyFacts,
-): Situation {
+function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
   const fields = appointmentFields(appointment, facts);
+  const { linked } = facts;
   const live = facts.events.find((e) => e.eventId === linked?.eventId);
   if (live !== undefined && facts.ics !== null && !sameSlot(live, appointment)) {
     return { case: "reschedule", appointment, fields, matches: [live] };
@@ -583,7 +591,7 @@ function newSituation(
   };
 }
 
-function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
+function situationOf(verdict: MailVerdict, sent: PolicyFacts): Situation {
   switch (verdict.kind) {
     case "ignore":
       return { case: "ignore" };
@@ -594,23 +602,23 @@ function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
     case "suspicious":
       return { case: "suspicious", suspicion: verdict.suspicion };
   }
-  const linked = linkedFor(verdict, facts);
+  const facts = { ...sent, linked: linkedFor(verdict, sent) };
   switch (verdict.change) {
     case "cancel":
       return {
         case: "cancel",
         previous: verdict.previous,
-        matches: matchesFor(verdict.previous, linked, facts),
+        matches: matchesFor(verdict.previous, facts),
       };
     case "reschedule":
       return {
         case: "reschedule",
         appointment: verdict.appointment,
         fields: appointmentFields(verdict.appointment, facts),
-        matches: matchesFor(verdict.previous, linked, facts),
+        matches: matchesFor(verdict.previous, facts),
       };
     case "new":
-      return newSituation(verdict.appointment, linked, facts);
+      return newSituation(verdict.appointment, facts);
   }
 }
 

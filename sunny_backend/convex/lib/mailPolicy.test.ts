@@ -185,8 +185,7 @@ describe("planWithRule decision table", () => {
     });
 
     test("a slot link whose event has moved away is not the appointment, so it is added", () => {
-      const moved: LinkedEvent = { eventId: "evt_eye", date: "2026-11-24", time: "10:30" };
-      expect(kinds(effectsOf(newAppointment(), facts({ linked: moved })))).toEqual([
+      expect(kinds(effectsOf(newAppointment(), facts({ linked: linkTo("evt_eye") })))).toEqual([
         "add_event",
         "tell_caregivers",
       ]);

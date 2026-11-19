@@ -84,6 +84,20 @@ const MOVED_EYE_EXAM: JevSays = {
   before: { date: "2026-12-10", time: "14:15" },
 };
 
+function invite(lines: string[], uid = "visit-42@lakesideeye.example"): string {
+  return [
+    "BEGIN:VCALENDAR",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    "DURATION:PT30M",
+    "SUMMARY:Eye exam",
+    ...lines,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+}
+
 const PHISHING: JevSays = { yes: ["asks_hard_to_trace_payment"] };
 
 const DELIVERY: JevSays = { yes: ["about_package"] };
@@ -521,20 +535,6 @@ describe("an appointment email", () => {
     expect(JSON.stringify(events)).not.toMatch(/Miller|Kiosk/);
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
-
-  function invite(lines: string[]): string {
-    return [
-      "BEGIN:VCALENDAR",
-      "METHOD:REQUEST",
-      "BEGIN:VEVENT",
-      "UID:visit-42@lakesideeye.example",
-      "DURATION:PT30M",
-      "SUMMARY:Eye exam",
-      ...lines,
-      "END:VEVENT",
-      "END:VCALENDAR",
-    ].join("\r\n");
-  }
 
   test("an updated invite with a UID Sunny never linked, read as moved, moves the event", async () => {
     const h = await setup();
@@ -1406,18 +1406,12 @@ describe("links belong to the sender's domain", () => {
   const CLINIC_UID = "visit-42@lakesideeye.example";
 
   function invitation(from: string, uid: string, lines: string[]): RawEmail {
-    const ics = [
-      "BEGIN:VCALENDAR",
-      "METHOD:REQUEST",
-      "BEGIN:VEVENT",
-      `UID:${uid}`,
-      "DURATION:PT30M",
-      "SUMMARY:Eye exam",
-      ...lines,
-      "END:VEVENT",
-      "END:VCALENDAR",
-    ].join("\r\n");
-    return clinic({ from, subject: "Invitation", text: "See the invitation.", ics });
+    return clinic({
+      from,
+      subject: "Invitation",
+      text: "See the invitation.",
+      ics: invite(lines, uid),
+    });
   }
 
   const AT_SLOT = "DTSTART:20261210T191500Z";
