@@ -608,7 +608,3 @@ export function planWithRule(triaged: Triaged, facts: PolicyFacts): Plan {
     ),
   };
 }
-
-export function planEffects(triaged: Triaged, facts: PolicyFacts): MailEffect[] {
-  return planWithRule(triaged, facts).effects;
-}

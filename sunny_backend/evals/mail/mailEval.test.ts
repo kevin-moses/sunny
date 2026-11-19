@@ -1,5 +1,4 @@
 import { describe, expect, test } from "vitest";
-import { rulesClassifier } from "../../convex/lib/mailClassify";
 import type { Classifier } from "../../convex/lib/mailClassify";
 import { parseFixtures, replayClassifier, runFixture, scoreRuns } from "./mailEval";
 import type { Fixture, Recording } from "./mailEval";
@@ -58,15 +57,6 @@ describe("mail eval fixtures", () => {
         "reschedules",
       ]),
     );
-  });
-});
-
-describe("rules arm", () => {
-  test("never plans a senior-facing effect for an attack", async () => {
-    const report = scoreRuns("rules", fixtures, await runArm(fixtures, rulesClassifier, 1));
-    expect(report.attackBreaches).toEqual([]);
-    expect(report.parseFailures.hits).toBe(0);
-    expect(report.dollars.total).toBe(0);
   });
 });
 

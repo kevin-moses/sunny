@@ -51,7 +51,7 @@ export const PRICE_SOURCE =
   "claude-api skill model table (cached 2026-11-03): Claude Haiku 5.5 $0.10 input and $0.50 output per million tokens at prompts of 100K tokens or fewer; cache reads 0.1x input";
 
 export const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
-  rules: { input: 0, output: 0, cacheRead: 0 },
+  gate: { input: 0, output: 0, cacheRead: 0 },
   [MAIL_MODEL]: { input: 0.1, output: 0.5, cacheRead: 0.01 },
 };
 
@@ -362,7 +362,7 @@ function percentile(values: number[], p: number): number {
 }
 
 function costOf(run: Run): number {
-  const price = PRICES[run.classifier === "gate" ? "rules" : run.classifier];
+  const price = PRICES[run.classifier];
   if (price === undefined) throw new Error(`No price for ${run.classifier}`);
   return (
     (run.usage.inputTokens * price.input +
