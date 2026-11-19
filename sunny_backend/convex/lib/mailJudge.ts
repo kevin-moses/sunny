@@ -17,14 +17,15 @@ import type {
   Triaged,
   Usage,
 } from "./mailTypes";
-import { addDays, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES } from "./time";
+import { addDays, daysBetween, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES } from "./time";
 
 export const JEV_MODEL = "jev-1.14.0";
 
 const JEV_TIMEOUT_MS = 20_000;
 
 const SURE = 0.7;
-const NEXT_YEAR_AFTER_DAYS = 31;
+const PAST_DATE_DAYS = 180;
+const DAYS_IN_WEEK = 7;
 
 function noul(
   instructions: string | Record<string, string>,
@@ -205,7 +206,7 @@ const DATE_FORMS = ["calendar_date", "today", "tomorrow", "weekday", "not_stated
 const WEEKS = ["this_week", "next_week", "unqualified"] as const;
 const NOT_STATED = "not_stated";
 
-type Week = (typeof WEEKS)[number];
+export type Week = (typeof WEEKS)[number];
 
 type SlotName = "when" | "before";
 
@@ -368,19 +369,32 @@ function calendarDate(year: number, month: number, day: number): string | null {
   return isLocalDate(date) ? date : null;
 }
 
-function weekdayDate(anchor: string, weekday: number, week: Week): string {
-  const anchorWeekday = isoWeekday(anchor);
-  const monday = addDays(anchor, 1 - anchorWeekday);
-  if (week === "next_week") return addDays(monday, 7 + weekday - 1);
-  if (week === "this_week") return addDays(monday, weekday - 1);
-  return addDays(anchor, (weekday - anchorWeekday + 7) % 7);
+export function weekdayDate(anchor: string, weekday: string, week: Week): string | null {
+  const offset = WEEKDAY_NAMES.indexOf(weekday);
+  if (offset < 0) return null;
+  const monday = addDays(anchor, 1 - isoWeekday(anchor));
+  switch (week) {
+    case "this_week": {
+      const date = addDays(monday, offset);
+      return date < anchor ? null : date;
+    }
+    case "next_week": {
+      const date = addDays(monday, DAYS_IN_WEEK + offset);
+      return daysBetween(anchor, date) < DAYS_IN_WEEK ? null : date;
+    }
+    case "unqualified": {
+      const ahead = (offset + 1 - isoWeekday(anchor) + DAYS_IN_WEEK) % DAYS_IN_WEEK;
+      return ahead === 0 ? null : addDays(anchor, ahead);
+    }
+  }
 }
 
 function inferYear(month: number, day: number, anchor: string): string | null {
   const year = Number(anchor.slice(0, 4));
-  const same = calendarDate(year, month, day);
-  if (same === null) return calendarDate(year + 1, month, day);
-  return same < addDays(anchor, -NEXT_YEAR_AFTER_DAYS) ? calendarDate(year + 1, month, day) : same;
+  const dates = [year - 1, year, year + 1].flatMap((y) => calendarDate(y, month, day) ?? []);
+  const lastPast = dates.findLast((d) => d < anchor);
+  if (lastPast !== undefined && daysBetween(lastPast, anchor) <= PAST_DATE_DAYS) return null;
+  return dates.find((d) => d >= anchor) ?? null;
 }
 
 function oneOf<T extends string>(values: readonly T[], value: string | null): T | null {
@@ -397,9 +411,8 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
     case "tomorrow":
       return addDays(anchor, 1);
     case "weekday": {
-      const weekday = WEEKDAY_NAMES.indexOf(sure(picks.weekday) ?? "");
       const week = oneOf(WEEKS, sure(picks.week));
-      return weekday < 0 || week === null ? null : weekdayDate(anchor, weekday + 1, week);
+      return week === null ? null : weekdayDate(anchor, sure(picks.weekday) ?? "", week);
     }
     case "calendar_date": {
       const month = MONTHS.indexOf(sure(picks.month) ?? "") + 1;

@@ -19,6 +19,7 @@ import {
   resolveSlot,
   resolveTime,
   triageEmail,
+  weekdayDate,
 } from "./mailJudge";
 import type { Flag, Invite, Level, Readings, SlotPicks } from "./mailJudge";
 import { appointmentFields } from "./mailPolicy";
@@ -425,12 +426,17 @@ describe("date resolution against the day the email arrived", () => {
     [
       "a date without a year a few days ago",
       { date_form: "calendar_date", month: "November", day: "16" },
-      "2026-11-16",
+      null,
     ],
     [
-      "a date without a year well in the past",
-      { date_form: "calendar_date", month: "October", day: "1" },
-      "2027-10-01",
+      "a date without a year past by fewer than 180 days",
+      { date_form: "calendar_date", month: "June", day: "1" },
+      null,
+    ],
+    [
+      "a date without a year past by more than 180 days",
+      { date_form: "calendar_date", month: "March", day: "3" },
+      "2027-03-03",
     ],
     [
       "a day that does not exist",
@@ -446,13 +452,34 @@ describe("date resolution against the day the email arrived", () => {
     ["today", { date_form: "today" }, "2026-11-18"],
     ["tomorrow", { date_form: "tomorrow" }, "2026-11-19"],
     ["a bare weekday later this week", { date_form: "weekday", weekday: "Sunday" }, "2026-11-22"],
-    ["a bare weekday that is today", { date_form: "weekday", weekday: "Wednesday" }, "2026-11-18"],
+    ["a bare weekday that is today", { date_form: "weekday", weekday: "Wednesday" }, null],
     ["this Friday", { date_form: "weekday", weekday: "Friday", week: "this_week" }, "2026-11-20"],
-    ["next Tuesday", { date_form: "weekday", weekday: "Tuesday", week: "next_week" }, "2026-11-24"],
+    [
+      "next Thursday",
+      { date_form: "weekday", weekday: "Thursday", week: "next_week" },
+      "2026-11-26",
+    ],
+    [
+      "next Tuesday, 6 days away",
+      { date_form: "weekday", weekday: "Tuesday", week: "next_week" },
+      null,
+    ],
     ["a weekday form with no weekday", { date_form: "weekday" }, null],
     ["no date", {}, null],
   ])("%s", (_, parts, expected) => {
     expect(resolveDate(picks(parts), ANCHOR)).toBe(expected);
+  });
+
+  test.each([
+    ["December 30", "December", "30", "2027-01-05", null],
+    ["January 5", "January", "5", "2026-12-20", "2027-01-05"],
+    ["October 25", "October", "25", "2026-11-19", null],
+    ["May 23", "May", "23", "2026-11-19", null],
+    ["May 22", "May", "22", "2026-11-19", "2027-05-22"],
+    ["November 19", "November", "19", "2026-11-19", "2026-11-19"],
+    ["February 29", "February", "29", "2026-11-19", null],
+  ])("%s with no year, read on %s", (_, month, day, anchor, expected) => {
+    expect(resolveDate(picks({ date_form: "calendar_date", month, day }), anchor)).toBe(expected);
   });
 
   test("a part read with low probability leaves the date unread", () => {
@@ -466,6 +493,32 @@ describe("date resolution against the day the email arrived", () => {
     expect(
       resolveDate({ ...parts, month: { choice: "December", probability: 0.6 } }, ANCHOR),
     ).toBeNull();
+  });
+});
+
+describe("the product's weekday convention", () => {
+  test.each([
+    ["Monday 2026-11-16", "Tuesday", "unqualified", "2026-11-17"],
+    ["Monday 2026-11-16", "Tuesday", "this_week", "2026-11-17"],
+    ["Monday 2026-11-16", "Tuesday", "next_week", "2026-11-24"],
+    ["Tuesday 2026-11-17", "Tuesday", "unqualified", null],
+    ["Tuesday 2026-11-17", "Tuesday", "this_week", "2026-11-17"],
+    ["Tuesday 2026-11-17", "Tuesday", "next_week", "2026-11-24"],
+    ["Wednesday 2026-11-18", "Monday", "this_week", null],
+    ["Wednesday 2026-11-18", "Sunday", "this_week", "2026-11-22"],
+    ["Wednesday 2026-11-18", "Tuesday", "unqualified", "2026-11-24"],
+    ["Wednesday 2026-11-18", "Wednesday", "next_week", "2026-11-25"],
+    ["Wednesday 2026-11-18", "Tuesday", "next_week", null],
+    ["Saturday 2026-11-21", "Tuesday", "this_week", null],
+    ["Saturday 2026-11-21", "Tuesday", "unqualified", "2026-11-24"],
+    ["Saturday 2026-11-21", "Tuesday", "next_week", null],
+    ["Saturday 2026-11-21", "Sunday", "this_week", "2026-11-22"],
+    ["Sunday 2026-11-22", "Monday", "unqualified", "2026-11-23"],
+    ["Sunday 2026-11-22", "Monday", "this_week", null],
+    ["Sunday 2026-11-22", "Monday", "next_week", null],
+    ["Sunday 2026-11-22", "Sunday", "next_week", "2026-11-29"],
+  ] as const)("on %s, %s (%s) is %s", (received, weekday, week, expected) => {
+    expect(weekdayDate(received.split(" ")[1]!, weekday, week)).toBe(expected);
   });
 });
 
