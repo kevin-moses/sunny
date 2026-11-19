@@ -312,6 +312,71 @@ describe("authenticated", () => {
     ).toBe(false);
     expect(authenticated([from("x@bank.example")])).toBe(false);
   });
+
+  test("ignores a pass clause hidden in a quoted envelope sender or a comment", () => {
+    expect(
+      authenticated([
+        results(
+          'mx.google.com; dkim=fail; spf=pass smtp.mailfrom="x;dkim=pass header.d=bank.example;"@evil.example; dmarc=fail header.from=bank.example',
+        ),
+        from("x@bank.example"),
+      ]),
+    ).toBe(false);
+    expect(
+      authenticated([
+        results(
+          "mx.google.com; spf=pass (google.com: domain of x@evil.example; dkim=pass header.d=bank.example) smtp.mailfrom=x@evil.example",
+        ),
+        from("x@bank.example"),
+      ]),
+    ).toBe(false);
+  });
+
+  test("requires a DMARC pass to name the From domain", () => {
+    expect(
+      authenticated([results("mx.google.com; dkim=none; dmarc=pass"), from("x@bank.example")]),
+    ).toBe(false);
+    expect(
+      authenticated([
+        results("mx.google.com; dmarc=pass (p=NONE) header.from=bank.example"),
+        from("x@bank.example"),
+      ]),
+    ).toBe(true);
+  });
+
+  test("trusts nothing when more than one header claims to be Gmail's", () => {
+    for (const order of [
+      [results(GMAIL_AUTH), results("mx.google.com; dkim=fail; dmarc=fail")],
+      [results("mx.google.com; dkim=fail; dmarc=fail"), results(GMAIL_AUTH)],
+    ]) {
+      expect(authenticated([...order, from("x@lakesideeye.example")])).toBe(false);
+    }
+  });
+
+  test("reads Gmail's header wherever it sits among other relays' headers", () => {
+    expect(
+      authenticated([
+        results("relay.example; dmarc=pass header.from=lakesideeye.example"),
+        results(GMAIL_AUTH),
+        from("x@lakesideeye.example"),
+      ]),
+    ).toBe(true);
+    expect(
+      authenticated([
+        results("relay.example; dmarc=pass header.from=lakesideeye.example"),
+        from("x@lakesideeye.example"),
+      ]),
+    ).toBe(false);
+  });
+
+  test("treats an unparseable header as not authenticated", () => {
+    expect(
+      authenticated([
+        results("mx.google.com; dkim=pass header.d=bank.example (unclosed comment"),
+        from("x@bank.example"),
+      ]),
+    ).toBe(false);
+  });
 });
 
 describe("htmlToText", () => {

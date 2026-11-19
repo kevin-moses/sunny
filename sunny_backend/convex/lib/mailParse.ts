@@ -5,6 +5,7 @@ import { MINUTE_MS, canonicalTimezone, localDate, localTime, zonedInstant } from
 
 export const MAX_EMAIL_TEXT = 6000;
 const MAX_BODY_SOURCE = 256 * 1024;
+const GMAIL_AUTHSERV = "mx.google.com";
 
 export interface MailHeader {
   name: string;
@@ -115,24 +116,78 @@ function aligned(signer: string, fromDomain: string): boolean {
   );
 }
 
-export function authenticated(headers: MailHeader[]): boolean {
-  const results = headers.find((h) => h.name.toLowerCase() === "authentication-results");
-  const from = parseAddress(header(headers, "From") ?? "");
-  if (!results || !from) return false;
-  const [authserv, ...clauses] = results.value.split(";").map((c) => c.trim().toLowerCase());
-  if (authserv !== "mx.google.com") return false;
-  const fromDomain = domainOf(from.address);
-  return clauses.some((clause) => {
-    if (clause.startsWith("dmarc=pass")) {
-      const checked = /header\.from=([^\s;]+)/.exec(clause)?.[1];
-      return checked === undefined || aligned(checked, fromDomain);
+function withoutCommentsAndQuotes(value: string): string | null {
+  let out = "";
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
     }
-    if (clause.startsWith("dkim=pass")) {
-      const signer = /header\.(?:d=|i=[^@\s;]*@)([^\s;]+)/.exec(clause)?.[1];
-      return signer !== undefined && aligned(signer, fromDomain);
+    if (quoted) {
+      if (ch === '"') quoted = false;
+    } else if (depth > 0) {
+      if (ch === "(") depth += 1;
+      else if (ch === ")") depth -= 1;
+    } else if (ch === '"') {
+      quoted = true;
+      out += '""';
+    } else if (ch === "(") {
+      depth = 1;
+      out += " ";
+    } else {
+      out += ch;
     }
-    return false;
+  }
+  return depth === 0 && !quoted ? out : null;
+}
+
+interface AuthResult {
+  method: string;
+  result: string;
+  props: Map<string, string>;
+}
+
+function authResults(value: string): { authserv: string; results: AuthResult[] } | null {
+  const bare = withoutCommentsAndQuotes(value);
+  if (bare === null) return null;
+  const [head = "", ...clauses] = bare.toLowerCase().split(";");
+  const results = clauses.flatMap((clause) => {
+    const [verdict = "", ...props] = clause.trim().split(/\s+/);
+    const eq = verdict.indexOf("=");
+    if (eq <= 0) return [];
+    const pairs = props.flatMap((prop) => {
+      const at = prop.indexOf("=");
+      return at > 0 ? [[prop.slice(0, at), prop.slice(at + 1)] as const] : [];
+    });
+    return [{ method: verdict.slice(0, eq), result: verdict.slice(eq + 1), props: new Map(pairs) }];
   });
+  return { authserv: head.trim().split(/\s+/)[0] ?? "", results };
+}
+
+function passes(result: AuthResult, fromDomain: string): boolean {
+  if (result.result !== "pass") return false;
+  if (result.method === "dmarc") return result.props.get("header.from") === fromDomain;
+  if (result.method !== "dkim") return false;
+  const signers = [result.props.get("header.d"), result.props.get("header.i")]
+    .filter((s): s is string => s !== undefined)
+    .map(domainOf);
+  return signers.some((signer) => signer !== "" && aligned(signer, fromDomain));
+}
+
+export function authenticated(headers: MailHeader[]): boolean {
+  const from = parseAddress(header(headers, "From") ?? "");
+  if (!from) return false;
+  const parsed = headers
+    .filter((h) => h.name.toLowerCase() === "authentication-results")
+    .map((h) => authResults(h.value));
+  if (parsed.some((p) => p === null)) return false;
+  const gmail = parsed.filter((p) => p?.authserv === GMAIL_AUTHSERV);
+  if (gmail.length !== 1) return false;
+  const fromDomain = domainOf(from.address);
+  return gmail[0]!.results.some((result) => passes(result, fromDomain));
 }
 
 const VOID_TAGS = new Set([
