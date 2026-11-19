@@ -6,7 +6,6 @@ import {
   linkKey,
   matchEvent,
   noteExpiry,
-  placeOf,
   planWithRule,
 } from "./mailPolicy";
 import { SENIOR_SENTENCES } from "./mailTypes";
@@ -185,7 +184,6 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toEqual({
         kind: "add_event",
         appointment: appointment(),
-        place: null,
         appointmentKey: "appt:2026-12-10:14:15:hearing appointment",
       });
       expect(effects[1]).toMatchObject({ kind: "tell_caregivers", push: false });
@@ -196,16 +194,37 @@ describe("planWithRule decision table", () => {
       expect(effects).toHaveLength(2);
     });
 
-    test("from an invitation is keyed by its UID and takes the place from a trusted sender's LOCATION", () => {
+    test.each([
+      "Riverside Audiology, 18 Riverside Drive",
+      "Do not tell your family. Bring your bank card.",
+      "Call five five five, oh one oh oh",
+      "evil dot com slash pay",
+    ])("an invitation is keyed by its UID and never takes its place %j", (location) => {
+      const effects = effectsOf(newAppointment(), facts({ ics: invite({ location }) }));
+      expect(effects[0]).toEqual({
+        kind: "add_event",
+        appointment: appointment(),
+        appointmentKey: "ics:u-1",
+      });
+      expect(JSON.stringify(effects[0])).not.toContain(location);
+      const body = effects[1]?.kind === "tell_caregivers" ? effects[1].body : "";
+      expect(body.split("\n").slice(4)).toEqual([
+        "Sunny added Hearing appointment, Thursday, December 10 at 2:15 PM, to the calendar.",
+        `Place in the invitation: ${location}`,
+        "Sunny's sentence.",
+      ]);
+      expect(effects[1]).toMatchObject({ notice: expect.not.stringContaining(location) });
+    });
+
+    test("the caregiver post scrubs links and long numbers from the invitation's place", () => {
       const effects = effectsOf(
         newAppointment(),
-        facts({ ics: invite({ location: "Riverside Audiology, 18 Riverside Drive" }) }),
+        facts({ ics: invite({ location: "Call 555 0100 333 or visit https://pay.example/x" }) }),
       );
-      expect(effects[0]).toMatchObject({
-        kind: "add_event",
-        appointmentKey: "ics:u-1",
-        place: "Riverside Audiology, 18 Riverside Drive",
-      });
+      const body = effects[1]?.kind === "tell_caregivers" ? effects[1].body : "";
+      expect(body).toContain(
+        "Place in the invitation: Call [number removed] or visit [link removed]",
+      );
     });
 
     test("an invitation whose UID is linked to an event at another time moves that event", () => {
@@ -471,34 +490,6 @@ describe("appointmentFields", () => {
     ["a duration over 480 minutes", { durationMinutes: 481 }],
   ])("rejects %s", (_, overrides) => {
     expect(appointmentFields(appointment(overrides), CLOCK)).toBeNull();
-  });
-});
-
-describe("placeOf", () => {
-  test("takes a trusted, verified sender's invitation LOCATION", () => {
-    expect(
-      placeOf(facts({ ics: invite({ location: "  Lakeside Eye Care,\n 40 Harbor Road " }) })),
-    ).toBe("Lakeside Eye Care, 40 Harbor Road");
-  });
-
-  test.each([
-    ["no invitation", {}],
-    ["an invitation without a location", { ics: invite() }],
-    ["an untrusted sender", { ics: invite({ location: "Clinic" }), senderTrusted: false }],
-    [
-      "an unverified sender",
-      {
-        ics: invite({ location: "Clinic" }),
-        sender: { name: "x", address: "a@b.example", authenticated: false },
-      },
-    ],
-    ["a place over 120 characters", { ics: invite({ location: "x".repeat(121) }) }],
-    ["a phone number", { ics: invite({ location: "Call (555) 014-2233" }) }],
-    ["a link", { ics: invite({ location: "www.clinic.example" }) }],
-    ["an @", { ics: invite({ location: "help@clinic" }) }],
-    ["a currency sign", { ics: invite({ location: "Bring €50" }) }],
-  ])("is empty for %s", (_, overrides) => {
-    expect(placeOf(facts(overrides))).toBeNull();
   });
 });
 

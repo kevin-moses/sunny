@@ -156,7 +156,6 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
           onDate: date,
           startTime: time,
           durationMinutes: durationMinutes ?? undefined,
-          place: effect.place ?? undefined,
         },
         scope.facts.now,
       );

@@ -238,12 +238,13 @@ describe("an appointment email", () => {
     );
   });
 
-  test("a trusted sender's reschedule moves a hand-entered event", async () => {
+  test("a trusted sender's reschedule moves a hand-entered event and keeps its place", async () => {
     const h = await setup();
     const eventId = await insertEvent(h.t, h.householdId, {
       title: "Eye exam",
       startsOn: "2026-12-10",
       startTime: "14:15",
+      place: "Lakeside Eye Care",
     });
     const moved = await triageEmail(h, clinic(), MOVED_EYE_EXAM);
     expect(moved.effects).toEqual([
@@ -253,6 +254,7 @@ describe("an appointment email", () => {
     expect((await rows(h, "events"))[0]).toMatchObject({
       startsOn: "2026-12-12",
       startTime: "10:00",
+      place: "Lakeside Eye Care",
     });
   });
 
@@ -392,8 +394,11 @@ describe("an appointment email", () => {
       startsOn: "2026-12-10",
       startTime: "14:15",
       durationMinutes: 30,
-      place: "Lakeside Eye Care, 40 Harbor Road",
     });
+    expect(event!.place).toBeUndefined();
+    expect((await rows(h, "chatPosts"))[0]!.body).toContain(
+      "Place in the invitation: Lakeside Eye Care, 40 Harbor Road",
+    );
     expect((await rows(h, "mailEventLinks"))[0]!.appointmentKey).toBe(
       "ics:visit-42@lakesideeye.example",
     );
@@ -925,7 +930,7 @@ describe("carrying out a plan", () => {
           summary: "An eye exam.",
         },
         [
-          { kind: "add_event", appointment, place: null, appointmentKey: "appt:x" },
+          { kind: "add_event", appointment, appointmentKey: "appt:x" },
           {
             kind: "tell_caregivers",
             body: "Sunny added Eye exam.",

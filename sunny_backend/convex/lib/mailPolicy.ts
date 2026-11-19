@@ -32,7 +32,6 @@ import {
 } from "./time";
 
 export const STALE_AFTER_MS = DAY_MS;
-const MAX_PLACE = 120;
 const MAX_DAYS_AHEAD = 400;
 const MIN_DURATION_MINUTES = 5;
 const MAX_DURATION_MINUTES = 480;
@@ -43,9 +42,6 @@ const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
 const LINK_REMOVED = "[link removed]";
 const NUMBER_REMOVED = "[number removed]";
 
-const LINK = /:\/\/|www\.|@|\b[a-z0-9-]{2,}\.[a-z]{2,}\b/i;
-const CURRENCY = /\p{Sc}/u;
-const PLACE_DIGITS = /\d(?:[\s().-]*\d){6,}/;
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
 const NEW_SENDER = "this sender is new to Sunny";
 
@@ -105,15 +101,6 @@ export function appointmentFields(
   return appointment;
 }
 
-export function placeOf(facts: PolicyFacts): string | null {
-  const location = facts.ics?.location;
-  if (!location || !facts.senderTrusted || !facts.sender.authenticated) return null;
-  const place = oneLine(location);
-  if (place.length === 0 || place.length > MAX_PLACE) return null;
-  if (PLACE_DIGITS.test(place) || LINK.test(place) || CURRENCY.test(place)) return null;
-  return place;
-}
-
 function scrub(text: string): string {
   return oneLine(text.slice(0, MAX_SCRUBBED))
     .replace(/(?:https?:\/\/|www\.)\S+/gi, LINK_REMOVED)
@@ -159,7 +146,9 @@ export function caregiverMessage(
   line: string,
   summary: string,
 ): CaregiverMessage {
-  return { body: caregiverText(facts, [line, summary]), notice: scrub(line) };
+  const place = facts.ics?.location ?? null;
+  const placeLine = place === null ? [] : [`Place in the invitation: ${place}`];
+  return { body: caregiverText(facts, [line, ...placeLine, summary]), notice: scrub(line) };
 }
 
 export function noteExpiry(receivedAt: number, timezone: string): number {
@@ -324,7 +313,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               {
                 kind: "add_event",
                 appointment: s.fields,
-                place: placeOf(c.facts),
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
               tell(c, `Sunny added ${described(s.fields)}, to the calendar.`, false),

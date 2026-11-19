@@ -220,7 +220,6 @@ export type MailEffect =
   | {
       kind: "add_event";
       appointment: Appointment;
-      place: string | null;
       appointmentKey: string;
     }
   | {
