@@ -273,11 +273,27 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertNil(tokens.read())
     }
 
-    func testPressWithoutCredentialsIsKeptForLater() async throws {
+    func testAWidgetPressOnAnUnpairedPhoneStoresNothing() async throws {
         tokens = MemoryTokenStore(nil)
         let result = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
         XCTAssertEqual(result, .noCredentials)
+        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.pressed(), [])
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    func testAWidgetPressBeforeTheFirstUnlockIsKeptForLater() async throws {
+        let sync = WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: LockedKeychainTokenStore(),
+            sites: sites,
+            transport: transport,
+            clock: { [clock] in clock!.now }
+        )
+        let result = await sync.pressDone(instanceId: "inst", step: 0, via: .widget)
+        XCTAssertEqual(result, .pending)
         XCTAssertEqual(queue.pending().map(\.instanceId), ["inst"])
+        XCTAssertTrue(transport.requests.isEmpty)
     }
 
     func testRateLimitedRefreshWaitsForRetryAfter() async throws {

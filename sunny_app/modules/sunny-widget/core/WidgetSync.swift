@@ -17,6 +17,16 @@ private enum Credentials {
     case paired(DeviceClient)
     case notPaired
     case unreadable
+
+    var client: DeviceClient? {
+        guard case .paired(let client) = self else { return nil }
+        return client
+    }
+
+    var unsentResult: FlushResult {
+        guard case .notPaired = self else { return .pending }
+        return .noCredentials
+    }
 }
 
 public struct WidgetSync: Sendable {
@@ -74,6 +84,7 @@ public struct WidgetSync: Sendable {
         via: PressVia,
         showPress: (Date) async -> Void = { _ in }
     ) async -> FlushResult {
+        if case .notPaired = credentials() { return .noCredentials }
         let press = Press(instanceId: instanceId, step: step, via: via, pressedAt: clock())
         do {
             try storage.presses.append(press)
@@ -85,7 +96,8 @@ public struct WidgetSync: Sendable {
     }
 
     private func sendUnqueued(_ press: Press, showPress: (Date) async -> Void) async -> FlushResult {
-        guard let client = client() else { return .noCredentials }
+        let credentials = credentials()
+        guard let client = credentials.client else { return credentials.unsentResult }
         let outcome = await client.confirm(press, at: clock(), timeout: Self.pressTimeout)
         switch PressReplay.decision(for: outcome) {
         case .drop:
@@ -101,7 +113,8 @@ public struct WidgetSync: Sendable {
     }
 
     public func replayPresses(timeout: TimeInterval) async -> FlushResult {
-        guard let client = client() else { return .noCredentials }
+        let credentials = credentials()
+        guard let client = credentials.client else { return credentials.unsentResult }
         let deadline = clock().addingTimeInterval(timeout)
         var held: Set<String> = []
         for press in storage.presses.pending() where !held.contains(press.instanceId) {
@@ -202,14 +215,8 @@ public struct WidgetSync: Sendable {
         }
     }
 
-    var isNotPaired: Bool {
-        guard case .notPaired = credentials() else { return false }
-        return true
-    }
-
     private func client() -> DeviceClient? {
-        guard case .paired(let client) = credentials() else { return nil }
-        return client
+        credentials().client
     }
 
     private func reconciledPressed(since fetchStartedAt: Date) -> Set<PressKey> {

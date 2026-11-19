@@ -355,7 +355,7 @@ final class ActivityPressTests: XCTestCase {
             clock: { [now] in now }
         )
         let result = await sync.pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
-        XCTAssertEqual(result, .noCredentials)
+        XCTAssertEqual(result, .pending)
         XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
         XCTAssertEqual(sync.unsentPresses().map(\.key), [PressKey(instanceId: "inst-pills", step: 0)])
     }
