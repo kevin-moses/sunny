@@ -184,16 +184,25 @@ export async function requirePrimary(
   return await requireCaregiver(ctx, householdId, ["primary"]);
 }
 
+export const DEVICES_ONLY = "Only the senior's devices can do this";
+
+export function deviceActor(device: Doc<"devices">): DeviceActor {
+  return { kind: "senior_device", userId: device.userId, householdId: device.householdId, device };
+}
+
+export async function requireDeviceActor(ctx: QueryCtx): Promise<DeviceActor> {
+  const device = await findDevice(ctx, await requireUserId(ctx));
+  if (!device) throw appError("forbidden", DEVICES_ONLY);
+  return deviceActor(device);
+}
+
 export async function requireSenior(
   ctx: QueryCtx,
   householdId: Id<"households">,
 ): Promise<DeviceActor> {
-  const userId = await requireUserId(ctx);
-  const device = await findDevice(ctx, userId);
-  if (!device || device.householdId !== householdId) {
-    throw appError("forbidden", "Only the senior's devices can do this");
-  }
-  return { kind: "senior_device", userId, householdId, device };
+  const actor = await requireDeviceActor(ctx);
+  if (actor.householdId !== householdId) throw appError("forbidden", DEVICES_ONLY);
+  return actor;
 }
 
 export async function requireCaregiverAccount(ctx: QueryCtx): Promise<string> {

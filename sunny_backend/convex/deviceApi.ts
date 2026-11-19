@@ -14,7 +14,7 @@ import type { PublicHttpAction } from "convex/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { NO_SUCH_TASK, confirmPressedInstance } from "./instances";
 import type { ConfirmTransport, PressResult } from "./instances";
-import { findDevice, requireUserId } from "./lib/access";
+import { DEVICES_ONLY, deviceActor, findDevice, requireDeviceActor } from "./lib/access";
 import type { Actor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { NOT_DUE_YET } from "./lib/confirmRule";
@@ -128,20 +128,8 @@ export async function findDeviceByTokenHash(
     .unique();
 }
 
-function deviceActor(device: Doc<"devices">): DeviceActor {
-  return { kind: "senior_device", userId: device.userId, householdId: device.householdId, device };
-}
-
 function seenLongAgo(lastSeenAt: number | null | undefined, now: number): boolean {
   return lastSeenAt == null || now - lastSeenAt > LAST_SEEN_INTERVAL_MS;
-}
-
-const DEVICES_ONLY = "Only the senior's devices can do this";
-
-async function requireOwnDevice(ctx: QueryCtx): Promise<Doc<"devices">> {
-  const device = await findDevice(ctx, await requireUserId(ctx));
-  if (!device) throw appError("forbidden", DEVICES_ONLY);
-  return device;
 }
 
 export async function revokeTokenOf(
@@ -164,10 +152,10 @@ export async function revokeTokenOf(
 export const revokeOwnToken = mutation({
   args: {},
   handler: async (ctx): Promise<null> => {
-    const device = await requireOwnDevice(ctx);
-    const limit = await rateLimiter.limit(ctx, "tokenRevokes", { key: device._id });
+    const actor = await requireDeviceActor(ctx);
+    const limit = await rateLimiter.limit(ctx, "tokenRevokes", { key: actor.device._id });
     if (!limit.ok) throw appError("limit", "Too many device token revokes. Try again later.");
-    await revokeTokenOf(ctx, deviceActor(device), device);
+    await revokeTokenOf(ctx, actor, actor.device);
     return null;
   },
 });
@@ -210,8 +198,8 @@ export const issueToken = action({
 export const state = query({
   args: { minute: v.optional(v.number()) },
   handler: async (ctx): Promise<DeviceState> => {
-    const device = await requireOwnDevice(ctx);
-    return await loadDeviceState(ctx, device.householdId, Date.now());
+    const actor = await requireDeviceActor(ctx);
+    return await loadDeviceState(ctx, actor.householdId, Date.now());
   },
 });
 
