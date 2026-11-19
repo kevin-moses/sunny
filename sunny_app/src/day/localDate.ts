@@ -58,34 +58,48 @@ export function yearOf(time: number): number {
   return new Date(time).getUTCFullYear();
 }
 
-export function localClockTime(timezone: string, at: number): string | null {
+const ZONED_FORMATS = {
+  clock: {
+    locale: 'en-US',
+    options: { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' },
+    fields: ['hour', 'minute'],
+    separator: ':',
+    shape: /^\d{2}:\d{2}$/,
+  },
+  date: {
+    locale: 'en-CA',
+    options: { year: 'numeric', month: '2-digit', day: '2-digit' },
+    fields: ['year', 'month', 'day'],
+    separator: '-',
+    shape: /^\d{4}-\d{2}-\d{2}$/,
+  },
+} as const;
+
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function zonedText(kind: keyof typeof ZONED_FORMATS, timezone: string, at: number): string | null {
+  const format = ZONED_FORMATS[kind];
+  const key = `${kind} ${timezone}`;
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(new Date(at));
-    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
-    const time = `${get('hour')}:${get('minute')}`;
-    return /^\d{2}:\d{2}$/.test(time) ? time : null;
+    let formatter = formatters.get(key);
+    if (formatter === undefined) {
+      formatter = new Intl.DateTimeFormat(format.locale, { ...format.options, timeZone: timezone });
+      formatters.set(key, formatter);
+    }
+    const parts = formatter.formatToParts(new Date(at));
+    const text = format.fields
+      .map((type) => parts.find((part) => part.type === type)?.value ?? '')
+      .join(format.separator);
+    return format.shape.test(text) ? text : null;
   } catch {
     return null;
   }
 }
 
+export function localClockTime(timezone: string, at: number): string | null {
+  return zonedText('clock', timezone, at);
+}
+
 export function currentLocalDate(timezone: string, now: number): string | null {
-  try {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(new Date(now));
-    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
-    const date = `${get('year')}-${get('month')}-${get('day')}`;
-    return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
-  } catch {
-    return null;
-  }
+  return zonedText('date', timezone, now);
 }
