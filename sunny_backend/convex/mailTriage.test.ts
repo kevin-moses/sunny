@@ -360,6 +360,9 @@ describe("an appointment email", () => {
     expect((await rows(h, "chatPosts"))[0]!.body).toContain(
       "Sunny did not move Eye exam, Thursday, December 10 at 2:15 PM, because Gmail could not verify the sender. The email asks to move it to Saturday, December 12 at 10:00 AM. Tell Sunny in chat to move it if the email is genuine.",
     );
+    expect((await rows(h, "notificationOutbox"))[0]!.body).toBe(
+      "Sunny did not move Eye exam, Thursday, December 10 at 2:15 PM, because Gmail could not verify the sender. The email asks to move it to Saturday, December 12 at 10:00 AM. Tell...",
+    );
     expect(kinds(await rows(h, "notificationOutbox"))).toEqual([
       "mail_escalation",
       "mail_escalation",
@@ -1624,6 +1627,41 @@ describe("links belong to the sender's domain", () => {
       },
     ]);
     expect(slots(await rows(h, "events"))).toEqual(["2026-12-10 14:15"]);
+  });
+
+  test("a reminder at the time a caregiver moved the clinic's appointment from changes nothing and asks", async () => {
+    const h = await setup();
+    const says: JevSays = {
+      yes: ["confirms_appointment"],
+      kind: "eye_doctor",
+      when: { date: "2026-12-10", time: "14:15" },
+    };
+    const first = await triageEmail(h, clinic({ subject: "Confirmed" }), says);
+    const [event] = await rows(h, "events");
+    expect(first.effects?.[0]).toEqual({ kind: "event_added", eventId: event!._id });
+    await h.t.run(
+      async (ctx) => await ctx.db.patch(event!._id, { startsOn: "2026-12-11", startTime: "09:00" }),
+    );
+    const reminder = await triageEmail(h, clinic({ subject: "Reminder" }), says);
+    expect(reminder.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "unclear_appointment",
+        pushed: true,
+        eventId: event!._id,
+        proposed: { kind: "eye_doctor", date: "2026-12-10", time: "14:15" },
+      },
+    ]);
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-11 09:00"]);
+    expect(await rows(h, "mailEventLinks")).toEqual([
+      expect.objectContaining({
+        appointmentKey: "appt:2026-12-10:14:15:eye exam",
+        eventId: event!._id,
+      }),
+    ]);
+    expect((await rows(h, "chatPosts")).at(-1)!.body).toContain(
+      "The email gives Eye exam, Thursday, December 10 at 2:15 PM. Sunny's calendar has this appointment on Friday, December 11 at 9:00 AM, so Sunny changed nothing. Tell Sunny in chat which time is right.",
+    );
   });
 
   test("the clinic's update moves a video call Sunny added from its invite", async () => {

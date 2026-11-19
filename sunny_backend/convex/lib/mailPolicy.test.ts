@@ -184,11 +184,15 @@ describe("planWithRule decision table", () => {
       ]);
     });
 
-    test("a slot link whose event has moved away is not the appointment, so it is added", () => {
-      expect(kinds(effectsOf(newAppointment(), facts({ linked: linkTo("evt_eye") })))).toEqual([
-        "add_event",
-        "tell_caregivers",
-      ]);
+    test("a slot link whose event has moved away changes nothing and asks which time is right", () => {
+      const effects = effectsOf(newAppointment(), facts({ linked: linkTo("evt_eye") }));
+      expect(kinds(effects)).toEqual(["escalate:unclear_appointment:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: "evt_eye",
+        proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
+        notice:
+          "The email gives Hearing appointment, Thursday, December 10 at 2:15 PM. Sunny's calendar has this appointment on Tuesday, November 24 at 10:30 AM, so Sunny changed nothing. Tell Sunny in chat which time is right.",
+      });
     });
 
     test("at the same date and time as a live event of the same kind is already on the calendar", () => {

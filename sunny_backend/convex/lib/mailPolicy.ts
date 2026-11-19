@@ -222,6 +222,7 @@ type Situation =
       case: "new";
       appointment: Appointment;
       fields: Appointment | null;
+      elsewhere: LinkedEvent | null;
       duplicate: string | null;
       conflict: CalendarEventFact | null;
     }
@@ -323,6 +324,21 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 "unverified_sender",
                 `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
                 null,
+                s.appointment,
+              ),
+            ],
+    },
+    {
+      rule: "the sender's link has this appointment at another time",
+      plan: (s, c) =>
+        s.elsewhere === null
+          ? null
+          : [
+              escalate(
+                c,
+                "unclear_appointment",
+                `The email gives ${described(s.appointment)}. Sunny's calendar has this appointment on ${when(s.elsewhere.date, s.elsewhere.time)}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
+                s.elsewhere.eventId,
                 s.appointment,
               ),
             ],
@@ -571,32 +587,42 @@ function sameSlot(a: { date: string; time: string }, b: { date: string; time: st
   return a.date === b.date && a.time === b.time;
 }
 
-function linkedFor(verdict: MailVerdict, facts: PolicyFacts): LinkedEvent | null {
-  const { linked } = facts;
-  if (linked === null || facts.ics !== null) return linked;
-  return verdict.kind === "appointment" &&
-    verdict.change !== "cancel" &&
-    sameSlot(linked, verdict.appointment)
-    ? linked
-    : null;
+interface ScopedLink {
+  linked: LinkedEvent | null;
+  elsewhere: LinkedEvent | null;
 }
 
-function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
-  const fields = appointmentFields(appointment, facts);
+function scopedLink(appointment: Appointment | null, facts: PolicyFacts): ScopedLink {
   const { linked } = facts;
-  const live = facts.events.find((e) => e.eventId === linked?.eventId);
-  if (live !== undefined && facts.ics !== null && !sameSlot(live, appointment)) {
-    return { case: "reschedule", appointment, fields, matches: [live] };
-  }
-  if (linked !== null && live === undefined && !sameSlot(linked, appointment)) {
-    return { case: "reschedule", appointment, fields, matches: [] };
-  }
+  if (linked === null || facts.ics !== null) return { linked, elsewhere: null };
+  return appointment !== null && sameSlot(linked, appointment)
+    ? { linked, elsewhere: null }
+    : { linked: null, elsewhere: linked };
+}
+
+function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEventFact[] | null {
+  const { linked } = facts;
+  if (facts.ics === null || linked === null) return null;
+  const live = facts.events.find((e) => e.eventId === linked.eventId);
+  if (live === undefined) return sameSlot(linked, appointment) ? null : [];
+  return sameSlot(live, appointment) ? null : [live];
+}
+
+function newSituation(
+  appointment: Appointment,
+  elsewhere: LinkedEvent | null,
+  facts: PolicyFacts,
+): Situation {
+  const fields = appointmentFields(appointment, facts);
+  const moved = linkedInvite(appointment, facts);
+  if (moved !== null) return { case: "reschedule", appointment, fields, matches: moved };
   const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
   return {
     case: "new",
     appointment,
     fields,
-    duplicate: linked?.eventId ?? same?.eventId ?? null,
+    elsewhere,
+    duplicate: facts.linked?.eventId ?? same?.eventId ?? null,
     conflict:
       fields === null
         ? null
@@ -604,7 +630,11 @@ function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
   };
 }
 
-function situationOf(verdict: MailVerdict, sent: PolicyFacts): Situation {
+function situationOf(
+  verdict: MailVerdict,
+  facts: PolicyFacts,
+  elsewhere: LinkedEvent | null,
+): Situation {
   switch (verdict.kind) {
     case "ignore":
       return { case: "ignore" };
@@ -615,7 +645,6 @@ function situationOf(verdict: MailVerdict, sent: PolicyFacts): Situation {
     case "suspicious":
       return { case: "suspicious", suspicion: verdict.suspicion };
   }
-  const facts = { ...sent, linked: linkedFor(verdict, sent) };
   switch (verdict.change) {
     case "cancel":
       return {
@@ -631,7 +660,7 @@ function situationOf(verdict: MailVerdict, sent: PolicyFacts): Situation {
         matches: matchesFor(verdict.previous, facts),
       };
     case "new":
-      return newSituation(verdict.appointment, facts);
+      return newSituation(verdict.appointment, elsewhere, facts);
   }
 }
 
@@ -666,10 +695,16 @@ function planFor(situation: Situation, context: Context): Plan {
   }
 }
 
+function appointmentOf(verdict: MailVerdict): Appointment | null {
+  return verdict.kind === "appointment" && verdict.change !== "cancel" ? verdict.appointment : null;
+}
+
 export function planWithRule(
   triaged: Pick<Triaged, "verdict" | "summary">,
-  facts: PolicyFacts,
+  sent: PolicyFacts,
 ): Plan {
+  const { linked, elsewhere } = scopedLink(appointmentOf(triaged.verdict), sent);
+  const facts = { ...sent, linked };
   const context: Context = {
     facts,
     authenticated: facts.sender.authenticated,
@@ -678,7 +713,7 @@ export function planWithRule(
     summary: triaged.summary,
     decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
   };
-  const plan = planFor(situationOf(triaged.verdict, facts), context);
+  const plan = planFor(situationOf(triaged.verdict, facts, elsewhere), context);
   if (!context.stale) return plan;
   return {
     rule: plan.rule,
