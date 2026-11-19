@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
+import * as Notifications from 'expo-notifications';
+
 import { registerPushToken, unregisterStoredPushToken } from '../push';
 
 const mockStore = new Map<string, string>();
@@ -15,6 +17,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 jest.mock('expo-notifications', () => ({ setNotificationHandler: jest.fn() }));
+
+const installedHandler = jest.mocked(Notifications.setNotificationHandler).mock.calls[0]![0]!;
 
 jest.mock('../../backend/api', () => ({
   callMutation: (...args: unknown[]) => mockMutation(...args),
@@ -90,5 +94,26 @@ describe('registerPushToken', () => {
     mockMutation.mockRejectedValue(new Error('boom'));
     await registerPushToken('apns-new');
     expect(mockStore.get('sunny.pushToken')).toBe('apns-old');
+  });
+});
+
+describe('a note from the mail arriving while the app is open', () => {
+  it('shows as a normal banner with its sound', async () => {
+    const note = {
+      request: {
+        identifier: 'n1',
+        content: {
+          title: 'Sunny',
+          body: 'The pharmacy says your refill is ready.',
+          data: { kind: 'senior_note', household_id: 'h1', notification_id: 'n1' },
+        },
+      },
+    } as unknown as Notifications.Notification;
+    expect(await installedHandler.handleNotification(note)).toEqual({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    });
   });
 });
