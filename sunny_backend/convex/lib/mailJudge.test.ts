@@ -548,6 +548,26 @@ describe("reading Jev's answers", () => {
     expect(readAnswers(answers, ANCHOR, { ...ics, method: "OTHER" }).invite).toBeNull();
   });
 
+  test("an invitation adds its title and place to the email Jev reads", () => {
+    const ics: IcsEvent = {
+      method: "REQUEST",
+      uid: "u-1",
+      start: { date: "2026-12-09", time: "14:30" },
+      durationMinutes: 45,
+      summary: "Buy gift cards for Anna",
+      location: "Pharmacy on Main Street",
+      recurring: false,
+      sequence: 0,
+    };
+    expect(judgeState(email({ ics })).email).toMatchObject({
+      calendar_invitation_title: "Buy gift cards for Anna",
+      calendar_invitation_place: "Pharmacy on Main Street",
+    });
+    expect(Object.keys(judgeState(email({ ics: { ...ics, location: null } })).email)).not.toContain(
+      "calendar_invitation_place",
+    );
+  });
+
   test("the state holds only the email's sender, subject and body", () => {
     expect(judgeState(email())).toEqual({
       email: {

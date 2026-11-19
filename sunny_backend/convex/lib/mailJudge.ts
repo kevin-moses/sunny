@@ -262,12 +262,20 @@ export function judgeQuestions(
 }
 
 export function judgeState(email: ParsedEmail): { email: Record<string, string> } {
+  const invitation =
+    email.ics === null
+      ? {}
+      : {
+          calendar_invitation_title: email.ics.summary,
+          ...(email.ics.location === null ? {} : { calendar_invitation_place: email.ics.location }),
+        };
   return {
     email: {
       sender_name: email.sender.name,
       sender_address: email.sender.address,
       subject: email.subject,
       body: email.text,
+      ...invitation,
     },
   };
 }
