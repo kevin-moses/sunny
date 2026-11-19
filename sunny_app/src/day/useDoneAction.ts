@@ -33,6 +33,7 @@ export const UNDO_MS = 30_000;
 export interface UndoLineData {
   label: string;
   text: string;
+  pressedAt: number;
 }
 
 export interface DoneAction {
@@ -245,6 +246,7 @@ export function useDoneAction(
       : {
           label: pressLabel(offer.pressed.task),
           text: `${pressLabel(offer.pressed.task)} done.${unsent ? OFFLINE_NOTE : ''}`,
+          pressedAt: offer.pressed.pressedAt,
         };
 
   return { task, message, pressDone, undo, pressUndo };
