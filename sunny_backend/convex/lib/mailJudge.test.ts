@@ -7,6 +7,7 @@ import {
   FLAGS,
   FLAG_GROUPS,
   JEV_MODEL,
+  JevAnswerError,
   TRUTH_TABLE,
   askJev,
   compactAnswers,
@@ -542,6 +543,22 @@ describe("reading Jev's answers", () => {
     expect(read.flags.get("addresses_assistant")).toBe("no");
     expect(read.flags.get("about_bill")).toBe("unsure");
     expect(read.when).toEqual(DEC_10);
+  });
+
+  test.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01])(
+    "a Noul of %d is an error, not an answer",
+    (noul) => {
+      const raw = { ...jevAnswers(EYE_EXAM, QUESTIONS), bulk_mail: { type: "noul", noul } };
+      expect(() => compactAnswers(raw, QUESTIONS)).toThrow(JevAnswerError);
+    },
+  );
+
+  test.each([Number.NaN, -0.5, 2])("a chosen option with probability %d is an error", (p) => {
+    const raw = {
+      ...jevAnswers(EYE_EXAM, QUESTIONS),
+      when_day: { type: "choice", choice: "10", confidence: 1, probabilities: { "10": p } },
+    };
+    expect(() => compactAnswers(raw, QUESTIONS)).toThrow(JevAnswerError);
   });
 
   test("a missing answer is an error, not a no", () => {

@@ -33,6 +33,7 @@ import {
   scheduleGrantRevoke,
 } from "./lib/googleTokens";
 import { pushToCaregivers } from "./lib/mailEffects";
+import { JevAnswerError } from "./lib/mailJudge";
 import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import { SecretUnreadable, encryptSecret } from "./lib/secretBox";
@@ -338,7 +339,7 @@ export function mailFailure(e: unknown): MailFailure {
   if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
     return { kind: "mailbox", status: "error", error: FORBIDDEN_MESSAGE };
   }
-  if (e instanceof ConfigError) return { kind: "permanent" };
+  if (e instanceof ConfigError || e instanceof JevAnswerError) return { kind: "permanent" };
   if (e instanceof GoogleApiError) {
     return !e.retryable && e.status !== 401 ? { kind: "permanent" } : { kind: "retry" };
   }

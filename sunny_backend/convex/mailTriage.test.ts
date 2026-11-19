@@ -14,6 +14,7 @@ import {
   MAILBOX,
   item,
   jevCalls,
+  jevRepliesWith,
   jevSays,
   mailHousehold,
   receive,
@@ -21,7 +22,7 @@ import {
   summaryCalls,
   triageEmail,
 } from "./mailMocks.helpers";
-import type { JevSays, MailHousehold, RawEmail } from "./mailMocks.helpers";
+import type { JevSays, JevWireReply, MailHousehold, RawEmail } from "./mailMocks.helpers";
 import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
 import { insertEvent, insertRequest, makeBackend } from "./testing.helpers";
 
@@ -719,6 +720,60 @@ describe("the item lifecycle", () => {
     await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toMatchObject({
       name: "NonRetryableError",
     });
+  });
+
+  test.each([
+    [
+      "a Noul above 1",
+      (r: JevWireReply) => ({
+        ...r,
+        answers: { ...r.answers, addresses_assistant: { type: "noul", noul: 1.4 } },
+      }),
+    ],
+    [
+      "a negative Noul",
+      (r: JevWireReply) => ({
+        ...r,
+        answers: { ...r.answers, asks_private_details: { type: "noul", noul: -0.4 } },
+      }),
+    ],
+    [
+      "a chosen option with a probability above 1",
+      (r: JevWireReply) => ({
+        ...r,
+        answers: {
+          ...r.answers,
+          when_month: {
+            type: "choice",
+            choice: "December",
+            confidence: 1,
+            probabilities: { December: 3 },
+          },
+        },
+      }),
+    ],
+    [
+      "an answer missing",
+      (r: JevWireReply) => {
+        const { confirms_appointment: _, ...answers } = r.answers;
+        return { ...r, answers };
+      },
+    ],
+    [
+      "no input token count",
+      (r: JevWireReply) => ({
+        ...r,
+        usage: { input_tokens: null, output_tokens: 3 },
+      }),
+    ],
+  ])("a Jev reply with %s fails the row once without a retry", async (_, change) => {
+    const h = await setup();
+    jevRepliesWith(EYE_EXAM, change);
+    const itemId = await receive(h, clinic());
+    await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toMatchObject({
+      name: "NonRetryableError",
+    });
+    expect(await rows(h, "events")).toHaveLength(0);
   });
 
   test("a missing TypeSafe key is not retried", async () => {

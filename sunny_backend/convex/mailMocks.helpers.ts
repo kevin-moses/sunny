@@ -185,16 +185,24 @@ function wireQuestions(value: unknown): Record<string, WireQuestion> {
   );
 }
 
-export function jevReply(says: JevSays, init: RequestInit | undefined): Response {
+export type JevWireReply = Record<string, unknown> & { answers: Record<string, unknown> };
+
+export function jevReply(
+  says: JevSays,
+  init: RequestInit | undefined,
+  change: (reply: JevWireReply) => unknown = (reply) => reply,
+): Response {
   const body: unknown = JSON.parse(String(init?.body));
   if (!isRecord(body)) throw new Error("Jev request is not an object");
   const questions = wireQuestions(body.questions);
   jevCalls.push({ state: body.state, questions });
-  return json({
-    model: JEV_MODEL,
-    answers: jevAnswers(says, questions),
-    usage: { input_tokens: 4200, output_tokens: 310 },
-  });
+  return json(
+    change({
+      model: JEV_MODEL,
+      answers: jevAnswers(says, questions),
+      usage: { input_tokens: 4200, output_tokens: 310 },
+    }),
+  );
 }
 
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -244,6 +252,17 @@ export function jevSays(
       if (String(url) !== JEV_URL) throw new Error(`unexpected fetch ${String(url)}`);
       if ("status" in says) return json({ detail: "refused" }, says.status);
       return jevReply(says, init);
+    }),
+  );
+}
+
+export function jevRepliesWith(says: JevSays, change: (reply: JevWireReply) => unknown): void {
+  vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url) !== JEV_URL) throw new Error(`unexpected fetch ${String(url)}`);
+      return jevReply(says, init, change);
     }),
   );
 }

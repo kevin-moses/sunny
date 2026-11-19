@@ -781,17 +781,25 @@ export interface JevReply {
 
 export type AskJev = (request: JevRequest) => Promise<JevReply>;
 
+export class JevAnswerError extends Error {
+  override name = "JevAnswerError";
+}
+
+function isProbability(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function compactAnswer(
   name: string,
   question: NoulQuestion | ChoiceQuestion,
   raw: unknown,
 ): JevAnswer {
   if (typeof raw !== "object" || raw === null || !("type" in raw)) {
-    throw new Error(`Jev returned no answer for ${name}`);
+    throw new JevAnswerError(`Jev returned no answer for ${name}`);
   }
   if (question.type === "noul") {
-    if (raw.type === "noul" && "noul" in raw && typeof raw.noul === "number") return raw.noul;
-    throw new Error(`Jev returned no Noul answer for ${name}`);
+    if (raw.type === "noul" && "noul" in raw && isProbability(raw.noul)) return raw.noul;
+    throw new JevAnswerError(`Jev returned no Noul probability for ${name}`);
   }
   if (
     raw.type === "choice" &&
@@ -806,9 +814,9 @@ function compactAnswer(
     const probability: unknown = Object.entries(raw.probabilities).find(
       ([label]) => label === choice,
     )?.[1];
-    if (typeof probability === "number") return { choice, probability };
+    if (isProbability(probability)) return { choice, probability };
   }
-  throw new Error(`Jev returned no Choice answer for ${name}`);
+  throw new JevAnswerError(`Jev returned no Choice probability for ${name}`);
 }
 
 export function compactAnswers(raw: Record<string, unknown>, questions: JevQuestions): JevAnswers {
@@ -828,7 +836,7 @@ export const askJev: AskJev = async (request) => {
   });
   const response = await client.systemOne(request);
   const inputTokens = response.usage.input_tokens;
-  if (inputTokens === null) throw new Error("Jev returned no input token count");
+  if (inputTokens === null) throw new JevAnswerError("Jev returned no input token count");
   return {
     answers: compactAnswers(response.answers, request.questions),
     usage: { inputTokens, outputTokens: response.usage.output_tokens ?? 0, cacheReadTokens: 0 },
