@@ -25,6 +25,7 @@ type AnyMock = (...args: unknown[]) => Promise<unknown>;
 const mockStore = new Map<string, string>();
 const mockCalls: string[] = [];
 const mockUnregister = jest.fn<AnyMock>();
+const mockClearWidget = jest.fn<AnyMock>();
 const mockSignOut = jest.fn<AnyMock>();
 const mockSignInCreate = jest.fn<AnyMock>();
 const mockSetActive = jest.fn<AnyMock>();
@@ -73,6 +74,10 @@ jest.mock('../../notifications/push', () => ({
   unregisterStoredPushToken: () => mockUnregister(),
 }));
 
+jest.mock('../../widget/widgetSync', () => ({
+  clearWidget: () => mockClearWidget(),
+}));
+
 jest.mock('../../logging/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
@@ -118,6 +123,7 @@ beforeEach(() => {
   mockSignInCreate.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' });
   mockSetActive.mockResolvedValue(undefined);
   mockUnregister.mockImplementation(async () => void mockCalls.push('push'));
+  mockClearWidget.mockResolvedValue(undefined);
   mockSignOut.mockImplementation(async () => void mockCalls.push('signOut'));
   global.fetch = mockFetch as unknown as typeof fetch;
 });
@@ -310,6 +316,13 @@ describe('unpair', () => {
     clear.mockRestore();
   });
 
+  it('clears the widget credentials and presses, with or without a session', async () => {
+    await unpair();
+    mockClerk.session = { id: 's' };
+    await unpair();
+    expect(mockClearWidget).toHaveBeenCalledTimes(2);
+  });
+
   it('shares one run between concurrent calls', async () => {
     mockClerk.session = { id: 's' };
     await Promise.all([unpair(), unpair()]);
@@ -347,6 +360,13 @@ describe('unpair resilience', () => {
   it('still signs out when unregistering the push token throws', async () => {
     mockClerk.session = { id: 's' };
     mockUnregister.mockRejectedValue(new Error('boom'));
+    await expect(unpair()).resolves.toBeUndefined();
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('still signs out when clearing the widget fails', async () => {
+    mockClerk.session = { id: 's' };
+    mockClearWidget.mockRejectedValue(new Error('keychain'));
     await expect(unpair()).resolves.toBeUndefined();
     expect(mockSignOut).toHaveBeenCalledTimes(1);
   });

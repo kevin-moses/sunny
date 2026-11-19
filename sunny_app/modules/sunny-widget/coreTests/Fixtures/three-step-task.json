@@ -1,0 +1,50 @@
+{
+  "version": "v-three-step",
+  "generatedAt": 1795098600000,
+  "timezone": "America/New_York",
+  "until": 1795185000000,
+  "entries": [
+    {
+      "at": 1795098600000,
+      "cards": [
+        {
+          "kind": "task",
+          "instanceId": "inst-tea",
+          "step": 0,
+          "stepCount": 3,
+          "stepText": "Fill the kettle.",
+          "label": "Make tea",
+          "sentence": "Time to make tea.",
+          "detail": null,
+          "startsAt": 1795098600000,
+          "endsAt": 1795102200000
+        },
+        {
+          "kind": "task",
+          "instanceId": "inst-tea",
+          "step": 1,
+          "stepCount": 3,
+          "stepText": "Put a tea bag in the blue cup on the counter by the window.",
+          "label": "Make tea",
+          "sentence": "Time to make tea.",
+          "detail": null,
+          "startsAt": 1795098600000,
+          "endsAt": 1795102200000
+        },
+        {
+          "kind": "task",
+          "instanceId": "inst-tea",
+          "step": 2,
+          "stepCount": 3,
+          "stepText": null,
+          "label": "Make tea",
+          "sentence": "Time to make tea.",
+          "detail": null,
+          "startsAt": 1795098600000,
+          "endsAt": 1795102200000
+        },
+        { "kind": "clear", "allDone": true, "next": null }
+      ]
+    }
+  ]
+}

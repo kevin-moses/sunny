@@ -1,0 +1,42 @@
+{
+  "version": "v-two-due",
+  "generatedAt": 1795098600000,
+  "timezone": "America/New_York",
+  "until": 1795185000000,
+  "entries": [
+    {
+      "at": 1795098600000,
+      "cards": [
+        {
+          "kind": "task",
+          "instanceId": "inst-morning-pills",
+          "step": 0,
+          "stepCount": 1,
+          "stepText": null,
+          "label": "Morning pills",
+          "sentence": "Take your morning pills.",
+          "detail": null,
+          "startsAt": 1795098600000,
+          "endsAt": 1795105800000
+        },
+        {
+          "kind": "task",
+          "instanceId": "inst-blood-pressure",
+          "step": 0,
+          "stepCount": 1,
+          "stepText": null,
+          "label": "Blood pressure",
+          "sentence": "Check your blood pressure and write it in the notebook by the kettle.",
+          "detail": null,
+          "startsAt": 1795098600000,
+          "endsAt": 1795105800000
+        },
+        {
+          "kind": "clear",
+          "allDone": false,
+          "next": { "label": "Lunch", "startsAt": 1795109400000 }
+        }
+      ]
+    }
+  ]
+}

@@ -59,6 +59,10 @@ jest.mock('../../notifications/push', () => ({
   unregisterStoredPushToken: async () => undefined,
 }));
 
+jest.mock('../../widget/widgetSync', () => ({
+  clearWidget: async () => undefined,
+}));
+
 jest.mock('../../logging/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));

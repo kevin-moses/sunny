@@ -1,0 +1,70 @@
+import SunnyWidget from '../../modules/sunny-widget';
+import { callAction } from '../backend/api';
+import { api } from '../backend/convexApi';
+import type { SessionDecision } from '../backend/pairing';
+import { CONVEX_SITE_URL } from '../config';
+import type { DayViewData } from '../day/types';
+import { errorMessage } from '../errors';
+import { logger } from '../logging/logger';
+
+export type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
+
+let storeFailed = false;
+let syncRun: Promise<void> | null = null;
+
+export function widgetHolderOf(decision: SessionDecision): WidgetHolder {
+  switch (decision.state) {
+    case 'paired':
+      return decision.device.kind === 'senior_phone' ? 'seniorPhone' : 'none';
+    case 'loading':
+    case 'removed':
+      return 'undecided';
+    default:
+      return 'none';
+  }
+}
+
+export function widgetReloadKey(day: DayViewData | null): string | null {
+  if (day === null) return null;
+  const { localDate, tasks, eventsToday, nextUp } = day;
+  return JSON.stringify({ localDate, tasks, eventsToday, nextUp });
+}
+
+export async function ensureWidgetToken(): Promise<boolean> {
+  if (SunnyWidget.storedSiteUrl() === CONVEX_SITE_URL) return true;
+  if (storeFailed) return false;
+  const { deviceToken } = await callAction(api.deviceApi.issueToken, {});
+  try {
+    await SunnyWidget.setCredentials(deviceToken, CONVEX_SITE_URL);
+  } catch (e) {
+    storeFailed = true;
+    logger.error('Widget', `Could not store the widget credentials: ${errorMessage(e)}`);
+    return false;
+  }
+  return true;
+}
+
+async function syncOnce(): Promise<void> {
+  if (!(await ensureWidgetToken())) return;
+  const result = await SunnyWidget.flushPresses();
+  if (result === 'unauthorized' && (await ensureWidgetToken())) await SunnyWidget.flushPresses();
+  SunnyWidget.reloadTimelines();
+}
+
+export function syncWidget(): Promise<void> {
+  syncRun ??= syncOnce()
+    .catch((e: unknown) => logger.warning('Widget', `Widget sync failed: ${errorMessage(e)}`))
+    .finally(() => {
+      syncRun = null;
+    });
+  return syncRun;
+}
+
+export async function clearWidget(): Promise<void> {
+  storeFailed = false;
+  await SunnyWidget.clearCredentials();
+}
+
+export function reloadWidget(): void {
+  SunnyWidget.reloadTimelines();
+}
