@@ -125,6 +125,7 @@ export function appointmentFields(
   if (TITLE_DIGITS.test(title) || LINK.test(title) || CURRENCY.test(title)) return null;
   if (place.length > MAX_PLACE || PLACE_DIGITS.test(place)) return null;
   if (LINK.test(place) || CURRENCY.test(place)) return null;
+  if (DENIED_WORDS.test(title) || DENIED_WORDS.test(place)) return null;
   if (!isLocalDate(date) || !isLocalTime(time)) return null;
   if (zonedInstant(date, time, clock.timezone) < clock.now) return null;
   if (daysBetween(localDate(clock.now, clock.timezone), date) > MAX_DAYS_AHEAD) return null;
@@ -265,6 +266,17 @@ function escalate(
   };
 }
 
+function domainOf(address: string): string {
+  return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+}
+
+function sameDomain(source: string | null, sender: string): boolean {
+  if (source === null) return false;
+  const a = domainOf(source);
+  const b = domainOf(sender);
+  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+}
+
 function only(matches: CalendarEventFact[]): CalendarEventFact | null {
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
@@ -354,10 +366,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule: [
     {
-      rule: "not authenticated, no single match, or new fields rejected",
+      rule: "not authenticated, no single match, new fields rejected, or sender neither known nor the event's source",
       plan: (s, c) => {
         const match = only(s.matches);
-        if (c.authenticated && match !== null && s.fields !== null) return null;
+        const mayMove =
+          match !== null &&
+          (c.facts.senderKnown || sameDomain(match.sourceSender, c.facts.sender.address));
+        if (c.authenticated && mayMove && s.fields !== null) return null;
         return [
           escalate(
             c,

@@ -31,6 +31,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-11-24",
     time: "10:30",
     durationMinutes: 60,
+    sourceSender: "appointments@lakesideeye.example",
   },
   {
     eventId: "evt_pt",
@@ -38,6 +39,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-11-20",
     time: "14:00",
     durationMinutes: 45,
+    sourceSender: "frontdesk@mail.riversidept.example",
   },
   {
     eventId: "evt_dentist",
@@ -45,8 +47,15 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-12-02",
     time: "09:00",
     durationMinutes: null,
+    sourceSender: null,
   },
 ];
+
+const PT_SENDER = {
+  name: "Riverside Physical Therapy",
+  address: "frontdesk@riversidept.example",
+  authenticated: true,
+};
 
 function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
   return {
@@ -201,8 +210,8 @@ describe("planEffects decision table", () => {
   describe("reschedule", () => {
     const pt = { date: "2026-11-20", time: "14:00", title: "Physical therapy" };
 
-    test("with exactly one match moves the event and tells caregivers with a push", () => {
-      const effects = planEffects(model(reschedule(pt)), facts());
+    test("with exactly one match from the event's source moves it and tells caregivers with a push", () => {
+      const effects = planEffects(model(reschedule(pt)), facts({ sender: PT_SENDER }));
       expect(effects[0]).toMatchObject({
         kind: "reschedule_event",
         eventId: "evt_pt",
@@ -218,15 +227,26 @@ describe("planEffects decision table", () => {
     test("finds the event through the link before the previous time", () => {
       const effects = planEffects(
         model(reschedule({ date: "2030-01-01", time: null, title: "?" })),
-        facts({ linkedEventId: "evt_pt" }),
+        facts({ linkedEventId: "evt_pt", sender: PT_SENDER }),
       );
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
+    });
+
+    test("from a known sender may move an event entered by hand", () => {
+      const effects = planEffects(
+        model(reschedule({ date: "2026-12-02", time: "09:00", title: "Dentist" })),
+        facts({
+          sender: { name: "Anna Ellis", address: "anna.ellis@example.net", authenticated: true },
+          senderKnown: true,
+        }),
+      );
+      expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_dentist" });
     });
 
     test("to the time the event already has is already on the calendar", () => {
       const effects = planEffects(
         model(reschedule(pt, { date: "2026-11-20", time: "14:00" })),
-        facts(),
+        facts({ sender: PT_SENDER }),
       );
       expect(effects).toEqual([{ kind: "already_on_calendar", eventId: "evt_pt" }]);
     });
@@ -256,14 +276,39 @@ describe("planEffects decision table", () => {
               date: "2026-11-20",
               time: "16:00",
               durationMinutes: 30,
+              sourceSender: null,
             },
           ],
         },
         null,
       ],
       ["the new fields are rejected", reschedule(pt, { place: "Call 555-014-2233" }), {}, "evt_pt"],
+      [
+        "the sender is a lookalike of the event's source",
+        reschedule({ date: "2026-11-24", time: "10:30", title: "Eye exam" }),
+        {
+          sender: {
+            name: "Lakeside Eye Care",
+            address: "appointments@lakeside-eyecare.example",
+            authenticated: true,
+          },
+        },
+        "evt_eye",
+      ],
+      [
+        "an unknown sender asks to move an event entered by hand",
+        reschedule({ date: "2026-12-02", time: "09:00", title: "Dentist" }),
+        {
+          sender: {
+            name: "Maple Street Dental",
+            address: "office@maplestreetdental.example",
+            authenticated: true,
+          },
+        },
+        "evt_dentist",
+      ],
     ])("escalates as unclear when %s", (_, verdict, overrides, eventId) => {
-      const effects = planEffects(model(verdict), facts(overrides));
+      const effects = planEffects(model(verdict), facts({ sender: PT_SENDER, ...overrides }));
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
       expect(effects[0]).toMatchObject({ eventId });
     });
@@ -336,7 +381,7 @@ describe("planEffects decision table", () => {
   });
 
   test("a stale email never pushes", () => {
-    const stale = facts({ receivedAt: NOW - 3 * DAY_MS });
+    const stale = facts({ receivedAt: NOW - 3 * DAY_MS, sender: PT_SENDER });
     expect(
       kinds(planEffects(model({ kind: "suspicious", suspicion: "scam", summary: "x" }), stale)),
     ).toEqual(["escalate:scam:false"]);
@@ -392,6 +437,8 @@ describe("appointmentFields", () => {
     ["a phone number in the place", { place: "Call (555) 014-2233" }],
     ["a link in the place", { place: "www.clinic.example" }],
     ["a currency sign in the place", { place: "Bring €50" }],
+    ["an instruction word in the title", { title: "Medicare card verification - bring bank card" }],
+    ["an instruction word in the place", { place: "Kiosk - verify your account first" }],
     ["a malformed date", { date: "12/10/2026" }],
     ["a malformed time", { time: "2:15 PM" }],
     ["a time already past", { date: "2026-11-18", time: "08:59" }],
