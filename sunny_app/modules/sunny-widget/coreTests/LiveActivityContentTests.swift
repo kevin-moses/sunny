@@ -211,7 +211,13 @@ final class TaskActivityFaceTests: XCTestCase {
 
     func testATaskWithoutStepsHasItsDetailUnderTheLabel() {
         guard case .due(let due) = face(Sample.state()) else { return XCTFail("expected due") }
-        XCTAssertNil(due.stepLine)
+        XCTAssertEqual(due.secondLine, "the small white ones")
+    }
+
+    func testAStepWithoutTextHasTheDetailUnderTheLabel() {
+        let state = Sample.state(Sample.card(stepCount: 3, stepText: nil))
+        guard case .due(let due) = face(state) else { return XCTFail("expected due") }
+        XCTAssertNil(due.line)
         XCTAssertEqual(due.secondLine, "the small white ones")
     }
 

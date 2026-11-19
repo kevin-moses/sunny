@@ -46,7 +46,7 @@ public struct WidgetPushReport: Codable, Equatable, Sendable {
     }
 }
 
-public struct PushStateReport: Equatable, Sendable {
+public struct PushStateReport: Encodable, Equatable, Sendable {
     public let liveActivityStart: StartTokenReport?
     public let activities: [ActivityReport]?
     public let widgetPush: WidgetPushReport?
@@ -69,19 +69,6 @@ public struct PushStateReport: Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         return try encoder.encode(self)
-    }
-}
-
-extension PushStateReport: Encodable {
-    private enum CodingKeys: String, CodingKey {
-        case liveActivityStart, activities, widgetPush
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(liveActivityStart, forKey: .liveActivityStart)
-        try container.encodeIfPresent(activities, forKey: .activities)
-        try container.encodeIfPresent(widgetPush, forKey: .widgetPush)
     }
 }
 

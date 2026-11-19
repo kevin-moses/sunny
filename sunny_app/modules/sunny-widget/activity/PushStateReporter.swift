@@ -29,8 +29,9 @@ public actor PushStateReporter {
     }
 
     public func refreshFromPush() async {
-        let flushed = await WidgetSync.live()?.replayPresses(timeout: WidgetSync.pressTimeout)
-        await endAllIfUnauthorized(flushed, in: ActivityKitStore())
+        if await WidgetSync.live()?.replayPresses(timeout: WidgetSync.pressTimeout) == .unauthorized {
+            await TaskActivities.endAll(in: ActivityKitStore())
+        }
         await sync()
     }
 
@@ -48,10 +49,6 @@ public actor PushStateReporter {
             WidgetCenter.shared.reloadAllTimelines()
             return result
         }.get()
-    }
-
-    private func endAllIfUnauthorized(_ flushed: FlushResult?, in store: ActivityKitStore) async {
-        if flushed == .unauthorized { await TaskActivities.endAll(in: store) }
     }
 
     private func observe() {

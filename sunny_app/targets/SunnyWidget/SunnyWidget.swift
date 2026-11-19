@@ -6,15 +6,6 @@ struct SunnyEntry: TimelineEntry {
     let date: Date
     let content: WidgetContent
 
-    init(date: Date, content: WidgetContent) {
-        self.date = date
-        self.content = content
-    }
-
-    init(_ planned: PlannedEntry) {
-        self.init(date: planned.date, content: planned.content)
-    }
-
     static func gallerySample(at date: Date) -> SunnyEntry {
         let calendar = Calendar.autoupdatingCurrent
         let nineThirty = calendar.date(bySettingHour: 9, minute: 30, second: 0, of: date) ?? date
@@ -28,12 +19,18 @@ struct SunnyEntry: TimelineEntry {
                     time: time,
                     label: "Morning pills",
                     line: "Take your morning pills.",
-                    stepLine: nil,
+                    hasSteps: false,
                     detail: "the small white ones",
                     icon: .pills
                 )
             )
         )
+    }
+}
+
+extension SunnyEntry {
+    init(_ planned: PlannedEntry) {
+        self.init(date: planned.date, content: planned.content)
     }
 }
 
