@@ -2,14 +2,13 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { haikuClassifier } from "../convex/lib/mailClassify";
-import type { Classifier } from "../convex/lib/mailClassify";
-import { jevClassifier } from "../convex/lib/mailJudge";
+import { askJev } from "../convex/lib/mailJudge";
+import type { AskJev } from "../convex/lib/mailJudge";
 import {
   formatReport,
   parseFixtures,
-  recordingClassifier,
-  replayClassifier,
+  recordingAsk,
+  replayAsk,
   runFixture,
   scoreRuns,
 } from "../evals/mail/mailEval";
@@ -18,7 +17,7 @@ import type { Fixture, Recording, Run } from "../evals/mail/mailEval";
 const EVAL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "evals", "mail");
 const FIXTURE_DIR = join(EVAL_DIR, "fixtures");
 const USAGE =
-  "Usage: tsx scripts/mailEval.ts --classifier haiku|jev|replay [--repeat N] [--out report.json] [--record recording.json] [--replay recording.json] [--concurrency N]";
+  "Usage: tsx scripts/mailEval.ts --classifier jev|replay [--repeat N] [--out report.json] [--record recording.json] [--replay recording.json] [--concurrency N]";
 
 function loadFixtures(): Fixture[] {
   const files = readdirSync(FIXTURE_DIR)
@@ -40,7 +39,7 @@ function loadFixtures(): Fixture[] {
 
 async function runAll(
   fixtures: Fixture[],
-  classifier: Classifier,
+  ask: AskJev,
   repeat: number,
   concurrency: number,
 ): Promise<Run[]> {
@@ -54,7 +53,7 @@ async function runAll(
       const job = jobs[next];
       next += 1;
       if (job === undefined) return;
-      runs.push(await runFixture(job.fixture, classifier, job.repeat));
+      runs.push(await runFixture(job.fixture, ask, job.repeat));
       process.stderr.write(".");
     }
   }
@@ -84,30 +83,24 @@ async function main(): Promise<void> {
   const repeat = positive(values.repeat, 1, "--repeat");
   const concurrency = positive(values.concurrency, 4, "--concurrency");
   const fixtures = loadFixtures();
-  let classifier: Classifier;
+  let ask: AskJev;
   let recording: Recording | null = null;
   switch (values.classifier) {
-    case "haiku": {
-      const recorder = recordingClassifier(haikuClassifier);
-      classifier = recorder.classifier;
-      recording = recorder.recording;
-      break;
-    }
     case "jev": {
-      const recorder = recordingClassifier(jevClassifier);
-      classifier = recorder.classifier;
+      const recorder = recordingAsk(askJev);
+      ask = recorder.ask;
       recording = recorder.recording;
       break;
     }
     case "replay": {
       if (values.replay === undefined) throw new Error("--classifier replay needs --replay <file>");
-      classifier = replayClassifier(JSON.parse(readFileSync(values.replay, "utf8")));
+      ask = replayAsk(JSON.parse(readFileSync(values.replay, "utf8")));
       break;
     }
     default:
       throw new Error(USAGE);
   }
-  const runs = await runAll(fixtures, classifier, repeat, concurrency);
+  const runs = await runAll(fixtures, ask, repeat, concurrency);
   const report = scoreRuns(values.classifier, fixtures, runs);
   console.log(formatReport(report));
   if (values.out !== undefined)

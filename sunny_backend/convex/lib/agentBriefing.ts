@@ -5,6 +5,7 @@ import { listTasksCore } from "../tasks";
 import { isAsNeededTask } from "./taskDraft";
 import { findMember, householdCaregivers } from "./access";
 import { isAnytimeTask } from "./anytime";
+import { appointmentTitle } from "./mailTypes";
 import { joinLines } from "./text";
 import { DAY_MS, addDays, localDate, localDateTime, localTime, weekdayCodes } from "./time";
 import type { MailEffectRecord } from "./validators";
@@ -125,7 +126,10 @@ async function mailLine(
     );
   }
   if (escalated.proposed !== undefined) {
-    parts.push(`proposed ${escalated.proposed.date} at ${escalated.proposed.time}`);
+    const { kind, date, time } = escalated.proposed;
+    parts.push(
+      `proposed ${JSON.stringify(appointmentTitle(kind, time))} (kind ${kind}) on ${date} at ${time}`,
+    );
   }
   const received =
     row.receivedAt === undefined ? "unknown time" : localStamp(row.receivedAt, timezone);

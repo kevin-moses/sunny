@@ -11,24 +11,17 @@ import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
 import { AccessTokens } from "./lib/googleTokens";
 import type { StoredGrant } from "./lib/googleTokens";
-import { haikuClassifier, triageEmail } from "./lib/mailClassify";
 import { carryOut, linkByKey } from "./lib/mailEffects";
+import { askJev, triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
-import { NO_USAGE } from "./lib/mailTypes";
-import type {
-  CalendarEventFact,
-  KnownInvite,
-  MailVerdict,
-  PolicyFacts,
-  Triaged,
-} from "./lib/mailTypes";
+import type { CalendarEventFact, KnownInvite, MailVerdict, PolicyFacts } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
-import type { ClassifierRecord, StoredSender, StoredVerdict } from "./lib/validators";
+import type { StoredSender } from "./lib/validators";
 
 export const MAX_TRIAGE_ATTEMPTS = 10;
 const LEASE_MS = 10 * MINUTE_MS;
@@ -37,7 +30,6 @@ const SWEEP_BATCH = 100;
 const MAX_NAME = 120;
 const MAX_ADDRESS = 320;
 const MAX_STORED_SUBJECT = 200;
-const MAX_SUMMARY = 600;
 
 type Claim =
   | { kind: "skip"; reason: string }
@@ -86,17 +78,6 @@ function storedHeader(header: MailHeader): {
     subject: truncate(header.subject, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
   };
-}
-
-function storedVerdict(verdict: MailVerdict | null): StoredVerdict {
-  if (verdict === null) return { kind: "unreadable", summary: "" };
-  return { kind: verdict.kind, summary: truncate(verdict.summary, MAX_SUMMARY) };
-}
-
-function classifierOf(triaged: Triaged): ClassifierRecord {
-  return triaged.stage === "gate"
-    ? { name: `gate:${triaged.rule}`, usage: NO_USAGE }
-    : { name: triaged.classifier, usage: triaged.usage };
 }
 
 async function mailboxOf(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Doc<"mailboxes"> | null> {
@@ -199,8 +180,8 @@ function eventFact(event: Doc<"events">, date: string): CalendarEventFact {
   };
 }
 
-function datesNamed(verdict: MailVerdict | null): string[] {
-  if (verdict?.kind !== "appointment") return [];
+function datesNamed(verdict: MailVerdict): string[] {
+  if (verdict.kind !== "appointment") return [];
   if (verdict.change === "cancel") return [verdict.previous.date];
   const { date } = verdict.appointment;
   const dates = [addDays(date, -1), date];
@@ -211,7 +192,7 @@ async function calendarFacts(
   ctx: QueryCtx,
   household: Doc<"households">,
   now: number,
-  verdict: MailVerdict | null,
+  verdict: MailVerdict,
 ): Promise<{ events: Doc<"events">[]; facts: CalendarEventFact[] }> {
   const today = localDate(now, household.timezone);
   const last = addDays(today, EVENT_HORIZON_DAYS);
@@ -273,7 +254,7 @@ export const applyTriage = internalMutation({
         facts,
         events,
         linkKey: key,
-        summary: triaged.verdict?.summary ?? "",
+        summary: triaged.summary,
       },
       plan.effects,
     );
@@ -281,11 +262,13 @@ export const applyTriage = internalMutation({
       ...header,
       state: "done",
       leaseUntil: undefined,
-      verdict: storedVerdict(triaged.verdict),
+      verdict: triaged.verdict.kind,
       rule: plan.rule,
+      judgeRule: triaged.rule,
+      judgeAnswers: triaged.answers ?? undefined,
       effects,
       escalatedAt: effects.some((e) => e.kind === "escalated") ? now : undefined,
-      classifier: classifierOf(triaged),
+      classifier: triaged.classifier,
     });
     return true;
   },
@@ -337,12 +320,7 @@ async function triageClaimed(
     icsKey: linkKey(null, email.ics),
   });
   if (parsed === null) return "lost";
-  const triaged = await triageEmail(
-    email,
-    { now: claim.now, timezone },
-    haikuClassifier,
-    parsed.known,
-  );
+  const triaged = await triageEmail(email, { now: claim.now, timezone }, parsed.known, askJev);
   const applied = await ctx.runMutation(internal.mailTriage.applyTriage, {
     itemId,
     attempt,

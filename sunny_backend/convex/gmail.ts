@@ -1,4 +1,4 @@
-import { APIError } from "@anthropic-ai/sdk";
+import { APIConnectionError, APIError, TypeSafeError } from "@typesafe-ai/sdk";
 import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -42,7 +42,7 @@ import type {
   MailEffectRecord,
   MailItemState,
   StoredSender,
-  StoredVerdict,
+  VerdictKind,
 } from "./lib/validators";
 import type { FlowOwner } from "./googleOauth";
 
@@ -58,7 +58,7 @@ const REVOKED_MESSAGE = "Google access was revoked; reconnect the senior's Gmail
 const UNREADABLE_MESSAGE = "Reconnect Gmail: Sunny could not read the saved Google sign-in.";
 const FORBIDDEN_MESSAGE = "Google denied Sunny access to the mailbox; reconnect Gmail.";
 const POLL_FAILED_MESSAGE = "Sunny could not check the mailbox; it will try again.";
-const PERMANENT_MODEL_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
+const RETRYABLE_JEV_STATUSES = new Set([408, 429]);
 
 type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "failed";
 
@@ -77,7 +77,7 @@ interface MailItemView {
   sender: StoredSender | null;
   subject: string | null;
   receivedAt: number | null;
-  verdict: StoredVerdict["kind"] | null;
+  verdict: VerdictKind | null;
   effects: MailEffectRecord[];
 }
 
@@ -342,7 +342,12 @@ export function mailFailure(e: unknown): MailFailure {
   if (e instanceof GoogleApiError) {
     return !e.retryable && e.status !== 401 ? { kind: "permanent" } : { kind: "retry" };
   }
-  if (e instanceof APIError && e.status !== undefined && PERMANENT_MODEL_STATUSES.has(e.status)) {
+  if (e instanceof APIError) {
+    return e.status < 500 && !RETRYABLE_JEV_STATUSES.has(e.status)
+      ? { kind: "permanent" }
+      : { kind: "retry" };
+  }
+  if (e instanceof TypeSafeError && !(e instanceof APIConnectionError)) {
     return { kind: "permanent" };
   }
   return { kind: "retry" };
@@ -475,7 +480,7 @@ export const recentMail = query({
       sender: row.sender ?? null,
       subject: row.subject ?? null,
       receivedAt: row.receivedAt ?? null,
-      verdict: row.verdict?.kind ?? null,
+      verdict: row.verdict ?? null,
       effects: row.effects ?? [],
     }));
   },

@@ -1,46 +1,44 @@
+import { APIError } from "@typesafe-ai/sdk";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { triageEmail } from "./mailClassify";
+import { jevAnswers, jevCalls, jevSays } from "../mailMocks.helpers";
+import type { JevSays } from "../mailMocks.helpers";
+import { cleanText } from "./frameText";
 import {
-  APPOINTMENT_KINDS,
-  FLAG_QUESTIONS,
+  FLAGS,
   JEV_MODEL,
-  NOTES,
   TRUTH_TABLE,
+  askJev,
+  compactAnswers,
   decide,
-  jevClassifier,
   judgeQuestions,
   judgeState,
   readAnswers,
   resolveDate,
   resolveSlot,
   resolveTime,
-  verdictWire,
+  triageEmail,
 } from "./mailJudge";
-import type { AppointmentKind, Flag, Level, Readings, SlotPicks } from "./mailJudge";
-import { appointmentFields, seniorNoteText } from "./mailPolicy";
-import type { MailVerdict, ParsedEmail } from "./mailTypes";
-import { parseVerdict } from "./mailVerdict";
+import type { Flag, Invite, Level, Readings, SlotPicks } from "./mailJudge";
+import { appointmentFields } from "./mailPolicy";
+import { APPOINTMENT_KIND_NAMES, SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
+import type { IcsEvent, MailVerdict, ParsedEmail } from "./mailTypes";
 import { zonedInstant } from "./time";
 
 const NY = "America/New_York";
 const CLOCK = { now: zonedInstant("2026-11-18", "09:00", NY), timezone: NY };
 const ANCHOR = "2026-11-18";
 
-const NO_FLAGS = Object.fromEntries(Object.keys(FLAG_QUESTIONS).map((f) => [f, "no"])) as Record<
-  Flag,
-  Level
->;
-
 function readings(
   flags: Partial<Record<Flag, Level>>,
   rest: Partial<Omit<Readings, "flags">> = {},
 ): Readings {
   return {
-    flags: { ...NO_FLAGS, ...flags },
+    flags: new Map(FLAGS.map((f) => [f, flags[f] ?? "no"])),
     otherTimeZone: "no",
     kind: "other",
     when: null,
     before: null,
+    invite: null,
     ...rest,
   };
 }
@@ -62,6 +60,11 @@ function label(verdict: MailVerdict): string {
 
 const DEC_10 = { date: "2026-12-10", time: "14:15" };
 const NOV_20 = { date: "2026-11-20", time: "14:00" };
+const INVITE: Invite = {
+  method: "REQUEST",
+  start: { date: "2026-12-09", time: "14:30" },
+  durationMinutes: 45,
+};
 
 const ROWS: [string, string, Readings, string][] = [
   ["instructions to an assistant", "", readings({ addresses_assistant: "yes" }), "suspicious:scam"],
@@ -79,11 +82,8 @@ const ROWS: [string, string, Readings, string][] = [
   ],
   [
     "asks to bring payment",
-    "",
-    readings(
-      { asks_to_bring_payment: "yes", appointment_moved: "yes" },
-      { when: DEC_10, before: NOV_20 },
-    ),
+    "even on a calendar invitation",
+    readings({ asks_to_bring_payment: "yes" }, { invite: INVITE }),
     "suspicious:money_request",
   ],
   [
@@ -112,9 +112,21 @@ const ROWS: [string, string, Readings, string][] = [
   ],
   [
     "a safety question is unsettled",
-    "blocks an appointment",
-    readings({ discourages_checking: "unsure", confirms_appointment: "yes" }, { when: DEC_10 }),
+    "blocks a calendar invitation",
+    readings({ discourages_checking: "unsure" }, { invite: INVITE }),
     "needs_decision:other",
+  ],
+  [
+    "calendar invitation",
+    "a request",
+    readings({ asks_question: "yes" }, { kind: "medical_test", invite: INVITE }),
+    "appointment:new",
+  ],
+  [
+    "calendar invitation",
+    "a cancellation",
+    readings({}, { invite: { ...INVITE, method: "CANCEL" } }),
+    "appointment:cancel",
   ],
   [
     "cancelled",
@@ -196,21 +208,21 @@ const ROWS: [string, string, Readings, string][] = [
     "prescription",
     "ready now",
     readings({ about_prescription: "yes", prescription_ready_now: "yes" }),
-    "senior_info:prescription",
+    "senior_info:prescription_ready",
   ],
   [
     "prescription",
     "being prepared",
     readings({ about_prescription: "yes", needs_action: "unsure" }),
-    "senior_info:prescription",
+    "senior_info:prescription_coming",
   ],
   [
     "package",
     "arrived",
     readings({ about_package: "yes", package_arrived: "yes" }),
-    "senior_info:delivery",
+    "senior_info:package_arrived",
   ],
-  ["package", "on its way", readings({ about_package: "yes" }), "senior_info:delivery"],
+  ["package", "on its way", readings({ about_package: "yes" }), "senior_info:package_coming"],
   [
     "home visit",
     "",
@@ -218,7 +230,7 @@ const ROWS: [string, string, Readings, string][] = [
       { home_visit: "yes", confirms_appointment: "yes" },
       { when: { date: "2026-11-19", time: null } },
     ),
-    "senior_info:service_visit",
+    "senior_info:home_visit",
   ],
   [
     "appointment without a readable date and start time",
@@ -270,35 +282,36 @@ describe("truth table", () => {
     const result = decide(input);
     expect(result.rule).toBe(rule);
     expect(label(result.verdict)).toBe(expected);
-    expect(result.verdict.summary.length).toBeGreaterThan(0);
+    expect(result.summary.length).toBeGreaterThan(0);
   });
 
-  test("every verdict survives the wire format unchanged", () => {
-    for (const [, , input] of ROWS) {
-      const { verdict } = decide(input);
-      expect(parseVerdict(verdictWire(verdict))).toEqual(verdict);
-    }
-  });
-
-  test("appointments carry Sunny's own title and no place or duration", () => {
+  test("an appointment carries a kind and a slot, never a title or place", () => {
     expect(
       decide(readings({ confirms_appointment: "yes" }, { kind: "eye_doctor", when: DEC_10 }))
         .verdict,
     ).toEqual({
       kind: "appointment",
       change: "new",
-      appointment: {
-        title: "Eye exam",
-        date: "2026-12-10",
-        time: "14:15",
-        durationMinutes: null,
-        place: null,
-      },
-      summary: "The email confirms an appointment.",
+      appointment: { kind: "eye_doctor", date: "2026-12-10", time: "14:15", durationMinutes: null },
     });
   });
 
-  test("a reschedule names the old slot with the same title", () => {
+  test("an invitation takes its start and length from the calendar part, not from the reading", () => {
+    expect(
+      decide(
+        readings(
+          { confirms_appointment: "yes" },
+          { kind: "medical_test", when: DEC_10, invite: INVITE },
+        ),
+      ).verdict,
+    ).toEqual({
+      kind: "appointment",
+      change: "new",
+      appointment: { kind: "medical_test", date: "2026-12-09", time: "14:30", durationMinutes: 45 },
+    });
+  });
+
+  test("a reschedule names the old slot with the same kind", () => {
     const { verdict } = decide(
       readings(
         { appointment_moved: "yes" },
@@ -306,58 +319,63 @@ describe("truth table", () => {
       ),
     );
     expect(verdict).toMatchObject({
-      previous: { date: "2026-11-20", time: "14:00", title: "Physical therapy" },
-      appointment: { date: "2026-12-10", time: "14:15", title: "Physical therapy" },
+      previous: { kind: "physical_therapy", date: "2026-11-20", time: "14:00" },
+      appointment: { kind: "physical_therapy", date: "2026-12-10", time: "14:15" },
     });
   });
+});
 
+describe("Sunny's own words", () => {
   test.each([
     ["08:00", "Breakfast"],
     ["12:30", "Lunch"],
     ["18:00", "Dinner"],
   ])("a meal at %s is titled %s", (time, title) => {
-    const { verdict } = decide(
-      readings(
-        { confirms_appointment: "yes" },
-        { kind: "meal", when: { date: "2026-12-10", time } },
-      ),
-    );
-    expect(verdict).toMatchObject({ appointment: { title } });
+    expect(appointmentTitle("meal", time)).toBe(title);
   });
 
-  test("every appointment title passes the calendar field checks", () => {
-    for (const kind of Object.keys(APPOINTMENT_KINDS) as AppointmentKind[]) {
+  test("every kind's title is short and has no digits", () => {
+    for (const kind of APPOINTMENT_KIND_NAMES) {
+      const title = appointmentTitle(kind, "09:00");
+      expect(title.length).toBeLessThanOrEqual(60);
+      expect(title).not.toMatch(/\d/);
+    }
+  });
+
+  test.each(Object.entries(SENIOR_SENTENCES))(
+    "the %s sentence fits the senior screens",
+    (_, sentence) => {
+      expect(sentence.length).toBeLessThanOrEqual(160);
+      expect(
+        sentence.split(/[.!?]+(?:\s+|$)/).filter((s) => s.trim() !== "").length,
+      ).toBeLessThanOrEqual(2);
+      expect(sentence).not.toMatch(/\d/);
+      expect(cleanText(sentence)).toBe(sentence);
+    },
+  );
+
+  test("every appointment the table can build passes the calendar field checks", () => {
+    for (const kind of APPOINTMENT_KIND_NAMES) {
       const { verdict } = decide(readings({ confirms_appointment: "yes" }, { kind, when: DEC_10 }));
       if (verdict.kind !== "appointment" || verdict.change !== "new") throw new Error(kind);
       expect(appointmentFields(verdict.appointment, CLOCK)).toEqual(verdict.appointment);
     }
   });
-
-  test("every senior note passes the senior note checks for its topic", () => {
-    const notes = ROWS.map(([, , input]) => decide(input).verdict).filter(
-      (v): v is Extract<MailVerdict, { kind: "senior_info" }> => v.kind === "senior_info",
-    );
-    expect(new Set(notes.map((v) => v.note))).toEqual(new Set(Object.values(NOTES)));
-    for (const v of notes) expect(seniorNoteText(v.note, v.topic)).toBe(v.note);
-  });
 });
 
 function picks(parts: Partial<Record<keyof SlotPicks, string>>, probability = 0.95): SlotPicks {
-  const chosen: Record<keyof SlotPicks, string> = {
-    date_form: "not_stated",
-    month: "not_stated",
-    day: "not_stated",
-    year: "not_stated",
-    weekday: "not_stated",
-    week: "unqualified",
-    hour: "not_stated",
-    minute: "00",
-    half: "am",
-    ...parts,
+  const pick = (choice: string) => ({ choice, probability });
+  return {
+    date_form: pick(parts.date_form ?? "not_stated"),
+    month: pick(parts.month ?? "not_stated"),
+    day: pick(parts.day ?? "not_stated"),
+    year: pick(parts.year ?? "not_stated"),
+    weekday: pick(parts.weekday ?? "not_stated"),
+    week: pick(parts.week ?? "unqualified"),
+    hour: pick(parts.hour ?? "not_stated"),
+    minute: pick(parts.minute ?? "00"),
+    half: pick(parts.half ?? "am"),
   };
-  return Object.fromEntries(
-    Object.entries(chosen).map(([k, choice]) => [k, { choice, probability }]),
-  ) as SlotPicks;
 }
 
 describe("date resolution against the day the email arrived", () => {
@@ -479,72 +497,55 @@ function email(overrides: Partial<ParsedEmail> = {}): ParsedEmail {
 
 const QUESTIONS = judgeQuestions(2026, NY);
 
-function answers(
-  nouls: Partial<Record<string, number>>,
-  choices: Record<string, string>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(QUESTIONS).map(([name, q]) => {
-      if (q.type === "noul") return [name, { type: "noul", noul: nouls[name] ?? 0.02 }];
-      const fallback = "not_stated" in q.criteria ? "not_stated" : Object.keys(q.criteria)[0];
-      const picked = choices[name] ?? fallback ?? "";
-      return [
-        name,
-        { type: "choice", choice: picked, confidence: 0.9, probabilities: { [picked]: 0.95 } },
-      ];
-    }),
-  );
-}
-
-const EYE_EXAM = answers(
-  { confirms_appointment: 0.98 },
-  {
-    appointment_kind: "eye_doctor",
-    when_date_form: "calendar_date",
-    when_month: "December",
-    when_day: "10",
-    when_year: "2026",
-    when_weekday: "Thursday",
-    when_hour: "2",
-    when_minute: "15",
-    when_half: "pm",
-    when_week: "unqualified",
-    before_week: "unqualified",
-  },
-);
+const EYE_EXAM: JevSays = { yes: ["confirms_appointment"], kind: "eye_doctor", when: DEC_10 };
 
 describe("reading Jev's answers", () => {
   test("turns probabilities and picks into readings", () => {
-    expect(readAnswers(EYE_EXAM, QUESTIONS, ANCHOR)).toMatchObject({
-      flags: { confirms_appointment: "yes", addresses_assistant: "no" },
+    const answers = compactAnswers(jevAnswers(EYE_EXAM, QUESTIONS), QUESTIONS);
+    const read = readAnswers(answers, ANCHOR, null);
+    expect(read.flags.get("confirms_appointment")).toBe("yes");
+    expect(read.flags.get("addresses_assistant")).toBe("no");
+    expect(read).toMatchObject({
       kind: "eye_doctor",
       when: { date: "2026-12-10", time: "14:15" },
       before: null,
       otherTimeZone: "no",
+      invite: null,
     });
   });
 
   test("a missing answer is an error, not a no", () => {
-    const { addresses_assistant: _, ...rest } = EYE_EXAM;
-    expect(() => readAnswers(rest, QUESTIONS, ANCHOR)).toThrow(/addresses_assistant/);
+    const { addresses_assistant: _, ...rest } = jevAnswers(EYE_EXAM, QUESTIONS);
+    expect(() => compactAnswers(rest, QUESTIONS)).toThrow(/addresses_assistant/);
   });
 
   test("a pick outside the question's options is an error", () => {
-    expect(() =>
-      readAnswers(
-        {
-          ...EYE_EXAM,
-          when_month: {
-            type: "choice",
-            choice: "Smarch",
-            confidence: 1,
-            probabilities: { Smarch: 1 },
-          },
-        },
-        QUESTIONS,
-        ANCHOR,
-      ),
-    ).toThrow(/when_month/);
+    const raw = {
+      ...jevAnswers(EYE_EXAM, QUESTIONS),
+      when_month: { type: "choice", choice: "Smarch", confidence: 1, probabilities: { Smarch: 1 } },
+    };
+    expect(() => compactAnswers(raw, QUESTIONS)).toThrow(/when_month/);
+  });
+
+  test("an invitation's start comes from the calendar part", () => {
+    const ics: IcsEvent = {
+      method: "REQUEST",
+      uid: "u-1",
+      start: { date: "2026-12-09", time: "14:30" },
+      durationMinutes: 45,
+      summary: "Call Officer Miller back",
+      location: null,
+      recurring: false,
+      sequence: 0,
+    };
+    const answers = compactAnswers(jevAnswers(EYE_EXAM, QUESTIONS), QUESTIONS);
+    expect(readAnswers(answers, ANCHOR, ics).invite).toEqual({
+      method: "REQUEST",
+      start: { date: "2026-12-09", time: "14:30" },
+      durationMinutes: 45,
+    });
+    expect(readAnswers(answers, ANCHOR, { ...ics, start: null }).invite).toBeNull();
+    expect(readAnswers(answers, ANCHOR, { ...ics, method: "OTHER" }).invite).toBeNull();
   });
 
   test("the state holds only the email's sender, subject and body", () => {
@@ -559,64 +560,66 @@ describe("reading Jev's answers", () => {
   });
 });
 
-describe("jevClassifier", () => {
+describe("askJev through triage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    jevCalls.length = 0;
   });
 
-  function respond(status: number, body: unknown): void {
-    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify(body), {
-            status,
-            headers: { "content-type": "application/json" },
-          }),
-      ),
-    );
-  }
-
-  test("plugs into triage and returns a verdict built by Sunny", async () => {
-    respond(200, {
-      model: JEV_MODEL,
-      answers: EYE_EXAM,
-      usage: { input_tokens: 4200, output_tokens: 310 },
-    });
-    const triaged = await triageEmail(email(), CLOCK, jevClassifier, null);
-    expect(triaged).toEqual({
+  test("returns a verdict built by Sunny with the rule and the answers that decided it", async () => {
+    jevSays(EYE_EXAM);
+    const triaged = await triageEmail(email(), CLOCK, null, askJev);
+    expect(triaged).toMatchObject({
       stage: "model",
-      classifier: JEV_MODEL,
-      usage: { inputTokens: 4200, outputTokens: 310, cacheReadTokens: 0 },
+      rule: "confirms an appointment with a date and start time",
+      summary: "The email confirms an appointment.",
+      classifier: {
+        name: JEV_MODEL,
+        usage: { inputTokens: 4200, outputTokens: 310, cacheReadTokens: 0 },
+      },
       verdict: {
         kind: "appointment",
         change: "new",
         appointment: {
-          title: "Eye exam",
+          kind: "eye_doctor",
           date: "2026-12-10",
           time: "14:15",
           durationMinutes: null,
-          place: null,
         },
-        summary: "The email confirms an appointment.",
       },
     });
+    expect(triaged.answers).toMatchObject({
+      confirms_appointment: 0.95,
+      appointment_kind: { choice: "eye_doctor", probability: 0.95 },
+    });
+    expect(jevCalls).toHaveLength(1);
   });
 
-  test("a failed API call rejects instead of answering", async () => {
-    respond(400, { detail: "bad request" });
-    await expect(jevClassifier(email(), CLOCK)).rejects.toThrow();
+  test("mail the gate settles never reaches Jev", async () => {
+    jevSays(EYE_EXAM);
+    const triaged = await triageEmail(email({ labels: ["SPAM"] }), CLOCK, null, askJev);
+    expect(triaged).toMatchObject({ stage: "gate", rule: "gate:label:SPAM", answers: null });
+    expect(jevCalls).toHaveLength(0);
+  });
+
+  test("a refused API call rejects with the API's status instead of answering", async () => {
+    jevSays({ status: 401 });
+    await expect(triageEmail(email(), CLOCK, null, askJev)).rejects.toBeInstanceOf(APIError);
   });
 
   test("a response missing an answer rejects", async () => {
-    const { confirms_appointment: _, ...partial } = EYE_EXAM;
-    respond(200, {
-      model: JEV_MODEL,
-      answers: partial,
-      usage: { input_tokens: 1, output_tokens: 1 },
-    });
-    await expect(jevClassifier(email(), CLOCK)).rejects.toThrow(/confirms_appointment/);
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const { confirms_appointment: _, ...partial } = jevAnswers(EYE_EXAM, QUESTIONS);
+        return new Response(
+          JSON.stringify({ model: JEV_MODEL, answers: partial, usage: { input_tokens: 1 } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+    await expect(triageEmail(email(), CLOCK, null, askJev)).rejects.toThrow(/confirms_appointment/);
   });
 });

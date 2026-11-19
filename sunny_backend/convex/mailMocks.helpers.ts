@@ -3,7 +3,11 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { gmailMocks } from "./googleMocks.helpers";
 import { toBase64Url } from "./lib/base64";
-import { MAIL_MODEL } from "./lib/mailClassify";
+import { JEV_MODEL } from "./lib/mailJudge";
+import type { Flag } from "./lib/mailJudge";
+import type { AppointmentKind } from "./lib/mailTypes";
+import { isRecord } from "./lib/http";
+import { weekdayName } from "./lib/time";
 import { createFamilyHousehold } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
@@ -79,52 +83,128 @@ export function rawEmail(email: RawEmail): Record<string, unknown> {
   };
 }
 
-const EMPTY_VERDICT = {
-  change: null,
-  title: null,
-  date: null,
-  time: null,
-  duration_minutes: null,
-  place: null,
-  previous_date: null,
-  previous_time: null,
-  previous_title: null,
-  topic: null,
-  note: null,
-  reason: null,
-  suspicion: null,
-};
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 
-export function verdict(fields: Record<string, unknown>): Record<string, unknown> {
-  return { ...EMPTY_VERDICT, ...fields };
+export interface JevSays {
+  yes?: Flag[];
+  unsure?: Flag[];
+  kind?: AppointmentKind;
+  when?: { date: string; time: string | null };
+  before?: { date: string; time: string | null };
+}
+
+interface WireQuestion {
+  type: string;
+  criteria?: object | null;
+}
+
+function slotChoices(prefix: string, slot: JevSays["when"]): Record<string, string> {
+  if (slot === undefined) return {};
+  const [year, month, day] = slot.date.split("-");
+  const choices: Record<string, string> = {
+    [`${prefix}_date_form`]: "calendar_date",
+    [`${prefix}_month`]: MONTHS[Number(month) - 1] ?? "",
+    [`${prefix}_day`]: String(Number(day)),
+    [`${prefix}_year`]: year ?? "",
+    [`${prefix}_weekday`]: weekdayName(slot.date),
+  };
+  if (slot.time === null) return choices;
+  const [hour, minute] = slot.time.split(":").map(Number);
+  return {
+    ...choices,
+    [`${prefix}_hour`]: String((((hour ?? 0) + 11) % 12) + 1),
+    [`${prefix}_minute`]: String(minute ?? 0).padStart(2, "0"),
+    [`${prefix}_half`]: (hour ?? 0) >= 12 ? "pm" : "am",
+  };
+}
+
+const CHOICE_DEFAULTS = ["not_stated", "unqualified", "00", "am", "other"];
+
+export function jevAnswers(
+  says: JevSays,
+  questions: Record<string, WireQuestion>,
+): Record<string, unknown> {
+  const choices: Record<string, string> = {
+    appointment_kind: says.kind ?? "other",
+    ...slotChoices("when", says.when),
+    ...slotChoices("before", says.before),
+  };
+  return Object.fromEntries(
+    Object.entries(questions).map(([name, q]) => {
+      if (q.type === "noul") {
+        const p = says.yes?.some((f) => f === name)
+          ? 0.95
+          : says.unsure?.some((f) => f === name)
+            ? 0.5
+            : 0.02;
+        return [name, { type: "noul", noul: p }];
+      }
+      const options = Object.keys(q.criteria ?? {});
+      const picked = choices[name] ?? CHOICE_DEFAULTS.find((d) => options.includes(d)) ?? "";
+      return [
+        name,
+        { type: "choice", choice: picked, confidence: 0.9, probabilities: { [picked]: 0.95 } },
+      ];
+    }),
+  );
 }
 
 const NOW_FOR_TRUST = Date.parse("2026-11-01T12:00:00Z");
 
-export const modelCalls: unknown[] = [];
+export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 
-export function replyWith(raw: unknown): void {
-  vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
+export const jevCalls: Array<{ state: unknown; questions: Record<string, WireQuestion> }> = [];
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function wireQuestions(value: unknown): Record<string, WireQuestion> {
+  if (!isRecord(value)) throw new Error("Jev request without questions");
+  return Object.fromEntries(
+    Object.entries(value).map(([name, q]) => {
+      if (!isRecord(q) || typeof q.type !== "string") throw new Error(`Bad question ${name}`);
+      return [name, { type: q.type, criteria: isRecord(q.criteria) ? q.criteria : undefined }];
+    }),
+  );
+}
+
+export function jevReply(says: JevSays, init: RequestInit | undefined): Response {
+  const body: unknown = JSON.parse(String(init?.body));
+  if (!isRecord(body)) throw new Error("Jev request is not an object");
+  const questions = wireQuestions(body.questions);
+  jevCalls.push({ state: body.state, questions });
+  return json({
+    model: JEV_MODEL,
+    answers: jevAnswers(says, questions),
+    usage: { input_tokens: 4200, output_tokens: 310 },
+  });
+}
+
+export function jevSays(says: JevSays | { status: number }): void {
+  vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string, init: RequestInit) => {
-      if (!String(url).startsWith("https://api.anthropic.com/")) {
-        throw new Error(`unexpected fetch ${String(url)}`);
-      }
-      modelCalls.push(JSON.parse(String(init.body)));
-      return new Response(
-        JSON.stringify({
-          id: "msg_1",
-          type: "message",
-          role: "assistant",
-          model: MAIL_MODEL,
-          content: [{ type: "text", text: JSON.stringify(raw) }],
-          stop_reason: "end_turn",
-          stop_sequence: null,
-          usage: { input_tokens: 1200, output_tokens: 90, cache_read_input_tokens: 0 },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url) !== JEV_URL) throw new Error(`unexpected fetch ${String(url)}`);
+      if ("status" in says) return json({ detail: "refused" }, says.status);
+      return jevReply(says, init);
     }),
   );
 }
@@ -199,9 +279,9 @@ export async function itemFor(h: MailHousehold, gmailId: string): Promise<Id<"ma
 export async function triageEmail(
   h: MailHousehold,
   email: RawEmail,
-  modelVerdict?: unknown,
+  says?: JevSays,
 ): Promise<Doc<"mailItems">> {
-  if (modelVerdict !== undefined) replyWith(modelVerdict);
+  if (says !== undefined) jevSays(says);
   const itemId = await receive(h, email);
   await h.t.action(internal.mailTriage.triage, { itemId });
   return await item(h, itemId);

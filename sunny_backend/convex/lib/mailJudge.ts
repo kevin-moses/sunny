@@ -1,14 +1,20 @@
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import type { ChoiceQuestion, NoulQuestion } from "@typesafe-ai/sdk";
-import type { Classifier, Clock } from "./mailClassify";
+import { gate } from "./mailGate";
+import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
 import type {
-  Appointment,
-  AppointmentRef,
+  AppointmentKind,
+  Clock,
   DecisionReason,
+  IcsEvent,
   InfoTopic,
+  JevAnswer,
+  JevAnswers,
+  KnownInvite,
   MailVerdict,
   ParsedEmail,
   Suspicion,
+  Triaged,
   Usage,
 } from "./mailTypes";
 import { addDays, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES } from "./time";
@@ -135,42 +141,11 @@ export const FLAG_QUESTIONS = {
 
 export type Flag = keyof typeof FLAG_QUESTIONS;
 
-const FLAGS = Object.keys(FLAG_QUESTIONS) as Flag[];
+function isFlag(name: string): name is Flag {
+  return Object.hasOwn(FLAG_QUESTIONS, name);
+}
 
-export const APPOINTMENT_KINDS = {
-  doctor_visit: {
-    describe: "A visit with a doctor, nurse or other clinician",
-    title: "Doctor visit",
-  },
-  dentist: { describe: "A dentist visit or teeth cleaning", title: "Dentist appointment" },
-  eye_doctor: { describe: "An eye exam or a visit to an eye doctor", title: "Eye exam" },
-  hearing: { describe: "A hearing test or a hearing aid visit", title: "Hearing appointment" },
-  physical_therapy: { describe: "Physical or occupational therapy", title: "Physical therapy" },
-  medical_test: {
-    describe: "A lab test, blood draw, scan, X-ray, MRI or other medical test",
-    title: "Medical test",
-  },
-  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment" },
-  hair: { describe: "A haircut or a salon visit", title: "Hair appointment" },
-  group_activity: { describe: "A class, club or group activity", title: "Group activity" },
-  meal: { describe: "A breakfast, lunch, dinner or coffee with someone", title: "Meal" },
-  family_visit: { describe: "A visit with family or friends", title: "Family visit" },
-  video_call: { describe: "A video call", title: "Video call" },
-  phone_call: { describe: "A phone call", title: "Phone call" },
-  meeting: { describe: "A meeting or counseling session", title: "Meeting" },
-  home_service: { describe: "A worker coming to the home", title: "Home service visit" },
-  other: { describe: "Any other kind of appointment", title: "Appointment" },
-} as const;
-
-export type AppointmentKind = keyof typeof APPOINTMENT_KINDS;
-
-const KIND_NAMES = Object.keys(APPOINTMENT_KINDS) as AppointmentKind[];
-
-const MEAL_TITLES: [string, string][] = [
-  ["11:00", "Breakfast"],
-  ["16:00", "Lunch"],
-  ["24:00", "Dinner"],
-];
+export const FLAGS: Flag[] = Object.keys(FLAG_QUESTIONS).filter(isFlag);
 
 const MONTHS = [
   "January",
@@ -279,7 +254,7 @@ export function judgeQuestions(
     ),
     appointment_kind: choice(
       "What kind of appointment is `email` about?",
-      Object.fromEntries(KIND_NAMES.map((k) => [k, APPOINTMENT_KINDS[k].describe])),
+      Object.fromEntries(APPOINTMENT_KIND_NAMES.map((k) => [k, APPOINTMENT_KINDS[k].describe])),
     ),
     ...slotQuestions("when", receivedYear),
     ...slotQuestions("before", receivedYear),
@@ -310,12 +285,19 @@ export interface Slot {
   time: string | null;
 }
 
+export interface Invite {
+  method: "REQUEST" | "CANCEL";
+  start: { date: string; time: string };
+  durationMinutes: number | null;
+}
+
 export interface Readings {
-  flags: Record<Flag, Level>;
+  flags: ReadonlyMap<Flag, Level>;
   otherTimeZone: Level;
   kind: AppointmentKind;
   when: Slot | null;
   before: Slot | null;
+  invite: Invite | null;
 }
 
 export interface Pick {
@@ -410,19 +392,28 @@ export function resolveSlot(picks: SlotPicks, anchor: string): Slot | null {
   return date === null ? null : { date, time: resolveTime(picks) };
 }
 
-function title(kind: AppointmentKind, time: string | null): string {
-  if (kind !== "meal" || time === null) return APPOINTMENT_KINDS[kind].title;
-  return MEAL_TITLES.find(([before]) => time < before)?.[1] ?? APPOINTMENT_KINDS.meal.title;
+export interface Decision {
+  verdict: MailVerdict;
+  summary: string;
 }
 
-export const NOTES = {
-  prescription_ready: "Your prescription is ready to pick up at the pharmacy.",
-  prescription_coming: "The pharmacy is getting your prescription ready.",
-  package_arrived: "A package was delivered to your home.",
-  package_coming: "A package is on its way to you.",
-  home_visit: "A service worker will visit your home soon.",
-  personal_note: "You have a friendly email from family or a friend. Someone can read it with you.",
-} as const;
+function suspicious(suspicion: Suspicion, summary: string): Decision {
+  return { verdict: { kind: "suspicious", suspicion }, summary };
+}
+
+function decision(reason: DecisionReason, summary: string): Decision {
+  return { verdict: { kind: "needs_decision", reason }, summary };
+}
+
+function info(topic: InfoTopic, summary: string): Decision {
+  return { verdict: { kind: "senior_info", topic }, summary };
+}
+
+function timed(r: Readings): { date: string; time: string } | null {
+  const slot = r.when;
+  if (slot === null || slot.time === null || r.otherTimeZone !== "no") return null;
+  return { date: slot.date, time: slot.time };
+}
 
 const SAFETY_FLAGS: Flag[] = [
   "addresses_assistant",
@@ -436,6 +427,14 @@ const SAFETY_FLAGS: Flag[] = [
   "promises_unexpected_money",
   "announces_new_contact",
   "name_mismatch",
+];
+
+const PRESSURE_FLAGS: Flag[] = [
+  "threatens_arrest",
+  "threatens_lockout",
+  "threatens_lost_benefits",
+  "discourages_checking",
+  "promises_unexpected_money",
 ];
 
 const SPECIFIC_DECISION_FLAGS: Flag[] = [
@@ -460,51 +459,19 @@ const INFO_FLAGS: Flag[] = [
   "feedback_request",
 ];
 
-function suspicious(suspicion: Suspicion, summary: string): MailVerdict {
-  return { kind: "suspicious", suspicion, summary };
-}
-
-function decision(reason: DecisionReason, summary: string): MailVerdict {
-  return { kind: "needs_decision", reason, summary };
-}
-
-function info(topic: InfoTopic, note: string, summary: string): MailVerdict {
-  return { kind: "senior_info", topic, note, summary };
-}
-
-function ref(kind: AppointmentKind, slot: Slot): AppointmentRef {
-  return { date: slot.date, time: slot.time, title: title(kind, slot.time) };
-}
-
-function appointment(kind: AppointmentKind, slot: Slot & { time: string }): Appointment {
-  return {
-    title: title(kind, slot.time),
-    date: slot.date,
-    time: slot.time,
-    durationMinutes: null,
-    place: null,
-  };
-}
-
-function timed(r: Readings): (Slot & { time: string }) | null {
-  const slot = r.when;
-  if (slot === null || slot.time === null || r.otherTimeZone !== "no") return null;
-  return { date: slot.date, time: slot.time };
-}
-
 interface Row {
   rule: string;
-  verdict: (r: Readings) => MailVerdict | null;
+  decide: (r: Readings) => Decision | null;
 }
 
-const is = (r: Readings, flag: Flag): boolean => r.flags[flag] === "yes";
+const is = (r: Readings, flag: Flag): boolean => r.flags.get(flag) === "yes";
 const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
-  flags.some((f) => r.flags[f] === "unsure");
+  flags.some((f) => r.flags.get(f) === "unsure");
 
 export const TRUTH_TABLE: Row[] = [
   {
     rule: "instructions to an assistant",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "addresses_assistant")
         ? suspicious(
             "scam",
@@ -514,14 +481,14 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "asks for private details",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "asks_private_details")
         ? suspicious("credentials", "The email asks for private login or identity details.")
         : null,
   },
   {
     rule: "asks for hard-to-trace payment",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "asks_hard_to_trace_payment")
         ? suspicious(
             "money_request",
@@ -531,7 +498,7 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "asks to bring payment",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "asks_to_bring_payment")
         ? suspicious(
             "money_request",
@@ -541,22 +508,15 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "new contact details or a mismatched sender name",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "announces_new_contact") || is(r, "name_mismatch")
         ? suspicious("impersonation", "The sender may not be who they claim to be.")
         : null,
   },
   {
     rule: "threat, secrecy or unexpected money",
-    verdict: (r) => {
-      const pressure: Flag[] = [
-        "threatens_arrest",
-        "threatens_lockout",
-        "threatens_lost_benefits",
-        "discourages_checking",
-        "promises_unexpected_money",
-      ];
-      if (!pressure.some((f) => is(r, f))) return null;
+    decide: (r) => {
+      if (!PRESSURE_FLAGS.some((f) => is(r, f))) return null;
       const posing = is(r, "from_government") || is(r, "about_account_security");
       return suspicious(
         posing ? "impersonation" : "scam",
@@ -566,7 +526,7 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "a safety question is unsettled",
-    verdict: (r) =>
+    decide: (r) =>
       anyUnsure(r, SAFETY_FLAGS)
         ? decision(
             "other",
@@ -575,8 +535,33 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
+    rule: "calendar invitation",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite === null) return null;
+      const { date, time } = invite.start;
+      return invite.method === "CANCEL"
+        ? {
+            verdict: {
+              kind: "appointment",
+              change: "cancel",
+              previous: { kind: r.kind, date, time },
+            },
+            summary: "The email is a calendar cancellation.",
+          }
+        : {
+            verdict: {
+              kind: "appointment",
+              change: "new",
+              appointment: { kind: r.kind, date, time, durationMinutes: invite.durationMinutes },
+            },
+            summary: "The email is a calendar invitation.",
+          };
+    },
+  },
+  {
     rule: "cancelled",
-    verdict: (r) => {
+    decide: (r) => {
       if (!is(r, "appointment_cancelled")) return null;
       return r.before === null
         ? decision(
@@ -584,16 +569,18 @@ export const TRUTH_TABLE: Row[] = [
             "The email says an appointment was cancelled, but Sunny could not read which one.",
           )
         : {
-            kind: "appointment",
-            change: "cancel",
-            previous: ref(r.kind, r.before),
+            verdict: {
+              kind: "appointment",
+              change: "cancel",
+              previous: { kind: r.kind, ...r.before },
+            },
             summary: "The email says an appointment was cancelled.",
           };
     },
   },
   {
     rule: "moved",
-    verdict: (r) => {
+    decide: (r) => {
       if (!is(r, "appointment_moved")) return null;
       const slot = timed(r);
       return r.before === null || slot === null
@@ -602,23 +589,27 @@ export const TRUTH_TABLE: Row[] = [
             "The email says an appointment moved, but Sunny could not read the old and new times.",
           )
         : {
-            kind: "appointment",
-            change: "reschedule",
-            previous: ref(r.kind, r.before),
-            appointment: appointment(r.kind, slot),
+            verdict: {
+              kind: "appointment",
+              change: "reschedule",
+              previous: { kind: r.kind, ...r.before },
+              appointment: { kind: r.kind, ...slot, durationMinutes: null },
+            },
             summary: "The email says an appointment moved to a new time.",
           };
     },
   },
   {
     rule: "confirms an appointment with a date and start time",
-    verdict: (r) => {
+    decide: (r) => {
       const slot = timed(r);
       return is(r, "confirms_appointment") && slot !== null
         ? {
-            kind: "appointment",
-            change: "new",
-            appointment: appointment(r.kind, slot),
+            verdict: {
+              kind: "appointment",
+              change: "new",
+              appointment: { kind: r.kind, ...slot, durationMinutes: null },
+            },
             summary: "The email confirms an appointment.",
           }
         : null;
@@ -626,21 +617,21 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "test results",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "about_test_results")
         ? decision("health_result", "The email is about medical test results.")
         : null,
   },
   {
     rule: "bill",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "about_bill")
         ? decision("bill_or_payment", "The email is about a bill or a payment.")
         : null,
   },
   {
     rule: "account security",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "about_account_security")
         ? decision(
             "account_or_credentials",
@@ -650,28 +641,28 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "government",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "from_government")
         ? decision("legal_or_government", "The email is from a government, court or tax office.")
         : null,
   },
   {
     rule: "question for the senior",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "asks_question")
         ? decision("reply_needed", "The email asks the senior a question that needs an answer.")
         : null,
   },
   {
     rule: "payment, reply, signature or decision needed",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "needs_action")
         ? decision("other", "The email needs a payment, a reply, a signature or a decision.")
         : null,
   },
   {
     rule: "a specific decision question is unsettled",
-    verdict: (r) =>
+    decide: (r) =>
       anyUnsure(r, SPECIFIC_DECISION_FLAGS)
         ? decision(
             "other",
@@ -681,40 +672,32 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "prescription",
-    verdict: (r) => {
+    decide: (r) => {
       if (!is(r, "about_prescription")) return null;
       return is(r, "prescription_ready_now")
-        ? info(
-            "prescription",
-            NOTES.prescription_ready,
-            "The email says a prescription is ready for pickup.",
-          )
-        : info(
-            "prescription",
-            NOTES.prescription_coming,
-            "The email says a prescription is being prepared.",
-          );
+        ? info("prescription_ready", "The email says a prescription is ready for pickup.")
+        : info("prescription_coming", "The email says a prescription is being prepared.");
     },
   },
   {
     rule: "package",
-    verdict: (r) => {
+    decide: (r) => {
       if (!is(r, "about_package")) return null;
       return is(r, "package_arrived")
-        ? info("delivery", NOTES.package_arrived, "The email says a package was delivered.")
-        : info("delivery", NOTES.package_coming, "The email says a package is on its way.");
+        ? info("package_arrived", "The email says a package was delivered.")
+        : info("package_coming", "The email says a package is on its way.");
     },
   },
   {
     rule: "home visit",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "home_visit")
-        ? info("service_visit", NOTES.home_visit, "The email says a worker will visit the home.")
+        ? info("home_visit", "The email says a worker will visit the home.")
         : null,
   },
   {
     rule: "appointment without a readable date and start time",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "confirms_appointment")
         ? decision(
             "other",
@@ -724,28 +707,24 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "personal note",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "personal_note")
-        ? info(
-            "family_news",
-            NOTES.personal_note,
-            "The email is a personal note from a relative or friend.",
-          )
+        ? info("family_news", "The email is a personal note from a relative or friend.")
         : null,
   },
   {
     rule: "bulk mail, receipt or feedback request",
-    verdict: (r) =>
+    decide: (r) =>
       is(r, "bulk_mail") || is(r, "receipt") || is(r, "feedback_request")
         ? {
-            kind: "ignore",
+            verdict: { kind: "ignore" },
             summary: "The email is bulk mail, a receipt or a request for feedback.",
           }
         : null,
   },
   {
     rule: "a broad question is unsettled",
-    verdict: (r) =>
+    decide: (r) =>
       anyUnsure(r, BROAD_FLAGS)
         ? decision(
             "other",
@@ -755,124 +734,111 @@ export const TRUTH_TABLE: Row[] = [
   },
   {
     rule: "an information question is unsettled",
-    verdict: (r) =>
+    decide: (r) =>
       anyUnsure(r, INFO_FLAGS)
         ? decision("other", "Sunny could not tell what this email is about. Please look at it.")
         : null,
   },
   {
     rule: "otherwise",
-    verdict: () =>
+    decide: () =>
       decision("other", "Sunny did not recognize what this email is about. Please look at it."),
   },
 ];
 
-export function decide(readings: Readings): { rule: string; verdict: MailVerdict } {
+export function decide(readings: Readings): Decision & { rule: string } {
   for (const row of TRUTH_TABLE) {
-    const verdict = row.verdict(readings);
-    if (verdict !== null) return { rule: row.rule, verdict };
+    const decided = row.decide(readings);
+    if (decided !== null) return { ...decided, rule: row.rule };
   }
   throw new Error("The mail truth table has no matching row");
 }
 
-export function verdictWire(verdict: MailVerdict): Record<string, unknown> {
-  const empty = {
-    change: null,
-    title: null,
-    date: null,
-    time: null,
-    duration_minutes: null,
-    place: null,
-    previous_date: null,
-    previous_time: null,
-    previous_title: null,
-    topic: null,
-    note: null,
-    reason: null,
-    suspicion: null,
-  };
-  const base = { ...empty, kind: verdict.kind, summary: verdict.summary };
-  switch (verdict.kind) {
-    case "ignore":
-      return base;
-    case "senior_info":
-      return { ...base, topic: verdict.topic, note: verdict.note };
-    case "needs_decision":
-      return { ...base, reason: verdict.reason };
-    case "suspicious":
-      return { ...base, suspicion: verdict.suspicion };
+export type JevQuestions = Record<string, NoulQuestion | ChoiceQuestion>;
+
+export interface JevRequest {
+  model: string;
+  state: ReturnType<typeof judgeState>;
+  questions: JevQuestions;
+}
+
+export interface JevReply {
+  answers: JevAnswers;
+  usage: Usage;
+  model: string;
+}
+
+export type AskJev = (request: JevRequest) => Promise<JevReply>;
+
+function compactAnswer(
+  name: string,
+  question: NoulQuestion | ChoiceQuestion,
+  raw: unknown,
+): JevAnswer {
+  if (typeof raw !== "object" || raw === null || !("type" in raw)) {
+    throw new Error(`Jev returned no answer for ${name}`);
   }
-  const previous =
-    verdict.change === "new"
-      ? {}
-      : {
-          previous_date: verdict.previous.date,
-          previous_time: verdict.previous.time,
-          previous_title: verdict.previous.title,
-        };
-  const next =
-    verdict.change === "cancel"
-      ? {}
-      : {
-          title: verdict.appointment.title,
-          date: verdict.appointment.date,
-          time: verdict.appointment.time,
-          duration_minutes: verdict.appointment.durationMinutes,
-          place: verdict.appointment.place,
-        };
-  return { ...base, change: verdict.change, ...previous, ...next };
-}
-
-export interface JevAnswers {
-  [name: string]: unknown;
-}
-
-function probabilityOf(answers: JevAnswers, name: string): number {
-  const answer = answers[name];
-  if (
-    typeof answer === "object" &&
-    answer !== null &&
-    "type" in answer &&
-    answer.type === "noul" &&
-    "noul" in answer &&
-    typeof answer.noul === "number"
-  ) {
-    return answer.noul;
+  if (question.type === "noul") {
+    if (raw.type === "noul" && "noul" in raw && typeof raw.noul === "number") return raw.noul;
+    throw new Error(`Jev returned no Noul answer for ${name}`);
   }
-  throw new Error(`Jev returned no Noul answer for ${name}`);
-}
-
-function pickOf(answers: JevAnswers, name: string, question: ChoiceQuestion): Pick {
-  const answer = answers[name];
   if (
-    typeof answer === "object" &&
-    answer !== null &&
-    "type" in answer &&
-    answer.type === "choice" &&
-    "choice" in answer &&
-    typeof answer.choice === "string" &&
-    answer.choice in question.criteria &&
-    "probabilities" in answer &&
-    typeof answer.probabilities === "object" &&
-    answer.probabilities !== null
+    raw.type === "choice" &&
+    "choice" in raw &&
+    typeof raw.choice === "string" &&
+    Object.hasOwn(question.criteria, raw.choice) &&
+    "probabilities" in raw &&
+    typeof raw.probabilities === "object" &&
+    raw.probabilities !== null
   ) {
-    const probability: unknown = (answer.probabilities as Record<string, unknown>)[answer.choice];
-    if (typeof probability === "number") return { choice: answer.choice, probability };
+    const choice = raw.choice;
+    const probability: unknown = Object.entries(raw.probabilities).find(
+      ([label]) => label === choice,
+    )?.[1];
+    if (typeof probability === "number") return { choice, probability };
   }
   throw new Error(`Jev returned no Choice answer for ${name}`);
 }
 
-function slotPicks(
-  answers: JevAnswers,
-  questions: Record<string, NoulQuestion | ChoiceQuestion>,
-  slot: SlotName,
-): SlotPicks {
-  const read = (part: keyof SlotPicks): Pick => {
-    const name = `${slot}_${part}`;
-    const question = questions[name];
-    if (question?.type !== "choice") throw new Error(`No Choice question named ${name}`);
-    return pickOf(answers, name, question);
+export function compactAnswers(raw: Record<string, unknown>, questions: JevQuestions): JevAnswers {
+  return Object.fromEntries(
+    Object.entries(questions).map(([name, question]) => [
+      name,
+      compactAnswer(name, question, raw[name]),
+    ]),
+  );
+}
+
+export const askJev: AskJev = async (request) => {
+  const client = new TypeSafeClient({
+    timeout: JEV_TIMEOUT_MS,
+    retry: { maxRetries: 1 },
+    compression: false,
+  });
+  const response = await client.systemOne(request);
+  const inputTokens = response.usage.input_tokens;
+  if (inputTokens === null) throw new Error("Jev returned no input token count");
+  return {
+    answers: compactAnswers(response.answers, request.questions),
+    usage: { inputTokens, outputTokens: response.usage.output_tokens ?? 0, cacheReadTokens: 0 },
+    model: response.model,
   };
+};
+
+function probabilityOf(answers: JevAnswers, name: string): number {
+  const answer = answers[name];
+  if (typeof answer === "number") return answer;
+  throw new Error(`No Noul answer for ${name}`);
+}
+
+function pickOf(answers: JevAnswers, name: string): Pick {
+  const answer = answers[name];
+  if (typeof answer === "object") return answer;
+  throw new Error(`No Choice answer for ${name}`);
+}
+
+function slotPicks(answers: JevAnswers, slot: SlotName): SlotPicks {
+  const read = (part: keyof SlotPicks): Pick => pickOf(answers, `${slot}_${part}`);
   return {
     date_form: read("date_form"),
     month: read("month"),
@@ -886,66 +852,52 @@ function slotPicks(
   };
 }
 
-export function readAnswers(
-  answers: JevAnswers,
-  questions: Record<string, NoulQuestion | ChoiceQuestion>,
-  anchor: string,
-): Readings {
-  const kindQuestion = questions.appointment_kind;
-  if (kindQuestion?.type !== "choice") throw new Error("No Choice question named appointment_kind");
-  const kind = sure(pickOf(answers, "appointment_kind", kindQuestion));
+function inviteOf(ics: IcsEvent | null): Invite | null {
+  if (ics === null || ics.start === null) return null;
+  if (ics.method !== "REQUEST" && ics.method !== "CANCEL") return null;
+  return { method: ics.method, start: ics.start, durationMinutes: ics.durationMinutes };
+}
+
+export function readAnswers(answers: JevAnswers, anchor: string, ics: IcsEvent | null): Readings {
+  const kind = sure(pickOf(answers, "appointment_kind"));
   return {
-    flags: Object.fromEntries(FLAGS.map((f) => [f, level(probabilityOf(answers, f))])) as Record<
-      Flag,
-      Level
-    >,
+    flags: new Map(FLAGS.map((f) => [f, level(probabilityOf(answers, f))])),
     otherTimeZone: level(probabilityOf(answers, "other_time_zone")),
-    kind: KIND_NAMES.find((k) => k === kind) ?? "other",
-    when: resolveSlot(slotPicks(answers, questions, "when"), anchor),
-    before: resolveSlot(slotPicks(answers, questions, "before"), anchor),
+    kind: APPOINTMENT_KIND_NAMES.find((k) => k === kind) ?? "other",
+    when: resolveSlot(slotPicks(answers, "when"), anchor),
+    before: resolveSlot(slotPicks(answers, "before"), anchor),
+    invite: inviteOf(ics),
   };
 }
 
-export interface Judgment {
-  request: {
-    model: string;
-    state: ReturnType<typeof judgeState>;
-    questions: Record<string, NoulQuestion | ChoiceQuestion>;
-  };
-  answers: JevAnswers;
-  readings: Readings;
-  rule: string;
-  verdict: MailVerdict;
-  usage: Usage;
-  model: string;
-}
-
-export async function judgeEmail(email: ParsedEmail, clock: Clock): Promise<Judgment> {
+export function jevRequest(email: ParsedEmail, clock: Clock): JevRequest {
   const anchor = localDate(email.receivedAt, clock.timezone);
-  const request = {
+  return {
     model: JEV_MODEL,
     state: judgeState(email),
     questions: judgeQuestions(Number(anchor.slice(0, 4)), clock.timezone),
   };
-  const client = new TypeSafeClient({ timeout: JEV_TIMEOUT_MS, retry: { maxRetries: 1 } });
-  const response = await client.systemOne(request);
-  const inputTokens = response.usage.input_tokens;
-  if (inputTokens === null) throw new Error("Jev returned no input token count");
-  const answers: JevAnswers = response.answers;
-  const readings = readAnswers(answers, request.questions, anchor);
-  const { rule, verdict } = decide(readings);
+}
+
+export async function judgeEmail(email: ParsedEmail, clock: Clock, ask: AskJev): Promise<Triaged> {
+  const reply = await ask(jevRequest(email, clock));
+  const anchor = localDate(email.receivedAt, clock.timezone);
+  const { verdict, summary, rule } = decide(readAnswers(reply.answers, anchor, email.ics));
   return {
-    request,
-    answers,
-    readings,
-    rule,
+    stage: "model",
     verdict,
-    usage: { inputTokens, outputTokens: response.usage.output_tokens ?? 0, cacheReadTokens: 0 },
-    model: response.model,
+    summary,
+    rule,
+    classifier: { name: reply.model, usage: reply.usage },
+    answers: reply.answers,
   };
 }
 
-export const jevClassifier: Classifier = async (email, clock) => {
-  const judgment = await judgeEmail(email, clock);
-  return { raw: verdictWire(judgment.verdict), usage: judgment.usage, name: judgment.model };
-};
+export async function triageEmail(
+  email: ParsedEmail,
+  clock: Clock,
+  known: KnownInvite | null,
+  ask: AskJev,
+): Promise<Triaged> {
+  return gate(email, known) ?? (await judgeEmail(email, clock, ask));
+}

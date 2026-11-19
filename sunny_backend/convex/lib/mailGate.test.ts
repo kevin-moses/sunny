@@ -39,14 +39,11 @@ describe("gate", () => {
     "CATEGORY_SOCIAL",
     "CATEGORY_FORUMS",
   ])("ignores mail Gmail filed as %s, invite or not", (label) => {
-    const result = gate(email({ labels: ["UNREAD", label], ics: invite() }), null);
-    expect(result).toEqual({
-      kind: "settled",
-      triaged: {
-        stage: "gate",
-        verdict: expect.objectContaining({ kind: "ignore" }),
-        rule: `label:${label}`,
-      },
+    expect(gate(email({ labels: ["UNREAD", label], ics: invite() }), null)).toMatchObject({
+      stage: "gate",
+      verdict: { kind: "ignore" },
+      rule: `gate:label:${label}`,
+      answers: null,
     });
   });
 
@@ -54,87 +51,35 @@ describe("gate", () => {
     "settles a %s for a repeating event as a decision for the caregivers",
     (method) => {
       for (const known of [null, { sequence: 0 }]) {
-        const result = gate(email({ ics: invite({ method, recurring: true }) }), known);
-        expect(result).toEqual({
-          kind: "settled",
-          triaged: {
-            stage: "gate",
-            verdict: expect.objectContaining({ kind: "needs_decision", reason: "other" }),
-            rule: "ics:recurring",
-          },
+        expect(gate(email({ ics: invite({ method, recurring: true }) }), known)).toMatchObject({
+          verdict: { kind: "needs_decision", reason: "other" },
+          rule: "gate:ics:recurring",
         });
       }
     },
   );
 
   test("ignores an invitation older than the one Sunny already linked", () => {
-    const result = gate(email({ ics: invite({ sequence: 1 }) }), { sequence: 2 });
-    expect(result).toEqual({
-      kind: "settled",
-      triaged: {
-        stage: "gate",
-        verdict: expect.objectContaining({ kind: "ignore" }),
-        rule: "ics:older_sequence",
-      },
+    expect(gate(email({ ics: invite({ sequence: 1 }) }), { sequence: 2 })).toMatchObject({
+      verdict: { kind: "ignore" },
+      rule: "gate:ics:older_sequence",
     });
-    const same = gate(email({ ics: invite({ sequence: 2 }) }), { sequence: 2 });
-    expect(same.kind === "settled" && same.triaged.rule).toBe("ics:request_known");
-  });
-
-  test("sends plain mail to the classifier", () => {
-    expect(gate(email(), null)).toEqual({ kind: "classify" });
+    expect(gate(email({ ics: invite({ sequence: 2 }) }), { sequence: 2 })).toBeNull();
   });
 
   test("ignores replies to invitations", () => {
-    const result = gate(email({ ics: invite({ method: "REPLY" }) }), { sequence: 0 });
-    expect(result.kind === "settled" && result.triaged.verdict.kind).toBe("ignore");
-  });
-
-  test("turns an invitation with an unknown UID into a new appointment", () => {
-    const result = gate(email({ ics: invite() }), null);
-    expect(result.kind === "settled" && result.triaged.verdict).toEqual({
-      kind: "appointment",
-      change: "new",
-      appointment: {
-        title: "Thanksgiving dinner at Anna's",
-        date: "2026-11-26",
-        time: "16:00",
-        durationMinutes: 180,
-        place: "12 Birch Lane",
-      },
-      summary: "Calendar invitation: Thanksgiving dinner at Anna's on 2026-11-26 at 16:00.",
+    expect(gate(email({ ics: invite({ method: "REPLY" }) }), { sequence: 0 })).toMatchObject({
+      verdict: { kind: "ignore" },
+      rule: "gate:ics:reply",
     });
   });
 
-  test("turns an invitation with a known UID into a reschedule", () => {
-    const result = gate(email({ ics: invite({ start: { date: "2026-11-26", time: "17:00" } }) }), {
-      sequence: 0,
-    });
-    expect(result.kind === "settled" && result.triaged.verdict).toMatchObject({
-      kind: "appointment",
-      change: "reschedule",
-      appointment: { date: "2026-11-26", time: "17:00" },
-    });
-  });
-
-  test("turns a cancelled invitation into a cancel, known UID or not", () => {
-    for (const known of [{ sequence: 0 }, null]) {
-      const result = gate(email({ ics: invite({ method: "CANCEL" }) }), known);
-      expect(result.kind === "settled" && result.triaged.verdict).toMatchObject({
-        kind: "appointment",
-        change: "cancel",
-        previous: { date: "2026-11-26", time: "16:00", title: "Thanksgiving dinner at Anna's" },
-      });
+  test("leaves plain mail and every invitation or cancellation to Jev", () => {
+    expect(gate(email(), null)).toBeNull();
+    for (const method of ["REQUEST", "CANCEL", "OTHER"] as const) {
+      for (const known of [null, { sequence: 0 }]) {
+        expect(gate(email({ ics: invite({ method }) }), known)).toBeNull();
+      }
     }
-  });
-
-  test("leaves invitations without a usable start, or with other methods, to the classifier", () => {
-    expect(gate(email({ ics: invite({ start: null }) }), null)).toEqual({ kind: "classify" });
-    expect(
-      gate(email({ ics: invite({ method: "CANCEL", start: null }) }), { sequence: 0 }),
-    ).toEqual({
-      kind: "classify",
-    });
-    expect(gate(email({ ics: invite({ method: "OTHER" }) }), null)).toEqual({ kind: "classify" });
   });
 });

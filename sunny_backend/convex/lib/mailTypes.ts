@@ -29,28 +29,100 @@ export interface ParsedEmail {
   ics: IcsEvent | null;
 }
 
+export interface Clock {
+  now: number;
+  timezone: string;
+}
+
+export const APPOINTMENT_KIND_NAMES = [
+  "doctor_visit",
+  "dentist",
+  "eye_doctor",
+  "hearing",
+  "physical_therapy",
+  "medical_test",
+  "vaccine",
+  "hair",
+  "group_activity",
+  "meal",
+  "family_visit",
+  "video_call",
+  "phone_call",
+  "meeting",
+  "home_service",
+  "other",
+] as const;
+
+export type AppointmentKind = (typeof APPOINTMENT_KIND_NAMES)[number];
+
+export const APPOINTMENT_KINDS: Record<AppointmentKind, { describe: string; title: string }> = {
+  doctor_visit: {
+    describe: "A visit with a doctor, nurse or other clinician",
+    title: "Doctor visit",
+  },
+  dentist: { describe: "A dentist visit or teeth cleaning", title: "Dentist appointment" },
+  eye_doctor: { describe: "An eye exam or a visit to an eye doctor", title: "Eye exam" },
+  hearing: { describe: "A hearing test or a hearing aid visit", title: "Hearing appointment" },
+  physical_therapy: { describe: "Physical or occupational therapy", title: "Physical therapy" },
+  medical_test: {
+    describe: "A lab test, blood draw, scan, X-ray, MRI or other medical test",
+    title: "Medical test",
+  },
+  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment" },
+  hair: { describe: "A haircut or a salon visit", title: "Hair appointment" },
+  group_activity: { describe: "A class, club or group activity", title: "Group activity" },
+  meal: { describe: "A breakfast, lunch, dinner or coffee with someone", title: "Meal" },
+  family_visit: { describe: "A visit with family or friends", title: "Family visit" },
+  video_call: { describe: "A video call", title: "Video call" },
+  phone_call: { describe: "A phone call", title: "Phone call" },
+  meeting: { describe: "A meeting or counseling session", title: "Meeting" },
+  home_service: { describe: "A worker coming to the home", title: "Home service visit" },
+  other: { describe: "Any other kind of appointment", title: "Appointment" },
+};
+
+const MEAL_TITLES: [string, string][] = [
+  ["11:00", "Breakfast"],
+  ["16:00", "Lunch"],
+  ["24:00", "Dinner"],
+];
+
+export function appointmentTitle(kind: AppointmentKind, time: string | null): string {
+  if (kind !== "meal" || time === null) return APPOINTMENT_KINDS[kind].title;
+  return MEAL_TITLES.find(([before]) => time < before)?.[1] ?? APPOINTMENT_KINDS.meal.title;
+}
+
 export interface Appointment {
-  title: string;
+  kind: AppointmentKind;
   date: string;
   time: string;
   durationMinutes: number | null;
-  place: string | null;
 }
 
 export interface AppointmentRef {
+  kind: AppointmentKind;
   date: string;
   time: string | null;
-  title: string;
 }
 
 export const INFO_TOPICS = [
-  "delivery",
-  "prescription",
+  "prescription_ready",
+  "prescription_coming",
+  "package_arrived",
+  "package_coming",
+  "home_visit",
   "family_news",
-  "service_visit",
-  "other",
 ] as const;
+
 export type InfoTopic = (typeof INFO_TOPICS)[number];
+
+export const SENIOR_SENTENCES: Record<InfoTopic, string> = {
+  prescription_ready: "The pharmacy has your medicine ready to pick up.",
+  prescription_coming: "The pharmacy is getting your prescription ready.",
+  package_arrived: "A package was delivered to your home.",
+  package_coming: "Someone is bringing a package to your home.",
+  home_visit: "A service worker will visit your home soon.",
+  family_news: "You have a friendly email from family or a friend. Someone can read it with you.",
+};
 
 export const DECISION_REASONS = [
   "cancellation",
@@ -67,19 +139,18 @@ export const SUSPICIONS = ["scam", "money_request", "credentials", "impersonatio
 export type Suspicion = (typeof SUSPICIONS)[number];
 
 export type MailVerdict =
-  | { kind: "ignore"; summary: string }
-  | { kind: "appointment"; change: "new"; appointment: Appointment; summary: string }
+  | { kind: "ignore" }
+  | { kind: "appointment"; change: "new"; appointment: Appointment }
   | {
       kind: "appointment";
       change: "reschedule";
       previous: AppointmentRef;
       appointment: Appointment;
-      summary: string;
     }
-  | { kind: "appointment"; change: "cancel"; previous: AppointmentRef; summary: string }
-  | { kind: "senior_info"; topic: InfoTopic; note: string; summary: string }
-  | { kind: "needs_decision"; reason: DecisionReason; summary: string }
-  | { kind: "suspicious"; suspicion: Suspicion; summary: string };
+  | { kind: "appointment"; change: "cancel"; previous: AppointmentRef }
+  | { kind: "senior_info"; topic: InfoTopic }
+  | { kind: "needs_decision"; reason: DecisionReason }
+  | { kind: "suspicious"; suspicion: Suspicion };
 
 export interface Usage {
   inputTokens: number;
@@ -89,9 +160,18 @@ export interface Usage {
 
 export const NO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
-export type Triaged =
-  | { stage: "gate"; verdict: MailVerdict; rule: string }
-  | { stage: "model"; verdict: MailVerdict | null; usage: Usage; classifier: string };
+export type JevAnswer = number | { choice: string; probability: number };
+
+export type JevAnswers = Record<string, JevAnswer>;
+
+export interface Triaged {
+  stage: "gate" | "model";
+  verdict: MailVerdict;
+  summary: string;
+  rule: string;
+  classifier: { name: string; usage: Usage };
+  answers: JevAnswers | null;
+}
 
 export interface CalendarEventFact {
   eventId: string;
@@ -123,11 +203,11 @@ export const ESCALATION_REASONS = [
   "unclear_appointment",
   "unclear_reschedule",
   "conflict",
-  "unreadable",
 ] as const;
 export type EscalationReason = (typeof ESCALATION_REASONS)[number];
 
-export interface Slot {
+export interface Proposed {
+  kind: AppointmentKind;
   date: string;
   time: string;
 }
@@ -138,7 +218,12 @@ export interface CaregiverMessage {
 }
 
 export type MailEffect =
-  | { kind: "add_event"; appointment: Appointment; appointmentKey: string }
+  | {
+      kind: "add_event";
+      appointment: Appointment;
+      place: string | null;
+      appointmentKey: string;
+    }
   | {
       kind: "reschedule_event";
       eventId: string;
@@ -153,5 +238,5 @@ export type MailEffect =
       reason: EscalationReason;
       push: boolean;
       eventId: string | null;
-      proposed: Slot | null;
+      proposed: Proposed | null;
     } & CaregiverMessage);

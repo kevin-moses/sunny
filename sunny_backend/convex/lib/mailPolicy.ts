@@ -1,4 +1,4 @@
-import { cleanText } from "./frameText";
+import { SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
 import type {
   Appointment,
   AppointmentRef,
@@ -11,7 +11,7 @@ import type {
   MailEffect,
   MailVerdict,
   PolicyFacts,
-  Slot,
+  Proposed,
   Suspicion,
   Triaged,
 } from "./mailTypes";
@@ -32,14 +32,11 @@ import {
 } from "./time";
 
 export const STALE_AFTER_MS = DAY_MS;
-const MAX_TITLE = 60;
 const MAX_PLACE = 120;
 const MAX_DAYS_AHEAD = 400;
 const MIN_DURATION_MINUTES = 5;
 const MAX_DURATION_MINUTES = 480;
 const ASSUMED_DURATION_MINUTES = 30;
-export const MAX_NOTE = 160;
-const MAX_NOTE_SENTENCES = 2;
 const MAX_SHOWN_SUBJECT = 120;
 const MAX_CAREGIVER_BODY = 600;
 const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
@@ -48,56 +45,17 @@ const NUMBER_REMOVED = "[number removed]";
 
 const LINK = /:\/\/|www\.|@|\b[a-z0-9-]{2,}\.[a-z]{2,}\b/i;
 const CURRENCY = /\p{Sc}/u;
-const TITLE_DIGITS = /\d(?:[\s().-]*\d){2,}/;
 const PLACE_DIGITS = /\d(?:[\s().-]*\d){6,}/;
-const MARKUP = /[<>{}[\]*_`#|\\=]/;
-const MONEY_AND_CREDENTIAL_WORDS = [
-  "pay",
-  "money",
-  "bank",
-  "card",
-  "gift",
-  "wire",
-  "transfer",
-  "password",
-  "code",
-  "verify",
-  "account",
-  "prize",
-  "refund",
-  "medicare",
-];
-const ACTION_WORDS = [
-  "call",
-  "phone",
-  "dial",
-  "click",
-  "tap",
-  "link",
-  "download",
-  "reply",
-  "send",
-  "urgent",
-];
-const INFLECTION = "(?:s|es|ed|d|ing|er|ers|ment|ments|ly)?";
-const EXTRA_MONEY_AND_CREDENTIAL_FORMS =
-  "\\bpaid\\b|\\bsocial\\s+security\\b|\\bverif(?:ied|ication)\\b";
-
-function wordPattern(words: string[]): RegExp {
-  return new RegExp(
-    `\\b(?:${words.join("|")})${INFLECTION}\\b|${EXTRA_MONEY_AND_CREDENTIAL_FORMS}`,
-    "i",
-  );
-}
-
-const DENIED_IN_TITLES = wordPattern(MONEY_AND_CREDENTIAL_WORDS);
-export const NOTE_DENIED_WORDS = [...MONEY_AND_CREDENTIAL_WORDS, ...ACTION_WORDS];
-const DENIED_IN_NOTES = wordPattern(NOTE_DENIED_WORDS);
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
+const NEW_SENDER = "this sender is new to Sunny";
+
+export function titleOf(appointment: { kind: Appointment["kind"]; time: string | null }): string {
+  return appointmentTitle(appointment.kind, appointment.time);
+}
 
 export function appointmentKey(appointment: Appointment, ics: IcsEvent | null): string {
   if (ics !== null) return `ics:${ics.uid}`;
-  return `appt:${appointment.date}:${appointment.time}:${textKey(appointment.title)}`;
+  return `appt:${appointment.date}:${appointment.time}:${textKey(titleOf(appointment))}`;
 }
 
 export function linkKey(verdict: MailVerdict | null, ics: IcsEvent | null): string | null {
@@ -124,7 +82,7 @@ export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): Ca
     (e) =>
       e.date === ref.date &&
       (ref.time === null || e.time === ref.time) &&
-      sharesWords(e.title, ref.title),
+      sharesWords(e.title, titleOf(ref)),
   );
 }
 
@@ -132,14 +90,7 @@ export function appointmentFields(
   appointment: Appointment,
   clock: { now: number; timezone: string },
 ): Appointment | null {
-  const title = oneLine(appointment.title);
-  const place = appointment.place === null ? "" : oneLine(appointment.place);
   const { date, time, durationMinutes } = appointment;
-  if (title.length === 0 || title.length > MAX_TITLE) return null;
-  if (TITLE_DIGITS.test(title) || LINK.test(title) || CURRENCY.test(title)) return null;
-  if (place.length > MAX_PLACE || PLACE_DIGITS.test(place)) return null;
-  if (LINK.test(place) || CURRENCY.test(place)) return null;
-  if (DENIED_IN_TITLES.test(title) || DENIED_IN_TITLES.test(place)) return null;
   if (!isLocalDate(date) || !isLocalTime(time)) return null;
   if (zonedInstant(date, time, clock.timezone) < clock.now) return null;
   if (daysBetween(localDate(clock.now, clock.timezone), date) > MAX_DAYS_AHEAD) return null;
@@ -151,29 +102,16 @@ export function appointmentFields(
   ) {
     return null;
   }
-  return { title, date, time, durationMinutes, place: place === "" ? null : place };
+  return appointment;
 }
 
-function foldPunctuation(text: string): string {
-  return text
-    .replace(/[‘’‛′]/g, "'")
-    .replace(/[“”„″]/g, '"')
-    .replace(/[–—]/g, "-")
-    .replace(/…/g, "...");
-}
-
-function sentenceCount(text: string): number {
-  return text.split(/[.!?]+(?:\s+|$)/).filter((s) => s.trim() !== "").length;
-}
-
-export function seniorNoteText(note: string, topic: InfoTopic): string | null {
-  if (topic === "other") return null;
-  const text = oneLine(foldPunctuation(note));
-  if (text.length === 0 || text.length > MAX_NOTE) return null;
-  if (sentenceCount(text) > MAX_NOTE_SENTENCES) return null;
-  if (/\d/.test(text) || LINK.test(text) || MARKUP.test(text) || CURRENCY.test(text)) return null;
-  if (DENIED_IN_NOTES.test(text)) return null;
-  return cleanText(text) === text ? text : null;
+export function placeOf(facts: PolicyFacts): string | null {
+  const location = facts.ics?.location;
+  if (!location || !facts.senderTrusted || !facts.sender.authenticated) return null;
+  const place = oneLine(location);
+  if (place.length === 0 || place.length > MAX_PLACE) return null;
+  if (PLACE_DIGITS.test(place) || LINK.test(place) || CURRENCY.test(place)) return null;
+  return place;
 }
 
 function scrub(text: string): string {
@@ -236,12 +174,12 @@ function overlaps(a: Appointment, b: CalendarEventFact, timezone: string): boole
 interface Context {
   facts: PolicyFacts;
   authenticated: boolean;
+  trusted: boolean;
   stale: boolean;
   summary: string;
 }
 
 type Situation =
-  | { case: "unreadable" }
   | { case: "ignore" }
   | {
       case: "new";
@@ -257,7 +195,7 @@ type Situation =
       matches: CalendarEventFact[];
     }
   | { case: "cancel"; previous: AppointmentRef; matches: CalendarEventFact[] }
-  | { case: "senior_info"; note: string | null }
+  | { case: "senior_info"; topic: InfoTopic }
   | { case: "needs_decision"; reason: DecisionReason }
   | { case: "suspicious"; suspicion: Suspicion };
 
@@ -273,12 +211,16 @@ export interface Plan {
   effects: MailEffect[];
 }
 
+function proposed(appointment: Appointment): Proposed {
+  return { kind: appointment.kind, date: appointment.date, time: appointment.time };
+}
+
 function escalate(
   c: Context,
   reason: EscalationReason,
   line: string,
-  eventId: string | null = null,
-  proposed: Slot | null = null,
+  eventId: string | null,
+  appointment: Appointment | null,
 ): MailEffect {
   return {
     kind: "escalate",
@@ -286,7 +228,7 @@ function escalate(
     ...caregiverMessage(c.facts, line, c.summary),
     push: true,
     eventId,
-    proposed,
+    proposed: appointment === null ? null : proposed(appointment),
   };
 }
 
@@ -294,26 +236,15 @@ function tell(c: Context, line: string, push: boolean): MailEffect {
   return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
 }
 
-const TRUST_OFFER =
-  "Tell Sunny in chat to add it, and to trust this sender if the email is genuine.";
-
-function slotOf(appointment: Appointment): Slot {
-  return { date: appointment.date, time: appointment.time };
-}
-
 function only(matches: CalendarEventFact[]): CalendarEventFact | null {
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
+function described(appointment: Appointment): string {
+  return `${titleOf(appointment)}, ${when(appointment.date, appointment.time)}`;
+}
+
 const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = {
-  unreadable: [
-    {
-      rule: "any",
-      plan: (_, c) => [
-        escalate(c, "unreadable", "Sunny could not sort this email. Please look at it."),
-      ],
-    },
-  ],
   ignore: [{ rule: "any", plan: () => [] }],
   new: [
     {
@@ -325,9 +256,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               escalate(
                 c,
                 "unverified_sender",
-                `${s.appointment.title}, ${when(s.appointment.date, s.appointment.time)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
+                `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
                 null,
-                slotOf(s.appointment),
+                s.appointment,
               ),
             ],
     },
@@ -340,7 +271,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               escalate(
                 c,
                 "unclear_appointment",
-                `Sunny did not add this appointment because its details did not pass Sunny's checks: ${s.appointment.title}, ${when(s.appointment.date, s.appointment.time)}.`,
+                `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
+                null,
+                s.appointment,
               ),
             ],
     },
@@ -352,15 +285,15 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     {
       rule: "sender not trusted",
       plan: (s, c) =>
-        c.facts.senderTrusted
+        c.trusted
           ? null
           : [
               escalate(
                 c,
                 "new_sender",
-                `${s.appointment.title}, ${when(s.appointment.date, s.appointment.time)}. Sunny has not added it because no caregiver has approved this sender yet. ${TRUST_OFFER}`,
+                `${described(s.appointment)}. Sunny has not added it because ${NEW_SENDER}. Tell Sunny in chat to add it and to trust this sender.`,
                 null,
-                slotOf(s.appointment),
+                s.appointment,
               ),
             ],
     },
@@ -373,9 +306,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               escalate(
                 c,
                 "conflict",
-                `Sunny did not add ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
+                `Sunny did not add ${described(s.fields)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
                 null,
-                slotOf(s.fields),
+                s.fields,
               ),
             ],
     },
@@ -388,13 +321,10 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               {
                 kind: "add_event",
                 appointment: s.fields,
+                place: placeOf(c.facts),
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
-              tell(
-                c,
-                `Sunny added ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, to the calendar.`,
-                false,
-              ),
+              tell(c, `Sunny added ${described(s.fields)}, to the calendar.`, false),
             ],
     },
   ],
@@ -403,24 +333,17 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       rule: "not authenticated, not trusted, no single match, the match repeats, or new fields rejected",
       plan: (s, c) => {
         const match = only(s.matches);
-        const trusted = c.authenticated && c.facts.senderTrusted;
-        if (trusted && match !== null && !match.repeating && s.fields !== null) return null;
+        if (c.trusted && match !== null && !match.repeating && s.fields !== null) return null;
         const asked = when(s.appointment.date, s.appointment.time);
-        return [
-          escalate(
-            c,
-            "unclear_reschedule",
-            match === null
-              ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
-              : match.repeating
-                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-                : c.authenticated && !c.facts.senderTrusted
-                  ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because no caregiver has approved this sender yet. The email asks to move it to ${asked}. Tell Sunny in chat to move it, and to trust this sender if the email is genuine.`
-                  : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`,
-            match?.eventId ?? null,
-            slotOf(s.appointment),
-          ),
-        ];
+        const line =
+          match === null
+            ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
+            : match.repeating
+              ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
+              : c.authenticated && !c.trusted
+                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because ${NEW_SENDER}. The email asks to move it to ${asked}. Tell Sunny in chat to move it and to trust this sender.`
+                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
+        return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
       },
     },
     {
@@ -465,7 +388,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           match === null
             ? `The sender cancelled an appointment on ${dateLabel(s.previous.date)}. Sunny found no single matching event and changed nothing.`
             : `The sender cancelled ${match.title}, ${when(match.date, match.time)}. Sunny left it on the calendar; tell Sunny in chat to cancel it.`;
-        return [escalate(c, "cancellation", line, match?.eventId ?? null)];
+        return [escalate(c, "cancellation", line, match?.eventId ?? null, null)];
       },
     },
   ],
@@ -474,45 +397,32 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     {
       rule: "not authenticated, or not trusted",
       plan: (_, c) =>
-        c.authenticated && c.facts.senderTrusted
+        c.trusted
           ? null
           : [
               tell(
                 c,
-                "Sunny did not tell the senior about this email because no caregiver has approved this sender yet.",
-                false,
-              ),
-            ],
-    },
-    {
-      rule: "seniorNoteText rejects",
-      plan: (s, c) =>
-        s.note !== null
-          ? null
-          : [
-              tell(
-                c,
-                "Sunny did not pass this on to the senior because it did not pass Sunny's checks.",
+                `Sunny did not tell the senior about this email because ${NEW_SENDER}.`,
                 false,
               ),
             ],
     },
     {
       rule: "otherwise",
-      plan: (s, c) =>
-        s.note === null
-          ? null
-          : [
-              {
-                kind: "senior_note",
-                text: s.note,
-                expiresAt: noteExpiry(c.facts.receivedAt, c.facts.timezone),
-              },
-            ],
+      plan: (s, c) => [
+        {
+          kind: "senior_note",
+          text: SENIOR_SENTENCES[s.topic],
+          expiresAt: noteExpiry(c.facts.receivedAt, c.facts.timezone),
+        },
+      ],
     },
   ],
   needs_decision: [
-    { rule: "any", plan: (s, c) => [escalate(c, s.reason, "This email needs a decision.")] },
+    {
+      rule: "any",
+      plan: (s, c) => [escalate(c, s.reason, "This email needs a decision.", null, null)],
+    },
   ],
   suspicious: [
     {
@@ -522,6 +432,8 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           c,
           s.suspicion,
           "Sunny thinks this email may be a scam and did not tell the senior about it.",
+          null,
+          null,
         ),
       ],
     },
@@ -533,17 +445,43 @@ function matchesFor(ref: AppointmentRef, facts: PolicyFacts): CalendarEventFact[
   return facts.events.filter((e) => e.eventId === facts.linkedEventId);
 }
 
-function situationOf(verdict: MailVerdict | null, facts: PolicyFacts): Situation {
-  const clock = { now: facts.now, timezone: facts.timezone };
-  if (verdict === null) return { case: "unreadable" };
+function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
+  const fields = appointmentFields(appointment, facts);
+  const linked = facts.events.find((e) => e.eventId === facts.linkedEventId);
+  if (
+    facts.ics !== null &&
+    linked !== undefined &&
+    (linked.date !== appointment.date || linked.time !== appointment.time)
+  ) {
+    return { case: "reschedule", appointment, fields, matches: [linked] };
+  }
+  const same =
+    fields === null
+      ? undefined
+      : facts.events.find(
+          (e) =>
+            e.date === fields.date &&
+            e.time === fields.time &&
+            sharesWords(e.title, titleOf(fields)),
+        );
+  return {
+    case: "new",
+    appointment,
+    fields,
+    duplicate: facts.linkedEventId ?? same?.eventId ?? null,
+    conflict:
+      fields === null
+        ? null
+        : (facts.events.find((e) => overlaps(fields, e, facts.timezone)) ?? null),
+  };
+}
+
+function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
   switch (verdict.kind) {
     case "ignore":
       return { case: "ignore" };
     case "senior_info":
-      return {
-        case: "senior_info",
-        note: seniorNoteText(verdict.note, verdict.topic),
-      };
+      return { case: "senior_info", topic: verdict.topic };
     case "needs_decision":
       return { case: "needs_decision", reason: verdict.reason };
     case "suspicious":
@@ -560,31 +498,11 @@ function situationOf(verdict: MailVerdict | null, facts: PolicyFacts): Situation
       return {
         case: "reschedule",
         appointment: verdict.appointment,
-        fields: appointmentFields(verdict.appointment, clock),
+        fields: appointmentFields(verdict.appointment, facts),
         matches: matchesFor(verdict.previous, facts),
       };
-    case "new": {
-      const fields = appointmentFields(verdict.appointment, clock);
-      const same =
-        fields === null
-          ? undefined
-          : facts.events.find(
-              (e) =>
-                e.date === fields.date &&
-                e.time === fields.time &&
-                sharesWords(e.title, fields.title),
-            );
-      return {
-        case: "new",
-        appointment: verdict.appointment,
-        fields,
-        duplicate: facts.linkedEventId ?? same?.eventId ?? null,
-        conflict:
-          fields === null
-            ? null
-            : (facts.events.find((e) => overlaps(fields, e, facts.timezone)) ?? null),
-      };
-    }
+    case "new":
+      return newSituation(verdict.appointment, facts);
   }
 }
 
@@ -602,8 +520,6 @@ function runTable<K extends Case>(
 
 function planFor(situation: Situation, context: Context): Plan {
   switch (situation.case) {
-    case "unreadable":
-      return runTable(DECISION_TABLE.unreadable, situation, context);
     case "ignore":
       return runTable(DECISION_TABLE.ignore, situation, context);
     case "new":
@@ -621,15 +537,18 @@ function planFor(situation: Situation, context: Context): Plan {
   }
 }
 
-export function planWithRule(triaged: Triaged, facts: PolicyFacts): Plan {
-  const verdict = triaged.verdict;
+export function planWithRule(
+  triaged: Pick<Triaged, "verdict" | "summary">,
+  facts: PolicyFacts,
+): Plan {
   const context: Context = {
     facts,
     authenticated: facts.sender.authenticated,
+    trusted: facts.sender.authenticated && facts.senderTrusted,
     stale: isStale(facts),
-    summary: verdict === null ? "" : verdict.summary,
+    summary: triaged.summary,
   };
-  const plan = planFor(situationOf(verdict, facts), context);
+  const plan = planFor(situationOf(triaged.verdict, facts), context);
   if (!context.stale) return plan;
   return {
     rule: plan.rule,

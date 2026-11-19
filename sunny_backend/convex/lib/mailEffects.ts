@@ -8,8 +8,8 @@ import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, reachableMembers } from "./delivery";
-import { STALE_AFTER_MS, caregiverMessage, ellipsize, isStale, when } from "./mailPolicy";
-import type { EscalationReason, MailEffect, PolicyFacts, Slot } from "./mailTypes";
+import { STALE_AFTER_MS, caregiverMessage, ellipsize, isStale, titleOf, when } from "./mailPolicy";
+import type { EscalationReason, MailEffect, PolicyFacts, Proposed } from "./mailTypes";
 import { isLocalDate, isLocalTime, localDate, zonedInstant } from "./time";
 import type { MailEffectRecord, NotificationKind } from "./validators";
 
@@ -146,17 +146,17 @@ async function notesWrittenToday(scope: EffectScope): Promise<number> {
 function makeHandlers(effects: readonly MailEffect[]): Handlers {
   return {
     add_event: async (scope, effect) => {
-      const { title, date, time, durationMinutes, place } = effect.appointment;
+      const { date, time, durationMinutes } = effect.appointment;
       const added = await addEventCore(
         scope.ctx,
         MAIL_AGENT,
         scope.household._id,
         {
-          title,
+          title: titleOf(effect.appointment),
           onDate: date,
           startTime: time,
           durationMinutes: durationMinutes ?? undefined,
-          place: place ?? undefined,
+          place: effect.place ?? undefined,
         },
         scope.facts.now,
       );
@@ -262,7 +262,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         ...(effect.proposed !== null &&
         isLocalDate(effect.proposed.date) &&
         isLocalTime(effect.proposed.time)
-          ? { proposed: { date: effect.proposed.date, time: effect.proposed.time } }
+          ? { proposed: effect.proposed }
           : {}),
       };
     },
@@ -283,7 +283,7 @@ function escalation(
   reason: EscalationReason,
   line: string,
   eventId: string | null,
-  proposed: Slot | null,
+  proposed: Proposed | null,
 ): EffectOf<"escalate"> {
   const { facts } = scope;
   return {
@@ -307,9 +307,9 @@ function refusedWrite(
     return escalation(
       scope,
       "unclear_appointment",
-      `Sunny could not add ${appointment.title}, ${when(appointment.date, appointment.time)}, to the calendar.`,
+      `Sunny could not add ${titleOf(appointment)}, ${when(appointment.date, appointment.time)}, to the calendar.`,
       null,
-      null,
+      { kind: appointment.kind, date: appointment.date, time: appointment.time },
     );
   }
   if (effect.kind === "reschedule_event") {
@@ -319,7 +319,11 @@ function refusedWrite(
       "unclear_reschedule",
       `Sunny could not move ${event.title} to ${when(effect.appointment.date, effect.appointment.time)}.`,
       effect.eventId,
-      { date: effect.appointment.date, time: effect.appointment.time },
+      {
+        kind: effect.appointment.kind,
+        date: effect.appointment.date,
+        time: effect.appointment.time,
+      },
     );
   }
   return null;

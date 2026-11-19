@@ -7,21 +7,22 @@ import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import { MAIL_HEADING, buildBriefing } from "./lib/agentBriefing";
 import { loadDeviceState } from "./lib/deviceState";
 import { carryOut } from "./lib/mailEffects";
+import { JEV_MODEL } from "./lib/mailJudge";
+import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import type { Triaged } from "./lib/mailTypes";
 import {
   MAILBOX,
   item,
+  jevCalls,
+  jevSays,
   mailHousehold,
-  modelCalls,
   receive,
-  replyWith,
   rows,
   triageEmail,
-  verdict,
 } from "./mailMocks.helpers";
-import type { MailHousehold, RawEmail } from "./mailMocks.helpers";
+import type { JevSays, MailHousehold, RawEmail } from "./mailMocks.helpers";
 import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
-import { insertEvent, makeBackend } from "./testing.helpers";
+import { insertEvent, insertRequest, makeBackend } from "./testing.helpers";
 
 vi.mock("./lib/google", async (original) =>
   (await import("./googleMocks.helpers")).googleMock(await original()),
@@ -41,7 +42,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
   resetGoogleMocks();
-  modelCalls.length = 0;
+  jevCalls.length = 0;
   vi.spyOn(console, "error").mockImplementation(() => undefined);
   vi.spyOn(console, "log").mockImplementation(() => undefined);
 });
@@ -67,36 +68,22 @@ function clinic(overrides: Partial<RawEmail> = {}): RawEmail {
   };
 }
 
-const EYE_EXAM = verdict({
-  kind: "appointment",
-  change: "new",
-  title: "Eye exam with Dr. Rivera",
-  date: "2026-12-10",
-  time: "14:15",
-  duration_minutes: 30,
-  place: "Lakeside Eye Care",
-  summary: "The eye clinic confirmed an eye exam.",
-});
+const EYE_EXAM: JevSays = {
+  yes: ["confirms_appointment"],
+  kind: "eye_doctor",
+  when: { date: "2026-12-10", time: "14:15" },
+};
 
-const MOVED_EYE_EXAM = verdict({
-  kind: "appointment",
-  change: "reschedule",
-  title: "Eye exam with Dr. Rivera",
-  date: "2026-12-12",
-  time: "10:00",
-  duration_minutes: 30,
-  place: "Lakeside Eye Care",
-  previous_date: "2026-12-10",
-  previous_time: "14:15",
-  previous_title: "Eye exam",
-  summary: "The eye clinic moved the eye exam.",
-});
+const MOVED_EYE_EXAM: JevSays = {
+  yes: ["appointment_moved"],
+  kind: "eye_doctor",
+  when: { date: "2026-12-12", time: "10:00" },
+  before: { date: "2026-12-10", time: "14:15" },
+};
 
-const PHISHING = verdict({
-  kind: "suspicious",
-  suspicion: "money_request",
-  summary: "Someone asks for gift cards.",
-});
+const PHISHING: JevSays = { yes: ["asks_hard_to_trace_payment"] };
+
+const DELIVERY: JevSays = { yes: ["about_package"] };
 
 async function setup(): Promise<MailHousehold> {
   return await mailHousehold(makeBackend());
@@ -118,18 +105,25 @@ describe("an appointment email", () => {
         address: "appointments@lakesideeye.example",
         authenticated: true,
       },
-      verdict: { kind: "appointment", summary: "The eye clinic confirmed an eye exam." },
-      classifier: { name: "claude-haiku-5-5", usage: { inputTokens: 1200, outputTokens: 90 } },
+      verdict: "appointment",
+      rule: "new: otherwise",
+      judgeRule: "confirms an appointment with a date and start time",
+      classifier: { name: JEV_MODEL, usage: { inputTokens: 4200, outputTokens: 310 } },
     });
+    expect(done.judgeAnswers).toMatchObject({
+      confirms_appointment: 0.95,
+      addresses_assistant: 0.02,
+      appointment_kind: { choice: "eye_doctor", probability: 0.95 },
+    });
+    expect(JSON.stringify(done.judgeAnswers)).not.toContain("Dr. Rivera");
     const [event] = await rows(h, "events");
     expect(event).toMatchObject({
-      title: "Eye exam with Dr. Rivera",
+      title: "Eye exam",
       startsOn: "2026-12-10",
       startTime: "14:15",
-      durationMinutes: 30,
-      place: "Lakeside Eye Care",
       createdVia: "agent",
     });
+    expect(event!.place).toBeUndefined();
     expect(event!.notes).toBeUndefined();
     expect(done.effects).toEqual([
       { kind: "event_added", eventId: event!._id },
@@ -140,7 +134,7 @@ describe("an appointment email", () => {
     const posts = await rows(h, "chatPosts");
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ kind: "mail", mailItemId: done._id });
-    expect(posts[0]!.body).toContain("Sunny added Eye exam with Dr. Rivera");
+    expect(posts[0]!.body).toContain("Sunny added Eye exam, Thursday, December 10 at 2:15 PM");
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 
@@ -149,20 +143,24 @@ describe("an appointment email", () => {
     const email = clinic();
     const itemId = await receive(h, email);
     const triaged: Triaged = {
-      stage: "gate",
-      rule: "ics:request_new",
+      stage: "model",
       verdict: {
         kind: "appointment",
         change: "new",
         appointment: {
-          title: "Eye exam",
+          kind: "eye_doctor",
           date: "2026-12-10",
           time: "14:15",
           durationMinutes: null,
-          place: null,
         },
-        summary: "An eye exam.",
       },
+      summary: "The email confirms an appointment.",
+      rule: "confirms an appointment with a date and start time",
+      classifier: {
+        name: JEV_MODEL,
+        usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0 },
+      },
+      answers: { confirms_appointment: 0.95 },
     };
     const header = {
       sender: {
@@ -203,7 +201,7 @@ describe("an appointment email", () => {
     expect(await rows(h, "chatPosts")).toHaveLength(1);
   });
 
-  test("a reschedule from the same sender domain moves the event and the link and pushes caregivers", async () => {
+  test("a reschedule from another trusted address moves the event and the link and pushes caregivers", async () => {
     const h = await setup();
     await triageEmail(h, clinic(), EYE_EXAM);
     const moved = await triageEmail(
@@ -223,13 +221,13 @@ describe("an appointment email", () => {
       { kind: "told_caregivers", pushed: true },
     ]);
     const [link] = await rows(h, "mailEventLinks");
-    expect(link!.appointmentKey).toBe("appt:2026-12-12:10:00:eye exam with dr. rivera");
+    expect(link!.appointmentKey).toBe("appt:2026-12-12:10:00:eye exam");
     const pushes = await rows(h, "notificationOutbox");
     expect(kinds(pushes)).toEqual(["mail_update", "mail_update", "mail_update"]);
     expect(pushes.map((p) => p.recipientUserId).sort()).toEqual(["max", "pat", "val"]);
     expect(pushes[0]!.title).toBe("Sunny moved an appointment");
     expect(pushes[0]!.body).toBe(
-      "Sunny moved Eye exam with Dr. Rivera from Thursday, December 10 at 2:15 PM to Saturday, December 12 at 10:00 AM.",
+      "Sunny moved Eye exam from Thursday, December 10 at 2:15 PM to Saturday, December 12 at 10:00 AM.",
     );
   });
 
@@ -269,7 +267,7 @@ describe("an appointment email", () => {
         reason: "unclear_reschedule",
         pushed: true,
         eventId,
-        proposed: { date: "2026-12-12", time: "10:00" },
+        proposed: { kind: "eye_doctor", date: "2026-12-12", time: "10:00" },
       },
     ]);
     expect((await rows(h, "events"))[0]).toMatchObject({
@@ -278,7 +276,7 @@ describe("an appointment email", () => {
     });
     expect(await rows(h, "mailEventLinks")).toHaveLength(0);
     expect((await rows(h, "notificationOutbox"))[0]!.body).toContain(
-      "because no caregiver has approved this sender yet",
+      "because this sender is new to Sunny",
     );
     expect(kinds(await rows(h, "notificationOutbox"))).toEqual([
       "mail_escalation",
@@ -309,17 +307,17 @@ describe("an appointment email", () => {
     test("an appointment that overlaps one of its dates escalates as a conflict", async () => {
       const h = await setup();
       await weeklyEyeExam(h);
-      const done = await triageEmail(
-        h,
-        clinic(),
-        verdict({ ...EYE_EXAM, title: "Hearing test", time: "14:30" }),
-      );
+      const done = await triageEmail(h, clinic(), {
+        ...EYE_EXAM,
+        kind: "hearing",
+        when: { date: "2026-12-10", time: "14:30" },
+      });
       expect(done.effects).toEqual([
         {
           kind: "escalated",
           reason: "conflict",
           pushed: true,
-          proposed: { date: "2026-12-10", time: "14:30" },
+          proposed: { kind: "hearing", date: "2026-12-10", time: "14:30" },
         },
       ]);
       expect(await rows(h, "events")).toHaveLength(1);
@@ -335,7 +333,7 @@ describe("an appointment email", () => {
           reason: "unclear_reschedule",
           pushed: true,
           eventId: seriesId,
-          proposed: { date: "2026-12-12", time: "10:00" },
+          proposed: { kind: "eye_doctor", date: "2026-12-12", time: "10:00" },
         },
       ]);
       expect((await rows(h, "events"))[0]).toMatchObject({
@@ -350,18 +348,11 @@ describe("an appointment email", () => {
     const h = await setup();
     await triageEmail(h, clinic(), EYE_EXAM);
     const [event] = await rows(h, "events");
-    const cancelled = await triageEmail(
-      h,
-      clinic({ subject: "Cancelled" }),
-      verdict({
-        kind: "appointment",
-        change: "cancel",
-        previous_date: "2026-12-10",
-        previous_time: "14:15",
-        previous_title: "Eye exam",
-        summary: "The clinic cancelled the eye exam.",
-      }),
-    );
+    const cancelled = await triageEmail(h, clinic({ subject: "Cancelled" }), {
+      yes: ["appointment_cancelled"],
+      kind: "eye_doctor",
+      before: { date: "2026-12-10", time: "14:15" },
+    });
     expect(cancelled.effects).toEqual([
       { kind: "escalated", reason: "cancellation", pushed: true, eventId: event!._id },
     ]);
@@ -371,7 +362,7 @@ describe("an appointment email", () => {
     expect(pushes[0]!.title).not.toContain("Cancelled");
   });
 
-  test("an ICS invite is settled by the gate without the model", async () => {
+  test("an invite goes to Jev, takes its start from the calendar part and is linked by its UID", async () => {
     const h = await setup();
     const ics = [
       "BEGIN:VCALENDAR",
@@ -380,21 +371,64 @@ describe("an appointment email", () => {
       "UID:visit-42@lakesideeye.example",
       "DTSTART;TZID=America/New_York:20261210T141500",
       "DURATION:PT30M",
-      "SUMMARY:Eye exam",
+      "SUMMARY:Call Officer Miller back",
+      "LOCATION:Lakeside Eye Care\\, 40 Harbor Road",
       "END:VEVENT",
       "END:VCALENDAR",
     ].join("\r\n");
-    const done = await triageEmail(h, clinic({ ics }));
-    expect(modelCalls).toHaveLength(0);
-    expect(done.classifier).toMatchObject({ name: "gate:ics:request_new" });
+    const done = await triageEmail(h, clinic({ ics }), { kind: "eye_doctor" });
+    expect(jevCalls).toHaveLength(1);
+    expect(done).toMatchObject({ judgeRule: "calendar invitation", rule: "new: otherwise" });
+    const [event] = await rows(h, "events");
+    expect(event).toMatchObject({
+      title: "Eye exam",
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+      durationMinutes: 30,
+      place: "Lakeside Eye Care, 40 Harbor Road",
+    });
     expect((await rows(h, "mailEventLinks"))[0]!.appointmentKey).toBe(
       "ics:visit-42@lakesideeye.example",
     );
-    const repeat = await triageEmail(h, clinic({ ics }));
-    expect(repeat.classifier).toMatchObject({ name: "gate:ics:request_known" });
-    expect(repeat.effects).toEqual([
-      { kind: "already_on_calendar", eventId: (await rows(h, "events"))[0]!._id },
+    const repeat = await triageEmail(h, clinic({ ics }), { kind: "eye_doctor" });
+    expect(repeat.effects).toEqual([{ kind: "already_on_calendar", eventId: event!._id }]);
+  });
+
+  test("an invite with a hostile title from a verified domain no caregiver trusts is never added", async () => {
+    const h = await setup();
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "METHOD:REQUEST",
+      "BEGIN:VEVENT",
+      "UID:verify-1@benefits-desk.example",
+      "DTSTART;TZID=America/New_York:20261119T100000",
+      "DURATION:PT30M",
+      "SUMMARY:Call Officer Miller back",
+      "LOCATION:Kiosk 4",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n");
+    const done = await triageEmail(
+      h,
+      clinic({ from: "Benefits Desk <events@benefits-desk.example>", subject: "Invitation", ics }),
+      { kind: "phone_call" },
+    );
+    expect(done.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "new_sender",
+        pushed: true,
+        proposed: { kind: "phone_call", date: "2026-11-19", time: "10:00" },
+      },
     ]);
+    expect(await rows(h, "events")).toHaveLength(0);
+    const pushes = await rows(h, "notificationOutbox");
+    expect(pushes).toHaveLength(3);
+    for (const push of pushes) {
+      expect(push.body).toBe(
+        "Phone call, Thursday, November 19 at 10:00 AM. Sunny has not added it because this sender is new to Sunny. Tell Sunny in chat to add it and to trust this sender.",
+      );
+    }
   });
 
   function invite(lines: string[]): string {
@@ -413,14 +447,19 @@ describe("an appointment email", () => {
 
   test("an invite update older than the one Sunny linked is ignored", async () => {
     const h = await setup();
-    await triageEmail(h, clinic({ ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:0"]) }));
+    await triageEmail(h, clinic({ ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:0"]) }), {
+      kind: "eye_doctor",
+    });
     await triageEmail(h, clinic({ ics: invite(["DTSTART:20261211T191500Z", "SEQUENCE:2"]) }));
     expect((await rows(h, "mailEventLinks"))[0]).toMatchObject({ sequence: 2 });
     const late = await triageEmail(
       h,
       clinic({ ics: invite(["DTSTART:20261212T191500Z", "SEQUENCE:1"]) }),
     );
-    expect(late.classifier).toMatchObject({ name: "gate:ics:older_sequence" });
+    expect(late).toMatchObject({
+      judgeRule: "gate:ics:older_sequence",
+      classifier: { name: "gate" },
+    });
     expect(late.effects).toEqual([]);
     expect((await rows(h, "events"))[0]).toMatchObject({ startsOn: "2026-12-11" });
   });
@@ -431,21 +470,14 @@ describe("an appointment email", () => {
       h,
       clinic({ ics: invite(["DTSTART:20261210T191500Z", "RRULE:FREQ=WEEKLY;COUNT=6"]) }),
     );
-    expect(modelCalls).toHaveLength(0);
-    expect(done.classifier).toMatchObject({ name: "gate:ics:recurring" });
+    expect(jevCalls).toHaveLength(0);
+    expect(done.judgeRule).toBe("gate:ics:recurring");
     expect(done.effects).toEqual([{ kind: "escalated", reason: "other", pushed: true }]);
     expect(await rows(h, "events")).toHaveLength(0);
   });
 });
 
 describe("other verdicts", () => {
-  const DELIVERY = verdict({
-    kind: "senior_info",
-    topic: "delivery",
-    note: "Your package from the pharmacy arrives today.",
-    summary: "A pharmacy delivery is on its way.",
-  });
-
   test("a delivery notice creates a senior note pushed to the senior phone only", async () => {
     const h = await setup();
     const done = await triageEmail(
@@ -457,7 +489,7 @@ describe("other verdicts", () => {
     expect(note).toMatchObject({
       householdId: h.householdId,
       mailItemId: done._id,
-      text: "Your package from the pharmacy arrives today.",
+      text: SENIOR_SENTENCES.package_coming,
       receivedAt: NOW - 30 * MINUTE,
     });
     expect(note!.expiresAt).toBe(Date.parse("2026-11-20T05:00:00Z"));
@@ -467,7 +499,7 @@ describe("other verdicts", () => {
     expect(pushes[0]).toMatchObject({
       kind: "senior_note",
       title: "Sunny",
-      body: "Your package from the pharmacy arrives today.",
+      body: SENIOR_SENTENCES.package_coming,
       recipientDeviceId: h.phoneId,
       seniorNoteId: note!._id,
     });
@@ -496,7 +528,7 @@ describe("other verdicts", () => {
     const posts = await rows(h, "chatPosts");
     expect(posts).toHaveLength(1);
     expect(posts[0]!.body).toContain("daily limit");
-    expect(posts[0]!.body).toContain("Your package from the pharmacy arrives today.");
+    expect(posts[0]!.body).toContain(SENIOR_SENTENCES.package_coming);
   });
 
   test("the note limit starts again on the next local day", async () => {
@@ -555,23 +587,26 @@ describe("other verdicts", () => {
     expect(await rows(h, "notificationOutbox")).toHaveLength(18);
   });
 
-  test("a model verdict that fails parseVerdict escalates as unreadable", async () => {
+  test("a delivery notice from a sender no caregiver trusts goes to the caregivers only", async () => {
     const h = await setup();
     const done = await triageEmail(
       h,
-      clinic(),
-      verdict({ kind: "appointment", change: null, summary: "Something." }),
+      clinic({ from: "Parcel Post <tracking@parcelpost.example>", subject: "Out for delivery" }),
+      DELIVERY,
     );
-    expect(done.verdict).toEqual({ kind: "unreadable", summary: "" });
-    expect(done.effects).toEqual([{ kind: "escalated", reason: "unreadable", pushed: true }]);
-    expect((await rows(h, "chatPosts"))[0]!.body).toContain("could not sort this email");
+    expect(done.effects).toEqual([{ kind: "told_caregivers", pushed: false }]);
+    expect(await rows(h, "seniorNotes")).toHaveLength(0);
+    expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    expect((await rows(h, "chatPosts"))[0]!.body).toContain(
+      "Sunny did not tell the senior about this email because this sender is new to Sunny.",
+    );
   });
 
   test("mail Gmail filed as a promotion is ignored without the model", async () => {
     const h = await setup();
     const done = await triageEmail(h, clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }));
     expect(done).toMatchObject({ state: "done", rule: "ignore: any", effects: [] });
-    expect(modelCalls).toHaveLength(0);
+    expect(jevCalls).toHaveLength(0);
   });
 
   test("a message Gmail no longer has is done with no effects", async () => {
@@ -586,7 +621,7 @@ describe("other verdicts", () => {
 describe("the item lifecycle", () => {
   test("a paused household is not claimed and resumes through sweepStuck", async () => {
     const h = await setup();
-    replyWith(PHISHING);
+    jevSays(PHISHING);
     await h.t.run(async (ctx) => ctx.db.patch(h.householdId, { backgroundPaused: true }));
     const itemId = await receive(h, clinic());
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
@@ -605,7 +640,7 @@ describe("the item lifecycle", () => {
 
   test("a row waits while the mailbox is revoked and is triaged after a reconnect to the same address", async () => {
     const h = await setup();
-    replyWith(PHISHING);
+    jevSays(PHISHING);
     const itemId = await receive(h, clinic());
     for (const status of ["revoked", "error"] as const) {
       await h.t.run(async (ctx) => ctx.db.patch(h.mailboxId, { status }));
@@ -651,25 +686,35 @@ describe("the item lifecycle", () => {
     expect((await item(h, itemId)).state).toBe("failed");
   });
 
-  test("a retryable model error releases the claim and rethrows, keeping the headers", async () => {
+  test("a Jev server error releases the claim and rethrows, keeping the headers", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
     const h = await setup();
-    vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ type: "error", error: { type: "overloaded_error" } }), {
-            status: 529,
-            headers: { "content-type": "application/json", "x-should-retry": "false" },
-          }),
-      ),
-    );
+    jevSays({ status: 503 });
     const itemId = await receive(h, clinic());
     await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toThrow();
     expect(await item(h, itemId)).toMatchObject({
       state: "queued",
       attempt: 1,
       subject: "Your appointment is confirmed",
+    });
+  });
+
+  test.each([401, 403, 422])("a Jev %i is not retried", async (status) => {
+    const h = await setup();
+    jevSays({ status });
+    const itemId = await receive(h, clinic());
+    await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toMatchObject({
+      name: "NonRetryableError",
+    });
+  });
+
+  test("a missing TypeSafe key is not retried", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    vi.stubEnv("TYPESAFE_API_KEY", "");
+    await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toMatchObject({
+      name: "NonRetryableError",
     });
   });
 
@@ -846,11 +891,10 @@ describe("carrying out a plan", () => {
       const household = (await ctx.db.get(h.householdId))!;
       const row = (await ctx.db.get(itemId))!;
       const appointment = {
-        title: "Eye exam",
+        kind: "eye_doctor" as const,
         date: "2026-11-01",
         time: "09:00",
         durationMinutes: null,
-        place: null,
       };
       return await carryOut(
         {
@@ -874,7 +918,7 @@ describe("carrying out a plan", () => {
           summary: "An eye exam.",
         },
         [
-          { kind: "add_event", appointment, appointmentKey: "appt:x" },
+          { kind: "add_event", appointment, place: null, appointmentKey: "appt:x" },
           {
             kind: "tell_caregivers",
             body: "Sunny added Eye exam.",
@@ -884,7 +928,14 @@ describe("carrying out a plan", () => {
         ],
       );
     });
-    expect(records).toEqual([{ kind: "escalated", reason: "unclear_appointment", pushed: true }]);
+    expect(records).toEqual([
+      {
+        kind: "escalated",
+        reason: "unclear_appointment",
+        pushed: true,
+        proposed: { kind: "eye_doctor", date: "2026-11-01", time: "09:00" },
+      },
+    ]);
     expect(await rows(h, "events")).toHaveLength(0);
     const posts = await rows(h, "chatPosts");
     expect(posts).toHaveLength(1);
@@ -893,13 +944,6 @@ describe("carrying out a plan", () => {
 });
 
 describe("where Sunny's reading shows up", () => {
-  const DELIVERY = verdict({
-    kind: "senior_info",
-    topic: "delivery",
-    note: "Your package from the pharmacy arrives today.",
-    summary: "A pharmacy delivery is on its way.",
-  });
-
   test("a senior note is in the device state and the voice context until it expires", async () => {
     const h = await setup();
     vi.stubEnv("SUNNY_AGENT_KEY", "agent-key");
@@ -916,7 +960,7 @@ describe("where Sunny's reading shows up", () => {
     expect(after.notes).toEqual([
       {
         id: note!._id,
-        text: "Your package from the pharmacy arrives today.",
+        text: SENIOR_SENTENCES.package_coming,
         receivedAt: NOW - 30 * MINUTE,
         expiresAt: note!.expiresAt,
       },
@@ -924,7 +968,7 @@ describe("where Sunny's reading shows up", () => {
     expect(after.version).not.toBe(before.version);
     expect(after.displayVersion).toBe(before.displayVersion);
     expect((await context()).mailNotes).toEqual([
-      { text: "Your package from the pharmacy arrives today.", receivedAt: NOW - 30 * MINUTE },
+      { text: SENIOR_SENTENCES.package_coming, receivedAt: NOW - 30 * MINUTE },
     ]);
 
     vi.setSystemTime(note!.expiresAt);
@@ -983,7 +1027,7 @@ describe("where Sunny's reading shows up", () => {
       verdict: "appointment",
       receivedAt: NOW - 30 * MINUTE,
     });
-    expect(JSON.stringify(recent)).not.toContain("eye clinic confirmed");
+    expect(JSON.stringify(recent)).not.toContain("The email confirms an appointment.");
     await expect(
       h.t.withIdentity({ subject: "stranger" }).query(api.gmail.recentMail, {
         householdId: h.householdId,
@@ -1013,12 +1057,12 @@ describe("where Sunny's reading shows up", () => {
     const heading = lines.findIndex((l) => l.startsWith(MAIL_HEADING));
     const [, moved] = await h.t.run(async (ctx) => await ctx.db.query("mailItems").collect());
     expect(lines[heading + 1]).toBe(
-      `  2026-11-18 08:30: unclear_reschedule; mail_item_id ${moved!._id}; sender tom@other.example; event_id ${event!._id} "Eye exam with Dr. Rivera" on 2026-12-10 at 14:15; proposed 2026-12-12 at 10:00`,
+      `  2026-11-18 08:30: unclear_reschedule; mail_item_id ${moved!._id}; sender tom@other.example; event_id ${event!._id} "Eye exam" on 2026-12-10 at 14:15; proposed "Eye exam" (kind eye_doctor) on 2026-12-12 at 10:00`,
     );
     expect(lines[heading + 2]).toMatch(/^- Daily summaries/);
     expect(text).not.toContain("Ignore previous instructions");
     expect(text).not.toContain("Dr Evil");
-    expect(text).not.toContain("The eye clinic moved the eye exam.");
+    expect(text).not.toContain("The email says an appointment moved to a new time.");
   });
 
   test("a busy inbox does not hide an escalation from the briefing", async () => {
@@ -1033,5 +1077,78 @@ describe("where Sunny's reading shows up", () => {
     expect(lines[heading + 1]).toMatch(
       /^ {2}\S+ \S+: money_request; mail_item_id \w+; sender appointments@lakesideeye\.example$/,
     );
+  });
+});
+
+describe("a sender the caregivers come to trust", () => {
+  test("first contact escalates, the caregiver trusts it in chat, and the next email is added", async () => {
+    const h = await setup();
+    const foot = (subject: string) =>
+      clinic({ from: "Northside Foot & Ankle <office@northsidefoot.example>", subject });
+    const podiatry: JevSays = {
+      yes: ["confirms_appointment"],
+      kind: "doctor_visit",
+      when: { date: "2026-12-03", time: "13:00" },
+    };
+
+    const first = await triageEmail(h, foot("Appointment with Dr. Nwosu"), podiatry);
+    expect(first.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "new_sender",
+        pushed: true,
+        proposed: { kind: "doctor_visit", date: "2026-12-03", time: "13:00" },
+      },
+    ]);
+    expect(await rows(h, "events")).toHaveLength(0);
+    expect((await rows(h, "notificationOutbox"))[0]!.body).toBe(
+      "Doctor visit, Thursday, December 3 at 1:00 PM. Sunny has not added it because this sender is new to Sunny. Tell Sunny in chat to add it and to trust this sender.",
+    );
+    const briefing = await h.t.run(
+      async (ctx) => await buildBriefing(ctx, h.householdId, "pat", NOW),
+    );
+    expect(briefing).toContain(
+      `new_sender; mail_item_id ${first._id}; sender office@northsidefoot.example; proposed "Doctor visit" (kind doctor_visit) on 2026-12-03 at 13:00`,
+    );
+    expect(briefing).not.toContain("Nwosu");
+    expect(briefing).not.toContain("Northside Foot");
+
+    const requestId = await insertRequest(h.t, h.householdId, {
+      requestedBy: "pat",
+      status: "running",
+    });
+    await h.t.mutation(internal.agentRuntime.executeToolCalls, {
+      requestId,
+      calls: [
+        {
+          toolUseId: "tu1",
+          name: "trust_mail_sender",
+          input: JSON.stringify({ mail_item_id: first._id }),
+        },
+      ],
+    });
+    expect((await item(h, first._id)).effects).toEqual(first.effects);
+    expect(await rows(h, "events")).toHaveLength(0);
+
+    const second = await triageEmail(h, foot("Reminder"), {
+      ...podiatry,
+      when: { date: "2026-12-17", time: "13:00" },
+    });
+    expect(kinds(second.effects ?? [])).toEqual(["event_added", "told_caregivers"]);
+    expect((await rows(h, "events"))[0]).toMatchObject({
+      title: "Doctor visit",
+      startsOn: "2026-12-17",
+    });
+  });
+
+  test("a trusted address that sends a scam still escalates and reaches neither the senior nor the calendar", async () => {
+    const h = await setup();
+    const done = await triageEmail(h, clinic({ subject: "Please wire the copay" }), {
+      ...EYE_EXAM,
+      yes: ["confirms_appointment", "asks_hard_to_trace_payment"],
+    });
+    expect(done.effects).toEqual([{ kind: "escalated", reason: "money_request", pushed: true }]);
+    expect(await rows(h, "events")).toHaveLength(0);
+    expect(await rows(h, "seniorNotes")).toHaveLength(0);
   });
 });
