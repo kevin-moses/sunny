@@ -281,16 +281,16 @@ async function purgeEnded(
   householdId: Id<"households">,
   now: number,
 ): Promise<void> {
-  const oldest = await ctx.db
+  const expired = await ctx.db
     .query("liveActivities")
     .withIndex("by_household_phase", (q) =>
-      q.eq("householdId", householdId).eq("phase.kind", "ended"),
+      q
+        .eq("householdId", householdId)
+        .eq("phase.kind", "ended")
+        .lte("phase.at", now - ENDED_KEPT_MS),
     )
     .take(PURGE_BATCH);
-  for (const row of oldest) {
-    if (row.phase.kind !== "ended" || now - row.phase.at < ENDED_KEPT_MS) continue;
-    await ctx.db.delete(row._id);
-  }
+  for (const row of expired) await ctx.db.delete(row._id);
 }
 
 export async function sweepLiveActivities(

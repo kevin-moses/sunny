@@ -233,7 +233,7 @@ export default defineSchema({
     quiet: v.boolean(),
   })
     .index("by_instance", ["taskInstanceId"])
-    .index("by_household_phase", ["householdId", "phase.kind"])
+    .index("by_household_phase", ["householdId", "phase.kind", "phase.at"])
     .index("by_device", ["deviceId"]),
 
   phonePush: defineTable({
