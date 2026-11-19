@@ -2,19 +2,27 @@ import { HOUR, MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { action, httpAction, internalMutation, internalQuery, query } from "./_generated/server";
+import {
+  action,
+  httpAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import type { PublicHttpAction } from "convex/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { NO_SUCH_TASK, confirmPressedInstance } from "./instances";
 import type { ConfirmTransport, PressResult } from "./instances";
 import { findDevice, requireUserId } from "./lib/access";
-import type { DeviceActor } from "./lib/access";
+import type { Actor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { NOT_DUE_YET } from "./lib/confirmRule";
 import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
 import { isOpenState } from "./lib/escalation";
+import { phoneRevoked } from "./lib/liveActivitySync";
 import { loadPhoneTimeline } from "./lib/phoneTimeline";
 import type { PhoneTimeline } from "./lib/phoneTimeline";
 import { appError, isAppError } from "./lib/errors";
@@ -127,11 +135,45 @@ function seenLongAgo(lastSeenAt: number | null | undefined, now: number): boolea
   return lastSeenAt == null || now - lastSeenAt > LAST_SEEN_INTERVAL_MS;
 }
 
+const DEVICES_ONLY = "Only the senior's devices can do this";
+
+async function requireOwnDevice(ctx: QueryCtx): Promise<Doc<"devices">> {
+  const device = await findDevice(ctx, await requireUserId(ctx));
+  if (!device) throw appError("forbidden", DEVICES_ONLY);
+  return device;
+}
+
+export async function revokeTokenOf(
+  ctx: MutationCtx,
+  actor: Actor,
+  device: Doc<"devices">,
+): Promise<void> {
+  await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
+  await phoneRevoked(ctx, device._id);
+  await audit(ctx, {
+    householdId: device.householdId,
+    actor,
+    action: "revoke_device_token",
+    entity: "device",
+    entityId: device._id,
+    detail: { hadToken: device.tokenHash !== undefined },
+  });
+}
+
+export const revokeOwnToken = mutation({
+  args: {},
+  handler: async (ctx): Promise<null> => {
+    const device = await requireOwnDevice(ctx);
+    await revokeTokenOf(ctx, deviceActor(device), device);
+    return null;
+  },
+});
+
 export const storeTokenHash = internalMutation({
   args: { userId: v.string(), tokenHash: v.string() },
   handler: async (ctx, args): Promise<null> => {
     const device = await findDevice(ctx, args.userId);
-    if (!device) throw appError("forbidden", "Only the senior's devices can do this");
+    if (!device) throw appError("forbidden", DEVICES_ONLY);
     await ctx.db.patch(device._id, { tokenHash: args.tokenHash, tokenIssuedAt: Date.now() });
     await audit(ctx, {
       householdId: device.householdId,
@@ -165,9 +207,7 @@ export const issueToken = action({
 export const state = query({
   args: { minute: v.optional(v.number()) },
   handler: async (ctx): Promise<DeviceState> => {
-    const userId = await requireUserId(ctx);
-    const device = await findDevice(ctx, userId);
-    if (!device) throw appError("forbidden", "Only the senior's devices can do this");
+    const device = await requireOwnDevice(ctx);
     return await loadDeviceState(ctx, device.householdId, Date.now());
   },
 });

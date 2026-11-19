@@ -59,42 +59,48 @@ async function twoShown(): Promise<PhoneFixture> {
   return f;
 }
 
-async function asCaregiver(
-  f: PhoneFixture,
-  change: "removeDevice" | "revokeDeviceToken",
-): Promise<void> {
+type Revoke = "removeDevice" | "revokeDeviceToken" | "revokeOwnToken";
+
+async function revoke(f: PhoneFixture, change: Revoke): Promise<void> {
+  if (change === "revokeOwnToken") {
+    await f.t.withIdentity({ subject: f.phoneUser }).mutation(api.deviceApi.revokeOwnToken, {});
+    return;
+  }
   await f.t
     .withIdentity({ subject: f.caregiver })
     .mutation(api.households[change], { householdId: f.householdId, deviceId: f.phoneId });
 }
 
-describe.each(["removeDevice", "revokeDeviceToken"] as const)("%s on a phone", (change) => {
-  test("forgets its push tokens and ends its activities", async () => {
-    const f = await twoShown();
-    await asCaregiver(f, change);
-    await settle(f.t);
-    expect(await phonePushRow(f)).toBeNull();
-    expect(ends().map((end) => end.tokens)).toEqual([[UPDATE_TOKEN]]);
-    expect(ends()[0]!.aps["content-state"].closed).toMatchObject({ kind: "over" });
-    expect((await activities(f)).map((row) => row.phase)).toEqual([
-      expect.objectContaining({ kind: "ended", reason: "device_revoked" }),
-      expect.objectContaining({ kind: "ended", reason: "device_revoked" }),
-    ]);
-  });
+describe.each(["removeDevice", "revokeDeviceToken", "revokeOwnToken"] as const)(
+  "%s on a phone",
+  (change) => {
+    test("forgets its push tokens and ends its activities", async () => {
+      const f = await twoShown();
+      await revoke(f, change);
+      await settle(f.t);
+      expect(await phonePushRow(f)).toBeNull();
+      expect(ends().map((end) => end.tokens)).toEqual([[UPDATE_TOKEN]]);
+      expect(ends()[0]!.aps["content-state"].closed).toMatchObject({ kind: "over" });
+      expect((await activities(f)).map((row) => row.phase)).toEqual([
+        expect.objectContaining({ kind: "ended", reason: "device_revoked" }),
+        expect.objectContaining({ kind: "ended", reason: "device_revoked" }),
+      ]);
+    });
 
-  test("the phone's old device token no longer reports", async () => {
-    const f = await twoShown();
-    await asCaregiver(f, change);
-    const response = await putPushState(f, {});
-    expect(response.status).toBe(401);
-    expect(await phonePushRow(f)).toBeNull();
-  });
-});
+    test("the phone's old device token no longer reports", async () => {
+      const f = await twoShown();
+      await revoke(f, change);
+      const response = await putPushState(f, {});
+      expect(response.status).toBe(401);
+      expect(await phonePushRow(f)).toBeNull();
+    });
+  },
+);
 
 describe("after a token revoke", () => {
   test("the next cue is a notification until the phone reports with a new token", async () => {
     const f = await twoShown();
-    await asCaregiver(f, "revokeDeviceToken");
+    await revoke(f, "revokeDeviceToken");
     await settle(f.t);
     resetProviderMocks();
 
@@ -120,7 +126,7 @@ describe("after a token revoke", () => {
 describe("after a phone is removed", () => {
   test("later tasks send it nothing", async () => {
     const f = await twoShown();
-    await asCaregiver(f, "removeDevice");
+    await revoke(f, "removeDevice");
     await settle(f.t);
     resetProviderMocks();
     await addTask(f, { title: "Inhaler", time: "08:20" });

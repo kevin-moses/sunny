@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { revokeTokenOf } from "./deviceApi";
 import type { QueryCtx } from "./_generated/server";
 import {
   ALREADY_IN_HOUSEHOLD,
@@ -18,7 +19,6 @@ import {
   requireReader,
   requireUserId,
 } from "./lib/access";
-import { audit } from "./lib/audit";
 import { dropMemberConnections } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import {
@@ -410,16 +410,7 @@ export const revokeDeviceToken = mutation({
     if (!device || device.householdId !== args.householdId) {
       throw appError("not_found", "Device not found");
     }
-    await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
-    await phoneRevoked(ctx, device._id);
-    await audit(ctx, {
-      householdId: args.householdId,
-      actor,
-      action: "revoke_device_token",
-      entity: "device",
-      entityId: device._id,
-      detail: { hadToken: device.tokenHash !== undefined },
-    });
+    await revokeTokenOf(ctx, actor, device);
     return null;
   },
 });
