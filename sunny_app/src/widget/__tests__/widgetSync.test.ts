@@ -161,6 +161,69 @@ describe('syncWidget', () => {
   });
 });
 
+describe('clearWidget', () => {
+  function nativeStore(writeGate: Promise<unknown> = Promise.resolve()): {
+    token: () => string | null;
+  } {
+    let token: string | null = null;
+    mockNative.storedSiteUrl.mockImplementation(() => (token === null ? null : SITE));
+    mockNative.clearCredentials.mockImplementation(async () => {
+      token = null;
+      return true;
+    });
+    mockNative.setCredentials.mockImplementation(async (value) => {
+      await writeGate;
+      token = String(value);
+    });
+    return { token: () => token };
+  }
+
+  function deferred(): { promise: Promise<unknown>; resolve: (value: unknown) => void } {
+    let resolve!: (value: unknown) => void;
+    const promise = new Promise<unknown>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  }
+
+  it('leaves no token behind when it runs while a sync is still issuing one', async () => {
+    const { syncWidget, clearWidget } = loadModule();
+    const native = nativeStore();
+    const issue = deferred();
+    mockCallAction.mockReturnValueOnce(issue.promise);
+    const sync = syncWidget();
+    await settle();
+    const cleared = clearWidget();
+    issue.resolve({ deviceToken: 'tok-late' });
+    await Promise.all([sync, cleared]);
+    expect(native.token()).toBeNull();
+  });
+
+  it('leaves no token behind when it runs while a token is being stored', async () => {
+    const { syncWidget, clearWidget } = loadModule();
+    const write = deferred();
+    const native = nativeStore(write.promise);
+    const sync = syncWidget();
+    await settle();
+    const cleared = clearWidget();
+    write.resolve(undefined);
+    await Promise.all([sync, cleared]);
+    expect(native.token()).toBeNull();
+  });
+
+  it('lets a sync after it issue a new token', async () => {
+    const { syncWidget, clearWidget } = loadModule();
+    const native = nativeStore();
+    await clearWidget();
+    await syncWidget();
+    expect(native.token()).toBe('tok-1');
+  });
+});
+
 describe('syncSurfaces', () => {
   it('asks the native side to sync and logs a failure instead of throwing', async () => {
     const { syncSurfaces } = loadModule();

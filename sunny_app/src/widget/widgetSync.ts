@@ -11,6 +11,8 @@ export type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
 
 let storeFailed = false;
 let syncRun: Promise<void> | null = null;
+let generation = 0;
+let storing: Promise<void> = Promise.resolve();
 
 export function widgetHolderOf(decision: SessionDecision): WidgetHolder {
   switch (decision.state) {
@@ -33,15 +35,19 @@ export function surfaceSyncKey(day: DayViewData | null): string | null {
 export async function ensureWidgetToken(): Promise<boolean> {
   if (SunnyWidget.storedSiteUrl() === CONVEX_SITE_URL) return true;
   if (storeFailed) return false;
+  const issuedFor = generation;
   const { deviceToken } = await callAction(api.deviceApi.issueToken, {});
+  if (issuedFor !== generation) return false;
+  const store = SunnyWidget.setCredentials(deviceToken, CONVEX_SITE_URL);
+  storing = store.catch(() => undefined);
   try {
-    await SunnyWidget.setCredentials(deviceToken, CONVEX_SITE_URL);
+    await store;
   } catch (e) {
-    storeFailed = true;
+    storeFailed = issuedFor === generation;
     logger.error('Widget', `Could not store the widget credentials: ${errorMessage(e)}`);
     return false;
   }
-  return true;
+  return issuedFor === generation;
 }
 
 async function syncOnce(): Promise<void> {
@@ -61,7 +67,9 @@ export function syncWidget(): Promise<void> {
 }
 
 export async function clearWidget(): Promise<void> {
+  generation += 1;
   storeFailed = false;
+  await storing;
   await SunnyWidget.clearCredentials();
 }
 
