@@ -3,12 +3,20 @@ import SunnyLiveActivity
 import SunnyWidgetCore
 import WidgetKit
 
-final class WidgetNotConfiguredException: Exception, @unchecked Sendable {
-    override var reason: String { "The app is missing its widget app group or keychain group" }
-}
+enum BridgeError {
+    static func notConfigured() -> Exception {
+        Exception(
+            name: "WidgetNotConfigured",
+            description: "The app is missing its widget app group or keychain group"
+        )
+    }
 
-final class InvalidSiteURLException: Exception, @unchecked Sendable {
-    override var reason: String { "The site URL is not a valid URL" }
+    static func unsafeSiteURL() -> Exception {
+        Exception(
+            name: "UnsafeSiteURL",
+            description: "The site URL must be https, or http on this device only"
+        )
+    }
 }
 
 public final class SunnyWidgetModule: Module {
@@ -20,14 +28,14 @@ public final class SunnyWidgetModule: Module {
         }
 
         AsyncFunction("setCredentials") { (token: String, siteUrl: String) throws in
-            guard let sync = WidgetSync.live() else { throw WidgetNotConfiguredException() }
-            guard let url = URL(string: siteUrl), url.scheme != nil else { throw InvalidSiteURLException() }
+            guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
+            guard let url = SiteURL.parse(siteUrl) else { throw BridgeError.unsafeSiteURL() }
             try sync.storeCredentials(token: token, siteURL: url)
             WidgetCenter.shared.reloadAllTimelines()
         }
 
         AsyncFunction("clearCredentials") { () async throws -> Bool in
-            guard let sync = WidgetSync.live() else { throw WidgetNotConfiguredException() }
+            guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             return try await PushStateReporter.shared.clear(sync).get()
         }
 
@@ -36,7 +44,7 @@ public final class SunnyWidgetModule: Module {
         }
 
         AsyncFunction("flushPresses") { () async throws -> String in
-            guard let sync = WidgetSync.live() else { throw WidgetNotConfiguredException() }
+            guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             return await sync.replayPresses(timeout: WidgetSync.pressTimeout).rawValue
         }
     }

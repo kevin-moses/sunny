@@ -29,6 +29,8 @@ public struct WidgetEnvironment: Equatable, Sendable {
 }
 
 extension WidgetSync {
+    private static let sharedTransport = URLSessionTransport()
+
     public static func live(bundle: Bundle = .main) -> WidgetSync? {
         guard
             let environment = WidgetEnvironment.from(infoDictionary: bundle.infoDictionary),
@@ -38,7 +40,7 @@ extension WidgetSync {
             storage: WidgetStorage(directory: directory),
             tokens: KeychainTokenStore(accessGroup: environment.keychainGroup),
             sites: DefaultsSiteStore(suiteName: environment.appGroup),
-            transport: URLSessionTransport()
+            transport: sharedTransport
         )
     }
 }
