@@ -110,6 +110,7 @@ export async function deleteInstances(
   ctx: MutationCtx,
   instances: Doc<"taskInstances">[],
 ): Promise<void> {
+  const now = Date.now();
   for (const instance of instances) {
     const notifications = await ctx.db
       .query("notificationOutbox")
@@ -117,7 +118,7 @@ export async function deleteInstances(
       .collect();
     for (const notification of notifications) await ctx.db.delete(notification._id);
     await ctx.db.delete(instance._id);
-    await instanceGone(ctx, instance);
+    if (instance.windowStart <= now) await instanceGone(ctx, instance);
   }
 }
 
