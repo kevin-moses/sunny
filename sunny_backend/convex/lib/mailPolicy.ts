@@ -618,7 +618,7 @@ function linkPlace(linked: LinkedEvent, slot: Appointment, facts: PolicyFacts): 
   const { eventId } = linked;
   const live = facts.events.filter((e) => e.eventId === eventId);
   if (live.some((e) => sameSlot(e, slot))) return { at: "slot" };
-  const [seen] = live;
+  const seen = live.find((e) => e.date === slot.date) ?? live[0];
   if (seen !== undefined) return { at: "elsewhere", elsewhere: { eventId, seen } };
   if (!linked.occurs) return { at: "over", date: linked.date, time: linked.time };
   return factsCover(slot.date, facts)

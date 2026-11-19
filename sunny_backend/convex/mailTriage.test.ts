@@ -1745,6 +1745,49 @@ describe("links belong to the sender's domain", () => {
       );
     });
 
+    test("a clinic's second reminder after a caregiver moved a Monday and Tuesday series names the email's date", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h, [1, 2]);
+      await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      await h.t.run(async (ctx) => await ctx.db.patch(seriesId, { startTime: "11:00" }));
+      const second = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(second.effects).toEqual([
+        expect.objectContaining({
+          kind: "escalated",
+          reason: "unclear_appointment",
+          eventId: seriesId,
+        }),
+      ]);
+      expect((await rows(h, "chatPosts")).at(-1)!.body).toContain(
+        "The email gives Physical therapy, Tuesday, December 1 at 10:00 AM. Sunny's calendar has this appointment on Tuesday, December 1 at 11:00 AM, so Sunny changed nothing. Tell Sunny in chat which time is right.",
+      );
+    });
+
+    test("a clinic's invite sent again after a caregiver moved a Monday and Tuesday series names the email's date", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h, [1, 2]);
+      const uid = "therapy-9@lakesideeye.example";
+      await triageEmail(h, invitation(CLINIC, uid, ["DTSTART:20261201T150000Z"]), {
+        kind: "physical_therapy",
+      });
+      await h.t.run(async (ctx) => await ctx.db.patch(seriesId, { startTime: "11:00" }));
+      const again = await triageEmail(
+        h,
+        invitation(CLINIC, uid, ["DTSTART:20261201T150000Z", "SEQUENCE:1"]),
+        { kind: "physical_therapy" },
+      );
+      expect(again.effects).toEqual([
+        expect.objectContaining({
+          kind: "escalated",
+          reason: "unclear_reschedule",
+          eventId: seriesId,
+        }),
+      ]);
+      expect((await rows(h, "chatPosts")).at(-1)!.body).toContain(
+        "Sunny did not move Physical therapy, Tuesday, December 1 at 11:00 AM, because it is one date of a repeating event.",
+      );
+    });
+
     test("a clinic's invite moved to the series' stored start, which is none of its weekdays, changes nothing and asks", async () => {
       const h = await setup();
       const seriesId = await insertEvent(h.t, h.householdId, {
