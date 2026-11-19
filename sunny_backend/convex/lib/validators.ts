@@ -143,6 +143,9 @@ export const calendarConnectionStatus = v.union(
 );
 export type CalendarConnectionStatus = Infer<typeof calendarConnectionStatus>;
 
+export const oauthPurpose = v.literal("calendar");
+export type OAuthPurpose = Infer<typeof oauthPurpose>;
+
 export const calendarSyncState = v.union(
   v.literal("queued"),
   v.literal("running"),

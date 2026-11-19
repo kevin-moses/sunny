@@ -52,12 +52,12 @@ export function startUrl(ticket: string): string {
   return url.toString();
 }
 
-export function consentUrl(state: string, codeChallenge: string): string {
+export function consentUrl(state: string, codeChallenge: string, scope: string): string {
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
     redirect_uri: env("GOOGLE_REDIRECT_URI"),
     response_type: "code",
-    scope: `openid email ${CALENDAR_SCOPE}`,
+    scope: `openid email ${scope}`,
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "false",
@@ -113,15 +113,17 @@ async function emailFromUserinfo(accessToken: string): Promise<string | null> {
   }
 }
 
-export async function exchangeCode(
-  code: string,
-  codeVerifier: string,
-): Promise<{
+export interface GoogleGrant {
   accessToken: string;
   refreshToken: string;
   scopes: string[];
   email: string | null;
-} | null> {
+}
+
+export async function exchangeCode(
+  code: string,
+  codeVerifier: string,
+): Promise<GoogleGrant | null> {
   let body: Record<string, unknown>;
   try {
     body = await tokenRequest({

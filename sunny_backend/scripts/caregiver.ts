@@ -177,7 +177,10 @@ function day(): void {
 
 function google(): void {
   const state = loadState();
-  const url = convexRun("googleCalendar:connectUrl", { householdId: state.householdId });
+  const url = convexRun("googleOauth:connectUrl", {
+    householdId: state.householdId,
+    purpose: "calendar",
+  });
   console.log(`Within 5 minutes, open this link once, in the browser you will sign in to Google with
 (as a Google test user); the sign-in must finish in that same browser. The link works once:
 do not paste it anywhere else, since a link preview would use it up.

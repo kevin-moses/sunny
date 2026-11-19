@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import {
   actorKind,
   calendarConnectionStatus,
+  oauthPurpose,
   calendarSyncState,
   agentRequestStatus,
   confirmVia,
@@ -280,6 +281,7 @@ export default defineSchema({
     ticketHash: v.string(),
     userId: v.string(),
     householdId: v.id("households"),
+    purpose: oauthPurpose,
     expiresAt: v.number(),
     started: v.optional(v.object({ browserHash: v.string(), codeVerifier: v.string() })),
     consumedAt: v.optional(v.number()),

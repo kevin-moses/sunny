@@ -70,7 +70,7 @@ async function connectUrl(
   return new URL(
     await t
       .withIdentity({ subject: userId })
-      .action(api.googleCalendar.connectUrl, { householdId }),
+      .action(api.googleOauth.connectUrl, { householdId, purpose: "calendar" }),
   );
 }
 
@@ -241,10 +241,12 @@ describe("Starting the Google flow", () => {
     await expect(
       t
         .withIdentity({ subject: "dev_1", sunny_kind: "device" })
-        .action(api.googleCalendar.connectUrl, { householdId }),
+        .action(api.googleOauth.connectUrl, { householdId, purpose: "calendar" }),
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
     await expect(
-      t.withIdentity({ subject: "dev_1" }).action(api.googleCalendar.connectUrl, { householdId }),
+      t
+        .withIdentity({ subject: "dev_1" })
+        .action(api.googleOauth.connectUrl, { householdId, purpose: "calendar" }),
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
   });
 
@@ -262,7 +264,9 @@ describe("Starting the Google flow", () => {
     await expect(connectUrl(t, householdId, "stranger")).rejects.toMatchObject({
       data: { code: "forbidden" },
     });
-    await expect(t.action(api.googleCalendar.connectUrl, { householdId })).rejects.toMatchObject({
+    await expect(
+      t.action(api.googleOauth.connectUrl, { householdId, purpose: "calendar" }),
+    ).rejects.toMatchObject({
       data: { code: "unauthenticated" },
     });
     expect((await storedState(t)).flows).toHaveLength(0);
@@ -650,7 +654,7 @@ describe("OAuth callback", () => {
     await addConnection(t, householdId, { calendarId: "cal-old" });
     googleMocks.calendarExists.mockResolvedValue(true);
     await finish(t, await startFlow(t, householdId));
-    expect(await pendingScheduled(t)).toContain("googleCalendar:revokeGrant");
+    expect(await pendingScheduled(t)).toContain("googleOauth:revokeGrant");
   });
 
   test("the senior's name is escaped in the success page", async () => {
@@ -744,7 +748,7 @@ describe("OAuth flow housekeeping and grant revocation", () => {
     await connectPath(t, householdId);
     vi.advanceTimersByTime(6 * 60_000);
     await startFlow(t, householdId);
-    expect(await t.mutation(internal.googleCalendar.sweepOauthFlows, {})).toBe(1);
+    expect(await t.mutation(internal.googleOauth.sweepOauthFlows, {})).toBe(1);
     const left = (await storedState(t)).flows;
     expect(left).toHaveLength(1);
     expect(left[0]?.started).toBeDefined();
@@ -752,7 +756,7 @@ describe("OAuth flow housekeeping and grant revocation", () => {
 
   test("revokeGrant decrypts the stored token and revokes it at Google", async () => {
     const t = makeBackend();
-    expect(await t.action(internal.googleCalendar.revokeGrant, { refreshToken: "box:rt-1" })).toBe(
+    expect(await t.action(internal.googleOauth.revokeGrant, { refreshToken: "box:rt-1" })).toBe(
       true,
     );
     expect(googleMocks.revokeRefreshToken).toHaveBeenCalledWith("rt-1");
@@ -760,7 +764,7 @@ describe("OAuth flow housekeeping and grant revocation", () => {
 
   test("revokeGrant never throws when the token cannot be read", async () => {
     const t = makeBackend();
-    expect(await t.action(internal.googleCalendar.revokeGrant, { refreshToken: "garbage" })).toBe(
+    expect(await t.action(internal.googleOauth.revokeGrant, { refreshToken: "garbage" })).toBe(
       false,
     );
     expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
@@ -772,7 +776,7 @@ describe("OAuth flow housekeeping and grant revocation", () => {
     await t
       .withIdentity({ subject: "user_a" })
       .mutation(api.googleCalendar.disconnect, { connectionId });
-    expect(await pendingScheduled(t)).toContain("googleCalendar:revokeGrant");
+    expect(await pendingScheduled(t)).toContain("googleOauth:revokeGrant");
   });
 
   test("myConnections shows the sync error", async () => {

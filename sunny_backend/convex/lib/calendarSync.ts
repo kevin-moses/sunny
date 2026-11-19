@@ -2,6 +2,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { scheduleGrantRevoke } from "./googleTokens";
 import { localDate } from "./time";
 
 const MAX_PARALLEL_PUSHES = 5;
@@ -178,15 +179,6 @@ export async function deleteLinks(
     .withIndex("by_connection", (q) => q.eq("connectionId", connectionId))
     .collect();
   for (const link of links) await ctx.db.delete(link._id);
-}
-
-export async function scheduleGrantRevoke(
-  ctx: MutationCtx,
-  encryptedRefreshToken: string,
-): Promise<void> {
-  await ctx.scheduler.runAfter(0, internal.googleCalendar.revokeGrant, {
-    refreshToken: encryptedRefreshToken,
-  });
 }
 
 export async function dropConnection(

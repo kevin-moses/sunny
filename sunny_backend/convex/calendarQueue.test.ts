@@ -265,7 +265,7 @@ describe("household hooks", () => {
     expect(left.links).toHaveLength(0);
     expect(left.syncs.map((s) => s.connectionId)).not.toContain(bConnection);
     expect(left.syncs).toHaveLength(1);
-    expect(await pendingScheduled(t)).toContain("googleCalendar:revokeGrant");
+    expect(await pendingScheduled(t)).toContain("googleOauth:revokeGrant");
   });
 });
 
