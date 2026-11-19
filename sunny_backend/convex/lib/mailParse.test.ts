@@ -228,6 +228,36 @@ describe("parseGmailMessage", () => {
     expect(parseGmailMessage(raw, NY)?.text.length).toBe(MAX_EMAIL_TEXT);
   });
 
+  test("parses a 2 MB body of unclosed tags in well under a second", () => {
+    const copies = 700_000;
+    const raw = message({
+      partId: "",
+      mimeType: "text/html",
+      filename: "",
+      headers: [
+        ...topHeaders("a@example.org", "Hostile", []),
+        { name: "Content-Type", value: "text/html; charset=UTF-8" },
+      ],
+      body: { size: 3 * copies, data: data("<a ").repeat(copies) },
+    });
+    const started = performance.now();
+    const parsed = parseGmailMessage(raw, NY);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(parsed?.text.length).toBeLessThanOrEqual(MAX_EMAIL_TEXT);
+  });
+
+  test("parses a 40 KB sender header in well under a second", () => {
+    const good = alternative("a@example.org", "Hi", "Hi", "<p>Hi</p>");
+    for (const from of [`<${"a@".repeat(20_000)}`, `${"a@".repeat(20_000)} (`]) {
+      const headers = good.headers.map((h) =>
+        h.name === "From" ? { name: "From", value: from } : h,
+      );
+      const started = performance.now();
+      expect(parseGmailMessage(message({ ...good, headers }), NY)).toBeNull();
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
+  });
+
   test("rejects input that is not a Gmail message", () => {
     const good = alternative("a@example.org", "Hi", "Hi", "<p>Hi</p>");
     expect(parseGmailMessage(null, NY)).toBeNull();

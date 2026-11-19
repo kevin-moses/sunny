@@ -4,6 +4,7 @@ import { oneLine } from "./text";
 import { MINUTE_MS, canonicalTimezone, localDate, localTime, zonedInstant } from "./time";
 
 export const MAX_EMAIL_TEXT = 6000;
+const MAX_BODY_SOURCE = 256 * 1024;
 
 export interface MailHeader {
   name: string;
@@ -90,7 +91,7 @@ function decodeHeaderValue(value: string): string {
 
 function parseAddress(value: string): { name: string; address: string } | null {
   const decoded = oneLine(decodeHeaderValue(value));
-  const angled = /^(.*?)<([^<>\s]+@[^<>\s]+)>$/.exec(decoded);
+  const angled = /^(.*?)<([^<>\s@]+@[^<>\s]+)>$/.exec(decoded);
   if (angled) {
     const name = angled[1]!
       .trim()
@@ -99,7 +100,7 @@ function parseAddress(value: string): { name: string; address: string } | null {
       .trim();
     return { name, address: angled[2]!.toLowerCase() };
   }
-  const bare = /^([^\s<>()]+@[^\s<>()]+)(?:\s*\((.*)\))?$/.exec(decoded);
+  const bare = /^([^\s<>()@]+@[^\s<>()]+)(?:\s*\((.*)\))?$/.exec(decoded);
   if (bare) return { name: (bare[2] ?? "").trim(), address: bare[1]!.toLowerCase() };
   return null;
 }
@@ -238,13 +239,13 @@ function normalizeText(text: string): string {
 }
 
 const HTML_TOKEN =
-  /<!--[\s\S]*?(?:-->|$)|<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|[^<]+|</g;
+  /<!--[\s\S]*?(?:-->|$)|<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^<>"']|"[^"<]*"|'[^'<]*')*)>|[^<]+|</g;
 
 export function htmlToText(html: string): string {
   const stack: string[] = [];
   let hiddenFrom: number | null = null;
   let out = "";
-  for (const match of html.matchAll(HTML_TOKEN)) {
+  for (const match of html.slice(0, MAX_BODY_SOURCE).matchAll(HTML_TOKEN)) {
     const [token, closing, rawName, attributes = ""] = match;
     if (token.startsWith("<!--")) continue;
     if (rawName === undefined) {
@@ -297,7 +298,7 @@ function bodyText(parts: MimePart[]): string {
     .filter((p) => p.mimeType === "text/plain")
     .map(partText)
     .find((t): t is string => t !== null && t.trim() !== "");
-  if (plain !== undefined) return normalizeText(plain);
+  if (plain !== undefined) return normalizeText(plain.slice(0, MAX_BODY_SOURCE));
   const html = inline
     .filter((p) => p.mimeType === "text/html")
     .map(partText)

@@ -40,6 +40,7 @@ export const MAX_NOTE = 160;
 const MAX_NOTE_SENTENCES = 2;
 const MAX_SUBJECT = 120;
 const MAX_CAREGIVER_BODY = 600;
+const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
 const LINK_REMOVED = "[link removed]";
 const NUMBER_REMOVED = "[number removed]";
 
@@ -177,7 +178,7 @@ export function seniorNoteText(
 }
 
 function scrub(text: string): string {
-  return oneLine(text)
+  return oneLine(text.slice(0, MAX_SCRUBBED))
     .replace(/(?:https?:\/\/|www\.)\S+/gi, LINK_REMOVED)
     .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/\S*/gi, LINK_REMOVED)
     .replace(/\d(?:[\s().-]*\d){6,}/g, NUMBER_REMOVED);
