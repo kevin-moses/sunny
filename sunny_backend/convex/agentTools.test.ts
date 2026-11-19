@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { AGENT_MODEL, AGENT_NAME, AGENT_SYSTEM_PROMPT } from "./lib/agentConfig";
-import { buildBriefing, DIGEST_HEADING, MAX_DIGEST_CHARS } from "./lib/agentBriefing";
+import { buildBriefing, DIGEST_HEADING, MAIL_HEADING, MAX_DIGEST_CHARS } from "./lib/agentBriefing";
 import { listTasksCore } from "./tasks";
 import {
   AGENT_TOOLS,
@@ -502,6 +502,8 @@ describe("buildBriefing", () => {
         "- Calendar, today and the next 7 days:",
         "  (nothing scheduled)",
         "- Active tasks, with today's status:",
+        "  (none)",
+        MAIL_HEADING,
         "  (none)",
         DIGEST_HEADING,
         "  (none)",

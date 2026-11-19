@@ -15,6 +15,7 @@ import {
   findMember,
   requireCaregiverAccount,
   requireCaregiverMember,
+  requireCaregiverReader,
   SYSTEM_ACTOR,
 } from "./lib/access";
 import { audit } from "./lib/audit";
@@ -27,7 +28,13 @@ import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import { SecretUnreadable, encryptSecret } from "./lib/secretBox";
 import { DAY_MS } from "./lib/time";
-import type { MailboxStatus } from "./lib/validators";
+import type {
+  MailboxStatus,
+  MailEffectRecord,
+  MailItemState,
+  StoredSender,
+  StoredVerdict,
+} from "./lib/validators";
 import type { FlowOwner } from "./googleOauth";
 
 const BACKFILL_WINDOW_MS = 7 * DAY_MS;
@@ -35,6 +42,8 @@ const BACKFILL_MAX_MESSAGES = 50;
 const POLL_MAX_HISTORY_PAGES = 3;
 const POLL_MAX_IDS = 100;
 const POLL_ALL_PAGE = 100;
+const DEFAULT_RECENT_MAIL = 20;
+const MAX_RECENT_MAIL = 100;
 
 const REVOKED_MESSAGE = "Google access was revoked; reconnect the senior's Gmail.";
 const UNREADABLE_MESSAGE = "Reconnect Gmail: Sunny could not read the saved Google sign-in.";
@@ -50,6 +59,16 @@ interface MailboxView {
   error: string | null;
   lastPolledAt: number | null;
   lastError: string | null;
+}
+
+interface MailItemView {
+  id: Id<"mailItems">;
+  state: MailItemState;
+  sender: StoredSender | null;
+  subject: string | null;
+  receivedAt: number | null;
+  verdict: StoredVerdict["kind"] | null;
+  effects: MailEffectRecord[];
 }
 
 interface PollStart {
@@ -393,6 +412,28 @@ export const mailboxStatus = query({
       lastPolledAt: mailbox.lastPolledAt ?? null,
       lastError: mailbox.lastError ?? null,
     };
+  },
+});
+
+export const recentMail = query({
+  args: { householdId: v.id("households"), limit: v.optional(v.number()) },
+  handler: async (ctx, { householdId, limit }): Promise<MailItemView[]> => {
+    await requireCaregiverReader(ctx, householdId);
+    const count = Math.min(Math.max(Math.floor(limit ?? DEFAULT_RECENT_MAIL), 1), MAX_RECENT_MAIL);
+    const rows = await ctx.db
+      .query("mailItems")
+      .withIndex("by_household_received", (q) => q.eq("householdId", householdId))
+      .order("desc")
+      .take(count);
+    return rows.map((row) => ({
+      id: row._id,
+      state: row.state,
+      sender: row.sender ?? null,
+      subject: row.subject ?? null,
+      receivedAt: row.receivedAt ?? null,
+      verdict: row.verdict?.kind ?? null,
+      effects: row.effects ?? [],
+    }));
   },
 });
 

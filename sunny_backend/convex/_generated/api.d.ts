@@ -79,6 +79,7 @@ import type * as lib_occurrences from "../lib/occurrences.js";
 import type * as lib_profileReads from "../lib/profileReads.js";
 import type * as lib_schedule from "../lib/schedule.js";
 import type * as lib_secretBox from "../lib/secretBox.js";
+import type * as lib_seniorNotes from "../lib/seniorNotes.js";
 import type * as lib_seniorMemory from "../lib/seniorMemory.js";
 import type * as lib_taskDraft from "../lib/taskDraft.js";
 import type * as lib_taskSteps from "../lib/taskSteps.js";
@@ -180,6 +181,7 @@ declare const fullApi: ApiFromModules<{
   "lib/profileReads": typeof lib_profileReads;
   "lib/schedule": typeof lib_schedule;
   "lib/secretBox": typeof lib_secretBox;
+  "lib/seniorNotes": typeof lib_seniorNotes;
   "lib/seniorMemory": typeof lib_seniorMemory;
   "lib/taskDraft": typeof lib_taskDraft;
   "lib/taskSteps": typeof lib_taskSteps;
