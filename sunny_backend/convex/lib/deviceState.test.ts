@@ -230,24 +230,6 @@ describe("now (the Now card)", () => {
     });
   });
 
-  it("carries the screen sentence, or null when the task has none", () => {
-    const written = stateOf({
-      tasks: [makeTask({ state: "due", screenSentence: "Take your morning pills." })],
-    });
-    const absent = stateOf({ tasks: [makeTask({ state: "due" })] });
-    expect(written.now.task?.sentence).toBe("Take your morning pills.");
-    expect(absent.now.task?.sentence).toBeNull();
-  });
-
-  it("a changed screen sentence changes the version but not the displayed version", () => {
-    const plain = stateOf({ tasks: [makeTask({ state: "due" })] });
-    const written = stateOf({
-      tasks: [makeTask({ state: "due", screenSentence: "Take your morning pills." })],
-    });
-    expect(written.version).not.toBe(plain.version);
-    expect(written.displayVersion).toBe(plain.displayVersion);
-  });
-
   it("marks escalated and carried-over tasks as overdue", () => {
     const escalated = stateOf({ tasks: [makeTask({ state: "escalated" })] });
     const carried = stateOf({
@@ -660,7 +642,6 @@ describe("the state's shape", () => {
         "instanceId",
         "type",
         "label",
-        "sentence",
         "time",
         "icon",
         "question",
