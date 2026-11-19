@@ -338,7 +338,7 @@ describe("truth table", () => {
       (v): v is Extract<MailVerdict, { kind: "senior_info" }> => v.kind === "senior_info",
     );
     expect(new Set(notes.map((v) => v.note))).toEqual(new Set(Object.values(NOTES)));
-    for (const v of notes) expect(seniorNoteText(v.note, v.topic, true)).toBe(v.note);
+    for (const v of notes) expect(seniorNoteText(v.note, v.topic)).toBe(v.note);
   });
 });
 

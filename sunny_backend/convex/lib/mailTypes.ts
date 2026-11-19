@@ -100,14 +100,13 @@ export interface CalendarEventFact {
   time: string;
   durationMinutes: number | null;
   repeating: boolean;
-  sourceSender: string | null;
 }
 
 export interface PolicyFacts {
   now: number;
   timezone: string;
   sender: MailSender;
-  senderKnown: boolean;
+  senderTrusted: boolean;
   subject: string;
   receivedAt: number;
   gmailId: string;
@@ -116,14 +115,17 @@ export interface PolicyFacts {
   linkedEventId: string | null;
 }
 
-export type EscalationReason =
-  | DecisionReason
-  | Suspicion
-  | "unverified_sender"
-  | "unclear_appointment"
-  | "unclear_reschedule"
-  | "conflict"
-  | "unreadable";
+export const ESCALATION_REASONS = [
+  ...DECISION_REASONS,
+  ...SUSPICIONS,
+  "new_sender",
+  "unverified_sender",
+  "unclear_appointment",
+  "unclear_reschedule",
+  "conflict",
+  "unreadable",
+] as const;
+export type EscalationReason = (typeof ESCALATION_REASONS)[number];
 
 export interface Slot {
   date: string;

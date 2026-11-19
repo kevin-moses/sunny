@@ -9,6 +9,12 @@ import type { TestConvex } from "./testing.helpers";
 
 export const MAILBOX = "mom@example.com";
 
+export const TRUSTED_SENDERS = [
+  "appointments@lakesideeye.example",
+  "reminders@lakesideeye.example",
+  "rx@northgate.example",
+];
+
 export interface RawEmail {
   id: string;
   from: string;
@@ -93,6 +99,8 @@ export function verdict(fields: Record<string, unknown>): Record<string, unknown
   return { ...EMPTY_VERDICT, ...fields };
 }
 
+const NOW_FOR_TRUST = Date.parse("2026-11-01T12:00:00Z");
+
 export const modelCalls: unknown[] = [];
 
 export function replyWith(raw: unknown): void {
@@ -152,6 +160,14 @@ export async function mailHousehold(t: TestConvex): Promise<MailHousehold> {
       status: "active",
       historyId: "100",
     });
+    for (const address of TRUSTED_SENDERS) {
+      await ctx.db.insert("mailTrustedSenders", {
+        householdId,
+        address,
+        addedBy: "pat",
+        addedAt: NOW_FOR_TRUST,
+      });
+    }
     return { mailboxId, phoneId: phone._id, displayId };
   });
   return { t, householdId, ...ids };

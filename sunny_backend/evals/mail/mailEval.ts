@@ -3,7 +3,7 @@ import type { Classification, Classifier } from "../../convex/lib/mailClassify";
 import { JEV_MODEL } from "../../convex/lib/mailJudge";
 import { linkKey, planWithRule } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
-import { DECISION_REASONS, NO_USAGE, SUSPICIONS } from "../../convex/lib/mailTypes";
+import { ESCALATION_REASONS, NO_USAGE } from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -20,7 +20,7 @@ export interface Fixture {
   id: string;
   bucket: string;
   email: ParsedEmail;
-  senderKnown: boolean;
+  senderTrusted: boolean;
   household: {
     timezone: string;
     now: number;
@@ -71,16 +71,6 @@ const EFFECT_KINDS: readonly EffectKind[] = [
   "senior_note",
   "tell_caregivers",
   "escalate",
-];
-
-const ESCALATION_REASONS: readonly EscalationReason[] = [
-  ...DECISION_REASONS,
-  ...SUSPICIONS,
-  "unverified_sender",
-  "unclear_appointment",
-  "unclear_reschedule",
-  "conflict",
-  "unreadable",
 ];
 
 function oneOf<T extends string>(values: readonly T[], value: string, where: string): T {
@@ -174,7 +164,6 @@ function readEvent(value: unknown, where: string): CalendarEventFact {
     time: str(event.time, `${where}.time`),
     durationMinutes: numOrNull(event.durationMinutes, `${where}.durationMinutes`),
     repeating: bool(event.repeating, `${where}.repeating`),
-    sourceSender: strOrNull(event.sourceSender, `${where}.sourceSender`),
   };
 }
 
@@ -194,7 +183,7 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
     id,
     bucket,
     email: readEmail(fixture.email, `${id}.email`),
-    senderKnown: bool(fixture.senderKnown, `${id}.senderKnown`),
+    senderTrusted: bool(fixture.senderTrusted, `${id}.senderTrusted`),
     household: {
       timezone: str(household.timezone, `${id}.household.timezone`),
       now: num(household.now, `${id}.household.now`),
@@ -260,7 +249,7 @@ export async function runFixture(
     now: household.now,
     timezone: household.timezone,
     sender: email.sender,
-    senderKnown: fixture.senderKnown,
+    senderTrusted: fixture.senderTrusted,
     subject: email.subject,
     receivedAt: email.receivedAt,
     gmailId: email.gmailId,

@@ -7,6 +7,7 @@ import { MAILBOX, rawEmail, verdict } from "./mailMocks.helpers";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 
 const NOW = Date.parse("2026-11-18T14:00:00Z");
+const DAY = 86_400_000;
 
 const ENV: Record<string, string> = {
   CALENDAR_TOKEN_KEY: toBase64(new Uint8Array(32).fill(7)),
@@ -50,7 +51,6 @@ function network(input: string | URL | Request): Promise<Response> {
     return Promise.resolve(json({ access_token: "access-1", expires_in: 3600 }));
   }
   if (url.pathname === "/gmail/v1/users/me/messages/e2e-1") return Promise.resolve(json(MESSAGE));
-  if (url.pathname === "/gmail/v1/users/me/messages") return Promise.resolve(json({}));
   if (url.href === "https://api.anthropic.com/v1/messages") {
     return Promise.resolve(
       json({
@@ -86,17 +86,22 @@ test("a polled message runs through the workpool to an event and a caregiver cha
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
   const refreshToken = await encryptSecret("refresh-1");
-  const mailboxId = await t.run(
-    async (ctx) =>
-      await ctx.db.insert("mailboxes", {
-        householdId,
-        connectedBy: "pat",
-        accountEmail: MAILBOX,
-        refreshToken,
-        status: "active",
-        historyId: "100",
-      }),
-  );
+  const mailboxId = await t.run(async (ctx) => {
+    await ctx.db.insert("mailTrustedSenders", {
+      householdId,
+      address: "appointments@lakesideeye.example",
+      addedBy: "pat",
+      addedAt: NOW - DAY,
+    });
+    return await ctx.db.insert("mailboxes", {
+      householdId,
+      connectedBy: "pat",
+      accountEmail: MAILBOX,
+      refreshToken,
+      status: "active",
+      historyId: "100",
+    });
+  });
 
   await t.mutation(internal.gmail.recordNew, {
     mailboxId,
@@ -132,7 +137,6 @@ test("a polled message runs through the workpool to an event and a caregiver cha
   expect(requests).toEqual([
     "oauth2.googleapis.com/token",
     "gmail.googleapis.com/gmail/v1/users/me/messages/e2e-1",
-    "gmail.googleapis.com/gmail/v1/users/me/messages",
     "api.anthropic.com/v1/messages",
   ]);
   const mailbox = await t.run(async (ctx) => await ctx.db.get(mailboxId));

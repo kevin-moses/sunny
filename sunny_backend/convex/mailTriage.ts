@@ -8,12 +8,11 @@ import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { mailFailure } from "./gmail";
 import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
-import { getMessage, hasSentTo } from "./lib/gmailApi";
+import { getMessage } from "./lib/gmailApi";
 import { AccessTokens } from "./lib/googleTokens";
 import type { StoredGrant } from "./lib/googleTokens";
 import { haikuClassifier, triageEmail } from "./lib/mailClassify";
-import { ignoredLabel } from "./lib/mailGate";
-import { carryOut, linkByKey, linkForEvent } from "./lib/mailEffects";
+import { carryOut, linkByKey } from "./lib/mailEffects";
 import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
 import { NO_USAGE } from "./lib/mailTypes";
@@ -25,6 +24,7 @@ import type {
   Triaged,
 } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
+import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
@@ -82,7 +82,6 @@ function storedHeader(header: MailHeader): {
       name: truncate(sender.name, MAX_NAME),
       address: truncate(sender.address, MAX_ADDRESS),
       authenticated: sender.authenticated,
-      known: sender.known,
     },
     subject: truncate(header.subject, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
@@ -189,13 +188,7 @@ export const recordParsed = internalMutation({
   },
 });
 
-async function eventFact(
-  ctx: QueryCtx,
-  event: Doc<"events">,
-  date: string,
-): Promise<CalendarEventFact> {
-  const link = await linkForEvent(ctx, event._id);
-  const source = link === null ? null : await ctx.db.get(link.mailItemId);
+function eventFact(event: Doc<"events">, date: string): CalendarEventFact {
   return {
     eventId: event._id,
     title: event.title,
@@ -203,7 +196,6 @@ async function eventFact(
     time: event.startTime,
     durationMinutes: event.durationMinutes ?? null,
     repeating: event.repeatDays !== undefined,
-    sourceSender: source?.sender?.address ?? null,
   };
 }
 
@@ -230,10 +222,10 @@ async function calendarFacts(
   const occurrences = [...new Set(datesNamed(verdict).filter(inHorizon))].flatMap((date) =>
     expandOccurrences(series, household.timezone, date, date),
   );
-  const facts = await Promise.all([
-    ...singles.map((e) => eventFact(ctx, e, e.startsOn)),
-    ...occurrences.map((o) => eventFact(ctx, o.event, o.localDate)),
-  ]);
+  const facts = [
+    ...singles.map((e) => eventFact(e, e.startsOn)),
+    ...occurrences.map((o) => eventFact(o.event, o.localDate)),
+  ];
   return { events: [...singles, ...series], facts };
 }
 
@@ -264,7 +256,7 @@ export const applyTriage = internalMutation({
       now,
       timezone: household.timezone,
       sender: header.sender,
-      senderKnown: header.sender.known,
+      senderTrusted: (await trustedSender(ctx, household._id, header.sender.address)) !== null,
       subject: header.subject,
       receivedAt: header.receivedAt,
       gmailId: item.gmailId,
@@ -333,11 +325,8 @@ async function triageClaimed(
     await ctx.runMutation(internal.mailTriage.closeUnread, { itemId, attempt, rule });
     return rule;
   }
-  const known =
-    ignoredLabel(email) === null &&
-    (await tokens.withToken((token) => hasSentTo(token, email.sender.address)));
   const header = {
-    sender: { ...email.sender, known },
+    sender: email.sender,
     subject: email.subject,
     receivedAt: email.receivedAt,
   };
@@ -402,7 +391,7 @@ function unreadPost(item: Doc<"mailItems">, household: Doc<"households">, now: n
       now,
       timezone: household.timezone,
       sender,
-      senderKnown: sender.known,
+      senderTrusted: false,
       subject,
       receivedAt,
       gmailId: item.gmailId,

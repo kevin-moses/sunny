@@ -15,7 +15,6 @@ export const gmailMocks = {
   listHistory: vi.fn(),
   listRecent: vi.fn(),
   getMessage: vi.fn(),
-  hasSentTo: vi.fn(),
 };
 
 export function gmailMock<T extends object>(original: T): T {
@@ -56,7 +55,6 @@ export function resetGoogleMocks(): void {
   gmailMocks.listRecent.mockResolvedValue([]);
   gmailMocks.listHistory.mockResolvedValue({ ids: [], lastHistoryId: "100", next: null });
   gmailMocks.getMessage.mockResolvedValue(null);
-  gmailMocks.hasSentTo.mockResolvedValue(false);
   googleMocks.refreshAccessToken.mockResolvedValue({
     accessToken: "access-1",
     expiresAt: Date.now() + 3_600_000,

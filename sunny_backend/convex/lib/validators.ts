@@ -1,5 +1,5 @@
 import { v, type Infer } from "convex/values";
-import { DECISION_REASONS, INFO_TOPICS, SUSPICIONS } from "./mailTypes";
+import { DECISION_REASONS, ESCALATION_REASONS, INFO_TOPICS, SUSPICIONS } from "./mailTypes";
 
 export const memberRole = v.union(v.literal("primary"), v.literal("member"), v.literal("viewer"));
 export type MemberRole = Infer<typeof memberRole>;
@@ -248,7 +248,6 @@ export const mailSender = v.object({
   name: v.string(),
   address: v.string(),
   authenticated: v.boolean(),
-  known: v.boolean(),
 });
 export type StoredSender = Infer<typeof mailSender>;
 
@@ -278,15 +277,7 @@ export const mailEffectRecord = v.union(
   v.object({ kind: v.literal("told_caregivers"), pushed: v.boolean() }),
   v.object({
     kind: v.literal("escalated"),
-    reason: literals([
-      ...DECISION_REASONS,
-      ...SUSPICIONS,
-      "unverified_sender",
-      "unclear_appointment",
-      "unclear_reschedule",
-      "conflict",
-      "unreadable",
-    ] as const),
+    reason: literals(ESCALATION_REASONS),
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
     proposed: v.optional(v.object({ date: v.string(), time: v.string() })),

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { getMessage, getProfile, hasSentTo, listHistory, listRecent } from "./gmailApi";
+import { getMessage, getProfile, listHistory, listRecent } from "./gmailApi";
 import { GoogleApiError } from "./google";
 
 const fetchMock = vi.fn();
@@ -180,27 +180,6 @@ describe("getMessage", () => {
   });
 });
 
-describe("hasSentTo", () => {
-  test("is true when one sent message to the address exists", async () => {
-    fetchMock.mockResolvedValue(json(200, { messages: [{ id: "s1" }] }));
-    expect(await hasSentTo("tok", "pat@example.com")).toBe(true);
-    const params = requested().searchParams;
-    expect(params.get("labelIds")).toBe("SENT");
-    expect(params.get("q")).toBe("to:pat@example.com");
-    expect(params.get("maxResults")).toBe("1");
-  });
-
-  test("is false when none exists", async () => {
-    fetchMock.mockResolvedValue(json(200, { resultSizeEstimate: 0 }));
-    expect(await hasSentTo("tok", "pat@example.com")).toBe(false);
-  });
-
-  test("an address that could change the search is never sent to Google", async () => {
-    expect(await hasSentTo("tok", 'x@example.com OR in:anywhere "')).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-});
-
 describe("a malformed Gmail answer", () => {
   function raw(text: string): Response {
     return new Response(text, { status: 200, headers: { "Content-Type": "application/json" } });
@@ -211,7 +190,6 @@ describe("a malformed Gmail answer", () => {
     ["listRecent", () => listRecent("tok", Date.now() - 86_400_000, 10)],
     ["getProfile", () => getProfile("tok")],
     ["getMessage", () => getMessage("tok", "m1")],
-    ["hasSentTo", () => hasSentTo("tok", "a@example.com")],
   ])("is a GoogleApiError from %s", async (_, call) => {
     for (const body of ["null", "[]", "not json", '"text"']) {
       fetchMock.mockResolvedValueOnce(raw(body));

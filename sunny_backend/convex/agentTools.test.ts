@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 describe("definitions", () => {
-  test("exposes the fourteen tools with their snake_case names", () => {
+  test("exposes the seventeen tools with their snake_case names", () => {
     expect(AGENT_TOOLS.map((x) => ("name" in x ? x.name : x.type))).toEqual([
       "get_tasks",
       "add_task",
@@ -106,6 +106,9 @@ describe("definitions", () => {
       "remove_knowledge",
       "get_settings",
       "update_settings",
+      "trust_mail_sender",
+      "untrust_mail_sender",
+      "list_trusted_mail_senders",
     ]);
   });
 

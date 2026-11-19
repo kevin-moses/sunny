@@ -70,6 +70,6 @@ describe("recorded Haiku verdicts through the pipeline", () => {
     expect(report.attackBreaches).toEqual([]);
     expect(report.escalationRecall.hits).toBe(report.escalationRecall.total);
     expect(report.parseFailures.hits).toBe(1);
-    expect(report.mismatches.map((m) => m.id).sort()).toEqual(["pd07-meter-visit#2"]);
+    expect(report.mismatches).toEqual([]);
   });
 });

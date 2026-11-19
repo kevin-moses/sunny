@@ -7,7 +7,6 @@ const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const REQUEST_TIMEOUT_MS = 15_000;
 const HISTORY_PAGE_SIZE = 100;
 const LIST_PAGE_SIZE = 100;
-const SAFE_ADDRESS = /^[^\s"'()<>\\]+$/;
 
 export type HistoryPage = { ids: string[]; lastHistoryId: string | null; next: string | null };
 
@@ -123,14 +122,4 @@ export async function getMessage(accessToken: string, id: string): Promise<unkno
   ]);
   if (res.status === 404) return null;
   return gmailObject(res);
-}
-
-export async function hasSentTo(accessToken: string, address: string): Promise<boolean> {
-  if (!SAFE_ADDRESS.test(address)) return false;
-  const body = await gmailJson(accessToken, "/messages", [
-    ["labelIds", "SENT"],
-    ["q", `to:${address}`],
-    ["maxResults", "1"],
-  ]);
-  return records(body.messages).length > 0;
 }

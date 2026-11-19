@@ -1,5 +1,4 @@
 import { cleanText } from "./frameText";
-import { domainOf } from "./mailParse";
 import type {
   Appointment,
   AppointmentRef,
@@ -167,12 +166,8 @@ function sentenceCount(text: string): number {
   return text.split(/[.!?]+(?:\s+|$)/).filter((s) => s.trim() !== "").length;
 }
 
-export function seniorNoteText(
-  note: string,
-  topic: InfoTopic,
-  senderKnown: boolean,
-): string | null {
-  if (topic === "other" || (topic === "family_news" && !senderKnown)) return null;
+export function seniorNoteText(note: string, topic: InfoTopic): string | null {
+  if (topic === "other") return null;
   const text = oneLine(foldPunctuation(note));
   if (text.length === 0 || text.length > MAX_NOTE) return null;
   if (sentenceCount(text) > MAX_NOTE_SENTENCES) return null;
@@ -299,11 +294,11 @@ function tell(c: Context, line: string, push: boolean): MailEffect {
   return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
 }
 
-function sameDomain(source: string | null, sender: string): boolean {
-  if (source === null) return false;
-  const a = domainOf(source);
-  const b = domainOf(sender);
-  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+const TRUST_OFFER =
+  "Tell Sunny in chat to add it, and to trust this sender if the email is genuine.";
+
+function slotOf(appointment: Appointment): Slot {
+  return { date: appointment.date, time: appointment.time };
 }
 
 function only(matches: CalendarEventFact[]): CalendarEventFact | null {
@@ -330,7 +325,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               escalate(
                 c,
                 "unverified_sender",
-                `Sunny did not add this appointment because the sender is not verified: ${s.appointment.title}, ${when(s.appointment.date, s.appointment.time)}.`,
+                `${s.appointment.title}, ${when(s.appointment.date, s.appointment.time)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
+                null,
+                slotOf(s.appointment),
               ),
             ],
     },
@@ -353,6 +350,21 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         s.duplicate === null ? null : [{ kind: "already_on_calendar", eventId: s.duplicate }],
     },
     {
+      rule: "sender not trusted",
+      plan: (s, c) =>
+        c.facts.senderTrusted
+          ? null
+          : [
+              escalate(
+                c,
+                "new_sender",
+                `${s.appointment.title}, ${when(s.appointment.date, s.appointment.time)}. Sunny has not added it because no caregiver has approved this sender yet. ${TRUST_OFFER}`,
+                null,
+                slotOf(s.appointment),
+              ),
+            ],
+    },
+    {
       rule: "overlaps another live event",
       plan: (s, c) =>
         s.conflict === null || s.fields === null
@@ -362,6 +374,8 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 c,
                 "conflict",
                 `Sunny did not add ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
+                null,
+                slotOf(s.fields),
               ),
             ],
     },
@@ -386,14 +400,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule: [
     {
-      rule: "not authenticated, no single match, the match repeats, new fields rejected, or sender neither known nor the event's source",
+      rule: "not authenticated, not trusted, no single match, the match repeats, or new fields rejected",
       plan: (s, c) => {
         const match = only(s.matches);
-        const mayMove =
-          match !== null &&
-          !match.repeating &&
-          (c.facts.senderKnown || sameDomain(match.sourceSender, c.facts.sender.address));
-        if (c.authenticated && mayMove && s.fields !== null) return null;
+        const trusted = c.authenticated && c.facts.senderTrusted;
+        if (trusted && match !== null && !match.repeating && s.fields !== null) return null;
         const asked = when(s.appointment.date, s.appointment.time);
         return [
           escalate(
@@ -403,9 +414,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
               : match.repeating
                 ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`,
+                : c.authenticated && !c.facts.senderTrusted
+                  ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because no caregiver has approved this sender yet. The email asks to move it to ${asked}. Tell Sunny in chat to move it, and to trust this sender if the email is genuine.`
+                  : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`,
             match?.eventId ?? null,
-            { date: s.appointment.date, time: s.appointment.time },
+            slotOf(s.appointment),
           ),
         ];
       },
@@ -459,9 +472,22 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   senior_info: [
     { rule: "stale", plan: (_, c) => (c.stale ? [] : null) },
     {
-      rule: "not authenticated, or seniorNoteText rejects",
+      rule: "not authenticated, or not trusted",
+      plan: (_, c) =>
+        c.authenticated && c.facts.senderTrusted
+          ? null
+          : [
+              tell(
+                c,
+                "Sunny did not tell the senior about this email because no caregiver has approved this sender yet.",
+                false,
+              ),
+            ],
+    },
+    {
+      rule: "seniorNoteText rejects",
       plan: (s, c) =>
-        c.authenticated && s.note !== null
+        s.note !== null
           ? null
           : [
               tell(
@@ -516,7 +542,7 @@ function situationOf(verdict: MailVerdict | null, facts: PolicyFacts): Situation
     case "senior_info":
       return {
         case: "senior_info",
-        note: seniorNoteText(verdict.note, verdict.topic, facts.senderKnown),
+        note: seniorNoteText(verdict.note, verdict.topic),
       };
     case "needs_decision":
       return { case: "needs_decision", reason: verdict.reason };

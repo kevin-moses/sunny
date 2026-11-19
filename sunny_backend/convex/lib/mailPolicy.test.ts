@@ -32,7 +32,6 @@ const EVENTS: CalendarEventFact[] = [
     time: "10:30",
     durationMinutes: 60,
     repeating: false,
-    sourceSender: "appointments@lakesideeye.example",
   },
   {
     eventId: "evt_pt",
@@ -41,7 +40,6 @@ const EVENTS: CalendarEventFact[] = [
     time: "14:00",
     durationMinutes: 45,
     repeating: false,
-    sourceSender: "frontdesk@mail.riversidept.example",
   },
   {
     eventId: "evt_dentist",
@@ -50,7 +48,6 @@ const EVENTS: CalendarEventFact[] = [
     time: "09:00",
     durationMinutes: null,
     repeating: false,
-    sourceSender: null,
   },
 ];
 
@@ -69,7 +66,7 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
       address: "appointments@lakesideeye.example",
       authenticated: true,
     },
-    senderKnown: false,
+    senderTrusted: true,
     subject: "Your appointment",
     receivedAt: NOW - 3_600_000,
     gmailId: "m1",
@@ -151,6 +148,26 @@ describe("planWithRule decision table", () => {
         facts({ sender: { ...facts().sender, authenticated: false } }),
       );
       expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
+    });
+
+    test("from an authenticated sender no caregiver trusts escalates as a new sender and is not added", () => {
+      const effects = effectsOf(model(newAppointment()), facts({ senderTrusted: false }));
+      expect(kinds(effects)).toEqual(["escalate:new_sender:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: null,
+        proposed: { date: "2026-12-10", time: "14:15" },
+        notice:
+          "Hearing test, Thursday, December 10 at 2:15 PM. Sunny has not added it because no caregiver has approved this sender yet. Tell Sunny in chat to add it, and to trust this sender if the email is genuine.",
+      });
+    });
+
+    test("from an untrusted sender that repeats a live event is already on the calendar", () => {
+      expect(
+        effectsOf(
+          model(newAppointment()),
+          facts({ senderTrusted: false, linkedEventId: "evt_eye" }),
+        ),
+      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_eye" }]);
     });
 
     test("with rejected fields escalates as unclear", () => {
@@ -241,12 +258,11 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
     });
 
-    test("from a known sender may move an event entered by hand", () => {
+    test("from a trusted sender moves the one matching event, whoever entered it", () => {
       const effects = effectsOf(
         model(reschedule({ date: "2026-12-02", time: "09:00", title: "Dentist" })),
         facts({
           sender: { name: "Anna Ellis", address: "anna.ellis@example.net", authenticated: true },
-          senderKnown: true,
         }),
       );
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_dentist" });
@@ -307,7 +323,6 @@ describe("planWithRule decision table", () => {
               time: "16:00",
               durationMinutes: 30,
               repeating: false,
-              sourceSender: null,
             },
           ],
         },
@@ -323,11 +338,12 @@ describe("planWithRule decision table", () => {
             address: "appointments@lakeside-eyecare.example",
             authenticated: true,
           },
+          senderTrusted: false,
         },
         "evt_eye",
       ],
       [
-        "an unknown sender asks to move an event entered by hand",
+        "an untrusted sender asks to move an event",
         reschedule({ date: "2026-12-02", time: "09:00", title: "Dentist" }),
         {
           sender: {
@@ -335,6 +351,7 @@ describe("planWithRule decision table", () => {
             address: "office@maplestreetdental.example",
             authenticated: true,
           },
+          senderTrusted: false,
         },
         "evt_dentist",
       ],
@@ -387,6 +404,15 @@ describe("planWithRule decision table", () => {
       );
       expect(kinds(effects)).toEqual(["tell_caregivers"]);
       expect(effects[0]).toMatchObject({ push: false });
+    });
+
+    test("from an authenticated sender no caregiver trusts goes to caregivers without a push", () => {
+      const effects = effectsOf(model(info), facts({ senderTrusted: false }));
+      expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
+      expect(effects[0]).toMatchObject({
+        notice:
+          "Sunny did not tell the senior about this email because no caregiver has approved this sender yet.",
+      });
     });
 
     test("with a note the validator rejects goes to caregivers without a push", () => {
@@ -508,21 +534,19 @@ describe("appointmentFields", () => {
 
 describe("seniorNoteText", () => {
   test("accepts a short plain note and folds typographic quotes", () => {
-    expect(seniorNoteText("Anna’s kids loved  your cookies.", "family_news", true)).toBe(
+    expect(seniorNoteText("Anna’s kids loved  your cookies.", "family_news")).toBe(
       "Anna's kids loved your cookies.",
     );
     expect(
       seniorNoteText(
         "A package is arriving this afternoon. It will be left at the door.",
         "delivery",
-        false,
       ),
     ).toBe("A package is arriving this afternoon. It will be left at the door.");
   });
 
   test.each([
     ["the topic other", "Nice weather today.", "other", true],
-    ["family news from an unknown sender", "Helen moved to Ohio.", "family_news", false],
     ["more than 160 characters", `${"word ".repeat(33)}end.`, "delivery", false],
     ["three sentences", "A package came. It is big. It is red.", "delivery", false],
     ["a digit", "Your package arrives at 3.", "delivery", false],
@@ -531,24 +555,24 @@ describe("seniorNoteText", () => {
     ["markup", "Your *prescription* is ready.", "prescription", false],
     ["a character the display cannot draw", "Happy birthday \u{1F382}", "family_news", true],
     ["an empty note", "  ", "delivery", false],
-  ])("rejects %s", (_, note, topic, known) => {
-    expect(seniorNoteText(note, topic as "delivery", known)).toBeNull();
+  ])("rejects %s", (_, note, topic) => {
+    expect(seniorNoteText(note, topic as "delivery")).toBeNull();
   });
 
   test("accepts a note that says a place is open", () => {
-    expect(seniorNoteText("The pharmacy is open until six.", "prescription", true)).toBe(
+    expect(seniorNoteText("The pharmacy is open until six.", "prescription")).toBe(
       "The pharmacy is open until six.",
     );
-    expect(
-      seniorNoteText("Your prescription is ready. They open early.", "prescription", true),
-    ).toBe("Your prescription is ready. They open early.");
+    expect(seniorNoteText("Your prescription is ready. They open early.", "prescription")).toBe(
+      "Your prescription is ready. They open early.",
+    );
   });
 
   test("keeps the 160 character limit exact", () => {
     const at = `${"a".repeat(155)} done.`;
     expect(at).toHaveLength(161);
-    expect(seniorNoteText(at.slice(1), "delivery", true)).not.toBeNull();
-    expect(seniorNoteText(at, "delivery", true)).toBeNull();
+    expect(seniorNoteText(at.slice(1), "delivery")).not.toBeNull();
+    expect(seniorNoteText(at, "delivery")).toBeNull();
   });
 
   test.each([
@@ -582,7 +606,7 @@ describe("seniorNoteText", () => {
     "Medicare",
     "Social Security",
   ])("rejects a note containing %s", (word) => {
-    expect(seniorNoteText(`Something about ${word} today.`, "service_visit", true)).toBeNull();
+    expect(seniorNoteText(`Something about ${word} today.`, "service_visit")).toBeNull();
   });
 });
 

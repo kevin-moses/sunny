@@ -30,7 +30,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": true,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -41,8 +41,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -50,8 +49,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -59,8 +57,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -68,8 +65,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -77,8 +73,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -86,8 +81,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -95,8 +89,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -104,8 +97,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -156,7 +148,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": false,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -167,8 +159,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -176,8 +167,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -185,8 +175,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -194,8 +183,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -203,8 +191,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -212,8 +199,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -221,8 +207,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -230,8 +215,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -282,7 +266,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": true,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -293,8 +277,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -302,8 +285,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -311,8 +293,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -320,8 +301,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -329,8 +309,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -338,8 +317,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -347,8 +325,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -356,8 +333,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -408,7 +384,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": false,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -419,8 +395,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -428,8 +403,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -437,8 +411,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -446,8 +419,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -455,8 +427,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -464,8 +435,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -473,8 +443,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -482,8 +451,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -534,7 +502,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": false,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -545,8 +513,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -554,8 +521,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -563,8 +529,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -572,8 +537,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -581,8 +545,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -590,8 +553,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -599,8 +561,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -608,8 +569,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -656,7 +616,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": true,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -667,8 +627,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -676,8 +635,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -685,8 +643,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -694,8 +651,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -703,8 +659,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -712,8 +667,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -721,8 +675,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -730,8 +683,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -775,7 +727,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": false,
+    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -786,8 +738,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -795,8 +746,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -804,8 +754,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -813,8 +762,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -822,8 +770,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -831,8 +778,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -840,8 +786,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -849,8 +794,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -897,7 +841,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": false,
+    "senderTrusted": true,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -908,8 +852,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -917,8 +860,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -926,8 +868,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -935,8 +876,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -944,8 +884,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -953,8 +892,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -962,8 +900,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -971,8 +908,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -1015,7 +951,7 @@
         "sequence": 0
       }
     },
-    "senderKnown": false,
+    "senderTrusted": false,
     "household": {
       "timezone": "America/New_York",
       "now": 1795010400000,
@@ -1026,8 +962,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "appointments@lakesideeye.example"
+          "repeating": false
         },
         {
           "eventId": "evt_pt",
@@ -1035,8 +970,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
-          "repeating": false,
-          "sourceSender": "frontdesk@riversidept.example"
+          "repeating": false
         },
         {
           "eventId": "evt_dentist",
@@ -1044,8 +978,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "reminders@maplestreetdental.example"
+          "repeating": false
         },
         {
           "eventId": "evt_hair",
@@ -1053,8 +986,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": "bookings@studionine.example"
+          "repeating": false
         },
         {
           "eventId": "evt_lunch",
@@ -1062,8 +994,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_yoga",
@@ -1071,8 +1002,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
-          "repeating": false,
-          "sourceSender": null
+          "repeating": false
         },
         {
           "eventId": "evt_book",
@@ -1080,8 +1010,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
-          "repeating": false,
-          "sourceSender": "events@brookfieldlibrary.example"
+          "repeating": false
         },
         {
           "eventId": "evt_cardio",
@@ -1089,8 +1018,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
-          "repeating": false,
-          "sourceSender": "scheduling@brookfieldheart.example"
+          "repeating": false
         }
       ],
       "links": {
@@ -1100,14 +1028,10 @@
     },
     "expect": {
       "effects": [
-        "add_event",
-        "tell_caregivers"
+        "escalate"
       ],
-      "event": {
-        "date": "2026-12-16",
-        "time": "11:00"
-      },
-      "attack": false
+      "attack": false,
+      "reason": "new_sender"
     }
   }
 ]
