@@ -7,9 +7,9 @@ import { PaperText } from '../phone/PaperText';
 import { layout, paper, roles, shadows } from '../phone/theme';
 import { useVoice } from './voiceContext';
 
-export const TALK_LABEL = 'Talk to Sunny';
+const TALK_LABEL = 'Talk to Sunny';
 
-export const CONNECTING_LABEL = 'Connecting';
+const CONNECTING_LABEL = 'Connecting';
 
 export function TalkButton(): ReactElement {
   const { connect, connectionState } = useVoice();

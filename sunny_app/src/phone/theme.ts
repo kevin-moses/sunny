@@ -12,7 +12,7 @@ export const paper = {
   talkGlow: '#F0620F',
 } as const;
 
-export function withAlpha(hex: string, alpha: number): string {
+function withAlpha(hex: string, alpha: number): string {
   const byte = Math.round(alpha * 255)
     .toString(16)
     .padStart(2, '0');

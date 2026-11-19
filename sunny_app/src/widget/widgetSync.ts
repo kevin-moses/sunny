@@ -8,7 +8,7 @@ import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 import { readUnsentPresses } from './sharedPresses';
 
-export type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
+type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
 
 let storeFailed = false;
 let syncRun: Promise<void> | null = null;

@@ -30,7 +30,7 @@ export type PendingEntry = PendingConfirm | PendingUndo;
 
 export type PressedEntry = Omit<PendingConfirm, 'label'>;
 
-export type OverlayEntry = PressedEntry | PendingUndo;
+type OverlayEntry = PressedEntry | PendingUndo;
 
 const KNOWN_STATES: Record<DayTask['state'], true> = {
   upcoming: true,

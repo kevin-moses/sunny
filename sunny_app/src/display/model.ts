@@ -19,7 +19,7 @@ export type NowCard =
       allDone: boolean;
     };
 
-export type UpNext =
+type UpNext =
   { kind: 'task'; task: DayTask } | { kind: 'event'; event: EventOccurrence; laterDay: boolean };
 
 export interface NextItem {
