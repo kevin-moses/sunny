@@ -98,9 +98,14 @@ struct WhenLine: View {
     let metrics: WhenMetrics
     let scale: CGFloat
     let inks: Inks
+    var symbol: String?
 
     var body: some View {
         HStack(spacing: metrics.gap * Layout.shrink(scale)) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: metrics.style.size * scale, weight: .bold))
+            }
             NowTag(metrics: metrics, scale: scale, inks: inks)
             StyledLine(text: time, style: metrics.style, scale: scale, color: inks.text)
         }

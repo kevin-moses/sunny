@@ -58,7 +58,7 @@ public final class SunnyWidgetModule: Module {
                     "pressId": press.id.uuidString,
                     "instanceId": press.instanceId,
                     "step": press.step,
-                    "pressedAt": press.pressedAt.timeIntervalSince1970 * 1000,
+                    "pressedAt": epochMs(press.pressedAt),
                 ]
             }
         }
@@ -66,8 +66,13 @@ public final class SunnyWidgetModule: Module {
         AsyncFunction("markPressed") { (pressId: String, instanceId: String, step: Int, pressedAt: Double) async throws in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             guard let id = UUID(uuidString: pressId) else { throw BridgeError.badPressId() }
-            let at = Date(timeIntervalSince1970: pressedAt / 1000)
-            try await PushStateReporter.shared.markAppPress(sync, id: id, instanceId: instanceId, step: step, pressedAt: at)
+            try await PushStateReporter.shared.markAppPress(
+                sync,
+                id: id,
+                instanceId: instanceId,
+                step: step,
+                pressedAt: date(fromEpochMs: pressedAt)
+            )
         }
 
         AsyncFunction("answerPress") { (pressId: String) throws in

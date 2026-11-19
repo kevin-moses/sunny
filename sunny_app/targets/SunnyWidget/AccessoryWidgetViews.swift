@@ -61,13 +61,7 @@ struct RectangularAccessoryView: View {
         VStack(alignment: .leading, spacing: Self.gap) {
             switch content {
             case .due(let due):
-                HStack(spacing: WhenMetrics.accessory.gap) {
-                    Image(systemName: due.symbolName)
-                        .font(.system(size: TypeStyle.accessoryWhen.size * scale, weight: .bold))
-                    NowTag(metrics: .accessory, scale: scale, inks: inks)
-                    StyledLine(text: due.time, style: .accessoryWhen, scale: scale, color: inks.text)
-                }
-                .frame(height: WhenMetrics.accessory.height(scale))
+                WhenLine(time: due.time, metrics: .accessory, scale: scale, inks: inks, symbol: due.symbolName)
                 StyledLine(text: due.label, style: .accessoryLabel, scale: scale, color: inks.text)
                 if let detail = due.detail {
                     StyledLine(text: detail, style: .accessoryDetail, scale: scale, color: inks.text)

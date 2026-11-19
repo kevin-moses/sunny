@@ -88,6 +88,7 @@ struct WhenMetrics {
     static let accessory = WhenMetrics(style: .accessoryWhen, tagPaddingVertical: 1, tagPaddingHorizontal: 6, gap: 6)
     static let banner = WhenMetrics(style: .bannerWhen, tagPaddingVertical: 2, tagPaddingHorizontal: 8, gap: 8)
     static let island = WhenMetrics(style: .islandWhen, tagPaddingVertical: 2, tagPaddingHorizontal: 10, gap: 8)
+    static let compact = WhenMetrics(style: .compactTag, tagPaddingVertical: 2, tagPaddingHorizontal: 6.25, gap: 8)
 }
 
 struct KeyMetrics {
