@@ -243,7 +243,7 @@ function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
   const already: MailEffect = {
     kind: "already_on_calendar",
     eventId,
-    appointmentKey: c.authenticated ? key : null,
+    appointmentKey: key,
   };
   if (c.decision === null) return [already];
   return [

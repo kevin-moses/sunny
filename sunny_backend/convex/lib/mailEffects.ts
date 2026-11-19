@@ -151,9 +151,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
     },
     already_on_calendar: async (scope, effect) => {
       const event = eventOf(scope, effect.eventId);
-      if (effect.appointmentKey !== null) {
-        await linkEvent(scope, event._id, effect.appointmentKey, true);
-      }
+      await linkEvent(scope, event._id, effect.appointmentKey, true);
       return { kind: "already_on_calendar", eventId: event._id };
     },
     senior_note: async (scope, effect) => {

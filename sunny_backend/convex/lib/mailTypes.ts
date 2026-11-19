@@ -311,7 +311,7 @@ export type MailEffect =
       appointment: Appointment;
       appointmentKey: string;
     }
-  | { kind: "already_on_calendar"; eventId: string; appointmentKey: string | null }
+  | { kind: "already_on_calendar"; eventId: string; appointmentKey: string }
   | { kind: "senior_note"; text: string; expiresAt: number }
   | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
   | ({
