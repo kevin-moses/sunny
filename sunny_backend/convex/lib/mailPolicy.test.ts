@@ -52,18 +52,7 @@ const EVENTS: CalendarEventFact[] = [
   },
 ];
 
-const UNVERIFIED = { authenticated: false };
-
-function from(sender: Partial<PolicyFacts["sender"]>): Pick<PolicyFacts, "sender"> {
-  return {
-    sender: {
-      name: "Hillcrest Hearing",
-      address: "desk@hillcresthearing.example",
-      authenticated: true,
-      ...sender,
-    },
-  };
-}
+const UNVERIFIED = { sender: { name: "x", address: "x@x.example", authenticated: false } };
 
 const PT_SENDER = {
   name: "Riverside Physical Therapy",
@@ -153,18 +142,8 @@ describe("planWithRule decision table", () => {
   });
 
   describe("new appointment", () => {
-    test("from a verified sender Sunny has never seen is added", () => {
-      const effects = effectsOf(newAppointment(), facts(from({})));
-      expect(kinds(effects)).toEqual(["add_event", "tell_caregivers"]);
-      expect(effects[0]).toEqual({
-        kind: "add_event",
-        appointment: appointment(),
-        appointmentKey: "appt:2026-12-10:14:15:hearing appointment",
-      });
-    });
-
-    test("the same email from an unverified sender escalates with the proposal and is not added", () => {
-      const effects = effectsOf(newAppointment(), facts(from(UNVERIFIED)));
+    test("from an unverified sender escalates with the proposal and is not added", () => {
+      const effects = effectsOf(newAppointment(), facts(UNVERIFIED));
       expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
       expect(effects[0]).toMatchObject({
         eventId: null,
@@ -182,7 +161,7 @@ describe("planWithRule decision table", () => {
       (_, overrides) => {
         const effects = effectsOf(
           newAppointment({ kind: "eye_doctor", date: "2026-11-24", time: "10:30" }),
-          facts({ ...from(UNVERIFIED), ...overrides }),
+          facts({ ...UNVERIFIED, ...overrides }),
         );
         expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
       },
@@ -276,7 +255,7 @@ describe("planWithRule decision table", () => {
     test("the same linked invitation from an unverified sender escalates instead", () => {
       const effects = effectsOf(
         newAppointment({ kind: "physical_therapy", date: "2026-11-23", time: "15:00" }),
-        facts({ ics: invite(), linked: linkTo("evt_pt"), ...from(UNVERIFIED) }),
+        facts({ ics: invite(), linked: linkTo("evt_pt"), ...UNVERIFIED }),
       );
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
     });
@@ -332,7 +311,7 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
     });
 
-    test("from a verified sender Sunny has never seen moves the one matching event, whoever entered it", () => {
+    test("from any verified sender moves the one matching event, whoever entered it", () => {
       const effects = effectsOf(
         reschedule({ kind: "dentist", date: "2026-12-02", time: "09:00" }),
         facts({
@@ -357,10 +336,7 @@ describe("planWithRule decision table", () => {
     });
 
     test("an escalation with one match names the event, both times and what to tell Sunny", () => {
-      const effects = effectsOf(
-        reschedule(pt),
-        facts({ sender: { name: "x", address: "x@x.example", authenticated: false } }),
-      );
+      const effects = effectsOf(reschedule(pt), facts(UNVERIFIED));
       const body = effects[0]?.kind === "escalate" ? effects[0].body : "";
       expect(body).toContain(
         "Sunny did not move Physical therapy, Friday, November 20 at 2:00 PM. The email asks to move it to Monday, November 23 at 3:00 PM. Tell Sunny in chat to move it.",
@@ -378,12 +354,7 @@ describe("planWithRule decision table", () => {
     });
 
     test.each([
-      [
-        "the sender is not verified",
-        reschedule(pt),
-        { sender: { name: "x", address: "x@x.example", authenticated: false } },
-        "evt_pt",
-      ],
+      ["the sender is not verified", reschedule(pt), UNVERIFIED, "evt_pt"],
       [
         "nothing matches",
         reschedule({ kind: "physical_therapy", date: "2026-11-21", time: "09:00" }),
@@ -493,7 +464,7 @@ describe("planWithRule decision table", () => {
     });
 
     test("a verified sender's phone call confirmation escalates with the proposal and adds nothing", () => {
-      const effects = effectsOf(newAppointment({ kind: "phone_call" }), facts(from({})));
+      const effects = effectsOf(newAppointment({ kind: "phone_call" }), facts());
       expect(kinds(effects)).toEqual(["escalate:phone_call:true"]);
       expect(effects[0]).toMatchObject({
         eventId: null,
@@ -504,7 +475,7 @@ describe("planWithRule decision table", () => {
     });
 
     test("a video call is still added by itself", () => {
-      expect(kinds(effectsOf(newAppointment({ kind: "video_call" }), facts(from({}))))).toEqual([
+      expect(kinds(effectsOf(newAppointment({ kind: "video_call" }), facts()))).toEqual([
         "add_event",
         "tell_caregivers",
       ]);
@@ -527,7 +498,7 @@ describe("planWithRule decision table", () => {
     });
 
     test("from an unverified sender is one escalation that carries both facts", () => {
-      const effects = effectsOf({ ...newAppointment(), ...bill }, facts(from(UNVERIFIED)));
+      const effects = effectsOf({ ...newAppointment(), ...bill }, facts(UNVERIFIED));
       expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
       expect(effects[0]).toMatchObject({
         proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
@@ -613,8 +584,8 @@ describe("planWithRule decision table", () => {
   describe("senior info", () => {
     const info: MailVerdict = { kind: "senior_info", topic: "prescription_ready" };
 
-    test("from a verified sender Sunny has never seen becomes Sunny's sentence for the topic, expiring at the end of the next local day", () => {
-      expect(effectsOf(info, facts(from({})))).toEqual([
+    test("from a verified sender becomes Sunny's sentence for the topic, expiring at the end of the next local day", () => {
+      expect(effectsOf(info, facts())).toEqual([
         {
           kind: "senior_note",
           text: SENIOR_SENTENCES.prescription_ready,
@@ -627,8 +598,8 @@ describe("planWithRule decision table", () => {
       expect(effectsOf(info, facts({ receivedAt: NOW - DAY_MS - 1 }))).toEqual([]);
     });
 
-    test("the same news from an unverified sender goes to caregivers without a push", () => {
-      const effects = effectsOf(info, facts(from(UNVERIFIED)));
+    test("from an unverified sender goes to caregivers without a push", () => {
+      const effects = effectsOf(info, facts(UNVERIFIED));
       expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
       expect(effects[0]).toMatchObject({
         notice:

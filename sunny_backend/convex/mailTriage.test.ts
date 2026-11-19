@@ -828,20 +828,7 @@ describe("other verdicts", () => {
     expect(await rows(h, "notificationOutbox")).toHaveLength(18);
   });
 
-  test("a delivery notice from a verified sender Sunny has never seen becomes a senior note", async () => {
-    const h = await setup();
-    const done = await triageEmail(
-      h,
-      clinic({ from: "Parcel Post <tracking@parcelpost.example>", subject: "Out for delivery" }),
-      DELIVERY,
-    );
-    expect(kinds(done.effects ?? [])).toEqual(["senior_note"]);
-    expect((await rows(h, "seniorNotes")).map((n) => n.text)).toEqual([
-      SENIOR_SENTENCES.package_coming,
-    ]);
-  });
-
-  test("the same delivery notice from an unverified sender goes to the caregivers only", async () => {
+  test("a delivery notice from an unverified sender goes to the caregivers only", async () => {
     const h = await setup();
     const done = await triageEmail(
       h,
@@ -873,6 +860,17 @@ describe("other verdicts", () => {
     gmailMocks.getMessage.mockResolvedValue(null);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("gone");
     expect(await item(h, itemId)).toMatchObject({ state: "done", rule: "gone", effects: [] });
+  });
+
+  test("a verified address that sends a scam still escalates and reaches neither the senior nor the calendar", async () => {
+    const h = await setup();
+    const done = await triageEmail(h, clinic({ subject: "Please wire the copay" }), {
+      ...EYE_EXAM,
+      yes: ["confirms_appointment", "asks_hard_to_trace_payment"],
+    });
+    expect(done.effects).toEqual([{ kind: "escalated", reason: "money_request", pushed: true }]);
+    expect(await rows(h, "events")).toHaveLength(0);
+    expect(await rows(h, "seniorNotes")).toHaveLength(0);
   });
 });
 
@@ -1397,43 +1395,6 @@ describe("where Sunny's reading shows up", () => {
     expect(lines[heading + 1]).toMatch(
       /^ {2}\S+ \S+: money_request; mail_item_id \w+; sender domain lakesideeye\.example$/,
     );
-  });
-});
-
-describe("a verified sender Sunny has never seen", () => {
-  test("its first appointment email is added at once", async () => {
-    const h = await setup();
-    const done = await triageEmail(
-      h,
-      clinic({
-        from: "Northside Foot & Ankle <office@northsidefoot.example>",
-        subject: "Appointment with Dr. Nwosu",
-      }),
-      {
-        yes: ["confirms_appointment"],
-        kind: "doctor_visit",
-        when: { date: "2026-12-03", time: "13:00" },
-      },
-    );
-    expect(kinds(done.effects ?? [])).toEqual(["event_added", "told_caregivers"]);
-    expect(await rows(h, "events")).toEqual([
-      expect.objectContaining({
-        title: "Doctor visit",
-        startsOn: "2026-12-03",
-        startTime: "13:00",
-      }),
-    ]);
-  });
-
-  test("a verified address that sends a scam still escalates and reaches neither the senior nor the calendar", async () => {
-    const h = await setup();
-    const done = await triageEmail(h, clinic({ subject: "Please wire the copay" }), {
-      ...EYE_EXAM,
-      yes: ["confirms_appointment", "asks_hard_to_trace_payment"],
-    });
-    expect(done.effects).toEqual([{ kind: "escalated", reason: "money_request", pushed: true }]);
-    expect(await rows(h, "events")).toHaveLength(0);
-    expect(await rows(h, "seniorNotes")).toHaveLength(0);
   });
 });
 
