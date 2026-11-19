@@ -19,6 +19,8 @@ export const CLAIM_ACTION = 'claim';
 
 export type PushTab = 'home' | 'chat';
 
+const CHAT_PUSH_KINDS: ReadonlySet<string> = new Set(['digest', 'mail_escalation', 'mail_update']);
+
 export interface CaregiverPushRoute {
   tab: PushTab;
   claimInstanceId: TaskInstanceId | null;
@@ -42,7 +44,8 @@ export function routeCaregiverResponse(
     return { tab: 'home', claimInstanceId: claim ? (instance as TaskInstanceId) : null };
   }
   if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return null;
-  const tab: PushTab = dataString(data, 'kind') === 'digest' ? 'chat' : 'home';
+  const kind = dataString(data, 'kind');
+  const tab: PushTab = kind !== null && CHAT_PUSH_KINDS.has(kind) ? 'chat' : 'home';
   return { tab, claimInstanceId: null };
 }
 
