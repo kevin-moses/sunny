@@ -248,4 +248,4 @@ export const pushStateReport = v.object({
 });
 export type PushStateReport = Infer<typeof pushStateReport>;
 
-export const reportedPushToken = v.object({ token: v.string(), reportedAt: v.number() });
+export const reportedPushToken = v.object({ token: v.string() });

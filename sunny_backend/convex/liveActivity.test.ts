@@ -290,7 +290,7 @@ describe("a phone where no Live Activity can start gets the notification as befo
     await f.t.run(async (ctx) => {
       await ctx.db.insert("phonePush", {
         deviceId: f.displayId,
-        liveActivityStart: { token: START_TOKEN, reportedAt: Date.now() },
+        liveActivityStart: { token: START_TOKEN },
       });
       await ctx.db.insert("pushTokens", { userId: f.displayUser, token: "display-alert-token" });
     });

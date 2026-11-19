@@ -120,38 +120,32 @@ export function parsePushStateRequest(body: Record<string, unknown>): PushStateR
   return report;
 }
 
-type ReportedTokens = Pick<Doc<"phonePush">, "liveActivityStart" | "widgetPush">;
+type TokenField = "liveActivityStart" | "widgetPush";
 
-async function clearOnOtherPhones(
-  ctx: MutationCtx,
-  holders: Doc<"phonePush">[],
-  keeper: Id<"devices">,
-  field: keyof ReportedTokens,
-): Promise<void> {
-  for (const row of holders) {
-    if (row.deviceId !== keeper) await ctx.db.patch(row._id, { [field]: undefined });
-  }
+function reportedTokens(report: PushStateReport): [TokenField, string | null][] {
+  const tokens: [TokenField, string | null][] = [];
+  const start = report.liveActivityStart;
+  if (start !== undefined) tokens.push(["liveActivityStart", start.enabled ? start.token : null]);
+  if (report.widgetPush !== undefined) tokens.push(["widgetPush", report.widgetPush.token]);
+  return tokens;
 }
 
-async function takeTokensFromOtherPhones(
+async function takeTokenFromOtherPhones(
   ctx: MutationCtx,
   deviceId: Id<"devices">,
-  tokens: ReportedTokens,
+  field: TokenField,
+  token: string,
 ): Promise<void> {
-  const { liveActivityStart, widgetPush } = tokens;
-  if (liveActivityStart !== undefined) {
-    const holders = await ctx.db
-      .query("phonePush")
-      .withIndex("by_start_token", (q) => q.eq("liveActivityStart.token", liveActivityStart.token))
-      .collect();
-    await clearOnOtherPhones(ctx, holders, deviceId, "liveActivityStart");
-  }
-  if (widgetPush !== undefined) {
-    const holders = await ctx.db
-      .query("phonePush")
-      .withIndex("by_widget_token", (q) => q.eq("widgetPush.token", widgetPush.token))
-      .collect();
-    await clearOnOtherPhones(ctx, holders, deviceId, "widgetPush");
+  const holders =
+    field === "liveActivityStart"
+      ? ctx.db
+          .query("phonePush")
+          .withIndex("by_start_token", (q) => q.eq("liveActivityStart.token", token))
+      : ctx.db
+          .query("phonePush")
+          .withIndex("by_widget_token", (q) => q.eq("widgetPush.token", token));
+  for (const row of await holders.collect()) {
+    if (row.deviceId !== deviceId) await ctx.db.patch(row._id, { [field]: undefined });
   }
 }
 
@@ -159,23 +153,17 @@ async function storeReportedTokens(
   ctx: MutationCtx,
   device: Doc<"devices">,
   report: PushStateReport,
-  now: number,
 ): Promise<void> {
-  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | "liveActivityStart" | "widgetPush">> =
-    { blindSince: undefined };
-  const start = report.liveActivityStart;
-  if (start !== undefined) {
-    patch.liveActivityStart =
-      start.enabled && start.token !== null ? { token: start.token, reportedAt: now } : undefined;
-  }
-  const widget = report.widgetPush;
-  if (widget !== undefined) {
-    patch.widgetPush = widget.token === null ? undefined : { token: widget.token, reportedAt: now };
-  }
-  await takeTokensFromOtherPhones(ctx, device._id, patch);
   const existing = await findPhonePush(ctx, device._id);
+  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | TokenField>> = {};
+  if (existing?.blindSince !== undefined) patch.blindSince = undefined;
+  for (const [field, token] of reportedTokens(report)) {
+    if ((existing?.[field]?.token ?? null) === token) continue;
+    if (token !== null) await takeTokenFromOtherPhones(ctx, device._id, field, token);
+    patch[field] = token === null ? undefined : { token };
+  }
   if (existing === null) await ctx.db.insert("phonePush", { deviceId: device._id, ...patch });
-  else await ctx.db.patch(existing._id, patch);
+  else if (Object.keys(patch).length > 0) await ctx.db.patch(existing._id, patch);
 }
 
 export const reportByToken = internalMutation({
@@ -185,7 +173,7 @@ export const reportByToken = internalMutation({
     if (device === null) return { kind: "unauthorized" };
     if (device.kind !== "senior_phone") return { kind: "not_a_phone" };
     const now = Date.now();
-    await storeReportedTokens(ctx, device, args.report, now);
+    await storeReportedTokens(ctx, device, args.report);
     const { activities } = args.report;
     if (activities === undefined) return { kind: "ok", activities: [] };
     const { directives, behind } = await applyActivityReport(ctx, device, activities, now);

@@ -165,7 +165,7 @@ describe("PUT /device/push-state", () => {
     expect(await phonePushRow(f)).toBeNull();
   });
 
-  test("the start token is stored with the time it was reported", async () => {
+  test("the start token is stored", async () => {
     const f = await setup();
     const response = await putPushState(f, {
       liveActivityStart: { token: START_TOKEN, enabled: true },
@@ -174,7 +174,7 @@ describe("PUT /device/push-state", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await phonePushRow(f)).toMatchObject({
       deviceId: f.phoneId,
-      liveActivityStart: { token: START_TOKEN, reportedAt: about(EIGHT + 5 * MIN) },
+      liveActivityStart: { token: START_TOKEN },
     });
   });
 
@@ -252,6 +252,19 @@ describe("PUT /device/push-state", () => {
       liveActivityStart: { token: START_TOKEN },
       widgetPush: { token: WIDGET_TOKEN },
     });
+  });
+
+  test("a repeated report leaves the stored row as it was", async () => {
+    const f = await setup();
+    const report = {
+      liveActivityStart: { token: START_TOKEN, enabled: true },
+      widgetPush: { token: WIDGET_TOKEN },
+    };
+    await putPushState(f, report);
+    const first = await phonePushRow(f);
+    vi.advanceTimersByTime(MIN);
+    await putPushState(f, report);
+    expect(await phonePushRow(f)).toEqual(first);
   });
 
   test("any report, even an empty one, clears the blind mark", async () => {
