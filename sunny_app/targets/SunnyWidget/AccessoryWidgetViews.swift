@@ -2,17 +2,13 @@ import SunnyWidgetCore
 import SwiftUI
 import WidgetKit
 
-enum AccessorySymbol {
-    static let task = "pill"
-}
-
 struct InlineAccessoryView: View {
     let content: WidgetContent
 
     var body: some View {
         switch content {
         case .due(let due):
-            Label(due.inlineText, systemImage: AccessorySymbol.task)
+            Label(due.inlineText, systemImage: due.symbolName)
         case .clear(let clear):
             if let next = clear.next {
                 ViewThatFits {
@@ -66,7 +62,7 @@ struct RectangularAccessoryView: View {
             switch content {
             case .due(let due):
                 HStack(spacing: WhenMetrics.accessory.gap) {
-                    Image(systemName: AccessorySymbol.task)
+                    Image(systemName: due.symbolName)
                         .font(.system(size: TypeStyle.accessoryWhen.size * scale, weight: .bold))
                     NowTag(metrics: .accessory, scale: scale, inks: inks)
                     StyledLine(text: due.time, style: .accessoryWhen, scale: scale, color: inks.text)
@@ -115,7 +111,7 @@ struct CircularAccessoryView: View {
             VStack(spacing: 2) {
                 switch content {
                 case .due(let due):
-                    Image(systemName: AccessorySymbol.task)
+                    Image(systemName: due.symbolName)
                         .font(.system(size: 20 * scale, weight: .bold))
                     StyledLine(text: due.time, style: style, scale: scale, color: .white)
                 case .clear(let clear):

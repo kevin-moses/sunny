@@ -1,0 +1,15 @@
+{
+  "headers": {
+    "authorization": "bearer PROVIDER_TOKEN",
+    "apns-topic": "com.kmsunny.sunny",
+    "apns-push-type": "background",
+    "apns-priority": "5",
+    "apns-expiration": "0",
+    "content-type": "application/json"
+  },
+  "payload": {
+    "aps": {
+      "content-available": 1
+    }
+  }
+}

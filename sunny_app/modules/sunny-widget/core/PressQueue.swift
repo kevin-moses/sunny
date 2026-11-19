@@ -2,6 +2,7 @@ import Foundation
 
 public enum PressVia: String, Codable, Sendable {
     case widget
+    case liveActivity = "live_activity"
 }
 
 public struct Press: Codable, Equatable, Sendable {

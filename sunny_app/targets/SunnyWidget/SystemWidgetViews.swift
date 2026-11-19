@@ -97,7 +97,14 @@ struct SystemWidgetView: View {
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(due.spokenSummary)
-                DoneKey(due: due, metrics: layout.key, width: box.width, scale: scale, inks: inks)
+                DoneKey(
+                    intent: ConfirmTaskIntent(instanceId: due.instanceId, step: due.step),
+                    due: due,
+                    metrics: layout.key,
+                    width: box.width,
+                    scale: scale,
+                    inks: inks
+                )
             case .clear(let clear):
                 EmptyWhenLine(metrics: layout.when, scale: scale)
                 wrapped(clear.headline, maxLines: layout.lineMaxLines, width: box.width, scale: scale)

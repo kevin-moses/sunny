@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import SunnyLiveActivity
 import SunnyWidgetCore
 import WidgetKit
 
@@ -25,15 +26,13 @@ public final class SunnyWidgetModule: Module {
             WidgetCenter.shared.reloadAllTimelines()
         }
 
-        AsyncFunction("clearCredentials") { () throws -> Bool in
+        AsyncFunction("clearCredentials") { () async throws -> Bool in
             guard let sync = WidgetSync.live() else { throw WidgetNotConfiguredException() }
-            let removed = try sync.clear()
-            if removed { WidgetCenter.shared.reloadAllTimelines() }
-            return removed
+            return try await PushStateReporter.shared.clear(sync).get()
         }
 
-        Function("reloadTimelines") {
-            WidgetCenter.shared.reloadAllTimelines()
+        AsyncFunction("syncSurfaces") { () async in
+            await PushStateReporter.shared.sync()
         }
 
         AsyncFunction("flushPresses") { () async throws -> String in

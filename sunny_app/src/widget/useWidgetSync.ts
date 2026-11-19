@@ -7,10 +7,10 @@ import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 import {
   clearWidget,
-  reloadWidget,
+  syncSurfaces,
   syncWidget,
   widgetHolderOf,
-  widgetReloadKey,
+  surfaceSyncKey,
 } from './widgetSync';
 
 export function useWidgetSync(decision: SessionDecision): void {
@@ -32,10 +32,10 @@ export function useWidgetSync(decision: SessionDecision): void {
   }, [holder]);
 }
 
-export function useWidgetReload(day: DayViewData | null): void {
-  const key = useMemo(() => widgetReloadKey(day), [day]);
+export function useSurfaceSync(day: DayViewData | null): void {
+  const key = useMemo(() => surfaceSyncKey(day), [day]);
 
   useEffect(() => {
-    if (key !== null) reloadWidget();
+    if (key !== null) syncSurfaces();
   }, [key]);
 }

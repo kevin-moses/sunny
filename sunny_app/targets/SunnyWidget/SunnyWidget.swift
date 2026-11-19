@@ -28,7 +28,9 @@ struct SunnyEntry: TimelineEntry {
                     time: time,
                     label: "Morning pills",
                     line: "Take your morning pills.",
-                    detail: "the small white ones"
+                    stepLine: nil,
+                    detail: "the small white ones",
+                    icon: .pills
                 )
             )
         )
@@ -63,6 +65,14 @@ struct SunnyWidget: Widget {
     static let kind = "SunnyToday"
 
     var body: some WidgetConfiguration {
+        if #available(iOS 26.0, *) {
+            return configuration.pushHandler(WidgetPushTokenHandler.self)
+        } else {
+            return configuration
+        }
+    }
+
+    private var configuration: some WidgetConfiguration {
         StaticConfiguration(kind: Self.kind, provider: SunnyProvider()) { entry in
             SunnyWidgetView(content: entry.content)
         }
@@ -77,5 +87,6 @@ struct SunnyWidget: Widget {
 struct SunnyWidgetBundle: WidgetBundle {
     var body: some Widget {
         SunnyWidget()
+        TaskLiveActivity()
     }
 }

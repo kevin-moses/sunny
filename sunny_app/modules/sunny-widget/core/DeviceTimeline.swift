@@ -10,7 +10,25 @@ public struct PressKey: Hashable, Codable, Sendable {
     }
 }
 
-public struct TaskCard: Equatable, Sendable {
+public enum TaskIcon: String, Codable, Sendable {
+    case pills
+    case calendar
+    case checklist
+    case bell
+    case clock
+
+    public static func symbolName(_ icon: TaskIcon?) -> String {
+        switch icon ?? .clock {
+        case .pills: return "pill"
+        case .calendar: return "calendar"
+        case .checklist: return "checklist"
+        case .bell: return "bell"
+        case .clock: return "clock"
+        }
+    }
+}
+
+public struct TaskCard: Hashable, Sendable {
     public let instanceId: String
     public let step: Int
     public let stepCount: Int
@@ -20,8 +38,26 @@ public struct TaskCard: Equatable, Sendable {
     public let detail: String?
     public let startsAt: Date
     public let endsAt: Date
+    public let icon: TaskIcon?
 
     public var key: PressKey { PressKey(instanceId: instanceId, step: step) }
+
+    public var isLastStep: Bool { step + 1 >= stepCount }
+
+    func advanced(stepText nextText: String?) -> TaskCard {
+        TaskCard(
+            instanceId: instanceId,
+            step: step + 1,
+            stepCount: stepCount,
+            stepText: presentText(nextText),
+            label: label,
+            sentence: sentence,
+            detail: detail,
+            startsAt: startsAt,
+            endsAt: endsAt,
+            icon: icon
+        )
+    }
 }
 
 public struct NextItem: Equatable, Sendable {
@@ -70,11 +106,15 @@ public struct DeviceTimeline: Equatable, Sendable {
     }
 }
 
-private func date(fromEpochMs value: Double) -> Date {
+func date(fromEpochMs value: Double) -> Date {
     Date(timeIntervalSince1970: value / 1000)
 }
 
-private func presentText(_ value: String?) -> String? {
+func epochMs(_ date: Date) -> Double {
+    (date.timeIntervalSince1970 * 1000).rounded()
+}
+
+func presentText(_ value: String?) -> String? {
     guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
     return value
 }
@@ -126,8 +166,7 @@ private struct WireSlice: Decodable {
 
 extension PhoneCard: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case kind, instanceId, step, stepCount, stepText, label, sentence, detail, startsAt, endsAt
-        case allDone, next
+        case kind, allDone, next
     }
 
     private struct WireNext: Decodable {
@@ -140,7 +179,7 @@ extension PhoneCard: Decodable {
         let kind = try container.decode(String.self, forKey: .kind)
         switch kind {
         case "task":
-            self = .task(try Self.decodeTask(container))
+            self = .task(try TaskCard(from: decoder))
         case "clear":
             let next = try container.decodeIfPresent(WireNext.self, forKey: .next)
             if let next, presentText(next.label) == nil {
@@ -156,8 +195,15 @@ extension PhoneCard: Decodable {
             throw TimelineError.unknownCardKind(kind)
         }
     }
+}
 
-    private static func decodeTask(_ container: KeyedDecodingContainer<CodingKeys>) throws -> TaskCard {
+extension TaskCard: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case instanceId, step, stepCount, stepText, label, sentence, detail, startsAt, endsAt, icon
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
         let step = try container.decode(Int.self, forKey: .step)
         let stepCount = try container.decode(Int.self, forKey: .stepCount)
         guard step >= 0, stepCount >= 1, step < stepCount else {
@@ -168,7 +214,7 @@ extension PhoneCard: Decodable {
         guard let label = presentText(try container.decode(String.self, forKey: .label)) else {
             throw TimelineError.invalid("task has no label")
         }
-        return TaskCard(
+        self.init(
             instanceId: instanceId,
             step: step,
             stepCount: stepCount,
@@ -177,7 +223,22 @@ extension PhoneCard: Decodable {
             sentence: presentText(try container.decodeIfPresent(String.self, forKey: .sentence)),
             detail: presentText(try container.decodeIfPresent(String.self, forKey: .detail)),
             startsAt: date(fromEpochMs: try container.decode(Double.self, forKey: .startsAt)),
-            endsAt: date(fromEpochMs: try container.decode(Double.self, forKey: .endsAt))
+            endsAt: date(fromEpochMs: try container.decode(Double.self, forKey: .endsAt)),
+            icon: (try container.decodeIfPresent(String.self, forKey: .icon)).flatMap(TaskIcon.init(rawValue:))
         )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(instanceId, forKey: .instanceId)
+        try container.encode(step, forKey: .step)
+        try container.encode(stepCount, forKey: .stepCount)
+        try container.encode(stepText, forKey: .stepText)
+        try container.encode(label, forKey: .label)
+        try container.encode(sentence, forKey: .sentence)
+        try container.encode(detail, forKey: .detail)
+        try container.encode(epochMs(startsAt), forKey: .startsAt)
+        try container.encode(epochMs(endsAt), forKey: .endsAt)
+        try container.encode(icon, forKey: .icon)
     }
 }

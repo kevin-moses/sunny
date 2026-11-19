@@ -23,6 +23,7 @@ enum Face: String {
     case literataBold = "Literata-Bold"
     case atkinsonBold = "AtkinsonHyperlegibleNext-Bold"
     case atkinsonExtraBold = "AtkinsonHyperlegibleNext-ExtraBold"
+    case atkinsonMedium = "AtkinsonHyperlegibleNext-Medium"
 }
 
 struct TypeStyle {
@@ -56,6 +57,14 @@ struct TypeStyle {
     static let accessoryLabel = TypeStyle(face: .literataBold, size: 22, lineHeight: 24)
     static let accessoryDetail = TypeStyle(face: .atkinsonBold, size: 13, lineHeight: 16)
     static let accessoryNotice = TypeStyle(face: .atkinsonBold, size: 15, lineHeight: 18)
+    static let bannerWhen = TypeStyle(face: .atkinsonExtraBold, size: 15, lineHeight: 20)
+    static let bannerLabel = TypeStyle(face: .literataBold, size: 24, lineHeight: 28)
+    static let bannerDetail = TypeStyle(face: .atkinsonMedium, size: 16, lineHeight: 20)
+    static let bannerDone = TypeStyle(face: .atkinsonBold, size: 26, lineHeight: 30)
+    static let islandWhen = TypeStyle(face: .atkinsonExtraBold, size: 17, lineHeight: 22)
+    static let islandSentence = TypeStyle(face: .literataBold, size: 22, lineHeight: 28)
+    static let islandDone = TypeStyle(face: .atkinsonBold, size: 26, lineHeight: 30)
+    static let compactTag = TypeStyle(face: .atkinsonExtraBold, size: 15, lineHeight: 18)
 }
 
 struct WhenMetrics {
@@ -77,6 +86,8 @@ struct WhenMetrics {
     static let medium = WhenMetrics(style: .mediumWhen, tagPaddingVertical: 3, tagPaddingHorizontal: 10, gap: 8)
     static let small = WhenMetrics(style: .smallWhen, tagPaddingVertical: 1, tagPaddingHorizontal: 6, gap: 6)
     static let accessory = WhenMetrics(style: .accessoryWhen, tagPaddingVertical: 1, tagPaddingHorizontal: 6, gap: 6)
+    static let banner = WhenMetrics(style: .bannerWhen, tagPaddingVertical: 2, tagPaddingHorizontal: 8, gap: 8)
+    static let island = WhenMetrics(style: .islandWhen, tagPaddingVertical: 2, tagPaddingHorizontal: 10, gap: 8)
 }
 
 struct KeyMetrics {
@@ -96,6 +107,8 @@ struct KeyMetrics {
 
     static let medium = KeyMetrics(style: .mediumDone, checkSize: 28, height: 48, gap: 8, cornerRadius: 16)
     static let small = KeyMetrics(style: .smallDone, checkSize: 24, height: 48, gap: 8, cornerRadius: 16)
+    static let banner = KeyMetrics(style: .bannerDone, checkSize: 26, height: 56, gap: 8, cornerRadius: 16 * 56 / 48)
+    static let island = KeyMetrics(style: .islandDone, checkSize: 28, height: 48, gap: 8, cornerRadius: 16)
 }
 
 enum Layout {
@@ -118,6 +131,14 @@ enum Layout {
     }
 }
 
+struct Glow {
+    let opacity: Double
+    let offsetY: CGFloat
+
+    static let key = Glow(opacity: 1, offsetY: 8)
+    static let island = Glow(opacity: 0.85, offsetY: 6)
+}
+
 struct Inks {
     let text: Color
     let tagFill: Color
@@ -126,7 +147,7 @@ struct Inks {
     let keyText: Color
     let keyOutline: Color?
     let panelFill: Color
-    let glows: Bool
+    let glow: Glow?
 
     static func forMode(_ mode: WidgetRenderingMode) -> Inks {
         mode == .fullColor ? .fullColor : .monochrome
@@ -140,7 +161,18 @@ struct Inks {
         keyText: Palette.paper,
         keyOutline: nil,
         panelFill: Palette.restingPanel,
-        glows: true
+        glow: .key
+    )
+
+    static let island = Inks(
+        text: .white,
+        tagFill: Palette.nowYellow,
+        tagText: Palette.ink,
+        keyFill: Palette.paper,
+        keyText: Palette.ink,
+        keyOutline: nil,
+        panelFill: Palette.restingPanel,
+        glow: .island
     )
 
     static let monochrome = Inks(
@@ -151,7 +183,7 @@ struct Inks {
         keyText: .white,
         keyOutline: .white,
         panelFill: .white.opacity(0.15),
-        glows: false
+        glow: nil
     )
 }
 

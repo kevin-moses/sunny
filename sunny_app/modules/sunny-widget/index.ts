@@ -6,7 +6,7 @@ export interface SunnyWidgetBridge {
   storedSiteUrl(): string | null;
   setCredentials(token: string, siteUrl: string): Promise<void>;
   clearCredentials(): Promise<boolean>;
-  reloadTimelines(): void;
+  syncSurfaces(): Promise<void>;
   flushPresses(): Promise<FlushResult>;
 }
 
