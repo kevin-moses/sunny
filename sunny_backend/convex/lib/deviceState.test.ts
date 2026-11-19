@@ -8,7 +8,8 @@ import {
   fnv1a64,
   todayRows,
 } from "./deviceState";
-import type { CueInput, DayEvent, DayTask, DeviceStateInput } from "./deviceState";
+import type { DayTask } from "./today";
+import type { CueInput, DayEvent, DeviceStateInput } from "./deviceState";
 import { taskStep } from "./taskSteps";
 import { ESCALATION_LADDER } from "./escalation";
 import type { EscalationStep } from "./escalation";

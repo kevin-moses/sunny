@@ -2,7 +2,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { householdWeek } from "../calendar";
 import { ANYTIME, compareDayOrder, isAnytimeInstance } from "./anytime";
-import { isDoneState, seniorCanConfirm } from "./confirmRule";
+import { isDoneState } from "./confirmRule";
 import {
   clockTime,
   cueSpeech,
@@ -13,13 +13,7 @@ import {
 } from "./deviceWording";
 import type { DeviceIcon } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
-import {
-  escalationSteps,
-  isOpenState,
-  isSnoozed,
-  seniorPromptCount,
-  upcomingPromptTimes,
-} from "./escalation";
+import { escalationSteps, isOpenState, isSnoozed, upcomingPromptTimes } from "./escalation";
 import type { EscalationStep, PromptTiming } from "./escalation";
 import { occurrenceJson } from "./occurrences";
 import type { OccurrenceJson } from "./occurrences";
@@ -34,10 +28,10 @@ import {
   partOfDay,
   weekdayName,
 } from "./time";
-import { stepIndex, taskStep } from "./taskSteps";
+import { stepIndex } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
-import { todayInstances } from "./today";
-import type { TodayEntry } from "./today";
+import { instanceDayTask, todayInstances } from "./today";
+import type { DayTask, TodayEntry } from "./today";
 
 export const MAX_TODAY_ROWS = 7;
 
@@ -56,25 +50,6 @@ function deviceTuning(): DeviceTuning {
     carousel: { pages: ["now", "today"], intervalMs: 45_000 },
   };
 }
-
-export type DayTask = Pick<
-  TodayEntry,
-  | "instanceId"
-  | "localDate"
-  | "type"
-  | "displayLabel"
-  | "spokenPrompt"
-  | "screenSentence"
-  | "pillDescription"
-  | "checklistItems"
-  | "step"
-  | "scheduledTime"
-  | "state"
-  | "carriedOver"
-  | "confirmable"
-  | "seniorPrompts"
-  | "snoozedUntil"
->;
 
 export type DayEvent = Pick<
   OccurrenceJson,
@@ -488,30 +463,6 @@ function taskLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<Doc<"tasks"
       cache.set(taskId, loaded);
     }
     return loaded;
-  };
-}
-
-export function instanceDayTask(
-  instance: Doc<"taskInstances">,
-  task: Doc<"tasks">,
-  now: number,
-): DayTask {
-  return {
-    instanceId: instance._id,
-    localDate: instance.localDate,
-    type: task.type,
-    displayLabel: task.displayLabel,
-    spokenPrompt: task.spokenPrompt,
-    screenSentence: task.screenSentence ?? null,
-    pillDescription: task.pillDescription ?? null,
-    checklistItems: task.checklistItems,
-    step: taskStep(task.checklistItems, instance.currentStep),
-    scheduledTime: instance.scheduledTime,
-    state: instance.state,
-    carriedOver: false,
-    confirmable: seniorCanConfirm(instance, now),
-    seniorPrompts: seniorPromptCount(instance.firedSteps),
-    snoozedUntil: instance.snoozedUntil ?? null,
   };
 }
 

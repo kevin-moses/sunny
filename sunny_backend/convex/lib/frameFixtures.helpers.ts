@@ -1,5 +1,6 @@
 import { buildDeviceState } from "./deviceState";
-import type { CueInput, DayEvent, DayTask, DeviceState, DeviceStateInput } from "./deviceState";
+import type { DayTask } from "./today";
+import type { CueInput, DayEvent, DeviceState, DeviceStateInput } from "./deviceState";
 import { DEFAULT_SCREEN } from "./frame";
 import { taskStep } from "./taskSteps";
 import { MINUTE_MS, zonedInstant } from "./time";

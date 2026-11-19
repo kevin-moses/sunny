@@ -6,13 +6,12 @@ import {
   canonicalJson,
   doneTarget,
   fnv1a64,
-  instanceDayTask,
   isDue,
   loadDeviceDay,
   nowCard,
   pickNext,
 } from "./deviceState";
-import type { DayEvent, DayTask, DeviceDay } from "./deviceState";
+import type { DayEvent, DeviceDay } from "./deviceState";
 import { taskIcon } from "./deviceWording";
 import { isOpenState } from "./escalation";
 import { stepIndex } from "./taskSteps";
@@ -26,7 +25,8 @@ import {
   offsetChanges,
   wallClockMs,
 } from "./time";
-import { shownOn } from "./today";
+import { instanceDayTask, shownOn } from "./today";
+import type { DayTask } from "./today";
 import type { ActivityCard, InstanceState } from "./validators";
 
 export const TIMELINE_HORIZON_MS = DAY_MS;
