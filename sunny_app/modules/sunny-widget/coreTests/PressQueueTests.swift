@@ -23,34 +23,49 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("staging").path), [])
     }
 
-    func testRemovingAPressDeletesOnlyItsFile() throws {
+    func testAnAnsweredPressLeavesTheQueueAndOnlyItsOwnFileGoes() throws {
         let queue = PressQueue(directory: try temporaryDirectory())
         let first = press("a")
         let second = press("b", at: 1)
         try queue.append(first)
         try queue.append(second)
-        queue.remove(first.id)
+        queue.answered(first.id, at: start.addingTimeInterval(2))
         XCTAssertEqual(queue.pending(), [second])
     }
 
-    func testRecordsThePressedMarkAndKeepsItAfterSending() throws {
+    func testRecordsThePressedMarkAndKeepsItAfterTheAnswer() throws {
         let queue = PressQueue(directory: try temporaryDirectory())
         let sent = press("a")
         try queue.append(sent)
-        queue.remove(sent.id)
+        queue.answered(sent.id, at: start.addingTimeInterval(1))
         XCTAssertEqual(queue.pressed(), [sent.key])
     }
 
-    func testReconcileDropsMarksOfSentPressesMadeBeforeTheFetch() throws {
+    func testReconcileDropsOnlyMarksWhosePressWasAnsweredBeforeTheFetchStarted() throws {
         let queue = PressQueue(directory: try temporaryDirectory())
-        let sent = press("sent")
+        let answeredBefore = press("answered-before")
+        let answeredAfter = press("answered-after")
         let waiting = press("waiting", at: 1)
         let duringFetch = press("during", at: 30)
-        for item in [sent, waiting, duringFetch] { try queue.append(item) }
-        queue.remove(sent.id)
-        queue.remove(duringFetch.id)
+        for item in [answeredBefore, answeredAfter, waiting, duringFetch] { try queue.append(item) }
+        queue.answered(answeredBefore.id, at: start.addingTimeInterval(10))
+        queue.answered(answeredAfter.id, at: start.addingTimeInterval(25))
+        queue.answered(duringFetch.id, at: start.addingTimeInterval(31))
         queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(20))
-        XCTAssertEqual(queue.pressed(), [waiting.key, duringFetch.key])
+        XCTAssertEqual(queue.pressed(), [answeredAfter.key, waiting.key, duringFetch.key])
+    }
+
+    func testReconcileDropsAMarkThatNoAnswerCanReachAfterItsLifetime() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let marks = directory.appendingPathComponent("marks")
+        try FileManager.default.createDirectory(at: marks, withIntermediateDirectories: true)
+        let orphan = PressedMark(key: PressKey(instanceId: "orphan", step: 0), at: start)
+        try JSONEncoder().encode(orphan).write(to: marks.appendingPathComponent("\(UUID().uuidString).json"))
+        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime))
+        XCTAssertEqual(queue.pressed(), [orphan.key])
+        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime + 1))
+        XCTAssertEqual(queue.pressed(), [])
     }
 
     func testDropsUnreadableFiles() throws {

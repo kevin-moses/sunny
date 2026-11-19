@@ -163,6 +163,41 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(queue.pending(), [])
     }
 
+    func testAPressAnsweredAfterTheFetchStartedStaysHidden() async throws {
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        try queue.append(Press(instanceId: "inst-old", step: 0, via: .widget, pressedAt: clock.now))
+        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()])
+        let appProcess = makeSync()
+        let widgetProcess = makeSync()
+        let clock = self.clock!
+        let directory = self.directory!
+        transport.beforeReply(to: "/device/confirm") {
+            clock.advance(1)
+            try? PressQueue(directory: directory).append(
+                Press(instanceId: "inst-morning-pills", step: 0, via: .liveActivity, pressedAt: clock.now)
+            )
+            clock.advance(1)
+        }
+        transport.queueConfirm(200, body: confirmed)
+        transport.beforeReply(to: "/device/timeline") {
+            clock.advance(1)
+            _ = await appProcess.replayPresses(timeout: 1)
+        }
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        transport.queueConfirm(200, body: confirmed)
+        let plan = await widgetProcess.refresh(locale: Fixture.unitedStates)
+        XCTAssertEqual(queue.pending(), [])
+        guard case .clear = firstContent(plan) else {
+            return XCTFail("a timeline the server built before it applied the press shows the task as due again")
+        }
+        clock.advance(10)
+        transport.queueTimeline(200, body: try Fixture.data("all-done"))
+        let later = await makeSync().refresh(locale: Fixture.unitedStates)
+        XCTAssertEqual(queue.pressed(), [])
+        guard case .clear = firstContent(later) else { return XCTFail("the next fetch shows the server's day") }
+    }
+
     func testRefusedPressIsDroppedAndTheTaskReturnsWithTheFreshTimeline() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)

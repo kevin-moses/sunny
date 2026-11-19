@@ -82,7 +82,7 @@ public struct WidgetSync: Sendable {
             let outcome = await client.confirm(press, at: clock(), timeout: timeout)
             switch PressReplay.decision(for: outcome) {
             case .drop:
-                storage.presses.remove(press.id)
+                storage.presses.answered(press.id, at: clock())
             case .keepAndStop:
                 return .pending
             case .keepAndStopUnauthorized:

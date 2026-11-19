@@ -123,7 +123,23 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
     private var timelineReplies: [Reply?] = []
     private var confirmReplies: [Reply?] = []
     private var pushStateReplies: [Reply?] = []
+    private var hooks: [String: [@Sendable () async -> Void]] = [:]
     private(set) var requests: [RecordedRequest] = []
+
+    func beforeReply(to path: String, _ hook: @escaping @Sendable () async -> Void) {
+        lock.lock()
+        hooks[path, default: []].append(hook)
+        lock.unlock()
+    }
+
+    private func takeHook(for path: String) -> (@Sendable () async -> Void)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var waiting = hooks[path], !waiting.isEmpty else { return nil }
+        let hook = waiting.removeFirst()
+        hooks[path] = waiting
+        return hook
+    }
 
     func queueTimeline(_ status: Int, body: Data = Data(), headers: [String: String] = [:]) {
         lock.lock()
@@ -175,6 +191,7 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let url = try XCTUnwrap(request.url)
+        if let hook = takeHook(for: url.path) { await hook() }
         let reply: Reply? = try {
             lock.lock()
             defer { lock.unlock() }
