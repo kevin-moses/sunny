@@ -116,6 +116,7 @@ export default defineSchema({
     title: v.string(),
     displayLabel: v.string(),
     spokenPrompt: v.string(),
+    screenSentence: v.optional(v.string()),
     pillDescription: v.optional(v.string()),
     checklistItems: v.array(v.string()),
     times: v.array(v.string()),

@@ -24,6 +24,7 @@ export function fixtureTask(
     type: "routine",
     displayLabel: label,
     spokenPrompt: `Time for ${label}.`,
+    screenSentence: null,
     pillDescription: null,
     checklistItems: [],
     step: taskStep(items, 0),

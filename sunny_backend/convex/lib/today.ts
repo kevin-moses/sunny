@@ -18,6 +18,7 @@ export interface TodayEntry {
   type: TaskType;
   displayLabel: string;
   spokenPrompt: string;
+  screenSentence: string | null;
   pillDescription: string | null;
   checklistItems: string[];
   step: TaskStep | null;
@@ -119,6 +120,7 @@ export async function todayInstances(
       type: task.type,
       displayLabel: task.displayLabel,
       spokenPrompt: task.spokenPrompt,
+      screenSentence: task.screenSentence ?? null,
       pillDescription: task.pillDescription ?? null,
       checklistItems: task.checklistItems,
       step: taskStep(task.checklistItems, instance.currentStep),

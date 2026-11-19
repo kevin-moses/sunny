@@ -748,6 +748,7 @@ describe("add_task", () => {
       title: "Morning pills",
       display_label: "Morning pills",
       spoken_prompt: "Time for Morning pills.",
+      screen_sentence: null,
       times: ["08:00"],
       anytime: false,
       repeat_weekdays: null,
@@ -761,6 +762,22 @@ describe("add_task", () => {
       alerts_caregivers: true,
       active: true,
     });
+  });
+
+  test("add_task stores a screen sentence and returns it", async () => {
+    const { t, a } = await makeWorld();
+    const result = await tool(t, a, "add_task", {
+      ...PILLS,
+      screen_sentence: "  Take your morning pills.  ",
+    });
+    expect(JSON.parse(result.text).screen_sentence).toBe("Take your morning pills.");
+    expect((await readTasks(t)).tasks[0]!.screenSentence).toBe("Take your morning pills.");
+  });
+
+  test("a blank screen_sentence on add_task is stored as absent", async () => {
+    const { t, a } = await makeWorld();
+    await tool(t, a, "add_task", { ...PILLS, screen_sentence: "   " });
+    expect((await readTasks(t)).tasks[0]!.screenSentence).toBeUndefined();
   });
 
   test("maps every field", async () => {
@@ -1089,6 +1106,47 @@ describe("update_task", () => {
     expect(JSON.parse(result.text).spoken_prompt).toBe("Time for Morning pills.");
   });
 
+  test("a changed display_label clears the screen sentence", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, { ...PILLS, screen_sentence: "Take your morning pills." });
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { display_label: "Pills" },
+    });
+    expect(JSON.parse(result.text).screen_sentence).toBeNull();
+    expect((await readTasks(t)).tasks[0]!.screenSentence).toBeUndefined();
+  });
+
+  test("a new display_label with a new screen_sentence keeps the new one", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, { ...PILLS, screen_sentence: "Take your morning pills." });
+    const result = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { display_label: "Pills", screen_sentence: " Take your pills. " },
+    });
+    expect(JSON.parse(result.text).screen_sentence).toBe("Take your pills.");
+  });
+
+  test("other changes keep the screen sentence, and null or blank clears it", async () => {
+    const { t, a } = await makeWorld();
+    const id = await addTask(t, a, { ...PILLS, screen_sentence: "Take your morning pills." });
+    const kept = await tool(t, a, "update_task", { task_id: id, changes: { times: ["09:00"] } });
+    expect(JSON.parse(kept.text).screen_sentence).toBe("Take your morning pills.");
+    const stopped = await tool(t, a, "stop_task", { task_id: id });
+    expect(JSON.parse(stopped.text).screen_sentence).toBe("Take your morning pills.");
+    const nulled = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { screen_sentence: null },
+    });
+    expect(JSON.parse(nulled.text).screen_sentence).toBeNull();
+    await tool(t, a, "update_task", { task_id: id, changes: { screen_sentence: "Walk." } });
+    const blank = await tool(t, a, "update_task", {
+      task_id: id,
+      changes: { screen_sentence: "  " },
+    });
+    expect(JSON.parse(blank.text).screen_sentence).toBeNull();
+  });
+
   test("active true resumes a stopped task and brings back its instances", async () => {
     const { t, a } = await makeWorld();
     const id = await addTask(t, a);
@@ -1389,6 +1447,7 @@ describe("add_task size caps", () => {
     ["too many checklist items", { checklist_items: Array.from({ length: 51 }, () => "x") }],
     ["a long checklist item", { checklist_items: ["x".repeat(201)] }],
     ["a long spoken prompt", { spoken_prompt: "x".repeat(301) }],
+    ["a long screen sentence", { screen_sentence: "x".repeat(61) }],
     ["a long pill description", { pill_description: "x".repeat(201) }],
   ])("refuses %s", async (_name, extra) => {
     const { t, a } = await makeWorld();

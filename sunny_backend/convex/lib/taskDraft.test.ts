@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { TASK_CAPS, clippedLabel } from "./taskDraft";
+import { TASK_CAPS, clippedLabel, validateDraft } from "./taskDraft";
+import type { TaskDraft } from "./taskDraft";
 
 describe("clippedLabel", () => {
   test("keeps a label that fits", () => {
@@ -31,5 +32,43 @@ describe("clippedLabel", () => {
   test("never leaves half of a surrogate pair before the ellipsis", () => {
     const label = clippedLabel(`${"x".repeat(58)}\u{1F600}${"y".repeat(10)}`);
     expect(label).toBe(`${"x".repeat(58)}…`);
+  });
+});
+
+describe("validateDraft screen sentence", () => {
+  const draft: TaskDraft = {
+    type: "routine",
+    title: "Walk",
+    displayLabel: "Walk",
+    spokenPrompt: "",
+    checklistItems: [],
+    times: ["09:00"],
+    windowMinutes: 60,
+    highPriority: false,
+    active: true,
+  };
+
+  test("trims the sentence", () => {
+    expect(validateDraft({ ...draft, screenSentence: "  Go for a walk.  " }).screenSentence).toBe(
+      "Go for a walk.",
+    );
+  });
+
+  test("stores a blank sentence as absent", () => {
+    expect(validateDraft({ ...draft, screenSentence: "   " }).screenSentence).toBeUndefined();
+    expect(validateDraft(draft).screenSentence).toBeUndefined();
+  });
+
+  test("accepts the cap and refuses one character more", () => {
+    const longest = "x".repeat(TASK_CAPS.screenSentence);
+    expect(validateDraft({ ...draft, screenSentence: longest }).screenSentence).toBe(longest);
+    expect(() => validateDraft({ ...draft, screenSentence: `${longest}x` })).toThrow();
+  });
+
+  test("measures the cap after trimming", () => {
+    const padded = ` ${"x".repeat(TASK_CAPS.screenSentence)} `;
+    expect(validateDraft({ ...draft, screenSentence: padded }).screenSentence).toHaveLength(
+      TASK_CAPS.screenSentence,
+    );
   });
 });

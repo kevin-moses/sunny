@@ -64,6 +64,7 @@ export type DayTask = Pick<
   | "type"
   | "displayLabel"
   | "spokenPrompt"
+  | "screenSentence"
   | "pillDescription"
   | "checklistItems"
   | "step"
@@ -117,6 +118,7 @@ export interface NowTask {
   instanceId: Id<"taskInstances">;
   type: TodayEntry["type"];
   label: string;
+  sentence: string | null;
   time: string;
   icon: DeviceIcon;
   question: string;
@@ -239,6 +241,11 @@ export function buildAgenda(tasks: DayTask[], events: DayEvent[]): AgendaItem[] 
   });
 }
 
+function withoutPhoneOnlyFields(now: NowCard): NowCard {
+  if (now.task === null) return now;
+  return { ...now, task: { ...now.task, sentence: null } };
+}
+
 export function nowCard(
   tasks: DayTask[],
   target: DayTask | null,
@@ -252,6 +259,7 @@ export function nowCard(
         instanceId: target.instanceId,
         type: target.type,
         label: target.displayLabel,
+        sentence: target.screenSentence,
         time: clockTime(target.scheduledTime),
         icon: taskIcon(target.type),
         question: doneQuestion(target.type),
@@ -441,7 +449,7 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
     dateLabel: content.dateLabel,
     fullDate: content.fullDate,
     header: content.header,
-    now: content.now,
+    now: withoutPhoneOnlyFields(content.now),
     done: content.done,
     nextUp: content.nextUp,
     nextUpAfterDue: content.nextUpAfterDue,
