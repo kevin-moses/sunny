@@ -23,7 +23,7 @@ import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
 import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError, revokeRefreshToken } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
 import { AccessTokens, scheduleGrantRevoke } from "./lib/googleTokens";
-import { mailPool } from "./lib/mailPool";
+import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import { SecretUnreadable, encryptSecret } from "./lib/secretBox";
 import { DAY_MS } from "./lib/time";
@@ -85,13 +85,15 @@ async function insertUnseen(
       )
       .unique();
     if (existing) continue;
-    await ctx.db.insert("mailItems", {
+    const itemId = await ctx.db.insert("mailItems", {
       householdId,
       account,
       gmailId,
       state: "queued",
       attempt: 0,
+      leaseUntil: Date.now() + TRIAGE_PICKUP_MS,
     });
+    await enqueueTriage(ctx, itemId);
     inserted += 1;
   }
   return inserted;
@@ -279,26 +281,25 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
+export function mailboxFailure(e: unknown): { status: "revoked" | "error"; error: string } | null {
+  if (e instanceof SecretUnreadable) return { status: "error", error: UNREADABLE_MESSAGE };
+  if (e instanceof GoogleAccessRevoked) return { status: "revoked", error: REVOKED_MESSAGE };
+  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
+    return { status: "error", error: FORBIDDEN_MESSAGE };
+  }
+  return null;
+}
+
 async function settlePollError(
   ctx: ActionCtx,
   mailboxId: Id<"mailboxes">,
   e: unknown,
 ): Promise<PollOutcome> {
-  const mark = async (status: "revoked" | "error", error: string): Promise<void> => {
-    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId, status, error });
-  };
   if (e instanceof ConfigError) throw new NonRetryableError(e.message, { cause: e });
-  if (e instanceof SecretUnreadable) {
-    await mark("error", UNREADABLE_MESSAGE);
-    return "failed";
-  }
-  if (e instanceof GoogleAccessRevoked) {
-    await mark("revoked", REVOKED_MESSAGE);
-    return "revoked";
-  }
-  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
-    await mark("error", FORBIDDEN_MESSAGE);
-    return "failed";
+  const failure = mailboxFailure(e);
+  if (failure !== null) {
+    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId, ...failure });
+    return failure.status === "revoked" ? "revoked" : "failed";
   }
   if (e instanceof GoogleApiError && !e.retryable && e.status !== 401) {
     console.error(`Gmail poll ended without retry (${e.status}): ${e.message}`);
