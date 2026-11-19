@@ -194,7 +194,7 @@ export async function dropConnection(
     .collect();
   for (const sync of syncs) await ctx.db.delete(sync._id);
   await ctx.db.delete(connectionId);
-  await scheduleGrantRevoke(ctx, connection.refreshToken);
+  await scheduleGrantRevoke(ctx, connection.refreshToken, connection.accountEmail ?? null);
 }
 
 export async function dropMemberConnections(

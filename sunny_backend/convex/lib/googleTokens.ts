@@ -1,6 +1,6 @@
 import { internal } from "../_generated/api";
-import type { MutationCtx } from "../_generated/server";
-import { GoogleApiError, refreshAccessToken } from "./google";
+import type { ActionCtx, MutationCtx } from "../_generated/server";
+import { GoogleApiError, refreshAccessToken, revokeRefreshToken } from "./google";
 import { decryptSecret, encryptSecret } from "./secretBox";
 
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
@@ -63,11 +63,29 @@ export class AccessTokens {
   }
 }
 
+export function googleAccount(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 export async function scheduleGrantRevoke(
   ctx: MutationCtx,
   encryptedRefreshToken: string,
+  accountEmail: string | null,
 ): Promise<void> {
   await ctx.scheduler.runAfter(0, internal.googleOauth.revokeGrant, {
     refreshToken: encryptedRefreshToken,
+    accountEmail,
   });
+}
+
+export async function revokeUnusedGrant(
+  ctx: ActionCtx,
+  refreshToken: string,
+  accountEmail: string | null,
+): Promise<boolean> {
+  if (accountEmail === null) return false;
+  const inUse = await ctx.runQuery(internal.googleOauth.accountInUse, {
+    accountEmail: googleAccount(accountEmail),
+  });
+  return inUse ? false : await revokeRefreshToken(refreshToken);
 }

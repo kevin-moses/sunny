@@ -279,7 +279,8 @@ export default defineSchema({
     lastError: v.optional(v.string()),
   })
     .index("by_household_status", ["householdId", "status"])
-    .index("by_household_user", ["householdId", "userId"]),
+    .index("by_household_user", ["householdId", "userId"])
+    .index("by_account", ["accountEmail"]),
 
   calendarEventLinks: defineTable({
     eventId: v.id("events"),
@@ -316,7 +317,8 @@ export default defineSchema({
     lastError: v.optional(v.string()),
   })
     .index("by_household", ["householdId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_account", ["accountEmail"]),
 
   mailItems: defineTable({
     householdId: v.id("households"),

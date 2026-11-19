@@ -723,6 +723,101 @@ describe("mailboxStatus and disconnect", () => {
   });
 });
 
+async function runScheduledRevokes(t: TestConvex): Promise<void> {
+  const pending = await t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+      (r) => r.state.kind === "pending" && r.name === "googleOauth:revokeGrant",
+    ),
+  );
+  for (const row of pending) {
+    await t.action(internal.googleOauth.revokeGrant, row.args[0]);
+  }
+}
+
+describe("Revoking Google grants", () => {
+  test("reconnecting the same Google account revokes nothing", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addMailbox(t, householdId);
+    googleMocks.exchangeCode.mockResolvedValue({
+      ...grant([GMAIL_SCOPE]),
+      email: "margaret@example.com",
+    });
+    await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+    await runScheduledRevokes(t);
+    expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("reconnecting another Google account revokes the old grant", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addMailbox(t, householdId);
+    googleMocks.exchangeCode.mockResolvedValue({
+      ...grant([GMAIL_SCOPE]),
+      email: "mom@example.com",
+    });
+    gmailMocks.getProfile.mockResolvedValue({ email: "mom@example.com", historyId: "900" });
+    await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+    await runScheduledRevokes(t);
+    expect(googleMocks.revokeRefreshToken.mock.calls).toEqual([["refresh-1"]]);
+  });
+
+  test("a refused mailbox flow for an account that holds a calendar connection revokes nothing", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addConnection(t, householdId);
+    googleMocks.exchangeCode.mockResolvedValue({
+      ...grant(["openid", "email"]),
+      email: "anna@example.com",
+    });
+    const res = await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+    expect(res.status).toBe(400);
+    expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("a refused grant whose account Sunny cannot tell is not revoked", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    googleMocks.exchangeCode.mockResolvedValue({ ...grant(["openid"]), email: null });
+    const res = await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+    expect(res.status).toBe(400);
+    expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("disconnecting a mailbox whose account also holds a calendar connection revokes nothing", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addConnection(t, householdId);
+    const mailboxId = await addMailbox(t, householdId, { accountEmail: "Anna@Example.com" });
+    await t.withIdentity({ subject: "user_a" }).mutation(api.gmail.disconnect, { mailboxId });
+    await runScheduledRevokes(t);
+    expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("disconnecting the last connection of an account revokes its grant", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    await t.withIdentity({ subject: "user_a" }).mutation(api.gmail.disconnect, { mailboxId });
+    await runScheduledRevokes(t);
+    expect(googleMocks.revokeRefreshToken.mock.calls).toEqual([["refresh-1"]]);
+  });
+
+  test("reconnecting the calendar with the same Google account revokes nothing", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addConnection(t, householdId);
+    googleMocks.exchangeCode.mockResolvedValue({
+      ...grant([CALENDAR_SCOPE]),
+      email: "anna@example.com",
+    });
+    googleMocks.calendarExists.mockResolvedValue(true);
+    await finish(t, await startFlow(t, householdId, "user_a", "calendar"));
+    await runScheduledRevokes(t);
+    expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+});
+
 async function addMemberViewer(t: TestConvex, householdId: Id<"households">): Promise<void> {
   await addMember(t, householdId, "user_viewer", "viewer");
 }

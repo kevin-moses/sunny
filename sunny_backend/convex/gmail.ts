@@ -24,9 +24,14 @@ import { audit } from "./lib/audit";
 import { postMailbox } from "./lib/chatPosts";
 import { ConfigError, appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
-import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError, revokeRefreshToken } from "./lib/google";
+import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
-import { AccessTokens, scheduleGrantRevoke } from "./lib/googleTokens";
+import {
+  AccessTokens,
+  googleAccount,
+  revokeUnusedGrant,
+  scheduleGrantRevoke,
+} from "./lib/googleTokens";
 import { pushToCaregivers } from "./lib/mailEffects";
 import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
@@ -139,7 +144,7 @@ export const saveMailbox = internalMutation({
     }
     const fields = {
       connectedBy: args.userId,
-      accountEmail: args.accountEmail,
+      accountEmail: googleAccount(args.accountEmail),
       refreshToken: args.refreshToken,
       accessToken: undefined,
       accessTokenExpiresAt: undefined,
@@ -157,7 +162,7 @@ export const saveMailbox = internalMutation({
     if (existing) {
       await ctx.db.patch(existing._id, fields);
       if (existing.refreshToken !== args.refreshToken) {
-        await scheduleGrantRevoke(ctx, existing.refreshToken);
+        await scheduleGrantRevoke(ctx, existing.refreshToken, existing.accountEmail);
       }
       mailboxId = existing._id;
     } else {
@@ -184,7 +189,7 @@ export async function finishMailbox(
   tokens: GoogleGrant,
 ): Promise<Response> {
   if (!tokens.scopes.includes(GMAIL_SCOPE)) {
-    await revokeRefreshToken(tokens.refreshToken);
+    await revokeUnusedGrant(ctx, tokens.refreshToken, tokens.email);
     return oauthPage(
       "Permission needed",
       "Sunny needs permission to read the mailbox. Start again and allow it.",
@@ -495,7 +500,7 @@ export const disconnect = mutation({
       detail: { userId },
     });
     await ctx.db.delete(mailboxId);
-    await scheduleGrantRevoke(ctx, mailbox.refreshToken);
+    await scheduleGrantRevoke(ctx, mailbox.refreshToken, mailbox.accountEmail);
     return null;
   },
 });
