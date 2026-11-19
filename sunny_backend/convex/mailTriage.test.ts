@@ -512,13 +512,29 @@ describe("the item lifecycle", () => {
     });
   });
 
-  test("revoked access during triage marks the mailbox and returns the row to the queue", async () => {
+  test("revoked access during triage marks the mailbox once and notifies once", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());
+    const otherId = await receive(h, clinic());
     googleMocks.refreshAccessToken.mockRejectedValue(new GoogleAccessRevoked("invalid_grant"));
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("mailbox_lost");
+    expect(await h.t.action(internal.mailTriage.triage, { itemId: otherId })).toBe("skipped");
+    await h.t.mutation(internal.gmail.markMailbox, {
+      mailboxId: h.mailboxId,
+      status: "error",
+      error: "again",
+    });
     const mailbox = await h.t.run(async (ctx) => await ctx.db.get(h.mailboxId));
     expect(mailbox).toMatchObject({ status: "revoked" });
+    const posts = await rows(h, "chatPosts");
+    expect(posts.map((p) => [p.kind, p.body])).toEqual([
+      ["mailbox", `Sunny can no longer read ${MAILBOX}. Reconnect Gmail to keep mail coming in.`],
+    ]);
+    const pushes = await rows(h, "notificationOutbox");
+    expect(pushes.map((p) => [p.kind, p.title])).toEqual(
+      Array.from({ length: 3 }, () => ["mail_escalation", "Reconnect Gmail for Mom"]),
+    );
+    expect((await item(h, otherId)).state).toBe("failed");
     expect((await item(h, itemId)).state).toBe("queued");
     vi.setSystemTime(NOW + 16 * MINUTE);
     await h.t.mutation(internal.mailTriage.sweepStuck, {});

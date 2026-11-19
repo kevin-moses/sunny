@@ -87,7 +87,7 @@ async function setPaused(t: TestConvex, householdId: Id<"households">, paused: b
   await t.run(async (ctx) => ctx.db.patch(householdId, { backgroundPaused: paused }));
 }
 
-function history(ids: string[], lastHistoryId: string, next: string | null = null) {
+function history(ids: string[], lastHistoryId: string | null, next: string | null = null) {
   return { ids, lastHistoryId, next };
 }
 
@@ -135,6 +135,17 @@ describe("Connecting a mailbox", () => {
       new URL(flow.res.headers.get("Location")!).searchParams.get("scope");
     expect(scope(mailbox)).toBe(`openid email ${GMAIL_SCOPE}`);
     expect(scope(calendar)).toBe(`openid email ${CALENDAR_SCOPE}`);
+  });
+
+  test("the mailbox consent link makes Google ask which account to connect", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const prompt = (flow: { res: Response }) =>
+      new URL(flow.res.headers.get("Location")!).searchParams.get("prompt");
+    expect(prompt(await startFlow(t, householdId, "user_a", "mailbox"))).toBe(
+      "consent select_account",
+    );
+    expect(prompt(await startFlow(t, householdId, "user_a", "calendar"))).toBe("consent");
   });
 
   test("a grant without the Gmail scope is refused and revoked", async () => {
@@ -259,6 +270,20 @@ describe("Connecting a mailbox", () => {
     expect(rows[0]!.lastError).toBeUndefined();
     expect(rows[0]!.accessToken).toBeUndefined();
     expect(await pendingScheduled(t)).toContain("googleOauth:revokeGrant");
+  });
+
+  test("connecting posts in the caregiver chat which address Sunny now reads", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    googleMocks.exchangeCode.mockResolvedValue(grant([GMAIL_SCOPE]));
+    await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+    const posts = await t.run(async (ctx) => await ctx.db.query("chatPosts").collect());
+    expect(posts.map((p) => [p.kind, p.body])).toEqual([
+      ["mailbox", "Sunny now reads margaret@example.com."],
+    ]);
+    expect(await t.run(async (ctx) => await ctx.db.query("notificationOutbox").collect())).toEqual(
+      [],
+    );
   });
 
   test("connecting twice with overlapping backfills never duplicates a message", async () => {
@@ -410,6 +435,36 @@ describe("Polling", () => {
     ]);
     expect((await itemRows(t)).map((i) => i.gmailId)).toEqual(["p1", "p2", "p3"]);
     expect((await mailboxRows(t))[0]!.historyId).toBe("103");
+  });
+
+  test("empty pages with more to read leave the cursor at the last record read", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    gmailMocks.listHistory
+      .mockResolvedValueOnce(history(["a"], "120", "token-1"))
+      .mockResolvedValueOnce(history([], null, "token-2"))
+      .mockResolvedValueOnce(history([], null, "token-3"));
+
+    await t.action(internal.gmail.poll, { mailboxId });
+
+    expect((await itemRows(t)).map((i) => i.gmailId)).toEqual(["a"]);
+    expect((await mailboxRows(t))[0]!.historyId).toBe("120");
+  });
+
+  test("a poll that reads only empty pages recovers from the recent list instead of stalling", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId, { lastPolledAt: Date.now() - DAY_MS });
+    gmailMocks.listHistory.mockResolvedValue(history([], null, "more"));
+    gmailMocks.getProfile.mockResolvedValue({ email: "margaret@example.com", historyId: "500" });
+    gmailMocks.listRecent.mockResolvedValue(["r1"]);
+
+    expect(await t.action(internal.gmail.poll, { mailboxId })).toBe("recovered");
+
+    expect(gmailMocks.listHistory).toHaveBeenCalledTimes(3);
+    expect((await itemRows(t)).map((i) => i.gmailId)).toEqual(["r1"]);
+    expect((await mailboxRows(t))[0]!.historyId).toBe("500");
   });
 
   test("a poll stops paging once it holds 100 ids", async () => {
@@ -632,6 +687,28 @@ describe("mailboxStatus and disconnect", () => {
     });
     expect(await mailboxRows(t)).toHaveLength(1);
     expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("disconnect keeps the mail items so a reconnect does not triage them again", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    await t.mutation(internal.gmail.recordNew, {
+      mailboxId,
+      ids: ["a"],
+      expectedHistoryId: "100",
+      lastHistoryId: "110",
+    });
+    await t.withIdentity({ subject: "user_a" }).mutation(api.gmail.disconnect, { mailboxId });
+    expect((await itemRows(t)).map((i) => i.gmailId)).toEqual(["a"]);
+    const again = await addMailbox(t, householdId);
+    await t.mutation(internal.gmail.recordNew, {
+      mailboxId: again,
+      ids: ["a", "b"],
+      expectedHistoryId: "100",
+      lastHistoryId: "120",
+    });
+    expect((await itemRows(t)).map((i) => i.gmailId)).toEqual(["a", "b"]);
   });
 
   test("disconnecting the mailbox leaves the caregiver's calendar connection alone", async () => {

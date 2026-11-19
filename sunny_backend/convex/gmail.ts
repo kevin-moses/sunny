@@ -13,17 +13,20 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import {
   EDITOR_ROLES,
   findMember,
+  loadHousehold,
   requireCaregiverAccount,
   requireCaregiverMember,
   requireCaregiverReader,
   SYSTEM_ACTOR,
 } from "./lib/access";
 import { audit } from "./lib/audit";
+import { postMailbox } from "./lib/chatPosts";
 import { ConfigError, appError } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
 import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError, revokeRefreshToken } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
 import { AccessTokens, scheduleGrantRevoke } from "./lib/googleTokens";
+import { pushToCaregivers } from "./lib/mailEffects";
 import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import { SecretUnreadable, encryptSecret } from "./lib/secretBox";
@@ -159,6 +162,8 @@ export const saveMailbox = internalMutation({
       mailboxId = await ctx.db.insert("mailboxes", { householdId: args.householdId, ...fields });
     }
     await insertUnseen(ctx, args.householdId, args.accountEmail, args.ids);
+    const household = await loadHousehold(ctx, args.householdId);
+    await postMailbox(ctx, household, `Sunny now reads ${args.accountEmail}.`, Date.now());
     await audit(ctx, {
       householdId: args.householdId,
       actor: SYSTEM_ACTOR,
@@ -240,14 +245,24 @@ export const markMailbox = internalMutation({
     error: v.string(),
   },
   handler: async (ctx, { mailboxId, status, error }): Promise<null> => {
-    if (await ctx.db.get(mailboxId)) {
-      await ctx.db.patch(mailboxId, {
-        status,
-        error: error.slice(0, 2000),
-        accessToken: undefined,
-        accessTokenExpiresAt: undefined,
-      });
-    }
+    const mailbox = await ctx.db.get(mailboxId);
+    if (!mailbox || mailbox.status !== "active") return null;
+    await ctx.db.patch(mailboxId, {
+      status,
+      error: error.slice(0, 2000),
+      accessToken: undefined,
+      accessTokenExpiresAt: undefined,
+    });
+    const household = await ctx.db.get(mailbox.householdId);
+    if (!household) return null;
+    const body = `Sunny can no longer read ${mailbox.accountEmail}. Reconnect Gmail to keep mail coming in.`;
+    await postMailbox(ctx, household, body, Date.now());
+    await pushToCaregivers(ctx, household, {
+      kind: "mail_escalation",
+      title: `Reconnect Gmail for ${household.seniorPreferredName}`,
+      body,
+      payload: { mailboxId },
+    });
     return null;
   },
 });
@@ -285,7 +300,7 @@ async function recoverRecent(tokens: AccessTokens, lastPolledAt: number | null):
 
 async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered> {
   const ids = new Set<string>();
-  let lastHistoryId = start.historyId;
+  let lastHistoryId: string | null = null;
   let pageToken: string | undefined;
   for (let page = 0; page < POLL_MAX_HISTORY_PAGES; page += 1) {
     const result = await tokens.withToken((token) =>
@@ -293,10 +308,11 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
     );
     if (result === "expired") return await recoverRecent(tokens, start.lastPolledAt);
     for (const id of result.ids) ids.add(id);
-    lastHistoryId = result.lastHistoryId;
+    lastHistoryId = result.lastHistoryId ?? lastHistoryId;
     if (result.next === null || ids.size >= POLL_MAX_IDS) break;
     pageToken = result.next;
   }
+  if (lastHistoryId === null) return await recoverRecent(tokens, start.lastPolledAt);
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
