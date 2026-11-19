@@ -99,6 +99,15 @@ describe("listHistory", () => {
     expect(requested().searchParams.get("pageToken")).toBe("tok1");
   });
 
+  test("a page with no record while more pages remain does not move the cursor", async () => {
+    fetchMock.mockResolvedValue(json(200, { nextPageToken: "tok2", historyId: "99" }));
+    expect(await listHistory("tok", "10", "tok1")).toEqual({
+      ids: [],
+      lastHistoryId: null,
+      next: "tok2",
+    });
+  });
+
   test("an empty answer yields no ids and the current history id", async () => {
     fetchMock.mockResolvedValue(json(200, { historyId: "99" }));
     expect(await listHistory("tok", "10")).toEqual({ ids: [], lastHistoryId: "99", next: null });

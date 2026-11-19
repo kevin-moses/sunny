@@ -48,12 +48,13 @@ export interface FlowOwner {
 
 interface PurposeConfig {
   scope: string;
+  prompt: string;
   finish(ctx: ActionCtx, flow: FlowOwner, tokens: GoogleGrant): Promise<Response>;
 }
 
 export const GOOGLE_PURPOSES: Record<OAuthPurpose, PurposeConfig> = {
-  calendar: { scope: CALENDAR_SCOPE, finish: finishCalendar },
-  mailbox: { scope: GMAIL_SCOPE, finish: finishMailbox },
+  calendar: { scope: CALENDAR_SCOPE, prompt: "consent", finish: finishCalendar },
+  mailbox: { scope: GMAIL_SCOPE, prompt: "consent select_account", finish: finishMailbox },
 };
 
 const OAUTH_SWEEP_BATCH = 200;
@@ -251,7 +252,7 @@ export const start = httpAction(async (ctx, request) => {
         Location: consentUrl(
           await signState(started.flowId),
           await sha256Base64Url(codeVerifier),
-          GOOGLE_PURPOSES[started.purpose].scope,
+          GOOGLE_PURPOSES[started.purpose],
         ),
         "Set-Cookie": flowCookie(browserSecret),
         ...SECURITY_HEADERS,

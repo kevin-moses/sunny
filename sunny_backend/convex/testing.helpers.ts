@@ -1,3 +1,4 @@
+import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import workpoolTest from "@convex-dev/workpool/test";
 import workflowTest from "@convex-dev/workflow/test";
 import { convexTest } from "convex-test";
@@ -13,6 +14,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./**/*.helpe
 
 export function makeBackend() {
   const t = convexTest(schema, modules);
+  rateLimiterTest.register(t);
   workflowTest.register(t);
   workpoolTest.register(t, "calendarSyncPool");
   workpoolTest.register(t, "deliveryPool");

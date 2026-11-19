@@ -53,14 +53,18 @@ export function startUrl(ticket: string): string {
   return url.toString();
 }
 
-export function consentUrl(state: string, codeChallenge: string, scope: string): string {
+export function consentUrl(
+  state: string,
+  codeChallenge: string,
+  purpose: { scope: string; prompt: string },
+): string {
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
     redirect_uri: env("GOOGLE_REDIRECT_URI"),
     response_type: "code",
-    scope: `openid email ${scope}`,
+    scope: `openid email ${purpose.scope}`,
     access_type: "offline",
-    prompt: "consent",
+    prompt: purpose.prompt,
     include_granted_scopes: "false",
     state,
     code_challenge: codeChallenge,

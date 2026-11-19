@@ -9,7 +9,7 @@ const HISTORY_PAGE_SIZE = 100;
 const LIST_PAGE_SIZE = 100;
 const SAFE_ADDRESS = /^[^\s"'()<>\\]+$/;
 
-export type HistoryPage = { ids: string[]; lastHistoryId: string; next: string | null };
+export type HistoryPage = { ids: string[]; lastHistoryId: string | null; next: string | null };
 
 async function gmailGet(
   accessToken: string,
@@ -87,11 +87,12 @@ export async function listHistory(
   }
   const next = typeof body.nextPageToken === "string" ? body.nextPageToken : null;
   const lastRecordId = history.at(-1)?.id;
-  const lastHistoryId =
-    next !== null && typeof lastRecordId === "string"
-      ? lastRecordId
-      : stringField(body, "historyId");
-  return { ids: [...ids], lastHistoryId, next };
+  if (next === null) return { ids: [...ids], lastHistoryId: stringField(body, "historyId"), next };
+  return {
+    ids: [...ids],
+    lastHistoryId: typeof lastRecordId === "string" ? lastRecordId : null,
+    next,
+  };
 }
 
 export async function listRecent(

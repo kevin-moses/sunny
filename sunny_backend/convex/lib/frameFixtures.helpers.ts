@@ -84,6 +84,7 @@ export function dayState(time: string, day: Partial<DeviceStateInput>): DeviceSt
       eventsToday: day.eventsToday ?? [],
       upcoming: day.upcoming ?? [],
       cueInputs: day.cueInputs ?? tasks.map(cue),
+      notes: day.notes ?? [],
     },
     at(time),
   );

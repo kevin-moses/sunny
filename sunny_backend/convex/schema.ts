@@ -3,8 +3,12 @@ import { v } from "convex/values";
 import {
   actorKind,
   calendarConnectionStatus,
+  classifierRecord,
   mailboxStatus,
+  mailEffectRecord,
   mailItemState,
+  mailSender,
+  storedVerdict,
   oauthPurpose,
   calendarSyncState,
   agentRequestStatus,
@@ -203,6 +207,7 @@ export default defineSchema({
     kind: notificationKind,
     taskInstanceId: v.optional(v.id("taskInstances")),
     eventId: v.optional(v.id("events")),
+    seniorNoteId: v.optional(v.id("seniorNotes")),
     recipientUserId: v.optional(v.string()),
     recipientDeviceId: v.optional(v.id("devices")),
     title: v.string(),
@@ -233,13 +238,30 @@ export default defineSchema({
     .index("by_household_date", ["householdId", "localDate"])
     .index("by_status", ["status"]),
 
-  chatPosts: defineTable({
-    householdId: v.id("households"),
-    kind: v.literal("digest"),
-    body: v.string(),
-    localDate: v.string(),
-    digestId: v.id("digests"),
-  }).index("by_household", ["householdId"]),
+  chatPosts: defineTable(
+    v.union(
+      v.object({
+        householdId: v.id("households"),
+        kind: v.literal("digest"),
+        body: v.string(),
+        localDate: v.string(),
+        digestId: v.id("digests"),
+      }),
+      v.object({
+        householdId: v.id("households"),
+        kind: v.literal("mail"),
+        body: v.string(),
+        localDate: v.string(),
+        mailItemId: v.id("mailItems"),
+      }),
+      v.object({
+        householdId: v.id("households"),
+        kind: v.literal("mailbox"),
+        body: v.string(),
+        localDate: v.string(),
+      }),
+    ),
+  ).index("by_household", ["householdId"]),
 
   calendarConnections: defineTable({
     householdId: v.id("households"),
@@ -302,9 +324,34 @@ export default defineSchema({
     state: mailItemState,
     attempt: v.number(),
     leaseUntil: v.optional(v.number()),
+    sender: v.optional(mailSender),
+    subject: v.optional(v.string()),
+    receivedAt: v.optional(v.number()),
+    verdict: v.optional(storedVerdict),
+    rule: v.optional(v.string()),
+    effects: v.optional(v.array(mailEffectRecord)),
+    classifier: v.optional(classifierRecord),
   })
     .index("by_household_account_gmail", ["householdId", "account", "gmailId"])
-    .index("by_state_lease", ["state", "leaseUntil"]),
+    .index("by_state_lease", ["state", "leaseUntil"])
+    .index("by_household_received", ["householdId", "receivedAt"]),
+
+  seniorNotes: defineTable({
+    householdId: v.id("households"),
+    mailItemId: v.id("mailItems"),
+    text: v.string(),
+    receivedAt: v.number(),
+    expiresAt: v.number(),
+  }).index("by_household_expires", ["householdId", "expiresAt"]),
+
+  mailEventLinks: defineTable({
+    householdId: v.id("households"),
+    eventId: v.id("events"),
+    appointmentKey: v.string(),
+    mailItemId: v.id("mailItems"),
+  })
+    .index("by_household_key", ["householdId", "appointmentKey"])
+    .index("by_event", ["eventId"]),
 
   oauthFlows: defineTable({
     ticketHash: v.string(),

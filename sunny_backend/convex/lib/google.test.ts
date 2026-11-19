@@ -69,7 +69,9 @@ afterEach(() => {
 
 describe("consentUrl", () => {
   test("asks for offline access, consent, the calendar scope and an S256 challenge", () => {
-    const url = new URL(consentUrl("the-state", "the-challenge", CALENDAR_SCOPE));
+    const url = new URL(
+      consentUrl("the-state", "the-challenge", { scope: CALENDAR_SCOPE, prompt: "consent" }),
+    );
     expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     expect(url.searchParams.get("client_id")).toBe("client-id");
     expect(url.searchParams.get("redirect_uri")).toBe("https://example.test/google/callback");
@@ -84,7 +86,9 @@ describe("consentUrl", () => {
 
   test("names the missing variable", () => {
     delete process.env.GOOGLE_CLIENT_ID;
-    expect(() => consentUrl("s", "c", CALENDAR_SCOPE)).toThrow("Missing env var GOOGLE_CLIENT_ID");
+    expect(() => consentUrl("s", "c", { scope: CALENDAR_SCOPE, prompt: "consent" })).toThrow(
+      "Missing env var GOOGLE_CLIENT_ID",
+    );
   });
 });
 

@@ -13,21 +13,31 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import {
   EDITOR_ROLES,
   findMember,
+  loadHousehold,
   requireCaregiverAccount,
   requireCaregiverMember,
+  requireCaregiverReader,
   SYSTEM_ACTOR,
 } from "./lib/access";
 import { audit } from "./lib/audit";
+import { postMailbox } from "./lib/chatPosts";
 import { ConfigError, appError } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
 import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError, revokeRefreshToken } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
 import { AccessTokens, scheduleGrantRevoke } from "./lib/googleTokens";
-import { mailPool } from "./lib/mailPool";
+import { pushToCaregivers } from "./lib/mailEffects";
+import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import { SecretUnreadable, encryptSecret } from "./lib/secretBox";
 import { DAY_MS } from "./lib/time";
-import type { MailboxStatus } from "./lib/validators";
+import type {
+  MailboxStatus,
+  MailEffectRecord,
+  MailItemState,
+  StoredSender,
+  StoredVerdict,
+} from "./lib/validators";
 import type { FlowOwner } from "./googleOauth";
 
 const BACKFILL_WINDOW_MS = 7 * DAY_MS;
@@ -35,6 +45,8 @@ const BACKFILL_MAX_MESSAGES = 50;
 const POLL_MAX_HISTORY_PAGES = 3;
 const POLL_MAX_IDS = 100;
 const POLL_ALL_PAGE = 100;
+const DEFAULT_RECENT_MAIL = 20;
+const MAX_RECENT_MAIL = 100;
 
 const REVOKED_MESSAGE = "Google access was revoked; reconnect the senior's Gmail.";
 const UNREADABLE_MESSAGE = "Reconnect Gmail: Sunny could not read the saved Google sign-in.";
@@ -50,6 +62,16 @@ interface MailboxView {
   error: string | null;
   lastPolledAt: number | null;
   lastError: string | null;
+}
+
+interface MailItemView {
+  id: Id<"mailItems">;
+  state: MailItemState;
+  sender: StoredSender | null;
+  subject: string | null;
+  receivedAt: number | null;
+  verdict: StoredVerdict["kind"] | null;
+  effects: MailEffectRecord[];
 }
 
 interface PollStart {
@@ -85,13 +107,15 @@ async function insertUnseen(
       )
       .unique();
     if (existing) continue;
-    await ctx.db.insert("mailItems", {
+    const itemId = await ctx.db.insert("mailItems", {
       householdId,
       account,
       gmailId,
       state: "queued",
       attempt: 0,
+      leaseUntil: Date.now() + TRIAGE_PICKUP_MS,
     });
+    await enqueueTriage(ctx, itemId);
     inserted += 1;
   }
   return inserted;
@@ -138,6 +162,8 @@ export const saveMailbox = internalMutation({
       mailboxId = await ctx.db.insert("mailboxes", { householdId: args.householdId, ...fields });
     }
     await insertUnseen(ctx, args.householdId, args.accountEmail, args.ids);
+    const household = await loadHousehold(ctx, args.householdId);
+    await postMailbox(ctx, household, `Sunny now reads ${args.accountEmail}.`, Date.now());
     await audit(ctx, {
       householdId: args.householdId,
       actor: SYSTEM_ACTOR,
@@ -219,14 +245,24 @@ export const markMailbox = internalMutation({
     error: v.string(),
   },
   handler: async (ctx, { mailboxId, status, error }): Promise<null> => {
-    if (await ctx.db.get(mailboxId)) {
-      await ctx.db.patch(mailboxId, {
-        status,
-        error: error.slice(0, 2000),
-        accessToken: undefined,
-        accessTokenExpiresAt: undefined,
-      });
-    }
+    const mailbox = await ctx.db.get(mailboxId);
+    if (!mailbox || mailbox.status !== "active") return null;
+    await ctx.db.patch(mailboxId, {
+      status,
+      error: error.slice(0, 2000),
+      accessToken: undefined,
+      accessTokenExpiresAt: undefined,
+    });
+    const household = await ctx.db.get(mailbox.householdId);
+    if (!household) return null;
+    const body = `Sunny can no longer read ${mailbox.accountEmail}. Reconnect Gmail to keep mail coming in.`;
+    await postMailbox(ctx, household, body, Date.now());
+    await pushToCaregivers(ctx, household, {
+      kind: "mail_escalation",
+      title: `Reconnect Gmail for ${household.seniorPreferredName}`,
+      body,
+      payload: { mailboxId },
+    });
     return null;
   },
 });
@@ -264,7 +300,7 @@ async function recoverRecent(tokens: AccessTokens, lastPolledAt: number | null):
 
 async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered> {
   const ids = new Set<string>();
-  let lastHistoryId = start.historyId;
+  let lastHistoryId: string | null = null;
   let pageToken: string | undefined;
   for (let page = 0; page < POLL_MAX_HISTORY_PAGES; page += 1) {
     const result = await tokens.withToken((token) =>
@@ -272,11 +308,21 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
     );
     if (result === "expired") return await recoverRecent(tokens, start.lastPolledAt);
     for (const id of result.ids) ids.add(id);
-    lastHistoryId = result.lastHistoryId;
+    lastHistoryId = result.lastHistoryId ?? lastHistoryId;
     if (result.next === null || ids.size >= POLL_MAX_IDS) break;
     pageToken = result.next;
   }
+  if (lastHistoryId === null) return await recoverRecent(tokens, start.lastPolledAt);
   return { ids: [...ids], lastHistoryId, recovered: false };
+}
+
+export function mailboxFailure(e: unknown): { status: "revoked" | "error"; error: string } | null {
+  if (e instanceof SecretUnreadable) return { status: "error", error: UNREADABLE_MESSAGE };
+  if (e instanceof GoogleAccessRevoked) return { status: "revoked", error: REVOKED_MESSAGE };
+  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
+    return { status: "error", error: FORBIDDEN_MESSAGE };
+  }
+  return null;
 }
 
 async function settlePollError(
@@ -284,21 +330,11 @@ async function settlePollError(
   mailboxId: Id<"mailboxes">,
   e: unknown,
 ): Promise<PollOutcome> {
-  const mark = async (status: "revoked" | "error", error: string): Promise<void> => {
-    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId, status, error });
-  };
   if (e instanceof ConfigError) throw new NonRetryableError(e.message, { cause: e });
-  if (e instanceof SecretUnreadable) {
-    await mark("error", UNREADABLE_MESSAGE);
-    return "failed";
-  }
-  if (e instanceof GoogleAccessRevoked) {
-    await mark("revoked", REVOKED_MESSAGE);
-    return "revoked";
-  }
-  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
-    await mark("error", FORBIDDEN_MESSAGE);
-    return "failed";
+  const failure = mailboxFailure(e);
+  if (failure !== null) {
+    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId, ...failure });
+    return failure.status === "revoked" ? "revoked" : "failed";
   }
   if (e instanceof GoogleApiError && !e.retryable && e.status !== 401) {
     console.error(`Gmail poll ended without retry (${e.status}): ${e.message}`);
@@ -392,6 +428,28 @@ export const mailboxStatus = query({
       lastPolledAt: mailbox.lastPolledAt ?? null,
       lastError: mailbox.lastError ?? null,
     };
+  },
+});
+
+export const recentMail = query({
+  args: { householdId: v.id("households"), limit: v.optional(v.number()) },
+  handler: async (ctx, { householdId, limit }): Promise<MailItemView[]> => {
+    await requireCaregiverReader(ctx, householdId);
+    const count = Math.min(Math.max(Math.floor(limit ?? DEFAULT_RECENT_MAIL), 1), MAX_RECENT_MAIL);
+    const rows = await ctx.db
+      .query("mailItems")
+      .withIndex("by_household_received", (q) => q.eq("householdId", householdId))
+      .order("desc")
+      .take(count);
+    return rows.map((row) => ({
+      id: row._id,
+      state: row.state,
+      sender: row.sender ?? null,
+      subject: row.subject ?? null,
+      receivedAt: row.receivedAt ?? null,
+      verdict: row.verdict?.kind ?? null,
+      effects: row.effects ?? [],
+    }));
   },
 });
 

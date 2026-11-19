@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Id } from "../_generated/dataModel";
 import {
   CUE_HORIZON_MS,
   buildAgenda,
@@ -65,6 +66,7 @@ function makeInput(overrides: Partial<DeviceStateInput> = {}): DeviceStateInput 
     eventsToday: [],
     upcoming: [],
     cueInputs: [],
+    notes: [],
     ...overrides,
   };
 }
@@ -632,6 +634,7 @@ describe("the state's shape", () => {
         "rows",
         "rowsHidden",
         "cues",
+        "notes",
         "tuning",
       ].sort(),
     );
@@ -711,6 +714,20 @@ describe("version", () => {
     ).version;
     const laterHeader = buildDeviceState(input, local("12:30")).version;
     expect(new Set([base, confirmed, renamed, laterHeader]).size).toBe(4);
+  });
+
+  it("changes version but not displayVersion when a senior note arrives", () => {
+    const base = buildDeviceState(input, NOW);
+    const note = {
+      id: "note1" as Id<"seniorNotes">,
+      text: "Your package arrives today.",
+      receivedAt: NOW - 60_000,
+      expiresAt: NOW + 86_400_000,
+    };
+    const withNote = buildDeviceState({ ...input, notes: [note] }, NOW);
+    expect(withNote.notes).toEqual([note]);
+    expect(withNote.version).not.toBe(base.version);
+    expect(withNote.displayVersion).toBe(base.displayVersion);
   });
 
   it("changes when a prompt instant passes", () => {

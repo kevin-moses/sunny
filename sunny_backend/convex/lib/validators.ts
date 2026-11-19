@@ -1,4 +1,5 @@
 import { v, type Infer } from "convex/values";
+import { DECISION_REASONS, INFO_TOPICS, SUSPICIONS } from "./mailTypes";
 
 export const memberRole = v.union(v.literal("primary"), v.literal("member"), v.literal("viewer"));
 export type MemberRole = Infer<typeof memberRole>;
@@ -74,6 +75,9 @@ export const notificationKind = v.union(
   v.literal("digest"),
   v.literal("agent_flag"),
   v.literal("family_message"),
+  v.literal("senior_note"),
+  v.literal("mail_escalation"),
+  v.literal("mail_update"),
 );
 export type NotificationKind = Infer<typeof notificationKind>;
 
@@ -156,6 +160,139 @@ export const mailItemState = v.union(
   v.literal("failed"),
 );
 export type MailItemState = Infer<typeof mailItemState>;
+
+const literals = <T extends string>(values: readonly T[]) =>
+  v.union(...values.map((value) => v.literal(value)));
+
+const appointment = v.object({
+  title: v.string(),
+  date: v.string(),
+  time: v.string(),
+  durationMinutes: v.union(v.null(), v.number()),
+  place: v.union(v.null(), v.string()),
+});
+
+const appointmentRef = v.object({
+  date: v.string(),
+  time: v.union(v.null(), v.string()),
+  title: v.string(),
+});
+
+export const mailVerdict = v.union(
+  v.object({ kind: v.literal("ignore"), summary: v.string() }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("new"),
+    appointment,
+    summary: v.string(),
+  }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("reschedule"),
+    previous: appointmentRef,
+    appointment,
+    summary: v.string(),
+  }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("cancel"),
+    previous: appointmentRef,
+    summary: v.string(),
+  }),
+  v.object({
+    kind: v.literal("senior_info"),
+    topic: literals(INFO_TOPICS),
+    note: v.string(),
+    summary: v.string(),
+  }),
+  v.object({
+    kind: v.literal("needs_decision"),
+    reason: literals(DECISION_REASONS),
+    summary: v.string(),
+  }),
+  v.object({
+    kind: v.literal("suspicious"),
+    suspicion: literals(SUSPICIONS),
+    summary: v.string(),
+  }),
+);
+
+const usage = v.object({
+  inputTokens: v.number(),
+  outputTokens: v.number(),
+  cacheReadTokens: v.number(),
+});
+
+export const triaged = v.union(
+  v.object({ stage: v.literal("gate"), verdict: mailVerdict, rule: v.string() }),
+  v.object({
+    stage: v.literal("model"),
+    verdict: v.union(v.null(), mailVerdict),
+    usage,
+    classifier: v.string(),
+  }),
+);
+
+export const icsEvent = v.object({
+  method: literals(["REQUEST", "CANCEL", "REPLY", "OTHER"] as const),
+  uid: v.string(),
+  start: v.union(v.null(), v.object({ date: v.string(), time: v.string() })),
+  durationMinutes: v.union(v.null(), v.number()),
+  summary: v.string(),
+  location: v.union(v.null(), v.string()),
+});
+
+export const mailSender = v.object({
+  name: v.string(),
+  address: v.string(),
+  authenticated: v.boolean(),
+  known: v.boolean(),
+});
+export type StoredSender = Infer<typeof mailSender>;
+
+export const storedVerdict = v.object({
+  kind: literals([
+    "ignore",
+    "appointment",
+    "senior_info",
+    "needs_decision",
+    "suspicious",
+    "unreadable",
+  ] as const),
+  summary: v.string(),
+});
+export type StoredVerdict = Infer<typeof storedVerdict>;
+
+export const mailEffectRecord = v.union(
+  v.object({ kind: v.literal("event_added"), eventId: v.id("events") }),
+  v.object({
+    kind: v.literal("event_rescheduled"),
+    eventId: v.id("events"),
+    fromDate: v.string(),
+    fromTime: v.string(),
+  }),
+  v.object({ kind: v.literal("already_on_calendar"), eventId: v.id("events") }),
+  v.object({ kind: v.literal("senior_note"), noteId: v.id("seniorNotes") }),
+  v.object({ kind: v.literal("told_caregivers"), pushed: v.boolean() }),
+  v.object({
+    kind: v.literal("escalated"),
+    reason: literals([
+      ...DECISION_REASONS,
+      ...SUSPICIONS,
+      "unverified_sender",
+      "unclear_appointment",
+      "unclear_reschedule",
+      "conflict",
+      "unreadable",
+    ] as const),
+    pushed: v.boolean(),
+    eventId: v.optional(v.id("events")),
+  }),
+);
+export type MailEffectRecord = Infer<typeof mailEffectRecord>;
+
+export const classifierRecord = v.object({ name: v.string(), usage });
+export type ClassifierRecord = Infer<typeof classifierRecord>;
 
 export const calendarSyncState = v.union(
   v.literal("queued"),
