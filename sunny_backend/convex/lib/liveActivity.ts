@@ -156,6 +156,16 @@ type OpenPhase = Exclude<LiveActivityPhase, { kind: "ended" }>;
 
 const OPEN_KINDS = ["starting", "started", "live"] as const satisfies OpenPhase["kind"][];
 
+export type ActivityIn<K extends LiveActivityPhase["kind"]> = Doc<"liveActivities"> & {
+  phase: Extract<LiveActivityPhase, { kind: K }>;
+};
+
+export function isInPhase<K extends LiveActivityPhase["kind"]>(
+  kind: K,
+): (row: Doc<"liveActivities">) => row is ActivityIn<K> {
+  return (row): row is ActivityIn<K> => row.phase.kind === kind;
+}
+
 function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
   return phase.kind !== "ended";
 }
@@ -284,15 +294,14 @@ async function endAsViewed(
 export async function openActivitiesOf(
   ctx: QueryCtx,
   deviceId: Id<"devices">,
-): Promise<Doc<"liveActivities">[]> {
-  const open: Doc<"liveActivities">[] = [];
+): Promise<ActivityIn<OpenPhase["kind"]>[]> {
+  const open: ActivityIn<OpenPhase["kind"]>[] = [];
   for (const kind of OPEN_KINDS) {
-    open.push(
-      ...(await ctx.db
-        .query("liveActivities")
-        .withIndex("by_device_phase", (q) => q.eq("deviceId", deviceId).eq("phase.kind", kind))
-        .collect()),
-    );
+    const rows = await ctx.db
+      .query("liveActivities")
+      .withIndex("by_device_phase", (q) => q.eq("deviceId", deviceId).eq("phase.kind", kind))
+      .collect();
+    open.push(...rows.filter(isInPhase(kind)));
   }
   return open;
 }
@@ -406,9 +415,7 @@ export async function applyActivityReport(
     behind.push(...outcome.behind);
   }
   for (const row of await openActivitiesOf(ctx, device._id)) {
-    if (listed.has(row._id) || row.phase.kind === "ended" || row.phase.kind === "starting") {
-      continue;
-    }
+    if (listed.has(row._id) || row.phase.kind === "starting") continue;
     if (now - row.phase.acceptedAt < REPORT_GRACE_MS) continue;
     await endAsViewed(ctx, row, await loadActivityView(ctx, row, now), now);
   }

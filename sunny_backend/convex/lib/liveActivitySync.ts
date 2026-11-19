@@ -13,6 +13,7 @@ import {
   canShowAgain,
   endActivity,
   findPhonePush,
+  isInPhase,
   loadActivityView,
   loadSubject,
   nextCommand,
@@ -20,8 +21,8 @@ import {
 } from "./liveActivity";
 import { taskCards, timelineTask } from "./phoneTimeline";
 import { DAY_MS } from "./time";
-import type { ActivitySubject, ActivityView } from "./liveActivity";
-import type { ActivityEndReason, ConfirmVia } from "./validators";
+import type { ActivityIn, ActivitySubject, ActivityView } from "./liveActivity";
+import type { ActivityEndReason, ConfirmVia, LiveActivityPhase } from "./validators";
 import { phonePressedOn, requestWidgetRefresh, wakePhoneToReport } from "./widgetRefresh";
 
 export const ENDED_KEPT_MS = 7 * DAY_MS;
@@ -226,15 +227,16 @@ export async function proofMissed(
   });
 }
 
-async function activitiesInPhase(
+async function activitiesInPhase<K extends LiveActivityPhase["kind"]>(
   ctx: QueryCtx,
   householdId: Id<"households">,
-  kind: Doc<"liveActivities">["phase"]["kind"],
-): Promise<Doc<"liveActivities">[]> {
-  return await ctx.db
+  kind: K,
+): Promise<ActivityIn<K>[]> {
+  const rows = await ctx.db
     .query("liveActivities")
     .withIndex("by_household_phase", (q) => q.eq("householdId", householdId).eq("phase.kind", kind))
     .collect();
+  return rows.filter(isInPhase(kind));
 }
 
 async function sweepStarting(
@@ -243,7 +245,6 @@ async function sweepStarting(
   now: number,
 ): Promise<void> {
   for (const row of await activitiesInPhase(ctx, householdId, "starting")) {
-    if (row.phase.kind !== "starting") continue;
     const cue = await ctx.db.get(row.phase.outboxId);
     if (cue !== null && cue.state === "pending") continue;
     await endActivity(ctx, row, "start_failed", now);
@@ -266,7 +267,6 @@ async function sweepLive(
   now: number,
 ): Promise<void> {
   for (const row of await activitiesInPhase(ctx, householdId, "live")) {
-    if (row.phase.kind !== "live") continue;
     const view = await loadActivityView(ctx, row, now);
     if (now >= row.phase.acceptedAt + ACTIVITY_LIFETIME_MS) {
       await endActivity(ctx, row, view.kind === "end" ? view.reason : "expired", now);
