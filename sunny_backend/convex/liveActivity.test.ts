@@ -117,7 +117,6 @@ describe("the due cue on a phone that reported a start token", () => {
       attributes: {
         activityKey: row!._id,
         instanceId,
-        icon: "pills",
         receiptMs: 10_000,
       },
       "content-state": {
@@ -129,6 +128,7 @@ describe("the due cue on a phone that reported a start token", () => {
           label: "Morning pills",
           sentence: "Take your morning pills.",
           detail: null,
+          icon: "pills",
           startsAt: EIGHT,
           endsAt: EIGHT + 60 * MIN,
         },

@@ -20,6 +20,7 @@
           "label": "Shower",
           "sentence": "Take your shower.",
           "detail": null,
+          "icon": "clock",
           "startsAt": 1795093200000,
           "endsAt": 1795096800000
         },

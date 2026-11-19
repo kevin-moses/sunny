@@ -110,6 +110,8 @@ PhoneCard =
       "label": string,            the task's displayLabel
       "sentence": string | null,  the task's screenSentence
       "detail": string | null,    the task's pillDescription
+      "icon": string,             the task type's icon: "pills" (medication), "calendar" (appointment),
+                                  "checklist", "bell" (reminder) or "clock" (routine)
       "startsAt": number,         epoch ms of the instance's scheduled time
       "endsAt": number }          epoch ms when its window closes
   | { "kind": "clear",

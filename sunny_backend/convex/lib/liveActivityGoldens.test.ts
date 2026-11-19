@@ -66,8 +66,8 @@ function endOf(made: ActivityCommand): Extract<ActivityCommand, { kind: "end" }>
   return made;
 }
 
-function attributes(icon: ActivityAttributes["icon"]): ActivityAttributes {
-  return { activityKey: ACTIVITY_KEY, instanceId: INSTANCE_ID, icon, receiptMs: RECEIPT_MS };
+function attributes(): ActivityAttributes {
+  return { activityKey: ACTIVITY_KEY, instanceId: INSTANCE_ID, receiptMs: RECEIPT_MS };
 }
 
 const pills: ActivitySubject = { instance: instanceDoc(), task: taskDoc() };
@@ -89,13 +89,13 @@ function fromLive(subject: ActivitySubject, was: ActivityView, now: number): Act
 
 const CASES: Record<string, ApnsMessage> = {
   "start.json": liveActivityStartMessage(
-    attributes("pills"),
+    attributes(),
     { ...pillsShown, quiet: false },
     { title: "Morning pills", body: PILLS_PROMPT },
     seconds(WINDOW_START),
   ),
   "start-quiet-steps.json": liveActivityStartMessage(
-    attributes("clock"),
+    attributes(),
     { ...showerShown, quiet: true },
     { title: "Shower", body: SHOWER_PROMPT },
     seconds(WINDOW_START + 6 * MIN),

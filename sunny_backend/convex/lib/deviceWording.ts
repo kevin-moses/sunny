@@ -3,9 +3,9 @@ import { ANYTIME } from "./anytime";
 import { taskStep } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
 import { daysBetween, isLocalDate, weekdayName } from "./time";
-import type { TaskType } from "./validators";
+import type { DeviceIcon, TaskType } from "./validators";
 
-export type DeviceIcon = "pills" | "calendar" | "checklist" | "bell" | "clock";
+export type { DeviceIcon };
 
 export interface SpeechTask {
   type: TaskType;

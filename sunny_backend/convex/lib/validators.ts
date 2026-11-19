@@ -106,6 +106,10 @@ export const apnsMessage = v.object({
 });
 export type ApnsMessage = Infer<typeof apnsMessage>;
 
+export const DEVICE_ICONS = ["pills", "calendar", "checklist", "bell", "clock"] as const;
+export const deviceIcon = v.union(...DEVICE_ICONS.map((icon) => v.literal(icon)));
+export type DeviceIcon = Infer<typeof deviceIcon>;
+
 export const activityCard = v.object({
   instanceId: v.id("taskInstances"),
   step: v.number(),
@@ -114,6 +118,7 @@ export const activityCard = v.object({
   label: v.string(),
   sentence: v.union(v.string(), v.null()),
   detail: v.union(v.string(), v.null()),
+  icon: deviceIcon,
   startsAt: v.number(),
   endsAt: v.number(),
 });

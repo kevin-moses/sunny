@@ -36,6 +36,7 @@ const PILLS_CARD = {
   label: "Morning pills",
   sentence: "Take your morning pills.",
   detail: "the small white ones",
+  icon: "pills" as const,
   startsAt: WINDOW_START,
   endsAt: WINDOW_END,
 };
@@ -206,6 +207,7 @@ describe("activityView", () => {
         label: "Shower",
         sentence: "Take your shower.",
         detail: null,
+        icon: "clock",
         startsAt: WINDOW_START,
         endsAt: WINDOW_END,
       },
@@ -340,6 +342,7 @@ describe("nextCommand", () => {
         endsAt: WINDOW_END,
         startsAt: WINDOW_START,
         detail: "the small white ones",
+        icon: "pills",
         sentence: "Take your morning pills.",
         label: "Morning pills",
         stepText: null,

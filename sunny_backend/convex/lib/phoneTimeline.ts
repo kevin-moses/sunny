@@ -13,6 +13,8 @@ import {
   pickNext,
 } from "./deviceState";
 import type { DayEvent, DayTask, DeviceDay } from "./deviceState";
+import { taskIcon } from "./deviceWording";
+import type { DeviceIcon } from "./deviceWording";
 import { isOpenState } from "./escalation";
 import { stepIndex } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
@@ -59,6 +61,7 @@ export interface PhoneTaskCard {
   label: string;
   sentence: string | null;
   detail: string | null;
+  icon: DeviceIcon;
   startsAt: number;
   endsAt: number;
 }
@@ -156,6 +159,7 @@ export function taskCards(task: TimelineTask): PhoneTaskCard[] {
     label: task.displayLabel,
     sentence: task.sentence,
     detail: task.pillDescription,
+    icon: taskIcon(task.type),
     startsAt: task.windowStart,
     endsAt: task.windowEnd,
   }));

@@ -4,8 +4,6 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { isAnytimeInstance } from "./anytime";
 import { contentState, liveActivityStartMessage } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
-import { taskIcon } from "./deviceWording";
-import type { DeviceIcon } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
 import { taskCards, timelineTask } from "./phoneTimeline";
 import { minutes } from "./time";
@@ -35,7 +33,6 @@ const RELEVANCE_BASE_SECONDS = 4_000_000_000;
 export interface ActivityAttributes {
   activityKey: string;
   instanceId: Id<"taskInstances">;
-  icon: DeviceIcon;
   receiptMs: number;
 }
 
@@ -72,7 +69,6 @@ export interface ActivityStart {
 
 export interface StartPlan extends ActivityStart {
   token: string;
-  icon: DeviceIcon;
   windowEnd: number;
   resume: Id<"liveActivities"> | null;
 }
@@ -391,7 +387,6 @@ export async function planStart(
     staleAt: view.staleAt,
     relevance: view.relevance,
     quiet: row.kind === "senior_reshow",
-    icon: taskIcon(task.type),
     windowEnd: instance.windowEnd,
     resume: resume?._id ?? null,
   };
@@ -421,7 +416,6 @@ export async function openActivity(
   const attributes: ActivityAttributes = {
     activityKey: activityId,
     instanceId: row.taskInstanceId,
-    icon: plan.icon,
     receiptMs: RECEIPT_MS,
   };
   const alert = { title: row.title, body: row.body };

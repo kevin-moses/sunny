@@ -156,6 +156,7 @@ export function contentState(content: ActivityContent): ActivityContent {
       label: card.label,
       sentence: card.sentence,
       detail: card.detail,
+      icon: card.icon,
       startsAt: card.startsAt,
       endsAt: card.endsAt,
     },
@@ -192,7 +193,6 @@ export function liveActivityStartMessage(
           attributes: {
             activityKey: attributes.activityKey,
             instanceId: attributes.instanceId,
-            icon: attributes.icon,
             receiptMs: attributes.receiptMs,
           },
           "content-state": contentState(start.content),

@@ -345,6 +345,7 @@ describe("reported activities", () => {
             label: "Morning pills",
             sentence: "Take your morning pills.",
             detail: null,
+            icon: "pills",
             startsAt: EIGHT,
             endsAt: EIGHT + 60 * MIN,
           },

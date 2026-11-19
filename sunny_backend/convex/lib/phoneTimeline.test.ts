@@ -261,14 +261,33 @@ describe("a day with a done task, a due task, a later task, an event and a multi
       label: "Morning pills",
       sentence: "Take your morning pills.",
       detail: "1 white tablet",
+      icon: "pills",
       startsAt: at("08:00"),
       endsAt: at("09:00"),
     });
     expect(timeline.entries[2]!.cards.slice(0, 3)).toMatchObject([
-      { instanceId: "ready", step: 0, stepCount: 3, stepText: "Shower", sentence: null },
+      {
+        instanceId: "ready",
+        step: 0,
+        stepCount: 3,
+        stepText: "Shower",
+        sentence: null,
+        icon: "clock",
+      },
       { instanceId: "ready", step: 1, stepCount: 3, stepText: "Dress" },
       { instanceId: "ready", step: 2, stepCount: 3, stepText: "Breakfast" },
     ]);
+  });
+
+  it.each([
+    ["medication", "pills"],
+    ["appointment", "calendar"],
+    ["checklist", "checklist"],
+    ["reminder", "bell"],
+    ["routine", "clock"],
+  ] as const)("a %s card carries the %s icon", (type, icon) => {
+    const day = input([task("tea", "Make tea", "08:00", { state: "due", type })], []);
+    expect(cardsAt(day, at("08:10"))[0]).toMatchObject({ kind: "task", label: "Make tea", icon });
   });
 
   it("matches a fresh fetch at each boundary, where the scheduler has stored the new states", () => {

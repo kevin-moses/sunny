@@ -168,6 +168,7 @@ describe("apns.send", () => {
         label: "Morning pills",
         sentence: null,
         detail: null,
+        icon: "pills" as const,
         startsAt: WINDOW_START,
         endsAt: WINDOW_START + 3_600_000,
       },

@@ -20,6 +20,7 @@
           "label": "Morning pills",
           "sentence": "Take your morning pills.",
           "detail": "the small white ones",
+          "icon": "pills",
           "startsAt": 1795093200000,
           "endsAt": 1795096800000
         },
