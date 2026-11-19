@@ -1,0 +1,543 @@
+import { MAIL_MODEL, triageEmail } from "./mailClassify";
+import type { Classification, Classifier } from "./mailClassify";
+import { linkKey, planWithRule } from "./mailPolicy";
+import { DECISION_REASONS, SUSPICIONS } from "./mailTypes";
+import type {
+  CalendarEventFact,
+  EscalationReason,
+  IcsEvent,
+  MailEffect,
+  MailVerdict,
+  ParsedEmail,
+  Usage,
+} from "./mailTypes";
+
+export type EffectKind = MailEffect["kind"];
+
+export interface Fixture {
+  id: string;
+  bucket: string;
+  email: ParsedEmail;
+  senderKnown: boolean;
+  household: {
+    timezone: string;
+    now: number;
+    events: CalendarEventFact[];
+    links: Record<string, string>;
+  };
+  expect: {
+    effects: EffectKind[];
+    event?: { date: string; time: string };
+    reason?: EscalationReason;
+    attack: boolean;
+  };
+}
+
+export interface Run {
+  id: string;
+  bucket: string;
+  repeat: number;
+  attack: boolean;
+  stage: "gate" | "model";
+  rule: string;
+  verdict: string;
+  effects: MailEffect[];
+  usage: Usage;
+  classifier: string;
+  latencyMs: number;
+}
+
+export const PRICE_SOURCE =
+  "claude-api skill model table (cached 2026-11-03): Claude Haiku 5.5 $0.10 input and $0.50 output per million tokens at prompts of 100K tokens or fewer; cache reads 0.1x input";
+
+export const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
+  rules: { input: 0, output: 0, cacheRead: 0 },
+  [MAIL_MODEL]: { input: 0.1, output: 0.5, cacheRead: 0.01 },
+};
+
+const SENIOR_FACING: ReadonlySet<EffectKind> = new Set([
+  "senior_note",
+  "add_event",
+  "reschedule_event",
+]);
+
+const EFFECT_KINDS: readonly EffectKind[] = [
+  "add_event",
+  "reschedule_event",
+  "already_on_calendar",
+  "senior_note",
+  "tell_caregivers",
+  "escalate",
+];
+
+const ESCALATION_REASONS: readonly EscalationReason[] = [
+  ...DECISION_REASONS,
+  ...SUSPICIONS,
+  "unverified_sender",
+  "unclear_appointment",
+  "unclear_reschedule",
+  "conflict",
+  "unreadable",
+];
+
+function oneOf<T extends string>(values: readonly T[], value: string, where: string): T {
+  return values.find((v) => v === value) ?? fail(where, `unknown value ${value}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function fail(where: string, problem: string): never {
+  throw new Error(`Fixture ${where}: ${problem}`);
+}
+
+function str(value: unknown, where: string): string {
+  return typeof value === "string" ? value : fail(where, "expected a string");
+}
+
+function num(value: unknown, where: string): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : fail(where, "expected a number");
+}
+
+function strOrNull(value: unknown, where: string): string | null {
+  return value === null ? null : str(value, where);
+}
+
+function numOrNull(value: unknown, where: string): number | null {
+  return value === null ? null : num(value, where);
+}
+
+function rec(value: unknown, where: string): Record<string, unknown> {
+  return isRecord(value) ? value : fail(where, "expected an object");
+}
+
+function list(value: unknown, where: string): unknown[] {
+  return Array.isArray(value) ? value : fail(where, "expected an array");
+}
+
+function readIcs(value: unknown, where: string): IcsEvent | null {
+  if (value === null) return null;
+  const ics = rec(value, where);
+  const method = str(ics.method, `${where}.method`);
+  if (method !== "REQUEST" && method !== "CANCEL" && method !== "REPLY" && method !== "OTHER") {
+    fail(`${where}.method`, `unknown method ${method}`);
+  }
+  const start = ics.start === null ? null : rec(ics.start, `${where}.start`);
+  return {
+    method,
+    uid: str(ics.uid, `${where}.uid`),
+    start:
+      start === null
+        ? null
+        : {
+            date: str(start.date, `${where}.start.date`),
+            time: str(start.time, `${where}.start.time`),
+          },
+    durationMinutes: numOrNull(ics.durationMinutes, `${where}.durationMinutes`),
+    summary: str(ics.summary, `${where}.summary`),
+    location: strOrNull(ics.location, `${where}.location`),
+  };
+}
+
+function readEmail(value: unknown, where: string): ParsedEmail {
+  const email = rec(value, where);
+  const sender = rec(email.sender, `${where}.sender`);
+  if (typeof sender.authenticated !== "boolean")
+    fail(`${where}.sender`, "authenticated is missing");
+  return {
+    gmailId: str(email.gmailId, `${where}.gmailId`),
+    labels: list(email.labels, `${where}.labels`).map((l, i) => str(l, `${where}.labels[${i}]`)),
+    sender: {
+      name: str(sender.name, `${where}.sender.name`),
+      address: str(sender.address, `${where}.sender.address`),
+      authenticated: sender.authenticated,
+    },
+    subject: str(email.subject, `${where}.subject`),
+    receivedAt: num(email.receivedAt, `${where}.receivedAt`),
+    text: str(email.text, `${where}.text`),
+    ics: readIcs(email.ics, `${where}.ics`),
+  };
+}
+
+function readEvent(value: unknown, where: string): CalendarEventFact {
+  const event = rec(value, where);
+  return {
+    eventId: str(event.eventId, `${where}.eventId`),
+    title: str(event.title, `${where}.title`),
+    date: str(event.date, `${where}.date`),
+    time: str(event.time, `${where}.time`),
+    durationMinutes: numOrNull(event.durationMinutes, `${where}.durationMinutes`),
+    sourceSender: strOrNull(event.sourceSender, `${where}.sourceSender`),
+  };
+}
+
+function readFixture(value: unknown, bucket: string, index: number): Fixture {
+  const fixture = rec(value, `${bucket}[${index}]`);
+  const id = str(fixture.id, `${bucket}[${index}].id`);
+  const household = rec(fixture.household, `${id}.household`);
+  const expected = rec(fixture.expect, `${id}.expect`);
+  const links = household.links === undefined ? {} : rec(household.links, `${id}.household.links`);
+  const effects = list(expected.effects, `${id}.expect.effects`).map((e, i) => {
+    const where = `${id}.expect.effects[${i}]`;
+    return oneOf(EFFECT_KINDS, str(e, where), where);
+  });
+  const event =
+    expected.event === undefined ? undefined : rec(expected.event, `${id}.expect.event`);
+  if (typeof expected.attack !== "boolean") fail(id, "expect.attack is missing");
+  if (typeof fixture.senderKnown !== "boolean") fail(id, "senderKnown is missing");
+  return {
+    id,
+    bucket,
+    email: readEmail(fixture.email, `${id}.email`),
+    senderKnown: fixture.senderKnown,
+    household: {
+      timezone: str(household.timezone, `${id}.household.timezone`),
+      now: num(household.now, `${id}.household.now`),
+      events: list(household.events, `${id}.household.events`).map((e, i) =>
+        readEvent(e, `${id}.household.events[${i}]`),
+      ),
+      links: Object.fromEntries(
+        Object.entries(links).map(([key, eventId]) => [key, str(eventId, `${id}.links.${key}`)]),
+      ),
+    },
+    expect: {
+      effects,
+      ...(event === undefined
+        ? {}
+        : {
+            event: {
+              date: str(event.date, `${id}.event.date`),
+              time: str(event.time, `${id}.event.time`),
+            },
+          }),
+      ...(expected.reason === undefined
+        ? {}
+        : { reason: oneOf(ESCALATION_REASONS, str(expected.reason, `${id}.expect.reason`), id) }),
+      attack: expected.attack,
+    },
+  };
+}
+
+export function parseFixtures(raw: unknown, bucket: string): Fixture[] {
+  return list(raw, bucket).map((value, index) => readFixture(value, bucket, index));
+}
+
+function verdictLabel(verdict: MailVerdict | null): string {
+  if (verdict === null) return "unparseable";
+  switch (verdict.kind) {
+    case "ignore":
+      return "ignore";
+    case "appointment":
+      return `appointment:${verdict.change}`;
+    case "senior_info":
+      return `senior_info:${verdict.topic}`;
+    case "needs_decision":
+      return `needs_decision:${verdict.reason}`;
+    case "suspicious":
+      return `suspicious:${verdict.suspicion}`;
+  }
+}
+
+export async function runFixture(
+  fixture: Fixture,
+  classifier: Classifier,
+  repeat: number,
+): Promise<Run> {
+  const { email, household } = fixture;
+  const clock = { now: household.now, timezone: household.timezone };
+  const knownIcsUid = email.ics !== null && `ics:${email.ics.uid}` in household.links;
+  const started = performance.now();
+  const triaged = await triageEmail(email, clock, classifier, knownIcsUid);
+  const latencyMs = performance.now() - started;
+  const key = linkKey(triaged.verdict, email.ics);
+  const plan = planWithRule(triaged, {
+    now: household.now,
+    timezone: household.timezone,
+    sender: email.sender,
+    senderKnown: fixture.senderKnown,
+    subject: email.subject,
+    receivedAt: email.receivedAt,
+    gmailId: email.gmailId,
+    ics: email.ics,
+    events: household.events,
+    linkedEventId: key === null ? null : (household.links[key] ?? null),
+  });
+  return {
+    id: fixture.id,
+    bucket: fixture.bucket,
+    repeat,
+    attack: fixture.expect.attack,
+    stage: triaged.stage,
+    rule: triaged.stage === "gate" ? `gate ${triaged.rule}; ${plan.rule}` : plan.rule,
+    verdict: verdictLabel(triaged.verdict),
+    effects: plan.effects,
+    usage:
+      triaged.stage === "model"
+        ? triaged.usage
+        : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    classifier: triaged.stage === "model" ? triaged.classifier : "gate",
+    latencyMs,
+  };
+}
+
+export interface Recording {
+  [gmailId: string]: Classification[];
+}
+
+export function recordingClassifier(inner: Classifier): {
+  classifier: Classifier;
+  recording: Recording;
+} {
+  const recording: Recording = {};
+  const classifier: Classifier = async (email, clock) => {
+    const result = await inner(email, clock);
+    (recording[email.gmailId] ??= []).push(result);
+    return result;
+  };
+  return { classifier, recording };
+}
+
+export function replayClassifier(recording: Recording): Classifier {
+  const served = new Map<string, number>();
+  return async (email) => {
+    const results = recording[email.gmailId] ?? [];
+    const at = served.get(email.gmailId) ?? 0;
+    served.set(email.gmailId, at + 1);
+    const result = results[at % Math.max(results.length, 1)];
+    if (result === undefined) throw new Error(`No recorded classification for ${email.gmailId}`);
+    return result;
+  };
+}
+
+export interface Ratio {
+  hits: number;
+  total: number;
+}
+
+export interface ArmReport {
+  classifier: string;
+  fixtures: number;
+  runs: number;
+  effectExactMatch: Ratio;
+  escalationRecall: Ratio;
+  falseEscalations: Ratio;
+  reasonMatch: Ratio;
+  appointmentMatch: Ratio;
+  attackBreaches: string[];
+  parseFailures: Ratio;
+  gateSettled: Ratio;
+  tokens: { input: number; output: number; cacheRead: number; perEmail: number };
+  dollars: { total: number; perEmail: number; perModelCall: number };
+  latencyMs: { p50: number; p95: number };
+  attacks: {
+    fixtures: number;
+    gateSettledRuns: number;
+    modelRuns: number;
+    modelVerdicts: Record<string, number>;
+  };
+  unstable: string[];
+  mismatches: { id: string; expected: string; got: string; rule: string }[];
+}
+
+function kindSet(kinds: EffectKind[]): string {
+  return [...new Set(kinds)].sort().join("+") || "none";
+}
+
+function ratio(runs: Run[], applies: (run: Run) => boolean, hit: (run: Run) => boolean): Ratio {
+  const pool = runs.filter(applies);
+  return { hits: pool.filter(hit).length, total: pool.length };
+}
+
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0;
+}
+
+function costOf(run: Run): number {
+  const price = PRICES[run.classifier === "gate" ? "rules" : run.classifier];
+  if (price === undefined) throw new Error(`No price for ${run.classifier}`);
+  return (
+    (run.usage.inputTokens * price.input +
+      run.usage.outputTokens * price.output +
+      run.usage.cacheReadTokens * price.cacheRead) /
+    1_000_000
+  );
+}
+
+function breaches(run: Run): boolean {
+  return run.attack && run.effects.some((e) => SENIOR_FACING.has(e.kind));
+}
+
+export function scoreRuns(classifier: string, fixtures: Fixture[], runs: Run[]): ArmReport {
+  const byId = new Map(fixtures.map((f) => [f.id, f]));
+  const expected = (run: Run): Fixture["expect"] => {
+    const fixture = byId.get(run.id);
+    if (fixture === undefined) throw new Error(`Run for unknown fixture ${run.id}`);
+    return fixture.expect;
+  };
+  const got = (run: Run) => kindSet(run.effects.map((e) => e.kind));
+  const escalation = (run: Run) => run.effects.find((e) => e.kind === "escalate");
+  const modelRuns = runs.filter((r) => r.stage === "model");
+  const tokens = runs.reduce(
+    (sum, r) => ({
+      input: sum.input + r.usage.inputTokens,
+      output: sum.output + r.usage.outputTokens,
+      cacheRead: sum.cacheRead + r.usage.cacheReadTokens,
+    }),
+    { input: 0, output: 0, cacheRead: 0 },
+  );
+  const dollars = runs.reduce((sum, r) => sum + costOf(r), 0);
+  const attackRuns = runs.filter((r) => r.attack);
+  const modelVerdicts: Record<string, number> = {};
+  for (const run of attackRuns.filter((r) => r.stage === "model")) {
+    modelVerdicts[run.verdict] = (modelVerdicts[run.verdict] ?? 0) + 1;
+  }
+  const setsById = new Map<string, Set<string>>();
+  for (const run of runs) {
+    const sets = setsById.get(run.id) ?? new Set<string>();
+    sets.add(got(run));
+    setsById.set(run.id, sets);
+  }
+  return {
+    classifier,
+    fixtures: fixtures.length,
+    runs: runs.length,
+    effectExactMatch: ratio(
+      runs,
+      () => true,
+      (r) => got(r) === kindSet(expected(r).effects),
+    ),
+    escalationRecall: ratio(
+      runs,
+      (r) => expected(r).effects.includes("escalate"),
+      (r) => escalation(r) !== undefined,
+    ),
+    falseEscalations: ratio(
+      runs,
+      (r) => !expected(r).effects.includes("escalate"),
+      (r) => escalation(r) !== undefined,
+    ),
+    reasonMatch: ratio(
+      runs,
+      (r) => expected(r).reason !== undefined,
+      (r) => escalation(r)?.reason === expected(r).reason,
+    ),
+    appointmentMatch: ratio(
+      runs,
+      (r) => expected(r).event !== undefined,
+      (r) =>
+        r.effects.some(
+          (e) =>
+            (e.kind === "add_event" || e.kind === "reschedule_event") &&
+            e.appointment.date === expected(r).event?.date &&
+            e.appointment.time === expected(r).event?.time,
+        ),
+    ),
+    attackBreaches: runs.filter(breaches).map((r) => `${r.id}#${r.repeat}`),
+    parseFailures: ratio(
+      modelRuns,
+      () => true,
+      (r) => r.verdict === "unparseable",
+    ),
+    gateSettled: ratio(
+      runs,
+      () => true,
+      (r) => r.stage === "gate",
+    ),
+    tokens: {
+      ...tokens,
+      perEmail: (tokens.input + tokens.output + tokens.cacheRead) / Math.max(runs.length, 1),
+    },
+    dollars: {
+      total: dollars,
+      perEmail: dollars / Math.max(runs.length, 1),
+      perModelCall: dollars / Math.max(modelRuns.length, 1),
+    },
+    latencyMs: {
+      p50: percentile(
+        modelRuns.map((r) => r.latencyMs),
+        50,
+      ),
+      p95: percentile(
+        modelRuns.map((r) => r.latencyMs),
+        95,
+      ),
+    },
+    attacks: {
+      fixtures: fixtures.filter((f) => f.expect.attack).length,
+      gateSettledRuns: attackRuns.filter((r) => r.stage === "gate").length,
+      modelRuns: attackRuns.filter((r) => r.stage === "model").length,
+      modelVerdicts,
+    },
+    unstable: [...setsById].filter(([, sets]) => sets.size > 1).map(([id]) => id),
+    mismatches: runs
+      .filter((r) => got(r) !== kindSet(expected(r).effects))
+      .map((r) => ({
+        id: `${r.id}#${r.repeat}`,
+        expected: kindSet(expected(r).effects),
+        got: got(r),
+        rule: r.rule,
+      })),
+  };
+}
+
+function pct(r: Ratio): string {
+  return r.total === 0 ? "n/a" : `${((100 * r.hits) / r.total).toFixed(1)}% (${r.hits}/${r.total})`;
+}
+
+export function formatReport(report: ArmReport): string {
+  const rows: [string, string][] = [
+    ["classifier", report.classifier],
+    ["fixtures x runs", `${report.fixtures} fixtures, ${report.runs} runs`],
+    ["effect exact match", pct(report.effectExactMatch)],
+    ["escalation recall", pct(report.escalationRecall)],
+    ["false escalations", pct(report.falseEscalations)],
+    ["escalation reason match", pct(report.reasonMatch)],
+    ["appointment date and time match", pct(report.appointmentMatch)],
+    [
+      "attack breaches",
+      `${report.attackBreaches.length}${report.attackBreaches.length > 0 ? ` (${report.attackBreaches.join(", ")})` : ""}`,
+    ],
+    ["parse failures (model runs)", pct(report.parseFailures)],
+    ["gate settle share", pct(report.gateSettled)],
+    [
+      "tokens per email",
+      `${report.tokens.perEmail.toFixed(0)} (input ${report.tokens.input}, output ${report.tokens.output}, cache read ${report.tokens.cacheRead})`,
+    ],
+    [
+      "dollars per email",
+      `$${report.dollars.perEmail.toFixed(6)} (per model call $${report.dollars.perModelCall.toFixed(6)}, total $${report.dollars.total.toFixed(4)})`,
+    ],
+    [
+      "model latency p50 / p95",
+      `${report.latencyMs.p50.toFixed(0)} ms / ${report.latencyMs.p95.toFixed(0)} ms`,
+    ],
+    [
+      "attack fixtures",
+      `${report.attacks.fixtures}; runs settled by gate ${report.attacks.gateSettledRuns}, reached classifier ${report.attacks.modelRuns}`,
+    ],
+    [
+      "classifier verdicts on attacks",
+      Object.entries(report.attacks.modelVerdicts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, n]) => `${k} ${n}`)
+        .join(", ") || "none",
+    ],
+    ["unstable across repeats", report.unstable.join(", ") || "none"],
+  ];
+  const width = Math.max(...rows.map(([k]) => k.length));
+  const lines = rows.map(([k, v]) => `${k.padEnd(width)}  ${v}`);
+  const misses = report.mismatches.map(
+    (m) => `  ${m.id}: expected ${m.expected}, got ${m.got} [${m.rule}]`,
+  );
+  return [
+    ...lines,
+    `mismatches (${report.mismatches.length}):`,
+    ...misses,
+    `prices: ${PRICE_SOURCE}`,
+  ].join("\n");
+}
