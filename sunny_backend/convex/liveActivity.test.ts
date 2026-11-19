@@ -26,6 +26,7 @@ import {
   proveStarts,
   putPushState,
   reportStartToken,
+  secondPhone,
   setNow,
   settle,
   starts,
@@ -522,6 +523,48 @@ describe("a blind phone", () => {
     expect(starts().map((aps) => aps.alert.title)).toEqual(["Morning pills", "Short walk"]);
     expect(await outbox(f, walk)).toEqual([
       expect.objectContaining({ state: "sent", channel: "live_activity" }),
+    ]);
+  });
+});
+
+describe("a start token that two phone rows reported", () => {
+  const SECOND_ALERT_TOKEN = "f6".repeat(32);
+
+  test("a phone paired again takes the token, and one task starts one activity on it", async () => {
+    const old = await setup();
+    await reportStartToken(old);
+    const paired = await secondPhone(old, SECOND_ALERT_TOKEN);
+    await reportStartToken(paired);
+    const instanceId = await pills(old);
+    await tick(old, EIGHT);
+    await settle(old.t);
+
+    expect(activityPushes().map((push) => push.tokens)).toEqual([[START_TOKEN]]);
+    expect((await phonePushRow(old))!.liveActivityStart).toBeUndefined();
+    expect((await phonePushRow(paired, paired.phoneId))!.liveActivityStart!.token).toBe(
+      START_TOKEN,
+    );
+    expect((await activities(old)).map((row) => row.deviceId)).toEqual([paired.phoneId]);
+    expect(alertsSent().map((alert) => alert.tokens)).toEqual([[ALERT_TOKEN]]);
+    expect((await outbox(paired, instanceId)).map((row) => row.channel)).toEqual(["live_activity"]);
+  });
+
+  test("a phone in another household that reports the token stops the first household's starts", async () => {
+    const t = makePhoneBackend();
+    const first = await phoneHousehold(t);
+    const other = await phoneHousehold(t, "other-");
+    await reportStartToken(first);
+    await reportStartToken(other);
+    const instanceId = await pills(first);
+    await tick(first, EIGHT);
+    await settle(t);
+
+    expect(activityPushes()).toEqual([]);
+    expect((await phonePushRow(first))!.liveActivityStart).toBeUndefined();
+    expect((await phonePushRow(other, other.phoneId))!.liveActivityStart!.token).toBe(START_TOKEN);
+    expect(await activities(first)).toEqual([]);
+    expect(await outbox(first, instanceId)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "apns" }),
     ]);
   });
 });

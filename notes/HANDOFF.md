@@ -172,6 +172,8 @@ Code: `lib/liveActivity.ts` (what the Lock Screen should show for an instance, t
 - `activities` lists every Sunny activity on the phone. `key` is the `activityKey` from the start push. `token` is that activity's update token, or `null` while the phone has none.
 - `widgetPush` is the WidgetKit push token. `null` clears it.
 
+A start token or a widget token that another device row holds moves to the phone that reports it. The row that held it loses it, in any household, so one token is never on two rows (`notes/SCHEMA.md`, `phonePush`).
+
 The answer is 200 with one directive for each listed activity that is on the phone (`active` or `stale`) and does not show what it should:
 
 ```

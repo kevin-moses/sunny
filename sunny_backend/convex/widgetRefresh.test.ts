@@ -218,6 +218,23 @@ describe("who is not sent a refresh", () => {
     expect(refreshes().map((push) => push.tokens)).toEqual([[SECOND_ALERT_TOKEN]]);
   });
 
+  test("a widget token that a phone paired again took gets one push, not two", async () => {
+    const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
+    const paired = await secondPhone(f, SECOND_ALERT_TOKEN);
+    expect((await putPushState(paired, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
+    const instanceId = await atGapStart(f);
+    await pressOnDisplay(f, instanceId, 0);
+    await settle(f.t);
+    expect(
+      refreshes()
+        .map((push) => [push.message.pushType, push.tokens])
+        .sort(),
+    ).toEqual([
+      ["background", [ALERT_TOKEN]],
+      ["widgets", [WIDGET_TOKEN]],
+    ]);
+  });
+
   test("changes the scheduler makes send none", async () => {
     const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
     await addTask(f, { title: "Morning pills", time: "08:00", windowMinutes: 30 });

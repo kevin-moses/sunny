@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import {
@@ -120,6 +120,32 @@ export function parsePushStateRequest(body: Record<string, unknown>): PushStateR
   return report;
 }
 
+async function takeTokensFromOtherPhones(
+  ctx: MutationCtx,
+  deviceId: Id<"devices">,
+  tokens: Pick<Doc<"phonePush">, "liveActivityStart" | "widgetPush">,
+): Promise<void> {
+  const { liveActivityStart, widgetPush } = tokens;
+  if (liveActivityStart !== undefined) {
+    const holders = await ctx.db
+      .query("phonePush")
+      .withIndex("by_start_token", (q) => q.eq("liveActivityStart.token", liveActivityStart.token))
+      .collect();
+    for (const row of holders) {
+      if (row.deviceId !== deviceId) await ctx.db.patch(row._id, { liveActivityStart: undefined });
+    }
+  }
+  if (widgetPush !== undefined) {
+    const holders = await ctx.db
+      .query("phonePush")
+      .withIndex("by_widget_token", (q) => q.eq("widgetPush.token", widgetPush.token))
+      .collect();
+    for (const row of holders) {
+      if (row.deviceId !== deviceId) await ctx.db.patch(row._id, { widgetPush: undefined });
+    }
+  }
+}
+
 async function storeReportedTokens(
   ctx: MutationCtx,
   device: Doc<"devices">,
@@ -137,6 +163,7 @@ async function storeReportedTokens(
   if (widget !== undefined) {
     patch.widgetPush = widget.token === null ? undefined : { token: widget.token, reportedAt: now };
   }
+  await takeTokensFromOtherPhones(ctx, device._id, patch);
   const existing = await findPhonePush(ctx, device._id);
   if (existing === null) await ctx.db.insert("phonePush", { deviceId: device._id, ...patch });
   else await ctx.db.patch(existing._id, patch);
