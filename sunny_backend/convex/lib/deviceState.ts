@@ -509,6 +509,7 @@ export function instanceDayTask(
     type: task.type,
     displayLabel: task.displayLabel,
     spokenPrompt: task.spokenPrompt,
+    screenSentence: task.screenSentence ?? null,
     pillDescription: task.pillDescription ?? null,
     checklistItems: task.checklistItems,
     step: taskStep(task.checklistItems, instance.currentStep),
