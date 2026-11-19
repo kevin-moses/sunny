@@ -7,7 +7,6 @@ import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
 import { isDueEntry } from "./dueTask";
 import { openActivity, planStart } from "./liveActivity";
-import type { StartPlan } from "./liveActivity";
 import type { ApnsMessage, NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
@@ -64,17 +63,9 @@ export type ApnsRoute = {
 
 export type LiveActivityRoute = {
   kind: "live_activity";
-  activityId: Id<"liveActivities">;
   deviceId: Id<"devices">;
   token: string;
   message: ApnsMessage;
-  alertFallback: ApnsRoute | null;
-};
-
-type StartRoute = {
-  kind: "live_activity_start";
-  device: Doc<"devices">;
-  start: StartPlan;
   alertFallback: ApnsRoute | null;
 };
 
@@ -165,11 +156,11 @@ function apnsRoute(
 }
 
 async function deviceRoute(
-  ctx: QueryCtx,
+  ctx: MutationCtx,
   row: Doc<"notificationOutbox">,
   deviceId: Id<"devices">,
   now: number,
-): Promise<ApnsRoute | StartRoute | SkipRoute> {
+): Promise<ApnsRoute | LiveActivityRoute | SkipRoute> {
   const device = await ctx.db.get(deviceId);
   if (!device || device.householdId !== row.householdId) {
     return { kind: "skip", reason: "device_removed" };
@@ -179,7 +170,13 @@ async function deviceRoute(
   const reshow = row.kind === "senior_reshow";
   const start = row.pushState === "gave_up" ? null : await planStart(ctx, row, device, now);
   if (start !== null) {
-    return { kind: "live_activity_start", device, start, alertFallback: reshow ? null : alert };
+    return {
+      kind: "live_activity",
+      deviceId: device._id,
+      token: start.token,
+      message: await openActivity(ctx, row, device, start, now),
+      alertFallback: reshow ? null : alert,
+    };
   }
   if (reshow) return { kind: "skip", reason: "no_live_activity" };
   return alert ?? { kind: "skip", reason: "no_push_tokens" };
@@ -238,11 +235,11 @@ export async function reachableMembers(
   return reachable;
 }
 
-async function planRoute(
-  ctx: QueryCtx,
+export async function resolveRoute(
+  ctx: MutationCtx,
   row: Doc<"notificationOutbox">,
   now: number,
-): Promise<ApnsRoute | SmsRoute | StartRoute | SkipRoute> {
+): Promise<Route> {
   const stale = await staleReason(ctx, row);
   if (stale !== null) return { kind: "skip", reason: stale };
   if (row.recipientDeviceId !== undefined) {
@@ -250,24 +247,6 @@ async function planRoute(
   }
   if (row.recipientUserId !== undefined) return await memberRoute(ctx, row, row.recipientUserId);
   return { kind: "skip", reason: "no_recipient" };
-}
-
-export async function resolveRoute(
-  ctx: MutationCtx,
-  row: Doc<"notificationOutbox">,
-  now: number,
-): Promise<Route> {
-  const route = await planRoute(ctx, row, now);
-  if (route.kind !== "live_activity_start") return route;
-  const opened = await openActivity(ctx, row, route.device, route.start, now);
-  return {
-    kind: "live_activity",
-    activityId: opened.activityId,
-    deviceId: route.device._id,
-    token: route.start.token,
-    message: opened.message,
-    alertFallback: route.alertFallback,
-  };
 }
 
 async function hasFallbackAfterPush(

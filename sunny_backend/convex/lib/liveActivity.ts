@@ -520,7 +520,7 @@ export async function openActivity(
   device: Doc<"devices">,
   plan: StartPlan,
   now: number,
-): Promise<{ activityId: Id<"liveActivities">; message: ApnsMessage }> {
+): Promise<ApnsMessage> {
   let activityId = plan.resume;
   if (activityId === null) {
     activityId = await ctx.db.insert("liveActivities", {
@@ -541,10 +541,7 @@ export async function openActivity(
     receiptMs: RECEIPT_MS,
   };
   const alert = { title: row.title, body: row.body };
-  return {
-    activityId,
-    message: liveActivityStartMessage(attributes, plan, alert, plan.timestamp),
-  };
+  return liveActivityStartMessage(attributes, plan, alert, plan.timestamp);
 }
 
 async function startOf(
