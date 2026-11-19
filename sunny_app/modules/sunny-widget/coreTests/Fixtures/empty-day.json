@@ -1,0 +1,12 @@
+{
+  "version": "v-empty-day",
+  "generatedAt": 1795098600000,
+  "timezone": "America/New_York",
+  "until": 1795185000000,
+  "entries": [
+    {
+      "at": 1795098600000,
+      "cards": [{ "kind": "clear", "allDone": false, "next": null }]
+    }
+  ]
+}
