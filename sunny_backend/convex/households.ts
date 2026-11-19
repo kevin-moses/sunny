@@ -2,8 +2,8 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import { revokeTokenOf } from "./deviceApi";
 import type { QueryCtx } from "./_generated/server";
+import { revokeTokenOf } from "./deviceApi";
 import {
   ALREADY_IN_HOUSEHOLD,
   findDevice,

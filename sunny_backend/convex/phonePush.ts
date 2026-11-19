@@ -120,10 +120,23 @@ export function parsePushStateRequest(body: Record<string, unknown>): PushStateR
   return report;
 }
 
+type ReportedTokens = Pick<Doc<"phonePush">, "liveActivityStart" | "widgetPush">;
+
+async function clearOnOtherPhones(
+  ctx: MutationCtx,
+  holders: Doc<"phonePush">[],
+  keeper: Id<"devices">,
+  field: keyof ReportedTokens,
+): Promise<void> {
+  for (const row of holders) {
+    if (row.deviceId !== keeper) await ctx.db.patch(row._id, { [field]: undefined });
+  }
+}
+
 async function takeTokensFromOtherPhones(
   ctx: MutationCtx,
   deviceId: Id<"devices">,
-  tokens: Pick<Doc<"phonePush">, "liveActivityStart" | "widgetPush">,
+  tokens: ReportedTokens,
 ): Promise<void> {
   const { liveActivityStart, widgetPush } = tokens;
   if (liveActivityStart !== undefined) {
@@ -131,18 +144,14 @@ async function takeTokensFromOtherPhones(
       .query("phonePush")
       .withIndex("by_start_token", (q) => q.eq("liveActivityStart.token", liveActivityStart.token))
       .collect();
-    for (const row of holders) {
-      if (row.deviceId !== deviceId) await ctx.db.patch(row._id, { liveActivityStart: undefined });
-    }
+    await clearOnOtherPhones(ctx, holders, deviceId, "liveActivityStart");
   }
   if (widgetPush !== undefined) {
     const holders = await ctx.db
       .query("phonePush")
       .withIndex("by_widget_token", (q) => q.eq("widgetPush.token", widgetPush.token))
       .collect();
-    for (const row of holders) {
-      if (row.deviceId !== deviceId) await ctx.db.patch(row._id, { widgetPush: undefined });
-    }
+    await clearOnOtherPhones(ctx, holders, deviceId, "widgetPush");
   }
 }
 
