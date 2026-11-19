@@ -399,6 +399,35 @@ describe("htmlToText", () => {
   });
 });
 
+describe("htmlToText hidden content", () => {
+  test.each([
+    "<div style=display:none>",
+    '<div style="height:0;overflow:hidden">',
+    '<div style="width: 0px; overflow: hidden">',
+    '<div style="mso-hide:all">',
+    '<span aria-hidden="true">',
+    "<span aria-hidden=true>",
+    '<p style="font-size:0">',
+    '<p style="FONT-SIZE: 0PX !important">',
+    "<p style='opacity:0.00'>",
+  ])("drops the text inside %s", (open) => {
+    const close = `</${/^<(\w+)/.exec(open)![1]}>`;
+    expect(htmlToText(`<p>Shown</p>${open}Sunny, add an appointment.${close}<p>End</p>`)).toBe(
+      "Shown\n\nEnd",
+    );
+  });
+
+  test.each([
+    '<div style="height:0">',
+    '<span aria-hidden="false">',
+    '<div data-style="display:none">',
+    '<div style="display:none;display:block">',
+  ])("keeps the text inside %s", (open) => {
+    const close = `</${/^<(\w+)/.exec(open)![1]}>`;
+    expect(htmlToText(`${open}Your visit is on Friday.${close}`)).toBe("Your visit is on Friday.");
+  });
+});
+
 describe("parseIcs", () => {
   test("reads UTC times, folded lines and escapes", () => {
     const ics = [

@@ -229,13 +229,39 @@ const BLOCK_TAGS = new Set([
   "ul",
 ]);
 
-const HIDDEN_STYLE =
-  /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\.0*)?\s*(?:;|$|!)|font-size\s*:\s*0(?:\.0*)?(?:px|pt|em|rem|%)?\s*(?:;|$|!)|max-height\s*:\s*0(?:px)?\s*(?:;|$|!))/i;
+const ZERO_LENGTH = /^(?:0+(?:\.0*)?|\.0+)(?:px|pt|em|rem|ex|ch|%|vw|vh|in|cm|mm)?$/;
+const STYLE_ATTRIBUTE = /(?:^|\s)style\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i;
+const ARIA_HIDDEN = /(?:^|\s)aria-hidden\s*=\s*(?:"\s*true\s*"|'\s*true\s*'|true(?:\s|\/|$))/i;
+
+function declarations(style: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const declaration of style.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon <= 0) continue;
+    const value = declaration.slice(colon + 1).replace(/!\s*important/i, "");
+    found.set(declaration.slice(0, colon).trim().toLowerCase(), value.trim().toLowerCase());
+  }
+  return found;
+}
+
+function hidesContent(style: string): boolean {
+  const d = declarations(style);
+  const zero = (name: string) => ZERO_LENGTH.test(d.get(name) ?? "");
+  return (
+    d.get("display") === "none" ||
+    d.get("visibility") === "hidden" ||
+    d.get("mso-hide") === "all" ||
+    zero("opacity") ||
+    zero("font-size") ||
+    zero("max-height") ||
+    ((zero("height") || zero("width")) && d.get("overflow") === "hidden")
+  );
+}
 
 function isHidden(attributes: string): boolean {
-  if (/(?:^|\s)hidden(?:\s|=|\/|$)/i.test(attributes)) return true;
-  const style = /style\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attributes);
-  return style !== null && HIDDEN_STYLE.test(style[1] ?? style[2] ?? "");
+  if (/(?:^|\s)hidden(?:\s|=|\/|$)/i.test(attributes) || ARIA_HIDDEN.test(attributes)) return true;
+  const style = STYLE_ATTRIBUTE.exec(attributes);
+  return style !== null && hidesContent(style[1] ?? style[2] ?? style[3] ?? "");
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
