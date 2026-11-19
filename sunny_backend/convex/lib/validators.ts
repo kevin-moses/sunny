@@ -142,7 +142,6 @@ export const activityEndReason = v.union(
   v.literal("window_closed"),
   v.literal("instance_gone"),
   v.literal("start_failed"),
-  v.literal("unreachable"),
   v.literal("ended_on_phone"),
   v.literal("expired"),
   v.literal("device_revoked"),

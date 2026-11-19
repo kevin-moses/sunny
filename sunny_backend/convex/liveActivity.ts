@@ -4,7 +4,7 @@ import { internalAction, internalMutation } from "./_generated/server";
 import { liveActivityEndMessage, liveActivityUpdateMessage } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
 import { endActivity, loadActivityView, nextCommand, nextPushTimestamp } from "./lib/liveActivity";
-import { proofMissed, reshowIfDue } from "./lib/liveActivitySync";
+import { endTokenlessIfOver, proofMissed, reshowIfDue } from "./lib/liveActivitySync";
 import { activityContent, activityEndReason } from "./lib/validators";
 import type { ActivityContent, ActivityEndReason, ApnsMessage } from "./lib/validators";
 
@@ -69,9 +69,13 @@ export const settle = internalMutation({
       return null;
     }
     if (args.outcome === "unregistered") {
-      await ctx.db.patch(row._id, {
-        phase: { kind: "started", acceptedAt: row.phase.acceptedAt, proof: "proven" },
-      });
+      const tokenless = {
+        kind: "started" as const,
+        acceptedAt: row.phase.acceptedAt,
+        proof: "proven" as const,
+      };
+      await ctx.db.patch(row._id, { phase: tokenless });
+      await endTokenlessIfOver(ctx, { ...row, phase: tokenless }, Date.now());
     } else if (args.ends === null) {
       if (args.timestamp === row.pushTimestamp)
         await ctx.db.patch(row._id, { shown: args.content });

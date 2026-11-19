@@ -287,6 +287,10 @@ export interface StartAps extends ActivityAps {
   "relevance-score": number;
 }
 
+export function backgroundPushes(): SentPush[] {
+  return pushesSent().filter((push) => push.message.pushType === "background");
+}
+
 export function activityPushes(): SentPush[] {
   return pushesSent().filter((push) => push.message.pushType === "liveactivity");
 }

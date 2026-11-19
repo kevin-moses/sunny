@@ -8,7 +8,6 @@ import { deliveryPool, insertNotification } from "./delivery";
 import { seniorPromptWords } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
 import {
-  ACTIVITY_CAP_MS,
   activitiesOfInstance,
   endActivity,
   findPhonePush,
@@ -17,7 +16,8 @@ import {
   openActivitiesOf,
 } from "./liveActivity";
 import { DAY_MS } from "./time";
-import { requestWidgetRefresh } from "./widgetRefresh";
+import type { ActivityEndReason } from "./validators";
+import { phonePressedOn, requestWidgetRefresh, wakePhoneToReport } from "./widgetRefresh";
 
 export const ENDED_KEPT_MS = 7 * DAY_MS;
 
@@ -30,12 +30,36 @@ export async function queueActivityPush(
   await deliveryPool.enqueueAction(ctx, internal.liveActivity.push, { activityId });
 }
 
-async function pushLiveActivities(
+const ENDS_THE_PHONE_CANNOT_PREDICT: ReadonlySet<ActivityEndReason> = new Set([
+  "confirmed",
+  "instance_gone",
+]);
+
+export async function endTokenlessIfOver(
+  ctx: MutationCtx,
+  row: Doc<"liveActivities">,
+  now: number,
+  pressedOn: Id<"devices"> | null = null,
+): Promise<boolean> {
+  if (row.phase.kind !== "started" || row.phase.proof === "awaited") return false;
+  const view = await loadActivityView(ctx, row, now);
+  if (view.kind !== "end") return false;
+  await endActivity(ctx, row, view.reason, now, view.content);
+  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== pressedOn) {
+    await wakePhoneToReport(ctx, row.deviceId, now);
+  }
+  return true;
+}
+
+async function syncActivities(
   ctx: MutationCtx,
   instanceId: Id<"taskInstances">,
+  now: number,
+  pressedOn: Id<"devices"> | null,
 ): Promise<void> {
   for (const row of await activitiesOfInstance(ctx, instanceId)) {
     if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
+    else await endTokenlessIfOver(ctx, row, now, pressedOn);
   }
 }
 
@@ -94,7 +118,7 @@ export async function instanceChanged(
   if (actor.kind === "system") return;
   if (before.state === after.state && stepOf(before) === stepOf(after)) return;
   await requestWidgetRefresh(ctx, actor, after.householdId);
-  await pushLiveActivities(ctx, after._id);
+  await syncActivities(ctx, after._id, Date.now(), phonePressedOn(actor));
   if (isDoneState(before.state) && isDueEntry(after) && wasPrompted(after)) {
     for (const phone of await seniorPhones(ctx, after.householdId)) {
       await queueReshow(ctx, after, phone._id);
@@ -109,7 +133,8 @@ export async function instanceGone(
   const now = Date.now();
   for (const row of await activitiesOfInstance(ctx, instance._id)) {
     if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
-    if (row.phase.kind === "starting") await endActivity(ctx, row, "instance_gone", now);
+    else if (row.phase.kind === "starting") await endActivity(ctx, row, "instance_gone", now);
+    else await endTokenlessIfOver(ctx, row, now);
   }
 }
 
@@ -133,7 +158,7 @@ export async function taskTextChanged(
       .query("taskInstances")
       .withIndex("by_task_state", (q) => q.eq("taskId", after._id).eq("state", state))
       .collect();
-    for (const instance of instances) await pushLiveActivities(ctx, instance._id);
+    for (const instance of instances) await syncActivities(ctx, instance._id, Date.now(), null);
   }
 }
 
@@ -154,9 +179,11 @@ export async function proofMissed(
 ): Promise<void> {
   const row = await ctx.db.get(activityId);
   if (row === null || row.phase.kind !== "started" || row.phase.proof !== "awaited") return;
-  await ctx.db.patch(row._id, { phase: { ...row.phase, proof: "missed" } });
+  const missed = { ...row, phase: { ...row.phase, proof: "missed" as const } };
+  await ctx.db.patch(row._id, { phase: missed.phase });
   const push = await findPhonePush(ctx, row.deviceId);
   if (push !== null) await ctx.db.patch(push._id, { blindSince: now });
+  await endTokenlessIfOver(ctx, missed, now);
   const instance = await ctx.db.get(row.taskInstanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
   if (instance === null || task === null || !isDueEntry(instance)) return;
@@ -204,10 +231,7 @@ async function sweepStarted(
 ): Promise<number> {
   let swept = 0;
   for (const row of await activitiesInPhase(ctx, householdId, "started")) {
-    if (row.phase.kind !== "started") continue;
-    if (now < Math.min(row.windowEnd, row.phase.acceptedAt + ACTIVITY_CAP_MS)) continue;
-    await endActivity(ctx, row, "unreachable", now);
-    swept += 1;
+    if (await endTokenlessIfOver(ctx, row, now)) swept += 1;
   }
   return swept;
 }

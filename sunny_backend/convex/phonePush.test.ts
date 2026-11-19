@@ -399,10 +399,10 @@ describe("reported activities", () => {
         },
       },
     ]);
-    expect((await activity(f, id)).phase.kind).toBe("started");
-    expect(await report(f, id, "ended")).toEqual([]);
     expect((await activity(f, id)).phase).toMatchObject({ kind: "ended", reason: "confirmed" });
     expect((await activity(f, id)).shown.closed).toEqual({ kind: "done", at: confirmedAt });
+    expect(await report(f, id, "ended")).toEqual([]);
+    expect((await activity(f, id)).phase).toMatchObject({ kind: "ended", reason: "confirmed" });
   });
 
   test("a step taken elsewhere tells the phone to update to the current step", async () => {

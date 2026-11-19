@@ -298,8 +298,12 @@ async function applyReportedActivity(
     return { directives: [], behind: [] };
   }
   const next = reportedPhase(phase, reported.token, now);
-  if (next !== phase) await ctx.db.patch(row._id, { phase: next });
   const directives = directiveFor(reported.key, row, view);
+  if (next.kind === "started" && view.kind === "end") {
+    await endActivity(ctx, row, view.reason, now, view.content);
+    return { directives, behind: [] };
+  }
+  if (next !== phase) await ctx.db.patch(row._id, { phase: next });
   return { directives, behind: next.kind === "live" && directives.length > 0 ? [row._id] : [] };
 }
 
