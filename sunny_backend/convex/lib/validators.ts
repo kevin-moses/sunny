@@ -122,6 +122,7 @@ export const activityCard = v.object({
   startsAt: v.number(),
   endsAt: v.number(),
 });
+export type ActivityCard = Infer<typeof activityCard>;
 
 export const activityClosed = v.object({
   kind: v.union(v.literal("done"), v.literal("over")),

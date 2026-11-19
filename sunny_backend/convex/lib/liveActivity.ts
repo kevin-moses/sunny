@@ -2,8 +2,9 @@ import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { isAnytimeInstance } from "./anytime";
-import { contentState, liveActivityStartMessage } from "./apnsPayload";
+import { liveActivityStartMessage, utf8Length } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
+import { canonicalJson } from "./deviceState";
 import { isDueEntry } from "./dueTask";
 import { taskCards, timelineTask } from "./phoneTimeline";
 import { minutes } from "./time";
@@ -92,11 +93,11 @@ type Showing =
   | { kind: "ended"; shown: ActivityContent; reason: ActivityEndReason };
 
 function contentBytes(content: ActivityContent): number {
-  return new TextEncoder().encode(JSON.stringify(contentState(content))).length;
+  return utf8Length(JSON.stringify(content));
 }
 
 export function sameContent(a: ActivityContent, b: ActivityContent): boolean {
-  return JSON.stringify(contentState(a)) === JSON.stringify(contentState(b));
+  return canonicalJson(a) === canonicalJson(b);
 }
 
 export function fitContent(content: ActivityContent): ActivityContent {
@@ -108,14 +109,14 @@ export function fitContent(content: ActivityContent): ActivityContent {
 }
 
 function taskContent(subject: ActivitySubject, now: number): ActivityContent {
-  const [current, ...later] = taskCards(timelineTask(subject.instance, subject.task, now));
-  return fitContent(
-    contentState({
-      card: current,
-      nextSteps: later.flatMap((next) => (next.stepText === null ? [] : [next.stepText])),
-      closed: null,
-    }),
+  const [{ kind, ...card }, ...later] = taskCards(
+    timelineTask(subject.instance, subject.task, now),
   );
+  return fitContent({
+    card,
+    nextSteps: later.flatMap((next) => (next.stepText === null ? [] : [next.stepText])),
+    closed: null,
+  });
 }
 
 function ended(
@@ -306,13 +307,13 @@ function directiveFor(key: string, row: ActivityRow, view: ActivityView): Activi
     case "none":
       return [];
     case "end":
-      return [{ key, directive: "end", content: contentState(change.content) }];
+      return [{ key, directive: "end", content: change.content }];
     case "update":
       return [
         {
           key,
           directive: "update",
-          content: contentState(change.content),
+          content: change.content,
           staleAt: change.staleAt,
         },
       ];
@@ -387,7 +388,7 @@ export async function applyActivityReport(
     const open = await openForReport(ctx, row, entry, now);
     if (open === null) {
       if (isOnPhone(entry)) {
-        directives.push({ key: entry.key, directive: "end", content: contentState(row.shown) });
+        directives.push({ key: entry.key, directive: "end", content: row.shown });
       }
       continue;
     }

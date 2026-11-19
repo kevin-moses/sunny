@@ -14,7 +14,6 @@ import {
 } from "./deviceState";
 import type { DayEvent, DayTask, DeviceDay } from "./deviceState";
 import { taskIcon } from "./deviceWording";
-import type { DeviceIcon } from "./deviceWording";
 import { isOpenState } from "./escalation";
 import { stepIndex } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
@@ -28,7 +27,7 @@ import {
   wallClockMs,
 } from "./time";
 import { shownOn } from "./today";
-import type { InstanceState } from "./validators";
+import type { ActivityCard, InstanceState } from "./validators";
 
 export const TIMELINE_HORIZON_MS = DAY_MS;
 
@@ -53,19 +52,7 @@ interface DayAt {
   upcoming: DayEvent[];
 }
 
-export interface PhoneTaskCard {
-  kind: "task";
-  instanceId: Id<"taskInstances">;
-  step: number;
-  stepCount: number;
-  stepText: string | null;
-  label: string;
-  sentence: string | null;
-  detail: string | null;
-  icon: DeviceIcon;
-  startsAt: number;
-  endsAt: number;
-}
+export type PhoneTaskCard = { kind: "task" } & ActivityCard;
 
 export interface PhoneClearCard {
   kind: "clear";

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "../_generated/dataModel";
+import { liveActivityEndMessage } from "./apnsPayload";
 import {
   ACTIVITY_CAP_MS,
   CONTENT_MAX_BYTES,
@@ -395,5 +396,20 @@ describe("nextCommand", () => {
     expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(PILLS));
     expect(sameContent(reordered, PILLS)).toBe(true);
     expect(nextCommand(rowOf(livePhase(), reordered), show)).toEqual({ kind: "none" });
+  });
+
+  test("an end push sends stored content in the wire's key order", () => {
+    const reordered: ActivityContent = {
+      closed: null,
+      nextSteps: [],
+      card: Object.fromEntries(Object.entries(PILLS_CARD).reverse()) as typeof PILLS_CARD,
+    };
+    const endBody = (content: ActivityContent): string =>
+      liveActivityEndMessage(
+        { kind: "end", token: UPDATE_TOKEN, content, reason: "instance_gone", receiptUntil: null },
+        WINDOW_START,
+        1,
+      ).body;
+    expect(endBody(reordered)).toBe(endBody(PILLS));
   });
 });

@@ -101,7 +101,7 @@ export function isValidDeviceToken(token: string): boolean {
   return /^[0-9a-fA-F]{64,200}$/.test(token);
 }
 
-function utf8Length(text: string): number {
+export function utf8Length(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
