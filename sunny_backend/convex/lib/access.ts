@@ -119,6 +119,17 @@ export async function memberNames(
   return new Map(members.map((m) => [m.userId, m.displayName]));
 }
 
+export async function seniorPhones(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+): Promise<Doc<"devices">[]> {
+  const devices = await ctx.db
+    .query("devices")
+    .withIndex("by_household", (q) => q.eq("householdId", householdId))
+    .collect();
+  return devices.filter((device) => device.kind === "senior_phone");
+}
+
 export async function findDevice(ctx: QueryCtx, userId: string): Promise<Doc<"devices"> | null> {
   return await ctx.db
     .query("devices")

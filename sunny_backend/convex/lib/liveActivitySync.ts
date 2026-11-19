@@ -1,6 +1,7 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { seniorPhones } from "./access";
 import type { Actor } from "./access";
 import { ACTIVITY_LIFETIME_MS } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
@@ -127,17 +128,6 @@ export async function reshowIfDue(
   if (instance === null || device === null) return;
   if (!isDueEntry(instance) || !wasPrompted(instance)) return;
   await queueReshow(ctx, instance, device);
-}
-
-async function seniorPhones(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<Doc<"devices">[]> {
-  const devices = await ctx.db
-    .query("devices")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
-    .collect();
-  return devices.filter((device) => device.kind === "senior_phone");
 }
 
 function stepOf(instance: Pick<Doc<"taskInstances">, "currentStep">): number {

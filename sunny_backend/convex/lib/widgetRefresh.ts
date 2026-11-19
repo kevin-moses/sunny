@@ -1,6 +1,7 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { seniorPhones } from "./access";
 import type { Actor } from "./access";
 import { findPhonePush } from "./liveActivity";
 import { minutes } from "./time";
@@ -74,13 +75,8 @@ export async function requestWidgetRefresh(
 ): Promise<void> {
   if (actor.kind === "system") return;
   const pressedOn = phonePressedOn(actor);
-  const devices = await ctx.db
-    .query("devices")
-    .withIndex("by_household", (q) => q.eq("householdId", householdId))
-    .collect();
   const now = Date.now();
-  for (const device of devices) {
-    if (device.kind !== "senior_phone" || device._id === pressedOn) continue;
-    await refreshPhone(ctx, device._id, now);
+  for (const phone of await seniorPhones(ctx, householdId)) {
+    if (phone._id !== pressedOn) await refreshPhone(ctx, phone._id, now);
   }
 }
