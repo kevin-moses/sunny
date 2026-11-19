@@ -57,6 +57,8 @@ public struct PushStateReport: Equatable, Sendable {
         self.widgetPush = widgetPush
     }
 
+    public static let maxActivities = 8
+
     public static let cleared = PushStateReport(
         liveActivityStart: StartTokenReport(token: nil, enabled: false),
         activities: [],
@@ -110,7 +112,7 @@ extension ActivityReport: Encodable {
 
 public enum ActivityDirective: Equatable, Sendable {
     case update(key: String, state: TaskActivityState, staleAt: Date)
-    case end(key: String, state: TaskActivityState)
+    case end(key: String, state: TaskActivityState?)
 
     public var key: String {
         switch self {
@@ -150,22 +152,31 @@ private struct WireDirective: Decodable {
         guard
             let container = try? decoder.container(keyedBy: CodingKeys.self),
             let key = try? container.decode(String.self, forKey: .key),
-            let kind = try? container.decode(String.self, forKey: .directive),
-            let state = try? container.decode(TaskActivityState.self, forKey: .content)
+            let kind = try? container.decode(String.self, forKey: .directive)
         else {
             directive = nil
             return
         }
+        let state = try? container.decode(TaskActivityState.self, forKey: .content)
         switch kind {
         case "update":
-            directive = (try? container.decode(Double.self, forKey: .staleAt)).map {
-                .update(key: key, state: state, staleAt: date(fromEpochMs: $0))
+            guard let state, let staleAt = try? container.decode(Double.self, forKey: .staleAt) else {
+                directive = nil
+                return
             }
+            directive = .update(key: key, state: state, staleAt: date(fromEpochMs: staleAt))
         case "end":
             directive = .end(key: key, state: state)
         default:
             directive = nil
         }
+    }
+}
+
+public enum RefreshPush {
+    public static func matches(_ userInfo: [AnyHashable: Any]) -> Bool {
+        guard let aps = userInfo["aps"] as? [AnyHashable: Any] else { return false }
+        return (aps["content-available"] as? Int) == 1
     }
 }
 

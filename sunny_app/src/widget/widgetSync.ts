@@ -24,7 +24,7 @@ export function widgetHolderOf(decision: SessionDecision): WidgetHolder {
   }
 }
 
-export function widgetReloadKey(day: DayViewData | null): string | null {
+export function surfaceSyncKey(day: DayViewData | null): string | null {
   if (day === null) return null;
   const { localDate, tasks, eventsToday, nextUp } = day;
   return JSON.stringify({ localDate, tasks, eventsToday, nextUp });
@@ -48,7 +48,7 @@ async function syncOnce(): Promise<void> {
   if (!(await ensureWidgetToken())) return;
   const result = await SunnyWidget.flushPresses();
   if (result === 'unauthorized' && (await ensureWidgetToken())) await SunnyWidget.flushPresses();
-  SunnyWidget.reloadTimelines();
+  await SunnyWidget.syncSurfaces();
 }
 
 export function syncWidget(): Promise<void> {
@@ -65,6 +65,8 @@ export async function clearWidget(): Promise<void> {
   await SunnyWidget.clearCredentials();
 }
 
-export function reloadWidget(): void {
-  SunnyWidget.reloadTimelines();
+export function syncSurfaces(): void {
+  SunnyWidget.syncSurfaces().catch((e: unknown) =>
+    logger.warning('Widget', `Lock Screen sync failed: ${errorMessage(e)}`),
+  );
 }

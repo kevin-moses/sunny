@@ -10,18 +10,18 @@ enum PushFixture {
         let urls = try XCTUnwrap(Bundle.module.urls(forResourcesWithExtension: "json", subdirectory: directory))
         return try urls.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { url in
             let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
-            return try aps(in: object).map { (url.lastPathComponent, $0) }
+            return aps(in: object).map { (url.lastPathComponent, $0) }
         }
     }
 
-    private static func aps(in object: Any) throws -> [String: Any]? {
+    static func aps(in object: Any) -> [String: Any]? {
         guard let root = object as? [String: Any] else { return nil }
-        if let aps = root["aps"] as? [String: Any] { return aps }
-        if let body = root["body"] as? [String: Any] { return try aps(in: body) }
-        if let text = root["body"] as? String {
-            return try aps(in: JSONSerialization.jsonObject(with: Data(text.utf8)))
-        }
-        return nil
+        return (root["aps"] as? [String: Any]) ?? root["payload"].flatMap(aps(in:))
+    }
+
+    static func aps(named name: String) throws -> [String: Any] {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: directory))
+        return try XCTUnwrap(aps(in: JSONSerialization.jsonObject(with: Data(contentsOf: url))))
     }
 
     static func section<T: Decodable>(_ type: T.Type, _ key: String, in aps: [String: Any]) throws -> T? {
@@ -192,6 +192,13 @@ final class TaskActivityFaceTests: XCTestCase {
     func testAStepTaskShowsTheStepText() {
         guard case .due(let due) = face(Sample.tea) else { return XCTFail("expected due") }
         XCTAssertEqual(due.line, "Fill the kettle.")
+        XCTAssertEqual(due.secondLine, "Fill the kettle.")
+    }
+
+    func testATaskWithoutStepsHasItsDetailUnderTheLabel() {
+        guard case .due(let due) = face(Sample.state()) else { return XCTFail("expected due") }
+        XCTAssertNil(due.stepLine)
+        XCTAssertEqual(due.secondLine, "the small white ones")
     }
 
     func testDoneShowsTheReceiptWithThePressTime() {

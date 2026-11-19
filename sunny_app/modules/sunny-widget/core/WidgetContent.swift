@@ -21,6 +21,7 @@ public struct DueContent: Equatable, Sendable {
     public let time: String
     public let label: String
     public let line: String?
+    public let stepLine: String?
     public let detail: String?
     public let icon: TaskIcon?
 
@@ -30,6 +31,7 @@ public struct DueContent: Equatable, Sendable {
         time: String,
         label: String,
         line: String?,
+        stepLine: String?,
         detail: String?,
         icon: TaskIcon?
     ) {
@@ -38,6 +40,7 @@ public struct DueContent: Equatable, Sendable {
         self.time = time
         self.label = label
         self.line = line
+        self.stepLine = stepLine
         self.detail = detail
         self.icon = icon
     }
@@ -49,9 +52,14 @@ public struct DueContent: Equatable, Sendable {
             time: ClockFormat.time(task.startsAt, in: timeZone, locale: locale),
             label: task.label,
             line: task.stepCount > 1 ? task.stepText : task.sentence,
+            stepLine: task.stepCount > 1 ? task.stepText : nil,
             detail: task.detail,
             icon: task.icon
         )
+    }
+
+    public var secondLine: String? {
+        stepLine ?? detail
     }
 
     public var symbolName: String {

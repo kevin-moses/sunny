@@ -93,27 +93,21 @@ public struct WidgetSync: Sendable {
         return .clean
     }
 
-    public func reportPushState(_ report: PushStateReport) async -> PushStateReply? {
+    public func reportPushState(_ report: PushStateReport) async -> PushStateOutcome? {
         guard let client = client() else { return nil }
-        switch await client.reportPushState(report, timeout: Self.reportTimeout) {
-        case .answered(let reply):
-            return reply
-        case .unauthorized:
-            dropToken(client.token)
-            return nil
-        case .failed:
-            return nil
-        }
+        let outcome = await client.reportPushState(report, timeout: Self.reportTimeout)
+        if outcome == .unauthorized { dropToken(client.token) }
+        return outcome
     }
 
     public func storedWidgetPush() -> WidgetPushReport? {
         storage.loadWidgetPush()
     }
 
-    public func recordWidgetPush(token: String) async {
-        let report = WidgetPushReport(token: token)
-        try? storage.saveWidgetPush(report)
-        _ = await reportPushState(PushStateReport(liveActivityStart: nil, activities: nil, widgetPush: report))
+    public func storeWidgetPush(token: String) -> PushStateReport {
+        let widgetPush = WidgetPushReport(token: token)
+        try? storage.saveWidgetPush(widgetPush)
+        return PushStateReport(liveActivityStart: nil, activities: nil, widgetPush: widgetPush)
     }
 
     public func cachedPlan(locale: Locale) -> TimelinePlan {

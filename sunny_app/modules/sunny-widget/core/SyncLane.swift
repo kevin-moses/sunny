@@ -14,27 +14,28 @@ public actor SyncLane {
             await waitingSync.value
             return
         }
-        let task = append(sync, isSync: true)
+        let previous = tail
+        let task = Task {
+            await previous?.value
+            self.syncStarted()
+            await sync()
+        }
+        tail = task
         waitingSync = task
         await task.value
     }
 
-    public func run(_ work: @escaping @Sendable () async -> Void) async {
-        await append(work, isSync: false).value
-    }
-
-    private func append(_ work: @escaping @Sendable () async -> Void, isSync: Bool) -> Task<Void, Never> {
+    public func run<Value: Sendable>(_ work: @escaping @Sendable () async -> Value) async -> Value {
         let previous = tail
         let task = Task {
             await previous?.value
-            self.started(isSync: isSync)
-            await work()
+            return await work()
         }
-        tail = task
-        return task
+        tail = Task { _ = await task.value }
+        return await task.value
     }
 
-    private func started(isSync: Bool) {
-        if isSync { waitingSync = nil }
+    private func syncStarted() {
+        waitingSync = nil
     }
 }

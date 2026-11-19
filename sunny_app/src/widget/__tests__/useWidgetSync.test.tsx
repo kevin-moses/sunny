@@ -5,22 +5,22 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { SessionDecision } from '../../backend/pairing';
 import type { DayViewData } from '../../day/types';
-import { useWidgetReload, useWidgetSync } from '../useWidgetSync';
+import { useSurfaceSync, useWidgetSync } from '../useWidgetSync';
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
 const mockSync = jest.fn<AnyMock>();
 const mockClear = jest.fn<AnyMock>();
-const mockReload = jest.fn<() => void>();
+const mockSurfaceSync = jest.fn<() => void>();
 
 jest.mock('../widgetSync', () => {
   const actual = jest.requireActual<typeof import('../widgetSync')>('../widgetSync');
   return {
     widgetHolderOf: actual.widgetHolderOf,
-    widgetReloadKey: actual.widgetReloadKey,
+    surfaceSyncKey: actual.surfaceSyncKey,
     syncWidget: () => mockSync(),
     clearWidget: () => mockClear(),
-    reloadWidget: () => mockReload(),
+    syncSurfaces: () => mockSurfaceSync(),
   };
 });
 
@@ -48,7 +48,7 @@ function SyncProbe({ decision }: { decision: SessionDecision }) {
 }
 
 function ReloadProbe({ day }: { day: DayViewData | null }) {
-  useWidgetReload(day);
+  useSurfaceSync(day);
   return null;
 }
 
@@ -118,7 +118,7 @@ describe('useWidgetSync', () => {
   });
 });
 
-describe('useWidgetReload', () => {
+describe('useSurfaceSync', () => {
   const day = {
     localDate: '2026-11-19',
     localNow: '2026-11-19T09:30',
@@ -127,16 +127,16 @@ describe('useWidgetReload', () => {
     nextUp: null,
   } as unknown as DayViewData;
 
-  it('reloads the widget when the day view changes, not when only the minute does', () => {
+  it('syncs the widget and the Lock Screen when the day view changes, not when only the minute does', () => {
     render(<ReloadProbe day={day} />);
     render(<ReloadProbe day={{ ...day, localNow: '2026-11-19T09:31' } as DayViewData} />);
-    expect(mockReload).toHaveBeenCalledTimes(1);
+    expect(mockSurfaceSync).toHaveBeenCalledTimes(1);
     render(<ReloadProbe day={{ ...day, tasks: [{ id: 't1' }] } as unknown as DayViewData} />);
-    expect(mockReload).toHaveBeenCalledTimes(2);
+    expect(mockSurfaceSync).toHaveBeenCalledTimes(2);
   });
 
-  it('does not reload without a day view', () => {
+  it('does not sync without a day view', () => {
     render(<ReloadProbe day={null} />);
-    expect(mockReload).not.toHaveBeenCalled();
+    expect(mockSurfaceSync).not.toHaveBeenCalled();
   });
 });

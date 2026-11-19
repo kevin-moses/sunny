@@ -10,7 +10,7 @@ const mockNative = {
   storedSiteUrl: jest.fn<() => string | null>(),
   setCredentials: jest.fn<AnyMock>(),
   clearCredentials: jest.fn<AnyMock>(),
-  reloadTimelines: jest.fn<() => void>(),
+  syncSurfaces: jest.fn<AnyMock>(),
   flushPresses: jest.fn<AnyMock>(),
 };
 const mockCallAction = jest.fn<AnyMock>();
@@ -48,6 +48,7 @@ beforeEach(() => {
   mockNative.setCredentials.mockResolvedValue(undefined);
   mockNative.clearCredentials.mockResolvedValue(true);
   mockNative.flushPresses.mockResolvedValue('clean');
+  mockNative.syncSurfaces.mockResolvedValue(undefined);
   mockCallAction.mockResolvedValue({ deviceToken: 'tok-1' });
 });
 
@@ -120,12 +121,12 @@ describe('ensureWidgetToken', () => {
 });
 
 describe('syncWidget', () => {
-  it('flushes queued presses and reloads the widget', async () => {
+  it('flushes queued presses, then syncs the widget and the Lock Screen', async () => {
     const { syncWidget } = loadModule();
     mockNative.storedSiteUrl.mockReturnValue(SITE);
     await syncWidget();
     expect(mockNative.flushPresses).toHaveBeenCalledTimes(1);
-    expect(mockNative.reloadTimelines).toHaveBeenCalledTimes(1);
+    expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
   });
 
   it('issues one new token after a 401 dropped the old one, then flushes again', async () => {
@@ -135,7 +136,7 @@ describe('syncWidget', () => {
     await syncWidget();
     expect(mockCallAction).toHaveBeenCalledTimes(1);
     expect(mockNative.flushPresses).toHaveBeenCalledTimes(2);
-    expect(mockNative.reloadTimelines).toHaveBeenCalledTimes(1);
+    expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
   });
 
   it('does not flush without a stored token', async () => {
@@ -160,8 +161,20 @@ describe('syncWidget', () => {
   });
 });
 
-describe('widgetReloadKey', () => {
-  const { widgetReloadKey } = loadModule();
+describe('syncSurfaces', () => {
+  it('asks the native side to sync and logs a failure instead of throwing', async () => {
+    const { syncSurfaces } = loadModule();
+    mockNative.syncSurfaces.mockRejectedValueOnce(new Error('native'));
+    syncSurfaces();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
+    expect(mockLogger.warning).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('surfaceSyncKey', () => {
+  const { surfaceSyncKey } = loadModule();
   const day = {
     localDate: '2026-11-19',
     localNow: '2026-11-19T09:30',
@@ -171,12 +184,12 @@ describe('widgetReloadKey', () => {
   } as unknown as DayViewData;
 
   it('is null without a day view', () => {
-    expect(widgetReloadKey(null)).toBeNull();
+    expect(surfaceSyncKey(null)).toBeNull();
   });
 
   it('ignores the minute ticking by', () => {
     const later = { ...day, localNow: '2026-11-19T09:31' } as DayViewData;
-    expect(widgetReloadKey(later)).toBe(widgetReloadKey(day));
+    expect(surfaceSyncKey(later)).toBe(surfaceSyncKey(day));
   });
 
   it('changes when a task changes', () => {
@@ -184,6 +197,6 @@ describe('widgetReloadKey', () => {
       ...day,
       tasks: [{ id: 't1', state: 'confirmed' }],
     } as unknown as DayViewData;
-    expect(widgetReloadKey(confirmed)).not.toBe(widgetReloadKey(day));
+    expect(surfaceSyncKey(confirmed)).not.toBe(surfaceSyncKey(day));
   });
 });

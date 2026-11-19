@@ -8,9 +8,10 @@ module.exports = (config) => ({
   bundleIdentifier: '.widget',
   deploymentTarget: '17.2',
   appleTeamId: config.ios.appleTeamId,
-  frameworks: ['SwiftUI', 'WidgetKit', 'AppIntents'],
+  frameworks: ['SwiftUI', 'WidgetKit', 'AppIntents', 'ActivityKit'],
   entitlements: {
     'com.apple.security.application-groups': [APP_GROUP],
     'keychain-access-groups': [KEYCHAIN_GROUP],
+    'aps-environment': 'development',
   },
 });

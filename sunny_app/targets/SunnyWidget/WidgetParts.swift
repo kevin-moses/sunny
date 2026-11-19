@@ -119,7 +119,8 @@ struct EmptyWhenLine: View {
     }
 }
 
-struct DoneKey: View {
+struct DoneKey<Intent: AppIntent>: View {
+    let intent: Intent
     let due: DueContent
     let metrics: KeyMetrics
     let width: CGFloat
@@ -138,7 +139,7 @@ struct DoneKey: View {
     }
 
     var body: some View {
-        Button(intent: ConfirmTaskIntent(instanceId: due.instanceId, step: due.step)) {
+        Button(intent: intent) {
             HStack(spacing: metrics.gap) {
                 Image(systemName: "checkmark")
                     .font(.system(size: metrics.checkSize * labelScale, weight: .bold))
@@ -159,16 +160,16 @@ struct DoneKey: View {
     @ViewBuilder
     private var keyBackground: some View {
         ZStack {
-            if inks.glows {
+            if let glow = inks.glow {
                 shape
-                    .fill(Palette.nowYellow)
+                    .fill(Palette.nowYellow.opacity(glow.opacity))
                     .padding(-1)
-                    .offset(y: 8)
+                    .offset(y: glow.offsetY)
                     .blur(radius: 9)
             }
             shape
                 .fill(inks.keyFill)
-                .shadow(color: inks.glows ? Palette.ink.opacity(0.25) : .clear, radius: 2, x: 0, y: 2)
+                .shadow(color: inks.glow == nil ? .clear : Palette.ink.opacity(0.25), radius: 2, x: 0, y: 2)
             if let outline = inks.keyOutline {
                 shape.strokeBorder(outline, lineWidth: 3)
             }

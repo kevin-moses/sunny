@@ -1,24 +1,36 @@
 {
-  "aps": {
-    "timestamp": 1795102200,
-    "event": "end",
-    "content-state": {
-      "card": {
-        "kind": "task",
-        "instanceId": "inst-pills",
-        "step": 0,
-        "stepCount": 1,
-        "stepText": null,
-        "label": "Morning pills",
-        "sentence": "Take your morning pills.",
-        "detail": "the small white ones",
-        "startsAt": 1795098600000,
-        "endsAt": 1795102200000,
-        "icon": "pills"
+  "headers": {
+    "authorization": "bearer PROVIDER_TOKEN",
+    "apns-topic": "com.kmsunny.sunny.push-type.liveactivity",
+    "apns-push-type": "liveactivity",
+    "apns-priority": "10",
+    "apns-expiration": "1795136402",
+    "content-type": "application/json"
+  },
+  "payload": {
+    "aps": {
+      "timestamp": 1795096820,
+      "event": "end",
+      "content-state": {
+        "card": {
+          "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+          "step": 0,
+          "stepCount": 1,
+          "stepText": null,
+          "label": "Morning pills",
+          "sentence": "Take your morning pills.",
+          "detail": "the small white ones",
+          "icon": "pills",
+          "startsAt": 1795093200000,
+          "endsAt": 1795096800000
+        },
+        "nextSteps": [],
+        "closed": {
+          "kind": "over",
+          "at": 1795096800000
+        }
       },
-      "nextSteps": [],
-      "closed": { "kind": "over", "at": 1795102200000 }
-    },
-    "dismissal-date": 1795102200
+      "dismissal-date": 1795093202
+    }
   }
 }

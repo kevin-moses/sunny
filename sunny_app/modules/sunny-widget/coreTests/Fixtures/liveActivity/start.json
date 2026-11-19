@@ -1,36 +1,45 @@
 {
-  "aps": {
-    "timestamp": 1795098600,
-    "event": "start",
-    "attributes-type": "SunnyTaskAttributes",
-    "attributes": {
-      "activityKey": "act-pills-1",
-      "instanceId": "inst-pills",
-      "receiptMs": 10000
-    },
-    "content-state": {
-      "card": {
-        "kind": "task",
-        "instanceId": "inst-pills",
-        "step": 0,
-        "stepCount": 1,
-        "stepText": null,
-        "label": "Morning pills",
-        "sentence": "Take your morning pills.",
-        "detail": "the small white ones",
-        "startsAt": 1795098600000,
-        "endsAt": 1795102200000,
-        "icon": "pills"
+  "headers": {
+    "authorization": "bearer PROVIDER_TOKEN",
+    "apns-topic": "com.kmsunny.sunny.push-type.liveactivity",
+    "apns-push-type": "liveactivity",
+    "apns-priority": "10",
+    "apns-expiration": "1795096800",
+    "content-type": "application/json"
+  },
+  "payload": {
+    "aps": {
+      "timestamp": 1795093200,
+      "event": "start",
+      "attributes-type": "SunnyTaskAttributes",
+      "attributes": {
+        "activityKey": "k97f2ea1p6d8s3m5x7c9v2b4n6q8w0zt",
+        "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+        "receiptMs": 10000
       },
-      "nextSteps": [],
-      "closed": null
-    },
-    "alert": {
-      "title": "Morning pills",
-      "body": "Take your morning pills.",
-      "sound": "default"
-    },
-    "stale-date": 1795102200,
-    "relevance-score": 2204901400
+      "content-state": {
+        "card": {
+          "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+          "step": 0,
+          "stepCount": 1,
+          "stepText": null,
+          "label": "Morning pills",
+          "sentence": "Take your morning pills.",
+          "detail": "the small white ones",
+          "icon": "pills",
+          "startsAt": 1795093200000,
+          "endsAt": 1795096800000
+        },
+        "nextSteps": [],
+        "closed": null
+      },
+      "alert": {
+        "title": "Morning pills",
+        "body": "It's 8 o'clock. Time for your morning pills, the small white ones.",
+        "sound": "default"
+      },
+      "stale-date": 1795096800,
+      "relevance-score": 2204906800
+    }
   }
 }

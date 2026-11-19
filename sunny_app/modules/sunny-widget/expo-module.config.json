@@ -2,6 +2,11 @@
   "platforms": ["apple"],
   "apple": {
     "modules": ["SunnyWidgetModule"],
-    "podspecPath": ["ios/SunnyWidgetBridge.podspec", "core/SunnyWidgetCore.podspec"]
+    "podspecPath": [
+      "ios/SunnyWidgetBridge.podspec",
+      "core/SunnyWidgetCore.podspec",
+      "activity/SunnyLiveActivity.podspec"
+    ],
+    "appDelegateSubscribers": ["SunnyAppDelegateSubscriber"]
   }
 }

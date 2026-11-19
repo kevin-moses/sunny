@@ -23,12 +23,12 @@ import { BACKGROUND, colors } from './src/theme/colors';
 import { ThemeProvider } from './src/theme/ThemeProvider';
 import { ConversationScreen } from './src/voice/ConversationScreen';
 import { useVoice, VoiceProvider } from './src/voice/VoiceProvider';
-import { useWidgetReload, useWidgetSync } from './src/widget/useWidgetSync';
+import { useSurfaceSync, useWidgetSync } from './src/widget/useWidgetSync';
 
 function PairedHome({ paired }: { paired: PairedDevice }) {
   const voice = useVoice();
   const dayView = useDayView(paired.householdId);
-  useWidgetReload(paired.kind === 'senior_phone' ? dayView.day : null);
+  useSurfaceSync(paired.kind === 'senior_phone' ? dayView.day : null);
   if (paired.kind === 'home_display') return <DisplayScreen dayView={dayView} />;
   if (voice.isInteractive) return <ConversationScreen />;
   return <TodayScreen dayView={dayView} />;
