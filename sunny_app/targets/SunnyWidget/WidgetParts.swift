@@ -5,9 +5,19 @@ import SwiftUI
 import WidgetKit
 
 enum TextMeasure {
+    private static let fonts = NSCache<NSString, CTFont>()
+
+    private static func font(_ style: TypeStyle, scale: CGFloat) -> CTFont {
+        let size = style.size * scale
+        let key = "\(style.face.rawValue) \(size)" as NSString
+        if let cached = fonts.object(forKey: key) { return cached }
+        let font = CTFontCreateWithName(style.face.rawValue as CFString, size, nil)
+        fonts.setObject(font, forKey: key)
+        return font
+    }
+
     static func width(of text: String, style: TypeStyle, scale: CGFloat) -> CGFloat {
-        let font = CTFontCreateWithName(style.face.rawValue as CFString, style.size * scale, nil)
-        let attributes = [NSAttributedString.Key(kCTFontAttributeName as String): font]
+        let attributes = [NSAttributedString.Key(kCTFontAttributeName as String): font(style, scale: scale)]
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
         return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
     }
@@ -37,15 +47,13 @@ struct StyledLine: View {
 
 struct WrappedLines: View {
     let text: String
+    let lines: [String]
     let style: TypeStyle
     let scale: CGFloat
-    let width: CGFloat
-    let maxLines: Int
     let color: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            let lines = TextMeasure.lines(text, style: style, scale: scale, width: width, maxLines: maxLines)
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 StyledLine(text: line, style: style, scale: scale, color: color)
             }
@@ -98,9 +106,14 @@ struct WhenLine: View {
     let metrics: WhenMetrics
     let scale: CGFloat
     let inks: Inks
+    var symbol: String?
 
     var body: some View {
         HStack(spacing: metrics.gap * Layout.shrink(scale)) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: metrics.style.size * scale, weight: .bold))
+            }
             NowTag(metrics: metrics, scale: scale, inks: inks)
             StyledLine(text: time, style: metrics.style, scale: scale, color: inks.text)
         }

@@ -27,24 +27,25 @@ public final class SunnyWidgetModule: Module {
     public func definition() -> ModuleDefinition {
         Name("SunnyWidget")
 
-        Function("storedSiteUrl") { () -> String? in
+        AsyncFunction("storedSiteUrl") { () -> String? in
             WidgetSync.live()?.storedSiteURL()?.absoluteString
         }
 
-        AsyncFunction("setCredentials") { (token: String, siteUrl: String) throws in
+        AsyncFunction("setCredentials") { (token: String, siteUrl: String) async throws in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             guard let url = SiteURL.parse(siteUrl) else { throw BridgeError.unsafeSiteURL() }
             try sync.storeCredentials(token: token, siteURL: url)
             WidgetCenter.shared.reloadAllTimelines()
+            await PushStateReporter.shared.startObserving()
         }
 
-        AsyncFunction("clearCredentials") { () async throws -> Bool in
+        AsyncFunction("clearCredentials") { () async throws in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
-            return try await PushStateReporter.shared.clear(sync).get()
+            try await PushStateReporter.shared.clear(sync)
         }
 
         AsyncFunction("syncSurfaces") { () async in
-            await PushStateReporter.shared.sync()
+            await PushStateReporter.shared.sync(.appSurfaces)
         }
 
         AsyncFunction("flushPresses") { () async throws -> String in
@@ -52,13 +53,13 @@ public final class SunnyWidgetModule: Module {
             return await sync.replayPresses(timeout: WidgetSync.pressTimeout).rawValue
         }
 
-        Function("unsentPresses") { () -> [[String: Any]] in
+        AsyncFunction("unsentPresses") { () -> [[String: Any]] in
             (WidgetSync.live()?.unsentPresses() ?? []).map { press in
                 [
-                    "id": press.id.uuidString,
+                    "pressId": press.id.uuidString,
                     "instanceId": press.instanceId,
                     "step": press.step,
-                    "pressedAt": press.pressedAt.timeIntervalSince1970 * 1000,
+                    "pressedAt": epochMs(press.pressedAt),
                 ]
             }
         }
@@ -66,8 +67,13 @@ public final class SunnyWidgetModule: Module {
         AsyncFunction("markPressed") { (pressId: String, instanceId: String, step: Int, pressedAt: Double) async throws in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             guard let id = UUID(uuidString: pressId) else { throw BridgeError.badPressId() }
-            let at = Date(timeIntervalSince1970: pressedAt / 1000)
-            try await PushStateReporter.shared.markAppPress(sync, id: id, instanceId: instanceId, step: step, pressedAt: at)
+            try await PushStateReporter.shared.markAppPress(
+                sync,
+                id: id,
+                instanceId: instanceId,
+                step: step,
+                pressedAt: date(fromEpochMs: pressedAt)
+            )
         }
 
         AsyncFunction("answerPress") { (pressId: String) throws in

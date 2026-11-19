@@ -10,7 +10,7 @@ public enum StoredToken: Equatable, Sendable {
 public protocol TokenStore: Sendable {
     func lookup() -> StoredToken
     func write(_ token: String) throws
-    @discardableResult func remove(ifEqualTo expected: String?) -> Bool
+    func remove(ifEqualTo expected: String?)
 }
 
 extension TokenStore {
@@ -23,7 +23,7 @@ extension TokenStore {
 public protocol SiteStore: Sendable {
     func read() -> URL?
     func write(_ url: URL)
-    @discardableResult func remove() -> Bool
+    func remove()
 }
 
 public struct KeychainError: Error, Equatable {
@@ -78,10 +78,9 @@ public struct KeychainTokenStore: TokenStore {
         guard added == errSecSuccess else { throw KeychainError(status: added) }
     }
 
-    @discardableResult
-    public func remove(ifEqualTo expected: String?) -> Bool {
-        if let expected, read() != expected { return false }
-        return SecItemDelete(baseQuery as CFDictionary) == errSecSuccess
+    public func remove(ifEqualTo expected: String?) {
+        if let expected, read() != expected { return }
+        SecItemDelete(baseQuery as CFDictionary)
     }
 }
 
@@ -104,10 +103,7 @@ public struct DefaultsSiteStore: SiteStore {
         defaults?.set(url.absoluteString, forKey: Self.key)
     }
 
-    @discardableResult
-    public func remove() -> Bool {
-        guard defaults?.object(forKey: Self.key) != nil else { return false }
+    public func remove() {
         defaults?.removeObject(forKey: Self.key)
-        return true
     }
 }

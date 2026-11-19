@@ -69,19 +69,18 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
         lock.unlock()
     }
 
-    func remove(ifEqualTo expected: String?) -> Bool {
+    func remove(ifEqualTo expected: String?) {
         lock.lock()
         defer { lock.unlock() }
-        guard token != nil, expected == nil || expected == token else { return false }
+        guard expected == nil || expected == token else { return }
         token = nil
-        return true
     }
 }
 
 struct LockedKeychainTokenStore: TokenStore {
     func lookup() -> StoredToken { .unreadable }
     func write(_ token: String) throws { throw KeychainError(status: -25308) }
-    func remove(ifEqualTo expected: String?) -> Bool { false }
+    func remove(ifEqualTo expected: String?) {}
 }
 
 final class MemorySiteStore: SiteStore, @unchecked Sendable {
@@ -102,12 +101,10 @@ final class MemorySiteStore: SiteStore, @unchecked Sendable {
         lock.unlock()
     }
 
-    func remove() -> Bool {
+    func remove() {
         lock.lock()
-        defer { lock.unlock() }
-        guard url != nil else { return false }
         url = nil
-        return true
+        lock.unlock()
     }
 }
 

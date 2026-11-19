@@ -69,7 +69,12 @@ function endOf(made: ActivityCommand): Extract<ActivityCommand, { kind: "end" }>
 }
 
 function attributes(): ActivityAttributes {
-  return { activityKey: ACTIVITY_KEY, instanceId: INSTANCE_ID, receiptMs: RECEIPT_MS };
+  return {
+    activityKey: ACTIVITY_KEY,
+    instanceId: INSTANCE_ID,
+    receiptMs: RECEIPT_MS,
+    timeZone: "America/New_York",
+  };
 }
 
 const pills: ActivitySubject = { instance: instanceDoc(), task: taskDoc() };

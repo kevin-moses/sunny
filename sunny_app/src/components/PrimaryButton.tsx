@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -12,6 +11,7 @@ import {
 
 import { colors } from '../theme/colors';
 import { useTheme } from '../theme/ThemeProvider';
+import { useSinglePress } from './useSinglePress';
 
 interface PrimaryButtonProps {
   label: string;
@@ -41,26 +41,8 @@ export function PrimaryButton({
   style,
 }: PrimaryButtonProps) {
   const theme = useTheme();
-  const [pressing, setPressing] = useState(false);
-  const mounted = useRef(true);
+  const { pressing, press } = useSinglePress(onPress, externalBusy || disabled);
   const busy = externalBusy || pressing;
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  const handlePress = async (): Promise<void> => {
-    if (busy || disabled) return;
-    setPressing(true);
-    try {
-      await onPress();
-    } finally {
-      if (mounted.current) setPressing(false);
-    }
-  };
 
   const outline = variant === 'outline';
   const foreground = outline ? (tone ?? theme.accentColor) : colors.onAccent;
@@ -75,7 +57,7 @@ export function PrimaryButton({
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled: disabled || busy, busy }}
       disabled={disabled || busy}
-      onPress={() => void handlePress()}
+      onPress={() => void press()}
       style={({ pressed }) => [
         styles.button,
         compact && styles.compact,

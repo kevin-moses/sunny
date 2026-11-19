@@ -14,9 +14,9 @@ import { upNext } from '../display/model';
 
 export const NOTHING_DUE = 'Nothing to do right now.';
 
-export const COMING_UP = 'Coming up';
+const COMING_UP = 'Coming up';
 
-export const EARLIER_TODAY = 'Earlier today';
+const EARLIER_TODAY = 'Earlier today';
 
 const EVENT_WITHOUT_END_MS = 60 * 60_000;
 
@@ -48,7 +48,7 @@ export function screenMode({ task, message, undo, next, timezone }: ModeInput): 
   return { kind: 'clear', next };
 }
 
-export interface Headline {
+interface Headline {
   sentence: string;
   detail: string | null;
 }

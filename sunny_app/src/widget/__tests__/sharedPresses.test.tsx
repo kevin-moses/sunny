@@ -11,7 +11,7 @@ import { syncSurfaces } from '../widgetSync';
 type BridgeCall = (...args: unknown[]) => Promise<void>;
 
 const mockBridge = {
-  unsentPresses: jest.fn<() => unknown>(),
+  unsentPresses: jest.fn<() => Promise<unknown>>(),
   markPressed: jest.fn<BridgeCall>(),
   answerPress: jest.fn<BridgeCall>(),
   withdrawPress: jest.fn<BridgeCall>(),
@@ -74,7 +74,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockBridge.unsentPresses.mockReturnValue([]);
+  mockBridge.unsentPresses.mockResolvedValue([]);
   mockBridge.markPressed.mockResolvedValue(undefined);
   mockBridge.answerPress.mockResolvedValue(undefined);
   mockBridge.withdrawPress.mockResolvedValue(undefined);
@@ -88,39 +88,42 @@ afterEach(() => {
 });
 
 describe('useUnsentWidgetPresses', () => {
-  it("gives the app the widget's and the Lock Screen's unsent presses", () => {
-    mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+  it("gives the app the widget's and the Lock Screen's unsent presses", async () => {
+    mockBridge.unsentPresses.mockResolvedValue([
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
     ]);
     act(() => {
       renderer = create(<Probe />);
     });
+    await settle();
     expect(seen).toEqual([
       { instanceId: 'pills', pressedAt: 1_795_098_600_000, pressId: PRESS_ID, step: 0 },
     ]);
   });
 
-  it('shows a press the widget sent as gone after the next read', () => {
-    mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+  it('shows a press the widget sent as gone after the next read', async () => {
+    mockBridge.unsentPresses.mockResolvedValue([
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
     ]);
     act(() => {
       renderer = create(<Probe />);
     });
-    mockBridge.unsentPresses.mockReturnValue([]);
-    act(() => readUnsentPresses());
+    await settle();
+    mockBridge.unsentPresses.mockResolvedValue([]);
+    await act(() => readUnsentPresses());
     expect(seen).toEqual([]);
   });
 
   it('drops a Lock Screen press once it was sent, so a task reopened later shows as due', async () => {
-    mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+    mockBridge.unsentPresses.mockResolvedValue([
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
     ]);
     act(() => {
       renderer = create(<Probe />);
     });
+    await settle();
     expect(seen).toHaveLength(1);
-    mockBridge.unsentPresses.mockReturnValue([]);
+    mockBridge.unsentPresses.mockResolvedValue([]);
     act(() => syncSurfaces());
     await settle();
     const reopened = makeTask({
@@ -131,32 +134,51 @@ describe('useUnsentWidgetPresses', () => {
     expect(shown?.state).toBe('due');
   });
 
-  it('leaves out anything the native side sends that is not a press', () => {
-    mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0.5, pressedAt: 1 },
-      { id: 7, instanceId: 'pills', step: 0, pressedAt: 1 },
+  it('leaves out anything the native side sends that is not a press', async () => {
+    mockBridge.unsentPresses.mockResolvedValue([
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0.5, pressedAt: 1 },
+      { pressId: 7, instanceId: 'pills', step: 0, pressedAt: 1 },
       null,
-      { id: PRESS_ID, instanceId: 'tea', step: 2, pressedAt: 5 },
+      { pressId: PRESS_ID, instanceId: 'tea', step: 2, pressedAt: 5 },
     ]);
     act(() => {
       renderer = create(<Probe />);
     });
+    await settle();
     expect(seen.map((press) => press.instanceId)).toEqual(['tea']);
   });
 
-  it('keeps the last good list when the native read throws', () => {
-    mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1 },
+  it('keeps the last good list when the native read throws', async () => {
+    mockBridge.unsentPresses.mockResolvedValue([
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1 },
     ]);
     act(() => {
       renderer = create(<Probe />);
     });
-    mockBridge.unsentPresses.mockImplementation(() => {
-      throw new Error('no app group');
-    });
-    act(() => readUnsentPresses());
+    await settle();
+    mockBridge.unsentPresses.mockRejectedValue(new Error('no app group'));
+    await act(() => readUnsentPresses());
     expect(seen).toHaveLength(1);
     expect(mockWarning).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the newest read when an older one answers last', async () => {
+    act(() => {
+      renderer = create(<Probe />);
+    });
+    await settle();
+    let answerOlder!: (value: unknown) => void;
+    mockBridge.unsentPresses.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerOlder = resolve;
+      }),
+    );
+    mockBridge.unsentPresses.mockResolvedValueOnce([]);
+    const older = readUnsentPresses();
+    await act(() => readUnsentPresses());
+    answerOlder([{ pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1 }]);
+    await act(() => older);
+    expect(seen).toEqual([]);
   });
 });
 

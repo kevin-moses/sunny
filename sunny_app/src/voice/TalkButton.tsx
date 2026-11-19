@@ -1,37 +1,21 @@
 import { SymbolView } from 'expo-symbols';
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 
+import { useSinglePress } from '../components/useSinglePress';
 import { PaperText } from '../phone/PaperText';
 import { layout, paper, roles, shadows } from '../phone/theme';
 import { useVoice } from './voiceContext';
 
-export const TALK_LABEL = 'Talk to Sunny';
+const TALK_LABEL = 'Talk to Sunny';
 
-export const CONNECTING_LABEL = 'Connecting';
+const CONNECTING_LABEL = 'Connecting';
 
 export function TalkButton(): ReactElement {
   const { connect, connectionState } = useVoice();
-  const [pressing, setPressing] = useState(false);
-  const mounted = useRef(true);
-  const busy = connectionState === 'connecting' || pressing;
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  const handlePress = async (): Promise<void> => {
-    if (busy) return;
-    setPressing(true);
-    try {
-      await connect();
-    } finally {
-      if (mounted.current) setPressing(false);
-    }
-  };
+  const connecting = connectionState === 'connecting';
+  const { pressing, press } = useSinglePress(connect, connecting);
+  const busy = connecting || pressing;
 
   return (
     <Pressable
@@ -40,7 +24,7 @@ export function TalkButton(): ReactElement {
       accessibilityHint="Double-tap to connect and start speaking"
       accessibilityState={{ disabled: busy, busy }}
       disabled={busy}
-      onPress={() => void handlePress()}
+      onPress={() => void press()}
       style={({ pressed }) => [
         styles.key,
         { boxShadow: pressed || busy ? shadows.talkPressed : shadows.talk },

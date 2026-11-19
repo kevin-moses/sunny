@@ -1,4 +1,5 @@
 import { SymbolView } from 'expo-symbols';
+import { memo } from 'react';
 import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { SPOKEN } from '../day/format';
@@ -10,7 +11,6 @@ import {
   stepTag,
   taskHeadline,
   type DayRow,
-  type RowTone,
   type ScreenMode,
 } from './model';
 import { PaperText } from './PaperText';
@@ -172,13 +172,6 @@ export function DoneSlot({ mode, onDone }: { mode: ScreenMode; onDone: () => voi
   );
 }
 
-const TONE_COLOR: Record<RowTone, string> = {
-  plain: paper.ink,
-  now: paper.ink,
-  early: paper.ink,
-  grey: paper.grey,
-};
-
 function RowMark({ row, color }: { row: DayRow; color: string }) {
   switch (row.mark) {
     case 'done':
@@ -190,9 +183,22 @@ function RowMark({ row, color }: { row: DayRow; color: string }) {
   }
 }
 
-function DayRowView({ row, scale }: { row: DayRow; scale: number }) {
+interface DayRowProps {
+  row: DayRow;
+  scale: number;
+}
+
+function sameRow(before: DayRowProps, after: DayRowProps): boolean {
+  const fields = Object.keys(after.row) as (keyof DayRow)[];
+  return (
+    before.scale === after.scale && fields.every((field) => before.row[field] === after.row[field])
+  );
+}
+
+const DayRowView = memo(function DayRowView({ row, scale }: DayRowProps) {
   const strong = row.tone === 'now' || row.tone === 'early';
-  const color = { color: TONE_COLOR[row.tone] };
+  const color = row.tone === 'grey' ? paper.grey : paper.ink;
+  const colorStyle = { color };
   return (
     <View
       accessible
@@ -201,22 +207,25 @@ function DayRowView({ row, scale }: { row: DayRow; scale: number }) {
       style={[styles.row, { minHeight: layout.row * scale }, row.tone === 'now' && styles.nowRow]}
     >
       <View style={styles.mark}>
-        <RowMark row={row} color={TONE_COLOR[row.tone]} />
+        <RowMark row={row} color={color} />
       </View>
       <PaperText
         textRole={strong ? roles.rowStrong : roles.rowTime}
         numberOfLines={1}
         adjustsFontSizeToFit
-        style={[{ width: layout.timeColumn * scale }, color]}
+        style={[{ width: layout.timeColumn * scale }, colorStyle]}
       >
         {row.time}
       </PaperText>
-      <PaperText textRole={strong ? roles.rowStrong : roles.rowLabel} style={[styles.label, color]}>
+      <PaperText
+        textRole={strong ? roles.rowStrong : roles.rowLabel}
+        style={[styles.label, colorStyle]}
+      >
         {row.label}
       </PaperText>
     </View>
   );
-}
+}, sameRow);
 
 export function DayList({ rows }: { rows: readonly DayRow[] }) {
   const { fontScale } = useWindowDimensions();

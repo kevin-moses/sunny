@@ -59,7 +59,12 @@ func shownActivity(
 ) -> ShownActivity {
     ShownActivity(
         id: id ?? "id-\(key)",
-        attributes: SunnyTaskAttributes(activityKey: key, instanceId: state.card.instanceId, receiptMs: 10_000),
+        attributes: SunnyTaskAttributes(
+            activityKey: key,
+            instanceId: state.card.instanceId,
+            receiptMs: 10_000,
+            timeZone: "America/New_York"
+        ),
         state: state,
         staleAt: staleAt,
         token: token,
@@ -314,6 +319,10 @@ final class ActivityPressTests: XCTestCase {
         }
     }
 
+    func testOnlyActiveAndStaleActivitiesAreOnScreen() {
+        XCTAssertEqual(ReportedActivityState.allCases.filter(\.isOnScreen), [.active, .stale])
+    }
+
     func testAnUnauthorizedPressEndsEveryActivity() async throws {
         let store = FakeActivityStore([
             shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-pills"))),
@@ -350,7 +359,7 @@ final class ActivityPressTests: XCTestCase {
             clock: { [now] in now }
         )
         let result = await sync.pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
-        XCTAssertEqual(result, .noCredentials)
+        XCTAssertEqual(result, .pending)
         XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
         XCTAssertEqual(sync.unsentPresses().map(\.key), [PressKey(instanceId: "inst-pills", step: 0)])
     }

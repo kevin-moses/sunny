@@ -8,12 +8,12 @@ type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
 const SITE = 'https://site.example';
 const mockNative = {
-  storedSiteUrl: jest.fn<() => string | null>(),
+  storedSiteUrl: jest.fn<() => Promise<string | null>>(),
   setCredentials: jest.fn<AnyMock>(),
   clearCredentials: jest.fn<AnyMock>(),
   syncSurfaces: jest.fn<AnyMock>(),
   flushPresses: jest.fn<AnyMock>(),
-  unsentPresses: jest.fn<() => unknown>(),
+  unsentPresses: jest.fn<() => Promise<unknown>>(),
 };
 const mockCallAction = jest.fn<AnyMock>();
 const mockLogger = { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() };
@@ -50,12 +50,12 @@ const paired = (kind: 'senior_phone' | 'home_display'): SessionDecision => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockNative.storedSiteUrl.mockReturnValue(null);
+  mockNative.storedSiteUrl.mockResolvedValue(null);
   mockNative.setCredentials.mockResolvedValue(undefined);
-  mockNative.clearCredentials.mockResolvedValue(true);
+  mockNative.clearCredentials.mockResolvedValue(undefined);
   mockNative.flushPresses.mockResolvedValue('clean');
   mockNative.syncSurfaces.mockResolvedValue(undefined);
-  mockNative.unsentPresses.mockReturnValue([]);
+  mockNative.unsentPresses.mockResolvedValue([]);
   mockCallAction.mockResolvedValue({ deviceToken: 'tok-1' });
 });
 
@@ -89,7 +89,7 @@ describe('widgetHolderOf', () => {
 describe('ensureWidgetToken', () => {
   it('keeps a stored token for this deployment', async () => {
     const { ensureWidgetToken } = loadModule();
-    mockNative.storedSiteUrl.mockReturnValue(SITE);
+    mockNative.storedSiteUrl.mockResolvedValue(SITE);
     await expect(ensureWidgetToken()).resolves.toBe(true);
     expect(mockCallAction).not.toHaveBeenCalled();
     expect(mockNative.setCredentials).not.toHaveBeenCalled();
@@ -104,7 +104,7 @@ describe('ensureWidgetToken', () => {
 
   it('issues a new token when the stored one belongs to another deployment', async () => {
     const { ensureWidgetToken } = loadModule();
-    mockNative.storedSiteUrl.mockReturnValue('https://old.example');
+    mockNative.storedSiteUrl.mockResolvedValue('https://old.example');
     await ensureWidgetToken();
     expect(mockCallAction).toHaveBeenCalledTimes(1);
   });
@@ -133,7 +133,7 @@ describe('ensureWidgetToken', () => {
 describe('syncWidget', () => {
   it('flushes queued presses, then syncs the widget and the Lock Screen', async () => {
     const { syncWidget } = loadModule();
-    mockNative.storedSiteUrl.mockReturnValue(SITE);
+    mockNative.storedSiteUrl.mockResolvedValue(SITE);
     await syncWidget();
     expect(mockNative.flushPresses).toHaveBeenCalledTimes(1);
     expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
@@ -141,7 +141,7 @@ describe('syncWidget', () => {
 
   it('issues one new token after a 401 dropped the old one, then flushes again', async () => {
     const { syncWidget } = loadModule();
-    mockNative.storedSiteUrl.mockReturnValueOnce(SITE).mockReturnValueOnce(null);
+    mockNative.storedSiteUrl.mockResolvedValueOnce(SITE).mockResolvedValueOnce(null);
     mockNative.flushPresses.mockResolvedValueOnce('unauthorized').mockResolvedValueOnce('clean');
     await syncWidget();
     expect(mockCallAction).toHaveBeenCalledTimes(1);
@@ -158,7 +158,7 @@ describe('syncWidget', () => {
 
   it('reads the presses the widget still has to send once the flush is over', async () => {
     const { syncWidget } = loadModule();
-    mockNative.storedSiteUrl.mockReturnValue(SITE);
+    mockNative.storedSiteUrl.mockResolvedValue(SITE);
     await syncWidget();
     expect(mockNative.unsentPresses).toHaveBeenCalledTimes(1);
     expect(mockNative.flushPresses.mock.invocationCallOrder[0]).toBeLessThan(
@@ -186,10 +186,9 @@ describe('clearWidget', () => {
     token: () => string | null;
   } {
     let token: string | null = null;
-    mockNative.storedSiteUrl.mockImplementation(() => (token === null ? null : SITE));
+    mockNative.storedSiteUrl.mockImplementation(async () => (token === null ? null : SITE));
     mockNative.clearCredentials.mockImplementation(async () => {
       token = null;
-      return true;
     });
     mockNative.setCredentials.mockImplementation(async (value) => {
       await writeGate;

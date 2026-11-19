@@ -9,7 +9,7 @@ import type { DayViewState } from '../day/useDayView';
 import { DisplayCanvas, DisplayMessage, NowBody, TodayBody } from '../display/DisplayParts';
 import { KEY_ROW_HEIGHT, KEY_WIDTH, KeyPanel } from '../display/KeyPanel';
 import { nextItem, nowCard, nowTime, todayRows } from '../display/model';
-import { CANVAS, ink, useDisplayFonts } from '../display/theme';
+import { CANVAS, ink, usePaperFonts } from '../display/theme';
 import { useTuning } from '../display/TuningProvider';
 import { useDisplayKeys } from '../display/useDisplayKeys';
 import { useDisplayVoice } from '../display/useDisplayVoice';
@@ -24,7 +24,7 @@ type Page = 'now' | 'today';
 export function DisplayScreen({ dayView }: { dayView: DayViewState }) {
   useKeepAwake();
   useQuietNotifications();
-  const fontsReady = useDisplayFonts();
+  const fontsReady = usePaperFonts();
   const { day, agenda, errorMessage, isOffline } = dayView;
   const card = useMemo(() => (day === null ? null : nowCard(day)), [day]);
   const taskCard = card?.kind === 'task' ? card : null;

@@ -7,6 +7,11 @@ public enum FlushResult: String, Equatable, Sendable {
     case noCredentials
 }
 
+public enum ReporterLaunch: Equatable, Sendable {
+    case observe
+    case endActivities
+}
+
 public enum ReportOutcome: Equatable, Sendable {
     case sent(PushStateOutcome)
     case notPaired
@@ -17,6 +22,16 @@ private enum Credentials {
     case paired(DeviceClient)
     case notPaired
     case unreadable
+
+    var client: DeviceClient? {
+        guard case .paired(let client) = self else { return nil }
+        return client
+    }
+
+    var unsentResult: FlushResult {
+        guard case .notPaired = self else { return .pending }
+        return .noCredentials
+    }
 }
 
 public struct WidgetSync: Sendable {
@@ -46,7 +61,12 @@ public struct WidgetSync: Sendable {
     }
 
     public func storedSiteURL() -> URL? {
-        tokens.read() == nil ? nil : sites.read()
+        guard let site = sites.read() else { return nil }
+        return tokens.read() == nil ? nil : site
+    }
+
+    public func reporterLaunch() -> ReporterLaunch {
+        tokens.lookup() == .absent ? .endActivities : .observe
     }
 
     public func storeCredentials(token: String, siteURL: URL) throws {
@@ -56,16 +76,13 @@ public struct WidgetSync: Sendable {
         }
     }
 
-    @discardableResult
-    public func clear() async throws -> Bool {
+    public func clear() async throws {
         _ = await replayPresses(timeout: Self.clearTimeout)
-        let removedCredentials = try storage.withCredentialsLock {
-            let removedToken = tokens.remove(ifEqualTo: nil)
-            let removedSite = sites.remove()
-            return removedToken || removedSite
+        try storage.withCredentialsLock {
+            tokens.remove(ifEqualTo: nil)
+            sites.remove()
         }
-        let removedFiles = try storage.removeAll()
-        return removedCredentials || removedFiles
+        try storage.removeAll()
     }
 
     public func pressDone(
@@ -74,18 +91,24 @@ public struct WidgetSync: Sendable {
         via: PressVia,
         showPress: (Date) async -> Void = { _ in }
     ) async -> FlushResult {
+        let credentials = credentials()
+        if case .notPaired = credentials { return .noCredentials }
         let press = Press(instanceId: instanceId, step: step, via: via, pressedAt: clock())
         do {
             try storage.presses.append(press)
         } catch {
-            return await sendUnqueued(press, showPress: showPress)
+            return await sendUnqueued(press, with: credentials, showPress: showPress)
         }
         await showPress(press.pressedAt)
-        return await replayPresses(timeout: Self.pressTimeout)
+        return await replay(with: credentials, timeout: Self.pressTimeout)
     }
 
-    private func sendUnqueued(_ press: Press, showPress: (Date) async -> Void) async -> FlushResult {
-        guard let client = client() else { return .noCredentials }
+    private func sendUnqueued(
+        _ press: Press,
+        with credentials: Credentials,
+        showPress: (Date) async -> Void
+    ) async -> FlushResult {
+        guard let client = credentials.client else { return credentials.unsentResult }
         let outcome = await client.confirm(press, at: clock(), timeout: Self.pressTimeout)
         switch PressReplay.decision(for: outcome) {
         case .drop:
@@ -101,7 +124,11 @@ public struct WidgetSync: Sendable {
     }
 
     public func replayPresses(timeout: TimeInterval) async -> FlushResult {
-        guard let client = client() else { return .noCredentials }
+        await replay(with: credentials(), timeout: timeout)
+    }
+
+    private func replay(with credentials: Credentials, timeout: TimeInterval) async -> FlushResult {
+        guard let client = credentials.client else { return credentials.unsentResult }
         let deadline = clock().addingTimeInterval(timeout)
         var held: Set<String> = []
         for press in storage.presses.pending() where !held.contains(press.instanceId) {
@@ -146,13 +173,9 @@ public struct WidgetSync: Sendable {
         return PushStateReport(liveActivityStart: nil, activities: nil, widgetPush: widgetPush)
     }
 
-    public func householdTimeZone() -> TimeZone {
-        storage.loadCache()?.timeline.timeZone ?? .autoupdatingCurrent
-    }
-
     public func cachedPlan(locale: Locale) -> TimelinePlan {
         let now = clock()
-        guard client() != nil else { return TimelinePlanner.notice(.openSunny, at: now) }
+        guard credentials().client != nil else { return TimelinePlanner.notice(.openSunny, at: now) }
         return TimelinePlanner.plan(
             at: now,
             timeline: storage.loadCache()?.timeline,
@@ -162,8 +185,9 @@ public struct WidgetSync: Sendable {
     }
 
     public func refresh(locale: Locale) async -> TimelinePlan {
-        guard let client = client() else { return TimelinePlanner.notice(.openSunny, at: clock()) }
-        if await replayPresses(timeout: Self.pressTimeout) == .unauthorized {
+        let credentials = credentials()
+        guard let client = credentials.client else { return TimelinePlanner.notice(.openSunny, at: clock()) }
+        if await replay(with: credentials, timeout: Self.pressTimeout) == .unauthorized {
             return TimelinePlanner.notice(.openSunny, at: clock())
         }
         let cache = storage.loadCache()
@@ -206,22 +230,11 @@ public struct WidgetSync: Sendable {
         }
     }
 
-    var isNotPaired: Bool {
-        guard case .notPaired = credentials() else { return false }
-        return true
-    }
-
-    private func client() -> DeviceClient? {
-        guard case .paired(let client) = credentials() else { return nil }
-        return client
-    }
-
     private func reconciledPressed(since fetchStartedAt: Date) -> Set<PressKey> {
         storage.presses.reconcile(withTimelineFetchedFrom: fetchStartedAt)
-        return storage.presses.pressed()
     }
 
     private func dropToken(_ token: String) {
-        _ = try? storage.withCredentialsLock { tokens.remove(ifEqualTo: token) }
+        try? storage.withCredentialsLock { tokens.remove(ifEqualTo: token) }
     }
 }

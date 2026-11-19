@@ -84,6 +84,7 @@ final class LiveActivityContentTests: XCTestCase {
                 )
                 XCTAssertEqual(attributes.instanceId, state?.card.instanceId, fixture.name)
                 XCTAssertEqual(attributes.receiptDuration, 10, fixture.name)
+                XCTAssertEqual(attributes.householdTimeZone.identifier, "America/New_York", fixture.name)
                 XCTAssertNil(state?.closed, fixture.name)
             }
             if event == "end" {
@@ -93,6 +94,19 @@ final class LiveActivityContentTests: XCTestCase {
         XCTAssertGreaterThan(events["start"] ?? 0, 0)
         XCTAssertGreaterThan(events["update"] ?? 0, 0)
         XCTAssertGreaterThan(events["end"] ?? 0, 0)
+    }
+
+    func testTheLockScreenTellsTimeInTheZoneTheStartCarries() throws {
+        let attributes = SunnyTaskAttributes(activityKey: "k", instanceId: "i", receiptMs: 10_000, timeZone: "Asia/Tokyo")
+        let pressed = Sample.state(Sample.card(), closed: ActivityClosed(kind: .done, at: Fixture.generatedAt))
+        let face = TaskActivityFace(
+            state: pressed,
+            isStale: false,
+            timeZone: attributes.householdTimeZone,
+            locale: Fixture.unitedStates
+        )
+        guard case .receipt(_, let noted) = face else { return XCTFail("expected the receipt") }
+        XCTAssertEqual(normalizedSpaces(noted), "Noted at 11:30 PM")
     }
 
     func testContentStateReadsEpochMillisecondsAndTheIcon() throws {
@@ -197,7 +211,13 @@ final class TaskActivityFaceTests: XCTestCase {
 
     func testATaskWithoutStepsHasItsDetailUnderTheLabel() {
         guard case .due(let due) = face(Sample.state()) else { return XCTFail("expected due") }
-        XCTAssertNil(due.stepLine)
+        XCTAssertEqual(due.secondLine, "the small white ones")
+    }
+
+    func testAStepWithoutTextHasTheDetailUnderTheLabel() {
+        let state = Sample.state(Sample.card(stepCount: 3, stepText: nil))
+        guard case .due(let due) = face(state) else { return XCTFail("expected due") }
+        XCTAssertNil(due.line)
         XCTAssertEqual(due.secondLine, "the small white ones")
     }
 

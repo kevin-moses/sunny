@@ -63,6 +63,12 @@ interface Line {
   instanceId: string;
 }
 
+function blocks(block: Block, target: DayTask | null): boolean {
+  return (
+    block === 'settle' || block === 'held' || (block === 'early' && target?.state === 'upcoming')
+  );
+}
+
 function announceQueued(text: string): void {
   AccessibilityInfo.announceForAccessibilityWithOptions(text, { queue: true });
 }
@@ -239,17 +245,13 @@ export function useDoneAction(
 
   const pressDone = (): void => {
     const now = Date.now();
-    if (target === null || storing.current) return;
-    if (blockRef.current === 'settle' || blockRef.current === 'held') return;
-    if (blockRef.current === 'early' && target.state === 'upcoming') return;
+    if (target === null || storing.current || blocks(blockRef.current, target)) return;
     if (now - lastPress.current < PRESS_GAP_MS) return;
     lastPress.current = now;
     void store(target, now);
   };
 
-  const hidden =
-    block === 'settle' || block === 'held' || (block === 'early' && target?.state === 'upcoming');
-  const task = hidden ? null : target;
+  const task = blocks(block, target) ? null : target;
   const message =
     line !== null && (task === null || line.instanceId === task.instanceId) ? line.text : null;
   const unsent = offer !== null && isOffline && entries.includes(offer.pressed.entry);

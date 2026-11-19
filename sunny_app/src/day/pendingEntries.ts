@@ -28,15 +28,9 @@ export interface PendingUndo {
 
 export type PendingEntry = PendingConfirm | PendingUndo;
 
-export interface PressedEntry {
-  kind?: undefined;
-  instanceId: string;
-  pressedAt: number;
-  pressId: string;
-  step?: number;
-}
+export type PressedEntry = Omit<PendingConfirm, 'label'>;
 
-export type OverlayEntry = PressedEntry | PendingUndo;
+type OverlayEntry = PressedEntry | PendingUndo;
 
 const KNOWN_STATES: Record<DayTask['state'], true> = {
   upcoming: true,
@@ -120,20 +114,28 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+export function isPressedEntry(value: unknown): value is PressedEntry {
+  if (typeof value !== 'object' || value === null) return false;
+  const entry = value as Partial<Record<keyof PendingConfirm, unknown>>;
+  return (
+    entry.kind === undefined &&
+    typeof entry.instanceId === 'string' &&
+    typeof entry.pressId === 'string' &&
+    isFiniteNumber(entry.pressedAt) &&
+    (entry.step === undefined || Number.isInteger(entry.step))
+  );
+}
+
 export function isEntry(value: unknown): value is PendingEntry {
   if (typeof value !== 'object' || value === null) return false;
-  const entry = value as Partial<PendingConfirm> & Partial<Omit<PendingUndo, 'kind'>>;
-  if (typeof entry.instanceId !== 'string' || typeof entry.label !== 'string') return false;
-  if (typeof entry.pressId !== 'string') return false;
-  const kind = (value as { kind?: unknown }).kind;
-  if (kind === undefined) {
-    return (
-      isFiniteNumber(entry.pressedAt) && (entry.step === undefined || isFiniteNumber(entry.step))
-    );
-  }
+  const entry = value as Partial<Record<keyof PendingUndo, unknown>>;
+  if (typeof entry.label !== 'string') return false;
+  if (isPressedEntry(value)) return true;
   const restore = entry.restore as { state?: unknown; confirmable?: unknown } | undefined;
   return (
-    kind === 'undo' &&
+    entry.kind === 'undo' &&
+    typeof entry.instanceId === 'string' &&
+    typeof entry.pressId === 'string' &&
     isFiniteNumber(entry.undoneAt) &&
     typeof restore?.state === 'string' &&
     Object.prototype.hasOwnProperty.call(KNOWN_STATES, restore.state) &&

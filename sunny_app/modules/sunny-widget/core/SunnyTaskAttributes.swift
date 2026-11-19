@@ -10,14 +10,18 @@ public struct SunnyTaskAttributes: Codable, Hashable, Sendable {
     public let activityKey: String
     public let instanceId: String
     public let receiptMs: Double
+    public let timeZone: String
 
-    public init(activityKey: String, instanceId: String, receiptMs: Double) {
+    public init(activityKey: String, instanceId: String, receiptMs: Double, timeZone: String) {
         self.activityKey = activityKey
         self.instanceId = instanceId
         self.receiptMs = receiptMs
+        self.timeZone = timeZone
     }
 
     public var receiptDuration: TimeInterval { receiptMs / 1000 }
+
+    public var householdTimeZone: TimeZone { TimeZone(identifier: timeZone) ?? .autoupdatingCurrent }
 }
 
 #if os(iOS)

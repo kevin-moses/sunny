@@ -21,7 +21,7 @@ public struct DueContent: Equatable, Sendable {
     public let time: String
     public let label: String
     public let line: String?
-    public let stepLine: String?
+    public let hasSteps: Bool
     public let detail: String?
     public let icon: TaskIcon?
 
@@ -31,7 +31,7 @@ public struct DueContent: Equatable, Sendable {
         time: String,
         label: String,
         line: String?,
-        stepLine: String?,
+        hasSteps: Bool,
         detail: String?,
         icon: TaskIcon?
     ) {
@@ -40,7 +40,7 @@ public struct DueContent: Equatable, Sendable {
         self.time = time
         self.label = label
         self.line = line
-        self.stepLine = stepLine
+        self.hasSteps = hasSteps
         self.detail = detail
         self.icon = icon
     }
@@ -52,14 +52,14 @@ public struct DueContent: Equatable, Sendable {
             time: ClockFormat.time(task.startsAt, in: timeZone, locale: locale),
             label: task.label,
             line: task.stepCount > 1 ? task.stepText : task.sentence,
-            stepLine: task.stepCount > 1 ? task.stepText : nil,
+            hasSteps: task.stepCount > 1,
             detail: task.detail,
             icon: task.icon
         )
     }
 
     public var secondLine: String? {
-        stepLine ?? detail
+        hasSteps ? line ?? detail : detail
     }
 
     public var symbolName: String {
@@ -136,7 +136,7 @@ public enum WidgetContent: Equatable, Sendable {
     case clear(ClearContent)
     case notice(Notice)
 
-    public static func from(_ pick: CardPick, timeZone: TimeZone, locale: Locale) -> WidgetContent {
+    public static func from(_ pick: PhoneCard, timeZone: TimeZone, locale: Locale) -> WidgetContent {
         let clock = { (date: Date) in ClockFormat.time(date, in: timeZone, locale: locale) }
         switch pick {
         case .task(let task):

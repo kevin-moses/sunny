@@ -195,6 +195,7 @@ export function liveActivityStartMessage(
             activityKey: attributes.activityKey,
             instanceId: attributes.instanceId,
             receiptMs: attributes.receiptMs,
+            timeZone: attributes.timeZone,
           },
           "content-state": contentState(start.content),
           alert: startAlert(alert.title, text, start.quiet),

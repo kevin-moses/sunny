@@ -46,21 +46,32 @@ struct SystemWidgetLayout {
         return CGSize(width: size.width - inset, height: size.height - inset)
     }
 
-    func contentHeight(_ content: WidgetContent, width: CGFloat, scale: CGFloat) -> CGFloat {
-        let gap = Layout.gap(scale)
-        let top = when.height(scale) + gap
-        let lineCount = { (text: String, maxLines: Int) in
-            CGFloat(max(1, TextMeasure.lines(text, style: line, scale: scale, width: width, maxLines: maxLines).count))
-        }
+    func wrappedText(_ content: WidgetContent) -> (text: String, maxLines: Int)? {
         switch content {
         case .due(let due):
-            let lines = showsSentence ? 1 : lineCount(due.label, lineMaxLines)
-            return top + lines * line.line(scale) + gap + key.keyHeight(scale)
+            return showsSentence ? nil : (due.label, lineMaxLines)
         case .clear(let clear):
-            let panel = clear.next == nil ? 0 : gap + panelHeight(scale)
-            return top + lineCount(clear.headline, lineMaxLines) * line.line(scale) + panel
+            return (clear.headline, lineMaxLines)
         case .notice(let notice):
-            return top + lineCount(notice.text, noticeMaxLines) * line.line(scale)
+            return (notice.text, noticeMaxLines)
+        }
+    }
+
+    func lines(_ content: WidgetContent, width: CGFloat, scale: CGFloat) -> [String] {
+        guard let wrapped = wrappedText(content) else { return [] }
+        return TextMeasure.lines(wrapped.text, style: line, scale: scale, width: width, maxLines: wrapped.maxLines)
+    }
+
+    func contentHeight(_ content: WidgetContent, lineCount: Int, scale: CGFloat) -> CGFloat {
+        let gap = Layout.gap(scale)
+        let text = when.height(scale) + gap + CGFloat(max(1, lineCount)) * line.line(scale)
+        switch content {
+        case .due:
+            return text + gap + key.keyHeight(scale)
+        case .clear(let clear):
+            return text + (clear.next == nil ? 0 : gap + panelHeight(scale))
+        case .notice:
+            return text
         }
     }
 
@@ -69,12 +80,18 @@ struct SystemWidgetLayout {
         return when.width(time: due.time, scale: scale) <= width
     }
 
-    func fittedScale(_ content: WidgetContent, size: CGSize, requested: CGFloat) -> CGFloat {
-        TypeScale.fitted(requested: requested, floor: TypeStyle.minimumPointSize / smallestTextSize) { scale in
-            let box = inner(size, scale: scale)
-            return contentHeight(content, width: box.width, scale: scale) <= box.height
-                && whenLineFits(content, width: box.width, scale: scale)
-        }
+    func fitted(_ content: WidgetContent, size: CGSize, requested: CGFloat) -> (scale: CGFloat, lines: [String]) {
+        let fit = TypeScale.fitted(
+            requested: requested,
+            floor: TypeStyle.minimumPointSize / smallestTextSize,
+            measure: { scale in lines(content, width: inner(size, scale: scale).width, scale: scale) },
+            fits: { lines, scale in
+                let box = inner(size, scale: scale)
+                return contentHeight(content, lineCount: lines.count, scale: scale) <= box.height
+                    && whenLineFits(content, width: box.width, scale: scale)
+            }
+        )
+        return (fit.scale, fit.measured)
     }
 }
 
@@ -86,14 +103,15 @@ struct SystemWidgetView: View {
     let inks: Inks
 
     var body: some View {
-        let scale = layout.fittedScale(content, size: size, requested: requestedScale)
+        let fit = layout.fitted(content, size: size, requested: requestedScale)
+        let scale = fit.scale
         let box = layout.inner(size, scale: scale)
         VStack(alignment: .leading, spacing: Layout.gap(scale)) {
             switch content {
             case .due(let due):
                 VStack(alignment: .leading, spacing: Layout.gap(scale)) {
                     WhenLine(time: due.time, metrics: layout.when, scale: scale, inks: inks)
-                    dueLine(due, width: box.width, scale: scale)
+                    dueLine(due, lines: fit.lines, scale: scale)
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(due.spokenSummary)
@@ -107,7 +125,7 @@ struct SystemWidgetView: View {
                 )
             case .clear(let clear):
                 EmptyWhenLine(metrics: layout.when, scale: scale)
-                wrapped(clear.headline, maxLines: layout.lineMaxLines, width: box.width, scale: scale)
+                wrapped(clear.headline, lines: fit.lines, scale: scale)
                 if let next = clear.next {
                     NextPanel(
                         next: next,
@@ -120,7 +138,7 @@ struct SystemWidgetView: View {
                 }
             case .notice(let notice):
                 EmptyWhenLine(metrics: layout.when, scale: scale)
-                wrapped(notice.text, maxLines: layout.noticeMaxLines, width: box.width, scale: scale)
+                wrapped(notice.text, lines: fit.lines, scale: scale)
             }
         }
         .frame(width: box.width, height: box.height, alignment: .topLeading)
@@ -128,15 +146,15 @@ struct SystemWidgetView: View {
     }
 
     @ViewBuilder
-    private func dueLine(_ due: DueContent, width: CGFloat, scale: CGFloat) -> some View {
+    private func dueLine(_ due: DueContent, lines: [String], scale: CGFloat) -> some View {
         if layout.showsSentence {
             OneLineChoice(preferred: due.line, fallback: due.label, style: layout.line, scale: scale, color: inks.text)
         } else {
-            wrapped(due.label, maxLines: layout.lineMaxLines, width: width, scale: scale)
+            wrapped(due.label, lines: lines, scale: scale)
         }
     }
 
-    private func wrapped(_ text: String, maxLines: Int, width: CGFloat, scale: CGFloat) -> some View {
-        WrappedLines(text: text, style: layout.line, scale: scale, width: width, maxLines: maxLines, color: inks.text)
+    private func wrapped(_ text: String, lines: [String], scale: CGFloat) -> some View {
+        WrappedLines(text: text, lines: lines, style: layout.line, scale: scale, color: inks.text)
     }
 }

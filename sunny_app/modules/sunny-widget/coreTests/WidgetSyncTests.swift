@@ -273,11 +273,27 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertNil(tokens.read())
     }
 
-    func testPressWithoutCredentialsIsKeptForLater() async throws {
+    func testAWidgetPressOnAnUnpairedPhoneStoresNothing() async throws {
         tokens = MemoryTokenStore(nil)
         let result = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
         XCTAssertEqual(result, .noCredentials)
+        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.pressed(), [])
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    func testAWidgetPressBeforeTheFirstUnlockIsKeptForLater() async throws {
+        let sync = WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: LockedKeychainTokenStore(),
+            sites: sites,
+            transport: transport,
+            clock: { [clock] in clock!.now }
+        )
+        let result = await sync.pressDone(instanceId: "inst", step: 0, via: .widget)
+        XCTAssertEqual(result, .pending)
         XCTAssertEqual(queue.pending().map(\.instanceId), ["inst"])
+        XCTAssertTrue(transport.requests.isEmpty)
     }
 
     func testRateLimitedRefreshWaitsForRetryAfter() async throws {
@@ -318,14 +334,13 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         try queue.append(Press(instanceId: "inst", step: 0, via: .widget, pressedAt: clock.now))
-        let removed = try await makeSync().clear()
-        XCTAssertTrue(removed)
+        try await makeSync().clear()
         XCTAssertNil(tokens.read())
         XCTAssertNil(sites.read())
         XCTAssertNil(WidgetStorage(directory: directory).loadCache())
         XCTAssertEqual(queue.pending(), [])
-        let removedAgain = try await makeSync().clear()
-        XCTAssertFalse(removedAgain)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["credentials.lock"])
+        try await makeSync().clear()
     }
 
     func testClearSendsQueuedPressesWithTheOldTokenBeforeItForgetsThem() async throws {
@@ -334,12 +349,52 @@ final class WidgetSyncTests: XCTestCase {
         try queue.append(Press(instanceId: "inst-b", step: 0, via: .liveActivity, pressedAt: start.addingTimeInterval(1)))
         transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
         transport.queueConfirmFailure()
-        let removed = try await makeSync().clear()
-        XCTAssertTrue(removed)
+        try await makeSync().clear()
         XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-a", "inst-b"])
         XCTAssertEqual(transport.requests.first?.headers["Authorization"], "Bearer token-1")
         XCTAssertNil(tokens.read())
         XCTAssertEqual(queue.pending(), [])
+    }
+
+    func testThePairedPhoneWatchesItsActivitiesFromLaunch() {
+        XCTAssertEqual(makeSync().reporterLaunch(), .observe)
+    }
+
+    func testAPhoneWithoutATokenOnlyEndsItsActivitiesAtLaunch() {
+        tokens = MemoryTokenStore(nil)
+        XCTAssertEqual(makeSync().reporterLaunch(), .endActivities)
+    }
+
+    func testAPhoneThatCannotReadItsKeychainYetStillWatchesAtLaunch() {
+        let sync = WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: LockedKeychainTokenStore(),
+            sites: sites,
+            transport: transport
+        )
+        XCTAssertEqual(sync.reporterLaunch(), .observe)
+    }
+
+    func testATimelineCachedInTheOldEnvelopeIsFetchedAgainWithoutAnETag() async throws {
+        let body = try Fixture.data("due-task")
+        let envelope = try JSONSerialization.data(withJSONObject: ["etag": "\"v0\"", "body": body.base64EncodedString()])
+        try envelope.write(to: directory.appendingPathComponent("timeline.json"))
+        XCTAssertNil(WidgetStorage(directory: directory).loadCache())
+        transport.queueTimeline(200, body: body, headers: ["ETag": "\"v1\""])
+        let plan = await makeSync().refresh(locale: Fixture.unitedStates)
+        guard case .due = firstContent(plan) else { return XCTFail("expected the due task") }
+        XCTAssertNil(transport.timelineRequests.first?.headers["If-None-Match"])
+        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.etag, "\"v1\"")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("timeline.json")), body)
+    }
+
+    func testATimelineWithoutAnETagForgetsTheOldOne() throws {
+        let storage = WidgetStorage(directory: directory)
+        let body = try Fixture.data("due-task")
+        try storage.saveCache(body: body, etag: "\"v1\"")
+        try storage.saveCache(body: body, etag: nil)
+        XCTAssertNotNil(storage.loadCache())
+        XCTAssertNil(storage.loadCache()?.etag)
     }
 
     func testStoreCredentialsWritesTokenAndSite() throws {
@@ -349,20 +404,6 @@ final class WidgetSyncTests: XCTestCase {
         try makeSync().storeCredentials(token: "token-9", siteURL: site)
         XCTAssertEqual(tokens.read(), "token-9")
         XCTAssertEqual(sites.read(), site)
-    }
-
-    func testTheLockScreenTellsTimeInTheHouseholdZoneOnceATimelineIsCached() async throws {
-        XCTAssertEqual(makeSync().householdTimeZone(), .autoupdatingCurrent)
-        var payload = try Fixture.object("due-task")
-        payload["timezone"] = "Asia/Tokyo"
-        transport.queueTimeline(200, body: try Fixture.json(payload))
-        _ = await makeSync().refresh(locale: Fixture.unitedStates)
-        let zone = makeSync().householdTimeZone()
-        XCTAssertEqual(zone.identifier, "Asia/Tokyo")
-        let pressed = Sample.state(Sample.card(), closed: ActivityClosed(kind: .done, at: Fixture.generatedAt))
-        let face = TaskActivityFace(state: pressed, isStale: false, timeZone: zone, locale: Fixture.unitedStates)
-        guard case .receipt(_, let noted) = face else { return XCTFail("expected the receipt") }
-        XCTAssertEqual(normalizedSpaces(noted), "Noted at 11:30 PM")
     }
 
     func testCachedPlanUsesNoNetwork() async throws {
@@ -396,12 +437,11 @@ final class RotatingTokenStore: TokenStore, @unchecked Sendable {
 
     func write(_ token: String) throws {}
 
-    func remove(ifEqualTo expected: String?) -> Bool {
+    func remove(ifEqualTo expected: String?) {
         lock.lock()
         defer { lock.unlock() }
-        guard expected == nil || expected == token else { return false }
+        guard expected == nil || expected == token else { return }
         token = nil
-        return true
     }
 
     var current: String? {

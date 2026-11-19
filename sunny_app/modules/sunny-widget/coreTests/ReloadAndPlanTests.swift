@@ -77,6 +77,15 @@ final class TimelinePlannerTests: XCTestCase {
         XCTAssertEqual(plan.entries[2].content, .notice(.notConnected))
     }
 
+    func testLeavesOutAnEntryThatShowsWhatTheOneBeforeShows() throws {
+        let timeline = try Fixture.timeline("due-task")
+        let pressed: Set = [PressKey(instanceId: "inst-morning-pills", step: 0)]
+        let plan = TimelinePlanner.plan(at: start, timeline: timeline, pressed: pressed, locale: Fixture.unitedStates)
+        XCTAssertEqual(plan.entries.map(\.date), [start, timeline.until])
+        guard case .clear(let clear) = plan.entries[0].content else { return XCTFail("expected clear first") }
+        XCTAssertEqual(clear.next?.label, "Lunch")
+    }
+
     func testAppliesPressesToFutureEntries() throws {
         let timeline = try Fixture.timeline("nothing-due-next")
         let pressed: Set = [PressKey(instanceId: "inst-lunch", step: 0)]

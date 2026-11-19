@@ -11,7 +11,6 @@ enum ActivityLayout {
     static let islandRowGap: CGFloat = 8
     static let compactSymbolSize: CGFloat = 22
     static let compactCheckSize: CGFloat = 18
-    static let compactTagSize = CGSize(width: 44, height: 22)
     static let compactDotSize: CGFloat = 12
     static let overOpacity: Double = 0.5
     static let receiptStyle = TypeStyle.mediumPanel
@@ -183,11 +182,7 @@ struct CompactTrailingView: View {
         switch face {
         case .due:
             ViewThatFits(in: .horizontal) {
-                Text(WidgetWords.now)
-                    .font(TypeStyle.compactTag.font(1))
-                    .foregroundStyle(Palette.ink)
-                    .frame(width: ActivityLayout.compactTagSize.width, height: ActivityLayout.compactTagSize.height)
-                    .background(RoundedRectangle(cornerRadius: Layout.tagRadius, style: .continuous).fill(Palette.nowYellow))
+                NowTag(metrics: .compact, scale: 1, inks: .island)
                 Circle()
                     .fill(Palette.nowYellow)
                     .frame(width: ActivityLayout.compactDotSize, height: ActivityLayout.compactDotSize)

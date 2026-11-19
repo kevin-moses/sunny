@@ -106,11 +106,11 @@ public struct DeviceTimeline: Equatable, Sendable {
     }
 }
 
-func date(fromEpochMs value: Double) -> Date {
+public func date(fromEpochMs value: Double) -> Date {
     Date(timeIntervalSince1970: value / 1000)
 }
 
-func epochMs(_ date: Date) -> Double {
+public func epochMs(_ date: Date) -> Double {
     (date.timeIntervalSince1970 * 1000).rounded()
 }
 

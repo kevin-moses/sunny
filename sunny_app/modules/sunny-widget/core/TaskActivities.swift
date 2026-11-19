@@ -26,7 +26,7 @@ public struct ShownActivity: Equatable, Sendable {
 
     public var key: String { attributes.activityKey }
 
-    public var isOnScreen: Bool { phase == .active || phase == .stale }
+    public var isOnScreen: Bool { phase.isOnScreen }
 
     public var report: ActivityReport {
         ActivityReport(key: key, token: token, state: phase)
@@ -131,14 +131,10 @@ public enum TaskActivities {
 
 extension WidgetSync {
     public func pressDoneOnActivity(instanceId: String, step: Int, in store: TaskActivityStore) async -> FlushResult {
-        if isNotPaired {
-            await TaskActivities.endAll(in: store)
-            return .noCredentials
-        }
         let result = await pressDone(instanceId: instanceId, step: step, via: .liveActivity) { pressedAt in
             await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, withReceipt: true, in: store)
         }
-        if result == .unauthorized { await TaskActivities.endAll(in: store) }
+        if result == .unauthorized || result == .noCredentials { await TaskActivities.endAll(in: store) }
         return result
     }
 

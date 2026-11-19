@@ -187,10 +187,10 @@ final class SyncLaneTests: XCTestCase {
 
     func testRequestsDuringARunAreFoldedIntoOneMoreRun() async {
         let gate = Gate()
-        let lane = SyncLane { await gate.enter() }
-        let first = Task { await lane.requestSync() }
+        let lane = SyncLane { _ in await gate.enter() }
+        let first = Task { await lane.requestSync(.launch) }
         await waitUntil { await gate.entered == 1 }
-        let later = (0..<5).map { _ in Task { await lane.requestSync() } }
+        let later = (0..<5).map { _ in Task { await lane.requestSync(.activityChange) } }
         try? await Task.sleep(nanoseconds: 20_000_000)
         let opener = Task {
             while !Task.isCancelled {
@@ -207,15 +207,47 @@ final class SyncLaneTests: XCTestCase {
 
     func testWorkRunsInTheOrderItWasAsked() async {
         let log = Log()
-        let lane = SyncLane { await log.add("sync") }
-        await lane.requestSync()
+        let lane = SyncLane { _ in await log.add("sync") }
+        await lane.requestSync(.launch)
         let cleared = await lane.run { () -> Bool in
             await log.add("clear")
             return true
         }
-        await lane.requestSync()
+        await lane.requestSync(.launch)
         let entries = await log.entries
         XCTAssertTrue(cleared)
         XCTAssertEqual(entries, ["sync", "clear", "sync"])
+    }
+
+    func testOnlyTriggersThatCanChangeTheWidgetReloadIt() {
+        let reloading = SyncTrigger.allCases.filter(\.reloadsWidget)
+        XCTAssertEqual(reloading, [.refreshPush, .appSurfaces, .press])
+    }
+
+    func testARunReloadsTheWidgetWhenAnyRequestFoldedIntoItAsked() async {
+        let gate = Gate()
+        let log = Log()
+        let lane = SyncLane { reloading in
+            await log.add(reloading ? "reload" : "report")
+            await gate.enter()
+        }
+        let first = Task { await lane.requestSync(.startToken) }
+        await waitUntil { await gate.entered == 1 }
+        let later = [SyncTrigger.activityChange, .press, .enablement].map { trigger in
+            Task { await lane.requestSync(trigger) }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        let opener = Task {
+            while !Task.isCancelled {
+                await gate.openAll()
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+        }
+        await first.value
+        for task in later { await task.value }
+        await lane.requestSync(.activityChange)
+        opener.cancel()
+        let entries = await log.entries
+        XCTAssertEqual(entries, ["report", "reload", "report"])
     }
 }
