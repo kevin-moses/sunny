@@ -169,7 +169,18 @@ interface Context {
   trusted: boolean;
   stale: boolean;
   summary: string;
+  decision: DecisionReason | null;
 }
+
+const ALSO_NEEDS: Record<DecisionReason, string> = {
+  cancellation: "The email also mentions a cancellation.",
+  bill_or_payment: "The email is also about a bill or a payment.",
+  account_or_credentials: "The email is also about the security of an account.",
+  reply_needed: "The email also asks a question that needs an answer.",
+  legal_or_government: "The email is also from a government, court or tax office.",
+  health_result: "The email is also about medical test results.",
+  other: "The email may also need a reply, a payment or a decision.",
+};
 
 type Situation =
   | { case: "ignore" }
@@ -214,10 +225,11 @@ function escalate(
   eventId: string | null,
   appointment: Appointment | null,
 ): MailEffect {
+  const also = c.decision === null ? "" : ` ${ALSO_NEEDS[c.decision]}`;
   return {
     kind: "escalate",
     reason,
-    ...caregiverMessage(c.facts, line, c.summary),
+    ...caregiverMessage(c.facts, `${line}${also}`, c.summary),
     push: true,
     eventId,
     proposed: appointment === null ? null : proposed(appointment),
@@ -225,7 +237,17 @@ function escalate(
 }
 
 function tell(c: Context, line: string, push: boolean): MailEffect {
+  if (c.decision !== null) return escalate(c, c.decision, line, null, null);
   return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
+}
+
+function onCalendar(c: Context, eventId: string): MailEffect[] {
+  const already: MailEffect = { kind: "already_on_calendar", eventId };
+  if (c.decision === null) return [already];
+  return [
+    already,
+    escalate(c, c.decision, "The appointment is already on the calendar.", eventId, null),
+  ];
 }
 
 function only(matches: CalendarEventFact[]): CalendarEventFact | null {
@@ -271,8 +293,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
     {
       rule: "already linked, or same date, time and title words as a live event",
-      plan: (s) =>
-        s.duplicate === null ? null : [{ kind: "already_on_calendar", eventId: s.duplicate }],
+      plan: (s, c) => (s.duplicate === null ? null : onCalendar(c, s.duplicate)),
     },
     {
       rule: "sender not trusted",
@@ -339,13 +360,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
     {
       rule: "the match already has the new date and time",
-      plan: (s) => {
+      plan: (s, c) => {
         const match = only(s.matches);
         return match !== null &&
           s.fields !== null &&
           match.date === s.fields.date &&
           match.time === s.fields.time
-          ? [{ kind: "already_on_calendar", eventId: match.eventId }]
+          ? onCalendar(c, match.eventId)
           : null;
       },
     },
@@ -431,9 +452,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function matchesFor(ref: AppointmentRef, facts: PolicyFacts): CalendarEventFact[] {
-  if (facts.linkedEventId === null) return matchEvent(ref, facts.events);
-  return facts.events.filter((e) => e.eventId === facts.linkedEventId);
+function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
+  if (facts.linkedEventId !== null) {
+    return facts.events.filter((e) => e.eventId === facts.linkedEventId);
+  }
+  return ref === null ? [] : matchEvent(ref, facts.events);
 }
 
 function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
@@ -538,6 +561,7 @@ export function planWithRule(
     trusted: facts.sender.authenticated && facts.senderTrusted,
     stale: isStale(facts),
     summary: triaged.summary,
+    decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
   };
   const plan = planFor(situationOf(triaged.verdict, facts), context);
   if (!context.stale) return plan;

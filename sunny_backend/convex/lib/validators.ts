@@ -185,19 +185,28 @@ const appointmentRef = v.object({
   time: v.union(v.null(), v.string()),
 });
 
+const decisionReason = v.union(v.null(), literals(DECISION_REASONS));
+
 const mailVerdict = v.union(
   v.object({ kind: v.literal("ignore") }),
-  v.object({ kind: v.literal("appointment"), change: v.literal("new"), appointment }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("new"),
+    appointment,
+    decision: decisionReason,
+  }),
   v.object({
     kind: v.literal("appointment"),
     change: v.literal("reschedule"),
-    previous: appointmentRef,
+    previous: v.union(v.null(), appointmentRef),
     appointment,
+    decision: decisionReason,
   }),
   v.object({
     kind: v.literal("appointment"),
     change: v.literal("cancel"),
     previous: appointmentRef,
+    decision: decisionReason,
   }),
   v.object({ kind: v.literal("senior_info"), topic: literals(INFO_TOPICS) }),
   v.object({ kind: v.literal("needs_decision"), reason: literals(DECISION_REASONS) }),

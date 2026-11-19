@@ -4,6 +4,7 @@ import { gate } from "./mailGate";
 import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
 import type {
   AppointmentKind,
+  AppointmentRef,
   Clock,
   DecisionReason,
   IcsEvent,
@@ -511,6 +512,60 @@ const is = (r: Readings, flag: Flag): boolean => r.flags.get(flag) === "yes";
 const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
   flags.some((f) => r.flags.get(f) === "unsure");
 
+const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: string }[] = [
+  {
+    rule: "test results",
+    flag: "about_test_results",
+    reason: "health_result",
+    summary: "The email is about medical test results.",
+  },
+  {
+    rule: "bill",
+    flag: "about_bill",
+    reason: "bill_or_payment",
+    summary: "The email is about a bill or a payment.",
+  },
+  {
+    rule: "account security",
+    flag: "about_account_security",
+    reason: "account_or_credentials",
+    summary: "The email is about the security of one of the senior's accounts.",
+  },
+  {
+    rule: "government",
+    flag: "from_government",
+    reason: "legal_or_government",
+    summary: "The email is from a government, court or tax office.",
+  },
+  {
+    rule: "question for the senior",
+    flag: "asks_question",
+    reason: "reply_needed",
+    summary: "The email asks the senior a question that needs an answer.",
+  },
+  {
+    rule: "payment, reply, signature or decision needed",
+    flag: "needs_action",
+    reason: "other",
+    summary: "The email needs a payment, a reply, a signature or a decision.",
+  },
+];
+
+const DECISION_FLAGS = flagsIn("decision");
+
+function decisionOf(r: Readings): DecisionReason | null {
+  const named = DECISIONS.find(({ flag }) => FLAG_GROUPS[flag] === "decision" && is(r, flag));
+  if (named !== undefined) return named.reason;
+  return anyUnsure(r, DECISION_FLAGS) ? "other" : null;
+}
+
+function cancelled(r: Readings, previous: AppointmentRef, summary: string): Decision {
+  return {
+    verdict: { kind: "appointment", change: "cancel", previous, decision: decisionOf(r) },
+    summary,
+  };
+}
+
 export const TRUTH_TABLE: Row[] = [
   {
     rule: "instructions to an assistant",
@@ -578,28 +633,60 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
+    rule: "calendar cancellation",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite?.method !== "CANCEL") return null;
+      return cancelled(
+        r,
+        { kind: r.kind, ...invite.start },
+        "The email is a calendar cancellation.",
+      );
+    },
+  },
+  {
+    rule: "invitation for a cancelled appointment",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite === null || !is(r, "appointment_cancelled")) return null;
+      return cancelled(
+        r,
+        { kind: r.kind, ...(r.before ?? invite.start) },
+        "The email is a calendar invitation that says the appointment is cancelled.",
+      );
+    },
+  },
+  {
+    rule: "invitation for a moved appointment",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite === null || !is(r, "appointment_moved")) return null;
+      return {
+        verdict: {
+          kind: "appointment",
+          change: "reschedule",
+          previous: r.before === null ? null : { kind: r.kind, ...r.before },
+          appointment: { kind: r.kind, ...invite.start, durationMinutes: invite.durationMinutes },
+          decision: decisionOf(r),
+        },
+        summary: "The email is a calendar invitation that moves an appointment.",
+      };
+    },
+  },
+  {
     rule: "calendar invitation",
     decide: (r) => {
       const invite = r.invite;
       if (invite === null) return null;
-      const { date, time } = invite.start;
-      return invite.method === "CANCEL"
-        ? {
-            verdict: {
-              kind: "appointment",
-              change: "cancel",
-              previous: { kind: r.kind, date, time },
-            },
-            summary: "The email is a calendar cancellation.",
-          }
-        : {
-            verdict: {
-              kind: "appointment",
-              change: "new",
-              appointment: { kind: r.kind, date, time, durationMinutes: invite.durationMinutes },
-            },
-            summary: "The email is a calendar invitation.",
-          };
+      return {
+        verdict: {
+          kind: "appointment",
+          change: "new",
+          appointment: { kind: r.kind, ...invite.start, durationMinutes: invite.durationMinutes },
+          decision: decisionOf(r),
+        },
+        summary: "The email is a calendar invitation.",
+      };
     },
   },
   {
@@ -611,14 +698,11 @@ export const TRUTH_TABLE: Row[] = [
             "cancellation",
             "The email says an appointment was cancelled, but Sunny could not read which one.",
           )
-        : {
-            verdict: {
-              kind: "appointment",
-              change: "cancel",
-              previous: { kind: r.kind, ...r.before },
-            },
-            summary: "The email says an appointment was cancelled.",
-          };
+        : cancelled(
+            r,
+            { kind: r.kind, ...r.before },
+            "The email says an appointment was cancelled.",
+          );
     },
   },
   {
@@ -637,6 +721,7 @@ export const TRUTH_TABLE: Row[] = [
               change: "reschedule",
               previous: { kind: r.kind, ...r.before },
               appointment: { kind: r.kind, ...slot, durationMinutes: null },
+              decision: decisionOf(r),
             },
             summary: "The email says an appointment moved to a new time.",
           };
@@ -652,57 +737,17 @@ export const TRUTH_TABLE: Row[] = [
               kind: "appointment",
               change: "new",
               appointment: { kind: r.kind, ...slot, durationMinutes: null },
+              decision: decisionOf(r),
             },
             summary: "The email confirms an appointment.",
           }
         : null;
     },
   },
-  {
-    rule: "test results",
-    decide: (r) =>
-      is(r, "about_test_results")
-        ? decision("health_result", "The email is about medical test results.")
-        : null,
-  },
-  {
-    rule: "bill",
-    decide: (r) =>
-      is(r, "about_bill")
-        ? decision("bill_or_payment", "The email is about a bill or a payment.")
-        : null,
-  },
-  {
-    rule: "account security",
-    decide: (r) =>
-      is(r, "about_account_security")
-        ? decision(
-            "account_or_credentials",
-            "The email is about the security of one of the senior's accounts.",
-          )
-        : null,
-  },
-  {
-    rule: "government",
-    decide: (r) =>
-      is(r, "from_government")
-        ? decision("legal_or_government", "The email is from a government, court or tax office.")
-        : null,
-  },
-  {
-    rule: "question for the senior",
-    decide: (r) =>
-      is(r, "asks_question")
-        ? decision("reply_needed", "The email asks the senior a question that needs an answer.")
-        : null,
-  },
-  {
-    rule: "payment, reply, signature or decision needed",
-    decide: (r) =>
-      is(r, "needs_action")
-        ? decision("other", "The email needs a payment, a reply, a signature or a decision.")
-        : null,
-  },
+  ...DECISIONS.map(({ rule, flag, reason, summary }): Row => ({
+    rule,
+    decide: (r) => (is(r, flag) ? decision(reason, summary) : null),
+  })),
   {
     rule: "a specific decision question is unsettled",
     decide: (r) =>

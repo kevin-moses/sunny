@@ -141,6 +141,30 @@ describe("an appointment email", () => {
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 
+  test("a confirmation that also asks for a payment adds the event and escalates once", async () => {
+    const h = await setup();
+    const done = await triageEmail(h, clinic(), {
+      ...EYE_EXAM,
+      yes: ["confirms_appointment", "about_bill"],
+    });
+    const [event] = await rows(h, "events");
+    expect(event).toMatchObject({ title: "Eye exam", startsOn: "2026-12-10", startTime: "14:15" });
+    expect(done.effects).toEqual([
+      { kind: "event_added", eventId: event!._id },
+      { kind: "escalated", reason: "bill_or_payment", pushed: true },
+    ]);
+    const posts = await rows(h, "chatPosts");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toContain(
+      "Sunny added Eye exam, Thursday, December 10 at 2:15 PM, to the calendar. The email is also about a bill or a payment.",
+    );
+    expect(kinds(await rows(h, "notificationOutbox"))).toEqual([
+      "mail_escalation",
+      "mail_escalation",
+      "mail_escalation",
+    ]);
+  });
+
   test("the same triage applied twice, or late after a re-claim, adds nothing more", async () => {
     const h = await setup();
     const email = clinic();
@@ -155,6 +179,7 @@ describe("an appointment email", () => {
           time: "14:15",
           durationMinutes: null,
         },
+        decision: null,
       },
       summary: "The email confirms an appointment.",
       rule: "confirms an appointment with a date and start time",
@@ -457,6 +482,52 @@ describe("an appointment email", () => {
       "END:VCALENDAR",
     ].join("\r\n");
   }
+
+  test("an updated invite with a UID Sunny never linked, read as moved, moves the event", async () => {
+    const h = await setup();
+    const eventId = await insertEvent(h.t, h.householdId, {
+      title: "Eye exam",
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+    });
+    const done = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART;TZID=America/New_York:20261212T100000"]) }),
+      {
+        yes: ["appointment_moved"],
+        kind: "eye_doctor",
+        before: { date: "2026-12-10", time: "14:15" },
+      },
+    );
+    expect(done).toMatchObject({ judgeRule: "invitation for a moved appointment" });
+    expect(done.effects).toEqual([
+      { kind: "event_rescheduled", eventId, fromDate: "2026-12-10", fromTime: "14:15" },
+      { kind: "told_caregivers", pushed: true },
+    ]);
+    expect(await rows(h, "events")).toHaveLength(1);
+    expect((await rows(h, "events"))[0]).toMatchObject({
+      startsOn: "2026-12-12",
+      startTime: "10:00",
+    });
+  });
+
+  test("an invite read as moved that matches no event escalates and adds nothing", async () => {
+    const h = await setup();
+    const done = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART;TZID=America/New_York:20261212T100000"]) }),
+      { yes: ["appointment_moved"], kind: "eye_doctor" },
+    );
+    expect(done.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "unclear_reschedule",
+        pushed: true,
+        proposed: { kind: "eye_doctor", date: "2026-12-12", time: "10:00" },
+      },
+    ]);
+    expect(await rows(h, "events")).toHaveLength(0);
+  });
 
   test("an invite update older than the one Sunny linked is ignored", async () => {
     const h = await setup();

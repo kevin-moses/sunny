@@ -409,9 +409,11 @@
     },
     "expect": {
       "effects": [
-        "already_on_calendar"
+        "already_on_calendar",
+        "escalate"
       ],
-      "attack": false
+      "attack": false,
+      "reason": "other"
     }
   }
 ]

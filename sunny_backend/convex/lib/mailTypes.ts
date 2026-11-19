@@ -140,14 +140,25 @@ export type Suspicion = (typeof SUSPICIONS)[number];
 
 export type MailVerdict =
   | { kind: "ignore" }
-  | { kind: "appointment"; change: "new"; appointment: Appointment }
+  | {
+      kind: "appointment";
+      change: "new";
+      appointment: Appointment;
+      decision: DecisionReason | null;
+    }
   | {
       kind: "appointment";
       change: "reschedule";
-      previous: AppointmentRef;
+      previous: AppointmentRef | null;
       appointment: Appointment;
+      decision: DecisionReason | null;
     }
-  | { kind: "appointment"; change: "cancel"; previous: AppointmentRef }
+  | {
+      kind: "appointment";
+      change: "cancel";
+      previous: AppointmentRef;
+      decision: DecisionReason | null;
+    }
   | { kind: "senior_info"; topic: InfoTopic }
   | { kind: "needs_decision"; reason: DecisionReason }
   | { kind: "suspicious"; suspicion: Suspicion };

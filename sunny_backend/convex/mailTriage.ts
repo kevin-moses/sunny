@@ -182,7 +182,9 @@ function datesNamed(verdict: MailVerdict): string[] {
   if (verdict.change === "cancel") return [verdict.previous.date];
   const { date } = verdict.appointment;
   const dates = [addDays(date, -1), date];
-  return verdict.change === "reschedule" ? [...dates, verdict.previous.date] : dates;
+  return verdict.change === "reschedule" && verdict.previous !== null
+    ? [...dates, verdict.previous.date]
+    : dates;
 }
 
 async function calendarFacts(

@@ -127,10 +127,22 @@ const ROWS: [string, string, Readings, string][] = [
     "appointment:new",
   ],
   [
-    "calendar invitation",
-    "a cancellation",
+    "calendar cancellation",
+    "",
     readings({}, { invite: { ...INVITE, method: "CANCEL" } }),
     "appointment:cancel",
+  ],
+  [
+    "invitation for a cancelled appointment",
+    "",
+    readings({ appointment_cancelled: "yes", appointment_moved: "yes" }, { invite: INVITE }),
+    "appointment:cancel",
+  ],
+  [
+    "invitation for a moved appointment",
+    "",
+    readings({ appointment_moved: "yes" }, { invite: INVITE, before: NOV_20 }),
+    "appointment:reschedule",
   ],
   [
     "cancelled",
@@ -311,6 +323,7 @@ describe("truth table", () => {
       kind: "appointment",
       change: "new",
       appointment: { kind: "eye_doctor", date: "2026-12-10", time: "14:15", durationMinutes: null },
+      decision: null,
     });
   });
 
@@ -326,6 +339,64 @@ describe("truth table", () => {
       kind: "appointment",
       change: "new",
       appointment: { kind: "medical_test", date: "2026-12-09", time: "14:30", durationMinutes: 45 },
+      decision: null,
+    });
+  });
+
+  test.each([
+    ["a bill", { about_bill: "yes", needs_action: "yes" }, "bill_or_payment"],
+    [
+      "test results and a question",
+      { about_test_results: "yes", asks_question: "yes" },
+      "health_result",
+    ],
+    ["an unsettled bill", { about_bill: "unsure" }, "other"],
+    ["only something to do", { needs_action: "yes" }, null],
+    ["an unsettled reply", { needs_action: "unsure" }, null],
+    ["nothing else", {}, null],
+  ] as const)(
+    "a confirmed appointment that also has %s carries that decision",
+    (_, flags, reason) => {
+      const { verdict } = decide(
+        readings({ confirms_appointment: "yes", ...flags }, { kind: "eye_doctor", when: DEC_10 }),
+      );
+      expect(verdict).toMatchObject({ kind: "appointment", change: "new", decision: reason });
+    },
+  );
+
+  test("an invitation that is also about a bill carries the bill", () => {
+    const { verdict } = decide(
+      readings({ about_bill: "yes", needs_action: "yes" }, { invite: INVITE }),
+    );
+    expect(verdict).toMatchObject({ change: "new", decision: "bill_or_payment" });
+  });
+
+  test("an invitation Jev reads as moved takes the new slot from the calendar part", () => {
+    expect(
+      decide(readings({ appointment_moved: "yes" }, { kind: "hearing", invite: INVITE })).verdict,
+    ).toEqual({
+      kind: "appointment",
+      change: "reschedule",
+      previous: null,
+      appointment: { kind: "hearing", date: "2026-12-09", time: "14:30", durationMinutes: 45 },
+      decision: null,
+    });
+    expect(
+      decide(
+        readings({ appointment_moved: "yes" }, { kind: "hearing", invite: INVITE, before: NOV_20 }),
+      ).verdict,
+    ).toMatchObject({ previous: { kind: "hearing", date: "2026-11-20", time: "14:00" } });
+  });
+
+  test("an invitation Jev reads as cancelled names the invitation's slot", () => {
+    expect(
+      decide(readings({ appointment_cancelled: "yes" }, { kind: "hearing", invite: INVITE }))
+        .verdict,
+    ).toEqual({
+      kind: "appointment",
+      change: "cancel",
+      previous: { kind: "hearing", date: "2026-12-09", time: "14:30" },
+      decision: null,
     });
   });
 
