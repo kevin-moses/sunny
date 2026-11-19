@@ -301,19 +301,20 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           : onCalendar(c, s.duplicate, appointmentKey(s.appointment, c.facts.ics)),
     },
     {
-      rule: "a person would come to the home",
-      plan: (s, c) =>
-        !APPOINTMENT_KINDS[s.appointment.kind].comesHome
-          ? null
-          : [
-              escalate(
-                c,
-                "home_visit",
-                `${described(s.appointment)}. Sunny has not added it because someone would come to the home. Tell Sunny in chat to add it once you have checked the visit.`,
-                null,
-                s.appointment,
-              ),
-            ],
+      rule: "a caregiver confirms this kind first",
+      plan: (s, c) => {
+        const confirms = APPOINTMENT_KINDS[s.appointment.kind].caregiverConfirms;
+        if (confirms === null) return null;
+        return [
+          escalate(
+            c,
+            confirms.reason,
+            `${described(s.appointment)}. Sunny has not added it because ${confirms.because}. Tell Sunny in chat to add it once you have checked ${confirms.checked}.`,
+            null,
+            s.appointment,
+          ),
+        ];
+      },
     },
     {
       rule: "overlaps another live event",

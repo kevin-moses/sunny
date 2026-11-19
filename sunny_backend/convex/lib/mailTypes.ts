@@ -45,66 +45,100 @@ export const APPOINTMENT_KIND_NAMES = [
 
 export type AppointmentKind = (typeof APPOINTMENT_KIND_NAMES)[number];
 
+export interface CaregiverConfirms {
+  reason: EscalationReason;
+  because: string;
+  checked: string;
+}
+
 export const APPOINTMENT_KINDS: Record<
   AppointmentKind,
-  { describe: string; title: string; comesHome: boolean }
+  { describe: string; title: string; caregiverConfirms: CaregiverConfirms | null }
 > = {
   doctor_visit: {
     describe: "A visit with a doctor, nurse or other clinician",
     title: "Doctor visit",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   dentist: {
     describe: "A dentist visit or teeth cleaning",
     title: "Dentist appointment",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   eye_doctor: {
     describe: "An eye exam or a visit to an eye doctor",
     title: "Eye exam",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   hearing: {
     describe: "A hearing test or a hearing aid visit",
     title: "Hearing appointment",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   physical_therapy: {
     describe: "Physical or occupational therapy",
     title: "Physical therapy",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   medical_test: {
     describe: "A lab test, blood draw, scan, X-ray, MRI or other medical test",
     title: "Medical test",
-    comesHome: false,
+    caregiverConfirms: null,
   },
-  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment", comesHome: false },
-  hair: { describe: "A haircut or a salon visit", title: "Hair appointment", comesHome: false },
+  vaccine: {
+    describe: "A vaccine or a shot",
+    title: "Vaccine appointment",
+    caregiverConfirms: null,
+  },
+  hair: {
+    describe: "A haircut or a salon visit",
+    title: "Hair appointment",
+    caregiverConfirms: null,
+  },
   group_activity: {
     describe: "A class, club or group activity",
     title: "Group activity",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   meal: {
     describe: "A breakfast, lunch, dinner or coffee with someone",
     title: "Meal",
-    comesHome: false,
+    caregiverConfirms: null,
   },
   family_visit: {
     describe: "A visit with family or friends",
     title: "Family visit",
-    comesHome: false,
+    caregiverConfirms: null,
   },
-  video_call: { describe: "A video call", title: "Video call", comesHome: false },
-  phone_call: { describe: "A phone call", title: "Phone call", comesHome: false },
-  meeting: { describe: "A meeting or counseling session", title: "Meeting", comesHome: false },
+  video_call: { describe: "A video call", title: "Video call", caregiverConfirms: null },
+  phone_call: {
+    describe: "A phone call",
+    title: "Phone call",
+    caregiverConfirms: {
+      reason: "phone_call",
+      because: "someone would phone the senior",
+      checked: "the call",
+    },
+  },
+  meeting: {
+    describe: "A meeting or counseling session",
+    title: "Meeting",
+    caregiverConfirms: null,
+  },
   home_service: {
     describe: "A worker coming to the home",
     title: "Home service visit",
-    comesHome: true,
+    caregiverConfirms: {
+      reason: "home_visit",
+      because: "someone would come to the home",
+      checked: "the visit",
+    },
   },
-  other: { describe: "Any other kind of appointment", title: "Appointment", comesHome: false },
+  other: {
+    describe: "Any other kind of appointment",
+    title: "Appointment",
+    caregiverConfirms: null,
+  },
 };
 
 const MEAL_TITLES: [string, string][] = [
@@ -245,6 +279,7 @@ export interface LinkedEvent {
 export const ESCALATION_REASONS = [
   ...DECISION_REASONS,
   ...SUSPICIONS,
+  "phone_call",
   "unverified_sender",
   "unclear_appointment",
   "unclear_reschedule",

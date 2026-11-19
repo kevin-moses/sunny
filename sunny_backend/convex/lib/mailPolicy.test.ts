@@ -491,6 +491,24 @@ describe("planWithRule decision table", () => {
           "Home service visit, Thursday, December 10 at 2:15 PM. Sunny has not added it because someone would come to the home. Tell Sunny in chat to add it once you have checked the visit.",
       });
     });
+
+    test("a verified sender's phone call confirmation escalates with the proposal and adds nothing", () => {
+      const effects = effectsOf(newAppointment({ kind: "phone_call" }), facts(from({})));
+      expect(kinds(effects)).toEqual(["escalate:phone_call:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: null,
+        proposed: { kind: "phone_call", date: "2026-12-10", time: "14:15" },
+        notice:
+          "Phone call, Thursday, December 10 at 2:15 PM. Sunny has not added it because someone would phone the senior. Tell Sunny in chat to add it once you have checked the call.",
+      });
+    });
+
+    test("a video call is still added by itself", () => {
+      expect(kinds(effectsOf(newAppointment({ kind: "video_call" }), facts(from({}))))).toEqual([
+        "add_event",
+        "tell_caregivers",
+      ]);
+    });
   });
 
   describe("an appointment that also needs a decision", () => {

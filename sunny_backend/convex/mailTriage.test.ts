@@ -464,8 +464,7 @@ describe("an appointment email", () => {
     expect(repeat.effects).toEqual([{ kind: "already_on_calendar", eventId: event!._id }]);
   });
 
-  test("an invite with a hostile title from a verified sender Sunny has never seen gets only Sunny's title", async () => {
-    const h = await setup();
+  function hostileInvite(): RawEmail {
     const ics = [
       "BEGIN:VCALENDAR",
       "METHOD:REQUEST",
@@ -478,16 +477,42 @@ describe("an appointment email", () => {
       "END:VEVENT",
       "END:VCALENDAR",
     ].join("\r\n");
-    const done = await triageEmail(
-      h,
-      clinic({ from: "Benefits Desk <events@benefits-desk.example>", subject: "Invitation", ics }),
-      { kind: "phone_call" },
-    );
+    return clinic({
+      from: "Benefits Desk <events@benefits-desk.example>",
+      subject: "Invitation",
+      ics,
+    });
+  }
+
+  test("a phone call invite from a verified sender escalates and adds nothing", async () => {
+    const h = await setup();
+    const done = await triageEmail(h, hostileInvite(), { kind: "phone_call" });
+    expect(done.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "phone_call",
+        pushed: true,
+        proposed: { kind: "phone_call", date: "2026-11-19", time: "10:00" },
+      },
+    ]);
+    expect(await rows(h, "events")).toHaveLength(0);
+    const pushes = await rows(h, "notificationOutbox");
+    expect(pushes).toHaveLength(3);
+    for (const push of pushes) {
+      expect(push.body).toBe(
+        "Phone call, Thursday, November 19 at 10:00 AM. Sunny has not added it because someone would phone the senior. Tell Sunny in chat to add it once you have checked the call.",
+      );
+    }
+  });
+
+  test("an invite with a hostile title from a verified sender gets only Sunny's title and no place", async () => {
+    const h = await setup();
+    const done = await triageEmail(h, hostileInvite(), { kind: "meeting" });
     expect(kinds(done.effects ?? [])).toEqual(["event_added", "told_caregivers"]);
     const events = await rows(h, "events");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
-      title: "Phone call",
+      title: "Meeting",
       startsOn: "2026-11-19",
       startTime: "10:00",
     });
