@@ -44,7 +44,7 @@ public final class SunnyWidgetModule: Module {
         }
 
         AsyncFunction("syncSurfaces") { () async in
-            await PushStateReporter.shared.sync()
+            await PushStateReporter.shared.sync(.appSurfaces)
         }
 
         AsyncFunction("flushPresses") { () async throws -> String in

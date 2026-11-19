@@ -1,15 +1,34 @@
 import Foundation
 
+public enum SyncTrigger: Sendable, CaseIterable {
+    case launch
+    case startToken
+    case enablement
+    case activityChange
+    case refreshPush
+    case appSurfaces
+    case press
+
+    public var reloadsWidget: Bool {
+        switch self {
+        case .launch, .startToken, .enablement, .activityChange: return false
+        case .refreshPush, .appSurfaces, .press: return true
+        }
+    }
+}
+
 public actor SyncLane {
-    private let sync: @Sendable () async -> Void
+    private let sync: @Sendable (_ reloadingWidget: Bool) async -> Void
     private var tail: Task<Void, Never>?
     private var waitingSync: Task<Void, Never>?
+    private var waitingReload = false
 
-    public init(sync: @escaping @Sendable () async -> Void) {
+    public init(sync: @escaping @Sendable (_ reloadingWidget: Bool) async -> Void) {
         self.sync = sync
     }
 
-    public func requestSync() async {
+    public func requestSync(_ trigger: SyncTrigger) async {
+        waitingReload = waitingReload || trigger.reloadsWidget
         if let waitingSync {
             await waitingSync.value
             return
@@ -17,8 +36,8 @@ public actor SyncLane {
         let previous = tail
         let task = Task {
             await previous?.value
-            self.syncStarted()
-            await sync()
+            let reloadingWidget = self.syncStarted()
+            await sync(reloadingWidget)
         }
         tail = task
         waitingSync = task
@@ -35,7 +54,9 @@ public actor SyncLane {
         return await task.value
     }
 
-    private func syncStarted() {
+    private func syncStarted() -> Bool {
         waitingSync = nil
+        defer { waitingReload = false }
+        return waitingReload
     }
 }
