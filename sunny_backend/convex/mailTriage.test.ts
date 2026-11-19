@@ -548,6 +548,103 @@ describe("an appointment email", () => {
     expect((await rows(h, "events"))[0]).toMatchObject({ startsOn: "2026-12-11" });
   });
 
+  test("an invite resent at the same time raises the stored SEQUENCE, so an older one cannot move it", async () => {
+    const h = await setup();
+    await triageEmail(h, clinic({ ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:0"]) }), {
+      kind: "eye_doctor",
+    });
+    const resent = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:3"]) }),
+    );
+    expect(resent.effects).toEqual([
+      { kind: "already_on_calendar", eventId: (await rows(h, "events"))[0]!._id },
+    ]);
+    expect((await rows(h, "mailEventLinks"))[0]).toMatchObject({ sequence: 3 });
+    const older = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART:20261211T191500Z", "SEQUENCE:2"]) }),
+    );
+    expect(older.judgeRule).toBe("gate:ics:older_sequence");
+    expect((await rows(h, "events"))[0]).toMatchObject({ startsOn: "2026-12-10" });
+  });
+
+  test("an untrusted sender's invite at a hand-entered event's time links nothing", async () => {
+    const h = await setup();
+    const eventId = await insertEvent(h.t, h.householdId, {
+      title: "Eye exam",
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+    });
+    const done = await triageEmail(
+      h,
+      clinic({
+        from: "Lakeside Eye Care <office@lakesideeye.example>",
+        ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:9"]),
+      }),
+      { kind: "eye_doctor" },
+    );
+    expect(done.effects).toEqual([{ kind: "already_on_calendar", eventId }]);
+    expect(await rows(h, "mailEventLinks")).toHaveLength(0);
+  });
+
+  test("an invite with a new date for a linked event that was cancelled escalates", async () => {
+    const h = await setup();
+    await triageEmail(h, clinic({ ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:0"]) }), {
+      kind: "eye_doctor",
+    });
+    const [event] = await rows(h, "events");
+    await h.t.run(async (ctx) => await ctx.db.patch(event!._id, { deletedAt: NOW }));
+    const update = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART:20261212T150000Z", "SEQUENCE:1"]) }),
+    );
+    expect(update.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "unclear_reschedule",
+        pushed: true,
+        proposed: { kind: "eye_doctor", date: "2026-12-12", time: "10:00" },
+      },
+    ]);
+    expect(await rows(h, "events")).toHaveLength(1);
+    expect((await rows(h, "mailEventLinks"))[0]).toMatchObject({ sequence: 0 });
+  });
+
+  test("an invite with a new date for a linked series with no date that day escalates", async () => {
+    const h = await setup();
+    const seriesId = await insertEvent(h.t, h.householdId, {
+      title: "Eye exam",
+      startsOn: "2026-11-19",
+      startTime: "14:15",
+      repeatDays: [4],
+    });
+    const mailItemId = await receive(h, clinic());
+    await h.t.run(
+      async (ctx) =>
+        await ctx.db.insert("mailEventLinks", {
+          householdId: h.householdId,
+          eventId: seriesId,
+          appointmentKey: "ics:visit-42@lakesideeye.example",
+          mailItemId,
+          sequence: 0,
+        }),
+    );
+    const update = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART:20261212T150000Z", "SEQUENCE:1"]) }),
+      { kind: "eye_doctor" },
+    );
+    expect(update.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "unclear_reschedule",
+        pushed: true,
+        proposed: { kind: "eye_doctor", date: "2026-12-12", time: "10:00" },
+      },
+    ]);
+  });
+
   test("an invite for a repeating appointment goes to the caregivers as a decision", async () => {
     const h = await setup();
     const done = await triageEmail(
@@ -1049,10 +1146,9 @@ describe("carrying out a plan", () => {
             gmailId: row.gmailId,
             ics: null,
             events: [],
-            linkedEventId: null,
+            linked: null,
           },
           events: new Map(),
-          linkKey: null,
           summary: "An eye exam.",
         },
         [

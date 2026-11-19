@@ -7,6 +7,7 @@ import type {
   CalendarEventFact,
   EscalationReason,
   IcsEvent,
+  LinkedEvent,
   MailEffect,
   MailVerdict,
   ParsedEmail,
@@ -24,6 +25,7 @@ export interface Fixture {
     timezone: string;
     now: number;
     events: CalendarEventFact[];
+    offCalendar: CalendarEventFact[];
     links: Record<string, string>;
   };
   expect: {
@@ -189,6 +191,9 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
       events: list(household.events, `${id}.household.events`).map((e, i) =>
         readEvent(e, `${id}.household.events[${i}]`),
       ),
+      offCalendar: list(household.offCalendar ?? [], `${id}.household.offCalendar`).map((e, i) =>
+        readEvent(e, `${id}.household.offCalendar[${i}]`),
+      ),
       links: Object.fromEntries(
         Object.entries(links).map(([key, eventId]) => [key, str(eventId, `${id}.links.${key}`)]),
       ),
@@ -258,6 +263,16 @@ export function leakedRuns(email: ParsedEmail, effects: MailEffect[]): string[] 
   return seen.flatMap((text) => [...runsOf(text)].filter((run) => source.has(run)));
 }
 
+function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
+  const eventId = key === null ? undefined : fixture.household.links[key];
+  if (eventId === undefined) return null;
+  const { events, offCalendar } = fixture.household;
+  const event = [...events, ...offCalendar].find((e) => e.eventId === eventId);
+  if (event === undefined)
+    throw new Error(`Fixture ${fixture.id} links ${eventId}, which it lists nowhere`);
+  return { eventId, date: event.date, time: event.time };
+}
+
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
   const { email, household } = fixture;
   const clock = { now: household.now, timezone: household.timezone };
@@ -277,7 +292,7 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     gmailId: email.gmailId,
     ics: email.ics,
     events: household.events,
-    linkedEventId: key === null ? null : (household.links[key] ?? null),
+    linked: linkedEvent(fixture, key),
   });
   return {
     id: fixture.id,

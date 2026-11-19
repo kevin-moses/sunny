@@ -241,8 +241,12 @@ function tell(c: Context, line: string, push: boolean): MailEffect {
   return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
 }
 
-function onCalendar(c: Context, eventId: string): MailEffect[] {
-  const already: MailEffect = { kind: "already_on_calendar", eventId };
+function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
+  const already: MailEffect = {
+    kind: "already_on_calendar",
+    eventId,
+    appointmentKey: c.trusted ? key : null,
+  };
   if (c.decision === null) return [already];
   return [
     already,
@@ -293,7 +297,10 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
     {
       rule: "already linked, or same date, time and title words as a live event",
-      plan: (s, c) => (s.duplicate === null ? null : onCalendar(c, s.duplicate)),
+      plan: (s, c) =>
+        s.duplicate === null
+          ? null
+          : onCalendar(c, s.duplicate, appointmentKey(s.appointment, c.facts.ics)),
     },
     {
       rule: "sender not trusted",
@@ -366,7 +373,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           s.fields !== null &&
           match.date === s.fields.date &&
           match.time === s.fields.time
-          ? onCalendar(c, match.eventId)
+          ? onCalendar(c, match.eventId, appointmentKey(s.fields, c.facts.ics))
           : null;
       },
     },
@@ -453,21 +460,24 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
 };
 
 function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
-  if (facts.linkedEventId !== null) {
-    return facts.events.filter((e) => e.eventId === facts.linkedEventId);
-  }
+  const { linked } = facts;
+  if (linked !== null) return facts.events.filter((e) => e.eventId === linked.eventId);
   return ref === null ? [] : matchEvent(ref, facts.events);
+}
+
+function sameSlot(a: { date: string; time: string }, b: { date: string; time: string }): boolean {
+  return a.date === b.date && a.time === b.time;
 }
 
 function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
   const fields = appointmentFields(appointment, facts);
-  const linked = facts.events.find((e) => e.eventId === facts.linkedEventId);
-  if (
-    facts.ics !== null &&
-    linked !== undefined &&
-    (linked.date !== appointment.date || linked.time !== appointment.time)
-  ) {
-    return { case: "reschedule", appointment, fields, matches: [linked] };
+  const { linked } = facts;
+  const live = facts.events.find((e) => e.eventId === linked?.eventId);
+  if (live !== undefined && facts.ics !== null && !sameSlot(live, appointment)) {
+    return { case: "reschedule", appointment, fields, matches: [live] };
+  }
+  if (linked !== null && live === undefined && !sameSlot(linked, appointment)) {
+    return { case: "reschedule", appointment, fields, matches: [] };
   }
   const same =
     fields === null
@@ -482,7 +492,7 @@ function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
     case: "new",
     appointment,
     fields,
-    duplicate: facts.linkedEventId ?? same?.eventId ?? null,
+    duplicate: linked?.eventId ?? same?.eventId ?? null,
     conflict:
       fields === null
         ? null

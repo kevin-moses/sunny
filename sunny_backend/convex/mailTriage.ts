@@ -225,7 +225,6 @@ interface Planned {
   household: Doc<"households">;
   facts: PolicyFacts;
   events: Map<string, Doc<"events">>;
-  key: string | null;
 }
 
 async function planned(
@@ -254,9 +253,12 @@ async function planned(
     gmailId: item.gmailId,
     ics: email.ics,
     events: calendar.facts,
-    linkedEventId: linked?._id ?? null,
+    linked:
+      linked === null
+        ? null
+        : { eventId: linked._id, date: linked.startsOn, time: linked.startTime },
   };
-  return { item, household, facts, events, key };
+  return { item, household, facts, events };
 }
 
 export const postsToCaregivers = internalQuery({
@@ -280,14 +282,11 @@ export const applyTriage = internalMutation({
       await ctx.db.patch(input.itemId, { state: "failed", leaseUntil: undefined });
       return false;
     }
-    const { item, household, facts, events, key } = ready;
+    const { item, household, facts, events } = ready;
     const { triaged } = input;
     const summary = caregiverSummary ?? triaged.summary;
     const plan = planWithRule({ verdict: triaged.verdict, summary }, facts);
-    const effects = await carryOut(
-      { ctx, household, item, facts, events, linkKey: key, summary },
-      plan.effects,
-    );
+    const effects = await carryOut({ ctx, household, item, facts, events, summary }, plan.effects);
     await ctx.db.patch(item._id, {
       ...storedHeader(input.email),
       state: "done",

@@ -202,7 +202,13 @@ export interface PolicyFacts {
   gmailId: string;
   ics: IcsEvent | null;
   events: CalendarEventFact[];
-  linkedEventId: string | null;
+  linked: LinkedEvent | null;
+}
+
+export interface LinkedEvent {
+  eventId: string;
+  date: string;
+  time: string;
 }
 
 export const ESCALATION_REASONS = [
@@ -239,7 +245,7 @@ export type MailEffect =
       appointment: Appointment;
       appointmentKey: string;
     }
-  | { kind: "already_on_calendar"; eventId: string }
+  | { kind: "already_on_calendar"; eventId: string; appointmentKey: string | null }
   | { kind: "senior_note"; text: string; expiresAt: number }
   | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
   | ({

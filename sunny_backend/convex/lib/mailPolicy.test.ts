@@ -14,6 +14,7 @@ import type {
   AppointmentRef,
   CalendarEventFact,
   IcsEvent,
+  LinkedEvent,
   MailEffect,
   MailVerdict,
   PolicyFacts,
@@ -72,9 +73,15 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     gmailId: "m1",
     ics: null,
     events: EVENTS,
-    linkedEventId: null,
+    linked: null,
     ...overrides,
   };
+}
+
+function linkTo(eventId: string): LinkedEvent {
+  const event = EVENTS.find((e) => e.eventId === eventId);
+  if (event === undefined) throw new Error(eventId);
+  return { eventId, date: event.date, time: event.time };
 }
 
 function invite(overrides: Partial<IcsEvent> = {}): IcsEvent {
@@ -155,10 +162,16 @@ describe("planWithRule decision table", () => {
       });
     });
 
-    test("from an untrusted sender that repeats a live event is already on the calendar", () => {
+    test("from an untrusted sender that repeats a live event is already on the calendar and links nothing", () => {
       expect(
-        effectsOf(newAppointment(), facts({ senderTrusted: false, linkedEventId: "evt_eye" })),
-      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_eye" }]);
+        effectsOf(newAppointment(), facts({ senderTrusted: false, linked: linkTo("evt_eye") })),
+      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_eye", appointmentKey: null }]);
+      expect(
+        effectsOf(
+          newAppointment({ kind: "eye_doctor", date: "2026-11-24", time: "10:30" }),
+          facts({ senderTrusted: false, ics: invite({ uid: "attacker" }) }),
+        ),
+      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_eye", appointmentKey: null }]);
     });
 
     test("with a date in the past escalates as unclear", () => {
@@ -167,15 +180,19 @@ describe("planWithRule decision table", () => {
     });
 
     test("already linked to an event is already on the calendar", () => {
-      expect(effectsOf(newAppointment(), facts({ linkedEventId: "evt_eye" }))).toEqual([
-        { kind: "already_on_calendar", eventId: "evt_eye" },
+      expect(effectsOf(newAppointment(), facts({ linked: linkTo("evt_eye") }))).toEqual([
+        {
+          kind: "already_on_calendar",
+          eventId: "evt_eye",
+          appointmentKey: "appt:2026-12-10:14:15:hearing appointment",
+        },
       ]);
     });
 
     test("at the same date and time as a live event of the same kind is already on the calendar", () => {
       const verdict = newAppointment({ kind: "eye_doctor", date: "2026-11-24", time: "10:30" });
-      expect(effectsOf(verdict, facts())).toEqual([
-        { kind: "already_on_calendar", eventId: "evt_eye" },
+      expect(effectsOf(verdict, facts({ ics: invite({ uid: "u-7" }) }))).toEqual([
+        { kind: "already_on_calendar", eventId: "evt_eye", appointmentKey: "ics:u-7" },
       ]);
     });
 
@@ -236,7 +253,7 @@ describe("planWithRule decision table", () => {
     test("an invitation whose UID is linked to an event at another time moves that event", () => {
       const effects = effectsOf(
         newAppointment({ kind: "physical_therapy", date: "2026-11-23", time: "15:00" }),
-        facts({ ics: invite(), linkedEventId: "evt_pt", sender: PT_SENDER }),
+        facts({ ics: invite(), linked: linkTo("evt_pt"), sender: PT_SENDER }),
       );
       expect(kinds(effects)).toEqual(["reschedule_event", "tell_caregivers"]);
       expect(effects[0]).toMatchObject({ eventId: "evt_pt", appointmentKey: "ics:u-1" });
@@ -245,9 +262,25 @@ describe("planWithRule decision table", () => {
     test("the same linked invitation from an untrusted sender escalates instead", () => {
       const effects = effectsOf(
         newAppointment({ kind: "physical_therapy", date: "2026-11-23", time: "15:00" }),
-        facts({ ics: invite(), linkedEventId: "evt_pt", senderTrusted: false }),
+        facts({ ics: invite(), linked: linkTo("evt_pt"), senderTrusted: false }),
       );
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
+    });
+
+    test("an invitation linked to an event that is not live escalates a new slot with the proposal", () => {
+      const gone: LinkedEvent = { eventId: "evt_gone", date: "2026-12-03", time: "10:00" };
+      const effects = effectsOf(newAppointment(), facts({ ics: invite(), linked: gone }));
+      expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: null,
+        proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
+      });
+      expect(
+        effectsOf(
+          newAppointment({ date: "2026-12-03", time: "10:00" }),
+          facts({ ics: invite(), linked: gone }),
+        ),
+      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_gone", appointmentKey: "ics:u-1" }]);
     });
 
     test("an invitation's SUMMARY never becomes an event title", () => {
@@ -280,7 +313,7 @@ describe("planWithRule decision table", () => {
     test("finds the event through the link before the previous time", () => {
       const effects = effectsOf(
         reschedule({ kind: "other", date: "2030-01-01", time: null }),
-        facts({ linkedEventId: "evt_pt", sender: PT_SENDER }),
+        facts({ linked: linkTo("evt_pt"), sender: PT_SENDER }),
       );
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
     });
@@ -300,7 +333,13 @@ describe("planWithRule decision table", () => {
         reschedule(pt, { date: "2026-11-20", time: "14:00" }),
         facts({ sender: PT_SENDER }),
       );
-      expect(effects).toEqual([{ kind: "already_on_calendar", eventId: "evt_pt" }]);
+      expect(effects).toEqual([
+        {
+          kind: "already_on_calendar",
+          eventId: "evt_pt",
+          appointmentKey: "appt:2026-11-20:14:00:physical therapy",
+        },
+      ]);
     });
 
     test("an escalation with one match names the event, both times and what to tell Sunny", () => {
@@ -441,7 +480,7 @@ describe("planWithRule decision table", () => {
     test("an appointment already on the calendar still escalates the decision", () => {
       const effects = effectsOf(
         { ...newAppointment(), ...bill },
-        facts({ linkedEventId: "evt_eye" }),
+        facts({ linked: linkTo("evt_eye") }),
       );
       expect(kinds(effects)).toEqual(["already_on_calendar", "escalate:bill_or_payment:true"]);
       expect(effects[1]).toMatchObject({ eventId: "evt_eye" });
@@ -474,7 +513,7 @@ describe("planWithRule decision table", () => {
     test("moves the event its UID is linked to", () => {
       const effects = effectsOf(
         movedInvite,
-        facts({ ics: invite(), linkedEventId: "evt_pt", sender: PT_SENDER }),
+        facts({ ics: invite(), linked: linkTo("evt_pt"), sender: PT_SENDER }),
       );
       expect(kinds(effects)).toEqual(["reschedule_event", "tell_caregivers"]);
       expect(effects[0]).toMatchObject({ eventId: "evt_pt", appointmentKey: "ics:u-1" });
