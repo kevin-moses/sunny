@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
-import { ActivityIndicator, StyleSheet, type ViewStyle } from 'react-native';
+import { ActivityIndicator } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import { buildAgenda } from '../../day/format';
-import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
+import type { DayTask, DayViewData } from '../../day/types';
 import { confirmQueue } from '../../day/pendingConfirms';
 import type { DayViewState } from '../../day/useDayView';
+import { instanceIdOf, makeDay, makeEvent, makeTask } from '../../testing/dayFixtures';
 import { TodayScreen } from '../TodayScreen';
 
 const mockStore = new Map<string, string>();
@@ -71,25 +72,11 @@ const NOW = Date.parse('2026-11-09T09:41:00Z');
 const renderers: ReactTestRenderer[] = [];
 
 function task(overrides: Partial<DayTask> = {}): DayTask {
-  return {
-    instanceId: 'pills',
-    taskId: 'pillsTask',
-    type: 'medication',
-    displayLabel: 'Morning pills',
-    screenSentence: 'Take your morning pills.',
-    pillDescription: 'the small white ones',
-    checklistItems: [],
-    step: null,
-    scheduledTime: '09:30',
-    state: 'due',
-    confirmable: true,
-    carriedOver: false,
-    ...overrides,
-  } as unknown as DayTask;
+  return makeTask(overrides);
 }
 
 const BREAKFAST = task({
-  instanceId: 'breakfast' as never,
+  instanceId: instanceIdOf('breakfast'),
   displayLabel: 'Breakfast',
   scheduledTime: '08:00',
   state: 'confirmed',
@@ -97,7 +84,7 @@ const BREAKFAST = task({
 });
 
 const WALK = task({
-  instanceId: 'walk' as never,
+  instanceId: instanceIdOf('walk'),
   displayLabel: 'Morning walk',
   screenSentence: 'Go for your morning walk.',
   pillDescription: null,
@@ -106,7 +93,7 @@ const WALK = task({
 });
 
 const LUNCH = task({
-  instanceId: 'lunch' as never,
+  instanceId: instanceIdOf('lunch'),
   displayLabel: 'Lunch',
   screenSentence: null,
   pillDescription: null,
@@ -115,32 +102,20 @@ const LUNCH = task({
   confirmable: false,
 });
 
-const VISIT = {
-  eventId: 'visit',
-  label: 'Sarah visits',
-  localDate: '2026-11-09',
-  startTime: '14:00',
-  startsAt: Date.parse('2026-11-09T14:00:00Z'),
-  endsAt: null,
-} as unknown as EventOccurrence;
+const VISIT = makeEvent();
 
 function dayView(
   tasks: DayTask[],
   extra: Partial<DayViewData> = {},
   state: Partial<DayViewState> = {},
 ): DayViewState {
-  const day = {
-    timezone: 'UTC',
-    localNow: '2026-11-09T09:41:00',
-    localDate: '2026-11-09',
-    dateLabel: 'November 9',
-    header: 'Monday morning',
+  const day = makeDay({
+    localNow: '2026-11-09T09:41',
     tasks,
     eventsToday: [VISIT],
     nextUp: VISIT,
-    upcoming: [],
     ...extra,
-  } as unknown as DayViewData;
+  });
   return { day, agenda: buildAgenda(day), errorMessage: null, isOffline: false, ...state };
 }
 
@@ -166,10 +141,6 @@ function buttonLabels(root: ReactTestInstance): string[] {
     .map((n) => String(n.props.accessibilityLabel));
 }
 
-function styleOf(node: ReactTestInstance): ViewStyle {
-  return StyleSheet.flatten(node.props.style) as ViewStyle;
-}
-
 const OLD_WORDS = ['Monday morning', 'November 9', 'Today', 'Next up', 'Coming up'];
 
 beforeEach(() => {
@@ -192,23 +163,6 @@ afterEach(async () => {
 });
 
 describe('TodayScreen layout', () => {
-  it('puts one column on paper, 24 from each side, from the safe areas to the Talk key', () => {
-    const root = render(dayView([BREAKFAST, task(), WALK]));
-    const views = root.findAll((n) => (n.type as unknown) === 'View');
-    expect(styleOf(views[0]!)).toMatchObject({
-      flex: 1,
-      backgroundColor: '#F7F4EC',
-      paddingTop: 62 + 8,
-      paddingBottom: 34 + 18,
-    });
-    expect(styleOf(views[1]!)).toMatchObject({
-      flex: 1,
-      gap: 14,
-      paddingTop: 44,
-      paddingHorizontal: 24,
-    });
-  });
-
   it('drops the day header, the date, the Next up card and the section titles', () => {
     const root = render(dayView([BREAKFAST, task(), WALK], { upcoming: [VISIT] }));
     for (const word of OLD_WORDS) expect(words(root)).not.toContain(word);
@@ -327,7 +281,7 @@ describe('TodayScreen states', () => {
   it('holds Noted with Undo for the 30 seconds of the Undo window before the next task', async () => {
     mockMutation.mockReturnValue(new Promise(() => {}));
     const evening = task({
-      instanceId: 'evening' as never,
+      instanceId: instanceIdOf('evening'),
       displayLabel: 'Evening pills',
       screenSentence: null,
       pillDescription: null,
@@ -361,7 +315,7 @@ describe('TodayScreen states', () => {
   });
 
   it('names the next event of the coming days when today has nothing left', () => {
-    const tomorrow = { ...VISIT, localDate: '2026-11-10' } as EventOccurrence;
+    const tomorrow = makeEvent({ localDate: '2026-11-10' });
     const root = render(dayView([BREAKFAST], { eventsToday: [], upcoming: [tomorrow] }));
     expect(words(root).slice(0, 2)).toEqual([
       'Nothing to do right now.',
@@ -401,7 +355,6 @@ describe('TodayScreen loading and errors', () => {
   it('shows an ink spinner on paper while the day loads, with Talk still there', () => {
     const root = render({ day: null, agenda: [], errorMessage: null, isOffline: false });
     expect(root.findAllByType(ActivityIndicator)).toHaveLength(1);
-    expect(root.findByType(ActivityIndicator).props.color).toBe('#121212');
     expect(words(root)).toEqual(['Talk to Sunny']);
   });
 

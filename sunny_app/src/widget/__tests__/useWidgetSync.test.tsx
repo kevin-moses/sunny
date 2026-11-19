@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import React from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState, type AppStateStatus, type NativeEventSubscription } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { SessionDecision } from '../../backend/pairing';
+import type { HouseholdId } from '../../backend/convexApi';
 import type { DayViewData } from '../../day/types';
+import { makeDay, makeTask } from '../../testing/dayFixtures';
 import { widgetPressMirror } from '../sharedPresses';
 import { useSurfaceSync, useWidgetSync } from '../useWidgetSync';
 
@@ -44,10 +46,17 @@ jest.mock('../../logging/logger', () => ({
 let appStateListener: ((state: AppStateStatus) => void) | null = null;
 const removeListener = jest.fn();
 
-const seniorPhone = {
+const HOUSEHOLD = 'h1' as HouseholdId;
+
+const seniorPhone: SessionDecision = {
   state: 'paired',
-  device: { householdId: 'h1', kind: 'senior_phone' },
-} as SessionDecision;
+  device: { householdId: HOUSEHOLD, kind: 'senior_phone' },
+};
+
+const homeDisplay: SessionDecision = {
+  state: 'paired',
+  device: { householdId: HOUSEHOLD, kind: 'home_display' },
+};
 
 function SyncProbe({ decision }: { decision: SessionDecision }) {
   useWidgetSync(decision);
@@ -74,7 +83,8 @@ beforeEach(() => {
   mockClear.mockResolvedValue(undefined);
   jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
     appStateListener = listener as (state: AppStateStatus) => void;
-    return { remove: removeListener } as unknown as ReturnType<typeof AppState.addEventListener>;
+    const subscription: NativeEventSubscription = { remove: () => removeListener() };
+    return subscription;
   });
 });
 
@@ -97,16 +107,7 @@ describe('useWidgetSync', () => {
 
   it('clears the widget for a caregiver, a home display and a signed-out phone', () => {
     render(<SyncProbe decision={{ state: 'signedOut' }} />);
-    render(
-      <SyncProbe
-        decision={
-          {
-            state: 'paired',
-            device: { householdId: 'h1', kind: 'home_display' },
-          } as SessionDecision
-        }
-      />,
-    );
+    render(<SyncProbe decision={homeDisplay} />);
     expect(mockClear).toHaveBeenCalledTimes(1);
     expect(mockSync).not.toHaveBeenCalled();
   });
@@ -134,19 +135,13 @@ describe('useWidgetSync', () => {
 });
 
 describe('useSurfaceSync', () => {
-  const day = {
-    localDate: '2026-11-19',
-    localNow: '2026-11-19T09:30',
-    tasks: [],
-    eventsToday: [],
-    nextUp: null,
-  } as unknown as DayViewData;
+  const day = makeDay({ localNow: '2026-11-09T09:30' });
 
   it('syncs the widget and the Lock Screen when the day view changes, not when only the minute does', () => {
     render(<ReloadProbe day={day} />);
-    render(<ReloadProbe day={{ ...day, localNow: '2026-11-19T09:31' } as DayViewData} />);
+    render(<ReloadProbe day={{ ...day, localNow: '2026-11-09T09:31' }} />);
     expect(mockSurfaceSync).toHaveBeenCalledTimes(1);
-    render(<ReloadProbe day={{ ...day, tasks: [{ id: 't1' }] } as unknown as DayViewData} />);
+    render(<ReloadProbe day={{ ...day, tasks: [makeTask()] }} />);
     expect(mockSurfaceSync).toHaveBeenCalledTimes(2);
   });
 

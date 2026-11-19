@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import type { SessionDecision } from '../../backend/pairing';
-import type { DayViewData } from '../../day/types';
+import type { HouseholdId } from '../../backend/convexApi';
+import { makeDay, makeTask } from '../../testing/dayFixtures';
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
@@ -40,8 +41,12 @@ function loadModule(): typeof import('../widgetSync') {
   return loaded;
 }
 
-const paired = (kind: 'senior_phone' | 'home_display'): SessionDecision =>
-  ({ state: 'paired', device: { householdId: 'h1', kind } }) as SessionDecision;
+const HOUSEHOLD = 'h1' as HouseholdId;
+
+const paired = (kind: 'senior_phone' | 'home_display'): SessionDecision => ({
+  state: 'paired',
+  device: { householdId: HOUSEHOLD, kind },
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -66,8 +71,11 @@ describe('widgetHolderOf', () => {
   });
 
   it('never gives the widget to a caregiver or a signed-out phone', () => {
-    const caregiver = { state: 'caregiver', home: { householdId: 'h1', role: 'primary' } };
-    expect(widgetHolderOf(caregiver as SessionDecision)).toBe('none');
+    const caregiver: SessionDecision = {
+      state: 'caregiver',
+      home: { householdId: HOUSEHOLD, role: 'primary' },
+    };
+    expect(widgetHolderOf(caregiver)).toBe('none');
     expect(widgetHolderOf({ state: 'caregiverOnboarding' })).toBe('none');
     expect(widgetHolderOf({ state: 'signedOut' })).toBe('none');
   });
@@ -250,28 +258,19 @@ describe('syncSurfaces', () => {
 
 describe('surfaceSyncKey', () => {
   const { surfaceSyncKey } = loadModule();
-  const day = {
-    localDate: '2026-11-19',
-    localNow: '2026-11-19T09:30',
-    tasks: [{ id: 't1', state: 'pending' }],
-    eventsToday: [],
-    nextUp: null,
-  } as unknown as DayViewData;
+  const day = makeDay({ localNow: '2026-11-09T09:30', tasks: [makeTask({ state: 'due' })] });
 
   it('is null without a day view', () => {
     expect(surfaceSyncKey(null)).toBeNull();
   });
 
   it('ignores the minute ticking by', () => {
-    const later = { ...day, localNow: '2026-11-19T09:31' } as DayViewData;
+    const later = { ...day, localNow: '2026-11-09T09:31' };
     expect(surfaceSyncKey(later)).toBe(surfaceSyncKey(day));
   });
 
   it('changes when a task changes', () => {
-    const confirmed = {
-      ...day,
-      tasks: [{ id: 't1', state: 'confirmed' }],
-    } as unknown as DayViewData;
+    const confirmed = { ...day, tasks: [makeTask({ state: 'confirmed' })] };
     expect(surfaceSyncKey(confirmed)).not.toBe(surfaceSyncKey(day));
   });
 });

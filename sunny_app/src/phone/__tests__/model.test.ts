@@ -14,8 +14,8 @@ import {
   stepTag,
   taskHeadline,
 } from '../model';
+import { eventIdOf, instanceIdOf, makeDay, makeEvent, makeTask } from '../../testing/dayFixtures';
 
-const TODAY = '2026-11-09';
 const AT = (hour: number, minute = 0): number =>
   Date.parse(`2026-11-09T${pad(hour)}:${pad(minute)}:00Z`);
 
@@ -24,33 +24,11 @@ function pad(value: number): string {
 }
 
 function task(overrides: Partial<DayTask> = {}): DayTask {
-  return {
-    instanceId: 'pills' as never,
-    displayLabel: 'Morning pills',
-    screenSentence: null,
-    pillDescription: null,
-    checklistItems: [],
-    step: null,
-    scheduledTime: '09:30',
-    state: 'due',
-    confirmable: true,
-    carriedOver: false,
-    ...overrides,
-  } as unknown as DayTask;
+  return makeTask({ screenSentence: null, pillDescription: null, ...overrides });
 }
 
 function event(overrides: Partial<EventOccurrence> = {}): EventOccurrence {
-  return {
-    eventId: 'visit' as never,
-    label: 'Sarah visits',
-    localDate: TODAY,
-    startTime: '14:00',
-    startsAt: AT(14),
-    endsAt: null,
-    visitorName: null,
-    place: null,
-    ...overrides,
-  } as unknown as EventOccurrence;
+  return makeEvent(overrides);
 }
 
 function day(
@@ -58,13 +36,7 @@ function day(
   eventsToday: EventOccurrence[] = [],
   upcoming: EventOccurrence[] = [],
 ): DayViewData {
-  return {
-    localDate: TODAY,
-    localNow: `${TODAY}T10:00`,
-    tasks,
-    eventsToday,
-    upcoming,
-  } as unknown as DayViewData;
+  return makeDay({ tasks, eventsToday, upcoming });
 }
 
 const UNDO: UndoLineData = { label: 'Morning pills', text: 'Morning pills done.', pressedAt: 0 };
@@ -210,7 +182,7 @@ describe('eventIsOver', () => {
 
 describe('nextLine', () => {
   const lunch = task({
-    instanceId: 'lunch' as never,
+    instanceId: instanceIdOf('lunch'),
     displayLabel: 'Lunch',
     scheduledTime: '12:30',
     state: 'upcoming',
@@ -230,12 +202,12 @@ describe('nextLine', () => {
     const today = day(
       [
         task({ state: 'confirmed' }),
-        task({ instanceId: 'm' as never, state: 'missed', scheduledTime: '08:00' }),
-        task({ instanceId: 'a' as never, state: 'upcoming', scheduledTime: 'anytime' }),
+        task({ instanceId: instanceIdOf('m'), state: 'missed', scheduledTime: '08:00' }),
+        task({ instanceId: instanceIdOf('a'), state: 'upcoming', scheduledTime: 'anytime' }),
       ],
       [
         event({ startTime: '09:00', startsAt: AT(9) }),
-        event({ eventId: 'tea' as never, label: 'Tea', startTime: '16:00', startsAt: AT(16) }),
+        event({ eventId: eventIdOf('tea'), label: 'Tea', startTime: '16:00', startsAt: AT(16) }),
       ],
     );
     expect(nextLine(today, buildAgenda(today), null)).toBe('Next: Tea at 4:00 PM');
@@ -296,7 +268,11 @@ describe('dayRows', () => {
   });
 
   it('keeps other open tasks plain, even a due one that is not on the key', () => {
-    const later = task({ instanceId: 'b' as never, state: 'upcoming', scheduledTime: '12:30' });
+    const later = task({
+      instanceId: instanceIdOf('b'),
+      state: 'upcoming',
+      scheduledTime: '12:30',
+    });
     const due = task();
     expect(rowsFor([due, later], null).map((r) => r.tone)).toEqual(['plain', 'plain']);
   });
@@ -319,7 +295,7 @@ describe('dayRows', () => {
 
   it('marks an event with the calendar and greys it once it is over', () => {
     const rows = rowsFor([], null, [
-      event({ eventId: 'walk' as never, label: 'Walk', startTime: '08:00', startsAt: AT(8) }),
+      event({ eventId: eventIdOf('walk'), label: 'Walk', startTime: '08:00', startsAt: AT(8) }),
       event(),
     ]);
     expect(rows.map((r) => [r.label, r.mark, r.tone, r.spoken])).toEqual([
