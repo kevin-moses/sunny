@@ -65,6 +65,11 @@ FamilyMessage = TypedDict(
 )
 
 
+class MailNote(TypedDict):
+    text: str
+    receivedAt: float
+
+
 class LifeProfileEntry(TypedDict):
     category: str
     name: str
@@ -99,6 +104,7 @@ class AgentContext(TypedDict):
     asNeeded: list[AsNeededEntry]
     events: list[UpcomingEvent]
     latestMessage: FamilyMessage | None
+    mailNotes: NotRequired[list[MailNote]]
     lifeProfile: list[LifeProfileEntry]
     sensitiveTopics: list[SensitiveTopic]
     memory: list[MemoryFact]

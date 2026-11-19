@@ -599,7 +599,7 @@ async def db_send_family_message(
     return f"Sent to {names}."
 
 
-def _spoken_when(epoch_ms: float, tz: str) -> str:
+def spoken_when(epoch_ms: float, tz: str) -> str:
     moment = to_local(epoch_ms, tz)
     today = to_local(now_epoch_ms(), tz).date()
     if moment.date() == today:
@@ -621,7 +621,7 @@ async def db_read_latest_message(
     if r is None:
         return "There are no messages from family."
     sender = one_line(r["from"]) or "family"
-    when = _spoken_when(r["sentAt"], tz)
+    when = spoken_when(r["sentAt"], tz)
     body = r["body"]
     photo = r["hasPhoto"]
     if body and photo:
