@@ -227,7 +227,6 @@ export default defineSchema({
     householdId: v.id("households"),
     deviceId: v.id("devices"),
     taskInstanceId: v.id("taskInstances"),
-    windowEnd: v.number(),
     phase: liveActivityPhase,
     shown: activityContent,
     pushTimestamp: v.number(),

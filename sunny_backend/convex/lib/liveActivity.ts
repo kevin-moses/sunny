@@ -44,7 +44,6 @@ export interface ActivitySubject {
 export interface ActivityRow {
   phase: LiveActivityPhase;
   shown: ActivityContent;
-  windowEnd: number;
 }
 
 export interface ActivityPhone {
@@ -86,7 +85,6 @@ export interface ActivityStart {
 export interface StartPlan extends ActivityStart {
   token: string;
   instanceId: Id<"taskInstances">;
-  windowEnd: number;
   resume: Id<"liveActivities"> | null;
   timestamp: number;
 }
@@ -486,7 +484,6 @@ async function planStartOf(
     relevance: view.relevance,
     quiet: cue.quiet,
     instanceId: instance._id,
-    windowEnd: instance.windowEnd,
     resume: resume?._id ?? null,
     timestamp: nextPushTimestamp(resume, now),
   };
@@ -530,7 +527,6 @@ export async function openActivity(
       householdId: row.householdId,
       deviceId: device._id,
       taskInstanceId: plan.instanceId,
-      windowEnd: plan.windowEnd,
       phase: { kind: "starting", outboxId: row._id, since: now },
       shown: plan.content,
       pushTimestamp: plan.timestamp,

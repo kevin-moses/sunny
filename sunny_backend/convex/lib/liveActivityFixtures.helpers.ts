@@ -78,7 +78,7 @@ export function instanceDoc(fields: Partial<Doc<"taskInstances">> = {}): Doc<"ta
 }
 
 export function rowOf(phase: LiveActivityPhase, shown: ActivityContent): ActivityRow {
-  return { phase, shown, windowEnd: WINDOW_END };
+  return { phase, shown };
 }
 
 export function livePhase(acceptedAt: number = WINDOW_START): LiveActivityPhase {

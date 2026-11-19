@@ -103,7 +103,6 @@ describe("the due cue on a phone that reported a start token", () => {
       householdId: f.householdId,
       deviceId: f.phoneId,
       taskInstanceId: instanceId,
-      windowEnd: EIGHT + 60 * MIN,
       phase: { kind: "started", proof: "awaited" },
     });
     expect(alertsSent()).toEqual([]);

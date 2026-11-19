@@ -263,7 +263,6 @@ export async function insertActivity(
       householdId: instance.householdId,
       deviceId,
       taskInstanceId: instanceId,
-      windowEnd: instance.windowEnd,
       phase,
       shown: view.content,
       pushTimestamp: Math.floor(instance.windowStart / 1000),
