@@ -184,6 +184,8 @@ Sunny reads the senior's Gmail, so that appointments and news that arrive by ema
 
 **How Sunny decides:** mail that Gmail files as promotions, social or spam is skipped. For the rest, a decision model (TypeSafe's Jev) answers yes-or-no and pick-one questions about the email, such as whether it asks for money or confirms an appointment at a stated time. Rules in the code turn those answers into what Sunny does, so the rules can be read and tested. Claude Haiku writes the summary for the caregivers and nothing else. Email bodies are not stored.
 
+Not settled before real use: the text of each email goes to TypeSafe, and to Anthropic for the summary, and neither has been checked against the BAA rule under Data handling; a caregiver signs in as the senior to connect the mailbox, and how the senior agrees to that is not decided; nobody has measured how many posts and pushes a real inbox sends the caregivers.
+
 Known limits: while the Google project is in testing, the sign-in expires about every 7 days and a caregiver has to reconnect; Sunny tells the caregivers when that happens. The app has no Connect Gmail button yet; the link comes from `scripts/caregiver.ts gmail`.
 
 ## Agent and backend

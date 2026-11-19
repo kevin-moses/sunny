@@ -57,7 +57,7 @@ npx convex env set TYPESAFE_API_KEY <key>
 Then, in the Google Cloud console:
 
 1. **APIs & Services > Library**: search **Gmail API** and click **Enable**.
-2. **Google Auth Platform > Data access > Add or remove scopes**: add `https://www.googleapis.com/auth/gmail.readonly`. Save. This is a restricted scope; it works for test users while the app stays in **Testing**, and public use needs Google's verification.
+2. **Google Auth Platform > Data access > Add or remove scopes**: add `https://www.googleapis.com/auth/gmail.readonly`. Save. This is a restricted scope; it works for test users while the app stays in **Testing**. Public use needs Google's verification and, for restricted scopes, a yearly security assessment by an assessor that Google approves.
 3. **Audience**: add the senior's Google account as a test user. Test-mode refresh tokens expire after 7 days, so reconnect weekly until the app is verified.
 4. Connect, signed in as the senior's Google account, in the browser that opens the link:
 
