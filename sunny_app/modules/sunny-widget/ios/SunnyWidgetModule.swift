@@ -27,7 +27,7 @@ public final class SunnyWidgetModule: Module {
     public func definition() -> ModuleDefinition {
         Name("SunnyWidget")
 
-        Function("storedSiteUrl") { () -> String? in
+        AsyncFunction("storedSiteUrl") { () -> String? in
             WidgetSync.live()?.storedSiteURL()?.absoluteString
         }
 
@@ -53,7 +53,7 @@ public final class SunnyWidgetModule: Module {
             return await sync.replayPresses(timeout: WidgetSync.pressTimeout).rawValue
         }
 
-        Function("unsentPresses") { () -> [[String: Any]] in
+        AsyncFunction("unsentPresses") { () -> [[String: Any]] in
             (WidgetSync.live()?.unsentPresses() ?? []).map { press in
                 [
                     "pressId": press.id.uuidString,

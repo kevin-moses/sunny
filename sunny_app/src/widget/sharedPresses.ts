@@ -8,20 +8,24 @@ import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
 
 let unsent: readonly PressedEntry[] = [];
+let reads = 0;
 const listeners = new Set<() => void>();
 
 function sameIds(a: readonly PressedEntry[], b: readonly PressedEntry[]): boolean {
   return a.length === b.length && a.every((entry, i) => entry.pressId === b[i]?.pressId);
 }
 
-export function readUnsentPresses(): void {
+export async function readUnsentPresses(): Promise<void> {
+  reads += 1;
+  const read = reads;
   let raw: unknown;
   try {
-    raw = SunnyWidget.unsentPresses();
+    raw = await SunnyWidget.unsentPresses();
   } catch (e) {
     logger.warning('Widget', `Could not read the widget's unsent presses: ${errorMessage(e)}`);
     return;
   }
+  if (read !== reads) return;
   const next = Array.isArray(raw) ? raw.filter(isPressedEntry) : [];
   if (sameIds(next, unsent)) return;
   unsent = next;
@@ -37,9 +41,9 @@ export function useUnsentWidgetPresses(): readonly PressedEntry[] {
   const presses = useSyncExternalStore(subscribe, () => unsent);
 
   useEffect(() => {
-    readUnsentPresses();
+    void readUnsentPresses();
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') readUnsentPresses();
+      if (state === 'active') void readUnsentPresses();
     });
     return () => subscription.remove();
   }, []);

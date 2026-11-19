@@ -8,13 +8,14 @@ import type { DayTask, DayViewData } from '../../day/types';
 import { confirmQueue } from '../../day/pendingConfirms';
 import type { DayViewState } from '../../day/useDayView';
 import { instanceIdOf, makeDay, makeEvent, makeTask } from '../../testing/dayFixtures';
+import { readUnsentPresses } from '../../widget/sharedPresses';
 import { TodayScreen } from '../TodayScreen';
 
 const mockStore = new Map<string, string>();
 let mockConnected = true;
 let mockFontsReady = true;
 const mockMutation = jest.fn<(...args: unknown[]) => Promise<unknown>>();
-const mockUnsentPresses = jest.fn<() => unknown[]>();
+const mockUnsentPresses = jest.fn<() => Promise<unknown[]>>();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -128,6 +129,12 @@ function render(view: DayViewState): ReactTestInstance {
   return renderer.root;
 }
 
+async function readWidgetPresses(): Promise<void> {
+  await act(async () => {
+    await readUnsentPresses();
+  });
+}
+
 function words(root: ReactTestInstance): string[] {
   return root
     .findAll((n) => (n.type as unknown) === 'Text')
@@ -143,7 +150,7 @@ function buttonLabels(root: ReactTestInstance): string[] {
 
 const OLD_WORDS = ['Monday morning', 'November 9', 'Today', 'Next up', 'Coming up'];
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.useFakeTimers();
   jest.setSystemTime(NOW);
   mockStore.clear();
@@ -151,7 +158,8 @@ beforeEach(() => {
   mockFontsReady = true;
   mockMutation.mockReset();
   mockMutation.mockResolvedValue({ status: 'confirmed' });
-  mockUnsentPresses.mockReturnValue([]);
+  mockUnsentPresses.mockResolvedValue([]);
+  await readWidgetPresses();
 });
 
 afterEach(async () => {
@@ -239,8 +247,8 @@ describe('TodayScreen states', () => {
     expect(row.props.accessibilityValue).toEqual({ text: 'Done' });
   });
 
-  it('shows a task pressed on the widget or the Lock Screen as done while that press is unsent', () => {
-    mockUnsentPresses.mockReturnValue([
+  it('shows a task pressed on the widget or the Lock Screen as done while that press is unsent', async () => {
+    mockUnsentPresses.mockResolvedValue([
       {
         pressId: 'F2B4E6A8-0000-4000-8000-000000000001',
         instanceId: 'pills',
@@ -249,6 +257,7 @@ describe('TodayScreen states', () => {
       },
     ]);
     const root = render(dayView([BREAKFAST, task(), LUNCH]));
+    await readWidgetPresses();
     expect(buttonLabels(root)).toEqual(['Talk to Sunny']);
     const row = root.find(
       (n) =>
@@ -257,8 +266,8 @@ describe('TodayScreen states', () => {
     expect(row.props.accessibilityValue).toEqual({ text: 'Done' });
   });
 
-  it('keeps showing the next step of a step task pressed elsewhere', () => {
-    mockUnsentPresses.mockReturnValue([
+  it('keeps showing the next step of a step task pressed elsewhere', async () => {
+    mockUnsentPresses.mockResolvedValue([
       {
         pressId: 'F2B4E6A8-0000-4000-8000-000000000002',
         instanceId: 'pills',
@@ -271,6 +280,7 @@ describe('TodayScreen states', () => {
       step: { index: 0, count: 3, text: 'Fill a glass' },
     });
     const root = render(dayView([stepped]));
+    await readWidgetPresses();
     expect(words(root).slice(0, 3)).toEqual([
       'Now',
       'Step 2 of 3',

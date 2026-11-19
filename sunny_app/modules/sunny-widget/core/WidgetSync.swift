@@ -61,7 +61,8 @@ public struct WidgetSync: Sendable {
     }
 
     public func storedSiteURL() -> URL? {
-        tokens.read() == nil ? nil : sites.read()
+        guard let site = sites.read() else { return nil }
+        return tokens.read() == nil ? nil : site
     }
 
     public func reporterLaunch() -> ReporterLaunch {

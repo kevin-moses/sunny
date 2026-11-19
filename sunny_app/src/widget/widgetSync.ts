@@ -34,7 +34,7 @@ export function surfaceSyncKey(day: DayViewData | null): string | null {
 }
 
 export async function ensureWidgetToken(): Promise<boolean> {
-  if (SunnyWidget.storedSiteUrl() === CONVEX_SITE_URL) return true;
+  if ((await SunnyWidget.storedSiteUrl()) === CONVEX_SITE_URL) return true;
   if (storeFailed) return false;
   const issuedFor = generation;
   const { deviceToken } = await callAction(api.deviceApi.issueToken, {});
@@ -63,7 +63,7 @@ export function syncWidget(): Promise<void> {
     .catch((e: unknown) => logger.warning('Widget', `Widget sync failed: ${errorMessage(e)}`))
     .finally(() => {
       syncRun = null;
-      readUnsentPresses();
+      void readUnsentPresses();
     });
   return syncRun;
 }
