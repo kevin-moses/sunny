@@ -174,7 +174,7 @@ Environment (set on the Convex deployment with `npx convex env set`, never in a 
 
 The entry points are `index.ts` and `App.tsx`. The rest of the app:
 
-- Screens are in `src/screens`: `PairingScreen`, `TodayScreen` for the phone, and `DisplayScreen` for the home display. The phone's Done button is in `src/day/useDoneAction.ts`. The offline queue of Done presses and Undo taps is in `src/day/pendingConfirms.ts`, with its entry types and display helpers in `src/day/pendingEntries.ts`. The 30-second Undo line is in `src/components/DayComponents.tsx`.
+- Screens are in `src/screens`: `PairingScreen`, `TodayScreen` for the phone, and `DisplayScreen` for the home display. The phone's Done button is in `src/day/useDoneAction.ts`. The offline queue of Done presses and Undo taps is in `src/day/pendingConfirms.ts`, with its entry types and display helpers in `src/day/pendingEntries.ts`. The phone's look is in `src/phone`: the paper colours, type roles, text-size caps and shadows in `theme.ts`, what each slot shows (including the 30-second Undo and the "Next:" line) in `model.ts`, and the slots and keys in `PhoneParts.tsx` and `PhoneKeys.tsx`. The Talk key is `src/voice/TalkButton.tsx`.
 - The day clock is in `src/day`. It subscribes to `calendar.dayView` with a per-minute argument.
 - Pairing is in `src/backend` (`pairing.ts`, `useSession.ts`), with typed Convex calls through `convexApi.ts`.
 - Voice is in `src/voice`. The LiveKit room token comes from `voice.livekitToken`. The app registers the phone RPCs `findContact` and `sendMessage`; no agent tool calls them.
