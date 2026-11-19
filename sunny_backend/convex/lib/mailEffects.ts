@@ -67,29 +67,14 @@ export async function linkForEvent(
     .first();
 }
 
-function sequenceFor(scope: EffectScope, key: string): number | undefined {
-  const { ics } = scope.facts;
-  return ics !== null && key === `ics:${ics.uid}` ? ics.sequence : undefined;
-}
-
 async function confirmLink(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
   const existing = await linkForEvent(scope.ctx, eventId);
-  if (existing === null) {
-    await linkEvent(scope, eventId, key);
-    return;
-  }
-  const sequence = sequenceFor(scope, key);
-  if (
-    existing.appointmentKey === key &&
-    sequence !== undefined &&
-    sequence > (existing.sequence ?? 0)
-  ) {
-    await scope.ctx.db.patch(existing._id, { sequence });
-  }
+  if (existing === null || existing.appointmentKey === key) await linkEvent(scope, eventId, key);
 }
 
 async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
-  const sequence = sequenceFor(scope, key);
+  const { ics } = scope.facts;
+  const sequence = ics !== null && key === `ics:${ics.uid}` ? ics.sequence : undefined;
   const existing = await linkForEvent(scope.ctx, eventId);
   if (existing === null) {
     await scope.ctx.db.insert("mailEventLinks", {

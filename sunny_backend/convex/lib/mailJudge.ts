@@ -209,7 +209,7 @@ const DATE_FORMS = ["calendar_date", "today", "tomorrow", "weekday", "not_stated
 const WEEKS = ["this_week", "next_week", "unqualified"] as const;
 const NOT_STATED = "not_stated";
 
-export type Week = (typeof WEEKS)[number];
+type Week = (typeof WEEKS)[number];
 
 type SlotName = "when" | "before";
 
@@ -499,6 +499,7 @@ function timed(r: Readings): { date: string; time: string } | null {
 
 const SAFETY_FLAGS = flagsIn("safety", "pressure");
 const PRESSURE_FLAGS = flagsIn("pressure");
+const DECISION_FLAGS = flagsIn("decision");
 const SPECIFIC_DECISION_FLAGS = flagsIn("decision", "appointment");
 const BROAD_FLAGS = flagsIn("broad");
 const INFO_FLAGS = flagsIn("information");
@@ -551,10 +552,8 @@ const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: st
   },
 ];
 
-const DECISION_FLAGS = flagsIn("decision");
-
 function decisionOf(r: Readings): DecisionReason | null {
-  const named = DECISIONS.find(({ flag }) => FLAG_GROUPS[flag] === "decision" && is(r, flag));
+  const named = DECISIONS.find(({ flag }) => DECISION_FLAGS.includes(flag) && is(r, flag));
   if (named !== undefined) return named.reason;
   return anyUnsure(r, DECISION_FLAGS) ? "other" : null;
 }
