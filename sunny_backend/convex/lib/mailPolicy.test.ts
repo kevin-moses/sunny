@@ -31,6 +31,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-11-24",
     time: "10:30",
     durationMinutes: 60,
+    repeating: false,
     sourceSender: "appointments@lakesideeye.example",
   },
   {
@@ -39,6 +40,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-11-20",
     time: "14:00",
     durationMinutes: 45,
+    repeating: false,
     sourceSender: "frontdesk@mail.riversidept.example",
   },
   {
@@ -47,6 +49,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-12-02",
     time: "09:00",
     durationMinutes: null,
+    repeating: false,
     sourceSender: null,
   },
 ];
@@ -297,6 +300,7 @@ describe("planEffects decision table", () => {
               date: "2026-11-20",
               time: "16:00",
               durationMinutes: 30,
+              repeating: false,
               sourceSender: null,
             },
           ],

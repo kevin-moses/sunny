@@ -264,6 +264,59 @@ describe("an appointment email", () => {
     ]);
   });
 
+  describe("with a weekly series on the calendar", () => {
+    async function weeklyEyeExam(h: MailHousehold): Promise<Id<"events">> {
+      return await insertEvent(h.t, h.householdId, {
+        title: "Eye exam",
+        startsOn: "2026-11-19",
+        startTime: "14:15",
+        durationMinutes: 30,
+        repeatDays: [4],
+      });
+    }
+
+    test("a confirmation of one of its dates is already on the calendar", async () => {
+      const h = await setup();
+      const seriesId = await weeklyEyeExam(h);
+      const done = await triageEmail(h, clinic(), EYE_EXAM);
+      expect(done.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      expect(await rows(h, "events")).toHaveLength(1);
+    });
+
+    test("an appointment that overlaps one of its dates escalates as a conflict", async () => {
+      const h = await setup();
+      await weeklyEyeExam(h);
+      const done = await triageEmail(
+        h,
+        clinic(),
+        verdict({ ...EYE_EXAM, title: "Hearing test", time: "14:30" }),
+      );
+      expect(done.effects).toEqual([{ kind: "escalated", reason: "conflict", pushed: true }]);
+      expect(await rows(h, "events")).toHaveLength(1);
+    });
+
+    test("a reschedule of one of its dates from a known sender escalates and moves nothing", async () => {
+      const h = await setup();
+      const seriesId = await weeklyEyeExam(h);
+      gmailMocks.hasSentTo.mockResolvedValue(true);
+      const moved = await triageEmail(h, clinic(), MOVED_EYE_EXAM);
+      expect(moved.effects).toEqual([
+        {
+          kind: "escalated",
+          reason: "unclear_reschedule",
+          pushed: true,
+          eventId: seriesId,
+          proposed: { date: "2026-12-12", time: "10:00" },
+        },
+      ]);
+      expect((await rows(h, "events"))[0]).toMatchObject({
+        startsOn: "2026-11-19",
+        startTime: "14:15",
+        repeatDays: [4],
+      });
+    });
+  });
+
   test("a cancellation escalates with the event and the event stays", async () => {
     const h = await setup();
     await triageEmail(h, clinic(), EYE_EXAM);

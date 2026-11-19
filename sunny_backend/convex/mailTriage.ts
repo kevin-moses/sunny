@@ -17,7 +17,7 @@ import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
 import type { CalendarEventFact, MailVerdict, PolicyFacts, Triaged } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
-import { liveEvents } from "./lib/occurrences";
+import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 import type { ClassifierRecord, StoredSender, StoredVerdict } from "./lib/validators";
@@ -182,29 +182,52 @@ export const recordParsed = internalMutation({
   },
 });
 
-async function eventFact(ctx: QueryCtx, event: Doc<"events">): Promise<CalendarEventFact> {
+async function eventFact(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  date: string,
+): Promise<CalendarEventFact> {
   const link = await linkForEvent(ctx, event._id);
   const source = link === null ? null : await ctx.db.get(link.mailItemId);
   return {
     eventId: event._id,
     title: event.title,
-    date: event.startsOn,
+    date,
     time: event.startTime,
     durationMinutes: event.durationMinutes ?? null,
+    repeating: event.repeatDays !== undefined,
     sourceSender: source?.sender?.address ?? null,
   };
 }
 
-async function upcomingSingleEvents(
+function datesNamed(verdict: MailVerdict | null): string[] {
+  if (verdict?.kind !== "appointment") return [];
+  if (verdict.change === "cancel") return [verdict.previous.date];
+  const { date } = verdict.appointment;
+  const dates = [addDays(date, -1), date];
+  return verdict.change === "reschedule" ? [...dates, verdict.previous.date] : dates;
+}
+
+async function calendarFacts(
   ctx: QueryCtx,
   household: Doc<"households">,
   now: number,
-): Promise<Doc<"events">[]> {
+  verdict: MailVerdict | null,
+): Promise<{ events: Doc<"events">[]; facts: CalendarEventFact[] }> {
   const today = localDate(now, household.timezone);
   const last = addDays(today, EVENT_HORIZON_DAYS);
-  return (await liveEvents(ctx, household._id)).filter(
-    (e) => e.repeatDays === undefined && e.startsOn >= today && e.startsOn <= last,
+  const inHorizon = (date: string) => date >= today && date <= last;
+  const live = await liveEvents(ctx, household._id);
+  const singles = live.filter((e) => e.repeatDays === undefined && inHorizon(e.startsOn));
+  const series = live.filter((e) => e.repeatDays !== undefined);
+  const occurrences = [...new Set(datesNamed(verdict).filter(inHorizon))].flatMap((date) =>
+    expandOccurrences(series, household.timezone, date, date),
   );
+  const facts = await Promise.all([
+    ...singles.map((e) => eventFact(ctx, e, e.startsOn)),
+    ...occurrences.map((o) => eventFact(ctx, o.event, o.localDate)),
+  ]);
+  return { events: [...singles, ...series], facts };
 }
 
 export const applyTriage = internalMutation({
@@ -223,8 +246,8 @@ export const applyTriage = internalMutation({
       return false;
     }
     const now = Date.now();
-    const upcoming = await upcomingSingleEvents(ctx, household, now);
-    const events = new Map<string, Doc<"events">>(upcoming.map((e) => [e._id, e]));
+    const calendar = await calendarFacts(ctx, household, now, triaged.verdict);
+    const events = new Map<string, Doc<"events">>(calendar.events.map((e) => [e._id, e]));
     const key = linkKey(triaged.verdict, email.ics);
     const link = key === null ? null : await linkByKey(ctx, household._id, key);
     const linked = link === null ? null : await ctx.db.get(link.eventId);
@@ -239,7 +262,7 @@ export const applyTriage = internalMutation({
       receivedAt: header.receivedAt,
       gmailId: item.gmailId,
       ics: email.ics,
-      events: await Promise.all(upcoming.map((e) => eventFact(ctx, e))),
+      events: calendar.facts,
       linkedEventId: linked?._id ?? null,
     };
     const plan = planWithRule(triaged, facts);

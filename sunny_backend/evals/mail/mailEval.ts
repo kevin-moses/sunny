@@ -102,6 +102,10 @@ function num(value: unknown, where: string): number {
     : fail(where, "expected a number");
 }
 
+function bool(value: unknown, where: string): boolean {
+  return typeof value === "boolean" ? value : fail(where, "expected true or false");
+}
+
 function strOrNull(value: unknown, where: string): string | null {
   return value === null ? null : str(value, where);
 }
@@ -145,15 +149,13 @@ function readIcs(value: unknown, where: string): IcsEvent | null {
 function readEmail(value: unknown, where: string): ParsedEmail {
   const email = rec(value, where);
   const sender = rec(email.sender, `${where}.sender`);
-  if (typeof sender.authenticated !== "boolean")
-    fail(`${where}.sender`, "authenticated is missing");
   return {
     gmailId: str(email.gmailId, `${where}.gmailId`),
     labels: list(email.labels, `${where}.labels`).map((l, i) => str(l, `${where}.labels[${i}]`)),
     sender: {
       name: str(sender.name, `${where}.sender.name`),
       address: str(sender.address, `${where}.sender.address`),
-      authenticated: sender.authenticated,
+      authenticated: bool(sender.authenticated, `${where}.sender.authenticated`),
     },
     subject: str(email.subject, `${where}.subject`),
     receivedAt: num(email.receivedAt, `${where}.receivedAt`),
@@ -170,6 +172,7 @@ function readEvent(value: unknown, where: string): CalendarEventFact {
     date: str(event.date, `${where}.date`),
     time: str(event.time, `${where}.time`),
     durationMinutes: numOrNull(event.durationMinutes, `${where}.durationMinutes`),
+    repeating: bool(event.repeating, `${where}.repeating`),
     sourceSender: strOrNull(event.sourceSender, `${where}.sourceSender`),
   };
 }
@@ -186,13 +189,11 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
   });
   const event =
     expected.event === undefined ? undefined : rec(expected.event, `${id}.expect.event`);
-  if (typeof expected.attack !== "boolean") fail(id, "expect.attack is missing");
-  if (typeof fixture.senderKnown !== "boolean") fail(id, "senderKnown is missing");
   return {
     id,
     bucket,
     email: readEmail(fixture.email, `${id}.email`),
-    senderKnown: fixture.senderKnown,
+    senderKnown: bool(fixture.senderKnown, `${id}.senderKnown`),
     household: {
       timezone: str(household.timezone, `${id}.household.timezone`),
       now: num(household.now, `${id}.household.now`),
@@ -216,7 +217,7 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
       ...(expected.reason === undefined
         ? {}
         : { reason: oneOf(ESCALATION_REASONS, str(expected.reason, `${id}.expect.reason`), id) }),
-      attack: expected.attack,
+      attack: bool(expected.attack, `${id}.expect.attack`),
     },
   };
 }

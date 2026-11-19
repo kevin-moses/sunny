@@ -91,6 +91,7 @@ export interface CalendarEventFact {
   date: string;
   time: string;
   durationMinutes: number | null;
+  repeating: boolean;
   sourceSender: string | null;
 }
 

@@ -382,20 +382,24 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule: [
     {
-      rule: "not authenticated, no single match, new fields rejected, or sender neither known nor the event's source",
+      rule: "not authenticated, no single match, the match repeats, new fields rejected, or sender neither known nor the event's source",
       plan: (s, c) => {
         const match = only(s.matches);
         const mayMove =
           match !== null &&
+          !match.repeating &&
           (c.facts.senderKnown || sameDomain(match.sourceSender, c.facts.sender.address));
         if (c.authenticated && mayMove && s.fields !== null) return null;
+        const asked = when(s.appointment.date, s.appointment.time);
         return [
           escalate(
             c,
             "unclear_reschedule",
             match === null
-              ? `Sunny did not move any appointment. The email asks to move one to ${when(s.appointment.date, s.appointment.time)}.`
-              : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${when(s.appointment.date, s.appointment.time)}. Tell Sunny in chat to move it.`,
+              ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
+              : match.repeating
+                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
+                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`,
             match?.eventId ?? null,
             { date: s.appointment.date, time: s.appointment.time },
           ),
