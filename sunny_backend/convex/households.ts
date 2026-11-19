@@ -27,6 +27,7 @@ import {
   updateHouseholdCore,
 } from "./lib/householdSettings";
 import { isValidDeviceToken } from "./lib/apnsPayload";
+import { phoneRevoked } from "./lib/liveActivitySync";
 import { requireNonBlank } from "./lib/text";
 import { joinGrant, memberRole } from "./lib/validators";
 import type { DeviceKind, JoinGrant, MemberRole } from "./lib/validators";
@@ -395,6 +396,7 @@ export const removeDevice = mutation({
       .withIndex("by_user", (q) => q.eq("userId", device.userId))
       .collect();
     for (const token of tokens) await ctx.db.delete(token._id);
+    await phoneRevoked(ctx, device._id);
     await ctx.scheduler.runAfter(0, internal.pairing.deleteClerkUser, { userId: device.userId });
     return null;
   },
@@ -409,6 +411,7 @@ export const revokeDeviceToken = mutation({
       throw appError("not_found", "Device not found");
     }
     await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
+    await phoneRevoked(ctx, device._id);
     await audit(ctx, {
       householdId: args.householdId,
       actor,

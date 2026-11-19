@@ -13,6 +13,7 @@ import {
   findPhonePush,
   loadActivityView,
   nextCommand,
+  openActivitiesOf,
 } from "./liveActivity";
 import { DAY_MS } from "./time";
 import { requestWidgetRefresh } from "./widgetRefresh";
@@ -142,6 +143,16 @@ export async function taskTextChanged(
       .withIndex("by_task_state", (q) => q.eq("taskId", after._id).eq("state", state))
       .collect();
     for (const instance of instances) await pushLiveActivities(ctx, instance._id);
+  }
+}
+
+export async function phoneRevoked(ctx: MutationCtx, deviceId: Id<"devices">): Promise<void> {
+  const push = await findPhonePush(ctx, deviceId);
+  if (push !== null) await ctx.db.delete(push._id);
+  const now = Date.now();
+  for (const row of await openActivitiesOf(ctx, deviceId)) {
+    if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
+    else await endActivity(ctx, row, "device_revoked", now);
   }
 }
 
