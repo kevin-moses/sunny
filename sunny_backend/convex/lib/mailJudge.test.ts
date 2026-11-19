@@ -5,6 +5,7 @@ import type { JevSays } from "../mailMocks.helpers";
 import { cleanText } from "./frameText";
 import {
   FLAGS,
+  FLAG_GROUPS,
   JEV_MODEL,
   TRUTH_TABLE,
   askJev,
@@ -285,6 +286,20 @@ describe("truth table", () => {
     expect(result.summary.length).toBeGreaterThan(0);
   });
 
+  test.each(FLAGS.filter((f) => FLAG_GROUPS[f] !== "follow_up"))(
+    "an unsettled %s on its own goes to the caregivers",
+    (flag) => {
+      expect(decide(readings({ [flag]: "unsure" })).verdict.kind).toBe("needs_decision");
+    },
+  );
+
+  test("a follow-up question is read only after its parent says yes", () => {
+    expect(
+      label(decide(readings({ about_package: "yes", package_arrived: "unsure" })).verdict),
+    ).toBe("senior_info:package_coming");
+    expect(decide(readings({ prescription_ready_now: "yes" })).rule).toBe("otherwise");
+  });
+
   test("an appointment carries a kind and a slot, never a title or place", () => {
     expect(
       decide(readings({ confirms_appointment: "yes" }, { kind: "eye_doctor", when: DEC_10 }))
@@ -512,6 +527,21 @@ describe("reading Jev's answers", () => {
       otherTimeZone: "no",
       invite: null,
     });
+  });
+
+  test("a Noul at a threshold reads the way a Choice part at the threshold does", () => {
+    const answers = {
+      ...compactAnswers(jevAnswers(EYE_EXAM, QUESTIONS), QUESTIONS),
+      confirms_appointment: 0.7,
+      addresses_assistant: 0.3,
+      about_bill: 0.5,
+      when_hour: { choice: "2", probability: 0.7 },
+    };
+    const read = readAnswers(answers, ANCHOR, null);
+    expect(read.flags.get("confirms_appointment")).toBe("yes");
+    expect(read.flags.get("addresses_assistant")).toBe("no");
+    expect(read.flags.get("about_bill")).toBe("unsure");
+    expect(read.when).toEqual(DEC_10);
   });
 
   test("a missing answer is an error, not a no", () => {

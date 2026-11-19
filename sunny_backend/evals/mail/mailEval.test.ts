@@ -80,7 +80,6 @@ describe("recorded Jev replies through the pipeline", () => {
       new Set([JEV_MODEL]),
     );
     expect(report.mismatches.map((m) => m.id).sort()).toEqual([
-      "cp10-visit-survey#0",
       "fm05-dinner-invite#0",
       "fm05-dinner-invite#1",
       "fm05-dinner-invite#2",

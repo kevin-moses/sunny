@@ -23,9 +23,7 @@ export const JEV_MODEL = "jev-1.14.0";
 
 const JEV_TIMEOUT_MS = 20_000;
 
-const YES = 0.7;
-const NO = 0.3;
-const PART_SURE = 0.7;
+const SURE = 0.7;
 const NEXT_YEAR_AFTER_DAYS = 31;
 
 function noul(
@@ -146,6 +144,45 @@ function isFlag(name: string): name is Flag {
 }
 
 export const FLAGS: Flag[] = Object.keys(FLAG_QUESTIONS).filter(isFlag);
+
+type FlagGroup =
+  "safety" | "pressure" | "decision" | "appointment" | "broad" | "information" | "follow_up";
+
+export const FLAG_GROUPS: Record<Flag, FlagGroup> = {
+  addresses_assistant: "safety",
+  asks_private_details: "safety",
+  asks_hard_to_trace_payment: "safety",
+  asks_to_bring_payment: "safety",
+  threatens_arrest: "pressure",
+  threatens_lockout: "pressure",
+  threatens_lost_benefits: "pressure",
+  discourages_checking: "pressure",
+  promises_unexpected_money: "pressure",
+  announces_new_contact: "safety",
+  name_mismatch: "safety",
+  from_government: "decision",
+  about_account_security: "decision",
+  about_test_results: "decision",
+  about_bill: "decision",
+  asks_question: "decision",
+  needs_action: "broad",
+  confirms_appointment: "broad",
+  appointment_moved: "appointment",
+  appointment_cancelled: "appointment",
+  about_package: "information",
+  package_arrived: "follow_up",
+  about_prescription: "information",
+  prescription_ready_now: "follow_up",
+  home_visit: "information",
+  personal_note: "information",
+  bulk_mail: "information",
+  receipt: "information",
+  feedback_request: "information",
+};
+
+function flagsIn(...groups: FlagGroup[]): Flag[] {
+  return FLAGS.filter((f) => groups.includes(FLAG_GROUPS[f]));
+}
 
 const MONTHS = [
   "January",
@@ -282,9 +319,13 @@ export function judgeState(email: ParsedEmail): { email: Record<string, string> 
 
 export type Level = "yes" | "unsure" | "no";
 
+function isSure(probability: number): boolean {
+  return probability >= SURE;
+}
+
 function level(probability: number): Level {
-  if (probability > YES) return "yes";
-  if (probability < NO) return "no";
+  if (isSure(probability)) return "yes";
+  if (isSure(1 - probability)) return "no";
   return "unsure";
 }
 
@@ -319,7 +360,7 @@ export type SlotPicks = Record<
 >;
 
 function sure(pick: Picked): string | null {
-  return pick.probability >= PART_SURE ? pick.choice : null;
+  return isSure(pick.probability) ? pick.choice : null;
 }
 
 function calendarDate(year: number, month: number, day: number): string | null {
@@ -423,49 +464,11 @@ function timed(r: Readings): { date: string; time: string } | null {
   return { date: slot.date, time: slot.time };
 }
 
-const SAFETY_FLAGS: Flag[] = [
-  "addresses_assistant",
-  "asks_private_details",
-  "asks_hard_to_trace_payment",
-  "asks_to_bring_payment",
-  "threatens_arrest",
-  "threatens_lockout",
-  "threatens_lost_benefits",
-  "discourages_checking",
-  "promises_unexpected_money",
-  "announces_new_contact",
-  "name_mismatch",
-];
-
-const PRESSURE_FLAGS: Flag[] = [
-  "threatens_arrest",
-  "threatens_lockout",
-  "threatens_lost_benefits",
-  "discourages_checking",
-  "promises_unexpected_money",
-];
-
-const SPECIFIC_DECISION_FLAGS: Flag[] = [
-  "about_test_results",
-  "about_bill",
-  "about_account_security",
-  "from_government",
-  "asks_question",
-  "appointment_moved",
-  "appointment_cancelled",
-];
-
-const BROAD_FLAGS: Flag[] = ["needs_action", "confirms_appointment"];
-
-const INFO_FLAGS: Flag[] = [
-  "about_prescription",
-  "about_package",
-  "home_visit",
-  "personal_note",
-  "bulk_mail",
-  "receipt",
-  "feedback_request",
-];
+const SAFETY_FLAGS = flagsIn("safety", "pressure");
+const PRESSURE_FLAGS = flagsIn("pressure");
+const SPECIFIC_DECISION_FLAGS = flagsIn("decision", "appointment");
+const BROAD_FLAGS = flagsIn("broad");
+const INFO_FLAGS = flagsIn("information");
 
 interface Row {
   rule: string;
