@@ -204,6 +204,8 @@ describe("planEffects decision table", () => {
         durationMinutes: 45,
         summary: "Hearing test",
         location: null,
+        recurring: false,
+        sequence: 0,
       };
       const effects = planEffects(model(newAppointment()), facts({ ics }));
       expect(effects[0]).toMatchObject({ kind: "add_event", appointmentKey: "ics:u-1" });
@@ -632,6 +634,8 @@ describe("keys, matching and expiry", () => {
       durationMinutes: null,
       summary: "",
       location: null,
+      recurring: false,
+      sequence: 0,
     };
     expect(appointmentKey(appointment(), ics)).toBe("ics:u-9");
   });
@@ -647,6 +651,8 @@ describe("keys, matching and expiry", () => {
         durationMinutes: null,
         summary: "",
         location: null,
+        recurring: false,
+        sequence: 0,
       }),
     ).toBe("ics:u-2");
   });

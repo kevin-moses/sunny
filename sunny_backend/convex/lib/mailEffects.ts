@@ -78,6 +78,8 @@ export async function linkForEvent(
 }
 
 async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
+  const { ics } = scope.facts;
+  const sequence = ics !== null && key === `ics:${ics.uid}` ? ics.sequence : undefined;
   const existing = await linkForEvent(scope.ctx, eventId);
   if (existing === null) {
     await scope.ctx.db.insert("mailEventLinks", {
@@ -85,9 +87,10 @@ async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string)
       eventId,
       appointmentKey: key,
       mailItemId: scope.item._id,
+      sequence,
     });
-  } else if (existing.appointmentKey !== key) {
-    await scope.ctx.db.patch(existing._id, { appointmentKey: key });
+  } else if (existing.appointmentKey !== key || existing.sequence !== sequence) {
+    await scope.ctx.db.patch(existing._id, { appointmentKey: key, sequence });
   }
 }
 

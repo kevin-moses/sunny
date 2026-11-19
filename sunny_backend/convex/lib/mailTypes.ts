@@ -11,6 +11,12 @@ export interface IcsEvent {
   durationMinutes: number | null;
   summary: string;
   location: string | null;
+  recurring: boolean;
+  sequence: number;
+}
+
+export interface KnownInvite {
+  sequence: number;
 }
 
 export interface ParsedEmail {

@@ -143,6 +143,8 @@ function readIcs(value: unknown, where: string): IcsEvent | null {
     durationMinutes: numOrNull(ics.durationMinutes, `${where}.durationMinutes`),
     summary: str(ics.summary, `${where}.summary`),
     location: strOrNull(ics.location, `${where}.location`),
+    recurring: bool(ics.recurring, `${where}.recurring`),
+    sequence: num(ics.sequence, `${where}.sequence`),
   };
 }
 
@@ -249,9 +251,10 @@ export async function runFixture(
 ): Promise<Run> {
   const { email, household } = fixture;
   const clock = { now: household.now, timezone: household.timezone };
-  const knownIcsUid = email.ics !== null && `ics:${email.ics.uid}` in household.links;
+  const known =
+    email.ics !== null && `ics:${email.ics.uid}` in household.links ? { sequence: 0 } : null;
   const started = performance.now();
-  const triaged = await triageEmail(email, clock, classifier, knownIcsUid);
+  const triaged = await triageEmail(email, clock, classifier, known);
   const latencyMs = performance.now() - started;
   const key = linkKey(triaged.verdict, email.ics);
   const plan = planWithRule(triaged, {

@@ -102,7 +102,7 @@ describe("rulesClassifier", () => {
 describe("triageEmail", () => {
   test("settles at the gate without calling the classifier", async () => {
     const classifier = vi.fn<Classifier>();
-    const triaged = await triageEmail(email({ labels: ["SPAM"] }), CLOCK, classifier, false);
+    const triaged = await triageEmail(email({ labels: ["SPAM"] }), CLOCK, classifier, null);
     expect(triaged).toMatchObject({ stage: "gate", rule: "label:SPAM" });
     expect(classifier).not.toHaveBeenCalled();
   });
@@ -115,7 +115,7 @@ describe("triageEmail", () => {
       usage,
       name: "fake",
     });
-    expect(await triageEmail(email(), CLOCK, good, false)).toEqual({
+    expect(await triageEmail(email(), CLOCK, good, null)).toEqual({
       stage: "model",
       verdict: {
         kind: "senior_info",
@@ -126,7 +126,7 @@ describe("triageEmail", () => {
       usage,
       classifier: "fake",
     });
-    expect(await triageEmail(email(), CLOCK, bad, false)).toMatchObject({
+    expect(await triageEmail(email(), CLOCK, bad, null)).toMatchObject({
       stage: "model",
       verdict: null,
     });

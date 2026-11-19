@@ -25,7 +25,9 @@
         },
         "durationMinutes": 180,
         "summary": "Thanksgiving dinner at Anna's",
-        "location": "Anna's house, 12 Birch Lane"
+        "location": "Anna's house, 12 Birch Lane",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": true,
@@ -149,7 +151,9 @@
         },
         "durationMinutes": 45,
         "summary": "Echocardiogram",
-        "location": "Brookfield Heart Center, 1200 Mill Street"
+        "location": "Brookfield Heart Center, 1200 Mill Street",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,
@@ -273,7 +277,9 @@
         },
         "durationMinutes": 30,
         "summary": "Video call with David",
-        "location": null
+        "location": null,
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": true,
@@ -397,7 +403,9 @@
         },
         "durationMinutes": 90,
         "summary": "Book club at the library",
-        "location": "Brookfield Public Library, Room B"
+        "location": "Brookfield Public Library, Room B",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,
@@ -521,7 +529,9 @@
         },
         "durationMinutes": 30,
         "summary": "Cardiology follow-up with Dr. Osei",
-        "location": null
+        "location": null,
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,
@@ -641,7 +651,9 @@
         },
         "durationMinutes": null,
         "summary": "Lunch with Ruth",
-        "location": null
+        "location": null,
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": true,
@@ -758,7 +770,9 @@
         },
         "durationMinutes": 60,
         "summary": "Chair yoga",
-        "location": "Brookfield Community Center"
+        "location": "Brookfield Community Center",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,
@@ -878,7 +892,9 @@
         },
         "durationMinutes": 90,
         "summary": "Book club at the library",
-        "location": "Brookfield Public Library, Room B"
+        "location": "Brookfield Public Library, Room B",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,
@@ -994,7 +1010,9 @@
         "start": null,
         "durationMinutes": null,
         "summary": "Benefits counseling session",
-        "location": "Brookfield Senior Services, 14 Elm Street, Room 2"
+        "location": "Brookfield Senior Services, 14 Elm Street, Room 2",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,

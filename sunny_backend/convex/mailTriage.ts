@@ -15,7 +15,13 @@ import { haikuClassifier, triageEmail } from "./lib/mailClassify";
 import { carryOut, linkByKey, linkForEvent } from "./lib/mailEffects";
 import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
-import type { CalendarEventFact, MailVerdict, PolicyFacts, Triaged } from "./lib/mailTypes";
+import type {
+  CalendarEventFact,
+  KnownInvite,
+  MailVerdict,
+  PolicyFacts,
+  Triaged,
+} from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate } from "./lib/time";
@@ -173,12 +179,12 @@ export const recordParsed = internalMutation({
   handler: async (
     ctx,
     { itemId, attempt, icsKey, ...header },
-  ): Promise<{ knownIcsUid: boolean } | null> => {
+  ): Promise<{ known: KnownInvite | null } | null> => {
     const item = await ctx.db.get(itemId);
     if (!holdsClaim(item, attempt)) return null;
     await ctx.db.patch(itemId, storedHeader(header));
     const link = icsKey === null ? null : await linkByKey(ctx, item.householdId, icsKey);
-    return { knownIcsUid: link !== null };
+    return { known: link === null ? null : { sequence: link.sequence ?? 0 } };
   },
 });
 
@@ -343,7 +349,7 @@ async function triageClaimed(
     email,
     { now: claim.now, timezone },
     haikuClassifier,
-    parsed.knownIcsUid,
+    parsed.known,
   );
   const applied = await ctx.runMutation(internal.mailTriage.applyTriage, {
     itemId,

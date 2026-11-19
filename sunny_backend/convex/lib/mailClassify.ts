@@ -1,6 +1,6 @@
 import { gate } from "./mailGate";
 import { MAX_NOTE, NOTE_DENIED_WORDS } from "./mailPolicy";
-import type { ParsedEmail, Suspicion, Triaged, Usage } from "./mailTypes";
+import type { KnownInvite, ParsedEmail, Suspicion, Triaged, Usage } from "./mailTypes";
 import { VERDICT_SCHEMA, parseVerdict } from "./mailVerdict";
 import { client } from "./managedAgents";
 import { oneLine } from "./text";
@@ -190,9 +190,9 @@ export async function triageEmail(
   email: ParsedEmail,
   clock: Clock,
   classifier: Classifier,
-  knownIcsUid: boolean,
+  known: KnownInvite | null,
 ): Promise<Triaged> {
-  const gated = gate(email, knownIcsUid);
+  const gated = gate(email, known);
   if (gated.kind === "settled") return gated.triaged;
   const { raw, usage, name } = await classifier(email, clock);
   return { stage: "model", verdict: parseVerdict(raw), usage, classifier: name };

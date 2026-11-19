@@ -240,6 +240,8 @@ export const icsEvent = v.object({
   durationMinutes: v.union(v.null(), v.number()),
   summary: v.string(),
   location: v.union(v.null(), v.string()),
+  recurring: v.boolean(),
+  sequence: v.number(),
 });
 
 export const mailSender = v.object({

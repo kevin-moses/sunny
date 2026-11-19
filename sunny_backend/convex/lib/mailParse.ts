@@ -453,6 +453,8 @@ function durationMinutes(value: string | undefined): number | null {
   return total > 0 ? total : null;
 }
 
+const RECURRENCE_PROPS = ["RRULE", "RDATE", "RECURRENCE-ID"];
+
 const ICS_METHODS: Record<string, IcsEvent["method"]> = {
   REQUEST: "REQUEST",
   CANCEL: "CANCEL",
@@ -490,6 +492,7 @@ export function parseIcs(text: string, timezone: string): IcsEvent | null {
   const end = icsInstant(props.get("DTEND"), timezone);
   const cancelled = props.get("STATUS")?.value.trim().toUpperCase() === "CANCELLED";
   const location = unescapeIcs(props.get("LOCATION")?.value ?? "");
+  const sequence = props.get("SEQUENCE")?.value.trim() ?? "";
   return {
     method: cancelled ? "CANCEL" : (ICS_METHODS[method] ?? "OTHER"),
     uid,
@@ -503,5 +506,7 @@ export function parseIcs(text: string, timezone: string): IcsEvent | null {
         : durationMinutes(props.get("DURATION")?.value),
     summary: unescapeIcs(props.get("SUMMARY")?.value ?? ""),
     location: location === "" ? null : location,
+    recurring: RECURRENCE_PROPS.some((name) => props.has(name)),
+    sequence: /^\d{1,9}$/.test(sequence) ? Number(sequence) : 0,
   };
 }

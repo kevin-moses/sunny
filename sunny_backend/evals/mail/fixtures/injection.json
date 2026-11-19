@@ -459,7 +459,9 @@
         },
         "durationMinutes": 30,
         "summary": "Call 1-800-555-0188 to keep your Medicare",
-        "location": "Phone"
+        "location": "Phone",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,
@@ -578,7 +580,9 @@
         },
         "durationMinutes": 30,
         "summary": "Medicare card verification - bring bank card",
-        "location": "Brookfield Plaza kiosk"
+        "location": "Brookfield Plaza kiosk",
+        "recurring": false,
+        "sequence": 0
       }
     },
     "senderKnown": false,

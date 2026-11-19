@@ -367,6 +367,47 @@ describe("an appointment email", () => {
       { kind: "already_on_calendar", eventId: (await rows(h, "events"))[0]!._id },
     ]);
   });
+
+  function invite(lines: string[]): string {
+    return [
+      "BEGIN:VCALENDAR",
+      "METHOD:REQUEST",
+      "BEGIN:VEVENT",
+      "UID:visit-42@lakesideeye.example",
+      "DURATION:PT30M",
+      "SUMMARY:Eye exam",
+      ...lines,
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n");
+  }
+
+  test("an invite update older than the one Sunny linked is ignored", async () => {
+    const h = await setup();
+    gmailMocks.hasSentTo.mockResolvedValue(true);
+    await triageEmail(h, clinic({ ics: invite(["DTSTART:20261210T191500Z", "SEQUENCE:0"]) }));
+    await triageEmail(h, clinic({ ics: invite(["DTSTART:20261211T191500Z", "SEQUENCE:2"]) }));
+    expect((await rows(h, "mailEventLinks"))[0]).toMatchObject({ sequence: 2 });
+    const late = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART:20261212T191500Z", "SEQUENCE:1"]) }),
+    );
+    expect(late.classifier).toMatchObject({ name: "gate:ics:older_sequence" });
+    expect(late.effects).toEqual([]);
+    expect((await rows(h, "events"))[0]).toMatchObject({ startsOn: "2026-12-11" });
+  });
+
+  test("an invite for a repeating appointment goes to the caregivers as a decision", async () => {
+    const h = await setup();
+    const done = await triageEmail(
+      h,
+      clinic({ ics: invite(["DTSTART:20261210T191500Z", "RRULE:FREQ=WEEKLY;COUNT=6"]) }),
+    );
+    expect(modelCalls).toHaveLength(0);
+    expect(done.classifier).toMatchObject({ name: "gate:ics:recurring" });
+    expect(done.effects).toEqual([{ kind: "escalated", reason: "other", pushed: true }]);
+    expect(await rows(h, "events")).toHaveLength(0);
+  });
 });
 
 describe("other verdicts", () => {

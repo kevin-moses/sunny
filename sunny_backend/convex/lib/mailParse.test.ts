@@ -220,6 +220,8 @@ describe("parseGmailMessage", () => {
       durationMinutes: 45,
       summary: "Video visit with Dr. Chen",
       location: "Online",
+      recurring: false,
+      sequence: 0,
     });
   });
 
@@ -419,6 +421,8 @@ describe("parseIcs", () => {
       durationMinutes: 90,
       summary: "Cardiology follow-up, Dr. Osei",
       location: "Brookfield Heart Center, 2nd floor Suite 200",
+      recurring: false,
+      sequence: 0,
     });
   });
 
@@ -442,6 +446,19 @@ describe("parseIcs", () => {
       "METHOD:REQUEST\nBEGIN:VEVENT\nUID:c1\nSTATUS:CANCELLED\nDTSTART:20261126T160000\nEND:VEVENT";
     expect(parseIcs(reply, NY)?.method).toBe("REPLY");
     expect(parseIcs(cancelled, NY)?.method).toBe("CANCEL");
+  });
+
+  test("marks repeating events and changes to one date of them, and reads the sequence", () => {
+    const base = ["METHOD:REQUEST", "BEGIN:VEVENT", "UID:pt-1", "DTSTART:20261126T160000"];
+    const read = (...lines: string[]) => parseIcs([...base, ...lines, "END:VEVENT"].join("\n"), NY);
+    expect(read()).toMatchObject({ recurring: false, sequence: 0 });
+    expect(read("RRULE:FREQ=WEEKLY;BYDAY=TH")).toMatchObject({ recurring: true });
+    expect(read("RDATE:20261203T160000")).toMatchObject({ recurring: true });
+    expect(read("RECURRENCE-ID:20261203T160000", "SEQUENCE:4")).toMatchObject({
+      recurring: true,
+      sequence: 4,
+    });
+    expect(read("SEQUENCE:x")).toMatchObject({ sequence: 0 });
   });
 
   test("rejects an event without a UID", () => {

@@ -353,6 +353,7 @@ export default defineSchema({
     eventId: v.id("events"),
     appointmentKey: v.string(),
     mailItemId: v.id("mailItems"),
+    sequence: v.optional(v.number()),
   })
     .index("by_household_key", ["householdId", "appointmentKey"])
     .index("by_event", ["eventId"]),
