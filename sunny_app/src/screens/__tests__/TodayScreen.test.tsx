@@ -358,11 +358,23 @@ describe('TodayScreen loading and errors', () => {
     expect(words(root)).toEqual(['Talk to Sunny']);
   });
 
-  it('waits for the paper typefaces before drawing the day', () => {
+  const loadError: DayViewState = {
+    day: null,
+    agenda: [],
+    errorMessage: 'Could not load.',
+    isOffline: false,
+  };
+
+  it.each<[string, DayViewState]>([
+    ['the day', dayView([task()])],
+    ['the offline note', dayView([task()], {}, { isOffline: true })],
+    ['a load error', loadError],
+  ])('mounts no text, %s and the Talk key included, before the paper typefaces load', (_, view) => {
     mockFontsReady = false;
-    const root = render(dayView([task()]));
+    const root = render(view);
     expect(root.findAllByType(ActivityIndicator)).toHaveLength(1);
-    expect(words(root)).toEqual(['Talk to Sunny']);
+    expect(words(root)).toEqual([]);
+    expect(buttonLabels(root)).toEqual([]);
   });
 
   it('shows a load error in the detail type', () => {

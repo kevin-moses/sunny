@@ -66,7 +66,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
       ]}
     >
       <View style={styles.column}>
-        {isOffline && <OfflineNote />}
+        {fontsReady && isOffline && <OfflineNote />}
         <TagRow mode={mode} />
         {mode !== null ? (
           <>
@@ -84,7 +84,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
             <View style={styles.rest} />
           </>
         )}
-        <TalkButton />
+        {fontsReady && <TalkButton />}
       </View>
     </View>
   );
