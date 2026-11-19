@@ -114,6 +114,9 @@ describe("recorded Jev replies through the pipeline", () => {
       "rs02-hair-moved-later#0",
       "rs02-hair-moved-later#1",
       "rs02-hair-moved-later#2",
+      "rs06-hand-entered-event#0",
+      "rs06-hand-entered-event#1",
+      "rs06-hand-entered-event#2",
     ]);
   });
 });
