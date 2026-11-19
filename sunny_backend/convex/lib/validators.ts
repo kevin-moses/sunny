@@ -287,6 +287,7 @@ export const mailEffectRecord = v.union(
     ] as const),
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
+    proposed: v.optional(v.object({ date: v.string(), time: v.string() })),
   }),
 );
 export type MailEffectRecord = Infer<typeof mailEffectRecord>;

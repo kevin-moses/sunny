@@ -116,6 +116,11 @@ export type EscalationReason =
   | "conflict"
   | "unreadable";
 
+export interface Slot {
+  date: string;
+  time: string;
+}
+
 export interface CaregiverMessage {
   body: string;
   notice: string;
@@ -137,4 +142,5 @@ export type MailEffect =
       reason: EscalationReason;
       push: boolean;
       eventId: string | null;
+      proposed: Slot | null;
     } & CaregiverMessage);

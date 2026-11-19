@@ -332,11 +332,13 @@ export default defineSchema({
     verdict: v.optional(storedVerdict),
     rule: v.optional(v.string()),
     effects: v.optional(v.array(mailEffectRecord)),
+    escalatedAt: v.optional(v.number()),
     classifier: v.optional(classifierRecord),
   })
     .index("by_household_account_gmail", ["householdId", "account", "gmailId"])
     .index("by_state_lease", ["state", "leaseUntil"])
-    .index("by_household_received", ["householdId", "receivedAt"]),
+    .index("by_household_received", ["householdId", "receivedAt"])
+    .index("by_household_escalated", ["householdId", "escalatedAt"]),
 
   seniorNotes: defineTable({
     householdId: v.id("households"),

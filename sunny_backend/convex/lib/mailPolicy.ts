@@ -1,4 +1,5 @@
 import { cleanText } from "./frameText";
+import { domainOf } from "./mailParse";
 import type {
   Appointment,
   AppointmentRef,
@@ -11,6 +12,7 @@ import type {
   MailEffect,
   MailVerdict,
   PolicyFacts,
+  Slot,
   Suspicion,
   Triaged,
 } from "./mailTypes";
@@ -276,6 +278,7 @@ function escalate(
   reason: EscalationReason,
   line: string,
   eventId: string | null = null,
+  proposed: Slot | null = null,
 ): MailEffect {
   return {
     kind: "escalate",
@@ -283,15 +286,12 @@ function escalate(
     ...caregiverMessage(c.facts, line, c.summary),
     push: true,
     eventId,
+    proposed,
   };
 }
 
 function tell(c: Context, line: string, push: boolean): MailEffect {
   return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
-}
-
-function domainOf(address: string): string {
-  return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 }
 
 function sameDomain(source: string | null, sender: string): boolean {
@@ -396,6 +396,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               ? `Sunny did not move any appointment. The email asks to move one to ${when(s.appointment.date, s.appointment.time)}.`
               : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${when(s.appointment.date, s.appointment.time)}. Tell Sunny in chat to move it.`,
             match?.eventId ?? null,
+            { date: s.appointment.date, time: s.appointment.time },
           ),
         ];
       },

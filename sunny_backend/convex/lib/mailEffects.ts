@@ -9,8 +9,17 @@ import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, reachableMembers } from "./delivery";
 import { STALE_AFTER_MS, caregiverMessage } from "./mailPolicy";
-import type { Appointment, EscalationReason, MailEffect, PolicyFacts } from "./mailTypes";
-import { DAY_MS, dateLabel, formatTime12, localDate, weekdayName, zonedInstant } from "./time";
+import type { Appointment, EscalationReason, MailEffect, PolicyFacts, Slot } from "./mailTypes";
+import {
+  DAY_MS,
+  dateLabel,
+  formatTime12,
+  isLocalDate,
+  isLocalTime,
+  localDate,
+  weekdayName,
+  zonedInstant,
+} from "./time";
 import type { MailEffectRecord, NotificationKind } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
@@ -256,6 +265,11 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         reason: effect.reason,
         pushed,
         ...(effect.eventId === null ? {} : { eventId: eventOf(scope, effect.eventId)._id }),
+        ...(effect.proposed !== null &&
+        isLocalDate(effect.proposed.date) &&
+        isLocalTime(effect.proposed.time)
+          ? { proposed: { date: effect.proposed.date, time: effect.proposed.time } }
+          : {}),
       };
     },
   };
@@ -280,6 +294,7 @@ function escalation(
   reason: EscalationReason,
   line: string,
   eventId: string | null,
+  proposed: Slot | null,
 ): EffectOf<"escalate"> {
   const { facts } = scope;
   return {
@@ -288,6 +303,7 @@ function escalation(
     ...caregiverMessage(facts, line, scope.summary),
     push: facts.receivedAt >= facts.now - DAY_MS,
     eventId,
+    proposed,
   };
 }
 
@@ -304,6 +320,7 @@ function refusedWrite(
       "unclear_appointment",
       `Sunny could not add ${appointment.title}, ${when(appointment)}, to the calendar.`,
       null,
+      null,
     );
   }
   if (effect.kind === "reschedule_event") {
@@ -313,6 +330,7 @@ function refusedWrite(
       "unclear_reschedule",
       `Sunny could not move ${event.title} to ${when(effect.appointment)}.`,
       effect.eventId,
+      { date: effect.appointment.date, time: effect.appointment.time },
     );
   }
   return null;

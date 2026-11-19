@@ -105,7 +105,7 @@ function parseAddress(value: string): { name: string; address: string } | null {
   return null;
 }
 
-function domainOf(address: string): string {
+export function domainOf(address: string): string {
   return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 }
 

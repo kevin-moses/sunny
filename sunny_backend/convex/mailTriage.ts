@@ -262,6 +262,7 @@ export const applyTriage = internalMutation({
       verdict: storedVerdict(triaged.verdict),
       rule: plan.rule,
       effects,
+      escalatedAt: effects.some((e) => e.kind === "escalated") ? now : undefined,
       classifier: classifierOf(triaged),
     });
     return true;
