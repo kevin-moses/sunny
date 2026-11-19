@@ -172,11 +172,13 @@ public enum ConfirmOutcome: Equatable, Sendable {
     case unreadable
     case unauthorized
     case rateLimited(retryAfter: TimeInterval?)
+    case serverError(status: Int)
     case failed
 }
 
 public enum ReplayDecision: Equatable, Sendable {
     case drop
+    case keepAndHoldTask
     case keepAndStop
     case keepAndStopUnauthorized
 }
@@ -190,6 +192,8 @@ public enum PressReplay {
             return .drop
         case .unauthorized:
             return .keepAndStopUnauthorized
+        case .serverError:
+            return .keepAndHoldTask
         case .rateLimited, .failed:
             return .keepAndStop
         }

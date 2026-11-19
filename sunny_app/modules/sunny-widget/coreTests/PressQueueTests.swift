@@ -118,6 +118,10 @@ final class PressReplayTests: XCTestCase {
         XCTAssertEqual(PressReplay.decision(for: .rateLimited(retryAfter: 30)), .keepAndStop)
     }
 
+    func testHoldsOnlyItsOwnTaskOnAServerError() {
+        XCTAssertEqual(PressReplay.decision(for: .serverError(status: 503)), .keepAndHoldTask)
+    }
+
     func testKeepsThePressAndStopsOnUnauthorized() {
         XCTAssertEqual(PressReplay.decision(for: .unauthorized), .keepAndStopUnauthorized)
     }
@@ -185,6 +189,6 @@ final class DeviceClientTests: XCTestCase {
         XCTAssertEqual(DeviceClient.confirmOutcome(status: 200, body: advanced, headers: response(200)), .answered(.advanced))
         XCTAssertEqual(DeviceClient.confirmOutcome(status: 400, body: Data(), headers: response(400)), .unreadable)
         XCTAssertEqual(DeviceClient.confirmOutcome(status: 401, body: Data(), headers: response(401)), .unauthorized)
-        XCTAssertEqual(DeviceClient.confirmOutcome(status: 503, body: Data(), headers: response(503)), .failed)
+        XCTAssertEqual(DeviceClient.confirmOutcome(status: 503, body: Data(), headers: response(503)), .serverError(status: 503))
     }
 }

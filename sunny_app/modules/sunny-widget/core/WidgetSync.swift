@@ -69,7 +69,7 @@ public struct WidgetSync: Sendable {
         let outcome = await client.confirm(press, at: clock(), timeout: Self.pressTimeout)
         switch PressReplay.decision(for: outcome) {
         case .drop: return .clean
-        case .keepAndStop: return .pending
+        case .keepAndHoldTask, .keepAndStop: return .pending
         case .keepAndStopUnauthorized:
             dropToken(client.token)
             return .unauthorized
@@ -78,11 +78,17 @@ public struct WidgetSync: Sendable {
 
     public func replayPresses(timeout: TimeInterval) async -> FlushResult {
         guard let client = client() else { return .noCredentials }
-        for press in storage.presses.pending() {
-            let outcome = await client.confirm(press, at: clock(), timeout: timeout)
+        let deadline = clock().addingTimeInterval(timeout)
+        var held: Set<String> = []
+        for press in storage.presses.pending() where !held.contains(press.instanceId) {
+            let left = deadline.timeIntervalSince(clock())
+            guard left > 0 else { return .pending }
+            let outcome = await client.confirm(press, at: clock(), timeout: left)
             switch PressReplay.decision(for: outcome) {
             case .drop:
                 storage.presses.answered(press.id, at: clock())
+            case .keepAndHoldTask:
+                held.insert(press.instanceId)
             case .keepAndStop:
                 return .pending
             case .keepAndStopUnauthorized:
@@ -90,7 +96,7 @@ public struct WidgetSync: Sendable {
                 return .unauthorized
             }
         }
-        return .clean
+        return held.isEmpty ? .clean : .pending
     }
 
     public func reportPushState(_ report: PushStateReport) async -> PushStateOutcome? {

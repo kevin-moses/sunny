@@ -115,7 +115,7 @@ public struct DeviceClient: Sendable {
         case 400: return .unreadable
         case 401: return .unauthorized
         case 429: return .rateLimited(retryAfter: retryAfter(headers))
-        default: return .failed
+        default: return .serverError(status: status)
         }
     }
 

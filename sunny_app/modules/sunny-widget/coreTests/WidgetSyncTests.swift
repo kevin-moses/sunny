@@ -211,6 +211,53 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(due.instanceId, "inst-morning-pills")
     }
 
+    func testAServerErrorHoldsBackOnlyTheLaterPressesOfItsOwnTask() async throws {
+        let start = clock.now
+        for (offset, instance, step) in [(0.0, "inst-a", 0), (1, "inst-b", 0), (2, "inst-a", 1), (3, "inst-c", 0)] {
+            try queue.append(Press(instanceId: instance, step: step, via: .widget, pressedAt: start.addingTimeInterval(offset)))
+        }
+        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()])
+        transport.queueConfirm(500)
+        transport.queueConfirm(200, body: confirmed)
+        transport.queueConfirm(200, body: confirmed)
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .pending)
+        XCTAssertEqual(
+            transport.confirmBodies.map { "\($0["instanceId"] as? String ?? "")/\($0["step"] as? Int ?? -1)" },
+            ["inst-a/0", "inst-b/0", "inst-c/0"]
+        )
+        XCTAssertEqual(queue.pending().map(\.step), [0, 1])
+        XCTAssertEqual(Set(queue.pending().map(\.instanceId)), ["inst-a"])
+    }
+
+    func testNoNetworkOrARateLimitStopsTheWholeReplay() async throws {
+        let start = clock.now
+        try queue.append(Press(instanceId: "inst-a", step: 0, via: .widget, pressedAt: start))
+        try queue.append(Press(instanceId: "inst-b", step: 0, via: .widget, pressedAt: start.addingTimeInterval(1)))
+        transport.queueConfirmFailure()
+        let offline = await makeSync().replayPresses(timeout: 4)
+        transport.queueConfirm(429, headers: ["Retry-After": "60"])
+        let limited = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual([offline, limited], [.pending, .pending])
+        XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-a", "inst-a"])
+        XCTAssertEqual(queue.pending().count, 2)
+    }
+
+    func testAReplayStopsWhenItsTimeIsUp() async throws {
+        let start = clock.now
+        for offset in 0..<3 {
+            try queue.append(Press(instanceId: "inst-\(offset)", step: 0, via: .widget, pressedAt: start.addingTimeInterval(TimeInterval(offset))))
+        }
+        let clock = self.clock!
+        for _ in 0..<3 {
+            transport.beforeReply(to: "/device/confirm") { clock.advance(3) }
+            transport.queueConfirm(503)
+        }
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .pending)
+        XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-0", "inst-1"])
+    }
+
     func testUnreadablePressIsDropped() async throws {
         transport.queueConfirm(400)
         let result = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
