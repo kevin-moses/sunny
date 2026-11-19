@@ -4,6 +4,7 @@ import { gate } from "./mailGate";
 import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
 import type {
   AppointmentKind,
+  AppointmentRef,
   Clock,
   DecisionReason,
   IcsEvent,
@@ -17,16 +18,17 @@ import type {
   Triaged,
   Usage,
 } from "./mailTypes";
-import { addDays, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES } from "./time";
+import { addDays, daysBetween, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES } from "./time";
 
 export const JEV_MODEL = "jev-1.14.0";
 
 const JEV_TIMEOUT_MS = 20_000;
+export const MAX_JEV_BODY = 20_000;
+const BREAKS = ["\n\n", "\n", " "];
 
-const YES = 0.7;
-const NO = 0.3;
-const PART_SURE = 0.7;
-const NEXT_YEAR_AFTER_DAYS = 31;
+const SURE = 0.7;
+const PAST_DATE_DAYS = 180;
+const DAYS_IN_WEEK = 7;
 
 function noul(
   instructions: string | Record<string, string>,
@@ -147,6 +149,45 @@ function isFlag(name: string): name is Flag {
 
 export const FLAGS: Flag[] = Object.keys(FLAG_QUESTIONS).filter(isFlag);
 
+type FlagGroup =
+  "safety" | "pressure" | "decision" | "appointment" | "broad" | "information" | "follow_up";
+
+export const FLAG_GROUPS: Record<Flag, FlagGroup> = {
+  addresses_assistant: "safety",
+  asks_private_details: "safety",
+  asks_hard_to_trace_payment: "safety",
+  asks_to_bring_payment: "safety",
+  threatens_arrest: "pressure",
+  threatens_lockout: "pressure",
+  threatens_lost_benefits: "pressure",
+  discourages_checking: "pressure",
+  promises_unexpected_money: "pressure",
+  announces_new_contact: "safety",
+  name_mismatch: "safety",
+  from_government: "decision",
+  about_account_security: "decision",
+  about_test_results: "decision",
+  about_bill: "decision",
+  asks_question: "decision",
+  needs_action: "broad",
+  confirms_appointment: "broad",
+  appointment_moved: "appointment",
+  appointment_cancelled: "appointment",
+  about_package: "information",
+  package_arrived: "follow_up",
+  about_prescription: "information",
+  prescription_ready_now: "follow_up",
+  home_visit: "information",
+  personal_note: "information",
+  bulk_mail: "information",
+  receipt: "information",
+  feedback_request: "information",
+};
+
+function flagsIn(...groups: FlagGroup[]): Flag[] {
+  return FLAGS.filter((f) => groups.includes(FLAG_GROUPS[f]));
+}
+
 const MONTHS = [
   "January",
   "February",
@@ -261,6 +302,23 @@ export function judgeQuestions(
   };
 }
 
+function cutBody(text: string): string {
+  const head = text.slice(0, MAX_JEV_BODY + 1);
+  for (const separator of BREAKS) {
+    const at = head.lastIndexOf(separator);
+    if (at > MAX_JEV_BODY / 2) return text.slice(0, at).trimEnd();
+  }
+  return text.slice(0, MAX_JEV_BODY);
+}
+
+function bodyOf(text: string): Record<string, string> {
+  if (text.length <= MAX_JEV_BODY) return { body: text };
+  return {
+    body: cutBody(text),
+    body_cut: `The body was cut after ${MAX_JEV_BODY} characters; the rest is not shown.`,
+  };
+}
+
 export function judgeState(email: ParsedEmail): { email: Record<string, string> } {
   const invitation =
     email.ics === null
@@ -274,7 +332,7 @@ export function judgeState(email: ParsedEmail): { email: Record<string, string> 
       sender_name: email.sender.name,
       sender_address: email.sender.address,
       subject: email.subject,
-      body: email.text,
+      ...bodyOf(email.text),
       ...invitation,
     },
   };
@@ -282,9 +340,13 @@ export function judgeState(email: ParsedEmail): { email: Record<string, string> 
 
 export type Level = "yes" | "unsure" | "no";
 
+function isSure(probability: number): boolean {
+  return probability >= SURE;
+}
+
 function level(probability: number): Level {
-  if (probability > YES) return "yes";
-  if (probability < NO) return "no";
+  if (isSure(probability)) return "yes";
+  if (isSure(1 - probability)) return "no";
   return "unsure";
 }
 
@@ -319,7 +381,7 @@ export type SlotPicks = Record<
 >;
 
 function sure(pick: Picked): string | null {
-  return pick.probability >= PART_SURE ? pick.choice : null;
+  return isSure(pick.probability) ? pick.choice : null;
 }
 
 function calendarDate(year: number, month: number, day: number): string | null {
@@ -327,19 +389,32 @@ function calendarDate(year: number, month: number, day: number): string | null {
   return isLocalDate(date) ? date : null;
 }
 
-function weekdayDate(anchor: string, weekday: number, week: Week): string {
-  const anchorWeekday = isoWeekday(anchor);
-  const monday = addDays(anchor, 1 - anchorWeekday);
-  if (week === "next_week") return addDays(monday, 7 + weekday - 1);
-  if (week === "this_week") return addDays(monday, weekday - 1);
-  return addDays(anchor, (weekday - anchorWeekday + 7) % 7);
+export function weekdayDate(anchor: string, weekday: string, week: Week): string | null {
+  const offset = WEEKDAY_NAMES.indexOf(weekday);
+  if (offset < 0) return null;
+  const monday = addDays(anchor, 1 - isoWeekday(anchor));
+  switch (week) {
+    case "this_week": {
+      const date = addDays(monday, offset);
+      return date < anchor ? null : date;
+    }
+    case "next_week": {
+      const date = addDays(monday, DAYS_IN_WEEK + offset);
+      return daysBetween(anchor, date) < DAYS_IN_WEEK ? null : date;
+    }
+    case "unqualified": {
+      const ahead = (offset + 1 - isoWeekday(anchor) + DAYS_IN_WEEK) % DAYS_IN_WEEK;
+      return ahead === 0 ? null : addDays(anchor, ahead);
+    }
+  }
 }
 
 function inferYear(month: number, day: number, anchor: string): string | null {
   const year = Number(anchor.slice(0, 4));
-  const same = calendarDate(year, month, day);
-  if (same === null) return calendarDate(year + 1, month, day);
-  return same < addDays(anchor, -NEXT_YEAR_AFTER_DAYS) ? calendarDate(year + 1, month, day) : same;
+  const dates = [year - 1, year, year + 1].flatMap((y) => calendarDate(y, month, day) ?? []);
+  const lastPast = dates.findLast((d) => d < anchor);
+  if (lastPast !== undefined && daysBetween(lastPast, anchor) <= PAST_DATE_DAYS) return null;
+  return dates.find((d) => d >= anchor) ?? null;
 }
 
 function oneOf<T extends string>(values: readonly T[], value: string | null): T | null {
@@ -356,9 +431,8 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
     case "tomorrow":
       return addDays(anchor, 1);
     case "weekday": {
-      const weekday = WEEKDAY_NAMES.indexOf(sure(picks.weekday) ?? "");
       const week = oneOf(WEEKS, sure(picks.week));
-      return weekday < 0 || week === null ? null : weekdayDate(anchor, weekday + 1, week);
+      return week === null ? null : weekdayDate(anchor, sure(picks.weekday) ?? "", week);
     }
     case "calendar_date": {
       const month = MONTHS.indexOf(sure(picks.month) ?? "") + 1;
@@ -423,49 +497,12 @@ function timed(r: Readings): { date: string; time: string } | null {
   return { date: slot.date, time: slot.time };
 }
 
-const SAFETY_FLAGS: Flag[] = [
-  "addresses_assistant",
-  "asks_private_details",
-  "asks_hard_to_trace_payment",
-  "asks_to_bring_payment",
-  "threatens_arrest",
-  "threatens_lockout",
-  "threatens_lost_benefits",
-  "discourages_checking",
-  "promises_unexpected_money",
-  "announces_new_contact",
-  "name_mismatch",
-];
-
-const PRESSURE_FLAGS: Flag[] = [
-  "threatens_arrest",
-  "threatens_lockout",
-  "threatens_lost_benefits",
-  "discourages_checking",
-  "promises_unexpected_money",
-];
-
-const SPECIFIC_DECISION_FLAGS: Flag[] = [
-  "about_test_results",
-  "about_bill",
-  "about_account_security",
-  "from_government",
-  "asks_question",
-  "appointment_moved",
-  "appointment_cancelled",
-];
-
-const BROAD_FLAGS: Flag[] = ["needs_action", "confirms_appointment"];
-
-const INFO_FLAGS: Flag[] = [
-  "about_prescription",
-  "about_package",
-  "home_visit",
-  "personal_note",
-  "bulk_mail",
-  "receipt",
-  "feedback_request",
-];
+const SAFETY_FLAGS = flagsIn("safety", "pressure");
+const PRESSURE_FLAGS = flagsIn("pressure");
+const DECISION_FLAGS = flagsIn("decision");
+const SPECIFIC_DECISION_FLAGS = flagsIn("decision", "appointment");
+const BROAD_FLAGS = flagsIn("broad");
+const INFO_FLAGS = flagsIn("information");
 
 interface Row {
   rule: string;
@@ -475,6 +512,58 @@ interface Row {
 const is = (r: Readings, flag: Flag): boolean => r.flags.get(flag) === "yes";
 const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
   flags.some((f) => r.flags.get(f) === "unsure");
+
+const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: string }[] = [
+  {
+    rule: "test results",
+    flag: "about_test_results",
+    reason: "health_result",
+    summary: "The email is about medical test results.",
+  },
+  {
+    rule: "bill",
+    flag: "about_bill",
+    reason: "bill_or_payment",
+    summary: "The email is about a bill or a payment.",
+  },
+  {
+    rule: "account security",
+    flag: "about_account_security",
+    reason: "account_or_credentials",
+    summary: "The email is about the security of one of the senior's accounts.",
+  },
+  {
+    rule: "government",
+    flag: "from_government",
+    reason: "legal_or_government",
+    summary: "The email is from a government, court or tax office.",
+  },
+  {
+    rule: "question for the senior",
+    flag: "asks_question",
+    reason: "reply_needed",
+    summary: "The email asks the senior a question that needs an answer.",
+  },
+  {
+    rule: "payment, reply, signature or decision needed",
+    flag: "needs_action",
+    reason: "other",
+    summary: "The email needs a payment, a reply, a signature or a decision.",
+  },
+];
+
+function decisionOf(r: Readings): DecisionReason | null {
+  const named = DECISIONS.find(({ flag }) => DECISION_FLAGS.includes(flag) && is(r, flag));
+  if (named !== undefined) return named.reason;
+  return anyUnsure(r, DECISION_FLAGS) ? "other" : null;
+}
+
+function cancelled(r: Readings, previous: AppointmentRef, summary: string): Decision {
+  return {
+    verdict: { kind: "appointment", change: "cancel", previous, decision: decisionOf(r) },
+    summary,
+  };
+}
 
 export const TRUTH_TABLE: Row[] = [
   {
@@ -543,28 +632,60 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
+    rule: "calendar cancellation",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite?.method !== "CANCEL") return null;
+      return cancelled(
+        r,
+        { kind: r.kind, ...invite.start },
+        "The email is a calendar cancellation.",
+      );
+    },
+  },
+  {
+    rule: "invitation for a cancelled appointment",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite === null || !is(r, "appointment_cancelled")) return null;
+      return cancelled(
+        r,
+        { kind: r.kind, ...(r.before ?? invite.start) },
+        "The email is a calendar invitation that says the appointment is cancelled.",
+      );
+    },
+  },
+  {
+    rule: "invitation for a moved appointment",
+    decide: (r) => {
+      const invite = r.invite;
+      if (invite === null || !is(r, "appointment_moved")) return null;
+      return {
+        verdict: {
+          kind: "appointment",
+          change: "reschedule",
+          previous: r.before === null ? null : { kind: r.kind, ...r.before },
+          appointment: { kind: r.kind, ...invite.start, durationMinutes: invite.durationMinutes },
+          decision: decisionOf(r),
+        },
+        summary: "The email is a calendar invitation that moves an appointment.",
+      };
+    },
+  },
+  {
     rule: "calendar invitation",
     decide: (r) => {
       const invite = r.invite;
       if (invite === null) return null;
-      const { date, time } = invite.start;
-      return invite.method === "CANCEL"
-        ? {
-            verdict: {
-              kind: "appointment",
-              change: "cancel",
-              previous: { kind: r.kind, date, time },
-            },
-            summary: "The email is a calendar cancellation.",
-          }
-        : {
-            verdict: {
-              kind: "appointment",
-              change: "new",
-              appointment: { kind: r.kind, date, time, durationMinutes: invite.durationMinutes },
-            },
-            summary: "The email is a calendar invitation.",
-          };
+      return {
+        verdict: {
+          kind: "appointment",
+          change: "new",
+          appointment: { kind: r.kind, ...invite.start, durationMinutes: invite.durationMinutes },
+          decision: decisionOf(r),
+        },
+        summary: "The email is a calendar invitation.",
+      };
     },
   },
   {
@@ -576,14 +697,11 @@ export const TRUTH_TABLE: Row[] = [
             "cancellation",
             "The email says an appointment was cancelled, but Sunny could not read which one.",
           )
-        : {
-            verdict: {
-              kind: "appointment",
-              change: "cancel",
-              previous: { kind: r.kind, ...r.before },
-            },
-            summary: "The email says an appointment was cancelled.",
-          };
+        : cancelled(
+            r,
+            { kind: r.kind, ...r.before },
+            "The email says an appointment was cancelled.",
+          );
     },
   },
   {
@@ -602,6 +720,7 @@ export const TRUTH_TABLE: Row[] = [
               change: "reschedule",
               previous: { kind: r.kind, ...r.before },
               appointment: { kind: r.kind, ...slot, durationMinutes: null },
+              decision: decisionOf(r),
             },
             summary: "The email says an appointment moved to a new time.",
           };
@@ -617,57 +736,17 @@ export const TRUTH_TABLE: Row[] = [
               kind: "appointment",
               change: "new",
               appointment: { kind: r.kind, ...slot, durationMinutes: null },
+              decision: decisionOf(r),
             },
             summary: "The email confirms an appointment.",
           }
         : null;
     },
   },
-  {
-    rule: "test results",
-    decide: (r) =>
-      is(r, "about_test_results")
-        ? decision("health_result", "The email is about medical test results.")
-        : null,
-  },
-  {
-    rule: "bill",
-    decide: (r) =>
-      is(r, "about_bill")
-        ? decision("bill_or_payment", "The email is about a bill or a payment.")
-        : null,
-  },
-  {
-    rule: "account security",
-    decide: (r) =>
-      is(r, "about_account_security")
-        ? decision(
-            "account_or_credentials",
-            "The email is about the security of one of the senior's accounts.",
-          )
-        : null,
-  },
-  {
-    rule: "government",
-    decide: (r) =>
-      is(r, "from_government")
-        ? decision("legal_or_government", "The email is from a government, court or tax office.")
-        : null,
-  },
-  {
-    rule: "question for the senior",
-    decide: (r) =>
-      is(r, "asks_question")
-        ? decision("reply_needed", "The email asks the senior a question that needs an answer.")
-        : null,
-  },
-  {
-    rule: "payment, reply, signature or decision needed",
-    decide: (r) =>
-      is(r, "needs_action")
-        ? decision("other", "The email needs a payment, a reply, a signature or a decision.")
-        : null,
-  },
+  ...DECISIONS.map(({ rule, flag, reason, summary }): Row => ({
+    rule,
+    decide: (r) => (is(r, flag) ? decision(reason, summary) : null),
+  })),
   {
     rule: "a specific decision question is unsettled",
     decide: (r) =>
@@ -700,7 +779,7 @@ export const TRUTH_TABLE: Row[] = [
     rule: "home visit",
     decide: (r) =>
       is(r, "home_visit")
-        ? info("home_visit", "The email says a worker will visit the home.")
+        ? decision("home_visit", "The email says a worker will visit the home.")
         : null,
   },
   {
@@ -778,17 +857,25 @@ export interface JevReply {
 
 export type AskJev = (request: JevRequest) => Promise<JevReply>;
 
+export class JevAnswerError extends Error {
+  override name = "JevAnswerError";
+}
+
+function isProbability(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
 function compactAnswer(
   name: string,
   question: NoulQuestion | ChoiceQuestion,
   raw: unknown,
 ): JevAnswer {
   if (typeof raw !== "object" || raw === null || !("type" in raw)) {
-    throw new Error(`Jev returned no answer for ${name}`);
+    throw new JevAnswerError(`Jev returned no answer for ${name}`);
   }
   if (question.type === "noul") {
-    if (raw.type === "noul" && "noul" in raw && typeof raw.noul === "number") return raw.noul;
-    throw new Error(`Jev returned no Noul answer for ${name}`);
+    if (raw.type === "noul" && "noul" in raw && isProbability(raw.noul)) return raw.noul;
+    throw new JevAnswerError(`Jev returned no Noul probability for ${name}`);
   }
   if (
     raw.type === "choice" &&
@@ -803,9 +890,9 @@ function compactAnswer(
     const probability: unknown = Object.entries(raw.probabilities).find(
       ([label]) => label === choice,
     )?.[1];
-    if (typeof probability === "number") return { choice, probability };
+    if (isProbability(probability)) return { choice, probability };
   }
-  throw new Error(`Jev returned no Choice answer for ${name}`);
+  throw new JevAnswerError(`Jev returned no Choice probability for ${name}`);
 }
 
 export function compactAnswers(raw: Record<string, unknown>, questions: JevQuestions): JevAnswers {
@@ -825,7 +912,7 @@ export const askJev: AskJev = async (request) => {
   });
   const response = await client.systemOne(request);
   const inputTokens = response.usage.input_tokens;
-  if (inputTokens === null) throw new Error("Jev returned no input token count");
+  if (inputTokens === null) throw new JevAnswerError("Jev returned no input token count");
   return {
     answers: compactAnswers(response.answers, request.questions),
     usage: { inputTokens, outputTokens: response.usage.output_tokens ?? 0, cacheReadTokens: 0 },

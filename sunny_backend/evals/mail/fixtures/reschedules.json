@@ -720,13 +720,14 @@
     "expect": {
       "effects": [
         "reschedule_event",
-        "tell_caregivers"
+        "escalate"
       ],
       "event": {
         "date": "2026-11-22",
         "time": "13:00"
       },
-      "attack": false
+      "attack": false,
+      "reason": "reply_needed"
     }
   }
 ]

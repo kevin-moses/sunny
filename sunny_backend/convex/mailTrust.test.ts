@@ -21,22 +21,31 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const HELD_FOR_TRUST: Doc<"mailItems">["effects"] = [
+  { kind: "escalated", reason: "new_sender", pushed: true, senderNotTrusted: true },
+];
+
 async function mailItem(
   t: TestConvex,
   householdId: Id<"households">,
   address = "Frontdesk@NorthsideFoot.example",
+  fields: Partial<Doc<"mailItems">> & { authenticated?: boolean } = {},
 ): Promise<Id<"mailItems">> {
+  const { authenticated = true, ...rest } = fields;
   return await t.run(
     async (ctx) =>
       await ctx.db.insert("mailItems", {
         householdId,
         account: "mom@example.com",
-        gmailId: `g-${address}`,
+        gmailId: `g-${address}-${Math.random()}`,
         state: "done",
         attempt: 1,
-        sender: { name: "Northside Foot & Ankle", address, authenticated: true },
+        sender: { name: "Northside Foot & Ankle", address, authenticated },
         subject: "Appointment with Dr. Nwosu",
         receivedAt: NOW - 60_000,
+        verdict: "appointment",
+        effects: HELD_FOR_TRUST,
+        ...rest,
       }),
   );
 }
@@ -177,6 +186,86 @@ describe("trust_mail_sender", () => {
   });
 });
 
+describe("what trust_mail_sender refuses", () => {
+  async function trust(
+    fields: Parameters<typeof mailItem>[3],
+  ): Promise<{ text: string; isError: boolean }> {
+    const t = makeBackend();
+    const home = await createFamilyHousehold(t);
+    const itemId = await mailItem(t, home, "x@clinic.example", fields);
+    const result = await t.run(
+      async (ctx) =>
+        await executeAgentTool(
+          ctx,
+          { householdId: home, actor: { kind: "agent", onBehalfOf: "pat" }, now: NOW },
+          { name: "trust_mail_sender", input: { mail_item_id: itemId } },
+        ),
+    );
+    expect(await all(t, "mailTrustedSenders")).toHaveLength(result.isError ? 0 : 1);
+    return result;
+  }
+
+  test.each([
+    [
+      "a sender Gmail did not verify",
+      {
+        authenticated: false,
+        effects: [
+          { kind: "escalated" as const, reason: "unverified_sender" as const, pushed: true },
+        ],
+      },
+      "Error: Gmail did not verify the sender of that email, so Sunny cannot trust it",
+    ],
+    [
+      "an email Sunny thinks may be a scam",
+      {
+        verdict: "suspicious" as const,
+        effects: [{ kind: "escalated" as const, reason: "money_request" as const, pushed: true }],
+      },
+      "Error: Sunny thinks that email may be a scam, so it will not trust its sender",
+    ],
+    [
+      "an email Sunny held nothing back from",
+      { effects: [{ kind: "told_caregivers" as const, pushed: false }] },
+      "Error: Sunny held nothing back from that email for want of trust, so there is nothing to trust its sender for",
+    ],
+    [
+      "an email that escalated for another reason",
+      { effects: [{ kind: "escalated" as const, reason: "conflict" as const, pushed: true }] },
+      "Error: Sunny held nothing back from that email for want of trust, so there is nothing to trust its sender for",
+    ],
+  ])("%s", async (_, fields, text) => {
+    expect(await trust(fields)).toEqual({ text, isError: true });
+  });
+
+  test.each([
+    [
+      "a reschedule held back for an untrusted sender",
+      {
+        effects: [
+          {
+            kind: "escalated" as const,
+            reason: "unclear_reschedule" as const,
+            pushed: true,
+            senderNotTrusted: true as const,
+          },
+        ],
+      },
+    ],
+    [
+      "news for the senior told only to the caregivers",
+      {
+        verdict: "senior_info" as const,
+        effects: [
+          { kind: "told_caregivers" as const, pushed: false, senderNotTrusted: true as const },
+        ],
+      },
+    ],
+  ])("accepts %s", async (_, fields) => {
+    expect(await trust(fields)).toMatchObject({ isError: false });
+  });
+});
+
 describe("list_trusted_mail_senders and untrust_mail_sender", () => {
   test("list what is trusted and remove one sender, with an audit row", async () => {
     const t = makeBackend();
@@ -212,6 +301,11 @@ describe("list_trusted_mail_senders and untrust_mail_sender", () => {
     expect((await trustAudits(t)).map((a) => [a.action, a.actorUserId])).toEqual([
       ["trust", "pat"],
       ["untrust", "pat"],
+    ]);
+    const posts = await t.run(async (ctx) => await ctx.db.query("chatPosts").collect());
+    expect(posts.map((p) => [p.kind, p.body])).toEqual([
+      ["mailbox", "Pat told Sunny to trust mail from frontdesk@northsidefoot.example."],
+      ["mailbox", "Pat told Sunny to stop trusting mail from frontdesk@northsidefoot.example."],
     ]);
   });
 });

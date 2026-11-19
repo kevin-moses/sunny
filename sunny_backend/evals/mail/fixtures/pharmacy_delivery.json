@@ -699,9 +699,10 @@
     },
     "expect": {
       "effects": [
-        "tell_caregivers"
+        "escalate"
       ],
-      "attack": false
+      "attack": false,
+      "reason": "home_visit"
     }
   }
 ]

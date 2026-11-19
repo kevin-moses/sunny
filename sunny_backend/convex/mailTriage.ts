@@ -14,13 +14,18 @@ import type { StoredGrant } from "./lib/googleTokens";
 import { carryOut, linkByKey } from "./lib/mailEffects";
 import { askJev, triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
-import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
+import {
+  MAX_CALENDAR_CHANGES_PER_DAY,
+  caregiverText,
+  linkKey,
+  planWithRule,
+} from "./lib/mailPolicy";
 import type { CalendarEventFact, KnownInvite, MailVerdict, PolicyFacts } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
-import { MINUTE_MS, addDays, localDate } from "./lib/time";
+import { MINUTE_MS, addDays, localDate, zonedInstant } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 import type { StoredSender } from "./lib/validators";
 
@@ -182,7 +187,9 @@ function datesNamed(verdict: MailVerdict): string[] {
   if (verdict.change === "cancel") return [verdict.previous.date];
   const { date } = verdict.appointment;
   const dates = [addDays(date, -1), date];
-  return verdict.change === "reschedule" ? [...dates, verdict.previous.date] : dates;
+  return verdict.change === "reschedule" && verdict.previous !== null
+    ? [...dates, verdict.previous.date]
+    : dates;
 }
 
 async function calendarFacts(
@@ -223,7 +230,25 @@ interface Planned {
   household: Doc<"households">;
   facts: PolicyFacts;
   events: Map<string, Doc<"events">>;
-  key: string | null;
+}
+
+async function calendarChangesToday(
+  ctx: QueryCtx,
+  household: Doc<"households">,
+  now: number,
+): Promise<number> {
+  const startOfToday = zonedInstant(
+    localDate(now, household.timezone),
+    "00:00",
+    household.timezone,
+  );
+  const changed = await ctx.db
+    .query("mailItems")
+    .withIndex("by_household_calendar_changed", (q) =>
+      q.eq("householdId", household._id).gte("calendarChangedAt", startOfToday),
+    )
+    .take(MAX_CALENDAR_CHANGES_PER_DAY);
+  return changed.length;
 }
 
 async function planned(
@@ -252,9 +277,13 @@ async function planned(
     gmailId: item.gmailId,
     ics: email.ics,
     events: calendar.facts,
-    linkedEventId: linked?._id ?? null,
+    linked:
+      linked === null
+        ? null
+        : { eventId: linked._id, date: linked.startsOn, time: linked.startTime },
+    calendarChangesToday: await calendarChangesToday(ctx, household, now),
   };
-  return { item, household, facts, events, key };
+  return { item, household, facts, events };
 }
 
 export const postsToCaregivers = internalQuery({
@@ -278,14 +307,11 @@ export const applyTriage = internalMutation({
       await ctx.db.patch(input.itemId, { state: "failed", leaseUntil: undefined });
       return false;
     }
-    const { item, household, facts, events, key } = ready;
+    const { item, household, facts, events } = ready;
     const { triaged } = input;
     const summary = caregiverSummary ?? triaged.summary;
     const plan = planWithRule({ verdict: triaged.verdict, summary }, facts);
-    const effects = await carryOut(
-      { ctx, household, item, facts, events, linkKey: key, summary },
-      plan.effects,
-    );
+    const effects = await carryOut({ ctx, household, item, facts, events, summary }, plan.effects);
     await ctx.db.patch(item._id, {
       ...storedHeader(input.email),
       state: "done",
@@ -296,6 +322,11 @@ export const applyTriage = internalMutation({
       judgeAnswers: triaged.answers ?? undefined,
       effects,
       escalatedAt: effects.some((e) => e.kind === "escalated") ? now : undefined,
+      calendarChangedAt: effects.some(
+        (e) => e.kind === "event_added" || e.kind === "event_rescheduled",
+      )
+        ? now
+        : undefined,
       classifier: triaged.classifier,
     });
     return true;

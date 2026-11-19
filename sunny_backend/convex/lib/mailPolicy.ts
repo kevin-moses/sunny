@@ -1,4 +1,4 @@
-import { SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
+import { APPOINTMENT_KINDS, SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
 import type {
   Appointment,
   AppointmentRef,
@@ -32,8 +32,9 @@ import {
 } from "./time";
 
 export const STALE_AFTER_MS = DAY_MS;
-const MAX_PLACE = 120;
 const MAX_DAYS_AHEAD = 400;
+export const MAX_CALENDAR_CHANGES_PER_DAY = 5;
+const DAILY_LIMIT = `the daily limit of ${MAX_CALENDAR_CHANGES_PER_DAY} calendar changes from email was reached`;
 const MIN_DURATION_MINUTES = 5;
 const MAX_DURATION_MINUTES = 480;
 const ASSUMED_DURATION_MINUTES = 30;
@@ -43,9 +44,6 @@ const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
 const LINK_REMOVED = "[link removed]";
 const NUMBER_REMOVED = "[number removed]";
 
-const LINK = /:\/\/|www\.|@|\b[a-z0-9-]{2,}\.[a-z]{2,}\b/i;
-const CURRENCY = /\p{Sc}/u;
-const PLACE_DIGITS = /\d(?:[\s().-]*\d){6,}/;
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
 const NEW_SENDER = "this sender is new to Sunny";
 
@@ -105,15 +103,6 @@ export function appointmentFields(
   return appointment;
 }
 
-export function placeOf(facts: PolicyFacts): string | null {
-  const location = facts.ics?.location;
-  if (!location || !facts.senderTrusted || !facts.sender.authenticated) return null;
-  const place = oneLine(location);
-  if (place.length === 0 || place.length > MAX_PLACE) return null;
-  if (PLACE_DIGITS.test(place) || LINK.test(place) || CURRENCY.test(place)) return null;
-  return place;
-}
-
 function scrub(text: string): string {
   return oneLine(text.slice(0, MAX_SCRUBBED))
     .replace(/(?:https?:\/\/|www\.)\S+/gi, LINK_REMOVED)
@@ -159,7 +148,9 @@ export function caregiverMessage(
   line: string,
   summary: string,
 ): CaregiverMessage {
-  return { body: caregiverText(facts, [line, summary]), notice: scrub(line) };
+  const place = facts.ics?.location ?? null;
+  const placeLine = place === null ? [] : [`Place in the invitation: ${place}`];
+  return { body: caregiverText(facts, [line, ...placeLine, summary]), notice: scrub(line) };
 }
 
 export function noteExpiry(receivedAt: number, timezone: string): number {
@@ -179,8 +170,21 @@ interface Context {
   authenticated: boolean;
   trusted: boolean;
   stale: boolean;
+  atDailyLimit: boolean;
   summary: string;
+  decision: DecisionReason | null;
 }
+
+const ALSO_NEEDS: Record<DecisionReason, string> = {
+  cancellation: "The email also mentions a cancellation.",
+  bill_or_payment: "The email is also about a bill or a payment.",
+  account_or_credentials: "The email is also about the security of an account.",
+  reply_needed: "The email also asks a question that needs an answer.",
+  legal_or_government: "The email is also from a government, court or tax office.",
+  health_result: "The email is also about medical test results.",
+  home_visit: "The email also says someone will come to the home.",
+  other: "The email may also need a reply, a payment or a decision.",
+};
 
 type Situation =
   | { case: "ignore" }
@@ -225,18 +229,45 @@ function escalate(
   eventId: string | null,
   appointment: Appointment | null,
 ): MailEffect {
+  const also = c.decision === null ? "" : ` ${ALSO_NEEDS[c.decision]}`;
   return {
     kind: "escalate",
     reason,
-    ...caregiverMessage(c.facts, line, c.summary),
+    ...caregiverMessage(c.facts, `${line}${also}`, c.summary),
     push: true,
     eventId,
     proposed: appointment === null ? null : proposed(appointment),
+    senderNotTrusted: false,
   };
 }
 
 function tell(c: Context, line: string, push: boolean): MailEffect {
-  return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
+  if (c.decision !== null) return escalate(c, c.decision, line, null, null);
+  return {
+    kind: "tell_caregivers",
+    ...caregiverMessage(c.facts, line, c.summary),
+    push,
+    senderNotTrusted: false,
+  };
+}
+
+function heldForTrust(c: Context, effect: MailEffect): MailEffect {
+  if (!c.authenticated || c.trusted) return effect;
+  if (effect.kind !== "escalate" && effect.kind !== "tell_caregivers") return effect;
+  return { ...effect, senderNotTrusted: true };
+}
+
+function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
+  const already: MailEffect = {
+    kind: "already_on_calendar",
+    eventId,
+    appointmentKey: c.trusted ? key : null,
+  };
+  if (c.decision === null) return [already];
+  return [
+    already,
+    escalate(c, c.decision, "The appointment is already on the calendar.", eventId, null),
+  ];
 }
 
 function only(matches: CalendarEventFact[]): CalendarEventFact | null {
@@ -282,8 +313,10 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
     {
       rule: "already linked, or same date, time and title words as a live event",
-      plan: (s) =>
-        s.duplicate === null ? null : [{ kind: "already_on_calendar", eventId: s.duplicate }],
+      plan: (s, c) =>
+        s.duplicate === null
+          ? null
+          : onCalendar(c, s.duplicate, appointmentKey(s.appointment, c.facts.ics)),
     },
     {
       rule: "sender not trusted",
@@ -291,10 +324,28 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         c.trusted
           ? null
           : [
+              heldForTrust(
+                c,
+                escalate(
+                  c,
+                  "new_sender",
+                  `${described(s.appointment)}. Sunny has not added it because ${NEW_SENDER}. Tell Sunny in chat to add it and to trust this sender.`,
+                  null,
+                  s.appointment,
+                ),
+              ),
+            ],
+    },
+    {
+      rule: "a person would come to the home",
+      plan: (s, c) =>
+        !APPOINTMENT_KINDS[s.appointment.kind].comesHome
+          ? null
+          : [
               escalate(
                 c,
-                "new_sender",
-                `${described(s.appointment)}. Sunny has not added it because ${NEW_SENDER}. Tell Sunny in chat to add it and to trust this sender.`,
+                "home_visit",
+                `${described(s.appointment)}. Sunny has not added it because someone would come to the home. Tell Sunny in chat to add it once you have checked the visit.`,
                 null,
                 s.appointment,
               ),
@@ -316,6 +367,21 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
+      rule: "daily limit of calendar changes reached",
+      plan: (s, c) =>
+        !c.atDailyLimit || s.fields === null
+          ? null
+          : [
+              escalate(
+                c,
+                "daily_limit",
+                `Sunny did not add ${described(s.fields)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
+                null,
+                s.fields,
+              ),
+            ],
+    },
+    {
       rule: "otherwise",
       plan: (s, c) =>
         s.fields === null
@@ -324,7 +390,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               {
                 kind: "add_event",
                 appointment: s.fields,
-                place: placeOf(c.facts),
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
               tell(c, `Sunny added ${described(s.fields)}, to the calendar.`, false),
@@ -346,19 +411,40 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               : c.authenticated && !c.trusted
                 ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because ${NEW_SENDER}. The email asks to move it to ${asked}. Tell Sunny in chat to move it and to trust this sender.`
                 : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
-        return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
+        return [
+          heldForTrust(
+            c,
+            escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment),
+          ),
+        ];
       },
     },
     {
       rule: "the match already has the new date and time",
-      plan: (s) => {
+      plan: (s, c) => {
         const match = only(s.matches);
         return match !== null &&
           s.fields !== null &&
           match.date === s.fields.date &&
           match.time === s.fields.time
-          ? [{ kind: "already_on_calendar", eventId: match.eventId }]
+          ? onCalendar(c, match.eventId, appointmentKey(s.fields, c.facts.ics))
           : null;
+      },
+    },
+    {
+      rule: "daily limit of calendar changes reached",
+      plan: (s, c) => {
+        const match = only(s.matches);
+        if (!c.atDailyLimit || match === null || s.fields === null) return null;
+        return [
+          escalate(
+            c,
+            "daily_limit",
+            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(s.fields.date, s.fields.time)}, because ${DAILY_LIMIT}. Tell Sunny in chat to move it.`,
+            match.eventId,
+            s.fields,
+          ),
+        ];
       },
     },
     {
@@ -403,10 +489,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         c.trusted
           ? null
           : [
-              tell(
+              heldForTrust(
                 c,
-                `Sunny did not tell the senior about this email because ${NEW_SENDER}.`,
-                false,
+                tell(
+                  c,
+                  `Sunny did not tell the senior about this email because ${NEW_SENDER}.`,
+                  false,
+                ),
               ),
             ],
     },
@@ -443,20 +532,25 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function matchesFor(ref: AppointmentRef, facts: PolicyFacts): CalendarEventFact[] {
-  if (facts.linkedEventId === null) return matchEvent(ref, facts.events);
-  return facts.events.filter((e) => e.eventId === facts.linkedEventId);
+function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
+  const { linked } = facts;
+  if (linked !== null) return facts.events.filter((e) => e.eventId === linked.eventId);
+  return ref === null ? [] : matchEvent(ref, facts.events);
+}
+
+function sameSlot(a: { date: string; time: string }, b: { date: string; time: string }): boolean {
+  return a.date === b.date && a.time === b.time;
 }
 
 function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
   const fields = appointmentFields(appointment, facts);
-  const linked = facts.events.find((e) => e.eventId === facts.linkedEventId);
-  if (
-    facts.ics !== null &&
-    linked !== undefined &&
-    (linked.date !== appointment.date || linked.time !== appointment.time)
-  ) {
-    return { case: "reschedule", appointment, fields, matches: [linked] };
+  const { linked } = facts;
+  const live = facts.events.find((e) => e.eventId === linked?.eventId);
+  if (live !== undefined && facts.ics !== null && !sameSlot(live, appointment)) {
+    return { case: "reschedule", appointment, fields, matches: [live] };
+  }
+  if (linked !== null && live === undefined && !sameSlot(linked, appointment)) {
+    return { case: "reschedule", appointment, fields, matches: [] };
   }
   const same =
     fields === null
@@ -471,7 +565,7 @@ function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
     case: "new",
     appointment,
     fields,
-    duplicate: facts.linkedEventId ?? same?.eventId ?? null,
+    duplicate: linked?.eventId ?? same?.eventId ?? null,
     conflict:
       fields === null
         ? null
@@ -549,7 +643,9 @@ export function planWithRule(
     authenticated: facts.sender.authenticated,
     trusted: facts.sender.authenticated && facts.senderTrusted,
     stale: isStale(facts),
+    atDailyLimit: facts.calendarChangesToday >= MAX_CALENDAR_CHANGES_PER_DAY,
     summary: triaged.summary,
+    decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
   };
   const plan = planFor(situationOf(triaged.verdict, facts), context);
   if (!context.stale) return plan;

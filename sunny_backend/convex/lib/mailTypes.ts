@@ -55,29 +55,66 @@ export const APPOINTMENT_KIND_NAMES = [
 
 export type AppointmentKind = (typeof APPOINTMENT_KIND_NAMES)[number];
 
-export const APPOINTMENT_KINDS: Record<AppointmentKind, { describe: string; title: string }> = {
+export const APPOINTMENT_KINDS: Record<
+  AppointmentKind,
+  { describe: string; title: string; comesHome: boolean }
+> = {
   doctor_visit: {
     describe: "A visit with a doctor, nurse or other clinician",
     title: "Doctor visit",
+    comesHome: false,
   },
-  dentist: { describe: "A dentist visit or teeth cleaning", title: "Dentist appointment" },
-  eye_doctor: { describe: "An eye exam or a visit to an eye doctor", title: "Eye exam" },
-  hearing: { describe: "A hearing test or a hearing aid visit", title: "Hearing appointment" },
-  physical_therapy: { describe: "Physical or occupational therapy", title: "Physical therapy" },
+  dentist: {
+    describe: "A dentist visit or teeth cleaning",
+    title: "Dentist appointment",
+    comesHome: false,
+  },
+  eye_doctor: {
+    describe: "An eye exam or a visit to an eye doctor",
+    title: "Eye exam",
+    comesHome: false,
+  },
+  hearing: {
+    describe: "A hearing test or a hearing aid visit",
+    title: "Hearing appointment",
+    comesHome: false,
+  },
+  physical_therapy: {
+    describe: "Physical or occupational therapy",
+    title: "Physical therapy",
+    comesHome: false,
+  },
   medical_test: {
     describe: "A lab test, blood draw, scan, X-ray, MRI or other medical test",
     title: "Medical test",
+    comesHome: false,
   },
-  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment" },
-  hair: { describe: "A haircut or a salon visit", title: "Hair appointment" },
-  group_activity: { describe: "A class, club or group activity", title: "Group activity" },
-  meal: { describe: "A breakfast, lunch, dinner or coffee with someone", title: "Meal" },
-  family_visit: { describe: "A visit with family or friends", title: "Family visit" },
-  video_call: { describe: "A video call", title: "Video call" },
-  phone_call: { describe: "A phone call", title: "Phone call" },
-  meeting: { describe: "A meeting or counseling session", title: "Meeting" },
-  home_service: { describe: "A worker coming to the home", title: "Home service visit" },
-  other: { describe: "Any other kind of appointment", title: "Appointment" },
+  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment", comesHome: false },
+  hair: { describe: "A haircut or a salon visit", title: "Hair appointment", comesHome: false },
+  group_activity: {
+    describe: "A class, club or group activity",
+    title: "Group activity",
+    comesHome: false,
+  },
+  meal: {
+    describe: "A breakfast, lunch, dinner or coffee with someone",
+    title: "Meal",
+    comesHome: false,
+  },
+  family_visit: {
+    describe: "A visit with family or friends",
+    title: "Family visit",
+    comesHome: false,
+  },
+  video_call: { describe: "A video call", title: "Video call", comesHome: false },
+  phone_call: { describe: "A phone call", title: "Phone call", comesHome: false },
+  meeting: { describe: "A meeting or counseling session", title: "Meeting", comesHome: false },
+  home_service: {
+    describe: "A worker coming to the home",
+    title: "Home service visit",
+    comesHome: true,
+  },
+  other: { describe: "Any other kind of appointment", title: "Appointment", comesHome: false },
 };
 
 const MEAL_TITLES: [string, string][] = [
@@ -85,6 +122,11 @@ const MEAL_TITLES: [string, string][] = [
   ["16:00", "Lunch"],
   ["24:00", "Dinner"],
 ];
+
+export const APPOINTMENT_TITLES: ReadonlySet<string> = new Set([
+  ...APPOINTMENT_KIND_NAMES.map((kind) => APPOINTMENT_KINDS[kind].title),
+  ...MEAL_TITLES.map(([, title]) => title),
+]);
 
 export function appointmentTitle(kind: AppointmentKind, time: string | null): string {
   if (kind !== "meal" || time === null) return APPOINTMENT_KINDS[kind].title;
@@ -109,18 +151,16 @@ export const INFO_TOPICS = [
   "prescription_coming",
   "package_arrived",
   "package_coming",
-  "home_visit",
   "family_news",
 ] as const;
 
 export type InfoTopic = (typeof INFO_TOPICS)[number];
 
 export const SENIOR_SENTENCES: Record<InfoTopic, string> = {
-  prescription_ready: "The pharmacy has your medicine ready to pick up.",
+  prescription_ready: "Your prescription is ready to pick up at the pharmacy.",
   prescription_coming: "The pharmacy is getting your prescription ready.",
   package_arrived: "A package was delivered to your home.",
-  package_coming: "Someone is bringing a package to your home.",
-  home_visit: "A service worker will visit your home soon.",
+  package_coming: "A package is on the way to your home.",
   family_news: "You have a friendly email from family or a friend. Someone can read it with you.",
 };
 
@@ -131,6 +171,7 @@ export const DECISION_REASONS = [
   "reply_needed",
   "legal_or_government",
   "health_result",
+  "home_visit",
   "other",
 ] as const;
 export type DecisionReason = (typeof DECISION_REASONS)[number];
@@ -140,14 +181,25 @@ export type Suspicion = (typeof SUSPICIONS)[number];
 
 export type MailVerdict =
   | { kind: "ignore" }
-  | { kind: "appointment"; change: "new"; appointment: Appointment }
+  | {
+      kind: "appointment";
+      change: "new";
+      appointment: Appointment;
+      decision: DecisionReason | null;
+    }
   | {
       kind: "appointment";
       change: "reschedule";
-      previous: AppointmentRef;
+      previous: AppointmentRef | null;
       appointment: Appointment;
+      decision: DecisionReason | null;
     }
-  | { kind: "appointment"; change: "cancel"; previous: AppointmentRef }
+  | {
+      kind: "appointment";
+      change: "cancel";
+      previous: AppointmentRef;
+      decision: DecisionReason | null;
+    }
   | { kind: "senior_info"; topic: InfoTopic }
   | { kind: "needs_decision"; reason: DecisionReason }
   | { kind: "suspicious"; suspicion: Suspicion };
@@ -191,7 +243,14 @@ export interface PolicyFacts {
   gmailId: string;
   ics: IcsEvent | null;
   events: CalendarEventFact[];
-  linkedEventId: string | null;
+  linked: LinkedEvent | null;
+  calendarChangesToday: number;
+}
+
+export interface LinkedEvent {
+  eventId: string;
+  date: string;
+  time: string;
 }
 
 export const ESCALATION_REASONS = [
@@ -202,6 +261,7 @@ export const ESCALATION_REASONS = [
   "unclear_appointment",
   "unclear_reschedule",
   "conflict",
+  "daily_limit",
 ] as const;
 export type EscalationReason = (typeof ESCALATION_REASONS)[number];
 
@@ -220,7 +280,6 @@ export type MailEffect =
   | {
       kind: "add_event";
       appointment: Appointment;
-      place: string | null;
       appointmentKey: string;
     }
   | {
@@ -229,13 +288,14 @@ export type MailEffect =
       appointment: Appointment;
       appointmentKey: string;
     }
-  | { kind: "already_on_calendar"; eventId: string }
+  | { kind: "already_on_calendar"; eventId: string; appointmentKey: string | null }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
+  | ({ kind: "tell_caregivers"; push: boolean; senderNotTrusted: boolean } & CaregiverMessage)
   | ({
       kind: "escalate";
       reason: EscalationReason;
       push: boolean;
       eventId: string | null;
       proposed: Proposed | null;
+      senderNotTrusted: boolean;
     } & CaregiverMessage);

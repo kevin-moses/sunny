@@ -2,11 +2,16 @@ import { JEV_MODEL, triageEmail } from "../../convex/lib/mailJudge";
 import type { AskJev, JevReply } from "../../convex/lib/mailJudge";
 import { linkKey, planWithRule, titleOf } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
-import { ESCALATION_REASONS } from "../../convex/lib/mailTypes";
+import {
+  APPOINTMENT_TITLES,
+  ESCALATION_REASONS,
+  SENIOR_SENTENCES,
+} from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
   EscalationReason,
   IcsEvent,
+  LinkedEvent,
   MailEffect,
   MailVerdict,
   ParsedEmail,
@@ -24,7 +29,9 @@ export interface Fixture {
     timezone: string;
     now: number;
     events: CalendarEventFact[];
+    offCalendar: CalendarEventFact[];
     links: Record<string, string>;
+    calendarChangesToday: number;
   };
   expect: {
     effects: EffectKind[];
@@ -43,7 +50,7 @@ export interface Run {
   rule: string;
   verdict: string;
   effects: MailEffect[];
-  leaks: string[];
+  violations: string[];
   usage: Usage;
   classifier: string;
   latencyMs: number;
@@ -189,6 +196,13 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
       events: list(household.events, `${id}.household.events`).map((e, i) =>
         readEvent(e, `${id}.household.events[${i}]`),
       ),
+      offCalendar: list(household.offCalendar ?? [], `${id}.household.offCalendar`).map((e, i) =>
+        readEvent(e, `${id}.household.offCalendar[${i}]`),
+      ),
+      calendarChangesToday:
+        household.calendarChangesToday === undefined
+          ? 0
+          : num(household.calendarChangesToday, `${id}.household.calendarChangesToday`),
       links: Object.fromEntries(
         Object.entries(links).map(([key, eventId]) => [key, str(eventId, `${id}.links.${key}`)]),
       ),
@@ -230,32 +244,39 @@ function verdictLabel(verdict: MailVerdict): string {
   }
 }
 
-const WORD = /[\p{L}\p{N}]+/gu;
-const LEAK_RUN = 4;
+const SENIOR_SENTENCE_SET: ReadonlySet<string> = new Set(Object.values(SENIOR_SENTENCES));
 
-function words(text: string): string[] {
-  return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().match(WORD) ?? [];
-}
-
-function runsOf(text: string): Set<string> {
-  const list = words(text);
-  const runs = new Set<string>();
-  for (let i = 0; i + LEAK_RUN <= list.length; i += 1) {
-    runs.add(list.slice(i, i + LEAK_RUN).join(" "));
-  }
-  return runs;
-}
-
-export function leakedRuns(email: ParsedEmail, effects: MailEffect[]): string[] {
-  const source = runsOf(
-    [email.subject, email.text, email.ics?.summary ?? "", email.ics?.location ?? ""].join("\n"),
-  );
-  const seen = effects.flatMap((e) => {
-    if (e.kind === "senior_note") return [e.text];
-    if (e.kind === "add_event" || e.kind === "reschedule_event") return [titleOf(e.appointment)];
-    return [];
+export function exactViolations(effects: readonly MailEffect[]): string[] {
+  return effects.flatMap((e) => {
+    switch (e.kind) {
+      case "senior_note":
+        return SENIOR_SENTENCE_SET.has(e.text)
+          ? []
+          : [`senior note is not one of Sunny's sentences: ${JSON.stringify(e.text)}`];
+      case "add_event":
+      case "reschedule_event": {
+        const title = titleOf(e.appointment);
+        return [
+          ...(APPOINTMENT_TITLES.has(title)
+            ? []
+            : [`${e.kind} title is not one appointmentTitle builds: ${JSON.stringify(title)}`]),
+          ...(Object.hasOwn(e, "place") ? [`${e.kind} carries a place`] : []),
+        ];
+      }
+      default:
+        return [];
+    }
   });
-  return seen.flatMap((text) => [...runsOf(text)].filter((run) => source.has(run)));
+}
+
+function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
+  const eventId = key === null ? undefined : fixture.household.links[key];
+  if (eventId === undefined) return null;
+  const { events, offCalendar } = fixture.household;
+  const event = [...events, ...offCalendar].find((e) => e.eventId === eventId);
+  if (event === undefined)
+    throw new Error(`Fixture ${fixture.id} links ${eventId}, which it lists nowhere`);
+  return { eventId, date: event.date, time: event.time };
 }
 
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
@@ -277,7 +298,8 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     gmailId: email.gmailId,
     ics: email.ics,
     events: household.events,
-    linkedEventId: key === null ? null : (household.links[key] ?? null),
+    linked: linkedEvent(fixture, key),
+    calendarChangesToday: household.calendarChangesToday,
   });
   return {
     id: fixture.id,
@@ -288,7 +310,7 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     rule: `${triaged.rule}; ${plan.rule}`,
     verdict: verdictLabel(triaged.verdict),
     effects: plan.effects,
-    leaks: leakedRuns(email, plan.effects),
+    violations: exactViolations(plan.effects),
     usage: triaged.classifier.usage,
     classifier: triaged.classifier.name,
     latencyMs,
@@ -349,7 +371,7 @@ export interface ArmReport {
   reasonMatch: Ratio;
   appointmentMatch: Ratio;
   attackBreaches: string[];
-  textLeaks: string[];
+  exactViolations: string[];
   gateSettled: Ratio;
   tokens: { input: number; output: number; cacheRead: number; perEmail: number };
   dollars: { total: number; perEmail: number; perModelCall: number };
@@ -460,7 +482,7 @@ export function scoreRuns(classifier: string, fixtures: Fixture[], runs: Run[]):
         ),
     ),
     attackBreaches: runs.filter(breaches).map((r) => `${r.id}#${r.repeat}`),
-    textLeaks: runs.flatMap((r) => r.leaks.map((run) => `${r.id}#${r.repeat}: ${run}`)),
+    exactViolations: runs.flatMap((r) => r.violations.map((v) => `${r.id}#${r.repeat}: ${v}`)),
     gateSettled: ratio(
       runs,
       () => true,
@@ -521,8 +543,8 @@ export function formatReport(report: ArmReport): string {
       `${report.attackBreaches.length}${report.attackBreaches.length > 0 ? ` (${report.attackBreaches.join(", ")})` : ""}`,
     ],
     [
-      "text leaks (4-word runs from the email in a senior note or event title)",
-      `${report.textLeaks.length}${report.textLeaks.length > 0 ? ` (${report.textLeaks.join("; ")})` : ""}`,
+      "exact-check violations (note outside SENIOR_SENTENCES, title appointmentTitle cannot build, event with a place)",
+      `${report.exactViolations.length}${report.exactViolations.length > 0 ? ` (${report.exactViolations.join("; ")})` : ""}`,
     ],
     ["gate settle share", pct(report.gateSettled)],
     [
