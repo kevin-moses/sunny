@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import React, { useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import { applyPending, overlayEntries } from '../../day/pendingEntries';
 import type { PendingConfirm, PressedEntry } from '../../day/pendingEntries';
+import { makeTask } from '../../testing/dayFixtures';
 import { readUnsentPresses, useUnsentWidgetPresses, widgetPressMirror } from '../sharedPresses';
+import { syncSurfaces } from '../widgetSync';
 
 type BridgeCall = (...args: unknown[]) => Promise<void>;
 
@@ -12,6 +15,7 @@ const mockBridge = {
   markPressed: jest.fn<BridgeCall>(),
   answerPress: jest.fn<BridgeCall>(),
   withdrawPress: jest.fn<BridgeCall>(),
+  syncSurfaces: jest.fn<BridgeCall>(),
 };
 const mockWarning = jest.fn();
 
@@ -22,8 +26,13 @@ jest.mock('../../../modules/sunny-widget', () => ({
     markPressed: (...args: unknown[]) => mockBridge.markPressed(...args),
     answerPress: (...args: unknown[]) => mockBridge.answerPress(...args),
     withdrawPress: (...args: unknown[]) => mockBridge.withdrawPress(...args),
+    syncSurfaces: () => mockBridge.syncSurfaces(),
   },
 }));
+
+jest.mock('../../backend/api', () => ({ callAction: jest.fn() }));
+jest.mock('../../backend/convexApi', () => ({ api: { deviceApi: { issueToken: 'issueToken' } } }));
+jest.mock('../../config', () => ({ CONVEX_SITE_URL: 'https://example.convex.site' }));
 
 jest.mock('../../logging/logger', () => ({
   logger: {
@@ -69,6 +78,7 @@ beforeEach(() => {
   mockBridge.markPressed.mockResolvedValue(undefined);
   mockBridge.answerPress.mockResolvedValue(undefined);
   mockBridge.withdrawPress.mockResolvedValue(undefined);
+  mockBridge.syncSurfaces.mockResolvedValue(undefined);
   readUnsentPresses();
 });
 
@@ -100,6 +110,25 @@ describe('useUnsentWidgetPresses', () => {
     mockBridge.unsentPresses.mockReturnValue([]);
     act(() => readUnsentPresses());
     expect(seen).toEqual([]);
+  });
+
+  it('drops a Lock Screen press once it was sent, so a task reopened later shows as due', async () => {
+    mockBridge.unsentPresses.mockReturnValue([
+      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+    ]);
+    act(() => {
+      renderer = create(<Probe />);
+    });
+    expect(seen).toHaveLength(1);
+    mockBridge.unsentPresses.mockReturnValue([]);
+    act(() => syncSurfaces());
+    await settle();
+    const reopened = makeTask({
+      instanceId: 'pills' as PendingConfirm['instanceId'],
+      state: 'due',
+    });
+    const [shown] = applyPending([reopened], overlayEntries([], seen));
+    expect(shown?.state).toBe('due');
   });
 
   it('leaves out anything the native side sends that is not a press', () => {

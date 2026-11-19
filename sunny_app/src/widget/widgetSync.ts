@@ -76,7 +76,7 @@ export async function clearWidget(): Promise<void> {
 }
 
 export function syncSurfaces(): void {
-  SunnyWidget.syncSurfaces().catch((e: unknown) =>
-    logger.warning('Widget', `Lock Screen sync failed: ${errorMessage(e)}`),
-  );
+  SunnyWidget.syncSurfaces()
+    .catch((e: unknown) => logger.warning('Widget', `Lock Screen sync failed: ${errorMessage(e)}`))
+    .finally(readUnsentPresses);
 }
