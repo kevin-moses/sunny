@@ -1,5 +1,6 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { localDate } from "./time";
 
 export interface ChatPostView {
   id: Id<"chatPosts">;
@@ -32,6 +33,36 @@ export async function postDigest(
     body: text,
     localDate: digest.localDate,
     digestId: digest._id,
+  });
+}
+
+export async function postMail(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  mailItemId: Id<"mailItems">,
+  body: string,
+  now: number,
+): Promise<void> {
+  await ctx.db.insert("chatPosts", {
+    householdId: household._id,
+    kind: "mail",
+    body,
+    localDate: localDate(now, household.timezone),
+    mailItemId,
+  });
+}
+
+export async function postMailbox(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  body: string,
+  now: number,
+): Promise<void> {
+  await ctx.db.insert("chatPosts", {
+    householdId: household._id,
+    kind: "mailbox",
+    body,
+    localDate: localDate(now, household.timezone),
   });
 }
 

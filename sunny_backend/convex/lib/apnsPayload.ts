@@ -22,16 +22,21 @@ export type PushStyle = {
 
 export type PushRecipient = { kind: "device" } | { kind: "caregiver"; canClaim: boolean };
 
-const CAREGIVER_TIME_SENSITIVE: ReadonlySet<NotificationKind> = new Set([
-  "caregiver_alert",
-  "agent_flag",
-]);
+const TIME_SENSITIVE: Record<NotificationKind, Record<PushRecipient["kind"], boolean>> = {
+  senior_prompt: { device: true, caregiver: false },
+  caregiver_alert: { device: false, caregiver: true },
+  event_notice: { device: false, caregiver: false },
+  digest: { device: false, caregiver: false },
+  agent_flag: { device: false, caregiver: true },
+  family_message: { device: false, caregiver: false },
+  senior_note: { device: false, caregiver: false },
+  mail_escalation: { device: false, caregiver: true },
+  mail_update: { device: false, caregiver: false },
+};
 
 export function pushStyle(kind: NotificationKind, recipient: PushRecipient): PushStyle {
   const style: PushStyle = {};
-  const timeSensitive =
-    recipient.kind === "device" ? kind === "senior_prompt" : CAREGIVER_TIME_SENSITIVE.has(kind);
-  if (timeSensitive) style.interruptionLevel = "time-sensitive";
+  if (TIME_SENSITIVE[kind][recipient.kind]) style.interruptionLevel = "time-sensitive";
   if (recipient.kind === "caregiver" && recipient.canClaim && kind === "caregiver_alert") {
     style.category = CAREGIVER_ALERT_CATEGORY;
   }

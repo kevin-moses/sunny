@@ -35,6 +35,9 @@ export const SMS_KIND_POLICY: Record<
   digest: { retryOnTimeout: false, hidesOlderAlert: false },
   agent_flag: { retryOnTimeout: true, hidesOlderAlert: true },
   family_message: { retryOnTimeout: false, hidesOlderAlert: true },
+  senior_note: { retryOnTimeout: false, hidesOlderAlert: false },
+  mail_escalation: { retryOnTimeout: true, hidesOlderAlert: true },
+  mail_update: { retryOnTimeout: false, hidesOlderAlert: false },
 };
 
 const SMS_MAX_CHARS = 1_500;
@@ -90,6 +93,10 @@ function smsText(row: Doc<"notificationOutbox">, canClaim: boolean): string {
 }
 
 async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<string | null> {
+  if (row.seniorNoteId !== undefined) {
+    const note = await ctx.db.get(row.seniorNoteId);
+    return note === null || note.expiresAt <= Date.now() ? "note_expired" : null;
+  }
   if (row.taskInstanceId === undefined) return null;
   const instance = await ctx.db.get(row.taskInstanceId);
   if (!instance) return "instance_gone";
