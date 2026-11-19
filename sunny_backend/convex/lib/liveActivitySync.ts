@@ -52,15 +52,14 @@ export async function endTokenlessIfOver(
   row: Doc<"liveActivities">,
   now: number,
   changedOn: Id<"devices"> | null = null,
-): Promise<boolean> {
-  if (row.phase.kind !== "started" || row.phase.proof === "awaited") return false;
+): Promise<void> {
+  if (row.phase.kind !== "started" || row.phase.proof === "awaited") return;
   const view = await loadActivityView(ctx, row, now);
-  if (view.kind !== "end") return false;
+  if (view.kind !== "end") return;
   await endActivity(ctx, row, view.reason, now, view.content);
   if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== changedOn) {
     await wakePhoneToReport(ctx, row.deviceId, now);
   }
-  return true;
 }
 
 async function syncActivities(
@@ -227,80 +226,65 @@ async function sweepStarting(
   ctx: MutationCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<number> {
-  let swept = 0;
+): Promise<void> {
   for (const row of await activitiesInPhase(ctx, householdId, "starting")) {
     if (row.phase.kind !== "starting") continue;
     const cue = await ctx.db.get(row.phase.outboxId);
     if (cue !== null && cue.state === "pending") continue;
     await endActivity(ctx, row, "start_failed", now);
-    swept += 1;
   }
-  return swept;
 }
 
 async function sweepStarted(
   ctx: MutationCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<number> {
-  let swept = 0;
+): Promise<void> {
   for (const row of await activitiesInPhase(ctx, householdId, "started")) {
-    if (await endTokenlessIfOver(ctx, row, now)) swept += 1;
+    await endTokenlessIfOver(ctx, row, now);
   }
-  return swept;
 }
 
 async function sweepLive(
   ctx: MutationCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<number> {
-  let swept = 0;
+): Promise<void> {
   for (const row of await activitiesInPhase(ctx, householdId, "live")) {
     if (row.phase.kind !== "live") continue;
     const view = await loadActivityView(ctx, row, now);
     if (now >= row.phase.acceptedAt + ACTIVITY_LIFETIME_MS) {
       await endActivity(ctx, row, view.kind === "end" ? view.reason : "expired", now);
-      swept += 1;
-      continue;
+    } else if (nextCommand(row, view).kind !== "none") {
+      await queueActivityPush(ctx, row._id);
     }
-    if (nextCommand(row, view).kind === "none") continue;
-    await queueActivityPush(ctx, row._id);
-    swept += 1;
   }
-  return swept;
 }
 
 async function purgeEnded(
   ctx: MutationCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<number> {
+): Promise<void> {
   const oldest = await ctx.db
     .query("liveActivities")
     .withIndex("by_household_phase", (q) =>
       q.eq("householdId", householdId).eq("phase.kind", "ended"),
     )
     .take(PURGE_BATCH);
-  let purged = 0;
   for (const row of oldest) {
     if (row.phase.kind !== "ended" || now - row.phase.at < ENDED_KEPT_MS) continue;
     await ctx.db.delete(row._id);
-    purged += 1;
   }
-  return purged;
 }
 
 export async function sweepLiveActivities(
   ctx: MutationCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<number> {
-  return (
-    (await sweepStarting(ctx, householdId, now)) +
-    (await sweepStarted(ctx, householdId, now)) +
-    (await sweepLive(ctx, householdId, now)) +
-    (await purgeEnded(ctx, householdId, now))
-  );
+): Promise<void> {
+  await sweepStarting(ctx, householdId, now);
+  await sweepStarted(ctx, householdId, now);
+  await sweepLive(ctx, householdId, now);
+  await purgeEnded(ctx, householdId, now);
 }
