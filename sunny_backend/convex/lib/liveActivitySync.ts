@@ -184,6 +184,7 @@ export async function proofMissed(
   const push = await findPhonePush(ctx, row.deviceId);
   if (push !== null) await ctx.db.patch(push._id, { blindSince: now });
   await endTokenlessIfOver(ctx, missed, now);
+  if (row.quiet) return;
   const instance = await ctx.db.get(row.taskInstanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
   if (instance === null || task === null || !isDueEntry(instance)) return;

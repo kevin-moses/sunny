@@ -31,6 +31,7 @@ import {
   outbox,
   patchInstance,
   phoneHousehold,
+  phonePushRow,
   postConfirm,
   pressOnDisplay,
   proveStarts,
@@ -783,6 +784,28 @@ describe("a task that comes back after it was done", () => {
     expect((await outbox(f, instanceId)).map((row) => [row.kind, row.state, row.channel])).toEqual([
       ["senior_prompt", "sent", "live_activity"],
       ["senior_reshow", "sent", "live_activity"],
+    ]);
+  });
+
+  test("a quiet start the phone never reports marks it blind and sends no notification", async () => {
+    const { f, instanceId } = await live();
+    setNow(EIGHT + 2 * MIN);
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    setNow(EIGHT + 5 * MIN);
+    await reopen(f, instanceId);
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+
+    expect(starts()).toHaveLength(2);
+    expect(alertsSent()).toEqual([]);
+    expect((await phonePushRow(f))!.blindSince).toEqual(about(EIGHT + 5 * MIN + PROOF_WAIT_MS));
+    expect((await activities(f)).map((row) => row.phase)).toEqual([
+      expect.objectContaining({ kind: "ended", reason: "confirmed" }),
+      expect.objectContaining({ kind: "started", proof: "missed" }),
+    ]);
+    expect((await outbox(f, instanceId)).map((row) => [row.kind, row.channel])).toEqual([
+      ["senior_prompt", "live_activity"],
+      ["senior_reshow", "live_activity"],
     ]);
   });
 

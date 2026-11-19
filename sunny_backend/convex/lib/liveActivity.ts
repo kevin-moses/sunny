@@ -504,6 +504,7 @@ export async function openActivity(
       phase: { kind: "starting", outboxId: row._id, since: now },
       shown: plan.content,
       pushTimestamp: plan.timestamp,
+      quiet: plan.quiet,
     });
   } else {
     await ctx.db.patch(activityId, { shown: plan.content, pushTimestamp: plan.timestamp });

@@ -231,6 +231,7 @@ export default defineSchema({
     phase: liveActivityPhase,
     shown: activityContent,
     pushTimestamp: v.number(),
+    quiet: v.boolean(),
   })
     .index("by_instance", ["taskInstanceId"])
     .index("by_household_phase", ["householdId", "phase.kind"])
