@@ -17,11 +17,11 @@ const MAX_PAYLOAD_BYTES = 4096;
 
 export const CAREGIVER_ALERT_CATEGORY = "caregiver_alert";
 
-export const ACTIVITY_ATTRIBUTES_TYPE = "SunnyTaskAttributes";
+const ACTIVITY_ATTRIBUTES_TYPE = "SunnyTaskAttributes";
 
 export const ACTIVITY_LIFETIME_MS = 12 * 60 * 60_000;
 
-export const TOPIC_SUFFIX: Record<PushType, string> = {
+const TOPIC_SUFFIX: Record<PushType, string> = {
   alert: "",
   background: "",
   liveactivity: ".push-type.liveactivity",

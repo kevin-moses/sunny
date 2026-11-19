@@ -93,7 +93,7 @@ export const deliveryChannel = v.union(
 );
 export type DeliveryChannel = Infer<typeof deliveryChannel>;
 
-export const PUSH_TYPES = ["alert", "liveactivity", "background", "widgets"] as const;
+const PUSH_TYPES = ["alert", "liveactivity", "background", "widgets"] as const;
 export const pushType = v.union(...PUSH_TYPES.map((type) => v.literal(type)));
 export type PushType = Infer<typeof pushType>;
 
@@ -106,7 +106,7 @@ export const apnsMessage = v.object({
 });
 export type ApnsMessage = Infer<typeof apnsMessage>;
 
-export const DEVICE_ICONS = ["pills", "calendar", "checklist", "bell", "clock"] as const;
+const DEVICE_ICONS = ["pills", "calendar", "checklist", "bell", "clock"] as const;
 export const deviceIcon = v.union(...DEVICE_ICONS.map((icon) => v.literal(icon)));
 export type DeviceIcon = Infer<typeof deviceIcon>;
 

@@ -12,7 +12,7 @@ import { endTokenlessIfOver, proofMissed, reshowIfDue } from "./lib/liveActivity
 import { activityContent, activityEndReason } from "./lib/validators";
 import type { ActivityContent, ActivityEndReason, ApnsMessage } from "./lib/validators";
 
-export type PushPlan =
+type PushPlan =
   | { kind: "none" }
   | {
       kind: "send";

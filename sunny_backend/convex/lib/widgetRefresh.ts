@@ -7,9 +7,9 @@ import { minutes } from "./time";
 
 export const WIDGET_REFRESH_GAP_MS = minutes(10);
 
-export type RefreshState = NonNullable<Doc<"phonePush">["widgetRefresh"]>;
+type RefreshState = NonNullable<Doc<"phonePush">["widgetRefresh"]>;
 
-export type RefreshDecision =
+type RefreshDecision =
   | { kind: "send" }
   | { kind: "trail"; state: { sentAt: number; trailingAt: number } }
   | { kind: "fold" };

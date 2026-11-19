@@ -37,7 +37,7 @@ export interface TimelineTask extends DayTask {
   windowEnd: number;
 }
 
-export type NonEmptyList<T> = [T, ...T[]];
+type NonEmptyList<T> = [T, ...T[]];
 
 export interface TimelineInput {
   timezone: string;
@@ -45,7 +45,7 @@ export interface TimelineInput {
   events: DayEvent[];
 }
 
-export interface DayAt {
+interface DayAt {
   today: string;
   time: string;
   tasks: TimelineTask[];
@@ -100,7 +100,7 @@ export function timelineTask(
   };
 }
 
-export function timelineInput(day: DeviceDay, now: number): TimelineInput {
+function timelineInput(day: DeviceDay, now: number): TimelineInput {
   return {
     timezone: day.timezone,
     tasks: day.instances.map(({ instance, task }) => timelineTask(instance, task, now)),

@@ -31,14 +31,14 @@ const MAX_ACTIVITY_KEY_LENGTH = 64;
 
 const MAX_REFRESH_TOKENS = 20;
 
-export interface RefreshTarget {
+interface RefreshTarget {
   kind: "widgets" | "background";
   tokens: string[];
 }
 
 const NOT_A_PHONE = "Only the senior's phone reports push state";
 
-export type PushStateResult =
+type PushStateResult =
   | { kind: "unauthorized" }
   | { kind: "not_a_phone" }
   | { kind: "ok"; activities: ActivityDirective[] };

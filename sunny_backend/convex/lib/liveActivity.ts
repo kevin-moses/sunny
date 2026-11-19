@@ -51,7 +51,7 @@ export interface ActivityPhone {
   canConfirm: boolean;
 }
 
-export type ViewInput = { phone: ActivityPhone } & (
+type ViewInput = { phone: ActivityPhone } & (
   { subject: ActivitySubject; row: ActivityRow | null } | { subject: null; row: ActivityRow }
 );
 
@@ -156,9 +156,9 @@ function showing(row: ActivityRow | null): Showing {
   }
 }
 
-export type OpenPhase = Exclude<LiveActivityPhase, { kind: "ended" }>;
+type OpenPhase = Exclude<LiveActivityPhase, { kind: "ended" }>;
 
-export function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
+function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
   return phase.kind !== "ended";
 }
 
@@ -170,7 +170,7 @@ export function nextPushTimestamp(
   return row === null ? nowSeconds : Math.max(nowSeconds, row.pushTimestamp + 1);
 }
 
-export function wantsActivity(
+function wantsActivity(
   instance: Pick<Doc<"taskInstances">, "state" | "scheduledTime" | "windowEnd">,
   now: number,
 ): boolean {
@@ -224,13 +224,13 @@ export type ActivityDirective =
   | { key: string; directive: "update"; content: ActivityContent; staleAt: number }
   | { key: string; directive: "end"; content: ActivityContent | null };
 
-export function firstShownPhase(token: string | null, now: number): OpenPhase {
+function firstShownPhase(token: string | null, now: number): OpenPhase {
   return token === null
     ? { kind: "started", acceptedAt: now, proof: "proven" }
     : { kind: "live", acceptedAt: now, updateToken: token };
 }
 
-export function reportedPhase(phase: OpenPhase, token: string | null, now: number): OpenPhase {
+function reportedPhase(phase: OpenPhase, token: string | null, now: number): OpenPhase {
   switch (phase.kind) {
     case "starting":
       return firstShownPhase(token, now);
@@ -297,7 +297,7 @@ function isOnPhone(reported: ReportedActivity): boolean {
   return reported.state === "active" || reported.state === "stale";
 }
 
-export interface ReportOutcome {
+interface ReportOutcome {
   directives: ActivityDirective[];
   behind: Id<"liveActivities">[];
 }

@@ -286,7 +286,7 @@ export function isPastEvent(event: Pick<DayEvent, "startsAt" | "endsAt">, now: n
   return now >= (event.endsAt ?? event.startsAt + EVENT_DEFAULT_MS);
 }
 
-export type NextPick<T extends DayTask = DayTask> =
+type NextPick<T extends DayTask = DayTask> =
   | { kind: "task"; task: T }
   | { kind: "event"; event: DayEvent }
   | { kind: "laterEvent"; event: DayEvent };
@@ -515,7 +515,7 @@ export function instanceDayTask(
   };
 }
 
-export interface LoadedInstance {
+interface LoadedInstance {
   instance: Doc<"taskInstances">;
   task: Doc<"tasks">;
 }
@@ -564,7 +564,7 @@ export async function loadDeviceDay(
   };
 }
 
-export function deviceStateInput(day: DeviceDay, now: number): DeviceStateInput {
+function deviceStateInput(day: DeviceDay, now: number): DeviceStateInput {
   return {
     seniorPreferredName: day.seniorPreferredName,
     timezone: day.timezone,
