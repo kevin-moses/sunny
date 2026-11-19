@@ -506,7 +506,6 @@ describe("a start that reached the phone while APNs answered with a failure", ()
         kind: "live",
         acceptedAt: about(EIGHT + 2 * MIN),
         updateToken: UPDATE_TOKEN,
-        tokenAt: about(EIGHT + 2 * MIN),
       },
     ]);
 

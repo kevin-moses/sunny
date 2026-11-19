@@ -288,7 +288,6 @@ describe("reported activities", () => {
       kind: "live",
       acceptedAt: accepted,
       updateToken: UPDATE_TOKEN,
-      tokenAt: about(EIGHT + 5 * MIN),
     });
   });
 
@@ -340,7 +339,6 @@ describe("reported activities", () => {
       kind: "live",
       acceptedAt: accepted,
       updateToken: UPDATE_TOKEN,
-      tokenAt: accepted,
     });
     await report(f, id, "active", OTHER_TOKEN);
     expect((await activity(f, id)).phase).toMatchObject({ kind: "live", updateToken: OTHER_TOKEN });
@@ -356,7 +354,6 @@ describe("reported activities", () => {
         kind: "live",
         acceptedAt: accepted,
         updateToken: UPDATE_TOKEN,
-        tokenAt: accepted,
       });
       expect(await report(f, id, state)).toEqual([]);
       expect((await activity(f, id)).phase).toEqual({
@@ -474,7 +471,6 @@ describe("reported activities", () => {
         kind: "live",
         acceptedAt,
         updateToken: UPDATE_TOKEN,
-        tokenAt: acceptedAt,
       });
     }
 

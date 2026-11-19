@@ -160,7 +160,6 @@ export const liveActivityPhase = v.union(
     kind: v.literal("live"),
     acceptedAt: v.number(),
     updateToken: v.string(),
-    tokenAt: v.number(),
   }),
   v.object({ kind: v.literal("ended"), at: v.number(), reason: activityEndReason }),
 );

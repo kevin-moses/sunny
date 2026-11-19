@@ -82,5 +82,5 @@ export function rowOf(phase: LiveActivityPhase, shown: ActivityContent): Activit
 }
 
 export function livePhase(acceptedAt: number = WINDOW_START): LiveActivityPhase {
-  return { kind: "live", acceptedAt, updateToken: UPDATE_TOKEN, tokenAt: acceptedAt + 2_000 };
+  return { kind: "live", acceptedAt, updateToken: UPDATE_TOKEN };
 }

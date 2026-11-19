@@ -227,7 +227,7 @@ export type ActivityDirective =
 export function firstShownPhase(token: string | null, now: number): OpenPhase {
   return token === null
     ? { kind: "started", acceptedAt: now, proof: "proven" }
-    : { kind: "live", acceptedAt: now, updateToken: token, tokenAt: now };
+    : { kind: "live", acceptedAt: now, updateToken: token };
 }
 
 export function reportedPhase(phase: OpenPhase, token: string | null, now: number): OpenPhase {
@@ -236,13 +236,13 @@ export function reportedPhase(phase: OpenPhase, token: string | null, now: numbe
       return firstShownPhase(token, now);
     case "started":
       if (token !== null) {
-        return { kind: "live", acceptedAt: phase.acceptedAt, updateToken: token, tokenAt: now };
+        return { kind: "live", acceptedAt: phase.acceptedAt, updateToken: token };
       }
       return phase.proof === "proven" ? phase : { ...phase, proof: "proven" };
     case "live":
       return token === null || token === phase.updateToken
         ? phase
-        : { ...phase, updateToken: token, tokenAt: now };
+        : { ...phase, updateToken: token };
   }
 }
 
