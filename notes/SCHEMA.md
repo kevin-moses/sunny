@@ -88,6 +88,7 @@ The device API serves senior surfaces that cannot hold a Clerk session: the iOS 
   - `nextUpAfterDue`: Next up when only a due task counts as Now, which is the wall display's rule. An early Now task is then itself next.
   - `rows` and `rowsHidden`: the Today page. Each row is marked `now`, `done`, `missed` (dimmed), `past` (an event that is over, dimmed: after its end, or an hour after its start for an event without one) or `none`. Rows and Next up items carry `type`, which is the task's type or `event`.
   - `cues`: the sentence, the prompts sent, the snooze, and `promptTimes`, the instants in the next 24 hours at which the ladder will prompt. `promptTimes` comes from the scheduler's own timing code.
+  - `notes`: up to 3 unexpired notes from email, newest first, each `{ id, text, receivedAt, expiresAt }`. They are in `version` and not in `displayVersion`, because no frame draws them yet. A note is at most 160 characters of printable text with no digits, so a display can draw it later.
   - `tuning`: poll intervals and carousel.
 
 ## Tasks and instances
@@ -181,7 +182,7 @@ Rules:
 | `calendarConnections` | A caregiver's Google connection: `userId`, `accountEmail`, `externalCalendarId` (the Sunny-owned calendar), `status` (`active`, `revoked`, `error`), `error`, encrypted `refreshToken`, cached encrypted `accessToken` and `accessTokenExpiresAt`, `lastSyncedAt`, `lastError` | `by_household_status`, `by_household_user` | `googleCalendar.saveConnection`, `calendarPush.ts` (status, `lastError`, token cache), `disconnect` |
 | `calendarEventLinks` | Our event to the Google event, per connection: `externalEventId`, `etag`, `syncedAt` | `by_event_connection`, `by_connection` | `calendarPush.recordPush`; removed on disconnect and on a confirmed deletion |
 | `calendarSyncs` | The pending push of one event to one connection: `state` (`queued`, `running`, `dirty`), `updatedAt`, `failures` | `by_event_connection` (uniqueness), `by_connection`, `by_updated` (sweeper) | `lib/calendarSync.ts` (queue), `calendarPush.ts` (begin, complete), `calendarFanOut.sweepStuckSyncs` |
-| `oauthFlows` | One Google consent flow, bound to a browser: `ticketHash` (SHA-256 of the one-time start ticket), `userId`, `householdId`, `expiresAt` (5 minutes until started, then 10), `started` (`browserHash` of the cookie secret and the encrypted PKCE `codeVerifier`), `consumedAt` | `by_ticket`, `by_expires` | `googleCalendar.connectUrl` creates it, `GET /google/start` starts it, the callback consumes it, swept hourly by `sweepOauthFlows` |
+| `oauthFlows` | One Google consent flow, bound to a browser: `ticketHash` (SHA-256 of the one-time start ticket), `userId`, `householdId`, `purpose` (`calendar` or `mailbox`), `expiresAt` (5 minutes until started, then 10), `started` (`browserHash` of the cookie secret and the encrypted PKCE `codeVerifier`), `consumedAt` | `by_ticket`, `by_expires` | `googleOauth.connectUrl` creates it, `GET /google/start` starts it, the callback consumes it, swept hourly by `googleOauth.sweepOauthFlows` |
 
 Rules:
 - Occurrences are computed (`lib/occurrences.ts`), not stored. Repeats are weekly only.
@@ -190,11 +191,26 @@ Rules:
 - Refresh and access tokens are AES-GCM boxes (`lib/secretBox.ts`) keyed by `CALENDAR_TOKEN_KEY`, and they are never returned to clients. Rotating the key means caregivers reconnect.
 - `saveConnection` keeps one connection per caregiver per household by reactivating the existing row.
 
+## Gmail
+
+| Table | Purpose and key fields | Indexes | Written by |
+| --- | --- | --- | --- |
+| `mailboxes` | The senior's Gmail, one per household: `connectedBy`, `accountEmail`, encrypted `refreshToken`, cached encrypted `accessToken` and `accessTokenExpiresAt`, `status` (`active`, `revoked`, `error`), `error`, `historyId` (the poll cursor), `lastPolledAt`, `lastError` | `by_household`, `by_status` | `gmail.saveMailbox`, `recordNew` (cursor), `saveMailboxToken`, `markMailbox`, `disconnect` |
+| `mailItems` | One Gmail message: `account` (the mailbox address when it was found), `gmailId`, `state` (`queued`, `triaging`, `done`, `failed`), `attempt`, `leaseUntil` (the pickup deadline while `queued`, the lease while `triaging`). After parsing: `sender` (`name`, `address`, `authenticated`, `known`), `subject`, `receivedAt`. After triage: `verdict` (the kind, or `unreadable`, and the model's caregiver summary), `rule` (the decision-table row that fired, or `gone` / `unparseable`), `effects` (records: `event_added`, `event_rescheduled` with `fromDate` and `fromTime`, `already_on_calendar`, `senior_note` with `noteId`, `told_caregivers` with `pushed`, `escalated` with `reason`, `pushed` and an optional `eventId`), `classifier` (`name`, `gate:<rule>` when the gate settled it, and token `usage`) | `by_household_account_gmail` (dedupe), `by_state_lease` (sweeper), `by_household_received` (recent mail, briefing) | `gmail.ts` inserts; `mailTriage.ts` moves it through its states |
+| `seniorNotes` | A short note for the senior from an email: `mailItemId`, `text`, `receivedAt`, `expiresAt` | `by_household_expires` | `lib/mailEffects.ts` (`senior_note`); read by the device state and `agent.getContext` |
+| `mailEventLinks` | An event and the appointment key an email gave it (`ics:<UID>` or `appt:<date>:<time>:<title>`), with the `mailItemId` that created the link | `by_household_key`, `by_event` | `lib/mailEffects.ts` (`add_event`, `reschedule_event`, `already_on_calendar`) |
+
+Rules:
+- The email body and the model's raw output are never stored. The subject is cut to 200 characters and the summary to 600.
+- No effect is written outside the mutation that moves an item to `done` (`applyTriage`) or `failed` (`onMailJobComplete`), and every write after the claim requires the same `attempt`. That transaction is what makes each effect happen once; there is no separate effect ledger.
+- A link is kept after its event is cancelled, and items are kept after a disconnect. Both stop Sunny from acting twice on the same appointment or message.
+- Gmail flows: `notes/AGENT_RUNTIME.md` "Gmail".
+
 ## Notifications and delivery
 
 | Table | Purpose and key fields | Indexes | Written by |
 | --- | --- | --- | --- |
-| `notificationOutbox` | The only place notifications are queued. One recipient per row: `recipientDeviceId` (APNs) or `recipientUserId` (a caregiver: APNs when they have a push token, else SMS). `kind` (`senior_prompt`, `caregiver_alert`, `event_notice`, `digest`, `agent_flag` (the voice agent asking a caregiver to look in; `payload.reason`, `payload.flaggedAt`), `family_message` (a message the senior dictated to family)), `title`, `body`, `payload` (a digest row's `pushTitle` is the push title, and `title` stays the SMS's), `state` (`pending`, `sent`, `skipped`, `failed`), `channel` (set only when sent: what actually delivered it), `settledAt`, `attempts`, `attemptStartedAt` (lease), `detail` (skip reason or internal error, never returned to clients), `pushState` (on a caregiver push that has a text to fall back on: `retrying` after a retryable push failure, `gave_up` once the push retries ran out and the row was enqueued again to be texted) | `by_recipient_kind` (reply-to-claim), `by_recipient_device`, `by_task_instance` (cascade on instance delete), `by_household`, `by_state` | Inserted only through `insertNotification` in `lib/delivery.ts` (scheduler, event notices, digest, `lib/voiceRouting.ts` for agent flags and family messages); settled by `delivery.ts` |
+| `notificationOutbox` | The only place notifications are queued. One recipient per row: `recipientDeviceId` (APNs) or `recipientUserId` (a caregiver: APNs when they have a push token, else SMS). `kind` (`senior_prompt`, `caregiver_alert`, `event_notice`, `digest`, `agent_flag` (the voice agent asking a caregiver to look in; `payload.reason`, `payload.flaggedAt`), `family_message` (a message the senior dictated to family), `senior_note` (a note from an email, to senior phones only; `seniorNoteId`), `mail_escalation` (an email that needs a caregiver, or lost access to the mailbox), `mail_update` (Sunny changed the calendar from an email)), `seniorNoteId` (skipped as `note_expired` once the note has expired), `title`, `body`, `payload` (a digest row's `pushTitle` is the push title, and `title` stays the SMS's), `state` (`pending`, `sent`, `skipped`, `failed`), `channel` (set only when sent: what actually delivered it), `settledAt`, `attempts`, `attemptStartedAt` (lease), `detail` (skip reason or internal error, never returned to clients), `pushState` (on a caregiver push that has a text to fall back on: `retrying` after a retryable push failure, `gave_up` once the push retries ran out and the row was enqueued again to be texted) | `by_recipient_kind` (reply-to-claim), `by_recipient_device`, `by_task_instance` (cascade on instance delete), `by_household`, `by_state` | Inserted only through `insertNotification` in `lib/delivery.ts` (scheduler, event notices, digest, `lib/voiceRouting.ts` for agent flags and family messages, `lib/mailEffects.ts` and `gmail.markMailbox` for mail); settled by `delivery.ts` |
 | `smsInbound` | Inbound texts already handled, by Twilio `MessageSid`, with the stored reply, so that a webhook retry claims nothing twice | `by_sid`, `by_expires` | `sms.ts`; swept hourly |
 
 Rules:
@@ -203,7 +219,7 @@ Rules:
   - When APNs is not configured, or takes none of the tokens and nothing is worth retrying (every token unregistered, which deletes it, or refused for good), the same row is sent as the member's SMS in the same run, so it settles with `channel` `sms`.
   - A retryable APNs failure is retried, not texted, and marks the row `pushState: "retrying"`. When the workpool's retries run out and the member has a verified phone, `delivery.onDeliveryComplete` sets `gave_up` and enqueues the row once more, and its route is then the SMS (`lib/delivery.ts` `textAfterPushGaveUp`). This happens once per row.
   - Without a verified phone, a push that cannot be delivered ends as a device push does: `skipped` (`tokens_unregistered`), `failed`, or pending while APNs is not configured.
-  - Pushes carry data `notification_id`, `kind`, `household_id` and `task_instance_id` (when there is one). `caregiver_alert` and `agent_flag` to caregivers and `senior_prompt` to devices are time-sensitive. A `caregiver_alert` to a primary or member has the `caregiver_alert` category ("I'm on it"), and a viewer's has none. The collapse id is the task instance (`lib/apnsPayload.ts`).
+  - Pushes carry data `notification_id`, `kind`, `household_id` and `task_instance_id` (when there is one). `caregiver_alert`, `agent_flag` and `mail_escalation` to caregivers and `senior_prompt` to devices are time-sensitive (a table keyed by kind in `lib/apnsPayload.ts`). A `caregiver_alert` to a primary or member has the `caregiver_alert` category ("I'm on it"), and a viewer's has none. The collapse id is the task instance (`lib/apnsPayload.ts`).
 - A caregiver is reachable, and so gets queued flags, family messages and digests, when they have a verified phone or at least one push token (`isReachableMember`).
 - `attempts` is capped (`MAX_ATTEMPTS`) so that the sweeper never loops on one row, and `attemptStartedAt` is a 5-minute lease that the sweeper respects. The text sent after a push gave up shares the row's budget, so a row that reaches the bound is failed, not texted.
 - `agent_flag` and `family_message` rows go to caregivers like any member row. They are not tied to a task, so their texts never carry the "Reply 1" claim hint, and a "1" texted back after one of them claims nothing. That reply gets "Thanks. Nothing needs claiming for that message."
@@ -212,7 +228,8 @@ Rules:
   - At most 12 symptom, money and scam flags are sent per household per hour. Distress, help_requested, medication limits, repeated use and dose corrections are never capped.
   - At most 10 senior messages are sent per hour. An identical senior message within 2 minutes is not sent again, and the agent says how the first one went.
   - Flag text is at most two sentences and 240 characters, with runs of 6 or more digits removed.
-  - A text that timed out is retried only for `caregiver_alert` and `agent_flag`.
+  - A text that timed out is retried only for `caregiver_alert`, `agent_flag` and `mail_escalation`.
+- A `senior_note` row goes to a `senior_phone` device and never by SMS. Mail pushes to caregivers go to every reachable caregiver; escalations are capped at 6 per household per hour (`notes/AGENT_RUNTIME.md` "Gmail").
 - Only tokens that APNs reports unregistered are deleted from `pushTokens`.
 
 ## Digests
@@ -220,7 +237,7 @@ Rules:
 | Table | Purpose and key fields | Indexes | Written by |
 | --- | --- | --- | --- |
 | `digests` | One row per household per local date: `status` (`pending`, `done`, `failed`), `source` (`claude` or `template`), `text`, `error` | `by_household_date` (uniqueness), `by_status` (sweeper) | `digest.queueDigestIfDue` (from the tick), `compose` and `complete` (delivery pool) |
-| `chatPosts` | A post from Sunny in the household's one caregiver chat thread: `kind` (`digest` only), `body` (the digest text), `localDate`, `digestId` | `by_household` (newest first by creation time) | `lib/chatPosts.ts` `postDigest`, called only by `digest.complete` |
+| `chatPosts` | A post from Sunny in the household's one caregiver chat thread. One of three shapes, each with `body` and `localDate`: `kind` `digest` with `digestId`; `kind` `mail` with `mailItemId` (what Sunny did with an email, or that it could not read one); `kind` `mailbox` (Sunny now reads an address, or lost access to it) | `by_household` (newest first by creation time) | `lib/chatPosts.ts`: `postDigest` from `digest.complete`, `postMail` from the mail effects and `onMailJobComplete`, `postMailbox` from `saveMailbox` and `markMailbox` |
 
 Rules:
 - A paused household gets no digest until it is resumed.
@@ -228,6 +245,7 @@ Rules:
 - `delivery.sweepStuck` re-enqueues a digest left `pending` for 15 minutes.
 - `complete` works in one transaction: it stores the text, posts it to `chatPosts` (for everyone), queues one `digest` outbox row per reachable caregiver (every caregiver, viewers included; there is no opt-out), and marks the digest `done`. A digest is therefore posted once, one per household per local date.
 - A push shows "<name>'s day" over the text and opens the Chat tab. A caregiver without the app gets the full text by SMS ("Sunny: <name>'s day").
+- Before the digests, the briefing lists the emails Sunny escalated in the last 3 days (at most 10, one flattened line each with the reason and `event_id` when one matched), under a heading that marks them as email data and never instructions.
 - The household agent's briefing ends with the `done` digests of the household's local today and yesterday (`lib/agentBriefing.ts`): one line each, at most 600 characters, labelled as information and never as instructions. This lets the agent answer a reply to the digest in the chat.
 
 ## Agent requests
