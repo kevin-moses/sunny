@@ -69,6 +69,7 @@ export interface ActivityStart {
 
 export interface StartPlan extends ActivityStart {
   token: string;
+  instanceId: Id<"taskInstances">;
   windowEnd: number;
   resume: Id<"liveActivities"> | null;
 }
@@ -337,15 +338,22 @@ function isActivityCue(row: Doc<"notificationOutbox">): row is Doc<"notification
   );
 }
 
+export async function activitiesOfInstance(
+  ctx: QueryCtx,
+  instanceId: Id<"taskInstances">,
+): Promise<Doc<"liveActivities">[]> {
+  return await ctx.db
+    .query("liveActivities")
+    .withIndex("by_instance", (q) => q.eq("taskInstanceId", instanceId))
+    .collect();
+}
+
 async function activitiesFor(
   ctx: QueryCtx,
   instanceId: Id<"taskInstances">,
   deviceId: Id<"devices">,
 ): Promise<Doc<"liveActivities">[]> {
-  const rows = await ctx.db
-    .query("liveActivities")
-    .withIndex("by_instance", (q) => q.eq("taskInstanceId", instanceId))
-    .collect();
+  const rows = await activitiesOfInstance(ctx, instanceId);
   return rows.filter((row) => row.deviceId === deviceId);
 }
 
@@ -387,6 +395,7 @@ export async function planStart(
     staleAt: view.staleAt,
     relevance: view.relevance,
     quiet: row.kind === "senior_reshow",
+    instanceId: instance._id,
     windowEnd: instance.windowEnd,
     resume: resume?._id ?? null,
   };
@@ -398,14 +407,13 @@ export async function openActivity(
   device: Doc<"devices">,
   plan: StartPlan,
   now: number,
-): Promise<{ activityId: Id<"liveActivities">; message: ApnsMessage } | null> {
-  if (!isActivityCue(row)) return null;
+): Promise<{ activityId: Id<"liveActivities">; message: ApnsMessage }> {
   let activityId = plan.resume;
   if (activityId === null) {
     activityId = await ctx.db.insert("liveActivities", {
       householdId: row.householdId,
       deviceId: device._id,
-      taskInstanceId: row.taskInstanceId,
+      taskInstanceId: plan.instanceId,
       windowEnd: plan.windowEnd,
       phase: { kind: "starting", outboxId: row._id, since: now },
       shown: plan.content,
@@ -415,7 +423,7 @@ export async function openActivity(
   }
   const attributes: ActivityAttributes = {
     activityKey: activityId,
-    instanceId: row.taskInstanceId,
+    instanceId: plan.instanceId,
     receiptMs: RECEIPT_MS,
   };
   const alert = { title: row.title, body: row.body };

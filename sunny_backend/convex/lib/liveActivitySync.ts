@@ -9,6 +9,7 @@ import { seniorPromptWords } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
 import {
   ACTIVITY_CAP_MS,
+  activitiesOfInstance,
   endActivity,
   findPhonePush,
   loadActivityView,
@@ -27,16 +28,6 @@ export async function queueActivityPush(
   activityId: Id<"liveActivities">,
 ): Promise<void> {
   await deliveryPool.enqueueAction(ctx, internal.liveActivity.push, { activityId });
-}
-
-async function activitiesOfInstance(
-  ctx: QueryCtx,
-  instanceId: Id<"taskInstances">,
-): Promise<Doc<"liveActivities">[]> {
-  return await ctx.db
-    .query("liveActivities")
-    .withIndex("by_instance", (q) => q.eq("taskInstanceId", instanceId))
-    .collect();
 }
 
 async function pushLiveActivities(

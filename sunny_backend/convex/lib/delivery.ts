@@ -260,7 +260,6 @@ export async function resolveRoute(
   const route = await planRoute(ctx, row, now);
   if (route.kind !== "live_activity_start") return route;
   const opened = await openActivity(ctx, row, route.device, route.start, now);
-  if (opened === null) return route.alertFallback ?? { kind: "skip", reason: "no_live_activity" };
   return {
     kind: "live_activity",
     activityId: opened.activityId,
