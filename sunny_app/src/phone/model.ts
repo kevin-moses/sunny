@@ -1,6 +1,5 @@
 import {
   displayTime,
-  isAnytime,
   isDone,
   isDue,
   isMissed,
@@ -11,6 +10,7 @@ import {
 import { localClockTime } from '../day/localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
 import type { UndoLineData } from '../day/useDoneAction';
+import { upNext } from '../display/model';
 
 export const NOTHING_DUE = 'Nothing to do right now.';
 
@@ -99,35 +99,23 @@ function laterDayWord(event: EventOccurrence, today: string): string | null {
   return day === 'Tomorrow' ? 'tomorrow' : day;
 }
 
-function laterEventText(event: EventOccurrence, today: string): string {
+function eventText(event: EventOccurrence, today: string, laterDay: boolean): string {
   const time = displayTime(event.startTime);
-  const day = laterDayWord(event, today);
+  const day = laterDay ? laterDayWord(event, today) : null;
   return day === null ? `${event.label} at ${time}` : `${event.label} ${day} at ${time}`;
 }
 
-function todayNext(item: AgendaItem, now: number): string | null {
-  if (item.kind === 'event') {
-    return item.event.startsAt > now
-      ? `${item.event.label} at ${displayTime(item.event.startTime)}`
-      : null;
-  }
-  const { task } = item;
-  return task.state === 'upcoming' && !isAnytime(task)
-    ? `${task.displayLabel} at ${displayTime(task.scheduledTime)}`
-    : null;
-}
-
 export function nextLine(
-  day: Pick<DayViewData, 'localDate' | 'upcoming'>,
+  day: Pick<DayViewData, 'localNow' | 'localDate' | 'upcoming'>,
   agenda: readonly AgendaItem[],
-  now: number,
+  shownTaskId: string | null,
 ): string | null {
-  for (const item of agenda) {
-    const text = todayNext(item, now);
-    if (text !== null) return `Next: ${text}`;
+  const next = upNext(day, agenda, shownTaskId);
+  if (next === null) return null;
+  if (next.kind === 'task') {
+    return `Next: ${next.task.displayLabel} at ${displayTime(next.task.scheduledTime)}`;
   }
-  const later = day.upcoming.find((event) => event.localDate > day.localDate);
-  return later === undefined ? null : `Next: ${laterEventText(later, day.localDate)}`;
+  return `Next: ${eventText(next.event, day.localDate, next.laterDay)}`;
 }
 
 export type RowTone = 'plain' | 'now' | 'early' | 'grey';

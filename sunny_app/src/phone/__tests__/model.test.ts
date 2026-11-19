@@ -58,7 +58,13 @@ function day(
   eventsToday: EventOccurrence[] = [],
   upcoming: EventOccurrence[] = [],
 ): DayViewData {
-  return { localDate: TODAY, tasks, eventsToday, upcoming } as unknown as DayViewData;
+  return {
+    localDate: TODAY,
+    localNow: `${TODAY}T10:00`,
+    tasks,
+    eventsToday,
+    upcoming,
+  } as unknown as DayViewData;
 }
 
 const UNDO: UndoLineData = { label: 'Morning pills', text: 'Morning pills done.', pressedAt: 0 };
@@ -212,12 +218,12 @@ describe('nextLine', () => {
 
   it('names the next open timed task', () => {
     const today = day([task({ state: 'confirmed' }), lunch], [event()]);
-    expect(nextLine(today, buildAgenda(today), AT(10))).toBe('Next: Lunch at 12:30 PM');
+    expect(nextLine(today, buildAgenda(today), null)).toBe('Next: Lunch at 12:30 PM');
   });
 
   it('names an event today when it comes first', () => {
     const today = day([lunch], [event({ startTime: '11:00', startsAt: AT(11) })]);
-    expect(nextLine(today, buildAgenda(today), AT(10))).toBe('Next: Sarah visits at 11:00 AM');
+    expect(nextLine(today, buildAgenda(today), null)).toBe('Next: Sarah visits at 11:00 AM');
   });
 
   it('skips an event that has started, and done, missed and anytime tasks', () => {
@@ -232,13 +238,13 @@ describe('nextLine', () => {
         event({ eventId: 'tea' as never, label: 'Tea', startTime: '16:00', startsAt: AT(16) }),
       ],
     );
-    expect(nextLine(today, buildAgenda(today), AT(10))).toBe('Next: Tea at 4:00 PM');
+    expect(nextLine(today, buildAgenda(today), null)).toBe('Next: Tea at 4:00 PM');
   });
 
   it('names the next event from the coming days with its day when today has none', () => {
     const tomorrow = event({ localDate: '2026-11-10', startsAt: AT(14) + 86_400_000 });
     const today = day([task({ state: 'confirmed' })], [], [tomorrow]);
-    expect(nextLine(today, buildAgenda(today), AT(10))).toBe(
+    expect(nextLine(today, buildAgenda(today), null)).toBe(
       'Next: Sarah visits tomorrow at 2:00 PM',
     );
   });
@@ -246,14 +252,25 @@ describe('nextLine', () => {
   it('names a later weekday by name', () => {
     const thursday = event({ localDate: '2026-11-12', startTime: '15:00' });
     const today = day([], [], [thursday]);
-    expect(nextLine(today, buildAgenda(today), AT(10))).toBe(
+    expect(nextLine(today, buildAgenda(today), null)).toBe(
       'Next: Sarah visits Thursday at 3:00 PM',
     );
   });
 
   it('is null with nothing at all', () => {
     const today = day([task({ state: 'confirmed' })]);
-    expect(nextLine(today, buildAgenda(today), AT(10))).toBeNull();
+    expect(nextLine(today, buildAgenda(today), null)).toBeNull();
+  });
+
+  it('names a due task that is not on the Done key, as the display does', () => {
+    const today = day([task(), lunch]);
+    expect(nextLine(today, buildAgenda(today), null)).toBe('Next: Morning pills at 9:30 AM');
+    expect(nextLine(today, buildAgenda(today), 'pills')).toBe('Next: Lunch at 12:30 PM');
+  });
+
+  it("reads the household's clock from the day view, not the phone's", () => {
+    const today = day([], [event({ startTime: '09:45', startsAt: AT(14) })]);
+    expect(nextLine(today, buildAgenda(today), null)).toBeNull();
   });
 });
 

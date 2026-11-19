@@ -49,7 +49,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         task: done.task,
         message: done.message ?? (stale ? STALE_DAY_MESSAGE : null),
         undo: done.undo,
-        next: stale ? null : nextLine(day, agenda, now),
+        next: stale ? null : nextLine(day, agenda, done.task?.instanceId ?? null),
         timezone: day.timezone,
       })
     : null;
