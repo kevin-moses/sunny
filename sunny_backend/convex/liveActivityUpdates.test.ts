@@ -265,13 +265,13 @@ describe("a task confirmed on another surface", () => {
     expect(alertsSent()).toEqual([]);
   });
 
-  test("an end that APNs keeps refusing is sent again by the next tick", async () => {
+  test("an end whose retries ran out is sent again by the next tick", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { f, instanceId, activityId } = await live();
-    refuseUpdates(400);
+    refuseUpdates(503, true);
     await confirmOnDisplay(f, instanceId);
-    await settle(f.t);
-    expect(ends()).toHaveLength(1);
+    await settle(f.t, MIN);
+    expect(ends().length).toBeGreaterThan(1);
     expect((await activity(f, activityId)).phase.kind).toBe("live");
 
     resetProviderMocks();
@@ -282,6 +282,62 @@ describe("a task confirmed on another surface", () => {
     await tick(f, EIGHT + 3 * MIN);
     await settle(f.t);
     expect(ends()).toHaveLength(1);
+    errorSpy.mockRestore();
+  });
+
+  test("an end that APNs refuses for good drops the token, ends the row and wakes the phone", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { f, instanceId, activityId } = await live();
+    expect((await putPushState(f, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
+    resetProviderMocks();
+    refuseUpdates(400);
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    expect(ends()).toHaveLength(1);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "ended",
+      reason: "confirmed",
+    });
+    expect(backgroundPushes().map((push) => push.tokens)).toEqual([[ALERT_TOKEN]]);
+
+    for (const minute of [2, 3, 4]) {
+      await tick(f, EIGHT + minute * MIN);
+      await settle(f.t);
+    }
+    expect(ends()).toHaveLength(1);
+    errorSpy.mockRestore();
+  });
+
+  test("an update that APNs refuses for good drops the token until the phone reports one again", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { f, instanceId, activityId } = await live({
+      title: "Shower",
+      time: "08:00",
+      type: "routine",
+      checklistItems: SHOWER_STEPS,
+    });
+    refuseUpdates(400);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t);
+    expect(updates()).toHaveLength(1);
+    expect((await activity(f, activityId)).phase).toEqual({
+      kind: "started",
+      acceptedAt: about(EIGHT),
+      proof: "proven",
+    });
+    for (const minute of [2, 3, 4]) {
+      await tick(f, EIGHT + minute * MIN);
+      await settle(f.t);
+    }
+    expect(updates()).toHaveLength(1);
+
+    resetProviderMocks();
+    expect(await reportUpdateToken(f)).toEqual([
+      expect.objectContaining({ key: activityId, directive: "update" }),
+    ]);
+    await settle(f.t);
+    expect(updates().map((update) => update.aps["content-state"].card.step)).toEqual([1]);
+    expect((await activity(f, activityId)).phase.kind).toBe("live");
     errorSpy.mockRestore();
   });
 
@@ -610,14 +666,15 @@ describe("a window longer than the system's eight hours", () => {
   test("a live activity whose end never gets through is closed after twelve hours", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { f, activityId } = await live(long);
-    refuseUpdates(400);
+    refuseUpdates(503, true);
     await tick(f, EIGHT + 11 * HOUR + 59 * MIN);
-    await settle(f.t);
-    expect(ends()).toHaveLength(1);
+    await settle(f.t, 50_000);
+    const tried = ends().length;
+    expect(tried).toBeGreaterThan(1);
     expect((await activity(f, activityId)).phase.kind).toBe("live");
     await tick(f, EIGHT + 12 * HOUR + MIN);
     await settle(f.t);
-    expect(ends()).toHaveLength(1);
+    expect(ends()).toHaveLength(tried);
     expect((await activity(f, activityId)).phase.kind).toBe("ended");
     errorSpy.mockRestore();
   });

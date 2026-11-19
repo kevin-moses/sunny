@@ -61,14 +61,14 @@ export const settle = internalMutation({
     content: activityContent,
     ends: v.union(activityEndReason, v.null()),
     timestamp: v.number(),
-    outcome: v.union(v.literal("sent"), v.literal("unregistered")),
+    outcome: v.union(v.literal("sent"), v.literal("token_unusable")),
   },
   handler: async (ctx, args): Promise<null> => {
     const row = await ctx.db.get(args.activityId);
     if (row === null || row.phase.kind !== "live" || row.phase.updateToken !== args.token) {
       return null;
     }
-    if (args.outcome === "unregistered") {
+    if (args.outcome === "token_unusable") {
       const tokenless = {
         kind: "started" as const,
         acceptedAt: row.phase.acceptedAt,
@@ -76,13 +76,15 @@ export const settle = internalMutation({
       };
       await ctx.db.patch(row._id, { phase: tokenless });
       await endTokenlessIfOver(ctx, { ...row, phase: tokenless }, Date.now());
-    } else if (args.ends === null) {
-      if (args.timestamp === row.pushTimestamp)
-        await ctx.db.patch(row._id, { shown: args.content });
-    } else {
+      return null;
+    }
+    if (args.ends !== null) {
       await endActivity(ctx, row, args.ends, Date.now(), args.content);
       if (args.ends === "confirmed") await reshowIfDue(ctx, row.taskInstanceId, row.deviceId);
+      return null;
     }
+    const newestSent = args.timestamp === row.pushTimestamp;
+    if (newestSent) await ctx.db.patch(row._id, { shown: args.content });
     return null;
   },
 });
@@ -104,8 +106,7 @@ export const push = internalAction({
     if (result.outcome === "failed") {
       const detail = `${result.status} ${result.reason ?? "unknown"}`;
       if (result.retryable) throw new Error(`Live Activity push failed, will retry: ${detail}`);
-      console.error(`Live Activity push refused: ${detail}`);
-      return null;
+      console.error(`Live Activity push refused, so its update token is dropped: ${detail}`);
     }
     await ctx.runMutation(internal.liveActivity.settle, {
       activityId: args.activityId,
@@ -113,7 +114,7 @@ export const push = internalAction({
       content: planned.content,
       ends: planned.ends,
       timestamp: planned.timestamp,
-      outcome: result.outcome,
+      outcome: result.outcome === "sent" ? "sent" : "token_unusable",
     });
     return null;
   },
