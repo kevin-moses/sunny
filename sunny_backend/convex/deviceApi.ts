@@ -15,6 +15,8 @@ import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
 import { isOpenState } from "./lib/escalation";
+import { loadPhoneTimeline } from "./lib/phoneTimeline";
+import type { PhoneTimeline } from "./lib/phoneTimeline";
 import { appError, isAppError } from "./lib/errors";
 import {
   NO_STORE,
@@ -189,6 +191,15 @@ export const stateByToken = internalQuery({
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
     if (device === null) return null;
     return await loadDeviceState(ctx, device.householdId, Date.now());
+  },
+});
+
+export const timelineByToken = internalQuery({
+  args: { tokenHash: v.string() },
+  handler: async (ctx, args): Promise<PhoneTimeline | null> => {
+    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
+    if (device === null) return null;
+    return await loadPhoneTimeline(ctx, device.householdId, Date.now());
   },
 });
 
@@ -451,8 +462,8 @@ export function notModified(
   return new Response(null, { status: 304, headers: { ...NO_STORE, ...headers, ETag: etag } });
 }
 
-function etagOf(state: DeviceState): string {
-  return `"${state.version}"`;
+function etagOf(versioned: { version: string }): string {
+  return `"${versioned.version}"`;
 }
 
 export function doneHeaders(state: DeviceState): Record<string, string> {
@@ -493,6 +504,15 @@ export const getState = deviceRoute("Could not load the device state", async (ct
   const cached = notModified(request, etag, done);
   if (cached !== null) return cached;
   return jsonResponse(state, 200, { ...done, ETag: etag });
+});
+
+export const getTimeline = deviceRoute("Could not load the timeline", async (ctx, request) => {
+  const tokenHash = await gate(ctx, request);
+  if (tokenHash instanceof Response) return tokenHash;
+  const timeline = await ctx.runQuery(internal.deviceApi.timelineByToken, { tokenHash });
+  if (timeline === null) return unauthorizedResponse();
+  const etag = etagOf(timeline);
+  return notModified(request, etag) ?? jsonResponse(timeline, 200, { ETag: etag });
 });
 
 export const confirm = deviceRoute("Could not confirm the task", async (ctx, request) => {
