@@ -123,6 +123,11 @@ const MEAL_TITLES: [string, string][] = [
   ["24:00", "Dinner"],
 ];
 
+export const APPOINTMENT_TITLES: ReadonlySet<string> = new Set([
+  ...APPOINTMENT_KIND_NAMES.map((kind) => APPOINTMENT_KINDS[kind].title),
+  ...MEAL_TITLES.map(([, title]) => title),
+]);
+
 export function appointmentTitle(kind: AppointmentKind, time: string | null): string {
   if (kind !== "meal" || time === null) return APPOINTMENT_KINDS[kind].title;
   return MEAL_TITLES.find(([before]) => time < before)?.[1] ?? APPOINTMENT_KINDS.meal.title;
@@ -146,18 +151,16 @@ export const INFO_TOPICS = [
   "prescription_coming",
   "package_arrived",
   "package_coming",
-  "home_visit",
   "family_news",
 ] as const;
 
 export type InfoTopic = (typeof INFO_TOPICS)[number];
 
 export const SENIOR_SENTENCES: Record<InfoTopic, string> = {
-  prescription_ready: "The pharmacy has your medicine ready to pick up.",
+  prescription_ready: "Your prescription is ready to pick up at the pharmacy.",
   prescription_coming: "The pharmacy is getting your prescription ready.",
   package_arrived: "A package was delivered to your home.",
-  package_coming: "Someone is bringing a package to your home.",
-  home_visit: "A service worker will visit your home soon.",
+  package_coming: "A package is on the way to your home.",
   family_news: "You have a friendly email from family or a friend. Someone can read it with you.",
 };
 

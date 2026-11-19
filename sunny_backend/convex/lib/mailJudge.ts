@@ -780,7 +780,7 @@ export const TRUTH_TABLE: Row[] = [
     rule: "home visit",
     decide: (r) =>
       is(r, "home_visit")
-        ? info("home_visit", "The email says a worker will visit the home.")
+        ? decision("home_visit", "The email says a worker will visit the home.")
         : null,
   },
   {

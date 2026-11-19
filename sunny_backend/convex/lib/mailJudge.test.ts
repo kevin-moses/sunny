@@ -246,7 +246,7 @@ const ROWS: [string, string, Readings, string][] = [
       { home_visit: "yes", confirms_appointment: "yes" },
       { when: { date: "2026-11-19", time: null } },
     ),
-    "senior_info:home_visit",
+    "needs_decision:home_visit",
   ],
   [
     "appointment without a readable date and start time",
@@ -442,6 +442,17 @@ describe("Sunny's own words", () => {
       expect(cleanText(sentence)).toBe(sentence);
     },
   );
+
+  test("the senior hears only these calm sentences, none about a visitor", () => {
+    expect(SENIOR_SENTENCES).toEqual({
+      prescription_ready: "Your prescription is ready to pick up at the pharmacy.",
+      prescription_coming: "The pharmacy is getting your prescription ready.",
+      package_arrived: "A package was delivered to your home.",
+      package_coming: "A package is on the way to your home.",
+      family_news:
+        "You have a friendly email from family or a friend. Someone can read it with you.",
+    });
+  });
 
   test("every appointment the table can build passes the calendar field checks", () => {
     for (const kind of APPOINTMENT_KIND_NAMES) {
