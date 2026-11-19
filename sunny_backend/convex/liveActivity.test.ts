@@ -6,7 +6,6 @@ import {
   APNS_SENT,
   alertsSent,
   answerEachToken,
-  providerMocks,
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
 import { MAX_OPEN_ACTIVITIES, PROOF_WAIT_MS } from "./lib/liveActivity";
