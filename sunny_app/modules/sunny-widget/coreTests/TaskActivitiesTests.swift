@@ -302,6 +302,36 @@ final class ActivityPressTests: XCTestCase {
         XCTAssertEqual(result, .unauthorized)
         XCTAssertTrue(store.shown().allSatisfy { $0.phase == .ended })
     }
+
+    func testAnUnpairedPhoneEndsEveryActivityShowsNoReceiptAndKeepsNoPress() async throws {
+        tokens = MemoryTokenStore(nil)
+        let store = FakeActivityStore([
+            shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-pills"))),
+            shownActivity(key: "b", state: Sample.tea),
+        ])
+        let sync = makeSync()
+        let result = await sync.pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+        XCTAssertEqual(result, .noCredentials)
+        XCTAssertTrue(store.shown().allSatisfy { $0.phase == .ended })
+        XCTAssertTrue(store.shown().allSatisfy { $0.state.closed == nil }, "a receipt for a press nobody will receive")
+        XCTAssertEqual(sync.unsentPresses(), [])
+        XCTAssertTrue(transport.confirmBodies.isEmpty)
+    }
+
+    func testAPressBeforeTheFirstUnlockIsKeptWithItsReceipt() async throws {
+        let store = pills()
+        let sync = WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: LockedKeychainTokenStore(),
+            sites: MemorySiteStore(URL(string: "https://example.convex.site")),
+            transport: transport,
+            clock: { [now] in now }
+        )
+        let result = await sync.pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+        XCTAssertEqual(result, .noCredentials)
+        XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
+        XCTAssertEqual(sync.unsentPresses().map(\.key), [PressKey(instanceId: "inst-pills", step: 0)])
+    }
 }
 
 final class LockedFlag: @unchecked Sendable {

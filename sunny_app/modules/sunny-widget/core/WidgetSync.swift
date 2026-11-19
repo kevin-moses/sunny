@@ -204,6 +204,11 @@ public struct WidgetSync: Sendable {
         }
     }
 
+    var isNotPaired: Bool {
+        guard case .notPaired = credentials() else { return false }
+        return true
+    }
+
     private func client() -> DeviceClient? {
         guard case .paired(let client) = credentials() else { return nil }
         return client
