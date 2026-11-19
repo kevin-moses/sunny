@@ -18,6 +18,7 @@ import {
 } from "./liveActivity";
 import { taskCards, timelineTask } from "./phoneTimeline";
 import { DAY_MS } from "./time";
+import type { ActivityView } from "./liveActivity";
 import type { ActivityEndReason, ConfirmVia } from "./validators";
 import { phonePressedOn, requestWidgetRefresh, wakePhoneToReport } from "./widgetRefresh";
 
@@ -25,7 +26,7 @@ export const ENDED_KEPT_MS = 7 * DAY_MS;
 
 const PURGE_BATCH = 50;
 
-export async function queueActivityPush(
+async function queueActivityPush(
   ctx: MutationCtx,
   activityId: Id<"liveActivities">,
 ): Promise<void> {
@@ -48,30 +49,50 @@ function changedOnPhone(actor: Actor, after: Doc<"taskInstances">): Id<"devices"
   return phonePressedOn(actor);
 }
 
-export async function endTokenlessIfOver(
+type SyncRule =
+  | { kind: "by_view"; changedOn: Id<"devices"> | null; startingEndsAs: ActivityEndReason | null }
+  | { kind: "end_as"; reason: ActivityEndReason };
+
+const BY_VIEW: SyncRule = { kind: "by_view", changedOn: null, startingEndsAs: null };
+
+export async function syncActivity(
   ctx: MutationCtx,
   row: Doc<"liveActivities">,
   now: number,
-  changedOn: Id<"devices"> | null = null,
+  rule: SyncRule = BY_VIEW,
+  known: ActivityView | null = null,
 ): Promise<void> {
-  if (row.phase.kind !== "started" || row.phase.proof === "awaited") return;
-  const view = await loadActivityView(ctx, row, now);
+  const { phase } = row;
+  if (phase.kind === "ended") return;
+  if (phase.kind === "live") {
+    await queueActivityPush(ctx, row._id);
+    return;
+  }
+  if (rule.kind === "end_as") {
+    await endActivity(ctx, row, rule.reason, now);
+    return;
+  }
+  if (phase.kind === "starting") {
+    if (rule.startingEndsAs !== null) await endActivity(ctx, row, rule.startingEndsAs, now);
+    return;
+  }
+  if (phase.proof === "awaited") return;
+  const view = known ?? (await loadActivityView(ctx, row, now));
   if (view.kind !== "end") return;
   await endActivity(ctx, row, view.reason, now, view.content);
-  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== changedOn) {
+  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== rule.changedOn) {
     await wakePhoneToReport(ctx, row.deviceId, now);
   }
 }
 
-async function syncActivities(
+async function syncInstanceActivities(
   ctx: MutationCtx,
   instanceId: Id<"taskInstances">,
   now: number,
-  changedOn: Id<"devices"> | null,
+  rule: SyncRule,
 ): Promise<void> {
   for (const row of await activitiesOfInstance(ctx, instanceId)) {
-    if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
-    else await endTokenlessIfOver(ctx, row, now, changedOn);
+    await syncActivity(ctx, row, now, rule);
   }
 }
 
@@ -132,7 +153,11 @@ export async function instanceChanged(
   if (actor.kind === "system") return;
   if (before.state === after.state && stepOf(before) === stepOf(after)) return;
   await requestWidgetRefresh(ctx, actor, after.householdId);
-  await syncActivities(ctx, after._id, Date.now(), changedOnPhone(actor, after));
+  await syncInstanceActivities(ctx, after._id, Date.now(), {
+    kind: "by_view",
+    changedOn: changedOnPhone(actor, after),
+    startingEndsAs: null,
+  });
   if (isDoneState(before.state) && isDueEntry(after) && wasPrompted(after)) {
     for (const phone of await seniorPhones(ctx, after.householdId)) {
       await queueReshow(ctx, after, phone);
@@ -144,12 +169,11 @@ export async function instanceGone(
   ctx: MutationCtx,
   instance: Doc<"taskInstances">,
 ): Promise<void> {
-  const now = Date.now();
-  for (const row of await activitiesOfInstance(ctx, instance._id)) {
-    if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
-    else if (row.phase.kind === "starting") await endActivity(ctx, row, "instance_gone", now);
-    else await endTokenlessIfOver(ctx, row, now);
-  }
+  await syncInstanceActivities(ctx, instance._id, Date.now(), {
+    kind: "by_view",
+    changedOn: null,
+    startingEndsAs: "instance_gone",
+  });
 }
 
 function shownCards(instance: Doc<"taskInstances">, task: Doc<"tasks">, now: number): string {
@@ -169,7 +193,7 @@ export async function taskTextChanged(
       .collect();
     for (const instance of instances) {
       if (shownCards(instance, before, now) === shownCards(instance, after, now)) continue;
-      await syncActivities(ctx, instance._id, now, null);
+      await syncInstanceActivities(ctx, instance._id, now, BY_VIEW);
     }
   }
 }
@@ -179,8 +203,7 @@ export async function phoneRevoked(ctx: MutationCtx, deviceId: Id<"devices">): P
   if (push !== null) await ctx.db.delete(push._id);
   const now = Date.now();
   for (const row of await openActivitiesOf(ctx, deviceId)) {
-    if (row.phase.kind === "live") await queueActivityPush(ctx, row._id);
-    else await endActivity(ctx, row, "device_revoked", now);
+    await syncActivity(ctx, row, now, { kind: "end_as", reason: "device_revoked" });
   }
 }
 
@@ -195,7 +218,7 @@ export async function proofMissed(
   await ctx.db.patch(row._id, { phase: missed.phase });
   const push = await findPhonePush(ctx, row.deviceId);
   if (push !== null) await ctx.db.patch(push._id, { blindSince: now });
-  await endTokenlessIfOver(ctx, missed, now);
+  await syncActivity(ctx, missed, now);
   if (row.quiet) return;
   const instance = await ctx.db.get(row.taskInstanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
@@ -240,7 +263,7 @@ async function sweepStarted(
   now: number,
 ): Promise<void> {
   for (const row of await activitiesInPhase(ctx, householdId, "started")) {
-    await endTokenlessIfOver(ctx, row, now);
+    await syncActivity(ctx, row, now);
   }
 }
 

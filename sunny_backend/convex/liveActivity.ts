@@ -8,7 +8,7 @@ import {
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
 import { endActivity, loadActivityView, nextCommand, nextPushTimestamp } from "./lib/liveActivity";
-import { endTokenlessIfOver, proofMissed, reshowIfDue } from "./lib/liveActivitySync";
+import { proofMissed, reshowIfDue, syncActivity } from "./lib/liveActivitySync";
 import { activityContent, activityEndReason } from "./lib/validators";
 import type { ActivityContent, ActivityEndReason, ApnsMessage } from "./lib/validators";
 
@@ -79,7 +79,7 @@ export const settle = internalMutation({
         proof: "proven" as const,
       };
       await ctx.db.patch(row._id, { phase: tokenless });
-      await endTokenlessIfOver(ctx, { ...row, phase: tokenless }, Date.now());
+      await syncActivity(ctx, { ...row, phase: tokenless }, Date.now());
       return null;
     }
     if (args.ends !== null) {

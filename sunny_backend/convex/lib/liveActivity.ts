@@ -296,9 +296,14 @@ function isOnPhone(reported: ReportedActivity): boolean {
   return reported.state === "active" || reported.state === "stale";
 }
 
+interface BehindActivity {
+  row: Doc<"liveActivities">;
+  view: ActivityView;
+}
+
 interface ReportOutcome {
   directives: ActivityDirective[];
-  behind: Id<"liveActivities">[];
+  behind: BehindActivity[];
 }
 
 function directiveFor(key: string, row: ActivityRow, view: ActivityView): ActivityDirective[] {
@@ -345,12 +350,11 @@ async function applyReportedActivity(
   }
   const next = reportedPhase(phase, reported.token, now);
   const directives = directiveFor(reported.key, row, view);
-  if (next.kind === "started" && view.kind === "end") {
-    await endActivity(ctx, row, view.reason, now, view.content);
-    return { directives, behind: [] };
-  }
   if (next !== phase) await ctx.db.patch(row._id, { phase: next });
-  return { directives, behind: next.kind === "live" && directives.length > 0 ? [row._id] : [] };
+  return {
+    directives,
+    behind: directives.length > 0 ? [{ row: { ...row, phase: next }, view }] : [],
+  };
 }
 
 async function openForReport(
@@ -375,7 +379,7 @@ export async function applyActivityReport(
 ): Promise<ReportOutcome> {
   const listed = new Set<Id<"liveActivities">>();
   const directives: ActivityDirective[] = [];
-  const behind: Id<"liveActivities">[] = [];
+  const behind: BehindActivity[] = [];
   for (const entry of reported) {
     const id = ctx.db.normalizeId("liveActivities", entry.key);
     const row = id === null ? null : await ctx.db.get(id);
