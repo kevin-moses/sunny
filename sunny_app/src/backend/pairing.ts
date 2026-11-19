@@ -7,6 +7,7 @@ import { CONVEX_SITE_URL } from '../config';
 import { logger } from '../logging/logger';
 import { confirmQueue } from '../day/pendingConfirms';
 import { unregisterStoredPushToken } from '../notifications/push';
+import { clearWidget } from '../widget/widgetSync';
 import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE } from './api';
 import { api, type HouseholdId } from './convexApi';
 
@@ -223,6 +224,7 @@ async function runUnpair(): Promise<void> {
   if (hasSession) await attempt('unregister push token', unregisterStoredPushToken);
   await attempt('clear pairing attempt', () => AsyncStorage.removeItem(ATTEMPT_KEY));
   await attempt('clear pending confirms', () => confirmQueue.clear());
+  await attempt('clear widget', clearWidget);
   if (hasSession) await attempt('sign out', () => getClerkInstance().signOut());
 }
 
