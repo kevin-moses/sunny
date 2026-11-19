@@ -12,14 +12,9 @@ import {
 import { audit } from "./lib/audit";
 import { deleteLinks, dropConnection, queueConnectionBackfill } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
-import {
-  CALENDAR_SCOPE,
-  calendarExists,
-  createSunnyCalendar,
-  revokeRefreshToken,
-} from "./lib/google";
+import { CALENDAR_SCOPE, calendarExists, createSunnyCalendar } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
-import { scheduleGrantRevoke } from "./lib/googleTokens";
+import { googleAccount, revokeUnusedGrant, scheduleGrantRevoke } from "./lib/googleTokens";
 import { oauthPage } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
 import type { CalendarConnectionStatus } from "./lib/validators";
@@ -68,7 +63,7 @@ export const saveConnection = internalMutation({
   handler: async (ctx, args): Promise<Id<"calendarConnections">> => {
     await requireCaregiverMember(ctx, args.householdId, args.userId);
     const fields = {
-      accountEmail: args.accountEmail ?? undefined,
+      accountEmail: args.accountEmail === null ? undefined : googleAccount(args.accountEmail),
       externalCalendarId: args.externalCalendarId,
       refreshToken: args.refreshToken,
       status: "active" as const,
@@ -89,7 +84,7 @@ export const saveConnection = internalMutation({
       }
       await ctx.db.patch(existing._id, fields);
       if (existing.refreshToken !== args.refreshToken) {
-        await scheduleGrantRevoke(ctx, existing.refreshToken);
+        await scheduleGrantRevoke(ctx, existing.refreshToken, existing.accountEmail ?? null);
       }
       connectionId = existing._id;
     } else {
@@ -119,7 +114,7 @@ export async function finishCalendar(
   tokens: GoogleGrant,
 ): Promise<Response> {
   if (!tokens.scopes.includes(CALENDAR_SCOPE)) {
-    await revokeRefreshToken(tokens.refreshToken);
+    await revokeUnusedGrant(ctx, tokens.refreshToken, tokens.email);
     return oauthPage(
       "Permission needed",
       "Sunny needs permission to manage the calendar it creates. Start again and allow it.",

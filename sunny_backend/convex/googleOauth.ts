@@ -19,12 +19,12 @@ import {
   GMAIL_SCOPE,
   consentUrl,
   exchangeCode,
-  revokeRefreshToken,
   signState,
   startUrl,
   verifyState,
 } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
+import { revokeUnusedGrant } from "./lib/googleTokens";
 import {
   OAUTH_FLOW_TTL_MS,
   OAUTH_TICKET_TTL_MS,
@@ -222,11 +222,26 @@ export const sweepOauthFlows = internalMutation({
   },
 });
 
+export const accountInUse = internalQuery({
+  args: { accountEmail: v.string() },
+  handler: async (ctx, { accountEmail }): Promise<boolean> => {
+    const mailbox = await ctx.db
+      .query("mailboxes")
+      .withIndex("by_account", (q) => q.eq("accountEmail", accountEmail))
+      .first();
+    const calendar = await ctx.db
+      .query("calendarConnections")
+      .withIndex("by_account", (q) => q.eq("accountEmail", accountEmail))
+      .first();
+    return mailbox !== null || calendar !== null;
+  },
+});
+
 export const revokeGrant = internalAction({
-  args: { refreshToken: v.string() },
-  handler: async (_ctx, { refreshToken }): Promise<boolean> => {
+  args: { refreshToken: v.string(), accountEmail: v.union(v.null(), v.string()) },
+  handler: async (ctx, { refreshToken, accountEmail }): Promise<boolean> => {
     try {
-      return await revokeRefreshToken(await decryptSecret(refreshToken));
+      return await revokeUnusedGrant(ctx, await decryptSecret(refreshToken), accountEmail);
     } catch (e) {
       console.error(`Could not revoke Google grant: ${errorText(e)}`);
       return false;
@@ -273,7 +288,7 @@ async function finishConnect(ctx: ActionCtx, request: Request): Promise<Response
       400,
     );
   }
-  let unusedGrant: string | null = null;
+  let unusedGrant: GoogleGrant | null = null;
   try {
     const flowId = await verifyState(url.searchParams.get("state") ?? "");
     const code = url.searchParams.get("code");
@@ -296,12 +311,14 @@ async function finishConnect(ctx: ActionCtx, request: Request): Promise<Response
       });
       return expiredPage();
     }
-    unusedGrant = tokens.refreshToken;
+    unusedGrant = tokens;
     const response = await GOOGLE_PURPOSES[purpose].finish(ctx, { householdId, userId }, tokens);
     unusedGrant = null;
     return response;
   } catch (e) {
-    if (unusedGrant !== null) await revokeRefreshToken(unusedGrant);
+    if (unusedGrant !== null) {
+      await revokeUnusedGrant(ctx, unusedGrant.refreshToken, unusedGrant.email);
+    }
     if (isAppError(e, "forbidden") || isAppError(e, "not_found")) {
       return oauthPage(
         "Not allowed",

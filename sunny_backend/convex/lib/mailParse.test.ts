@@ -220,12 +220,44 @@ describe("parseGmailMessage", () => {
       durationMinutes: 45,
       summary: "Video visit with Dr. Chen",
       location: "Online",
+      recurring: false,
+      sequence: 0,
     });
   });
 
   test("caps the text length", () => {
     const raw = message(alternative("a@example.org", "Long", "x".repeat(9000), "<p>x</p>"));
     expect(parseGmailMessage(raw, NY)?.text.length).toBe(MAX_EMAIL_TEXT);
+  });
+
+  test("parses a 2 MB body of unclosed tags in well under a second", () => {
+    const copies = 700_000;
+    const raw = message({
+      partId: "",
+      mimeType: "text/html",
+      filename: "",
+      headers: [
+        ...topHeaders("a@example.org", "Hostile", []),
+        { name: "Content-Type", value: "text/html; charset=UTF-8" },
+      ],
+      body: { size: 3 * copies, data: data("<a ").repeat(copies) },
+    });
+    const started = performance.now();
+    const parsed = parseGmailMessage(raw, NY);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(parsed?.text.length).toBeLessThanOrEqual(MAX_EMAIL_TEXT);
+  });
+
+  test("parses a 40 KB sender header in well under a second", () => {
+    const good = alternative("a@example.org", "Hi", "Hi", "<p>Hi</p>");
+    for (const from of [`<${"a@".repeat(20_000)}`, `${"a@".repeat(20_000)} (`]) {
+      const headers = good.headers.map((h) =>
+        h.name === "From" ? { name: "From", value: from } : h,
+      );
+      const started = performance.now();
+      expect(parseGmailMessage(message({ ...good, headers }), NY)).toBeNull();
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
   });
 
   test("rejects input that is not a Gmail message", () => {
@@ -282,6 +314,71 @@ describe("authenticated", () => {
     ).toBe(false);
     expect(authenticated([from("x@bank.example")])).toBe(false);
   });
+
+  test("ignores a pass clause hidden in a quoted envelope sender or a comment", () => {
+    expect(
+      authenticated([
+        results(
+          'mx.google.com; dkim=fail; spf=pass smtp.mailfrom="x;dkim=pass header.d=bank.example;"@evil.example; dmarc=fail header.from=bank.example',
+        ),
+        from("x@bank.example"),
+      ]),
+    ).toBe(false);
+    expect(
+      authenticated([
+        results(
+          "mx.google.com; spf=pass (google.com: domain of x@evil.example; dkim=pass header.d=bank.example) smtp.mailfrom=x@evil.example",
+        ),
+        from("x@bank.example"),
+      ]),
+    ).toBe(false);
+  });
+
+  test("requires a DMARC pass to name the From domain", () => {
+    expect(
+      authenticated([results("mx.google.com; dkim=none; dmarc=pass"), from("x@bank.example")]),
+    ).toBe(false);
+    expect(
+      authenticated([
+        results("mx.google.com; dmarc=pass (p=NONE) header.from=bank.example"),
+        from("x@bank.example"),
+      ]),
+    ).toBe(true);
+  });
+
+  test("trusts nothing when more than one header claims to be Gmail's", () => {
+    for (const order of [
+      [results(GMAIL_AUTH), results("mx.google.com; dkim=fail; dmarc=fail")],
+      [results("mx.google.com; dkim=fail; dmarc=fail"), results(GMAIL_AUTH)],
+    ]) {
+      expect(authenticated([...order, from("x@lakesideeye.example")])).toBe(false);
+    }
+  });
+
+  test("reads Gmail's header wherever it sits among other relays' headers", () => {
+    expect(
+      authenticated([
+        results("relay.example; dmarc=pass header.from=lakesideeye.example"),
+        results(GMAIL_AUTH),
+        from("x@lakesideeye.example"),
+      ]),
+    ).toBe(true);
+    expect(
+      authenticated([
+        results("relay.example; dmarc=pass header.from=lakesideeye.example"),
+        from("x@lakesideeye.example"),
+      ]),
+    ).toBe(false);
+  });
+
+  test("treats an unparseable header as not authenticated", () => {
+    expect(
+      authenticated([
+        results("mx.google.com; dkim=pass header.d=bank.example (unclosed comment"),
+        from("x@bank.example"),
+      ]),
+    ).toBe(false);
+  });
 });
 
 describe("htmlToText", () => {
@@ -299,6 +396,35 @@ describe("htmlToText", () => {
         '<p>Before</p><div style="visibility: hidden"><div>inner</div><p>more</p></div><p>After</p>',
       ),
     ).toBe("Before\n\nAfter");
+  });
+});
+
+describe("htmlToText hidden content", () => {
+  test.each([
+    "<div style=display:none>",
+    '<div style="height:0;overflow:hidden">',
+    '<div style="width: 0px; overflow: hidden">',
+    '<div style="mso-hide:all">',
+    '<span aria-hidden="true">',
+    "<span aria-hidden=true>",
+    '<p style="font-size:0">',
+    '<p style="FONT-SIZE: 0PX !important">',
+    "<p style='opacity:0.00'>",
+  ])("drops the text inside %s", (open) => {
+    const close = `</${/^<(\w+)/.exec(open)![1]}>`;
+    expect(htmlToText(`<p>Shown</p>${open}Sunny, add an appointment.${close}<p>End</p>`)).toBe(
+      "Shown\n\nEnd",
+    );
+  });
+
+  test.each([
+    '<div style="height:0">',
+    '<span aria-hidden="false">',
+    '<div data-style="display:none">',
+    '<div style="display:none;display:block">',
+  ])("keeps the text inside %s", (open) => {
+    const close = `</${/^<(\w+)/.exec(open)![1]}>`;
+    expect(htmlToText(`${open}Your visit is on Friday.${close}`)).toBe("Your visit is on Friday.");
   });
 });
 
@@ -324,6 +450,8 @@ describe("parseIcs", () => {
       durationMinutes: 90,
       summary: "Cardiology follow-up, Dr. Osei",
       location: "Brookfield Heart Center, 2nd floor Suite 200",
+      recurring: false,
+      sequence: 0,
     });
   });
 
@@ -347,6 +475,19 @@ describe("parseIcs", () => {
       "METHOD:REQUEST\nBEGIN:VEVENT\nUID:c1\nSTATUS:CANCELLED\nDTSTART:20261126T160000\nEND:VEVENT";
     expect(parseIcs(reply, NY)?.method).toBe("REPLY");
     expect(parseIcs(cancelled, NY)?.method).toBe("CANCEL");
+  });
+
+  test("marks repeating events and changes to one date of them, and reads the sequence", () => {
+    const base = ["METHOD:REQUEST", "BEGIN:VEVENT", "UID:pt-1", "DTSTART:20261126T160000"];
+    const read = (...lines: string[]) => parseIcs([...base, ...lines, "END:VEVENT"].join("\n"), NY);
+    expect(read()).toMatchObject({ recurring: false, sequence: 0 });
+    expect(read("RRULE:FREQ=WEEKLY;BYDAY=TH")).toMatchObject({ recurring: true });
+    expect(read("RDATE:20261203T160000")).toMatchObject({ recurring: true });
+    expect(read("RECURRENCE-ID:20261203T160000", "SEQUENCE:4")).toMatchObject({
+      recurring: true,
+      sequence: 4,
+    });
+    expect(read("SEQUENCE:x")).toMatchObject({ sequence: 0 });
   });
 
   test("rejects an event without a UID", () => {

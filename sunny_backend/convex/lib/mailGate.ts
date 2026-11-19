@@ -1,4 +1,11 @@
-import type { Appointment, IcsEvent, MailVerdict, ParsedEmail, Triaged } from "./mailTypes";
+import type {
+  Appointment,
+  IcsEvent,
+  KnownInvite,
+  MailVerdict,
+  ParsedEmail,
+  Triaged,
+} from "./mailTypes";
 
 export type GateTriaged = Extract<Triaged, { stage: "gate" }>;
 
@@ -32,15 +39,35 @@ function inviteSummary(ics: IcsEvent, start: { date: string; time: string }, wha
   return `${what}: ${ics.summary === "" ? "untitled event" : ics.summary} on ${start.date} at ${start.time}.`;
 }
 
-export function gate(email: ParsedEmail, knownIcsUid: boolean): GateResult {
-  const label = IGNORED_LABELS.find((l) => email.labels.includes(l));
-  if (label !== undefined) {
+export function ignoredLabel(email: ParsedEmail): string | null {
+  return IGNORED_LABELS.find((l) => email.labels.includes(l)) ?? null;
+}
+
+export function gate(email: ParsedEmail, known: KnownInvite | null): GateResult {
+  const label = ignoredLabel(email);
+  if (label !== null) {
     return settled({ kind: "ignore", summary: `Filed by Gmail as ${label}.` }, `label:${label}`);
   }
   const ics = email.ics;
   if (ics === null) return { kind: "classify" };
   if (ics.method === "REPLY") {
     return settled({ kind: "ignore", summary: "A reply to a calendar invitation." }, "ics:reply");
+  }
+  if (ics.recurring) {
+    return settled(
+      {
+        kind: "needs_decision",
+        reason: "other",
+        summary: "A calendar invitation for a repeating appointment, or for one date of one.",
+      },
+      "ics:recurring",
+    );
+  }
+  if (known !== null && ics.sequence < known.sequence) {
+    return settled(
+      { kind: "ignore", summary: "An older version of a calendar invitation Sunny already has." },
+      "ics:older_sequence",
+    );
   }
   const start = ics.start;
   if (start === null) return { kind: "classify" };
@@ -57,7 +84,7 @@ export function gate(email: ParsedEmail, knownIcsUid: boolean): GateResult {
   }
   if (ics.method !== "REQUEST") return { kind: "classify" };
   const appointment = invitedAppointment(ics, start);
-  if (!knownIcsUid) {
+  if (known === null) {
     return settled(
       {
         kind: "appointment",

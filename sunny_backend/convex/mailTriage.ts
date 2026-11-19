@@ -1,4 +1,3 @@
-import { APIError } from "@anthropic-ai/sdk";
 import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
@@ -6,33 +5,39 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { mailboxFailure } from "./gmail";
+import { mailFailure } from "./gmail";
 import { postMail } from "./lib/chatPosts";
-import { ConfigError, errorText } from "./lib/errors";
+import { errorText } from "./lib/errors";
 import { getMessage, hasSentTo } from "./lib/gmailApi";
-import { GoogleApiError } from "./lib/google";
 import { AccessTokens } from "./lib/googleTokens";
 import type { StoredGrant } from "./lib/googleTokens";
 import { haikuClassifier, triageEmail } from "./lib/mailClassify";
+import { ignoredLabel } from "./lib/mailGate";
 import { carryOut, linkByKey, linkForEvent } from "./lib/mailEffects";
 import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
-import type { CalendarEventFact, MailVerdict, PolicyFacts, Triaged } from "./lib/mailTypes";
+import { NO_USAGE } from "./lib/mailTypes";
+import type {
+  CalendarEventFact,
+  KnownInvite,
+  MailVerdict,
+  PolicyFacts,
+  Triaged,
+} from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
-import { liveEvents } from "./lib/occurrences";
+import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 import type { ClassifierRecord, StoredSender, StoredVerdict } from "./lib/validators";
 
+export const MAX_TRIAGE_ATTEMPTS = 10;
 const LEASE_MS = 10 * MINUTE_MS;
 const EVENT_HORIZON_DAYS = 400;
 const SWEEP_BATCH = 100;
 const MAX_NAME = 120;
 const MAX_ADDRESS = 320;
-const MAX_SUBJECT = 200;
+const MAX_STORED_SUBJECT = 200;
 const MAX_SUMMARY = 600;
-const NO_USAGE = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
-const PERMANENT_MODEL_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
 
 type Claim =
   | { kind: "skip"; reason: string }
@@ -62,7 +67,7 @@ function holdsClaim(item: Doc<"mailItems"> | null, attempt: number): item is Doc
   return item !== null && item.state === "triaging" && item.attempt === attempt;
 }
 
-function clip(text: string, max: number): string {
+function truncate(text: string, max: number): string {
   return text.slice(0, max);
 }
 
@@ -74,25 +79,40 @@ function storedHeader(header: MailHeader): {
   const { sender } = header;
   return {
     sender: {
-      name: clip(sender.name, MAX_NAME),
-      address: clip(sender.address, MAX_ADDRESS),
+      name: truncate(sender.name, MAX_NAME),
+      address: truncate(sender.address, MAX_ADDRESS),
       authenticated: sender.authenticated,
       known: sender.known,
     },
-    subject: clip(header.subject, MAX_SUBJECT),
+    subject: truncate(header.subject, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
   };
 }
 
 function storedVerdict(verdict: MailVerdict | null): StoredVerdict {
   if (verdict === null) return { kind: "unreadable", summary: "" };
-  return { kind: verdict.kind, summary: clip(verdict.summary, MAX_SUMMARY) };
+  return { kind: verdict.kind, summary: truncate(verdict.summary, MAX_SUMMARY) };
 }
 
 function classifierOf(triaged: Triaged): ClassifierRecord {
   return triaged.stage === "gate"
     ? { name: `gate:${triaged.rule}`, usage: NO_USAGE }
     : { name: triaged.classifier, usage: triaged.usage };
+}
+
+async function mailboxOf(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Doc<"mailboxes"> | null> {
+  const mailbox = await ctx.db
+    .query("mailboxes")
+    .withIndex("by_household", (q) => q.eq("householdId", item.householdId))
+    .unique();
+  return mailbox?.accountEmail === item.account ? mailbox : null;
+}
+
+async function waitsToBeClaimed(ctx: QueryCtx, item: Doc<"mailItems">): Promise<boolean> {
+  const household = await ctx.db.get(item.householdId);
+  if (household?.backgroundPaused) return true;
+  const mailbox = await mailboxOf(ctx, item);
+  return mailbox !== null && mailbox.status !== "active";
 }
 
 export const claimItem = internalMutation({
@@ -102,18 +122,15 @@ export const claimItem = internalMutation({
     if (!item || item.state !== "queued") return { kind: "skip", reason: "not queued" };
     const household = await ctx.db.get(item.householdId);
     if (household?.backgroundPaused) return { kind: "skip", reason: "household paused" };
-    const mailbox = await ctx.db
-      .query("mailboxes")
-      .withIndex("by_household", (q) => q.eq("householdId", item.householdId))
-      .unique();
-    if (
-      !household ||
-      !mailbox ||
-      mailbox.status !== "active" ||
-      mailbox.accountEmail !== item.account
-    ) {
+    const mailbox = await mailboxOf(ctx, item);
+    if (!household || !mailbox) {
       await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
-      return { kind: "skip", reason: "mailbox not readable" };
+      return { kind: "skip", reason: "mailbox gone" };
+    }
+    if (mailbox.status !== "active") return { kind: "skip", reason: "mailbox not active" };
+    if (item.attempt >= MAX_TRIAGE_ATTEMPTS) {
+      await failUnread(ctx, item);
+      return { kind: "skip", reason: "attempts used up" };
     }
     const now = Date.now();
     const attempt = item.attempt + 1;
@@ -163,38 +180,61 @@ export const recordParsed = internalMutation({
   handler: async (
     ctx,
     { itemId, attempt, icsKey, ...header },
-  ): Promise<{ knownIcsUid: boolean } | null> => {
+  ): Promise<{ known: KnownInvite | null } | null> => {
     const item = await ctx.db.get(itemId);
     if (!holdsClaim(item, attempt)) return null;
     await ctx.db.patch(itemId, storedHeader(header));
     const link = icsKey === null ? null : await linkByKey(ctx, item.householdId, icsKey);
-    return { knownIcsUid: link !== null };
+    return { known: link === null ? null : { sequence: link.sequence ?? 0 } };
   },
 });
 
-async function eventFact(ctx: QueryCtx, event: Doc<"events">): Promise<CalendarEventFact> {
+async function eventFact(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  date: string,
+): Promise<CalendarEventFact> {
   const link = await linkForEvent(ctx, event._id);
   const source = link === null ? null : await ctx.db.get(link.mailItemId);
   return {
     eventId: event._id,
     title: event.title,
-    date: event.startsOn,
+    date,
     time: event.startTime,
     durationMinutes: event.durationMinutes ?? null,
+    repeating: event.repeatDays !== undefined,
     sourceSender: source?.sender?.address ?? null,
   };
 }
 
-async function upcomingSingleEvents(
+function datesNamed(verdict: MailVerdict | null): string[] {
+  if (verdict?.kind !== "appointment") return [];
+  if (verdict.change === "cancel") return [verdict.previous.date];
+  const { date } = verdict.appointment;
+  const dates = [addDays(date, -1), date];
+  return verdict.change === "reschedule" ? [...dates, verdict.previous.date] : dates;
+}
+
+async function calendarFacts(
   ctx: QueryCtx,
   household: Doc<"households">,
   now: number,
-): Promise<Doc<"events">[]> {
+  verdict: MailVerdict | null,
+): Promise<{ events: Doc<"events">[]; facts: CalendarEventFact[] }> {
   const today = localDate(now, household.timezone);
   const last = addDays(today, EVENT_HORIZON_DAYS);
-  return (await liveEvents(ctx, household._id)).filter(
-    (e) => e.repeatDays === undefined && e.startsOn >= today && e.startsOn <= last,
+  const inHorizon = (date: string) => date >= today && date <= last;
+  const live = await liveEvents(ctx, household._id);
+  const singles = live.filter((e) => e.repeatDays === undefined && inHorizon(e.startsOn));
+  const series = live.filter((e) => e.repeatDays !== undefined);
+  const occurrences = [...new Set(datesNamed(verdict).filter(inHorizon))].flatMap((date) =>
+    expandOccurrences(series, household.timezone, date, date),
   );
+  const facts = await Promise.all([
+    ...singles.map((e) => eventFact(ctx, e, e.startsOn)),
+    ...occurrences.map((o) => eventFact(ctx, o.event, o.localDate)),
+  ]);
+  return { events: [...singles, ...series], facts };
 }
 
 export const applyTriage = internalMutation({
@@ -213,8 +253,8 @@ export const applyTriage = internalMutation({
       return false;
     }
     const now = Date.now();
-    const upcoming = await upcomingSingleEvents(ctx, household, now);
-    const events = new Map<string, Doc<"events">>(upcoming.map((e) => [e._id, e]));
+    const calendar = await calendarFacts(ctx, household, now, triaged.verdict);
+    const events = new Map<string, Doc<"events">>(calendar.events.map((e) => [e._id, e]));
     const key = linkKey(triaged.verdict, email.ics);
     const link = key === null ? null : await linkByKey(ctx, household._id, key);
     const linked = link === null ? null : await ctx.db.get(link.eventId);
@@ -229,7 +269,7 @@ export const applyTriage = internalMutation({
       receivedAt: header.receivedAt,
       gmailId: item.gmailId,
       ics: email.ics,
-      events: await Promise.all(upcoming.map((e) => eventFact(ctx, e))),
+      events: calendar.facts,
       linkedEventId: linked?._id ?? null,
     };
     const plan = planWithRule(triaged, facts);
@@ -252,16 +292,12 @@ export const applyTriage = internalMutation({
       verdict: storedVerdict(triaged.verdict),
       rule: plan.rule,
       effects,
+      escalatedAt: effects.some((e) => e.kind === "escalated") ? now : undefined,
       classifier: classifierOf(triaged),
     });
     return true;
   },
 });
-
-function isPermanent(e: unknown): boolean {
-  if (e instanceof GoogleApiError) return !e.retryable && e.status !== 401;
-  return e instanceof APIError && e.status !== undefined && PERMANENT_MODEL_STATUSES.has(e.status);
-}
 
 async function settleTriageError(
   ctx: ActionCtx,
@@ -269,18 +305,17 @@ async function settleTriageError(
   claim: Extract<Claim, { kind: "claimed" }>,
   e: unknown,
 ): Promise<TriageOutcome> {
-  if (e instanceof ConfigError || isPermanent(e)) {
-    throw new NonRetryableError(errorText(e), { cause: e });
+  const failure = mailFailure(e);
+  if (failure.kind === "permanent") throw new NonRetryableError(errorText(e), { cause: e });
+  if (failure.kind === "mailbox") {
+    await ctx.runMutation(internal.gmail.markMailbox, {
+      mailboxId: claim.mailboxId,
+      status: failure.status,
+      error: failure.error,
+    });
   }
-  const release = async () =>
-    await ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt });
-  const failure = mailboxFailure(e);
-  if (failure !== null) {
-    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId: claim.mailboxId, ...failure });
-    await release();
-    return "mailbox_lost";
-  }
-  await release();
+  await ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt });
+  if (failure.kind === "mailbox") return "mailbox_lost";
   throw e;
 }
 
@@ -298,7 +333,9 @@ async function triageClaimed(
     await ctx.runMutation(internal.mailTriage.closeUnread, { itemId, attempt, rule });
     return rule;
   }
-  const known = await tokens.withToken((token) => hasSentTo(token, email.sender.address));
+  const known =
+    ignoredLabel(email) === null &&
+    (await tokens.withToken((token) => hasSentTo(token, email.sender.address)));
   const header = {
     sender: { ...email.sender, known },
     subject: email.subject,
@@ -315,7 +352,7 @@ async function triageClaimed(
     email,
     { now: claim.now, timezone },
     haikuClassifier,
-    parsed.knownIcsUid,
+    parsed.known,
   );
   const applied = await ctx.runMutation(internal.mailTriage.applyTriage, {
     itemId,
@@ -346,6 +383,15 @@ export const triage = internalAction({
   },
 });
 
+async function failUnread(ctx: MutationCtx, item: Doc<"mailItems">): Promise<void> {
+  await ctx.db.patch(item._id, { state: "failed", leaseUntil: undefined });
+  const household = await ctx.db.get(item.householdId);
+  if (household) {
+    const now = Date.now();
+    await postMail(ctx, household, item._id, unreadPost(item, household, now), now);
+  }
+}
+
 function unreadPost(item: Doc<"mailItems">, household: Doc<"households">, now: number): string {
   const { sender, subject, receivedAt } = item;
   if (sender === undefined || subject === undefined || receivedAt === undefined) {
@@ -370,17 +416,13 @@ function unreadPost(item: Doc<"mailItems">, household: Doc<"households">, now: n
 
 export const onMailJobComplete = internalMutation({
   args: vOnCompleteArgs(v.object({ itemId: v.id("mailItems") })),
-  handler: async (ctx, { context, result }): Promise<null> => {
+  handler: async (ctx, { workId, context, result }): Promise<null> => {
     if (result.kind !== "failed") return null;
     const item = await ctx.db.get(context.itemId);
-    if (!item || (item.state !== "queued" && item.state !== "triaging")) return null;
+    if (!item || item.jobId !== workId) return null;
+    if (item.state !== "queued" && item.state !== "triaging") return null;
     console.error(`Mail triage failed: ${result.error}`);
-    await ctx.db.patch(item._id, { state: "failed", leaseUntil: undefined });
-    const household = await ctx.db.get(item.householdId);
-    if (household) {
-      const now = Date.now();
-      await postMail(ctx, household, item._id, unreadPost(item, household, now), now);
-    }
+    await failUnread(ctx, item);
     return null;
   },
 });
@@ -397,8 +439,7 @@ async function requeueOverdue(
   let queued = 0;
   for (const row of rows) {
     await ctx.db.patch(row._id, { state: "queued", leaseUntil: now + TRIAGE_PICKUP_MS });
-    const household = await ctx.db.get(row.householdId);
-    if (household?.backgroundPaused) continue;
+    if (await waitsToBeClaimed(ctx, row)) continue;
     await enqueueTriage(ctx, row._id);
     queued += 1;
   }

@@ -1,5 +1,5 @@
 import { GoogleApiError } from "./google";
-import { timedFetch } from "./http";
+import { isRecord, parseJsonObject, timedFetch } from "./http";
 import type { TimedResponse } from "./http";
 import { DAY_MS } from "./time";
 
@@ -24,18 +24,21 @@ async function gmailGet(
   );
 }
 
+function gmailObject(res: TimedResponse): Record<string, unknown> {
+  if (!res.ok) throw new GoogleApiError(res.status, res.text);
+  const body = parseJsonObject(res.text);
+  if (body === null) {
+    throw new GoogleApiError(502, "Gmail answered with something other than a JSON object");
+  }
+  return body;
+}
+
 async function gmailJson(
   accessToken: string,
   path: string,
   params: Array<[string, string]>,
 ): Promise<Record<string, unknown>> {
-  const res = await gmailGet(accessToken, path, params);
-  if (!res.ok) throw new GoogleApiError(res.status, res.text);
-  const body: unknown = res.json();
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new GoogleApiError(502, "Gmail answered with something other than an object");
-  }
-  return body as Record<string, unknown>;
+  return gmailObject(await gmailGet(accessToken, path, params));
 }
 
 function stringField(body: Record<string, unknown>, name: string): string {
@@ -47,11 +50,7 @@ function stringField(body: Record<string, unknown>, name: string): string {
 }
 
 function records(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value)
-    ? value.filter(
-        (item): item is Record<string, unknown> => typeof item === "object" && item !== null,
-      )
-    : [];
+  return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
 export async function getProfile(
@@ -75,14 +74,13 @@ export async function listHistory(
   if (pageToken !== undefined) params.push(["pageToken", pageToken]);
   const res = await gmailGet(accessToken, "/history", params);
   if (res.status === 404) return "expired";
-  if (!res.ok) throw new GoogleApiError(res.status, res.text);
-  const body = res.json() as Record<string, unknown>;
+  const body = gmailObject(res);
   const history = records(body.history);
   const ids = new Set<string>();
   for (const record of history) {
     for (const added of records(record.messagesAdded)) {
-      const id = (added.message as { id?: unknown } | undefined)?.id;
-      if (typeof id === "string") ids.add(id);
+      const message = added.message;
+      if (isRecord(message) && typeof message.id === "string") ids.add(message.id);
     }
   }
   const next = typeof body.nextPageToken === "string" ? body.nextPageToken : null;
@@ -124,8 +122,7 @@ export async function getMessage(accessToken: string, id: string): Promise<unkno
     ["format", "full"],
   ]);
   if (res.status === 404) return null;
-  if (!res.ok) throw new GoogleApiError(res.status, res.text);
-  return res.json();
+  return gmailObject(res);
 }
 
 export async function hasSentTo(accessToken: string, address: string): Promise<boolean> {

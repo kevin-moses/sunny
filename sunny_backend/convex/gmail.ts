@@ -1,3 +1,4 @@
+import { APIError } from "@anthropic-ai/sdk";
 import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -21,11 +22,16 @@ import {
 } from "./lib/access";
 import { audit } from "./lib/audit";
 import { postMailbox } from "./lib/chatPosts";
-import { ConfigError, appError } from "./lib/errors";
+import { ConfigError, appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
-import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError, revokeRefreshToken } from "./lib/google";
+import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
-import { AccessTokens, scheduleGrantRevoke } from "./lib/googleTokens";
+import {
+  AccessTokens,
+  googleAccount,
+  revokeUnusedGrant,
+  scheduleGrantRevoke,
+} from "./lib/googleTokens";
 import { pushToCaregivers } from "./lib/mailEffects";
 import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
@@ -52,6 +58,7 @@ const REVOKED_MESSAGE = "Google access was revoked; reconnect the senior's Gmail
 const UNREADABLE_MESSAGE = "Reconnect Gmail: Sunny could not read the saved Google sign-in.";
 const FORBIDDEN_MESSAGE = "Google denied Sunny access to the mailbox; reconnect Gmail.";
 const POLL_FAILED_MESSAGE = "Sunny could not check the mailbox; it will try again.";
+const PERMANENT_MODEL_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
 
 type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "failed";
 
@@ -137,7 +144,7 @@ export const saveMailbox = internalMutation({
     }
     const fields = {
       connectedBy: args.userId,
-      accountEmail: args.accountEmail,
+      accountEmail: googleAccount(args.accountEmail),
       refreshToken: args.refreshToken,
       accessToken: undefined,
       accessTokenExpiresAt: undefined,
@@ -155,7 +162,7 @@ export const saveMailbox = internalMutation({
     if (existing) {
       await ctx.db.patch(existing._id, fields);
       if (existing.refreshToken !== args.refreshToken) {
-        await scheduleGrantRevoke(ctx, existing.refreshToken);
+        await scheduleGrantRevoke(ctx, existing.refreshToken, existing.accountEmail);
       }
       mailboxId = existing._id;
     } else {
@@ -182,7 +189,7 @@ export async function finishMailbox(
   tokens: GoogleGrant,
 ): Promise<Response> {
   if (!tokens.scopes.includes(GMAIL_SCOPE)) {
-    await revokeRefreshToken(tokens.refreshToken);
+    await revokeUnusedGrant(ctx, tokens.refreshToken, tokens.email);
     return oauthPage(
       "Permission needed",
       "Sunny needs permission to read the mailbox. Start again and allow it.",
@@ -316,13 +323,29 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
-export function mailboxFailure(e: unknown): { status: "revoked" | "error"; error: string } | null {
-  if (e instanceof SecretUnreadable) return { status: "error", error: UNREADABLE_MESSAGE };
-  if (e instanceof GoogleAccessRevoked) return { status: "revoked", error: REVOKED_MESSAGE };
-  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
-    return { status: "error", error: FORBIDDEN_MESSAGE };
+export type MailFailure =
+  | { kind: "mailbox"; status: "revoked" | "error"; error: string }
+  | { kind: "permanent" }
+  | { kind: "retry" };
+
+export function mailFailure(e: unknown): MailFailure {
+  if (e instanceof SecretUnreadable) {
+    return { kind: "mailbox", status: "error", error: UNREADABLE_MESSAGE };
   }
-  return null;
+  if (e instanceof GoogleAccessRevoked) {
+    return { kind: "mailbox", status: "revoked", error: REVOKED_MESSAGE };
+  }
+  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
+    return { kind: "mailbox", status: "error", error: FORBIDDEN_MESSAGE };
+  }
+  if (e instanceof ConfigError) return { kind: "permanent" };
+  if (e instanceof GoogleApiError) {
+    return !e.retryable && e.status !== 401 ? { kind: "permanent" } : { kind: "retry" };
+  }
+  if (e instanceof APIError && e.status !== undefined && PERMANENT_MODEL_STATUSES.has(e.status)) {
+    return { kind: "permanent" };
+  }
+  return { kind: "retry" };
 }
 
 async function settlePollError(
@@ -330,17 +353,22 @@ async function settlePollError(
   mailboxId: Id<"mailboxes">,
   e: unknown,
 ): Promise<PollOutcome> {
-  if (e instanceof ConfigError) throw new NonRetryableError(e.message, { cause: e });
-  const failure = mailboxFailure(e);
-  if (failure !== null) {
-    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId, ...failure });
-    return failure.status === "revoked" ? "revoked" : "failed";
+  const failure = mailFailure(e);
+  switch (failure.kind) {
+    case "mailbox":
+      await ctx.runMutation(internal.gmail.markMailbox, {
+        mailboxId,
+        status: failure.status,
+        error: failure.error,
+      });
+      return failure.status === "revoked" ? "revoked" : "failed";
+    case "permanent":
+      if (e instanceof ConfigError) throw new NonRetryableError(e.message, { cause: e });
+      console.error(`Gmail poll ended without retry: ${errorText(e)}`);
+      return "failed";
+    case "retry":
+      throw e;
   }
-  if (e instanceof GoogleApiError && !e.retryable && e.status !== 401) {
-    console.error(`Gmail poll ended without retry (${e.status}): ${e.message}`);
-    return "failed";
-  }
-  throw e;
 }
 
 export const poll = internalAction({
@@ -472,7 +500,7 @@ export const disconnect = mutation({
       detail: { userId },
     });
     await ctx.db.delete(mailboxId);
-    await scheduleGrantRevoke(ctx, mailbox.refreshToken);
+    await scheduleGrantRevoke(ctx, mailbox.refreshToken, mailbox.accountEmail);
     return null;
   },
 });

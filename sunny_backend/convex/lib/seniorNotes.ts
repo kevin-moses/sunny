@@ -1,8 +1,9 @@
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { DAY_MS } from "./time";
 
 const MAX_SHOWN = 3;
-const MAX_SCANNED = 50;
+const LONGEST_NOTE_LIFE_MS = 3 * DAY_MS;
 
 export interface SeniorNoteView {
   id: Id<"seniorNotes">;
@@ -18,10 +19,13 @@ export async function activeSeniorNotes(
 ): Promise<SeniorNoteView[]> {
   const rows = await ctx.db
     .query("seniorNotes")
-    .withIndex("by_household_expires", (q) => q.eq("householdId", householdId).gt("expiresAt", now))
-    .take(MAX_SCANNED);
+    .withIndex("by_household_received", (q) =>
+      q.eq("householdId", householdId).gt("receivedAt", now - LONGEST_NOTE_LIFE_MS),
+    )
+    .order("desc")
+    .collect();
   return rows
-    .sort((a, b) => b.receivedAt - a.receivedAt)
+    .filter((row) => row.expiresAt > now)
     .slice(0, MAX_SHOWN)
     .map((row) => ({
       id: row._id,

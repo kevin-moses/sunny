@@ -1,6 +1,6 @@
 import { gate } from "./mailGate";
 import { MAX_NOTE, NOTE_DENIED_WORDS } from "./mailPolicy";
-import type { ParsedEmail, Suspicion, Triaged, Usage } from "./mailTypes";
+import type { KnownInvite, ParsedEmail, Triaged, Usage } from "./mailTypes";
 import { VERDICT_SCHEMA, parseVerdict } from "./mailVerdict";
 import { client } from "./managedAgents";
 import { oneLine } from "./text";
@@ -24,8 +24,6 @@ export const MAIL_MODEL = "claude-haiku-5-5";
 const MAIL_TIMEOUT_MS = 20_000;
 
 const MAX_OUTPUT_TOKENS = 2048;
-
-const NO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
 export const MAIL_SYSTEM_PROMPT = [
   "You sort one email for Sunny, an assistant that helps an older adult with memory loss (the senior) and the family caregivers who look after them.",
@@ -104,95 +102,13 @@ export const haikuClassifier: Classifier = async (email, clock) => {
   }
 };
 
-const SUSPICION_WORDS: [Suspicion, RegExp][] = [
-  [
-    "money_request",
-    /\bgift ?cards?\b|\bwire (?:the )?(?:money|funds|transfer)\b|\bwire transfer\b|\bbitcoin\b|\bcrypto(?:currency)?\b|\bbail\b|\bwestern union\b|\bmoneygram\b|\bsend (?:me |us )?(?:money|cash|funds)\b|\b(?:donate|donation)s?\b/i,
-  ],
-  [
-    "credentials",
-    /\bpassword\b|\bverify (?:your )?(?:account|identity|information|details)\b|\bconfirm your (?:account|identity|details)\b|\bunusual (?:sign[- ]?in|activity|login)\b|\bverification code\b|\bsecurity code\b|\bsocial security number\b|\baccount (?:will be )?(?:suspended|locked|closed)\b/i,
-  ],
-  [
-    "impersonation",
-    /\bmedicare\b[^.]*\b(?:suspend|expir|terminat|new card|verify|benefits? (?:review|update))|\bsocial security\b[^.]*\b(?:suspend|block|freez)|\birs\b|\binternal revenue\b|\bmicrosoft\b[^.]*\b(?:support|security|virus)|\btech(?:nical)? support\b|\bgrand(?:ma|pa|mother|father)\b[^.]*\b(?:trouble|jail|lawyer|arrested|don'?t tell)/i,
-  ],
-  [
-    "scam",
-    /\byou(?:'ve| have)? won\b|\bprize\b|\blottery\b|\bsweepstakes\b|\bunclaimed\b|\bact now\b|\bfinal notice\b|\bimmediate(?:ly)? action\b|\b(?:ignore|disregard) (?:all |any )?(?:previous|prior|earlier) instructions\b|\b(?:sunny|assistant|ai)\s*[:,]|\bnote to (?:the )?(?:ai|assistant|sunny)\b|\bredelivery fee\b|\bpackage (?:is )?(?:on hold|held)\b/i,
-  ],
-];
-
-const MONTH =
-  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.? \d{1,2}\b/i;
-
-const DATE_LIKE = new RegExp(
-  `${MONTH.source}|\\b\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?\\b|\\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\\b|\\btomorrow\\b`,
-  "i",
-);
-
-const APPOINTMENT_WORDS =
-  /\bappointments?\b|\bvisit\b|\bscheduled\b|\bconfirm(?:ed|ation)\b|\breschedul|\bcancel(?:l?ed)?\b|\bexam\b|\bconsultation\b|\bcheck-?up\b/i;
-
-const EMPTY_FIELDS = {
-  change: null,
-  title: null,
-  date: null,
-  time: null,
-  duration_minutes: null,
-  place: null,
-  previous_date: null,
-  previous_time: null,
-  previous_title: null,
-  topic: null,
-  note: null,
-  reason: null,
-  suspicion: null,
-};
-
-export const rulesClassifier: Classifier = async (email) => {
-  const text = `${email.subject}\n${email.text}`;
-  for (const [suspicion, words] of SUSPICION_WORDS) {
-    const hit = words.exec(text);
-    if (hit) {
-      return {
-        raw: {
-          ...EMPTY_FIELDS,
-          kind: "suspicious",
-          suspicion,
-          summary: `The email matched Sunny's scam word list (${oneLine(hit[0])}).`,
-        },
-        usage: NO_USAGE,
-        name: "rules",
-      };
-    }
-  }
-  if (DATE_LIKE.test(text) && APPOINTMENT_WORDS.test(text)) {
-    return {
-      raw: {
-        ...EMPTY_FIELDS,
-        kind: "needs_decision",
-        reason: "other",
-        summary: "The email mentions an appointment and a date.",
-      },
-      usage: NO_USAGE,
-      name: "rules",
-    };
-  }
-  return {
-    raw: { ...EMPTY_FIELDS, kind: "ignore", summary: "Nothing matched Sunny's rules." },
-    usage: NO_USAGE,
-    name: "rules",
-  };
-};
-
 export async function triageEmail(
   email: ParsedEmail,
   clock: Clock,
   classifier: Classifier,
-  knownIcsUid: boolean,
+  known: KnownInvite | null,
 ): Promise<Triaged> {
-  const gated = gate(email, knownIcsUid);
+  const gated = gate(email, known);
   if (gated.kind === "settled") return gated.triaged;
   const { raw, usage, name } = await classifier(email, clock);
   return { stage: "model", verdict: parseVerdict(raw), usage, classifier: name };

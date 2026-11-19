@@ -29,6 +29,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -37,6 +38,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -45,6 +47,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -53,6 +56,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -61,6 +65,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -69,6 +74,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -77,6 +83,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -85,6 +92,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],
@@ -128,6 +136,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -136,6 +145,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -144,6 +154,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -152,6 +163,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -160,6 +172,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -168,6 +181,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -176,6 +190,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -184,6 +199,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],
@@ -226,6 +242,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -234,6 +251,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -242,6 +260,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -250,6 +269,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -258,6 +278,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -266,6 +287,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -274,6 +296,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -282,6 +305,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],
@@ -324,6 +348,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -332,6 +357,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -340,6 +366,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -348,6 +375,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -356,6 +384,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -364,6 +393,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -372,6 +402,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -380,6 +411,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],
@@ -421,6 +453,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -429,6 +462,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -437,6 +471,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -445,6 +480,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -453,6 +489,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -461,6 +498,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -469,6 +507,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -477,6 +516,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],
@@ -520,6 +560,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -528,6 +569,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -536,6 +578,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -544,6 +587,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -552,6 +596,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -560,6 +605,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -568,6 +614,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -576,6 +623,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],
@@ -619,6 +667,7 @@
           "date": "2026-11-24",
           "time": "10:30",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "appointments@lakesideeye.example"
         },
         {
@@ -627,6 +676,7 @@
           "date": "2026-11-20",
           "time": "14:00",
           "durationMinutes": 45,
+          "repeating": false,
           "sourceSender": "frontdesk@riversidept.example"
         },
         {
@@ -635,6 +685,7 @@
           "date": "2026-12-02",
           "time": "09:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "reminders@maplestreetdental.example"
         },
         {
@@ -643,6 +694,7 @@
           "date": "2026-11-19",
           "time": "11:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": "bookings@studionine.example"
         },
         {
@@ -651,6 +703,7 @@
           "date": "2026-11-22",
           "time": "12:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -659,6 +712,7 @@
           "date": "2026-11-23",
           "time": "10:00",
           "durationMinutes": 60,
+          "repeating": false,
           "sourceSender": null
         },
         {
@@ -667,6 +721,7 @@
           "date": "2026-11-25",
           "time": "15:00",
           "durationMinutes": 90,
+          "repeating": false,
           "sourceSender": "events@brookfieldlibrary.example"
         },
         {
@@ -675,6 +730,7 @@
           "date": "2026-12-08",
           "time": "14:30",
           "durationMinutes": 30,
+          "repeating": false,
           "sourceSender": "scheduling@brookfieldheart.example"
         }
       ],

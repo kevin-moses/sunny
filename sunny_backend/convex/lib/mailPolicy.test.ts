@@ -6,7 +6,7 @@ import {
   linkKey,
   matchEvent,
   noteExpiry,
-  planEffects,
+  planWithRule,
   seniorNoteText,
 } from "./mailPolicy";
 import type {
@@ -31,6 +31,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-11-24",
     time: "10:30",
     durationMinutes: 60,
+    repeating: false,
     sourceSender: "appointments@lakesideeye.example",
   },
   {
@@ -39,6 +40,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-11-20",
     time: "14:00",
     durationMinutes: 45,
+    repeating: false,
     sourceSender: "frontdesk@mail.riversidept.example",
   },
   {
@@ -47,6 +49,7 @@ const EVENTS: CalendarEventFact[] = [
     date: "2026-12-02",
     time: "09:00",
     durationMinutes: null,
+    repeating: false,
     sourceSender: null,
   },
 ];
@@ -124,22 +127,26 @@ function reschedule(
   };
 }
 
+function effectsOf(triaged: Triaged, policyFacts: PolicyFacts): MailEffect[] {
+  return planWithRule(triaged, policyFacts).effects;
+}
+
 function kinds(effects: MailEffect[]): string[] {
   return effects.map((e) => (e.kind === "escalate" ? `escalate:${e.reason}:${e.push}` : e.kind));
 }
 
-describe("planEffects decision table", () => {
+describe("planWithRule decision table", () => {
   test("an unreadable model verdict escalates with a push", () => {
-    expect(kinds(planEffects(model(null), facts()))).toEqual(["escalate:unreadable:true"]);
+    expect(kinds(effectsOf(model(null), facts()))).toEqual(["escalate:unreadable:true"]);
   });
 
   test("ignore plans nothing", () => {
-    expect(planEffects(model({ kind: "ignore", summary: "A receipt." }), facts())).toEqual([]);
+    expect(effectsOf(model({ kind: "ignore", summary: "A receipt." }), facts())).toEqual([]);
   });
 
   describe("new appointment", () => {
     test("from an unverified sender escalates and is not added", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(newAppointment()),
         facts({ sender: { ...facts().sender, authenticated: false } }),
       );
@@ -147,12 +154,12 @@ describe("planEffects decision table", () => {
     });
 
     test("with rejected fields escalates as unclear", () => {
-      const effects = planEffects(model(newAppointment({ date: "2026-11-17" })), facts());
+      const effects = effectsOf(model(newAppointment({ date: "2026-11-17" })), facts());
       expect(kinds(effects)).toEqual(["escalate:unclear_appointment:true"]);
     });
 
     test("already linked to an event is already on the calendar", () => {
-      expect(planEffects(model(newAppointment()), facts({ linkedEventId: "evt_eye" }))).toEqual([
+      expect(effectsOf(model(newAppointment()), facts({ linkedEventId: "evt_eye" }))).toEqual([
         { kind: "already_on_calendar", eventId: "evt_eye" },
       ]);
     });
@@ -163,21 +170,21 @@ describe("planEffects decision table", () => {
         date: "2026-11-24",
         time: "10:30",
       });
-      expect(planEffects(model(verdict), facts())).toEqual([
+      expect(effectsOf(model(verdict), facts())).toEqual([
         { kind: "already_on_calendar", eventId: "evt_eye" },
       ]);
     });
 
     test("overlapping another live event escalates as a conflict and is not added", () => {
       const verdict = newAppointment({ date: "2026-11-24", time: "11:00" });
-      const effects = planEffects(model(verdict), facts());
+      const effects = effectsOf(model(verdict), facts());
       expect(kinds(effects)).toEqual(["escalate:conflict:true"]);
       expect(effects[0]).toMatchObject({ eventId: null });
     });
 
     test("otherwise is added and caregivers are told without a push", () => {
       const verdict = newAppointment({ title: "  Hearing   test ", place: " " });
-      const effects = planEffects(model(verdict), facts());
+      const effects = effectsOf(model(verdict), facts());
       expect(effects[0]).toEqual({
         kind: "add_event",
         appointment: {
@@ -201,8 +208,10 @@ describe("planEffects decision table", () => {
         durationMinutes: 45,
         summary: "Hearing test",
         location: null,
+        recurring: false,
+        sequence: 0,
       };
-      const effects = planEffects(model(newAppointment()), facts({ ics }));
+      const effects = effectsOf(model(newAppointment()), facts({ ics }));
       expect(effects[0]).toMatchObject({ kind: "add_event", appointmentKey: "ics:u-1" });
     });
   });
@@ -211,7 +220,7 @@ describe("planEffects decision table", () => {
     const pt = { date: "2026-11-20", time: "14:00", title: "Physical therapy" };
 
     test("with exactly one match from the event's source moves it and tells caregivers with a push", () => {
-      const effects = planEffects(model(reschedule(pt)), facts({ sender: PT_SENDER }));
+      const effects = effectsOf(model(reschedule(pt)), facts({ sender: PT_SENDER }));
       expect(effects[0]).toMatchObject({
         kind: "reschedule_event",
         eventId: "evt_pt",
@@ -225,7 +234,7 @@ describe("planEffects decision table", () => {
     });
 
     test("finds the event through the link before the previous time", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(reschedule({ date: "2030-01-01", time: null, title: "?" })),
         facts({ linkedEventId: "evt_pt", sender: PT_SENDER }),
       );
@@ -233,7 +242,7 @@ describe("planEffects decision table", () => {
     });
 
     test("from a known sender may move an event entered by hand", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(reschedule({ date: "2026-12-02", time: "09:00", title: "Dentist" })),
         facts({
           sender: { name: "Anna Ellis", address: "anna.ellis@example.net", authenticated: true },
@@ -244,7 +253,7 @@ describe("planEffects decision table", () => {
     });
 
     test("to the time the event already has is already on the calendar", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(reschedule(pt, { date: "2026-11-20", time: "14:00" })),
         facts({ sender: PT_SENDER }),
       );
@@ -252,7 +261,7 @@ describe("planEffects decision table", () => {
     });
 
     test("an escalation with one match names the event, both times and what to tell Sunny", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(reschedule(pt)),
         facts({ sender: { name: "x", address: "x@x.example", authenticated: false } }),
       );
@@ -263,7 +272,7 @@ describe("planEffects decision table", () => {
     });
 
     test("an escalation with no single match says Sunny moved nothing and names no event", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(reschedule({ date: "2030-01-01", time: null, title: "?" })),
         facts({ sender: PT_SENDER }),
       );
@@ -297,6 +306,7 @@ describe("planEffects decision table", () => {
               date: "2026-11-20",
               time: "16:00",
               durationMinutes: 30,
+              repeating: false,
               sourceSender: null,
             },
           ],
@@ -329,7 +339,7 @@ describe("planEffects decision table", () => {
         "evt_dentist",
       ],
     ])("escalates as unclear when %s", (_, verdict, overrides, eventId) => {
-      const effects = planEffects(model(verdict), facts({ sender: PT_SENDER, ...overrides }));
+      const effects = effectsOf(model(verdict), facts({ sender: PT_SENDER, ...overrides }));
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
       expect(effects[0]).toMatchObject({ eventId });
     });
@@ -342,10 +352,10 @@ describe("planEffects decision table", () => {
       previous: { date: "2026-12-02", time, title: "Dentist" },
       summary: "The dentist cancelled.",
     });
-    const matched = planEffects(model(cancel("09:00")), facts());
+    const matched = effectsOf(model(cancel("09:00")), facts());
     expect(kinds(matched)).toEqual(["escalate:cancellation:true"]);
     expect(matched[0]).toMatchObject({ eventId: "evt_dentist" });
-    expect(planEffects(model(cancel("16:00")), facts())[0]).toMatchObject({ eventId: null });
+    expect(effectsOf(model(cancel("16:00")), facts())[0]).toMatchObject({ eventId: null });
   });
 
   describe("senior info", () => {
@@ -357,7 +367,7 @@ describe("planEffects decision table", () => {
     };
 
     test("becomes a note that expires at the end of the next local day", () => {
-      expect(planEffects(model(info), facts())).toEqual([
+      expect(effectsOf(model(info), facts())).toEqual([
         {
           kind: "senior_note",
           text: "Your prescription is ready at the pharmacy.",
@@ -367,11 +377,11 @@ describe("planEffects decision table", () => {
     });
 
     test("from a stale email plans nothing", () => {
-      expect(planEffects(model(info), facts({ receivedAt: NOW - DAY_MS - 1 }))).toEqual([]);
+      expect(effectsOf(model(info), facts({ receivedAt: NOW - DAY_MS - 1 }))).toEqual([]);
     });
 
     test("from an unverified sender goes to caregivers without a push", () => {
-      const effects = planEffects(
+      const effects = effectsOf(
         model(info),
         facts({ sender: { name: "Pharmacy", address: "rx@x.example", authenticated: false } }),
       );
@@ -380,13 +390,13 @@ describe("planEffects decision table", () => {
     });
 
     test("with a note the validator rejects goes to caregivers without a push", () => {
-      const effects = planEffects(model({ ...info, note: "Call the pharmacy today." }), facts());
+      const effects = effectsOf(model({ ...info, note: "Call the pharmacy today." }), facts());
       expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
     });
   });
 
   test("needs decision escalates with its reason and a push", () => {
-    const effects = planEffects(
+    const effects = effectsOf(
       model({ kind: "needs_decision", reason: "bill_or_payment", summary: "Electric bill due." }),
       facts(),
     );
@@ -394,7 +404,7 @@ describe("planEffects decision table", () => {
   });
 
   test("suspicious mail escalates with its suspicion and never reaches the senior", () => {
-    const effects = planEffects(
+    const effects = effectsOf(
       model({ kind: "suspicious", suspicion: "money_request", summary: "Asks for gift cards." }),
       facts(),
     );
@@ -404,9 +414,9 @@ describe("planEffects decision table", () => {
   test("a stale email never pushes", () => {
     const stale = facts({ receivedAt: NOW - 3 * DAY_MS, sender: PT_SENDER });
     expect(
-      kinds(planEffects(model({ kind: "suspicious", suspicion: "scam", summary: "x" }), stale)),
+      kinds(effectsOf(model({ kind: "suspicious", suspicion: "scam", summary: "x" }), stale)),
     ).toEqual(["escalate:scam:false"]);
-    const moved = planEffects(
+    const moved = effectsOf(
       model(reschedule({ date: "2026-11-20", time: "14:00", title: "Physical therapy" })),
       stale,
     );
@@ -419,7 +429,7 @@ describe("planEffects decision table", () => {
       verdict: newAppointment(),
       rule: "ics:request_new",
     };
-    expect(kinds(planEffects(gateTriaged, facts()))).toEqual(["add_event", "tell_caregivers"]);
+    expect(kinds(effectsOf(gateTriaged, facts()))).toEqual(["add_event", "tell_caregivers"]);
   });
 });
 
@@ -628,6 +638,8 @@ describe("keys, matching and expiry", () => {
       durationMinutes: null,
       summary: "",
       location: null,
+      recurring: false,
+      sequence: 0,
     };
     expect(appointmentKey(appointment(), ics)).toBe("ics:u-9");
   });
@@ -643,14 +655,25 @@ describe("keys, matching and expiry", () => {
         durationMinutes: null,
         summary: "",
         location: null,
+        recurring: false,
+        sequence: 0,
       }),
     ).toBe("ics:u-2");
   });
 
-  test("matchEvent uses the time when given and title words otherwise", () => {
+  test("matchEvent needs a shared title word and uses the time when given", () => {
     expect(
-      matchEvent({ date: "2026-11-24", time: "10:30", title: "" }, EVENTS).map((e) => e.eventId),
+      matchEvent({ date: "2026-11-24", time: "10:30", title: "Eye exam" }, EVENTS).map(
+        (e) => e.eventId,
+      ),
     ).toEqual(["evt_eye"]);
+    expect(matchEvent({ date: "2026-11-24", time: "10:30", title: "" }, EVENTS)).toEqual([]);
+    expect(
+      matchEvent({ date: "2026-11-24", time: "10:30", title: "Hair appointment" }, EVENTS),
+    ).toEqual([]);
+    expect(matchEvent({ date: "2026-11-24", time: "11:00", title: "Eye exam" }, EVENTS)).toEqual(
+      [],
+    );
     expect(
       matchEvent({ date: "2026-11-24", time: null, title: "Dr. Rivera" }, EVENTS).map(
         (e) => e.eventId,

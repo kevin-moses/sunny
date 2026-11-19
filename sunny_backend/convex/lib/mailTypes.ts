@@ -11,6 +11,12 @@ export interface IcsEvent {
   durationMinutes: number | null;
   summary: string;
   location: string | null;
+  recurring: boolean;
+  sequence: number;
+}
+
+export interface KnownInvite {
+  sequence: number;
 }
 
 export interface ParsedEmail {
@@ -81,6 +87,8 @@ export interface Usage {
   cacheReadTokens: number;
 }
 
+export const NO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+
 export type Triaged =
   | { stage: "gate"; verdict: MailVerdict; rule: string }
   | { stage: "model"; verdict: MailVerdict | null; usage: Usage; classifier: string };
@@ -91,6 +99,7 @@ export interface CalendarEventFact {
   date: string;
   time: string;
   durationMinutes: number | null;
+  repeating: boolean;
   sourceSender: string | null;
 }
 
@@ -116,6 +125,16 @@ export type EscalationReason =
   | "conflict"
   | "unreadable";
 
+export interface Slot {
+  date: string;
+  time: string;
+}
+
+export interface CaregiverMessage {
+  body: string;
+  notice: string;
+}
+
 export type MailEffect =
   | { kind: "add_event"; appointment: Appointment; appointmentKey: string }
   | {
@@ -126,11 +145,11 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | { kind: "tell_caregivers"; body: string; push: boolean }
-  | {
+  | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
+  | ({
       kind: "escalate";
       reason: EscalationReason;
-      body: string;
       push: boolean;
       eventId: string | null;
-    };
+      proposed: Slot | null;
+    } & CaregiverMessage);

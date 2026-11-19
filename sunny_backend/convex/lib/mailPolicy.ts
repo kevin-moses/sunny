@@ -1,8 +1,10 @@
 import { cleanText } from "./frameText";
+import { domainOf } from "./mailParse";
 import type {
   Appointment,
   AppointmentRef,
   CalendarEventFact,
+  CaregiverMessage,
   DecisionReason,
   EscalationReason,
   IcsEvent,
@@ -10,6 +12,7 @@ import type {
   MailEffect,
   MailVerdict,
   PolicyFacts,
+  Slot,
   Suspicion,
   Triaged,
 } from "./mailTypes";
@@ -29,7 +32,7 @@ import {
   zonedInstant,
 } from "./time";
 
-const STALE_AFTER_MS = DAY_MS;
+export const STALE_AFTER_MS = DAY_MS;
 const MAX_TITLE = 60;
 const MAX_PLACE = 120;
 const MAX_DAYS_AHEAD = 400;
@@ -38,8 +41,9 @@ const MAX_DURATION_MINUTES = 480;
 const ASSUMED_DURATION_MINUTES = 30;
 export const MAX_NOTE = 160;
 const MAX_NOTE_SENTENCES = 2;
-const MAX_SUBJECT = 120;
+const MAX_SHOWN_SUBJECT = 120;
 const MAX_CAREGIVER_BODY = 600;
+const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
 const LINK_REMOVED = "[link removed]";
 const NUMBER_REMOVED = "[number removed]";
 
@@ -120,7 +124,8 @@ export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): Ca
   return events.filter(
     (e) =>
       e.date === ref.date &&
-      (ref.time === null ? sharesWords(e.title, ref.title) : e.time === ref.time),
+      (ref.time === null || e.time === ref.time) &&
+      sharesWords(e.title, ref.title),
   );
 }
 
@@ -177,17 +182,17 @@ export function seniorNoteText(
 }
 
 function scrub(text: string): string {
-  return oneLine(text)
+  return oneLine(text.slice(0, MAX_SCRUBBED))
     .replace(/(?:https?:\/\/|www\.)\S+/gi, LINK_REMOVED)
     .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/\S*/gi, LINK_REMOVED)
     .replace(/\d(?:[\s().-]*\d){6,}/g, NUMBER_REMOVED);
 }
 
-function clip(text: string, max: number): string {
+export function ellipsize(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 3).trimEnd()}...`;
 }
 
-function when(date: string, time: string): string {
+export function when(date: string, time: string): string {
   return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
 }
 
@@ -202,11 +207,23 @@ export function caregiverText(facts: PolicyFacts, lines: string[]): string {
   const body = lines.map(scrub).filter((line) => line !== "");
   return [
     `From: ${from} (${sender.authenticated ? "verified sender" : "sender not verified"})`,
-    `Subject: ${clip(scrub(facts.subject), MAX_SUBJECT)}`,
+    `Subject: ${ellipsize(scrub(facts.subject), MAX_SHOWN_SUBJECT)}`,
     `Received: ${received}`,
     "",
-    clip(body.join("\n"), MAX_CAREGIVER_BODY),
+    ellipsize(body.join("\n"), MAX_CAREGIVER_BODY),
   ].join("\n");
+}
+
+export function isStale(facts: { receivedAt: number; now: number }): boolean {
+  return facts.receivedAt < facts.now - STALE_AFTER_MS;
+}
+
+export function caregiverMessage(
+  facts: PolicyFacts,
+  line: string,
+  summary: string,
+): CaregiverMessage {
+  return { body: caregiverText(facts, [line, summary]), notice: scrub(line) };
 }
 
 export function noteExpiry(receivedAt: number, timezone: string): number {
@@ -266,18 +283,20 @@ function escalate(
   reason: EscalationReason,
   line: string,
   eventId: string | null = null,
+  proposed: Slot | null = null,
 ): MailEffect {
   return {
     kind: "escalate",
     reason,
-    body: caregiverText(c.facts, [line, c.summary]),
+    ...caregiverMessage(c.facts, line, c.summary),
     push: true,
     eventId,
+    proposed,
   };
 }
 
-function domainOf(address: string): string {
-  return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+function tell(c: Context, line: string, push: boolean): MailEffect {
+  return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
 }
 
 function sameDomain(source: string | null, sender: string): boolean {
@@ -296,13 +315,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     {
       rule: "any",
       plan: (_, c) => [
-        {
-          kind: "escalate",
-          reason: "unreadable",
-          body: caregiverText(c.facts, ["Sunny could not sort this email. Please look at it."]),
-          push: true,
-          eventId: null,
-        },
+        escalate(c, "unreadable", "Sunny could not sort this email. Please look at it."),
       ],
     },
   ],
@@ -363,34 +376,36 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 appointment: s.fields,
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
-              {
-                kind: "tell_caregivers",
-                body: caregiverText(c.facts, [
-                  `Sunny added ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, to the calendar.`,
-                  c.summary,
-                ]),
-                push: false,
-              },
+              tell(
+                c,
+                `Sunny added ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, to the calendar.`,
+                false,
+              ),
             ],
     },
   ],
   reschedule: [
     {
-      rule: "not authenticated, no single match, new fields rejected, or sender neither known nor the event's source",
+      rule: "not authenticated, no single match, the match repeats, new fields rejected, or sender neither known nor the event's source",
       plan: (s, c) => {
         const match = only(s.matches);
         const mayMove =
           match !== null &&
+          !match.repeating &&
           (c.facts.senderKnown || sameDomain(match.sourceSender, c.facts.sender.address));
         if (c.authenticated && mayMove && s.fields !== null) return null;
+        const asked = when(s.appointment.date, s.appointment.time);
         return [
           escalate(
             c,
             "unclear_reschedule",
             match === null
-              ? `Sunny did not move any appointment. The email asks to move one to ${when(s.appointment.date, s.appointment.time)}.`
-              : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${when(s.appointment.date, s.appointment.time)}. Tell Sunny in chat to move it.`,
+              ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
+              : match.repeating
+                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
+                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`,
             match?.eventId ?? null,
+            { date: s.appointment.date, time: s.appointment.time },
           ),
         ];
       },
@@ -419,14 +434,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             appointment: s.fields,
             appointmentKey: appointmentKey(s.fields, c.facts.ics),
           },
-          {
-            kind: "tell_caregivers",
-            body: caregiverText(c.facts, [
-              `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
-              c.summary,
-            ]),
-            push: true,
-          },
+          tell(
+            c,
+            `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
+            true,
+          ),
         ];
       },
     },
@@ -452,14 +464,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         c.authenticated && s.note !== null
           ? null
           : [
-              {
-                kind: "tell_caregivers",
-                body: caregiverText(c.facts, [
-                  "Sunny did not pass this on to the senior because it did not pass Sunny's checks.",
-                  c.summary,
-                ]),
-                push: false,
-              },
+              tell(
+                c,
+                "Sunny did not pass this on to the senior because it did not pass Sunny's checks.",
+                false,
+              ),
             ],
     },
     {
@@ -591,7 +600,7 @@ export function planWithRule(triaged: Triaged, facts: PolicyFacts): Plan {
   const context: Context = {
     facts,
     authenticated: facts.sender.authenticated,
-    stale: facts.receivedAt < facts.now - STALE_AFTER_MS,
+    stale: isStale(facts),
     summary: verdict === null ? "" : verdict.summary,
   };
   const plan = planFor(situationOf(verdict, facts), context);
@@ -602,8 +611,4 @@ export function planWithRule(triaged: Triaged, facts: PolicyFacts): Plan {
       (e.kind === "escalate" || e.kind === "tell_caregivers") && e.push ? { ...e, push: false } : e,
     ),
   };
-}
-
-export function planEffects(triaged: Triaged, facts: PolicyFacts): MailEffect[] {
-  return planWithRule(triaged, facts).effects;
 }

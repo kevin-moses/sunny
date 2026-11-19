@@ -19,7 +19,7 @@ export const mailPool = new Workpool(components.mailPool, {
 });
 
 export async function enqueueTriage(ctx: MutationCtx, itemId: Id<"mailItems">): Promise<void> {
-  await mailPool.enqueueAction(
+  const jobId = await mailPool.enqueueAction(
     ctx,
     internal.mailTriage.triage,
     { itemId },
@@ -29,4 +29,5 @@ export async function enqueueTriage(ctx: MutationCtx, itemId: Id<"mailItems">): 
       retry: TRIAGE_RETRY,
     },
   );
+  await ctx.db.patch(itemId, { jobId });
 }

@@ -1,9 +1,12 @@
 import { fromBase64Url } from "./base64";
+import { isRecord } from "./http";
 import type { IcsEvent, MailSender, ParsedEmail } from "./mailTypes";
 import { oneLine } from "./text";
 import { MINUTE_MS, canonicalTimezone, localDate, localTime, zonedInstant } from "./time";
 
 export const MAX_EMAIL_TEXT = 6000;
+const MAX_BODY_SOURCE = 256 * 1024;
+const GMAIL_AUTHSERV = "mx.google.com";
 
 export interface MailHeader {
   name: string;
@@ -16,10 +19,6 @@ interface MimePart {
   headers: MailHeader[];
   data: string | null;
   parts: MimePart[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readHeaders(raw: unknown): MailHeader[] {
@@ -90,7 +89,7 @@ function decodeHeaderValue(value: string): string {
 
 function parseAddress(value: string): { name: string; address: string } | null {
   const decoded = oneLine(decodeHeaderValue(value));
-  const angled = /^(.*?)<([^<>\s]+@[^<>\s]+)>$/.exec(decoded);
+  const angled = /^(.*?)<([^<>\s@]+@[^<>\s]+)>$/.exec(decoded);
   if (angled) {
     const name = angled[1]!
       .trim()
@@ -99,12 +98,12 @@ function parseAddress(value: string): { name: string; address: string } | null {
       .trim();
     return { name, address: angled[2]!.toLowerCase() };
   }
-  const bare = /^([^\s<>()]+@[^\s<>()]+)(?:\s*\((.*)\))?$/.exec(decoded);
+  const bare = /^([^\s<>()@]+@[^\s<>()]+)(?:\s*\((.*)\))?$/.exec(decoded);
   if (bare) return { name: (bare[2] ?? "").trim(), address: bare[1]!.toLowerCase() };
   return null;
 }
 
-function domainOf(address: string): string {
+export function domainOf(address: string): string {
   return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 }
 
@@ -114,24 +113,78 @@ function aligned(signer: string, fromDomain: string): boolean {
   );
 }
 
-export function authenticated(headers: MailHeader[]): boolean {
-  const results = headers.find((h) => h.name.toLowerCase() === "authentication-results");
-  const from = parseAddress(header(headers, "From") ?? "");
-  if (!results || !from) return false;
-  const [authserv, ...clauses] = results.value.split(";").map((c) => c.trim().toLowerCase());
-  if (authserv !== "mx.google.com") return false;
-  const fromDomain = domainOf(from.address);
-  return clauses.some((clause) => {
-    if (clause.startsWith("dmarc=pass")) {
-      const checked = /header\.from=([^\s;]+)/.exec(clause)?.[1];
-      return checked === undefined || aligned(checked, fromDomain);
+function withoutCommentsAndQuotes(value: string): string | null {
+  let out = "";
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
     }
-    if (clause.startsWith("dkim=pass")) {
-      const signer = /header\.(?:d=|i=[^@\s;]*@)([^\s;]+)/.exec(clause)?.[1];
-      return signer !== undefined && aligned(signer, fromDomain);
+    if (quoted) {
+      if (ch === '"') quoted = false;
+    } else if (depth > 0) {
+      if (ch === "(") depth += 1;
+      else if (ch === ")") depth -= 1;
+    } else if (ch === '"') {
+      quoted = true;
+      out += '""';
+    } else if (ch === "(") {
+      depth = 1;
+      out += " ";
+    } else {
+      out += ch;
     }
-    return false;
+  }
+  return depth === 0 && !quoted ? out : null;
+}
+
+interface AuthResult {
+  method: string;
+  result: string;
+  props: Map<string, string>;
+}
+
+function authResults(value: string): { authserv: string; results: AuthResult[] } | null {
+  const bare = withoutCommentsAndQuotes(value);
+  if (bare === null) return null;
+  const [head = "", ...clauses] = bare.toLowerCase().split(";");
+  const results = clauses.flatMap((clause) => {
+    const [verdict = "", ...props] = clause.trim().split(/\s+/);
+    const eq = verdict.indexOf("=");
+    if (eq <= 0) return [];
+    const pairs = props.flatMap((prop) => {
+      const at = prop.indexOf("=");
+      return at > 0 ? [[prop.slice(0, at), prop.slice(at + 1)] as const] : [];
+    });
+    return [{ method: verdict.slice(0, eq), result: verdict.slice(eq + 1), props: new Map(pairs) }];
   });
+  return { authserv: head.trim().split(/\s+/)[0] ?? "", results };
+}
+
+function passes(result: AuthResult, fromDomain: string): boolean {
+  if (result.result !== "pass") return false;
+  if (result.method === "dmarc") return result.props.get("header.from") === fromDomain;
+  if (result.method !== "dkim") return false;
+  const signers = [result.props.get("header.d"), result.props.get("header.i")]
+    .filter((s): s is string => s !== undefined)
+    .map(domainOf);
+  return signers.some((signer) => signer !== "" && aligned(signer, fromDomain));
+}
+
+export function authenticated(headers: MailHeader[]): boolean {
+  const from = parseAddress(header(headers, "From") ?? "");
+  if (!from) return false;
+  const parsed = headers
+    .filter((h) => h.name.toLowerCase() === "authentication-results")
+    .map((h) => authResults(h.value));
+  if (parsed.some((p) => p === null)) return false;
+  const gmail = parsed.filter((p) => p?.authserv === GMAIL_AUTHSERV);
+  if (gmail.length !== 1) return false;
+  const fromDomain = domainOf(from.address);
+  return gmail[0]!.results.some((result) => passes(result, fromDomain));
 }
 
 const VOID_TAGS = new Set([
@@ -176,13 +229,39 @@ const BLOCK_TAGS = new Set([
   "ul",
 ]);
 
-const HIDDEN_STYLE =
-  /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\.0*)?\s*(?:;|$|!)|font-size\s*:\s*0(?:\.0*)?(?:px|pt|em|rem|%)?\s*(?:;|$|!)|max-height\s*:\s*0(?:px)?\s*(?:;|$|!))/i;
+const ZERO_LENGTH = /^(?:0+(?:\.0*)?|\.0+)(?:px|pt|em|rem|ex|ch|%|vw|vh|in|cm|mm)?$/;
+const STYLE_ATTRIBUTE = /(?:^|\s)style\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i;
+const ARIA_HIDDEN = /(?:^|\s)aria-hidden\s*=\s*(?:"\s*true\s*"|'\s*true\s*'|true(?:\s|\/|$))/i;
+
+function declarations(style: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const declaration of style.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon <= 0) continue;
+    const value = declaration.slice(colon + 1).replace(/!\s*important/i, "");
+    found.set(declaration.slice(0, colon).trim().toLowerCase(), value.trim().toLowerCase());
+  }
+  return found;
+}
+
+function hidesContent(style: string): boolean {
+  const d = declarations(style);
+  const zero = (name: string) => ZERO_LENGTH.test(d.get(name) ?? "");
+  return (
+    d.get("display") === "none" ||
+    d.get("visibility") === "hidden" ||
+    d.get("mso-hide") === "all" ||
+    zero("opacity") ||
+    zero("font-size") ||
+    zero("max-height") ||
+    ((zero("height") || zero("width")) && d.get("overflow") === "hidden")
+  );
+}
 
 function isHidden(attributes: string): boolean {
-  if (/(?:^|\s)hidden(?:\s|=|\/|$)/i.test(attributes)) return true;
-  const style = /style\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attributes);
-  return style !== null && HIDDEN_STYLE.test(style[1] ?? style[2] ?? "");
+  if (/(?:^|\s)hidden(?:\s|=|\/|$)/i.test(attributes) || ARIA_HIDDEN.test(attributes)) return true;
+  const style = STYLE_ATTRIBUTE.exec(attributes);
+  return style !== null && hidesContent(style[1] ?? style[2] ?? style[3] ?? "");
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
@@ -238,13 +317,13 @@ function normalizeText(text: string): string {
 }
 
 const HTML_TOKEN =
-  /<!--[\s\S]*?(?:-->|$)|<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|[^<]+|</g;
+  /<!--[\s\S]*?(?:-->|$)|<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^<>"']|"[^"<]*"|'[^'<]*')*)>|[^<]+|</g;
 
 export function htmlToText(html: string): string {
   const stack: string[] = [];
   let hiddenFrom: number | null = null;
   let out = "";
-  for (const match of html.matchAll(HTML_TOKEN)) {
+  for (const match of html.slice(0, MAX_BODY_SOURCE).matchAll(HTML_TOKEN)) {
     const [token, closing, rawName, attributes = ""] = match;
     if (token.startsWith("<!--")) continue;
     if (rawName === undefined) {
@@ -297,7 +376,7 @@ function bodyText(parts: MimePart[]): string {
     .filter((p) => p.mimeType === "text/plain")
     .map(partText)
     .find((t): t is string => t !== null && t.trim() !== "");
-  if (plain !== undefined) return normalizeText(plain);
+  if (plain !== undefined) return normalizeText(plain.slice(0, MAX_BODY_SOURCE));
   const html = inline
     .filter((p) => p.mimeType === "text/html")
     .map(partText)
@@ -397,6 +476,8 @@ function durationMinutes(value: string | undefined): number | null {
   return total > 0 ? total : null;
 }
 
+const RECURRENCE_PROPS = ["RRULE", "RDATE", "RECURRENCE-ID"];
+
 const ICS_METHODS: Record<string, IcsEvent["method"]> = {
   REQUEST: "REQUEST",
   CANCEL: "CANCEL",
@@ -434,6 +515,7 @@ export function parseIcs(text: string, timezone: string): IcsEvent | null {
   const end = icsInstant(props.get("DTEND"), timezone);
   const cancelled = props.get("STATUS")?.value.trim().toUpperCase() === "CANCELLED";
   const location = unescapeIcs(props.get("LOCATION")?.value ?? "");
+  const sequence = props.get("SEQUENCE")?.value.trim() ?? "";
   return {
     method: cancelled ? "CANCEL" : (ICS_METHODS[method] ?? "OTHER"),
     uid,
@@ -447,5 +529,7 @@ export function parseIcs(text: string, timezone: string): IcsEvent | null {
         : durationMinutes(props.get("DURATION")?.value),
     summary: unescapeIcs(props.get("SUMMARY")?.value ?? ""),
     location: location === "" ? null : location,
+    recurring: RECURRENCE_PROPS.some((name) => props.has(name)),
+    sequence: /^\d{1,9}$/.test(sequence) ? Number(sequence) : 0,
   };
 }

@@ -8,15 +8,15 @@ import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, reachableMembers } from "./delivery";
-import { caregiverText } from "./mailPolicy";
-import type { Appointment, EscalationReason, MailEffect, PolicyFacts } from "./mailTypes";
-import { DAY_MS, dateLabel, formatTime12, weekdayName } from "./time";
+import { STALE_AFTER_MS, caregiverMessage, ellipsize, isStale, when } from "./mailPolicy";
+import type { EscalationReason, MailEffect, PolicyFacts, Slot } from "./mailTypes";
+import { isLocalDate, isLocalTime, localDate, zonedInstant } from "./time";
 import type { MailEffectRecord, NotificationKind } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
-const PUSH_LINES = 4;
-const MAX_PUSH_BODY = 300;
+const MAX_PUSH_BODY = 178;
 const SENIOR_NOTE_TITLE = "Sunny";
+const MAX_NOTES_PER_DAY = 3;
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   mailEscalationPush: { kind: "token bucket", rate: 6, period: HOUR, capacity: 6 },
@@ -69,6 +69,8 @@ export async function linkForEvent(
 }
 
 async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
+  const { ics } = scope.facts;
+  const sequence = ics !== null && key === `ics:${ics.uid}` ? ics.sequence : undefined;
   const existing = await linkForEvent(scope.ctx, eventId);
   if (existing === null) {
     await scope.ctx.db.insert("mailEventLinks", {
@@ -76,9 +78,10 @@ async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string)
       eventId,
       appointmentKey: key,
       mailItemId: scope.item._id,
+      sequence,
     });
-  } else if (existing.appointmentKey !== key) {
-    await scope.ctx.db.patch(existing._id, { appointmentKey: key });
+  } else if (existing.appointmentKey !== key || existing.sequence !== sequence) {
+    await scope.ctx.db.patch(existing._id, { appointmentKey: key, sequence });
   }
 }
 
@@ -90,15 +93,7 @@ function eventOf(scope: EffectScope, eventId: string): Doc<"events"> {
 }
 
 function pushBody(text: string): string {
-  const lines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "")
-    .slice(0, PUSH_LINES)
-    .join("\n");
-  return lines.length <= MAX_PUSH_BODY
-    ? lines
-    : `${lines.slice(0, MAX_PUSH_BODY - 3).trimEnd()}...`;
+  return ellipsize(text, MAX_PUSH_BODY);
 }
 
 export async function pushToCaregivers(
@@ -130,6 +125,22 @@ function updateTitle(scope: EffectScope, effects: readonly MailEffect[]): string
 
 function escalationTitle(scope: EffectScope): string {
   return `Email for ${scope.household.seniorPreferredName} needs you`;
+}
+
+async function notesWrittenToday(scope: EffectScope): Promise<number> {
+  const { ctx, household, facts } = scope;
+  const startOfToday = zonedInstant(
+    localDate(facts.now, household.timezone),
+    "00:00",
+    household.timezone,
+  );
+  const recent = await ctx.db
+    .query("seniorNotes")
+    .withIndex("by_household_received", (q) =>
+      q.eq("householdId", household._id).gte("receivedAt", startOfToday - STALE_AFTER_MS),
+    )
+    .collect();
+  return recent.filter((note) => note._creationTime >= startOfToday).length;
 }
 
 function makeHandlers(effects: readonly MailEffect[]): Handlers {
@@ -184,6 +195,12 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
     },
     senior_note: async (scope, effect) => {
       const { ctx, household } = scope;
+      if ((await notesWrittenToday(scope)) >= MAX_NOTES_PER_DAY) {
+        const line = `Sunny held back this note for the senior because the daily limit of ${MAX_NOTES_PER_DAY} notes was reached: ${effect.text}`;
+        const { body } = caregiverMessage(scope.facts, line, scope.summary);
+        await postMail(ctx, household, scope.item._id, body, scope.facts.now);
+        return { kind: "told_caregivers", pushed: false };
+      }
       const noteId = await ctx.db.insert("seniorNotes", {
         householdId: household._id,
         mailItemId: scope.item._id,
@@ -215,7 +232,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         (await pushToCaregivers(scope.ctx, scope.household, {
           kind: "mail_update",
           title: updateTitle(scope, effects),
-          body: effect.body,
+          body: effect.notice,
           payload: { mailItemId: scope.item._id },
         }));
       return { kind: "told_caregivers", pushed };
@@ -231,7 +248,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
           {
             kind: "mail_escalation",
             title: escalationTitle(scope),
-            body: effect.body,
+            body: effect.notice,
             payload: { mailItemId: scope.item._id },
           },
           async () =>
@@ -242,6 +259,11 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         reason: effect.reason,
         pushed,
         ...(effect.eventId === null ? {} : { eventId: eventOf(scope, effect.eventId)._id }),
+        ...(effect.proposed !== null &&
+        isLocalDate(effect.proposed.date) &&
+        isLocalTime(effect.proposed.time)
+          ? { proposed: { date: effect.proposed.date, time: effect.proposed.time } }
+          : {}),
       };
     },
   };
@@ -256,24 +278,21 @@ async function runEffect<K extends EffectKind>(
   return await handlers[kind](scope, effect);
 }
 
-function when(appointment: Appointment): string {
-  const { date, time } = appointment;
-  return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
-}
-
 function escalation(
   scope: EffectScope,
   reason: EscalationReason,
   line: string,
   eventId: string | null,
+  proposed: Slot | null,
 ): EffectOf<"escalate"> {
   const { facts } = scope;
   return {
     kind: "escalate",
     reason,
-    body: caregiverText(facts, [line, scope.summary]),
-    push: facts.receivedAt >= facts.now - DAY_MS,
+    ...caregiverMessage(facts, line, scope.summary),
+    push: !isStale(facts),
     eventId,
+    proposed,
   };
 }
 
@@ -288,7 +307,8 @@ function refusedWrite(
     return escalation(
       scope,
       "unclear_appointment",
-      `Sunny could not add ${appointment.title}, ${when(appointment)}, to the calendar.`,
+      `Sunny could not add ${appointment.title}, ${when(appointment.date, appointment.time)}, to the calendar.`,
+      null,
       null,
     );
   }
@@ -297,8 +317,9 @@ function refusedWrite(
     return escalation(
       scope,
       "unclear_reschedule",
-      `Sunny could not move ${event.title} to ${when(effect.appointment)}.`,
+      `Sunny could not move ${event.title} to ${when(effect.appointment.date, effect.appointment.time)}.`,
       effect.eventId,
+      { date: effect.appointment.date, time: effect.appointment.time },
     );
   }
   return null;

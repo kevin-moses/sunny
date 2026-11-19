@@ -240,6 +240,8 @@ export const icsEvent = v.object({
   durationMinutes: v.union(v.null(), v.number()),
   summary: v.string(),
   location: v.union(v.null(), v.string()),
+  recurring: v.boolean(),
+  sequence: v.number(),
 });
 
 export const mailSender = v.object({
@@ -287,6 +289,7 @@ export const mailEffectRecord = v.union(
     ] as const),
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
+    proposed: v.optional(v.object({ date: v.string(), time: v.string() })),
   }),
 );
 export type MailEffectRecord = Infer<typeof mailEffectRecord>;

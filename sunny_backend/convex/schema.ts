@@ -1,3 +1,4 @@
+import { vWorkIdValidator } from "@convex-dev/workpool";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
@@ -278,7 +279,8 @@ export default defineSchema({
     lastError: v.optional(v.string()),
   })
     .index("by_household_status", ["householdId", "status"])
-    .index("by_household_user", ["householdId", "userId"]),
+    .index("by_household_user", ["householdId", "userId"])
+    .index("by_account", ["accountEmail"]),
 
   calendarEventLinks: defineTable({
     eventId: v.id("events"),
@@ -315,7 +317,8 @@ export default defineSchema({
     lastError: v.optional(v.string()),
   })
     .index("by_household", ["householdId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_account", ["accountEmail"]),
 
   mailItems: defineTable({
     householdId: v.id("households"),
@@ -324,17 +327,20 @@ export default defineSchema({
     state: mailItemState,
     attempt: v.number(),
     leaseUntil: v.optional(v.number()),
+    jobId: v.optional(vWorkIdValidator),
     sender: v.optional(mailSender),
     subject: v.optional(v.string()),
     receivedAt: v.optional(v.number()),
     verdict: v.optional(storedVerdict),
     rule: v.optional(v.string()),
     effects: v.optional(v.array(mailEffectRecord)),
+    escalatedAt: v.optional(v.number()),
     classifier: v.optional(classifierRecord),
   })
     .index("by_household_account_gmail", ["householdId", "account", "gmailId"])
     .index("by_state_lease", ["state", "leaseUntil"])
-    .index("by_household_received", ["householdId", "receivedAt"]),
+    .index("by_household_received", ["householdId", "receivedAt"])
+    .index("by_household_escalated", ["householdId", "escalatedAt"]),
 
   seniorNotes: defineTable({
     householdId: v.id("households"),
@@ -342,13 +348,14 @@ export default defineSchema({
     text: v.string(),
     receivedAt: v.number(),
     expiresAt: v.number(),
-  }).index("by_household_expires", ["householdId", "expiresAt"]),
+  }).index("by_household_received", ["householdId", "receivedAt"]),
 
   mailEventLinks: defineTable({
     householdId: v.id("households"),
     eventId: v.id("events"),
     appointmentKey: v.string(),
     mailItemId: v.id("mailItems"),
+    sequence: v.optional(v.number()),
   })
     .index("by_household_key", ["householdId", "appointmentKey"])
     .index("by_event", ["eventId"]),

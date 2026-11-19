@@ -1,7 +1,8 @@
 import { MAIL_MODEL, triageEmail } from "../../convex/lib/mailClassify";
 import type { Classification, Classifier } from "../../convex/lib/mailClassify";
 import { linkKey, planWithRule } from "../../convex/lib/mailPolicy";
-import { DECISION_REASONS, SUSPICIONS } from "../../convex/lib/mailTypes";
+import { isRecord } from "../../convex/lib/http";
+import { DECISION_REASONS, NO_USAGE, SUSPICIONS } from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -51,7 +52,7 @@ export const PRICE_SOURCE =
   "claude-api skill model table (cached 2026-11-03): Claude Haiku 5.5 $0.10 input and $0.50 output per million tokens at prompts of 100K tokens or fewer; cache reads 0.1x input";
 
 export const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
-  rules: { input: 0, output: 0, cacheRead: 0 },
+  gate: { input: 0, output: 0, cacheRead: 0 },
   [MAIL_MODEL]: { input: 0.1, output: 0.5, cacheRead: 0.01 },
 };
 
@@ -84,10 +85,6 @@ function oneOf<T extends string>(values: readonly T[], value: string, where: str
   return values.find((v) => v === value) ?? fail(where, `unknown value ${value}`);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function fail(where: string, problem: string): never {
   throw new Error(`Fixture ${where}: ${problem}`);
 }
@@ -100,6 +97,10 @@ function num(value: unknown, where: string): number {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : fail(where, "expected a number");
+}
+
+function bool(value: unknown, where: string): boolean {
+  return typeof value === "boolean" ? value : fail(where, "expected true or false");
 }
 
 function strOrNull(value: unknown, where: string): string | null {
@@ -139,21 +140,21 @@ function readIcs(value: unknown, where: string): IcsEvent | null {
     durationMinutes: numOrNull(ics.durationMinutes, `${where}.durationMinutes`),
     summary: str(ics.summary, `${where}.summary`),
     location: strOrNull(ics.location, `${where}.location`),
+    recurring: bool(ics.recurring, `${where}.recurring`),
+    sequence: num(ics.sequence, `${where}.sequence`),
   };
 }
 
 function readEmail(value: unknown, where: string): ParsedEmail {
   const email = rec(value, where);
   const sender = rec(email.sender, `${where}.sender`);
-  if (typeof sender.authenticated !== "boolean")
-    fail(`${where}.sender`, "authenticated is missing");
   return {
     gmailId: str(email.gmailId, `${where}.gmailId`),
     labels: list(email.labels, `${where}.labels`).map((l, i) => str(l, `${where}.labels[${i}]`)),
     sender: {
       name: str(sender.name, `${where}.sender.name`),
       address: str(sender.address, `${where}.sender.address`),
-      authenticated: sender.authenticated,
+      authenticated: bool(sender.authenticated, `${where}.sender.authenticated`),
     },
     subject: str(email.subject, `${where}.subject`),
     receivedAt: num(email.receivedAt, `${where}.receivedAt`),
@@ -170,6 +171,7 @@ function readEvent(value: unknown, where: string): CalendarEventFact {
     date: str(event.date, `${where}.date`),
     time: str(event.time, `${where}.time`),
     durationMinutes: numOrNull(event.durationMinutes, `${where}.durationMinutes`),
+    repeating: bool(event.repeating, `${where}.repeating`),
     sourceSender: strOrNull(event.sourceSender, `${where}.sourceSender`),
   };
 }
@@ -186,13 +188,11 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
   });
   const event =
     expected.event === undefined ? undefined : rec(expected.event, `${id}.expect.event`);
-  if (typeof expected.attack !== "boolean") fail(id, "expect.attack is missing");
-  if (typeof fixture.senderKnown !== "boolean") fail(id, "senderKnown is missing");
   return {
     id,
     bucket,
     email: readEmail(fixture.email, `${id}.email`),
-    senderKnown: fixture.senderKnown,
+    senderKnown: bool(fixture.senderKnown, `${id}.senderKnown`),
     household: {
       timezone: str(household.timezone, `${id}.household.timezone`),
       now: num(household.now, `${id}.household.now`),
@@ -216,7 +216,7 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
       ...(expected.reason === undefined
         ? {}
         : { reason: oneOf(ESCALATION_REASONS, str(expected.reason, `${id}.expect.reason`), id) }),
-      attack: expected.attack,
+      attack: bool(expected.attack, `${id}.expect.attack`),
     },
   };
 }
@@ -248,9 +248,10 @@ export async function runFixture(
 ): Promise<Run> {
   const { email, household } = fixture;
   const clock = { now: household.now, timezone: household.timezone };
-  const knownIcsUid = email.ics !== null && `ics:${email.ics.uid}` in household.links;
+  const known =
+    email.ics !== null && `ics:${email.ics.uid}` in household.links ? { sequence: 0 } : null;
   const started = performance.now();
-  const triaged = await triageEmail(email, clock, classifier, knownIcsUid);
+  const triaged = await triageEmail(email, clock, classifier, known);
   const latencyMs = performance.now() - started;
   const key = linkKey(triaged.verdict, email.ics);
   const plan = planWithRule(triaged, {
@@ -274,10 +275,7 @@ export async function runFixture(
     rule: triaged.stage === "gate" ? `gate ${triaged.rule}; ${plan.rule}` : plan.rule,
     verdict: verdictLabel(triaged.verdict),
     effects: plan.effects,
-    usage:
-      triaged.stage === "model"
-        ? triaged.usage
-        : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    usage: triaged.stage === "model" ? triaged.usage : NO_USAGE,
     classifier: triaged.stage === "model" ? triaged.classifier : "gate",
     latencyMs,
   };
@@ -358,7 +356,7 @@ function percentile(values: number[], p: number): number {
 }
 
 function costOf(run: Run): number {
-  const price = PRICES[run.classifier === "gate" ? "rules" : run.classifier];
+  const price = PRICES[run.classifier];
   if (price === undefined) throw new Error(`No price for ${run.classifier}`);
   return (
     (run.usage.inputTokens * price.input +

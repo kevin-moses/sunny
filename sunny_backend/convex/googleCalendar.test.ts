@@ -488,7 +488,7 @@ describe("OAuth callback", () => {
       accessToken: "acc",
       refreshToken: "r",
       scopes: ["openid"],
-      email: null,
+      email: "anna@example.com",
     });
     const res = await finish(t, await startFlow(t, householdId));
     expect(res.status).toBe(400);
@@ -691,17 +691,23 @@ describe("OAuth flow housekeeping and grant revocation", () => {
 
   test("revokeGrant decrypts the stored token and revokes it at Google", async () => {
     const t = makeBackend();
-    expect(await t.action(internal.googleOauth.revokeGrant, { refreshToken: "box:rt-1" })).toBe(
-      true,
-    );
+    expect(
+      await t.action(internal.googleOauth.revokeGrant, {
+        refreshToken: "box:rt-1",
+        accountEmail: "anna@example.com",
+      }),
+    ).toBe(true);
     expect(googleMocks.revokeRefreshToken).toHaveBeenCalledWith("rt-1");
   });
 
   test("revokeGrant never throws when the token cannot be read", async () => {
     const t = makeBackend();
-    expect(await t.action(internal.googleOauth.revokeGrant, { refreshToken: "garbage" })).toBe(
-      false,
-    );
+    expect(
+      await t.action(internal.googleOauth.revokeGrant, {
+        refreshToken: "garbage",
+        accountEmail: "anna@example.com",
+      }),
+    ).toBe(false);
     expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
   });
 
