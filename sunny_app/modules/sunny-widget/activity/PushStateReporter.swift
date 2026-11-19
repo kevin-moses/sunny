@@ -18,11 +18,8 @@ public actor PushStateReporter {
     }
 
     public func confirm(instanceId: String, step: Int) async {
-        let pressedAt = Date()
-        let store = ActivityKitStore()
-        let flushed = await WidgetSync.live()?.pressDone(instanceId: instanceId, step: step, via: .liveActivity)
-        await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, in: store)
-        await endAllIfUnauthorized(flushed, in: store)
+        guard let widgetSync = WidgetSync.live() else { return }
+        _ = await widgetSync.pressDoneOnActivity(instanceId: instanceId, step: step, in: ActivityKitStore())
         await sync()
     }
 

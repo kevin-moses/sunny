@@ -124,3 +124,13 @@ public enum TaskActivities {
         store.shown().filter(\.isOnScreen)
     }
 }
+
+extension WidgetSync {
+    public func pressDoneOnActivity(instanceId: String, step: Int, in store: TaskActivityStore) async -> FlushResult {
+        let result = await pressDone(instanceId: instanceId, step: step, via: .liveActivity) { pressedAt in
+            await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, in: store)
+        }
+        if result == .unauthorized { await TaskActivities.endAll(in: store) }
+        return result
+    }
+}

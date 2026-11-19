@@ -242,3 +242,81 @@ final class TaskActivitiesTests: XCTestCase {
         XCTAssertEqual(Data([0x00, 0xAB, 0x10, 0xFF]).hexString, "00ab10ff")
     }
 }
+
+final class ActivityPressTests: XCTestCase {
+    private var directory: URL!
+    private var transport: FakeTransport!
+    private var tokens: MemoryTokenStore!
+    private let now = Fixture.generatedAt.addingTimeInterval(minutes(11))
+
+    override func setUpWithError() throws {
+        directory = try temporaryDirectory()
+        transport = FakeTransport()
+        tokens = MemoryTokenStore("token-1")
+    }
+
+    private func makeSync() -> WidgetSync {
+        let now = self.now
+        return WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: tokens,
+            sites: MemorySiteStore(URL(string: "https://example.convex.site")),
+            transport: transport,
+            clock: { now }
+        )
+    }
+
+    private func pills() -> FakeActivityStore {
+        FakeActivityStore([shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-pills")))])
+    }
+
+    func testTheReceiptShowsBeforeThePressIsSent() async throws {
+        let store = pills()
+        let receiptBeforeSend = LockedFlag()
+        transport.beforeReply(to: "/device/confirm") {
+            receiptBeforeSend.set(store.shown().first?.phase == .ended)
+        }
+        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+        XCTAssertEqual(result, .clean)
+        XCTAssertTrue(receiptBeforeSend.value, "the senior waited for the network before seeing the receipt")
+        XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
+    }
+
+    func testAPressThatCouldNotBeStoredOrSentShowsNoReceipt() async throws {
+        try Data().write(to: directory.appendingPathComponent("marks"))
+        let store = pills()
+        transport.queueConfirmFailure()
+        let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+        XCTAssertEqual(result, .pending)
+        XCTAssertEqual(store.calls, [])
+    }
+
+    func testAnUnauthorizedPressEndsEveryActivity() async throws {
+        let store = FakeActivityStore([
+            shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-pills"))),
+            shownActivity(key: "b", state: Sample.tea),
+        ])
+        transport.queueConfirm(401)
+        let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
+        XCTAssertEqual(result, .unauthorized)
+        XCTAssertTrue(store.shown().allSatisfy { $0.phase == .ended })
+    }
+}
+
+final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = false
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func set(_ value: Bool) {
+        lock.lock()
+        current = value
+        lock.unlock()
+    }
+}
