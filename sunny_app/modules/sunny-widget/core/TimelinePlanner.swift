@@ -31,13 +31,13 @@ public enum TimelinePlanner {
                 reloadAt: ReloadPolicy.nextReload(after: now, timeline: timeline, pressed: pressed, notBefore: notBefore)
             )
         }
-        let instants = [now] + timeline.boundaries(after: now)
-        var entries = instants.compactMap { instant -> PlannedEntry? in
-            guard let pick = timeline.pick(at: instant, pressed: pressed) else { return nil }
-            return PlannedEntry(
-                date: instant,
-                content: WidgetContent.from(pick, timeZone: timeline.timeZone, locale: locale)
-            )
+        var entries: [PlannedEntry] = []
+        for instant in [now] + timeline.boundaries(after: now) {
+            guard let pick = timeline.pick(at: instant, pressed: pressed) else { continue }
+            let content = WidgetContent.from(pick, timeZone: timeline.timeZone, locale: locale)
+            if content != entries.last?.content {
+                entries.append(PlannedEntry(date: instant, content: content))
+            }
         }
         entries.append(PlannedEntry(date: timeline.until, content: .notice(.notConnected)))
         return TimelinePlan(
