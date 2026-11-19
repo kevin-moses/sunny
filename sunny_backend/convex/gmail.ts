@@ -137,9 +137,10 @@ export const saveMailbox = internalMutation({
   },
   handler: async (ctx, args): Promise<Id<"mailboxes">> => {
     assertMailboxEditor(await requireCaregiverMember(ctx, args.householdId, args.userId));
+    const accountEmail = googleAccount(args.accountEmail);
     const fields = {
       connectedBy: args.userId,
-      accountEmail: googleAccount(args.accountEmail),
+      accountEmail,
       refreshToken: args.refreshToken,
       accessToken: undefined,
       accessTokenExpiresAt: undefined,
@@ -163,9 +164,9 @@ export const saveMailbox = internalMutation({
     } else {
       mailboxId = await ctx.db.insert("mailboxes", { householdId: args.householdId, ...fields });
     }
-    await insertUnseen(ctx, args.householdId, args.accountEmail, args.ids);
+    await insertUnseen(ctx, args.householdId, accountEmail, args.ids);
     const household = await loadHousehold(ctx, args.householdId);
-    await postMailbox(ctx, household, `Sunny now reads ${args.accountEmail}.`, Date.now());
+    await postMailbox(ctx, household, `Sunny now reads ${accountEmail}.`, Date.now());
     await audit(ctx, {
       householdId: args.householdId,
       actor: SYSTEM_ACTOR,

@@ -126,6 +126,29 @@ describe("Connecting a mailbox", () => {
     );
   });
 
+  test("a profile address with capitals and padding still lets every backfilled message be claimed", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    googleMocks.exchangeCode.mockResolvedValue(grant([GMAIL_SCOPE]));
+    gmailMocks.getProfile.mockResolvedValue({
+      email: "  Margaret@Example.COM ",
+      historyId: "777",
+    });
+    gmailMocks.listRecent.mockResolvedValue(["m1", "m2"]);
+
+    await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+
+    const [mailbox] = await mailboxRows(t);
+    expect(mailbox!.accountEmail).toBe("margaret@example.com");
+    const items = await itemRows(t);
+    expect(items.map((i) => i.account)).toEqual(["margaret@example.com", "margaret@example.com"]);
+    for (const item of items) {
+      const claim = await t.mutation(internal.mailTriage.claimItem, { itemId: item._id });
+      expect(claim).toMatchObject({ kind: "claimed", mailboxId: mailbox!._id });
+    }
+    expect((await itemRows(t)).map((i) => i.state)).toEqual(["triaging", "triaging"]);
+  });
+
   test("the consent link asks for the Gmail scope for a mailbox and the calendar scope for a calendar", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
