@@ -48,7 +48,7 @@ export class AccessTokens {
     return this.current.accessToken;
   }
 
-  invalidate(): void {
+  private invalidate(): void {
     this.current = null;
   }
 

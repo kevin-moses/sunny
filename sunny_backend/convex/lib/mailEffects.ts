@@ -4,17 +4,24 @@ import { components } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { addEventCore, updateEventCore } from "../calendar";
-import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
-import { insertNotification, reachableMembers } from "./delivery";
-import { STALE_AFTER_MS, caregiverMessage, ellipsize, isStale, titleOf, when } from "./mailPolicy";
+import { insertNotification, pushToCaregivers } from "./delivery";
+import {
+  STALE_AFTER_MS,
+  caregiverMessage,
+  described,
+  icsKey,
+  isStale,
+  proposed,
+  when,
+} from "./mailPolicy";
+import { appointmentTitle } from "./mailTypes";
 import type { EscalationReason, MailEffect, PolicyFacts, Proposed } from "./mailTypes";
-import { isLocalDate, isLocalTime, localDate, zonedInstant } from "./time";
-import type { MailEffectRecord, NotificationKind } from "./validators";
+import { isLocalDate, isLocalTime, localMidnight } from "./time";
+import type { MailEffectRecord } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
-const MAX_PUSH_BODY = 178;
 const SENIOR_NOTE_TITLE = "Sunny";
 const MAX_NOTES_PER_DAY = 3;
 
@@ -22,7 +29,7 @@ const rateLimiter = new RateLimiter(components.rateLimiter, {
   mailEscalationPush: { kind: "token bucket", rate: 6, period: HOUR, capacity: 6 },
 });
 
-export interface EffectScope {
+interface EffectScope {
   ctx: MutationCtx;
   household: Doc<"households">;
   item: Doc<"mailItems">;
@@ -37,13 +44,6 @@ type Handlers = {
   [K in EffectKind]: (scope: EffectScope, effect: EffectOf<K>) => Promise<MailEffectRecord>;
 };
 
-interface CaregiverNotice {
-  kind: NotificationKind;
-  title: string;
-  body: string;
-  payload: Record<string, string>;
-}
-
 export async function linkByKey(
   ctx: QueryCtx,
   householdId: Id<"households">,
@@ -57,25 +57,18 @@ export async function linkByKey(
     .first();
 }
 
-export async function linkForEvent(
-  ctx: QueryCtx,
+async function linkEvent(
+  scope: EffectScope,
   eventId: Id<"events">,
-): Promise<Doc<"mailEventLinks"> | null> {
-  return await ctx.db
+  key: string,
+  keepOtherKey: boolean,
+): Promise<void> {
+  const { ics } = scope.facts;
+  const sequence = ics !== null && key === icsKey(ics) ? ics.sequence : undefined;
+  const existing = await scope.ctx.db
     .query("mailEventLinks")
     .withIndex("by_event", (q) => q.eq("eventId", eventId))
     .first();
-}
-
-async function confirmLink(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
-  const existing = await linkForEvent(scope.ctx, eventId);
-  if (existing === null || existing.appointmentKey === key) await linkEvent(scope, eventId, key);
-}
-
-async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
-  const { ics } = scope.facts;
-  const sequence = ics !== null && key === `ics:${ics.uid}` ? ics.sequence : undefined;
-  const existing = await linkForEvent(scope.ctx, eventId);
   if (existing === null) {
     await scope.ctx.db.insert("mailEventLinks", {
       householdId: scope.household._id,
@@ -84,7 +77,7 @@ async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string)
       mailItemId: scope.item._id,
       sequence,
     });
-  } else if (existing.appointmentKey !== key || existing.sequence !== sequence) {
+  } else if (existing.appointmentKey === key ? existing.sequence !== sequence : !keepOtherKey) {
     await scope.ctx.db.patch(existing._id, { appointmentKey: key, sequence });
   }
 }
@@ -96,48 +89,15 @@ function eventOf(scope: EffectScope, eventId: string): Doc<"events"> {
   return event;
 }
 
-function pushBody(text: string): string {
-  return ellipsize(text, MAX_PUSH_BODY);
-}
-
-export async function pushToCaregivers(
-  ctx: MutationCtx,
-  household: Doc<"households">,
-  notice: CaregiverNotice,
-  admit: () => Promise<boolean> = async () => true,
-): Promise<boolean> {
-  const recipients = await reachableMembers(ctx, await householdCaregivers(ctx, household._id));
-  if (recipients.length === 0 || !(await admit())) return false;
-  for (const member of recipients) {
-    await insertNotification(ctx, {
-      householdId: household._id,
-      kind: notice.kind,
-      title: notice.title,
-      body: pushBody(notice.body),
-      payload: notice.payload,
-      recipientUserId: member.userId,
-    });
-  }
-  return true;
-}
-
 function updateTitle(scope: EffectScope, effects: readonly MailEffect[]): string {
   if (effects.some((e) => e.kind === "reschedule_event")) return "Sunny moved an appointment";
   if (effects.some((e) => e.kind === "add_event")) return "Sunny added an appointment";
   return `Sunny read an email for ${scope.household.seniorPreferredName}`;
 }
 
-function escalationTitle(scope: EffectScope): string {
-  return `Email for ${scope.household.seniorPreferredName} needs you`;
-}
-
 async function notesWrittenToday(scope: EffectScope): Promise<number> {
   const { ctx, household, facts } = scope;
-  const startOfToday = zonedInstant(
-    localDate(facts.now, household.timezone),
-    "00:00",
-    household.timezone,
-  );
+  const startOfToday = localMidnight(facts.now, household.timezone);
   const recent = await ctx.db
     .query("seniorNotes")
     .withIndex("by_household_received", (q) =>
@@ -160,14 +120,14 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         MAIL_AGENT,
         scope.household._id,
         {
-          title: titleOf(effect.appointment),
+          title: appointmentTitle(effect.appointment.kind, time),
           onDate: date,
           startTime: time,
           durationMinutes: durationMinutes ?? undefined,
         },
         scope.facts.now,
       );
-      await linkEvent(scope, added.eventId, effect.appointmentKey);
+      await linkEvent(scope, added.eventId, effect.appointmentKey, false);
       return { kind: "event_added", eventId: added.eventId };
     },
     reschedule_event: async (scope, effect) => {
@@ -185,7 +145,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         },
         scope.facts.now,
       );
-      await linkEvent(scope, event._id, effect.appointmentKey);
+      await linkEvent(scope, event._id, effect.appointmentKey, false);
       return {
         kind: "event_rescheduled",
         eventId: event._id,
@@ -196,7 +156,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
     already_on_calendar: async (scope, effect) => {
       const event = eventOf(scope, effect.eventId);
       if (effect.appointmentKey !== null) {
-        await confirmLink(scope, event._id, effect.appointmentKey);
+        await linkEvent(scope, event._id, effect.appointmentKey, true);
       }
       return { kind: "already_on_calendar", eventId: event._id };
     },
@@ -254,7 +214,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
           household,
           {
             kind: "mail_escalation",
-            title: escalationTitle(scope),
+            title: `Email for ${household.seniorPreferredName} needs you`,
             body: effect.notice,
             payload: { mailItemId: scope.item._id },
           },
@@ -312,13 +272,12 @@ function refusedWrite(
 ): EffectOf<"escalate"> | null {
   if (!(error instanceof ConvexError)) return null;
   if (effect.kind === "add_event") {
-    const { appointment } = effect;
     return escalation(
       scope,
       "unclear_appointment",
-      `Sunny could not add ${titleOf(appointment)}, ${when(appointment.date, appointment.time)}, to the calendar.`,
+      `Sunny could not add ${described(effect.appointment)}, to the calendar.`,
       null,
-      { kind: appointment.kind, date: appointment.date, time: appointment.time },
+      proposed(effect.appointment),
     );
   }
   if (effect.kind === "reschedule_event") {
@@ -328,11 +287,7 @@ function refusedWrite(
       "unclear_reschedule",
       `Sunny could not move ${event.title} to ${when(effect.appointment.date, effect.appointment.time)}.`,
       effect.eventId,
-      {
-        kind: effect.appointment.kind,
-        date: effect.appointment.date,
-        time: effect.appointment.time,
-      },
+      proposed(effect.appointment),
     );
   }
   return null;

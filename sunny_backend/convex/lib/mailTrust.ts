@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { actorUserId, findMember } from "./access";
+import { actorUserId, findMember, loadHousehold } from "./access";
 import type { Actor } from "./access";
 import { audit } from "./audit";
 import { postMailbox } from "./chatPosts";
@@ -9,9 +9,9 @@ import { appError } from "./errors";
 import { localDate } from "./time";
 import { idField, rejectUnknownKeys } from "./toolInput";
 import type { ToolHandler } from "./toolInput";
-import type { StoredSender } from "./validators";
+import type { MailSender } from "./mailTypes";
 
-export const MAX_TRUSTED_SENDERS = 100;
+const MAX_TRUSTED_SENDERS = 100;
 
 const ENTITY = "mailTrustedSender";
 
@@ -38,21 +38,15 @@ async function trustedSenders(
     .take(MAX_TRUSTED_SENDERS);
 }
 
-function senderForModel(row: Doc<"mailTrustedSenders">, timezone: string): Record<string, unknown> {
+function senderForModel(
+  row: Pick<Doc<"mailTrustedSenders">, "_id" | "address" | "addedAt">,
+  timezone: string,
+): Record<string, unknown> {
   return {
     trusted_sender_id: row._id,
     address: row.address,
     added_on: localDate(row.addedAt, timezone),
   };
-}
-
-async function householdOf(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-): Promise<Doc<"households">> {
-  const household = await ctx.db.get(householdId);
-  if (!household) throw appError("not_found", "Household not found");
-  return household;
 }
 
 function heldBackForTrust(item: Doc<"mailItems">): boolean {
@@ -61,7 +55,7 @@ function heldBackForTrust(item: Doc<"mailItems">): boolean {
   );
 }
 
-function trustableSender(item: Doc<"mailItems">): StoredSender {
+function trustableSender(item: Doc<"mailItems">): MailSender {
   const { sender } = item;
   if (sender === undefined) throw appError("invalid", "Sunny has no sender for that email");
   if (!sender.authenticated) {
@@ -144,7 +138,7 @@ export const MAIL_TRUST_HANDLERS: Record<MailTrustToolName, ToolHandler> = {
     const item = await ctx.db.get(itemId);
     if (!item || item.householdId !== householdId) throw appError("not_found", "Email not found");
     const sender = trustableSender(item);
-    const household = await householdOf(ctx, householdId);
+    const household = await loadHousehold(ctx, householdId);
     const existing = await trustedSender(ctx, householdId, sender.address);
     if (existing !== null) {
       return {
@@ -175,9 +169,10 @@ export const MAIL_TRUST_HANDLERS: Record<MailTrustToolName, ToolHandler> = {
     });
     const name = await caregiverName(ctx, householdId, actor);
     await postMailbox(ctx, household, `${name} told Sunny to trust mail from ${address}.`, now);
-    const row = await ctx.db.get(id);
-    if (!row) throw appError("not_found", "Trusted sender not found");
-    return { status: "trusted", trusted_sender: senderForModel(row, household.timezone) };
+    return {
+      status: "trusted",
+      trusted_sender: senderForModel({ _id: id, address, addedAt: now }, household.timezone),
+    };
   },
   untrust_mail_sender: async (ctx, { householdId, actor, now }, input) => {
     rejectUnknownKeys(input, ["trusted_sender_id"]);
@@ -201,7 +196,7 @@ export const MAIL_TRUST_HANDLERS: Record<MailTrustToolName, ToolHandler> = {
       entityId: id,
       detail: { address: row.address },
     });
-    const household = await householdOf(ctx, householdId);
+    const household = await loadHousehold(ctx, householdId);
     const name = await caregiverName(ctx, householdId, actor);
     await postMailbox(
       ctx,
@@ -213,7 +208,7 @@ export const MAIL_TRUST_HANDLERS: Record<MailTrustToolName, ToolHandler> = {
   },
   list_trusted_mail_senders: async (ctx, { householdId }, input) => {
     rejectUnknownKeys(input, []);
-    const { timezone } = await householdOf(ctx, householdId);
+    const { timezone } = await loadHousehold(ctx, householdId);
     const rows = await trustedSenders(ctx, householdId);
     return { trusted_senders: rows.map((row) => senderForModel(row, timezone)) };
   },

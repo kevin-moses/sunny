@@ -10,6 +10,10 @@ export function joinLines(value: string): string {
   return value.trim().replace(LINE_BREAKS, " / ");
 }
 
+export function ellipsize(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 3).trimEnd()}...`;
+}
+
 export function textKey(value: string): string {
   return oneLine(value).toLowerCase();
 }

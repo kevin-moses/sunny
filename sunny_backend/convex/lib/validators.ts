@@ -1,3 +1,4 @@
+import { literals } from "convex-helpers/validators";
 import { v, type Infer } from "convex/values";
 import {
   APPOINTMENT_KIND_NAMES,
@@ -167,10 +168,7 @@ export const mailItemState = v.union(
 );
 export type MailItemState = Infer<typeof mailItemState>;
 
-const literals = <T extends string>(values: readonly T[]) =>
-  v.union(...values.map((value) => v.literal(value)));
-
-const appointmentKind = literals(APPOINTMENT_KIND_NAMES);
+const appointmentKind = literals(...APPOINTMENT_KIND_NAMES);
 
 const appointment = v.object({
   kind: appointmentKind,
@@ -185,7 +183,7 @@ const appointmentRef = v.object({
   time: v.union(v.null(), v.string()),
 });
 
-const decisionReason = v.union(v.null(), literals(DECISION_REASONS));
+const decisionReason = v.union(v.null(), literals(...DECISION_REASONS));
 
 const mailVerdict = v.union(
   v.object({ kind: v.literal("ignore") }),
@@ -208,9 +206,9 @@ const mailVerdict = v.union(
     previous: appointmentRef,
     decision: decisionReason,
   }),
-  v.object({ kind: v.literal("senior_info"), topic: literals(INFO_TOPICS) }),
-  v.object({ kind: v.literal("needs_decision"), reason: literals(DECISION_REASONS) }),
-  v.object({ kind: v.literal("suspicious"), suspicion: literals(SUSPICIONS) }),
+  v.object({ kind: v.literal("senior_info"), topic: literals(...INFO_TOPICS) }),
+  v.object({ kind: v.literal("needs_decision"), reason: literals(...DECISION_REASONS) }),
+  v.object({ kind: v.literal("suspicious"), suspicion: literals(...SUSPICIONS) }),
 );
 
 const usage = v.object({
@@ -235,7 +233,7 @@ export const triaged = v.object({
 });
 
 export const icsEvent = v.object({
-  method: literals(["REQUEST", "CANCEL", "REPLY", "OTHER"] as const),
+  method: literals("REQUEST", "CANCEL", "REPLY", "OTHER"),
   uid: v.string(),
   start: v.union(v.null(), v.object({ date: v.string(), time: v.string() })),
   durationMinutes: v.union(v.null(), v.number()),
@@ -250,15 +248,14 @@ export const mailSender = v.object({
   address: v.string(),
   authenticated: v.boolean(),
 });
-export type StoredSender = Infer<typeof mailSender>;
 
-export const verdictKind = literals([
+export const verdictKind = literals(
   "ignore",
   "appointment",
   "senior_info",
   "needs_decision",
   "suspicious",
-] as const);
+);
 export type VerdictKind = Infer<typeof verdictKind>;
 
 export const mailEffectRecord = v.union(
@@ -278,7 +275,7 @@ export const mailEffectRecord = v.union(
   }),
   v.object({
     kind: v.literal("escalated"),
-    reason: literals(ESCALATION_REASONS),
+    reason: literals(...ESCALATION_REASONS),
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
     proposed: v.optional(v.object({ kind: appointmentKind, date: v.string(), time: v.string() })),

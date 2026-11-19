@@ -1,9 +1,13 @@
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { DAY_MS } from "./time";
+import { DAY_MS, addDays, localDate, zonedInstant } from "./time";
 
 const MAX_SHOWN = 3;
 const LONGEST_NOTE_LIFE_MS = 3 * DAY_MS;
+
+export function noteExpiry(receivedAt: number, timezone: string): number {
+  return zonedInstant(addDays(localDate(receivedAt, timezone), 2), "00:00", timezone);
+}
 
 export interface SeniorNoteView {
   id: Id<"seniorNotes">;

@@ -5,6 +5,7 @@ import { listTasksCore } from "../tasks";
 import { isAsNeededTask } from "./taskDraft";
 import { findMember, householdCaregivers } from "./access";
 import { isAnytimeTask } from "./anytime";
+import { domainOf } from "./mailParse";
 import { appointmentTitle } from "./mailTypes";
 import { joinLines } from "./text";
 import { DAY_MS, addDays, localDate, localDateTime, localTime, weekdayCodes } from "./time";
@@ -107,21 +108,16 @@ const NOT_DOMAIN_CHARACTER = /[^a-z0-9.-]/g;
 const MAX_DOMAIN = 253;
 
 function senderDomain(row: Doc<"mailItems">): string {
-  const address = row.sender?.address ?? "";
-  const domain = address
-    .slice(address.lastIndexOf("@") + 1)
-    .toLowerCase()
+  const domain = domainOf(row.sender?.address ?? "")
     .replace(NOT_DOMAIN_CHARACTER, "")
     .slice(0, MAX_DOMAIN);
   return domain === "" ? "unknown" : domain;
 }
 
 function receivedStamp(row: Doc<"mailItems">, timezone: string): string {
-  return row.receivedAt === undefined ? "unknown time" : localStamp(row.receivedAt, timezone);
-}
-
-function localStamp(instant: number, timezone: string): string {
-  return `${localDate(instant, timezone)} ${localTime(instant, timezone)}`;
+  const { receivedAt } = row;
+  if (receivedAt === undefined) return "unknown time";
+  return `${localDate(receivedAt, timezone)} ${localTime(receivedAt, timezone)}`;
 }
 
 async function mailLine(

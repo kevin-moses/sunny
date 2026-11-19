@@ -2,12 +2,14 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { findMember, verifiedPhone } from "./access";
+import { findMember, householdCaregivers, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
+import { ellipsize } from "./text";
 import type { NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
+const MAX_PUSH_BODY = 178;
 
 const DELIVERY_RETRY = { maxAttempts: 5, initialBackoffMs: 2_000, base: 2 };
 
@@ -215,6 +217,27 @@ export async function reachableMembers(
     if (await isReachableMember(ctx, member)) reachable.push(member);
   }
   return reachable;
+}
+
+export async function pushToCaregivers(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  notice: { kind: NotificationKind; title: string; body: string; payload: Record<string, string> },
+  admit: () => Promise<boolean> = async () => true,
+): Promise<boolean> {
+  const recipients = await reachableMembers(ctx, await householdCaregivers(ctx, household._id));
+  if (recipients.length === 0 || !(await admit())) return false;
+  for (const member of recipients) {
+    await insertNotification(ctx, {
+      householdId: household._id,
+      kind: notice.kind,
+      title: notice.title,
+      body: ellipsize(notice.body, MAX_PUSH_BODY),
+      payload: notice.payload,
+      recipientUserId: member.userId,
+    });
+  }
+  return true;
 }
 
 export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<Route> {

@@ -1,19 +1,9 @@
-export interface MailSender {
-  name: string;
-  address: string;
-  authenticated: boolean;
-}
+import type { Infer } from "convex/values";
+import type { icsEvent, mailSender } from "./validators";
 
-export interface IcsEvent {
-  method: "REQUEST" | "CANCEL" | "REPLY" | "OTHER";
-  uid: string;
-  start: { date: string; time: string } | null;
-  durationMinutes: number | null;
-  summary: string;
-  location: string | null;
-  recurring: boolean;
-  sequence: number;
-}
+export type MailSender = Infer<typeof mailSender>;
+
+export type IcsEvent = Infer<typeof icsEvent>;
 
 export interface KnownInvite {
   sequence: number;

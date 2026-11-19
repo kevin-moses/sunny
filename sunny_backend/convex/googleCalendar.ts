@@ -16,9 +16,9 @@ import { CALENDAR_SCOPE, calendarExists, createSunnyCalendar } from "./lib/googl
 import type { GoogleGrant } from "./lib/google";
 import { googleAccount, revokeUnusedGrant, scheduleGrantRevoke } from "./lib/googleTokens";
 import { oauthPage } from "./lib/oauthFlow";
+import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
 import type { CalendarConnectionStatus } from "./lib/validators";
-import type { FlowOwner } from "./googleOauth";
 
 interface ConnectionView {
   lastError: string | null;

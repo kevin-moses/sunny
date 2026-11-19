@@ -15,11 +15,11 @@ import type {
   Suspicion,
   Triaged,
 } from "./mailTypes";
-import { oneLine, textKey } from "./text";
+import { noteExpiry } from "./seniorNotes";
+import { ellipsize, oneLine, textKey } from "./text";
 import {
   DAY_MS,
   MINUTE_MS,
-  addDays,
   dateLabel,
   daysBetween,
   formatTime12,
@@ -47,17 +47,17 @@ const NUMBER_REMOVED = "[number removed]";
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
 const NEW_SENDER = "this sender is new to Sunny";
 
-export function titleOf(appointment: { kind: Appointment["kind"]; time: string | null }): string {
-  return appointmentTitle(appointment.kind, appointment.time);
+export function icsKey(ics: IcsEvent): string {
+  return `ics:${ics.uid}`;
 }
 
 export function appointmentKey(appointment: Appointment, ics: IcsEvent | null): string {
-  if (ics !== null) return `ics:${ics.uid}`;
-  return `appt:${appointment.date}:${appointment.time}:${textKey(titleOf(appointment))}`;
+  if (ics !== null) return icsKey(ics);
+  return `appt:${appointment.date}:${appointment.time}:${textKey(appointmentTitle(appointment.kind, appointment.time))}`;
 }
 
 export function linkKey(verdict: MailVerdict | null, ics: IcsEvent | null): string | null {
-  if (ics !== null) return `ics:${ics.uid}`;
+  if (ics !== null) return icsKey(ics);
   if (verdict?.kind !== "appointment" || verdict.change === "cancel") return null;
   return appointmentKey(verdict.appointment, null);
 }
@@ -80,7 +80,7 @@ export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): Ca
     (e) =>
       e.date === ref.date &&
       (ref.time === null || e.time === ref.time) &&
-      sharesWords(e.title, titleOf(ref)),
+      sharesWords(e.title, appointmentTitle(ref.kind, ref.time)),
   );
 }
 
@@ -108,10 +108,6 @@ function scrub(text: string): string {
     .replace(/(?:https?:\/\/|www\.)\S+/gi, LINK_REMOVED)
     .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/\S*/gi, LINK_REMOVED)
     .replace(/\d(?:[\s().-]*\d){6,}/g, NUMBER_REMOVED);
-}
-
-export function ellipsize(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 3).trimEnd()}...`;
 }
 
 export function when(date: string, time: string): string {
@@ -151,10 +147,6 @@ export function caregiverMessage(
   const place = facts.ics?.location ?? null;
   const placeLine = place === null ? [] : [`Place in the invitation: ${place}`];
   return { body: caregiverText(facts, [line, ...placeLine, summary]), notice: scrub(line) };
-}
-
-export function noteExpiry(receivedAt: number, timezone: string): number {
-  return zonedInstant(addDays(localDate(receivedAt, timezone), 2), "00:00", timezone);
 }
 
 function overlaps(a: Appointment, b: CalendarEventFact, timezone: string): boolean {
@@ -218,7 +210,7 @@ interface Plan {
   effects: MailEffect[];
 }
 
-function proposed(appointment: Appointment): Proposed {
+export function proposed(appointment: Appointment): Proposed {
   return { kind: appointment.kind, date: appointment.date, time: appointment.time };
 }
 
@@ -274,8 +266,8 @@ function only(matches: CalendarEventFact[]): CalendarEventFact | null {
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
-function described(appointment: Appointment): string {
-  return `${titleOf(appointment)}, ${when(appointment.date, appointment.time)}`;
+export function described(appointment: Appointment): string {
+  return `${appointmentTitle(appointment.kind, appointment.time)}, ${when(appointment.date, appointment.time)}`;
 }
 
 const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = {
@@ -552,15 +544,7 @@ function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
   if (linked !== null && live === undefined && !sameSlot(linked, appointment)) {
     return { case: "reschedule", appointment, fields, matches: [] };
   }
-  const same =
-    fields === null
-      ? undefined
-      : facts.events.find(
-          (e) =>
-            e.date === fields.date &&
-            e.time === fields.time &&
-            sharesWords(e.title, titleOf(fields)),
-        );
+  const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
   return {
     case: "new",
     appointment,

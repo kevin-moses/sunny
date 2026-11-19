@@ -1,14 +1,13 @@
-import { GoogleApiError } from "./google";
-import { isRecord, parseJsonObject, timedFetch } from "./http";
+import { GoogleApiError, googleFetch } from "./google";
+import { isRecord, parseJsonObject } from "./http";
 import type { TimedResponse } from "./http";
 import { DAY_MS } from "./time";
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
-const REQUEST_TIMEOUT_MS = 15_000;
 const HISTORY_PAGE_SIZE = 100;
 const LIST_PAGE_SIZE = 100;
 
-export type HistoryPage = { ids: string[]; lastHistoryId: string | null; next: string | null };
+type HistoryPage = { ids: string[]; lastHistoryId: string | null; next: string | null };
 
 async function gmailGet(
   accessToken: string,
@@ -16,11 +15,9 @@ async function gmailGet(
   params: Array<[string, string]>,
 ): Promise<TimedResponse> {
   const query = new URLSearchParams(params);
-  return await timedFetch(
-    `${GMAIL_API}${path}?${query}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-    REQUEST_TIMEOUT_MS,
-  );
+  return await googleFetch(`${GMAIL_API}${path}?${query}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
 }
 
 function gmailObject(res: TimedResponse): Record<string, unknown> {

@@ -18,7 +18,16 @@ import type {
   Triaged,
   Usage,
 } from "./mailTypes";
-import { addDays, daysBetween, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES } from "./time";
+import {
+  MONTH_NAMES,
+  WEEKDAY_NAMES,
+  addDays,
+  daysBetween,
+  isLocalDate,
+  isoWeekday,
+  localDate,
+  weekdayName,
+} from "./time";
 
 export const JEV_MODEL = "jev-1.14.0";
 
@@ -188,20 +197,6 @@ function flagsIn(...groups: FlagGroup[]): Flag[] {
   return FLAGS.filter((f) => groups.includes(FLAG_GROUPS[f]));
 }
 
-const MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
 const DAYS = Array.from({ length: 31 }, (_, i) => String(i + 1));
 const HOURS = Array.from({ length: 12 }, (_, i) => String(i + 1));
 const MINUTES = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, "0"));
@@ -242,7 +237,7 @@ function slotQuestions(slot: SlotName, receivedYear: number): Record<string, Cho
       weekday: "Only as a day of the week, such as Friday or next Tuesday",
       not_stated: "The email does not state this date",
     }),
-    [`${slot}_month`]: choice(`Which month is ${role.date}?`, options(MONTHS, absent)),
+    [`${slot}_month`]: choice(`Which month is ${role.date}?`, options(MONTH_NAMES, absent)),
     [`${slot}_day`]: choice(`Which day of the month is ${role.date}?`, options(DAYS, absent)),
     [`${slot}_year`]: choice(`Which year does \`email\` give for ${role.date}?`, {
       [String(receivedYear)]: null,
@@ -350,7 +345,7 @@ function level(probability: number): Level {
   return "unsure";
 }
 
-export interface Slot {
+interface Slot {
   date: string;
   time: string | null;
 }
@@ -370,7 +365,7 @@ export interface Readings {
   invite: Invite | null;
 }
 
-export interface Picked {
+interface Picked {
   choice: string;
   probability: number;
 }
@@ -435,7 +430,7 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
       return week === null ? null : weekdayDate(anchor, sure(picks.weekday) ?? "", week);
     }
     case "calendar_date": {
-      const month = MONTHS.indexOf(sure(picks.month) ?? "") + 1;
+      const month = MONTH_NAMES.indexOf(sure(picks.month) ?? "") + 1;
       const day = Number(sure(picks.day));
       const year = sure(picks.year);
       if (month === 0 || !Number.isInteger(day) || day < 1 || year === null) return null;
@@ -447,7 +442,7 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
       if (date === null) return null;
       const named = sure(picks.weekday);
       if (named === null) return null;
-      return named === NOT_STATED || WEEKDAY_NAMES[isoWeekday(date) - 1] === named ? date : null;
+      return named === NOT_STATED || weekdayName(date) === named ? date : null;
     }
   }
 }
@@ -843,7 +838,7 @@ export function decide(readings: Readings): Decision & { rule: string } {
 
 type JevQuestions = Record<string, NoulQuestion | ChoiceQuestion>;
 
-export interface JevRequest {
+interface JevRequest {
   model: string;
   state: ReturnType<typeof judgeState>;
   questions: JevQuestions;
@@ -958,7 +953,7 @@ export function readAnswers(answers: JevAnswers, anchor: string, ics: IcsEvent |
   return {
     flags: new Map(FLAGS.map((f) => [f, level(probabilityOf(answers, f))])),
     otherTimeZone: level(probabilityOf(answers, "other_time_zone")),
-    kind: APPOINTMENT_KIND_NAMES.find((k) => k === kind) ?? "other",
+    kind: oneOf(APPOINTMENT_KIND_NAMES, kind) ?? "other",
     when: resolveSlot(slotPicks(answers, "when"), anchor),
     before: resolveSlot(slotPicks(answers, "before"), anchor),
     invite: inviteOf(ics),
