@@ -81,7 +81,7 @@ final class PushStateSyncTests: XCTestCase {
             widgetPush: nil
         )
         let outcome = await makeSync().reportPushState(report)
-        XCTAssertEqual(outcome, .answered(PushStateReply(directives: [])))
+        XCTAssertEqual(outcome, .sent(.answered(PushStateReply(directives: []))))
         let request = try XCTUnwrap(transport.pushStateRequests.first)
         XCTAssertEqual(request.method, "PUT")
         XCTAssertEqual(request.headers["Authorization"], "Bearer token-1")
@@ -92,24 +92,48 @@ final class PushStateSyncTests: XCTestCase {
     func testAnUnauthorizedReportDropsTheToken() async {
         transport.queuePushState(401)
         let outcome = await makeSync().reportPushState(.cleared)
-        XCTAssertEqual(outcome, .unauthorized)
+        XCTAssertEqual(outcome, .sent(.unauthorized))
         XCTAssertNil(tokens.read())
     }
 
     func testAFailedReportKeepsTheTokenAndNothingIsQueued() async {
         transport.queuePushState(503)
         let first = await makeSync().reportPushState(.cleared)
-        XCTAssertEqual(first, .failed)
+        XCTAssertEqual(first, .sent(.failed))
         XCTAssertEqual(tokens.read(), "token-1")
         let second = await makeSync().reportPushState(.cleared)
-        XCTAssertEqual(second, .failed)
+        XCTAssertEqual(second, .sent(.failed))
         XCTAssertEqual(transport.pushStateRequests.count, 2)
     }
 
     func testWithoutCredentialsNothingIsSent() async {
         tokens = MemoryTokenStore(nil)
         let outcome = await makeSync().reportPushState(.cleared)
-        XCTAssertNil(outcome)
+        XCTAssertEqual(outcome, .notPaired)
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    func testAReportThatFindsTheTokenGoneEndsEveryActivity() async {
+        tokens = MemoryTokenStore(nil)
+        let store = FakeActivityStore([shownActivity(key: "a", state: Sample.tea)])
+        await TaskActivities.settle(await makeSync().reportPushState(.cleared), in: store)
+        XCTAssertEqual(store.shown().map(\.phase), [.ended])
+        XCTAssertTrue(transport.requests.isEmpty)
+    }
+
+    func testAReportBeforeTheFirstUnlockEndsNothingAndSendsNothing() async {
+        let store = FakeActivityStore([shownActivity(key: "a", state: Sample.tea)])
+        let sync = WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: LockedKeychainTokenStore(),
+            sites: MemorySiteStore(URL(string: "https://example.convex.site")),
+            transport: transport,
+            clock: { Fixture.generatedAt }
+        )
+        let outcome = await sync.reportPushState(.cleared)
+        XCTAssertEqual(outcome, .credentialsUnreadable)
+        await TaskActivities.settle(outcome, in: store)
+        XCTAssertEqual(store.shown().map(\.phase), [.active])
         XCTAssertTrue(transport.requests.isEmpty)
     }
 

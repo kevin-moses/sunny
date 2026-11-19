@@ -77,13 +77,13 @@ public enum TaskActivities {
         }
     }
 
-    public static func settle(_ outcome: PushStateOutcome?, in store: TaskActivityStore) async {
+    public static func settle(_ outcome: ReportOutcome, in store: TaskActivityStore) async {
         switch outcome {
-        case .answered(let reply):
+        case .sent(.answered(let reply)):
             await apply(reply.directives, to: store)
-        case .unauthorized:
+        case .sent(.unauthorized), .notPaired:
             await endAll(in: store)
-        case .failed, nil:
+        case .sent(.failed), .credentialsUnreadable:
             return
         }
     }

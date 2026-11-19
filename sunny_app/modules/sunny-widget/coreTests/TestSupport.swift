@@ -57,10 +57,10 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     init(_ token: String?) { self.token = token }
 
-    func read() -> String? {
+    func lookup() -> StoredToken {
         lock.lock()
         defer { lock.unlock() }
-        return token
+        return token.map(StoredToken.present) ?? .absent
     }
 
     func write(_ token: String) throws {
@@ -76,6 +76,12 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
         token = nil
         return true
     }
+}
+
+struct LockedKeychainTokenStore: TokenStore {
+    func lookup() -> StoredToken { .unreadable }
+    func write(_ token: String) throws { throw KeychainError(status: -25308) }
+    func remove(ifEqualTo expected: String?) -> Bool { false }
 }
 
 final class MemorySiteStore: SiteStore, @unchecked Sendable {

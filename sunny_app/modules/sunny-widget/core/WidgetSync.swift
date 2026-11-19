@@ -7,6 +7,18 @@ public enum FlushResult: String, Equatable, Sendable {
     case noCredentials
 }
 
+public enum ReportOutcome: Equatable, Sendable {
+    case sent(PushStateOutcome)
+    case notPaired
+    case credentialsUnreadable
+}
+
+private enum Credentials {
+    case paired(DeviceClient)
+    case notPaired
+    case unreadable
+}
+
 public struct WidgetSync: Sendable {
     public static let fetchTimeout: TimeInterval = 10
     public static let pressTimeout: TimeInterval = 4
@@ -109,11 +121,17 @@ public struct WidgetSync: Sendable {
         return held.isEmpty ? .clean : .pending
     }
 
-    public func reportPushState(_ report: PushStateReport) async -> PushStateOutcome? {
-        guard let client = client() else { return nil }
-        let outcome = await client.reportPushState(report, timeout: Self.reportTimeout)
-        if outcome == .unauthorized { dropToken(client.token) }
-        return outcome
+    public func reportPushState(_ report: PushStateReport) async -> ReportOutcome {
+        switch credentials() {
+        case .notPaired:
+            return .notPaired
+        case .unreadable:
+            return .credentialsUnreadable
+        case .paired(let client):
+            let outcome = await client.reportPushState(report, timeout: Self.reportTimeout)
+            if outcome == .unauthorized { dropToken(client.token) }
+            return .sent(outcome)
+        }
     }
 
     public func storedWidgetPush() -> WidgetPushReport? {
@@ -170,9 +188,21 @@ public struct WidgetSync: Sendable {
         }
     }
 
+    private func credentials() -> Credentials {
+        switch tokens.lookup() {
+        case .absent:
+            return .notPaired
+        case .unreadable:
+            return .unreadable
+        case .present(let token):
+            guard let siteURL = sites.read() else { return .unreadable }
+            return .paired(DeviceClient(siteURL: siteURL, token: token, transport: transport))
+        }
+    }
+
     private func client() -> DeviceClient? {
-        guard let token = tokens.read(), let siteURL = sites.read() else { return nil }
-        return DeviceClient(siteURL: siteURL, token: token, transport: transport)
+        guard case .paired(let client) = credentials() else { return nil }
+        return client
     }
 
     private func reconciledPressed(since fetchStartedAt: Date) -> Set<PressKey> {

@@ -372,12 +372,12 @@ final class RotatingTokenStore: TokenStore, @unchecked Sendable {
         self.replacement = replacement
     }
 
-    func read() -> String? {
+    func lookup() -> StoredToken {
         lock.lock()
         defer { lock.unlock() }
         let current = token
         token = replacement
-        return current
+        return current.map(StoredToken.present) ?? .absent
     }
 
     func write(_ token: String) throws {}

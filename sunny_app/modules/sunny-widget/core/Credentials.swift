@@ -1,10 +1,23 @@
 import Foundation
 import Security
 
+public enum StoredToken: Equatable, Sendable {
+    case present(String)
+    case absent
+    case unreadable
+}
+
 public protocol TokenStore: Sendable {
-    func read() -> String?
+    func lookup() -> StoredToken
     func write(_ token: String) throws
     @discardableResult func remove(ifEqualTo expected: String?) -> Bool
+}
+
+extension TokenStore {
+    public func read() -> String? {
+        guard case .present(let token) = lookup() else { return nil }
+        return token
+    }
 }
 
 public protocol SiteStore: Sendable {
@@ -36,15 +49,20 @@ public struct KeychainTokenStore: TokenStore {
         ]
     }
 
-    public func read() -> String? {
+    public func lookup() -> StoredToken {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else {
-            return nil
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data, let token = String(data: data, encoding: .utf8) else { return .unreadable }
+            return .present(token)
+        case errSecItemNotFound:
+            return .absent
+        default:
+            return .unreadable
         }
-        return String(data: data, encoding: .utf8)
     }
 
     public func write(_ token: String) throws {

@@ -154,10 +154,10 @@ final class TaskActivitiesTests: XCTestCase {
 
     func testAnUnauthorizedReportEndsEveryActivityAndAFailureEndsNone() async {
         let store = FakeActivityStore([shownActivity(key: "a", state: pills), shownActivity(key: "b", state: Sample.tea)])
-        await TaskActivities.settle(.failed, in: store)
-        await TaskActivities.settle(nil, in: store)
+        await TaskActivities.settle(.sent(.failed), in: store)
+        await TaskActivities.settle(.credentialsUnreadable, in: store)
         XCTAssertEqual(store.calls, [])
-        await TaskActivities.settle(.unauthorized, in: store)
+        await TaskActivities.settle(.sent(.unauthorized), in: store)
         XCTAssertEqual(
             store.calls,
             [
@@ -169,7 +169,7 @@ final class TaskActivitiesTests: XCTestCase {
 
     func testAnAnsweredReportAppliesItsDirectives() async {
         let store = FakeActivityStore([shownActivity(key: "a", state: pills)])
-        await TaskActivities.settle(.answered(PushStateReply(directives: [.end(key: "a", state: done)])), in: store)
+        await TaskActivities.settle(.sent(.answered(PushStateReply(directives: [.end(key: "a", state: done)]))), in: store)
         XCTAssertEqual(store.calls, [.end(id: "id-a", state: done, dismissal: .immediate)])
     }
 
