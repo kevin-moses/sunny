@@ -74,6 +74,7 @@ export const notificationKind = v.union(
   v.literal("digest"),
   v.literal("agent_flag"),
   v.literal("family_message"),
+  v.literal("senior_reshow"),
 );
 export type NotificationKind = Infer<typeof notificationKind>;
 
@@ -85,7 +86,11 @@ export const outboxState = v.union(
 );
 export type OutboxState = Infer<typeof outboxState>;
 
-export const deliveryChannel = v.union(v.literal("apns"), v.literal("sms"));
+export const deliveryChannel = v.union(
+  v.literal("apns"),
+  v.literal("sms"),
+  v.literal("live_activity"),
+);
 export type DeliveryChannel = Infer<typeof deliveryChannel>;
 
 export const PUSH_TYPES = ["alert", "liveactivity", "background", "widgets"] as const;

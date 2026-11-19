@@ -9,11 +9,12 @@ import { alertMessage } from "./lib/apnsPayload";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import {
   MAX_ATTEMPTS,
+  fallbackAfterPushGaveUp,
   requeueStuckDeliveries,
   resolveRoute,
-  textAfterPushGaveUp,
 } from "./lib/delivery";
-import type { ApnsRoute, SendRoute, SmsRoute } from "./lib/delivery";
+import type { ApnsRoute, LiveActivityRoute, SendRoute, SmsRoute } from "./lib/delivery";
+import { closeStart, markStarted } from "./lib/liveActivity";
 import { sendSmsFromEnv } from "./lib/twilio";
 import { deliveryChannel } from "./lib/validators";
 
@@ -28,7 +29,10 @@ async function settle(
   patch: Pick<Doc<"notificationOutbox">, "state"> &
     Partial<Pick<Doc<"notificationOutbox">, "channel" | "detail">>,
 ): Promise<void> {
-  await ctx.db.patch(row._id, { ...patch, settledAt: Date.now() });
+  const now = Date.now();
+  await ctx.db.patch(row._id, { ...patch, settledAt: now });
+  if (patch.channel === "live_activity") await markStarted(ctx, row, now);
+  else await closeStart(ctx, row, now);
 }
 
 export const begin = internalMutation({
@@ -42,7 +46,7 @@ export const begin = internalMutation({
       await settle(ctx, row, { state: "failed", detail: row.detail ?? "gave up" });
       return { kind: "done", outcome: "failed" };
     }
-    const route = await resolveRoute(ctx, row);
+    const route = await resolveRoute(ctx, row, Date.now());
     if (route.kind === "skip") {
       await settle(ctx, row, { state: "skipped", detail: route.reason });
       return { kind: "done", outcome: "skipped" };
@@ -143,6 +147,55 @@ async function sendApns(
   return "failed";
 }
 
+async function sendStart(
+  ctx: ActionCtx,
+  outboxId: Id<"notificationOutbox">,
+  route: LiveActivityRoute,
+): Promise<DeliveryOutcome | ApnsRoute> {
+  const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
+    sends: [{ token: route.token, message: route.message }],
+  });
+  if (configError !== undefined) {
+    await ctx.runMutation(internal.delivery.record, {
+      outboxId,
+      outcome: "retry",
+      detail: configError,
+    });
+    return "config";
+  }
+  const result = results[0];
+  if (result?.outcome === "sent") {
+    await ctx.runMutation(internal.delivery.record, {
+      outboxId,
+      outcome: "sent",
+      channel: "live_activity",
+    });
+    return "sent";
+  }
+  const detail = apnsDetail(results);
+  if (result === undefined || result.retryable) {
+    throw new Error(`Live Activity start failed, will retry: ${detail}`);
+  }
+  const unregistered = result.outcome === "unregistered";
+  if (unregistered) {
+    await ctx.runMutation(internal.phonePush.dropStartToken, {
+      deviceId: route.deviceId,
+      token: route.token,
+    });
+  }
+  if (route.alertFallback !== null) {
+    const why = unregistered ? "start token unregistered" : detail;
+    console.warn(`Live Activity not started (${why}); sending the notification instead`);
+    return route.alertFallback;
+  }
+  await ctx.runMutation(internal.delivery.record, {
+    outboxId,
+    outcome: unregistered ? "skipped" : "failed",
+    detail: unregistered ? "start_token_unregistered" : detail,
+  });
+  return unregistered ? "skipped" : "failed";
+}
+
 async function sendSms(
   ctx: ActionCtx,
   outboxId: Id<"notificationOutbox">,
@@ -196,11 +249,18 @@ async function runRoute(
   outboxId: Id<"notificationOutbox">,
   route: SendRoute,
 ): Promise<DeliveryOutcome> {
+  const next =
+    route.kind === "live_activity"
+      ? await attempt(ctx, outboxId, route.alertFallback !== null, () =>
+          sendStart(ctx, outboxId, route),
+        )
+      : route;
+  if (typeof next === "string") return next;
   const text =
-    route.kind === "sms"
-      ? route
-      : await attempt(ctx, outboxId, route.smsFallback !== null, () =>
-          sendApns(ctx, outboxId, route),
+    next.kind === "sms"
+      ? next
+      : await attempt(ctx, outboxId, next.smsFallback !== null, () =>
+          sendApns(ctx, outboxId, next),
         );
   if (typeof text === "string") return text;
   return await attempt(ctx, outboxId, false, () => sendSms(ctx, outboxId, text));
@@ -221,7 +281,7 @@ export const onDeliveryComplete = internalMutation({
     if (result.kind !== "failed") return null;
     const row = await ctx.db.get(context.outboxId);
     if (!row || row.state !== "pending") return null;
-    if (await textAfterPushGaveUp(ctx, row, result.error)) return null;
+    if (await fallbackAfterPushGaveUp(ctx, row, result.error)) return null;
     console.error(`Notification delivery failed: ${result.error}`);
     await settle(ctx, row, { state: "failed", detail: result.error });
     return null;

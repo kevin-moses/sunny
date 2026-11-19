@@ -1,8 +1,10 @@
+import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { isAnytimeInstance } from "./anytime";
-import { contentState } from "./apnsPayload";
+import { contentState, liveActivityStartMessage } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
+import { taskIcon } from "./deviceWording";
 import type { DeviceIcon } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
 import { taskCards, timelineTask } from "./phoneTimeline";
@@ -11,6 +13,7 @@ import type {
   ActivityClosed,
   ActivityContent,
   ActivityEndReason,
+  ApnsMessage,
   LiveActivityPhase,
   ReportedActivity,
 } from "./validators";
@@ -22,6 +25,10 @@ export const RECEIPT_MS = 10_000;
 export const CONTENT_MAX_BYTES = 3_000;
 
 export const REPORT_GRACE_MS = 60_000;
+
+export const PROOF_WAIT_MS = 45_000;
+
+export const MAX_OPEN_ACTIVITIES = 3;
 
 const RELEVANCE_BASE_SECONDS = 4_000_000_000;
 
@@ -61,6 +68,13 @@ export interface ActivityStart {
   staleAt: number;
   relevance: number;
   quiet: boolean;
+}
+
+export interface StartPlan extends ActivityStart {
+  token: string;
+  icon: DeviceIcon;
+  windowEnd: number;
+  resume: Id<"liveActivities"> | null;
 }
 
 type Showing =
@@ -298,4 +312,146 @@ export async function applyActivityReport(
     await endAsViewed(ctx, row, await loadActivityView(ctx, row, now), now);
   }
   return directives;
+}
+
+export async function findPhonePush(
+  ctx: QueryCtx,
+  deviceId: Id<"devices">,
+): Promise<Doc<"phonePush"> | null> {
+  return await ctx.db
+    .query("phonePush")
+    .withIndex("by_device", (q) => q.eq("deviceId", deviceId))
+    .unique();
+}
+
+function isActivityCue(row: Doc<"notificationOutbox">): row is Doc<"notificationOutbox"> & {
+  taskInstanceId: Id<"taskInstances">;
+  recipientDeviceId: Id<"devices">;
+} {
+  return (
+    (row.kind === "senior_prompt" || row.kind === "senior_reshow") &&
+    row.taskInstanceId !== undefined &&
+    row.recipientDeviceId !== undefined
+  );
+}
+
+async function activitiesFor(
+  ctx: QueryCtx,
+  instanceId: Id<"taskInstances">,
+  deviceId: Id<"devices">,
+): Promise<Doc<"liveActivities">[]> {
+  const rows = await ctx.db
+    .query("liveActivities")
+    .withIndex("by_instance", (q) => q.eq("taskInstanceId", instanceId))
+    .collect();
+  return rows.filter((row) => row.deviceId === deviceId);
+}
+
+function isStartOf(row: Doc<"liveActivities">, outboxId: Id<"notificationOutbox">): boolean {
+  return row.phase.kind === "starting" && row.phase.outboxId === outboxId;
+}
+
+export async function planStart(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+  device: Doc<"devices">,
+  now: number,
+): Promise<StartPlan | null> {
+  if (!isActivityCue(row) || device.kind !== "senior_phone") return null;
+  if (device.tokenHash === undefined) return null;
+  const push = await findPhonePush(ctx, device._id);
+  if (push === null || push.liveActivityStart === undefined || push.blindSince !== undefined) {
+    return null;
+  }
+  const instance = await ctx.db.get(row.taskInstanceId);
+  const task = instance === null ? null : await ctx.db.get(instance.taskId);
+  if (instance === null || task === null) return null;
+  const rows = await activitiesFor(ctx, instance._id, device._id);
+  const resume = rows.find((r) => isStartOf(r, row._id)) ?? null;
+  const earlier = rows.filter((r) => r !== resume);
+  const blocked =
+    row.kind === "senior_reshow" ? earlier.some((r) => isOpenPhase(r.phase)) : earlier.length > 0;
+  if (blocked) return null;
+  const open = (await openActivitiesOf(ctx, device._id)).filter((r) => r._id !== resume?._id);
+  if (open.length >= MAX_OPEN_ACTIVITIES) return null;
+  const view = activityView(
+    { subject: { instance, task }, row: resume, phoneCanConfirm: true },
+    now,
+  );
+  if (view.kind !== "show") return null;
+  return {
+    token: push.liveActivityStart.token,
+    content: view.content,
+    staleAt: view.staleAt,
+    relevance: view.relevance,
+    quiet: row.kind === "senior_reshow",
+    icon: taskIcon(task.type),
+    windowEnd: instance.windowEnd,
+    resume: resume?._id ?? null,
+  };
+}
+
+export async function openActivity(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  device: Doc<"devices">,
+  plan: StartPlan,
+  now: number,
+): Promise<{ activityId: Id<"liveActivities">; message: ApnsMessage } | null> {
+  if (!isActivityCue(row)) return null;
+  let activityId = plan.resume;
+  if (activityId === null) {
+    activityId = await ctx.db.insert("liveActivities", {
+      householdId: row.householdId,
+      deviceId: device._id,
+      taskInstanceId: row.taskInstanceId,
+      windowEnd: plan.windowEnd,
+      phase: { kind: "starting", outboxId: row._id, since: now },
+      shown: plan.content,
+    });
+  } else {
+    await ctx.db.patch(activityId, { shown: plan.content });
+  }
+  const attributes: ActivityAttributes = {
+    activityKey: activityId,
+    instanceId: row.taskInstanceId,
+    icon: plan.icon,
+    receiptMs: RECEIPT_MS,
+  };
+  const alert = { title: row.title, body: row.body };
+  return {
+    activityId,
+    message: liveActivityStartMessage(attributes, plan, alert, Math.floor(now / 1000)),
+  };
+}
+
+async function startOf(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+): Promise<Doc<"liveActivities"> | null> {
+  if (!isActivityCue(row)) return null;
+  const rows = await activitiesFor(ctx, row.taskInstanceId, row.recipientDeviceId);
+  return rows.find((r) => isStartOf(r, row._id)) ?? null;
+}
+
+export async function markStarted(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  now: number,
+): Promise<void> {
+  const start = await startOf(ctx, row);
+  if (start === null) return;
+  await ctx.db.patch(start._id, { phase: { kind: "started", acceptedAt: now, proof: "awaited" } });
+  await ctx.scheduler.runAfter(PROOF_WAIT_MS, internal.liveActivity.checkProof, {
+    activityId: start._id,
+  });
+}
+
+export async function closeStart(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  now: number,
+): Promise<void> {
+  const start = await startOf(ctx, row);
+  if (start !== null) await endActivity(ctx, start, "start_failed", now);
 }

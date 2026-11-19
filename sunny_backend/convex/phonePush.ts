@@ -1,8 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import { internalMutation } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import {
   deviceRoute,
   findDeviceByTokenHash,
@@ -13,7 +13,7 @@ import {
 } from "./deviceApi";
 import { isValidDeviceToken } from "./lib/apnsPayload";
 import { errorResponse, jsonResponse } from "./lib/httpResponse";
-import { applyActivityReport } from "./lib/liveActivity";
+import { applyActivityReport, findPhonePush } from "./lib/liveActivity";
 import type { ActivityDirective } from "./lib/liveActivity";
 import { REPORTED_ACTIVITY_STATES, pushStateReport } from "./lib/validators";
 import type { PushStateReport, ReportedActivity, ReportedActivityState } from "./lib/validators";
@@ -106,16 +106,6 @@ export function parsePushStateRequest(body: Record<string, unknown>): PushStateR
   return report;
 }
 
-export async function findPhonePush(
-  ctx: QueryCtx,
-  deviceId: Id<"devices">,
-): Promise<Doc<"phonePush"> | null> {
-  return await ctx.db
-    .query("phonePush")
-    .withIndex("by_device", (q) => q.eq("deviceId", deviceId))
-    .unique();
-}
-
 async function storeReportedTokens(
   ctx: MutationCtx,
   device: Doc<"devices">,
@@ -149,6 +139,17 @@ export const reportByToken = internalMutation({
     const { activities } = args.report;
     if (activities === undefined) return { kind: "ok", activities: [] };
     return { kind: "ok", activities: await applyActivityReport(ctx, device, activities, now) };
+  },
+});
+
+export const dropStartToken = internalMutation({
+  args: { deviceId: v.id("devices"), token: v.string() },
+  handler: async (ctx, args): Promise<null> => {
+    const row = await findPhonePush(ctx, args.deviceId);
+    if (row !== null && row.liveActivityStart?.token === args.token) {
+      await ctx.db.patch(row._id, { liveActivityStart: undefined });
+    }
+    return null;
   },
 });
 

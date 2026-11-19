@@ -1,0 +1,622 @@
+import type { WorkId } from "@convex-dev/workpool";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import {
+  APNS_SENT,
+  alertsSent,
+  answerEachToken,
+  providerMocks,
+  pushesSent,
+  resetProviderMocks,
+} from "./deliveryMocks.helpers";
+import type { SentPush } from "./deliveryMocks.helpers";
+import { MAX_OPEN_ACTIVITIES, PROOF_WAIT_MS } from "./lib/liveActivity";
+import {
+  ALERT_TOKEN,
+  MIN,
+  START_TOKEN,
+  about,
+  activities,
+  addTask,
+  displayToken,
+  local,
+  makePhoneBackend,
+  phoneHousehold,
+  phonePushRow,
+  postConfirm,
+  putPushState,
+  setNow,
+  settle,
+  tick,
+} from "./phoneHarness.helpers";
+import type { PhoneFixture } from "./phoneHarness.helpers";
+
+vi.mock("./apns", async (original) =>
+  (await import("./deliveryMocks.helpers")).apnsModule(await original()),
+);
+
+const EIGHT = local("08:00");
+
+const PILLS_PROMPT = "It's 8 o'clock. Time for your morning pills.";
+
+interface StartAps {
+  timestamp: number;
+  event: string;
+  "attributes-type": string;
+  attributes: { activityKey: string; instanceId: string; icon: string; receiptMs: number };
+  "content-state": Doc<"liveActivities">["shown"];
+  alert: { title: string; body: string; sound?: string };
+  "stale-date": number;
+  "relevance-score": number;
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  setNow(local("07:00"));
+  resetProviderMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+async function setup(): Promise<PhoneFixture> {
+  return await phoneHousehold(makePhoneBackend());
+}
+
+async function reportStartToken(f: PhoneFixture): Promise<void> {
+  const response = await putPushState(f, {
+    liveActivityStart: { token: START_TOKEN, enabled: true },
+  });
+  expect(response.status).toBe(200);
+}
+
+async function pills(f: PhoneFixture): Promise<Id<"taskInstances">> {
+  return await addTask(f, {
+    title: "Morning pills",
+    time: "08:00",
+    spokenPrompt: PILLS_PROMPT,
+    screenSentence: "Take your morning pills.",
+  });
+}
+
+async function proveStarts(f: PhoneFixture): Promise<void> {
+  const open = (await activities(f)).filter((row) => row.phase.kind !== "ended");
+  const response = await putPushState(f, {
+    activities: open.map((row) => ({ key: row._id, token: null, state: "active" })),
+  });
+  expect(response.status).toBe(200);
+}
+
+async function confirmOnDisplay(f: PhoneFixture, instanceId: Id<"taskInstances">): Promise<void> {
+  const response = await postConfirm(f, await displayToken(f), {
+    instanceId,
+    pressedAgoMs: 0,
+    via: "button",
+  });
+  expect(((await response.json()) as { status: string }).status).toBe("confirmed");
+}
+
+async function deliverPrompt(f: PhoneFixture, instanceId: Id<"taskInstances">): Promise<string> {
+  const row = (await outbox(f, instanceId)).find((r) => r.state === "pending")!;
+  return await f.t.action(internal.delivery.deliver, { outboxId: row._id });
+}
+
+function activityPushes(): SentPush[] {
+  return pushesSent().filter((push) => push.message.pushType === "liveactivity");
+}
+
+function starts(): StartAps[] {
+  return activityPushes()
+    .map((push) => push.payload.aps as StartAps)
+    .filter((aps) => aps.event === "start");
+}
+
+async function outbox(
+  f: PhoneFixture,
+  instanceId: Id<"taskInstances">,
+): Promise<Doc<"notificationOutbox">[]> {
+  return await f.t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("notificationOutbox")
+      .withIndex("by_task_instance", (q) => q.eq("taskInstanceId", instanceId))
+      .collect();
+    return rows.filter((row) => row.recipientDeviceId === f.phoneId);
+  });
+}
+
+function refuseStart(result: { status: number; retryable?: boolean }): void {
+  answerEachToken((token) =>
+    token === START_TOKEN
+      ? {
+          outcome: result.status === 410 ? "unregistered" : "failed",
+          status: result.status,
+          reason: "Refused",
+          retryable: result.retryable ?? false,
+        }
+      : APNS_SENT,
+  );
+}
+
+describe("the due cue on a phone that reported a start token", () => {
+  test("a tick that opens the window sends exactly one start and no notification", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    await tick(f, EIGHT);
+    await settle(f.t);
+
+    const [row] = await activities(f);
+    expect(await activities(f)).toHaveLength(1);
+    expect(row).toMatchObject({
+      householdId: f.householdId,
+      deviceId: f.phoneId,
+      taskInstanceId: instanceId,
+      windowEnd: EIGHT + 60 * MIN,
+      phase: { kind: "started", proof: "awaited" },
+    });
+    expect(alertsSent()).toEqual([]);
+    const [push] = activityPushes();
+    expect(activityPushes()).toHaveLength(1);
+    expect(push!.tokens).toEqual([START_TOKEN]);
+    expect(push!.message).toMatchObject({
+      pushType: "liveactivity",
+      priority: 10,
+      expiresAt: (EIGHT + 60 * MIN) / 1000,
+    });
+    expect(push!.payload.aps).toEqual({
+      timestamp: expect.closeTo(EIGHT / 1000, -1),
+      event: "start",
+      "attributes-type": "SunnyTaskAttributes",
+      attributes: {
+        activityKey: row!._id,
+        instanceId,
+        icon: "pills",
+        receiptMs: 10_000,
+      },
+      "content-state": {
+        card: {
+          instanceId,
+          step: 0,
+          stepCount: 1,
+          stepText: null,
+          label: "Morning pills",
+          sentence: "Take your morning pills.",
+          detail: null,
+          startsAt: EIGHT,
+          endsAt: EIGHT + 60 * MIN,
+        },
+        nextSteps: [],
+        closed: null,
+      },
+      alert: { title: "Morning pills", body: PILLS_PROMPT, sound: "default" },
+      "stale-date": (EIGHT + 60 * MIN) / 1000,
+      "relevance-score": 4_000_000_000 - EIGHT / 1000,
+    });
+    expect(row!.shown).toEqual((push!.payload.aps as StartAps)["content-state"]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ kind: "senior_prompt", state: "sent", channel: "live_activity" }),
+    ]);
+  });
+
+  test("a tick that runs twice still gives one activity row and one start", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    await pills(f);
+    await tick(f, EIGHT);
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await tick(f, EIGHT + MIN);
+    await settle(f.t);
+    expect(await activities(f)).toHaveLength(1);
+    expect(starts()).toHaveLength(1);
+    expect(alertsSent()).toEqual([]);
+  });
+
+  test("the reprompt fifteen minutes later is a notification, not a second start", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await putPushState(f, {
+      activities: [{ key: (await activities(f))[0]!._id, token: null, state: "active" }],
+    });
+    await tick(f, EIGHT + 15 * MIN);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect(await activities(f)).toHaveLength(1);
+    expect(alertsSent()).toEqual([
+      {
+        tokens: [ALERT_TOKEN],
+        title: "Morning pills",
+        body: PILLS_PROMPT,
+        interruptionLevel: "time-sensitive",
+        data: expect.objectContaining({ kind: "senior_prompt", task_instance_id: instanceId }),
+      },
+    ]);
+    const rows = await outbox(f, instanceId);
+    expect(rows.map((row) => row.channel)).toEqual(["live_activity", "apns"]);
+  });
+
+  test("two tasks due together get two starts, each bound to its own task", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const first = await pills(f);
+    const second = await addTask(f, { title: "Eye drops", time: "08:00" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    const rows = await activities(f);
+    expect(rows.map((row) => row.taskInstanceId).sort()).toEqual([first, second].sort());
+    expect(alertsSent()).toEqual([]);
+    expect(
+      starts()
+        .map((aps) => [aps.attributes.activityKey, aps.attributes.instanceId, aps.alert.title])
+        .sort(),
+    ).toEqual(
+      rows
+        .map((row) => [
+          row._id,
+          row.taskInstanceId,
+          row.taskInstanceId === first ? "Morning pills" : "Eye drops",
+        ])
+        .sort(),
+    );
+  });
+
+  test("an earlier task ranks above a later one that comes due while it is up", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    await pills(f);
+    await addTask(f, { title: "Eye drops", time: "08:10" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await proveStarts(f);
+    await tick(f, EIGHT + 10 * MIN);
+    await settle(f.t);
+    const [early, late] = starts();
+    expect(starts()).toHaveLength(2);
+    expect(early!.alert.title).toBe("Morning pills");
+    expect(late!.alert.title).toBe("Eye drops");
+    expect(early!["relevance-score"]).toBeGreaterThan(late!["relevance-score"]);
+  });
+
+  test("a task confirmed before its cue is delivered starts nothing", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    await tick(f, EIGHT);
+    await f.t.run(async (ctx) => await ctx.db.patch(instanceId, { state: "confirmed" }));
+    await settle(f.t);
+    expect(providerMocks.apnsSend).not.toHaveBeenCalled();
+    expect(await activities(f)).toEqual([]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "skipped", detail: "instance_closed" }),
+    ]);
+  });
+});
+
+describe("a phone where no Live Activity can start gets the notification as before", () => {
+  async function expectNotificationOnly(
+    f: PhoneFixture,
+    instanceId: Id<"taskInstances">,
+  ): Promise<void> {
+    expect(activityPushes()).toEqual([]);
+    expect(await activities(f)).toEqual([]);
+    expect(alertsSent()).toEqual([
+      expect.objectContaining({
+        tokens: [ALERT_TOKEN],
+        title: "Morning pills",
+        body: PILLS_PROMPT,
+        interruptionLevel: "time-sensitive",
+      }),
+    ]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "apns" }),
+    ]);
+  }
+
+  test("a phone that never reported", async () => {
+    const f = await setup();
+    const instanceId = await pills(f);
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await expectNotificationOnly(f, instanceId);
+  });
+
+  test("a phone that reported Live Activities turned off", async () => {
+    const f = await setup();
+    await putPushState(f, { liveActivityStart: { token: START_TOKEN, enabled: false } });
+    const instanceId = await pills(f);
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await expectNotificationOnly(f, instanceId);
+  });
+
+  test("the home display is never sent a start, even with a stored start token", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("phonePush", {
+        deviceId: f.displayId,
+        liveActivityStart: { token: START_TOKEN, reportedAt: Date.now() },
+      });
+      await ctx.db.insert("pushTokens", { userId: f.displayUser, token: "display-alert-token" });
+    });
+    await pills(f);
+    await tick(f, EIGHT);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect((await activities(f)).map((row) => row.deviceId)).toEqual([f.phoneId]);
+    expect(alertsSent().map((alert) => alert.tokens)).toEqual([["display-alert-token"]]);
+  });
+});
+
+describe("a start that APNs does not accept", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  test("a 410 deletes the start token and sends the notification in the same run", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    refuseStart({ status: 410 });
+    await tick(f, EIGHT);
+    expect(await deliverPrompt(f, instanceId)).toBe("sent");
+    expect(starts()).toHaveLength(1);
+    expect(alertsSent()).toEqual([
+      expect.objectContaining({ tokens: [ALERT_TOKEN], title: "Morning pills" }),
+    ]);
+    expect((await phonePushRow(f))!.liveActivityStart).toBeUndefined();
+    expect((await activities(f)).map((row) => row.phase)).toEqual([
+      { kind: "ended", at: about(EIGHT), reason: "start_failed" },
+    ]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "apns", attempts: 1 }),
+    ]);
+  });
+
+  test("another permanent refusal also falls back, and keeps the start token", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    refuseStart({ status: 400 });
+    await tick(f, EIGHT);
+    expect(await deliverPrompt(f, instanceId)).toBe("sent");
+    expect(alertsSent()).toHaveLength(1);
+    expect((await phonePushRow(f))!.liveActivityStart!.token).toBe(START_TOKEN);
+    expect((await activities(f))[0]!.phase).toMatchObject({
+      kind: "ended",
+      reason: "start_failed",
+    });
+  });
+
+  test("a retryable failure is retried with the same activity key", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    refuseStart({ status: 503, retryable: true });
+    await tick(f, EIGHT);
+    await expect(deliverPrompt(f, instanceId)).rejects.toThrow(/will retry/);
+    expect(alertsSent()).toEqual([]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "pending", pushState: "retrying" }),
+    ]);
+    expect((await activities(f))[0]!.phase.kind).toBe("starting");
+
+    const firstKey = starts()[0]!.attributes.activityKey;
+    resetProviderMocks();
+    expect(await deliverPrompt(f, instanceId)).toBe("sent");
+    expect(starts().map((aps) => aps.attributes.activityKey)).toEqual([firstKey]);
+    expect(await activities(f)).toHaveLength(1);
+    expect((await activities(f))[0]!.phase.kind).toBe("started");
+    expect(alertsSent()).toEqual([]);
+  });
+
+  test("retries that run out send the notification", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    refuseStart({ status: 503, retryable: true });
+    await tick(f, EIGHT);
+    await expect(deliverPrompt(f, instanceId)).rejects.toThrow(/will retry/);
+    const [row] = await outbox(f, instanceId);
+    await f.t.mutation(internal.delivery.onDeliveryComplete, {
+      workId: "work_1" as WorkId,
+      context: { outboxId: row!._id },
+      result: { kind: "failed", error: "Live Activity start failed, will retry: 503 Refused" },
+    });
+    expect(await deliverPrompt(f, instanceId)).toBe("sent");
+    expect(starts()).toHaveLength(1);
+    expect(alertsSent()).toEqual([
+      expect.objectContaining({ tokens: [ALERT_TOKEN], title: "Morning pills" }),
+    ]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "apns", pushState: "gave_up" }),
+    ]);
+    expect((await activities(f))[0]!.phase).toMatchObject({
+      kind: "ended",
+      reason: "start_failed",
+    });
+  });
+
+  test("the whole retry run through the pool ends with one notification", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    refuseStart({ status: 503, retryable: true });
+    await tick(f, EIGHT);
+    await settle(f.t, 2 * MIN);
+    expect(starts().length).toBeGreaterThan(1);
+    expect(alertsSent()).toHaveLength(1);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "apns" }),
+    ]);
+    errorSpy.mockRestore();
+  });
+});
+
+describe("the proof check 45 seconds after a start is accepted", () => {
+  async function started(): Promise<{ f: PhoneFixture; instanceId: Id<"taskInstances"> }> {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    await tick(f, EIGHT);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    return { f, instanceId };
+  }
+
+  test("a phone that reported the activity in time gets no notification", async () => {
+    const { f } = await started();
+    await proveStarts(f);
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+    expect(alertsSent()).toEqual([]);
+    expect((await phonePushRow(f))!.blindSince).toBeUndefined();
+    expect((await activities(f))[0]!.phase).toMatchObject({ kind: "started", proof: "proven" });
+  });
+
+  test("nothing is sent before the 45 seconds are over", async () => {
+    const { f } = await started();
+    await settle(f.t, PROOF_WAIT_MS - 10_000);
+    expect(alertsSent()).toEqual([]);
+    expect((await phonePushRow(f))!.blindSince).toBeUndefined();
+  });
+
+  test("no report and the task still due: one notification, and the phone is blind", async () => {
+    const { f, instanceId } = await started();
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+    expect(alertsSent()).toEqual([
+      {
+        tokens: [ALERT_TOKEN],
+        title: "Morning pills",
+        body: PILLS_PROMPT,
+        interruptionLevel: "time-sensitive",
+        data: expect.objectContaining({ kind: "senior_prompt", task_instance_id: instanceId }),
+      },
+    ]);
+    expect(starts()).toHaveLength(1);
+    expect((await phonePushRow(f))!.blindSince).toEqual(about(EIGHT + PROOF_WAIT_MS));
+    expect((await activities(f)).map((row) => row.phase)).toEqual([
+      { kind: "started", acceptedAt: about(EIGHT), proof: "missed" },
+    ]);
+  });
+
+  test("no report and the task already done: the phone is blind and nothing is sent", async () => {
+    const { f, instanceId } = await started();
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+    expect(alertsSent()).toEqual([]);
+    expect((await phonePushRow(f))!.blindSince).toBeDefined();
+  });
+
+  test("a check that runs twice sends no second notification", async () => {
+    const { f } = await started();
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+    expect(alertsSent()).toHaveLength(1);
+    const [row] = await activities(f);
+    await f.t.mutation(internal.liveActivity.checkProof, { activityId: row!._id });
+    await settle(f.t);
+    expect(alertsSent()).toHaveLength(1);
+  });
+
+  test("a report between scheduling and running stops the check from sending", async () => {
+    const { f } = await started();
+    await settle(f.t, PROOF_WAIT_MS - 10_000);
+    await proveStarts(f);
+    const [row] = await activities(f);
+    await f.t.mutation(internal.liveActivity.checkProof, { activityId: row!._id });
+    await settle(f.t, 20_000);
+    expect(alertsSent()).toEqual([]);
+    expect((await phonePushRow(f))!.blindSince).toBeUndefined();
+  });
+
+  test("a report that arrives after the check clears the blind mark", async () => {
+    const { f } = await started();
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+    expect((await phonePushRow(f))!.blindSince).toBeDefined();
+    await proveStarts(f);
+    expect((await phonePushRow(f))!.blindSince).toBeUndefined();
+    expect((await activities(f))[0]!.phase).toMatchObject({ kind: "started", proof: "proven" });
+    await settle(f.t, MIN);
+    expect(alertsSent()).toHaveLength(1);
+  });
+});
+
+describe("a blind phone", () => {
+  test("gets its next task's cue as a notification, until it reports again", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    await pills(f);
+    const drops = await addTask(f, { title: "Eye drops", time: "08:10" });
+    const walk = await addTask(f, { title: "Short walk", time: "08:20", type: "routine" });
+    await tick(f, EIGHT);
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+    expect(alertsSent().map((alert) => alert.title)).toEqual(["Morning pills"]);
+
+    await tick(f, EIGHT + 10 * MIN);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect(alertsSent().map((alert) => alert.title)).toEqual(["Morning pills", "Eye drops"]);
+    expect(await outbox(f, drops)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "apns" }),
+    ]);
+
+    expect((await putPushState(f, {})).status).toBe(200);
+    await tick(f, EIGHT + 20 * MIN);
+    await settle(f.t);
+    expect(starts().map((aps) => aps.alert.title)).toEqual(["Morning pills", "Short walk"]);
+    expect(await outbox(f, walk)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "live_activity" }),
+    ]);
+  });
+});
+
+describe("the cap on open activities per phone", () => {
+  test("a fourth task due together is a notification", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const titles = ["Morning pills", "Eye drops", "Inhaler", "Vitamin D"];
+    for (const title of titles) await addTask(f, { title, time: "08:00" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    expect(MAX_OPEN_ACTIVITIES).toBe(3);
+    expect(starts()).toHaveLength(3);
+    expect(await activities(f)).toHaveLength(3);
+    expect(alertsSent()).toHaveLength(1);
+    const cued = [...starts().map((aps) => aps.alert.title), ...alertsSent().map((a) => a.title)];
+    expect(cued.sort()).toEqual([...titles].sort());
+  });
+
+  test("an activity that ended frees a place for the next task", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    for (const title of ["Morning pills", "Eye drops", "Inhaler"]) {
+      await addTask(f, { title, time: "08:00" });
+    }
+    await addTask(f, { title: "Vitamin D", time: "08:10" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    const [first, ...rest] = await activities(f);
+    await putPushState(f, {
+      activities: [
+        { key: first!._id, token: null, state: "dismissed" },
+        ...rest.map((row) => ({ key: row._id, token: null, state: "active" })),
+      ],
+    });
+    await tick(f, EIGHT + 10 * MIN);
+    await settle(f.t);
+    expect(starts().map((aps) => aps.alert.title)).toContain("Vitamin D");
+    expect(alertsSent()).toEqual([]);
+  });
+});

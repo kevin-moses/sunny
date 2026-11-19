@@ -1,4 +1,6 @@
+import type { Doc } from "../_generated/dataModel";
 import { ANYTIME } from "./anytime";
+import { taskStep } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
 import { daysBetween, isLocalDate, weekdayName } from "./time";
 import type { TaskType } from "./validators";
@@ -46,6 +48,16 @@ export function stepSpeech(step: TaskStep): string {
 
 export function withStepSpeech(speech: string, step: TaskStep | null): string {
   return step === null ? speech : `${speech} ${stepSpeech(step)}`;
+}
+
+export function seniorPromptWords(
+  task: Pick<Doc<"tasks">, "displayLabel" | "spokenPrompt" | "checklistItems">,
+  instance: Pick<Doc<"taskInstances">, "currentStep">,
+): { title: string; body: string } {
+  return {
+    title: task.displayLabel,
+    body: withStepSpeech(task.spokenPrompt, taskStep(task.checklistItems, instance.currentStep)),
+  };
 }
 
 function baseCueSpeech(task: SpeechTask): string {

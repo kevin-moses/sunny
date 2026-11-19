@@ -24,6 +24,8 @@ export const ALERT_TOKEN = "e5".repeat(32);
 
 const SETTLE_STEP_MS = 100;
 
+const SETTLE_MS = 5_000;
+
 export function local(hhmm: string, date: string = DAY): number {
   return Date.parse(`${date}T${hhmm}:00-05:00`);
 }
@@ -62,6 +64,7 @@ export interface TaskSpec {
   type?: "medication" | "routine" | "reminder";
   windowMinutes?: number;
   checklistItems?: string[];
+  spokenPrompt?: string;
   screenSentence?: string;
   pillDescription?: string;
 }
@@ -130,16 +133,15 @@ export async function tick(f: PhoneFixture, now: number): Promise<void> {
   await f.t.mutation(internal.scheduler.tickHousehold, { householdId: f.householdId, now });
 }
 
-export async function settle(t: PhoneBackend, ms = 3_000): Promise<void> {
+export async function settle(t: PhoneBackend, ms = SETTLE_MS): Promise<void> {
   const until = Date.now() + ms;
   while (Date.now() < until) {
     let finished = false;
     void t.finishInProgressScheduledFunctions().then(() => {
       finished = true;
     });
-    do {
-      await vi.advanceTimersByTimeAsync(SETTLE_STEP_MS);
-    } while (!finished);
+    while (!finished) await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(SETTLE_STEP_MS);
   }
 }
 
@@ -154,6 +156,18 @@ export async function putPushState(
     method: "PUT",
     headers,
     body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+export async function postConfirm(
+  f: PhoneFixture,
+  deviceToken: string,
+  body: unknown,
+): Promise<Response> {
+  return await f.t.fetch("/device/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${deviceToken}` },
+    body: JSON.stringify(body),
   });
 }
 

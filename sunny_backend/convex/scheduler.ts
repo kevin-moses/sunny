@@ -6,7 +6,7 @@ import type { MutationCtx } from "./_generated/server";
 import { queueDigestIfDue } from "./digest";
 import { householdCaregivers, SYSTEM_ACTOR } from "./lib/access";
 import { isAnytimeInstance } from "./lib/anytime";
-import { withStepSpeech } from "./lib/deviceWording";
+import { seniorPromptWords } from "./lib/deviceWording";
 import { appError } from "./lib/errors";
 import { insertNotification } from "./lib/delivery";
 import { announceEvents } from "./lib/eventNotices";
@@ -21,7 +21,6 @@ import {
 } from "./lib/escalation";
 import type { EscalationStep } from "./lib/escalation";
 import { changeInstance, expandTasks } from "./lib/schedule";
-import { taskStep } from "./lib/taskSteps";
 import { formatTime12 } from "./lib/time";
 
 const TICK_PAGE_SIZE = 500;
@@ -92,12 +91,12 @@ async function queueNotifications(
     householdId: instance.householdId,
     kind: isPrompt ? ("senior_prompt" as const) : ("caregiver_alert" as const),
     taskInstanceId: instance._id,
-    title: isPrompt
-      ? task.displayLabel
-      : `${household.seniorPreferredName} hasn't confirmed ${task.displayLabel}`,
-    body: isPrompt
-      ? withStepSpeech(task.spokenPrompt, taskStep(task.checklistItems, instance.currentStep))
-      : `${dueAt}${note}`,
+    ...(isPrompt
+      ? seniorPromptWords(task, instance)
+      : {
+          title: `${household.seniorPreferredName} hasn't confirmed ${task.displayLabel}`,
+          body: `${dueAt}${note}`,
+        }),
     payload: {
       taskId: task._id,
       localDate: instance.localDate,
