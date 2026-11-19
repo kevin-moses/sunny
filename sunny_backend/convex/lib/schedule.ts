@@ -5,6 +5,7 @@ import type { Actor } from "./access";
 import { anytimeWindow, ANYTIME, isAnytimeInstance, isAnytimeTask } from "./anytime";
 import { audit } from "./audit";
 import { isDoneState, withTakenBackPressIds } from "./confirmRule";
+import { instanceChanged, instanceGone, taskTextChanged } from "./liveActivitySync";
 import { hasStepProgress, stepPressIds } from "./taskSteps";
 import { shownOn } from "./today";
 import { addDays, isoWeekday, localDate, minutes, zonedInstant } from "./time";
@@ -115,6 +116,7 @@ export async function deleteInstances(
       .collect();
     for (const notification of notifications) await ctx.db.delete(notification._id);
     await ctx.db.delete(instance._id);
+    await instanceGone(ctx, instance);
   }
 }
 
@@ -341,6 +343,7 @@ export async function patchTask(
   await ctx.db.patch(task._id, changed ? { ...patch, scheduleChangedAt: now } : patch);
   const updated = (await ctx.db.get(task._id))!;
   await auditTask(ctx, actor, "update", updated._id, updated);
+  await taskTextChanged(ctx, task, updated);
   if (changed) await resyncTask(ctx, actor, updated, now);
   if (!sameItems(task.checklistItems, updated.checklistItems)) {
     await restartStepsShownToday(ctx, actor, updated, now);
@@ -395,6 +398,7 @@ export async function changeInstance(
   if (changed.length === 0) return instance;
   await ctx.db.patch(instance._id, Object.fromEntries(changed));
   const after = (await ctx.db.get(instance._id))!;
+  await instanceChanged(ctx, actor, instance, after);
   let action: "state_change" | "claim" | "snooze" | "note" | "step";
   let detail: Record<string, unknown>;
   if (after.state !== instance.state) action = "state_change";

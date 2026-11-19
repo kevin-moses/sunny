@@ -20,6 +20,7 @@ import {
   stepHeld,
 } from "./lib/escalation";
 import type { EscalationStep } from "./lib/escalation";
+import { sweepLiveActivities } from "./lib/liveActivitySync";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12 } from "./lib/time";
 
@@ -199,6 +200,7 @@ export async function tickHouseholdCore(
   const stepsFired = await fireSteps(ctx, householdId, now);
   const escalated = await markEscalated(ctx, householdId);
   const missed = await closeWindows(ctx, householdId, now);
+  await sweepLiveActivities(ctx, householdId, now);
   const household = await ctx.db.get(householdId);
   if (!household) return { created, opened, stepsFired, escalated, missed, noticed: 0 };
   const noticed = await announceEvents(ctx, household, now);

@@ -15,6 +15,7 @@ import { isValidDeviceToken } from "./lib/apnsPayload";
 import { errorResponse, jsonResponse } from "./lib/httpResponse";
 import { applyActivityReport, findPhonePush } from "./lib/liveActivity";
 import type { ActivityDirective } from "./lib/liveActivity";
+import { queueActivityPush } from "./lib/liveActivitySync";
 import { REPORTED_ACTIVITY_STATES, pushStateReport } from "./lib/validators";
 import type { PushStateReport, ReportedActivity, ReportedActivityState } from "./lib/validators";
 
@@ -138,7 +139,9 @@ export const reportByToken = internalMutation({
     await storeReportedTokens(ctx, device, args.report, now);
     const { activities } = args.report;
     if (activities === undefined) return { kind: "ok", activities: [] };
-    return { kind: "ok", activities: await applyActivityReport(ctx, device, activities, now) };
+    const { directives, behind } = await applyActivityReport(ctx, device, activities, now);
+    for (const activityId of behind) await queueActivityPush(ctx, activityId);
+    return { kind: "ok", activities: directives };
   },
 });
 

@@ -1,16 +1,14 @@
 import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Id } from "./_generated/dataModel";
 import {
   APNS_SENT,
   alertsSent,
   answerEachToken,
   providerMocks,
-  pushesSent,
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
-import type { SentPush } from "./deliveryMocks.helpers";
 import { MAX_OPEN_ACTIVITIES, PROOF_WAIT_MS } from "./lib/liveActivity";
 import {
   ALERT_TOKEN,
@@ -18,19 +16,23 @@ import {
   START_TOKEN,
   about,
   activities,
+  activityPushes,
   addTask,
-  displayToken,
+  confirmOnDisplay,
   local,
   makePhoneBackend,
+  outbox,
   phoneHousehold,
   phonePushRow,
-  postConfirm,
+  proveStarts,
   putPushState,
+  reportStartToken,
   setNow,
   settle,
+  starts,
   tick,
 } from "./phoneHarness.helpers";
-import type { PhoneFixture } from "./phoneHarness.helpers";
+import type { PhoneFixture, StartAps } from "./phoneHarness.helpers";
 
 vi.mock("./apns", async (original) =>
   (await import("./deliveryMocks.helpers")).apnsModule(await original()),
@@ -39,17 +41,6 @@ vi.mock("./apns", async (original) =>
 const EIGHT = local("08:00");
 
 const PILLS_PROMPT = "It's 8 o'clock. Time for your morning pills.";
-
-interface StartAps {
-  timestamp: number;
-  event: string;
-  "attributes-type": string;
-  attributes: { activityKey: string; instanceId: string; icon: string; receiptMs: number };
-  "content-state": Doc<"liveActivities">["shown"];
-  alert: { title: string; body: string; sound?: string };
-  "stale-date": number;
-  "relevance-score": number;
-}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -66,13 +57,6 @@ async function setup(): Promise<PhoneFixture> {
   return await phoneHousehold(makePhoneBackend());
 }
 
-async function reportStartToken(f: PhoneFixture): Promise<void> {
-  const response = await putPushState(f, {
-    liveActivityStart: { token: START_TOKEN, enabled: true },
-  });
-  expect(response.status).toBe(200);
-}
-
 async function pills(f: PhoneFixture): Promise<Id<"taskInstances">> {
   return await addTask(f, {
     title: "Morning pills",
@@ -82,49 +66,9 @@ async function pills(f: PhoneFixture): Promise<Id<"taskInstances">> {
   });
 }
 
-async function proveStarts(f: PhoneFixture): Promise<void> {
-  const open = (await activities(f)).filter((row) => row.phase.kind !== "ended");
-  const response = await putPushState(f, {
-    activities: open.map((row) => ({ key: row._id, token: null, state: "active" })),
-  });
-  expect(response.status).toBe(200);
-}
-
-async function confirmOnDisplay(f: PhoneFixture, instanceId: Id<"taskInstances">): Promise<void> {
-  const response = await postConfirm(f, await displayToken(f), {
-    instanceId,
-    pressedAgoMs: 0,
-    via: "button",
-  });
-  expect(((await response.json()) as { status: string }).status).toBe("confirmed");
-}
-
 async function deliverPrompt(f: PhoneFixture, instanceId: Id<"taskInstances">): Promise<string> {
   const row = (await outbox(f, instanceId)).find((r) => r.state === "pending")!;
   return await f.t.action(internal.delivery.deliver, { outboxId: row._id });
-}
-
-function activityPushes(): SentPush[] {
-  return pushesSent().filter((push) => push.message.pushType === "liveactivity");
-}
-
-function starts(): StartAps[] {
-  return activityPushes()
-    .map((push) => push.payload.aps as StartAps)
-    .filter((aps) => aps.event === "start");
-}
-
-async function outbox(
-  f: PhoneFixture,
-  instanceId: Id<"taskInstances">,
-): Promise<Doc<"notificationOutbox">[]> {
-  return await f.t.run(async (ctx) => {
-    const rows = await ctx.db
-      .query("notificationOutbox")
-      .withIndex("by_task_instance", (q) => q.eq("taskInstanceId", instanceId))
-      .collect();
-    return rows.filter((row) => row.recipientDeviceId === f.phoneId);
-  });
 }
 
 function refuseStart(result: { status: number; retryable?: boolean }): void {

@@ -4,8 +4,10 @@ import { convexTest } from "convex-test";
 import { expect, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
+import { pushesSent } from "./deliveryMocks.helpers";
+import type { SentPush } from "./deliveryMocks.helpers";
 import { activityView } from "./lib/liveActivity";
-import type { LiveActivityPhase } from "./lib/validators";
+import type { ActivityContent, LiveActivityPhase } from "./lib/validators";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./**/*.helpers.ts"]);
@@ -224,5 +226,101 @@ export async function insertActivity(
       phase,
       shown: view.content,
     });
+  });
+}
+
+export interface ActivityAps {
+  timestamp: number;
+  event: "start" | "update" | "end";
+  "content-state": ActivityContent;
+  "stale-date"?: number;
+  "dismissal-date"?: number;
+}
+
+export interface StartAps extends ActivityAps {
+  "attributes-type": string;
+  attributes: { activityKey: string; instanceId: string; icon: string; receiptMs: number };
+  alert: { title: string; body: string; sound?: string };
+  "stale-date": number;
+  "relevance-score": number;
+}
+
+export function activityPushes(): SentPush[] {
+  return pushesSent().filter((push) => push.message.pushType === "liveactivity");
+}
+
+function activityAps(event: ActivityAps["event"]): (SentPush & { aps: ActivityAps })[] {
+  return activityPushes()
+    .map((push) => ({ ...push, aps: push.payload.aps as ActivityAps }))
+    .filter((push) => push.aps.event === event);
+}
+
+export function starts(): StartAps[] {
+  return activityAps("start").map((push) => push.aps as StartAps);
+}
+
+export function updates(): (SentPush & { aps: ActivityAps })[] {
+  return activityAps("update");
+}
+
+export function ends(): (SentPush & { aps: ActivityAps })[] {
+  return activityAps("end");
+}
+
+export async function reportStartToken(f: PhoneFixture): Promise<void> {
+  const response = await putPushState(f, {
+    liveActivityStart: { token: START_TOKEN, enabled: true },
+  });
+  expect(response.status).toBe(200);
+}
+
+async function reportOpenActivities(f: PhoneFixture, token: string | null): Promise<unknown[]> {
+  const open = (await activities(f)).filter((row) => row.phase.kind !== "ended");
+  const response = await putPushState(f, {
+    activities: open.map((row) => ({ key: row._id, token, state: "active" })),
+  });
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { activities: unknown[] }).activities;
+}
+
+export async function proveStarts(f: PhoneFixture): Promise<void> {
+  await reportOpenActivities(f, null);
+}
+
+export async function reportUpdateToken(f: PhoneFixture): Promise<unknown[]> {
+  return await reportOpenActivities(f, UPDATE_TOKEN);
+}
+
+export async function pressOnDisplay(
+  f: PhoneFixture,
+  instanceId: Id<"taskInstances">,
+  step?: number,
+): Promise<string> {
+  const response = await postConfirm(f, await displayToken(f), {
+    instanceId,
+    pressedAgoMs: 0,
+    via: "button",
+    ...(step === undefined ? {} : { step }),
+  });
+  return ((await response.json()) as { status: string }).status;
+}
+
+export async function confirmOnDisplay(
+  f: PhoneFixture,
+  instanceId: Id<"taskInstances">,
+): Promise<void> {
+  expect(await pressOnDisplay(f, instanceId)).toBe("confirmed");
+}
+
+export async function outbox(
+  f: PhoneFixture,
+  instanceId: Id<"taskInstances">,
+): Promise<Doc<"notificationOutbox">[]> {
+  return await f.t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("notificationOutbox")
+      .withIndex("by_task_instance", (q) => q.eq("taskInstanceId", instanceId))
+      .collect();
+    return rows.filter((row) => row.recipientDeviceId === f.phoneId);
   });
 }
