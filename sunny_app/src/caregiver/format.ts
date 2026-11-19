@@ -30,6 +30,10 @@ export type ChatPost = Extract<ChatItem, { type: 'post' }>;
 
 export const DIGEST_LABEL = 'Daily summary';
 
+export const MAIL_LABEL = 'Mail';
+
+const MAIL_HEADER_LINES = 3;
+
 export const HIGH_PRIORITY_DETAIL = 'High priority';
 
 export const WEEK_LENGTH = 7;
@@ -397,7 +401,7 @@ export const NOT_SPOKEN = 'Nothing. Tasks without a time are not announced.';
 
 export interface TranscriptEntry {
   id: string;
-  kind: 'caregiver' | 'sunny' | 'working' | 'error' | 'wording';
+  kind: 'caregiver' | 'sunny' | 'notice' | 'working' | 'error' | 'wording';
   text: string;
   speaker: string | null;
   label: string | null;
@@ -470,21 +474,44 @@ function requestEntries(request: AgentRequest, userId: string | null): Transcrip
   return entries;
 }
 
+function mailParts(body: string): { header: string | null; text: string } {
+  const lines = body.split('\n');
+  if (lines.length <= MAIL_HEADER_LINES || lines[MAIL_HEADER_LINES] !== '') {
+    return { header: null, text: body };
+  }
+  return {
+    header: lines.slice(0, MAIL_HEADER_LINES).join('\n'),
+    text: lines.slice(MAIL_HEADER_LINES + 1).join('\n'),
+  };
+}
+
+function postEntry(post: ChatPost): TranscriptEntry {
+  const entry = {
+    id: `${post.id}-post`,
+    kind: 'sunny',
+    text: post.body,
+    speaker: null,
+    label: null,
+    wording: null,
+  } as const;
+  switch (post.kind) {
+    case 'digest':
+      return { ...entry, label: postLabel(post.localDate) };
+    case 'mail': {
+      const { header, text } = mailParts(post.body);
+      return { ...entry, text, label: header ?? MAIL_LABEL };
+    }
+    case 'mailbox':
+      return { ...entry, kind: 'notice' };
+  }
+}
+
 export function buildTranscript(items: ChatItem[], userId: string | null): TranscriptEntry[] {
-  return [...items].reverse().flatMap((item): TranscriptEntry[] =>
-    item.type === 'request'
-      ? requestEntries(item, userId)
-      : [
-          {
-            id: `${item.id}-post`,
-            kind: 'sunny',
-            text: item.body,
-            speaker: null,
-            label: postLabel(item.localDate),
-            wording: null,
-          },
-        ],
-  );
+  return [...items]
+    .reverse()
+    .flatMap((item): TranscriptEntry[] =>
+      item.type === 'request' ? requestEntries(item, userId) : [postEntry(item)],
+    );
 }
 
 export function hasInProgress(items: ChatItem[]): boolean {

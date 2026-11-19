@@ -200,6 +200,51 @@ describe('CaregiverChatScreen', () => {
     });
   });
 
+  it('shows a mail post as a quiet header above its body, keeping the line breaks', async () => {
+    const mail = {
+      type: 'post',
+      id: 'p2',
+      householdId: HOUSEHOLD,
+      kind: 'mail',
+      body: [
+        'From: Dr Lee <office@clinic.example> (verified sender)',
+        'Subject: Checkup',
+        'Received: Friday, November 13 at 9:00 AM',
+        '',
+        'Added to the calendar:',
+        'Checkup, Tuesday at 2:00 PM.',
+      ].join('\n'),
+      localDate: '2026-11-13',
+      createdAt: 5,
+    };
+    const renderer = await renderChat(true, [mail]);
+    const message = renderer.root.findByType(AgentMessage);
+    expect(message.props.label).toBe(
+      [
+        'From: Dr Lee <office@clinic.example> (verified sender)',
+        'Subject: Checkup',
+        'Received: Friday, November 13 at 9:00 AM',
+      ].join('\n'),
+    );
+    expect(message.props.text).toBe('Added to the calendar:\nCheckup, Tuesday at 2:00 PM.');
+    expect(texts(renderer)).toContain('Added to the calendar:\nCheckup, Tuesday at 2:00 PM.');
+  });
+
+  it('shows a mailbox post as a short notice from Sunny', async () => {
+    const mailbox = {
+      type: 'post',
+      id: 'p3',
+      householdId: HOUSEHOLD,
+      kind: 'mailbox',
+      body: 'Sunny now reads mom@example.com.',
+      localDate: '2026-11-13',
+      createdAt: 6,
+    };
+    const renderer = await renderChat(true, [mailbox]);
+    expect(texts(renderer)).toContain('Sunny now reads mom@example.com.');
+    expect(renderer.root.findAllByType(AgentMessage)).toHaveLength(0);
+  });
+
   it('a viewer sees the digest posts read-only', async () => {
     const posts = THREAD.filter((item) => item.type === 'post');
     const renderer = await renderChat(false, posts);
