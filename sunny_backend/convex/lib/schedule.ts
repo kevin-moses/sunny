@@ -286,6 +286,7 @@ export async function resyncHouseholdTimezone(
   }
   await deleteInstances(ctx, doomed);
   await expandTasks(ctx, now, { householdId });
+  await requestWidgetRefresh(ctx, actor, householdId);
 }
 
 export function scheduleChanged(before: TaskFields, after: TaskFields): boolean {

@@ -6,6 +6,7 @@ import type { SentPush } from "./deliveryMocks.helpers";
 import { WIDGET_REFRESH_GAP_MS } from "./lib/widgetRefresh";
 import {
   ALERT_TOKEN,
+  DAY,
   MIN,
   WIDGET_TOKEN,
   addTask,
@@ -135,6 +136,112 @@ describe("a change the phone's timeline could not predict", () => {
     await addTask(f, { title: "Morning pills", time: "08:00" });
     await settle(f.t);
     expect(refreshes()).toHaveLength(1);
+  });
+});
+
+describe("a calendar change, which moves the widget's Next line", () => {
+  async function forgetLastRefresh(f: PhoneFixture): Promise<void> {
+    await settle(f.t);
+    await f.t.run(async (ctx) => {
+      const row = (await ctx.db.query("phonePush").first())!;
+      await ctx.db.patch(row._id, { widgetRefresh: undefined });
+    });
+    resetProviderMocks();
+  }
+
+  async function withWidget(): Promise<PhoneFixture> {
+    const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
+    setNow(T0);
+    return f;
+  }
+
+  async function addVisit(f: PhoneFixture): Promise<Id<"events">> {
+    const event = await f.t.withIdentity({ subject: f.caregiver }).mutation(api.calendar.addEvent, {
+      householdId: f.householdId,
+      title: "Anna visits",
+      onDate: DAY,
+      startTime: "15:00",
+    });
+    return event.eventId;
+  }
+
+  function widgetPushes(): string[][] {
+    return refreshes().map((push) => push.tokens);
+  }
+
+  test("a new event asks for a refresh", async () => {
+    const f = await withWidget();
+    await addVisit(f);
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([[WIDGET_TOKEN]]);
+  });
+
+  test("an edited event asks for a refresh, and an edit that changes nothing does not", async () => {
+    const f = await withWidget();
+    const eventId = await addVisit(f);
+    await forgetLastRefresh(f);
+    const pat = f.t.withIdentity({ subject: f.caregiver });
+    await pat.mutation(api.calendar.updateEvent, {
+      householdId: f.householdId,
+      eventId,
+      changes: { startTime: "16:00" },
+    });
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([[WIDGET_TOKEN]]);
+
+    await forgetLastRefresh(f);
+    await pat.mutation(api.calendar.updateEvent, {
+      householdId: f.householdId,
+      eventId,
+      changes: { startTime: "16:00" },
+    });
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([]);
+  });
+
+  test("a cancelled event asks for a refresh", async () => {
+    const f = await withWidget();
+    const eventId = await addVisit(f);
+    await forgetLastRefresh(f);
+    await f.t
+      .withIdentity({ subject: f.caregiver })
+      .mutation(api.calendar.cancelEvent, { householdId: f.householdId, eventId });
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([[WIDGET_TOKEN]]);
+  });
+
+  test("a new household timezone asks for a refresh, and other settings do not", async () => {
+    const f = await withWidget();
+    const pat = f.t.withIdentity({ subject: f.caregiver });
+    await pat.mutation(api.households.update, {
+      householdId: f.householdId,
+      timezone: "America/Chicago",
+    });
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([[WIDGET_TOKEN]]);
+
+    await forgetLastRefresh(f);
+    await pat.mutation(api.households.update, {
+      householdId: f.householdId,
+      timezone: "America/Chicago",
+      digestTime: "18:30",
+    });
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([]);
+  });
+
+  test("two event changes inside ten minutes send one push at once and fold the second", async () => {
+    const f = await withWidget();
+    const eventId = await addVisit(f);
+    await f.t
+      .withIdentity({ subject: f.caregiver })
+      .mutation(api.calendar.cancelEvent, { householdId: f.householdId, eventId });
+    await settle(f.t);
+    expect(widgetPushes()).toEqual([[WIDGET_TOKEN]]);
+    expect((await phonePushRow(f))!.widgetRefresh).toEqual({
+      sentAt: expect.closeTo(T0, -2),
+      trailingAt: expect.closeTo(T0 + WIDGET_REFRESH_GAP_MS, -2),
+    });
   });
 });
 
