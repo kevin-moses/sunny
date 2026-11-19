@@ -63,9 +63,13 @@ public struct PressQueue: Sendable {
 
     public func append(_ press: Press) throws {
         let encoder = JSONEncoder()
-        try place(encoder.encode(PressedMark(key: press.key, at: press.pressedAt)), named: press.id, in: marksDirectory)
+        try write(
+            encoder.encode(PressedMark(key: press.key, at: press.pressedAt)),
+            to: fileURL(for: press.id, in: marksDirectory),
+            overwriting: false
+        )
         do {
-            try place(encoder.encode(press), named: press.id, in: pressesDirectory)
+            try write(encoder.encode(press), to: fileURL(for: press.id, in: pressesDirectory), overwriting: false)
         } catch {
             try? FileManager.default.removeItem(at: fileURL(for: press.id, in: marksDirectory))
             throw error
@@ -87,12 +91,16 @@ public struct PressQueue: Sendable {
     }
 
     public func answered(_ id: UUID, at answeredAt: Date) {
-        try? replace(JSONEncoder().encode(PressAnswer(at: answeredAt)), at: fileURL(for: id, in: answersDirectory))
+        try? write(JSONEncoder().encode(PressAnswer(at: answeredAt)), to: fileURL(for: id, in: answersDirectory), overwriting: true)
         try? FileManager.default.removeItem(at: fileURL(for: id, in: pressesDirectory))
     }
 
     public func mark(_ id: UUID, key: PressKey, at pressedAt: Date) throws {
-        try replace(JSONEncoder().encode(PressedMark(key: key, at: pressedAt)), at: fileURL(for: id, in: marksDirectory))
+        try write(
+            JSONEncoder().encode(PressedMark(key: key, at: pressedAt)),
+            to: fileURL(for: id, in: marksDirectory),
+            overwriting: true
+        )
     }
 
     public func removeMark(_ id: UUID) {
@@ -164,23 +172,21 @@ public struct PressQueue: Sendable {
         directory.appendingPathComponent("\(id.uuidString).json")
     }
 
-    private func place(_ data: Data, named id: UUID, in directory: URL) throws {
+    private func write(_ data: Data, to destination: URL, overwriting: Bool) throws {
         let staged = try stage(data)
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try FileManager.default.moveItem(at: staged, to: fileURL(for: id, in: directory))
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if overwriting {
+                guard rename(staged.path, destination.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
+            } else {
+                try FileManager.default.moveItem(at: staged, to: destination)
+            }
         } catch {
             try? FileManager.default.removeItem(at: staged)
             throw error
-        }
-    }
-
-    private func replace(_ data: Data, at destination: URL) throws {
-        let staged = try stage(data)
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard rename(staged.path, destination.path) == 0 else {
-            try? FileManager.default.removeItem(at: staged)
-            throw CocoaError(.fileWriteUnknown)
         }
     }
 

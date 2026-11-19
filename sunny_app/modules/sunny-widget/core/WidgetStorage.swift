@@ -33,9 +33,7 @@ public struct WidgetStorage: Sendable {
     }
 
     public func saveCache(body: Data, etag: String?) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(CacheEnvelope(etag: etag, body: body))
-        try data.write(to: cacheURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try write(JSONEncoder().encode(CacheEnvelope(etag: etag, body: body)), to: cacheURL)
     }
 
     public func loadWidgetPush() -> WidgetPushReport? {
@@ -44,9 +42,7 @@ public struct WidgetStorage: Sendable {
     }
 
     public func saveWidgetPush(_ report: WidgetPushReport) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(report)
-        try data.write(to: widgetPushURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try write(JSONEncoder().encode(report), to: widgetPushURL)
     }
 
     @discardableResult
@@ -57,6 +53,11 @@ public struct WidgetStorage: Sendable {
             removed = true
         }
         return removed
+    }
+
+    private func write(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     public func withCredentialsLock<T>(_ body: () throws -> T) throws -> T {
