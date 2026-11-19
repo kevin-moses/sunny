@@ -175,7 +175,7 @@ export const INFO_TOPICS = [
   "prescription_coming",
   "package_arrived",
   "package_coming",
-  "family_news",
+  "personal_note",
 ] as const;
 
 export type InfoTopic = (typeof INFO_TOPICS)[number];
@@ -185,7 +185,7 @@ export const SENIOR_SENTENCES: Record<InfoTopic, string> = {
   prescription_coming: "The pharmacy is getting your prescription ready.",
   package_arrived: "A package was delivered to your home.",
   package_coming: "A package is on the way to your home.",
-  family_news: "You have a friendly email from family or a friend. Someone can read it with you.",
+  personal_note: "You have a personal email. Someone can read it with you.",
 };
 
 export const DECISION_REASONS = [

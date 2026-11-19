@@ -790,9 +790,7 @@ export const TRUTH_TABLE: Row[] = [
   {
     rule: "personal note",
     decide: (r) =>
-      is(r, "personal_note")
-        ? info("family_news", "The email is a personal note from a relative or friend.")
-        : null,
+      is(r, "personal_note") ? info("personal_note", "The email reads as a personal note.") : null,
   },
   {
     rule: "bulk mail, receipt or feedback request",

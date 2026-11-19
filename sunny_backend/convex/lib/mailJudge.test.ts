@@ -260,7 +260,7 @@ const ROWS: [string, string, Readings, string][] = [
     readings({ confirms_appointment: "yes" }, { when: DEC_10, otherTimeZone: "unsure" }),
     "needs_decision:other",
   ],
-  ["personal note", "", readings({ personal_note: "yes" }), "senior_info:family_news"],
+  ["personal note", "", readings({ personal_note: "yes" }), "senior_info:personal_note"],
   [
     "bulk mail, receipt or feedback request",
     "bulk mail with an unsettled broad question",
@@ -449,8 +449,7 @@ describe("Sunny's own words", () => {
       prescription_coming: "The pharmacy is getting your prescription ready.",
       package_arrived: "A package was delivered to your home.",
       package_coming: "A package is on the way to your home.",
-      family_news:
-        "You have a friendly email from family or a friend. Someone can read it with you.",
+      personal_note: "You have a personal email. Someone can read it with you.",
     });
   });
 
