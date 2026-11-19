@@ -191,7 +191,7 @@ What the phone must do that the server cannot check:
 
 - Keep one activity per `activityKey`. A start push that APNs answered late is sent again with the same key, so the phone can receive two starts for one key. It ends the extra one.
 - End every Sunny activity when the device API answers 401. The device was removed or its token revoked, and the server can no longer reach an activity that has no update token.
-- After a Done press on the last step, end its own activity with the receipt and dismiss it `receiptMs` later. Whether the server's end push that follows cuts the receipt short is a real-phone check.
+- After a Done press on the last step, end its own activity with the receipt and dismiss it `receiptMs` later. The server's end push for that press carries the same dismissal time ("The pushes", End). Whether iOS applies it to an activity the app has already ended is a real-phone check.
 
 #### The pushes
 
@@ -216,7 +216,7 @@ Start (`aps`):
 
 Update: `"timestamp"`, `"event": "update"`, `"content-state"`, `"stale-date"`. It expires at the stale date.
 
-End: `"timestamp"`, `"event": "end"`, `"content-state"`, `"dismissal-date"`. The dismissal date is the second the start was accepted, which is always in the past, so the banner leaves at once. The push expires 12 hours after the start was accepted (`ACTIVITY_LIFETIME_MS`), which is how long iOS can keep an activity.
+End: `"timestamp"`, `"event": "end"`, `"content-state"`, `"dismissal-date"`. The dismissal date is the second the start was accepted, which is always in the past, so the banner leaves at once. There is one exception. When the task was confirmed with `via: "live_activity"` by the phone that shows this activity, the dismissal date is the confirm time plus `receiptMs`, so the push does not cut the receipt short (`receiptUntil` in `lib/liveActivity.ts`). A confirm from any other surface, another phone's activity included, dismisses at once. The push expires 12 hours after the start was accepted (`ACTIVITY_LIFETIME_MS`), which is how long iOS can keep an activity.
 
 `ContentState` is `{ card, nextSteps, closed }`:
 
@@ -233,7 +233,8 @@ Times inside the content are epoch milliseconds as numbers, and no field is a da
 | `start.json` | Start for a one-step medication, with sound |
 | `start-quiet-steps.json` | Start without sound for a three-step task that came back |
 | `update-step.json` | Update after the first step was pressed elsewhere |
-| `end-done.json` | End after the task was confirmed |
+| `end-done.json` | End after the task was confirmed on another surface |
+| `end-done-receipt.json` | End after Done was pressed on this activity; the dismissal date is 10 seconds after the confirm |
 | `end-window-closed.json` | End after the window closed |
 | `alert-reprompt.json` | The time-sensitive notification (reprompt or fallback) |
 | `background-refresh.json` | Background push that asks the app to reload widget timelines |
@@ -306,7 +307,7 @@ Not verified, to check on a phone before the pilot:
 
 - that `stale-date` and `dismissal-date` are in seconds (Apple's example suggests it, the text does not say it);
 - whether a start alert without `sound` is silent;
-- whether an end push that arrives during the phone's own receipt cuts it short;
+- whether an end push whose dismissal date is the end of the receipt leaves the phone's own receipt up until then;
 - whether a retried start with the same `activityKey` shows a second activity;
 - what happens to a start on a force-quit phone, and whether the Done intent launches the app there;
 - whether APNs stores two starts for one offline phone, or only the last;

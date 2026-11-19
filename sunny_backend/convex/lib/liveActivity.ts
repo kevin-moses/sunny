@@ -47,18 +47,34 @@ export interface ActivityRow {
   windowEnd: number;
 }
 
-export type ViewInput = { phoneCanConfirm: boolean } & (
+export interface ActivityPhone {
+  userId: string | null;
+  canConfirm: boolean;
+}
+
+export type ViewInput = { phone: ActivityPhone } & (
   { subject: ActivitySubject; row: ActivityRow | null } | { subject: null; row: ActivityRow }
 );
 
 export type ActivityView =
   | { kind: "show"; content: ActivityContent; staleAt: number; relevance: number }
-  | { kind: "end"; content: ActivityContent; reason: ActivityEndReason };
+  | {
+      kind: "end";
+      content: ActivityContent;
+      reason: ActivityEndReason;
+      receiptUntil: number | null;
+    };
 
 export type ActivityCommand =
   | { kind: "none" }
   | { kind: "update"; token: string; content: ActivityContent; staleAt: number }
-  | { kind: "end"; token: string; content: ActivityContent; reason: ActivityEndReason };
+  | {
+      kind: "end";
+      token: string;
+      content: ActivityContent;
+      reason: ActivityEndReason;
+      receiptUntil: number | null;
+    };
 
 export interface ActivityStart {
   content: ActivityContent;
@@ -111,8 +127,21 @@ function ended(
   content: ActivityContent,
   closed: ActivityClosed,
   reason: ActivityEndReason,
+  receiptUntil: number | null = null,
 ): ActivityView {
-  return { kind: "end", content: { ...content, closed }, reason };
+  return { kind: "end", content: { ...content, closed }, reason, receiptUntil };
+}
+
+function receiptUntil(
+  instance: Pick<Doc<"taskInstances">, "confirmedVia" | "confirmedBy" | "confirmedAt">,
+  phone: ActivityPhone,
+): number | null {
+  const pressedOnThisActivity =
+    instance.confirmedVia === "live_activity" &&
+    phone.userId !== null &&
+    instance.confirmedBy === phone.userId;
+  if (!pressedOnThisActivity || instance.confirmedAt === undefined) return null;
+  return instance.confirmedAt + RECEIPT_MS;
 }
 
 function showing(row: ActivityRow | null): Showing {
@@ -152,15 +181,22 @@ export function wantsActivity(
 
 export function activityView(input: ViewInput, now: number): ActivityView {
   const was = showing(input.row);
-  if (was.kind === "ended") return { kind: "end", content: was.shown, reason: was.reason };
+  if (was.kind === "ended") {
+    return { kind: "end", content: was.shown, reason: was.reason, receiptUntil: null };
+  }
   if (input.subject === null) {
     return ended(input.row.shown, { kind: "over", at: now }, "instance_gone");
   }
   const { instance } = input.subject;
   const content = taskContent(input.subject, now);
-  if (!input.phoneCanConfirm) return ended(content, { kind: "over", at: now }, "device_revoked");
+  if (!input.phone.canConfirm) return ended(content, { kind: "over", at: now }, "device_revoked");
   if (isDoneState(instance.state)) {
-    return ended(content, { kind: "done", at: instance.confirmedAt ?? now }, "confirmed");
+    return ended(
+      content,
+      { kind: "done", at: instance.confirmedAt ?? now },
+      "confirmed",
+      receiptUntil(instance, input.phone),
+    );
   }
   if (!wantsActivity(instance, now)) {
     return ended(content, { kind: "over", at: Math.min(now, instance.windowEnd) }, "window_closed");
@@ -179,7 +215,8 @@ export function nextCommand(row: ActivityRow, view: ActivityView): ActivityComma
   if (row.phase.kind !== "live") return { kind: "none" };
   const token = row.phase.updateToken;
   if (view.kind === "end") {
-    return { kind: "end", token, content: view.content, reason: view.reason };
+    const { content, reason, receiptUntil } = view;
+    return { kind: "end", token, content, reason, receiptUntil };
   }
   if (sameContent(row.shown, view.content)) return { kind: "none" };
   return { kind: "update", token, content: view.content, staleAt: view.staleAt };
@@ -219,11 +256,12 @@ export async function loadActivityView(
   const instance = await ctx.db.get(row.taskInstanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
   const device = await ctx.db.get(row.deviceId);
-  const phoneCanConfirm = device !== null && device.tokenHash !== undefined;
-  if (instance === null || task === null) {
-    return activityView({ subject: null, row, phoneCanConfirm }, now);
-  }
-  return activityView({ subject: { instance, task }, row, phoneCanConfirm }, now);
+  const phone: ActivityPhone = {
+    userId: device?.userId ?? null,
+    canConfirm: device !== null && device.tokenHash !== undefined,
+  };
+  if (instance === null || task === null) return activityView({ subject: null, row, phone }, now);
+  return activityView({ subject: { instance, task }, row, phone }, now);
 }
 
 export async function endActivity(
@@ -428,7 +466,11 @@ export async function planStart(
   const open = (await openActivitiesOf(ctx, device._id)).filter((r) => r._id !== resume?._id);
   if (open.length >= MAX_OPEN_ACTIVITIES) return null;
   const view = activityView(
-    { subject: { instance, task }, row: resume, phoneCanConfirm: true },
+    {
+      subject: { instance, task },
+      row: resume,
+      phone: { userId: device.userId, canConfirm: true },
+    },
     now,
   );
   if (view.kind !== "show") return null;

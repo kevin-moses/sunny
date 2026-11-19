@@ -10,7 +10,7 @@ import {
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
 import type { ApnsSendArgs } from "./deliveryMocks.helpers";
-import { ACTIVITY_CAP_MS, PROOF_WAIT_MS } from "./lib/liveActivity";
+import { ACTIVITY_CAP_MS, PROOF_WAIT_MS, RECEIPT_MS } from "./lib/liveActivity";
 import { ENDED_KEPT_MS } from "./lib/liveActivitySync";
 import {
   ALERT_TOKEN,
@@ -37,6 +37,7 @@ import {
   putPushState,
   reportStartToken,
   reportUpdateToken,
+  secondPhone,
   setNow,
   settle,
   starts,
@@ -385,6 +386,75 @@ describe("a multi-step task", () => {
       kind: "ended",
       reason: "confirmed",
     });
+  });
+});
+
+describe("the receipt after Done is pressed on the activity itself", () => {
+  const SECOND_ALERT_TOKEN = "f6".repeat(32);
+
+  const SECOND_UPDATE_TOKEN = "b9".repeat(80);
+
+  async function pressOnPhone(
+    f: PhoneFixture,
+    instanceId: Id<"taskInstances">,
+    via: "live_activity" | "widget",
+  ): Promise<void> {
+    const response = await postConfirm(f, f.deviceToken, { instanceId, pressedAgoMs: 0, via });
+    expect(((await response.json()) as { status: string }).status).toBe("confirmed");
+  }
+
+  test("the end push to that phone dismisses the activity ten seconds after the press", async () => {
+    const { f, instanceId } = await live();
+    setNow(EIGHT + 4 * MIN);
+    await pressOnPhone(f, instanceId, "live_activity");
+    await settle(f.t);
+    const [end] = ends();
+    expect(ends()).toHaveLength(1);
+    expect(end!.aps["content-state"].closed).toEqual({ kind: "done", at: about(EIGHT + 4 * MIN) });
+    expect(end!.aps["dismissal-date"]).toBe((EIGHT + 4 * MIN + RECEIPT_MS) / 1000);
+    expect(end!.aps["dismissal-date"]).toBeGreaterThan(end!.aps.timestamp);
+  });
+
+  test("a press on the same phone's widget dismisses the activity at once", async () => {
+    const { f, instanceId } = await live();
+    setNow(EIGHT + 4 * MIN);
+    await pressOnPhone(f, instanceId, "widget");
+    await settle(f.t);
+    expect(ends()).toHaveLength(1);
+    expect(ends()[0]!.aps["dismissal-date"]).toBeLessThan(ends()[0]!.aps.timestamp);
+  });
+
+  test("another phone that shows the task is dismissed at once", async () => {
+    const f = await phoneHousehold(makePhoneBackend());
+    const other = await secondPhone(f, SECOND_ALERT_TOKEN);
+    await reportStartToken(f);
+    expect(
+      (
+        await putPushState(other, {
+          liveActivityStart: { token: "7c".repeat(80), enabled: true },
+        })
+      ).status,
+    ).toBe(200);
+    const instanceId = await addTask(f, { title: "Morning pills", time: "08:00" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    for (const row of await activities(f)) {
+      const mine = row.deviceId === f.phoneId;
+      const response = await putPushState(mine ? f : other, {
+        activities: [
+          { key: row._id, token: mine ? UPDATE_TOKEN : SECOND_UPDATE_TOKEN, state: "active" },
+        ],
+      });
+      expect(response.status).toBe(200);
+    }
+    setNow(EIGHT + 4 * MIN);
+    await pressOnPhone(f, instanceId, "live_activity");
+    await settle(f.t);
+
+    const dismissals = new Map(ends().map((end) => [end.tokens[0], end.aps["dismissal-date"]]));
+    expect(ends()).toHaveLength(2);
+    expect(dismissals.get(UPDATE_TOKEN)).toBe((EIGHT + 4 * MIN + RECEIPT_MS) / 1000);
+    expect(dismissals.get(SECOND_UPDATE_TOKEN)).toBeLessThan((EIGHT + 4 * MIN) / 1000);
   });
 });
 

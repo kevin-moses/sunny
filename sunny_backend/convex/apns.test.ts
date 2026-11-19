@@ -176,7 +176,7 @@ describe("apns.send", () => {
       closed: { kind: "done" as const, at: WINDOW_START + 60_000 },
     };
     const end = liveActivityEndMessage(
-      { kind: "end", token: UPDATE_TOKEN, content, reason: "confirmed" },
+      { kind: "end", token: UPDATE_TOKEN, content, reason: "confirmed", receiptUntil: null },
       WINDOW_START,
       WINDOW_START / 1000 + 61,
     );

@@ -239,7 +239,7 @@ export function liveActivityEndMessage(
         timestamp,
         event: "end",
         "content-state": contentState(command.content),
-        "dismissal-date": seconds(acceptedAt),
+        "dismissal-date": seconds(command.receiptUntil ?? acceptedAt),
       },
     }),
   };

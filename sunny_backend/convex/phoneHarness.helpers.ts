@@ -256,7 +256,7 @@ export async function insertActivity(
     const instance = (await ctx.db.get(instanceId))!;
     const task = (await ctx.db.get(instance.taskId))!;
     const view = activityView(
-      { subject: { instance, task }, row: null, phoneCanConfirm: true },
+      { subject: { instance, task }, row: null, phone: { userId: null, canConfirm: true } },
       instance.windowStart,
     );
     return await ctx.db.insert("liveActivities", {

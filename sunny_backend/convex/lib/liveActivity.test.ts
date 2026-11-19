@@ -3,6 +3,7 @@ import type { Id } from "../_generated/dataModel";
 import {
   ACTIVITY_CAP_MS,
   CONTENT_MAX_BYTES,
+  RECEIPT_MS,
   activityView,
   fitContent,
   nextCommand,
@@ -12,6 +13,8 @@ import type { ActivityView } from "./liveActivity";
 import {
   INSTANCE_ID,
   MIN,
+  PHONE,
+  PHONE_USER_ID,
   SHOWER_STEPS,
   UPDATE_TOKEN,
   WINDOW_END,
@@ -51,7 +54,7 @@ function pillsView(
     {
       subject: { instance: instanceDoc(instance), task: taskDoc() },
       row: null,
-      phoneCanConfirm: true,
+      phone: PHONE,
     },
     now,
   );
@@ -78,7 +81,7 @@ describe("activityView", () => {
   test("a task without a screen sentence or pill description shows nulls", () => {
     const { screenSentence: _sentence, pillDescription: _pills, ...task } = taskDoc();
     const view = activityView(
-      { subject: { instance: instanceDoc(), task }, row: null, phoneCanConfirm: true },
+      { subject: { instance: instanceDoc(), task }, row: null, phone: PHONE },
       NOW,
     );
     expect(view.content.card).toMatchObject({ sentence: null, detail: null });
@@ -92,15 +95,43 @@ describe("activityView", () => {
         kind: "end",
         reason: "confirmed",
         content: { ...PILLS, closed: { kind: "done", at: confirmedAt } },
+        receiptUntil: null,
       });
     },
   );
+
+  describe("the receipt of a press on the activity itself", () => {
+    const confirmedAt = WINDOW_START + 3 * MIN;
+    const pressed = { state: "confirmed" as const, confirmedAt };
+
+    test("a press on this phone's activity keeps it for the receipt time", () => {
+      const view = pillsView({
+        ...pressed,
+        confirmedVia: "live_activity",
+        confirmedBy: PHONE_USER_ID,
+      });
+      expect(view).toMatchObject({ kind: "end", receiptUntil: confirmedAt + RECEIPT_MS });
+    });
+
+    test.each([
+      ["another phone's activity", { confirmedVia: "live_activity", confirmedBy: "user_other" }],
+      ["this phone's widget", { confirmedVia: "widget", confirmedBy: PHONE_USER_ID }],
+      ["the home display's button", { confirmedVia: "button", confirmedBy: "user_display" }],
+      ["a caregiver", { confirmedVia: "caregiver", confirmedBy: "user_pat" }],
+    ] as const)("a confirm from %s has no receipt on this phone", (_surface, confirm) => {
+      expect(pillsView({ ...pressed, ...confirm })).toMatchObject({
+        kind: "end",
+        receiptUntil: null,
+      });
+    });
+  });
 
   test("a missed task ends as window_closed at its window end", () => {
     expect(pillsView({ state: "missed" }, WINDOW_END + 2 * MIN)).toEqual({
       kind: "end",
       reason: "window_closed",
       content: { ...PILLS, closed: { kind: "over", at: WINDOW_END } },
+      receiptUntil: null,
     });
   });
 
@@ -126,25 +157,28 @@ describe("activityView", () => {
 
   test("a phone that can no longer confirm ends as device_revoked", () => {
     const view = activityView(
-      { subject: { instance: instanceDoc(), task: taskDoc() }, row: null, phoneCanConfirm: false },
+      {
+        subject: { instance: instanceDoc(), task: taskDoc() },
+        row: null,
+        phone: { ...PHONE, canConfirm: false },
+      },
       NOW,
     );
     expect(view).toEqual({
       kind: "end",
       reason: "device_revoked",
       content: { ...PILLS, closed: { kind: "over", at: NOW } },
+      receiptUntil: null,
     });
   });
 
   test("a deleted instance ends as instance_gone with the content last shown", () => {
-    const view = activityView(
-      { subject: null, row: rowOf(livePhase(), PILLS), phoneCanConfirm: true },
-      NOW,
-    );
+    const view = activityView({ subject: null, row: rowOf(livePhase(), PILLS), phone: PHONE }, NOW);
     expect(view).toEqual({
       kind: "end",
       reason: "instance_gone",
       content: { ...PILLS, closed: { kind: "over", at: NOW } },
+      receiptUntil: null,
     });
   });
 
@@ -152,10 +186,15 @@ describe("activityView", () => {
     const shown = { ...PILLS, closed: { kind: "done" as const, at: NOW } };
     const row = rowOf({ kind: "ended", at: NOW, reason: "confirmed" }, shown);
     const view = activityView(
-      { subject: { instance: instanceDoc(), task: taskDoc() }, row, phoneCanConfirm: true },
+      { subject: { instance: instanceDoc(), task: taskDoc() }, row, phone: PHONE },
       NOW + MIN,
     );
-    expect(view).toEqual({ kind: "end", reason: "confirmed", content: shown });
+    expect(view).toEqual({
+      kind: "end",
+      reason: "confirmed",
+      content: shown,
+      receiptUntil: null,
+    });
   });
 
   describe("a window longer than the system's eight hours", () => {
@@ -171,7 +210,7 @@ describe("activityView", () => {
     function longView(phase: LiveActivityPhase | null, now: number): ActivityView {
       const subject = { instance: instanceDoc({ windowEnd: longEnd }), task: taskDoc() };
       const row = phase === null ? null : rowOf(phase, PILLS);
-      return activityView({ subject, row, phoneCanConfirm: true }, now);
+      return activityView({ subject, row, phone: PHONE }, now);
     }
 
     test("the cap is 7 hours 50 minutes", () => {
@@ -197,7 +236,7 @@ describe("activityView", () => {
 
   test("a multi-step task shows its current step and carries the later steps", () => {
     const subject = { instance: instanceDoc({ currentStep: 1 }), task: showerTask() };
-    const view = activityView({ subject, row: null, phoneCanConfirm: true }, NOW);
+    const view = activityView({ subject, row: null, phone: PHONE }, NOW);
     expect(view.content).toEqual({
       card: {
         instanceId: INSTANCE_ID,
@@ -218,7 +257,7 @@ describe("activityView", () => {
 
   test("the last step carries no later steps", () => {
     const subject = { instance: instanceDoc({ currentStep: 2 }), task: showerTask() };
-    const view = activityView({ subject, row: null, phoneCanConfirm: true }, NOW);
+    const view = activityView({ subject, row: null, phone: PHONE }, NOW);
     expect(view.content.card.step).toBe(2);
     expect(view.content.nextSteps).toEqual([]);
   });
@@ -234,7 +273,7 @@ describe("activityView", () => {
   test("a checklist of fifty long steps is cut to fit and stays a prefix of the steps", () => {
     const steps = Array.from({ length: 50 }, (_, n) => `${n + 1} ${"x".repeat(196)}`);
     const subject = { instance: instanceDoc(), task: showerTask({ checklistItems: steps }) };
-    const view = activityView({ subject, row: null, phoneCanConfirm: true }, NOW);
+    const view = activityView({ subject, row: null, phone: PHONE }, NOW);
     expect(bytes(view.content)).toBeLessThanOrEqual(CONTENT_MAX_BYTES);
     expect(view.content.card).toMatchObject({ step: 0, stepCount: 50, stepText: steps[0] });
     expect(view.content.nextSteps.length).toBeGreaterThan(5);
@@ -290,6 +329,7 @@ describe("nextCommand", () => {
     kind: "end",
     reason: "confirmed",
     content: { ...PILLS, closed: { kind: "done", at: NOW } },
+    receiptUntil: null,
   };
   const tokenless: LiveActivityPhase[] = [
     { kind: "starting", outboxId: OUTBOX_ID, since: WINDOW_START },
@@ -331,6 +371,7 @@ describe("nextCommand", () => {
       token: UPDATE_TOKEN,
       content: end.content,
       reason: "confirmed",
+      receiptUntil: null,
     });
   });
 
