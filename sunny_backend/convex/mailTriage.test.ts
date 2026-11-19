@@ -1718,6 +1718,72 @@ describe("links belong to the sender's domain", () => {
       expect(await rows(h, "chatPosts")).toHaveLength(0);
       expect(await rows(h, "notificationOutbox")).toHaveLength(0);
     });
+
+    test("a clinic's second reminder after a caregiver cancelled the series changes nothing and posts nothing", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h);
+      await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      await h.t.run(async (ctx) => await ctx.db.patch(seriesId, { deletedAt: NOW }));
+      const second = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(second.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      expect(await rows(h, "chatPosts")).toHaveLength(0);
+      expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    });
+
+    test("a clinic's late reminder for a past date of the series never says the calendar moved it", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h);
+      const lastTuesday: JevSays = { ...THERAPY, when: { date: "2026-11-24", time: "10:00" } };
+      const first = await triageEmail(h, clinic({ subject: "Reminder" }), lastTuesday);
+      expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      vi.setSystemTime(NOW + 7 * DAY);
+      const late = await triageEmail(
+        h,
+        clinic({ subject: "Reminder", receivedAt: NOW + 7 * DAY - 30 * MINUTE }),
+        lastTuesday,
+      );
+      expect(late.effects).toEqual([
+        {
+          kind: "escalated",
+          reason: "unclear_appointment",
+          pushed: true,
+          proposed: { kind: "physical_therapy", date: "2026-11-24", time: "10:00" },
+        },
+      ]);
+      const [post] = await rows(h, "chatPosts");
+      expect(post!.body).toContain(
+        "Sunny did not add this appointment because its date or time did not pass Sunny's checks: Physical therapy, Tuesday, November 24 at 10:00 AM.",
+      );
+      expect(post!.body).not.toContain("Sunny's calendar");
+    });
+  });
+
+  test("a clinic's late reminder for a one-off that is over never says the calendar moved it", async () => {
+    const h = await setup();
+    const tomorrow: JevSays = { ...EYE_EXAM, when: { date: "2026-11-19", time: "10:00" } };
+    const added = await triageEmail(h, clinic({ subject: "Confirmed" }), tomorrow);
+    const [event] = await rows(h, "events");
+    expect(added.effects?.[0]).toEqual({ kind: "event_added", eventId: event!._id });
+    vi.setSystemTime(NOW + 2 * DAY);
+    const late = await triageEmail(
+      h,
+      clinic({ subject: "Reminder", receivedAt: NOW + 2 * DAY - 30 * MINUTE }),
+      tomorrow,
+    );
+    expect(late.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "unclear_appointment",
+        pushed: true,
+        proposed: { kind: "eye_doctor", date: "2026-11-19", time: "10:00" },
+      },
+    ]);
+    expect(await rows(h, "events")).toHaveLength(1);
+    const post = (await rows(h, "chatPosts")).at(-1);
+    expect(post!.body).toContain(
+      "Sunny did not add this appointment because its date or time did not pass Sunny's checks: Eye exam, Thursday, November 19 at 10:00 AM.",
+    );
+    expect(post!.body).not.toContain("Sunny's calendar");
   });
 
   test("the clinic's update moves a video call Sunny added from its invite", async () => {
