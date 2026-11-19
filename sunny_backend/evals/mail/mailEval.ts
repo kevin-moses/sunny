@@ -1,5 +1,6 @@
 import { MAIL_MODEL, triageEmail } from "../../convex/lib/mailClassify";
 import type { Classification, Classifier } from "../../convex/lib/mailClassify";
+import { JEV_MODEL } from "../../convex/lib/mailJudge";
 import { linkKey, planWithRule } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
 import { DECISION_REASONS, NO_USAGE, SUSPICIONS } from "../../convex/lib/mailTypes";
@@ -49,11 +50,12 @@ export interface Run {
 }
 
 export const PRICE_SOURCE =
-  "claude-api skill model table (cached 2026-11-03): Claude Haiku 5.5 $0.10 input and $0.50 output per million tokens at prompts of 100K tokens or fewer; cache reads 0.1x input";
+  "claude-api skill model table (cached 2026-11-03): Claude Haiku 5.5 $0.10 input and $0.50 output per million tokens at prompts of 100K tokens or fewer; cache reads 0.1x input. TypeSafe models page (docs.typesafe.ai/models.md, read 2026-11-18): Jev 1.14 $0.042 per million input tokens, output tokens free";
 
 export const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
   gate: { input: 0, output: 0, cacheRead: 0 },
   [MAIL_MODEL]: { input: 0.1, output: 0.5, cacheRead: 0.01 },
+  [JEV_MODEL]: { input: 0.042, output: 0, cacheRead: 0 },
 };
 
 const SENIOR_FACING: ReadonlySet<EffectKind> = new Set([

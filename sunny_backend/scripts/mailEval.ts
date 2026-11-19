@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { haikuClassifier } from "../convex/lib/mailClassify";
 import type { Classifier } from "../convex/lib/mailClassify";
+import { jevClassifier } from "../convex/lib/mailJudge";
 import {
   formatReport,
   parseFixtures,
@@ -17,7 +18,7 @@ import type { Fixture, Recording, Run } from "../evals/mail/mailEval";
 const EVAL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "evals", "mail");
 const FIXTURE_DIR = join(EVAL_DIR, "fixtures");
 const USAGE =
-  "Usage: tsx scripts/mailEval.ts --classifier haiku|replay [--repeat N] [--out report.json] [--record recording.json] [--replay recording.json] [--concurrency N]";
+  "Usage: tsx scripts/mailEval.ts --classifier haiku|jev|replay [--repeat N] [--out report.json] [--record recording.json] [--replay recording.json] [--concurrency N]";
 
 function loadFixtures(): Fixture[] {
   const files = readdirSync(FIXTURE_DIR)
@@ -88,6 +89,12 @@ async function main(): Promise<void> {
   switch (values.classifier) {
     case "haiku": {
       const recorder = recordingClassifier(haikuClassifier);
+      classifier = recorder.classifier;
+      recording = recorder.recording;
+      break;
+    }
+    case "jev": {
+      const recorder = recordingClassifier(jevClassifier);
       classifier = recorder.classifier;
       recording = recorder.recording;
       break;
