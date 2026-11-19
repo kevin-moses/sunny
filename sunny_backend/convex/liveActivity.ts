@@ -1,9 +1,9 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import { internalAction, internalMutation } from "./_generated/server";
 import { liveActivityEndMessage, liveActivityUpdateMessage } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
-import { endActivity, loadActivityView, nextCommand } from "./lib/liveActivity";
+import { endActivity, loadActivityView, nextCommand, nextPushTimestamp } from "./lib/liveActivity";
 import { proofMissed, reshowIfDue } from "./lib/liveActivitySync";
 import { activityContent, activityEndReason } from "./lib/validators";
 import type { ActivityContent, ActivityEndReason, ApnsMessage } from "./lib/validators";
@@ -16,6 +16,7 @@ export type PushPlan =
       message: ApnsMessage;
       content: ActivityContent;
       ends: ActivityEndReason | null;
+      timestamp: number;
     };
 
 export const checkProof = internalMutation({
@@ -26,34 +27,30 @@ export const checkProof = internalMutation({
   },
 });
 
-export const plan = internalQuery({
+export const plan = internalMutation({
   args: { activityId: v.id("liveActivities") },
   handler: async (ctx, args): Promise<PushPlan> => {
     const row = await ctx.db.get(args.activityId);
     if (row === null || row.phase.kind !== "live") return { kind: "none" };
     const now = Date.now();
-    const nowSeconds = Math.floor(now / 1000);
     const command = nextCommand(row, await loadActivityView(ctx, row, now));
-    switch (command.kind) {
-      case "none":
-        return command;
-      case "update":
-        return {
-          kind: "send",
-          token: command.token,
-          message: liveActivityUpdateMessage(command, nowSeconds),
-          content: command.content,
-          ends: null,
-        };
-      case "end":
-        return {
-          kind: "send",
-          token: command.token,
-          message: liveActivityEndMessage(command, row.phase.acceptedAt, nowSeconds),
-          content: command.content,
-          ends: command.reason,
-        };
+    if (command.kind === "none") return command;
+    const timestamp = nextPushTimestamp(row, now);
+    await ctx.db.patch(row._id, { pushTimestamp: timestamp });
+    const sent = {
+      kind: "send" as const,
+      token: command.token,
+      content: command.content,
+      timestamp,
+    };
+    if (command.kind === "update") {
+      return { ...sent, message: liveActivityUpdateMessage(command, timestamp), ends: null };
     }
+    return {
+      ...sent,
+      message: liveActivityEndMessage(command, row.phase.acceptedAt, timestamp),
+      ends: command.reason,
+    };
   },
 });
 
@@ -63,6 +60,7 @@ export const settle = internalMutation({
     token: v.string(),
     content: activityContent,
     ends: v.union(activityEndReason, v.null()),
+    timestamp: v.number(),
     outcome: v.union(v.literal("sent"), v.literal("unregistered")),
   },
   handler: async (ctx, args): Promise<null> => {
@@ -75,7 +73,8 @@ export const settle = internalMutation({
         phase: { kind: "started", acceptedAt: row.phase.acceptedAt, proof: "proven" },
       });
     } else if (args.ends === null) {
-      await ctx.db.patch(row._id, { shown: args.content });
+      if (args.timestamp === row.pushTimestamp)
+        await ctx.db.patch(row._id, { shown: args.content });
     } else {
       await endActivity(ctx, row, args.ends, Date.now(), args.content);
       if (args.ends === "confirmed") await reshowIfDue(ctx, row.taskInstanceId, row.deviceId);
@@ -87,7 +86,7 @@ export const settle = internalMutation({
 export const push = internalAction({
   args: { activityId: v.id("liveActivities") },
   handler: async (ctx, args): Promise<null> => {
-    const planned: PushPlan = await ctx.runQuery(internal.liveActivity.plan, args);
+    const planned: PushPlan = await ctx.runMutation(internal.liveActivity.plan, args);
     if (planned.kind === "none") return null;
     const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
       sends: [{ token: planned.token, message: planned.message }],
@@ -109,6 +108,7 @@ export const push = internalAction({
       token: planned.token,
       content: planned.content,
       ends: planned.ends,
+      timestamp: planned.timestamp,
       outcome: result.outcome,
     });
     return null;

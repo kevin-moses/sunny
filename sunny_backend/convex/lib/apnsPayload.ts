@@ -177,7 +177,7 @@ export function liveActivityStartMessage(
   attributes: ActivityAttributes,
   start: ActivityStart,
   alert: { title: string; body: string },
-  nowSeconds: number,
+  timestamp: number,
 ): ApnsMessage {
   const staleDate = seconds(start.staleAt);
   return {
@@ -187,7 +187,7 @@ export function liveActivityStartMessage(
     body: cutToFit(alert.body, (text) =>
       JSON.stringify({
         aps: {
-          timestamp: nowSeconds,
+          timestamp,
           event: "start",
           "attributes-type": ACTIVITY_ATTRIBUTES_TYPE,
           attributes: {
@@ -207,7 +207,7 @@ export function liveActivityStartMessage(
 
 export function liveActivityUpdateMessage(
   command: Extract<ActivityCommand, { kind: "update" }>,
-  nowSeconds: number,
+  timestamp: number,
 ): ApnsMessage {
   const staleDate = seconds(command.staleAt);
   return {
@@ -216,7 +216,7 @@ export function liveActivityUpdateMessage(
     expiresAt: staleDate,
     body: JSON.stringify({
       aps: {
-        timestamp: nowSeconds,
+        timestamp,
         event: "update",
         "content-state": contentState(command.content),
         "stale-date": staleDate,
@@ -228,7 +228,7 @@ export function liveActivityUpdateMessage(
 export function liveActivityEndMessage(
   command: Extract<ActivityCommand, { kind: "end" }>,
   acceptedAt: number,
-  nowSeconds: number,
+  timestamp: number,
 ): ApnsMessage {
   return {
     pushType: "liveactivity",
@@ -236,7 +236,7 @@ export function liveActivityEndMessage(
     expiresAt: seconds(acceptedAt + ACTIVITY_LIFETIME_MS),
     body: JSON.stringify({
       aps: {
-        timestamp: nowSeconds,
+        timestamp,
         event: "end",
         "content-state": contentState(command.content),
         "dismissal-date": seconds(acceptedAt),

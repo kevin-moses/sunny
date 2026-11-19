@@ -230,6 +230,7 @@ export default defineSchema({
     windowEnd: v.number(),
     phase: liveActivityPhase,
     shown: activityContent,
+    pushTimestamp: v.number(),
   })
     .index("by_instance", ["taskInstanceId"])
     .index("by_household_phase", ["householdId", "phase.kind"])

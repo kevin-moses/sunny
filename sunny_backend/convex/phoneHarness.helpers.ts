@@ -266,6 +266,7 @@ export async function insertActivity(
       windowEnd: instance.windowEnd,
       phase,
       shown: view.content,
+      pushTimestamp: Math.floor(instance.windowStart / 1000),
     });
   });
 }

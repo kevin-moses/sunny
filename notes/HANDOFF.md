@@ -195,7 +195,7 @@ What the phone must do that the server cannot check:
 
 #### The pushes
 
-Every Live Activity push has `apns-push-type: liveactivity`, topic `<bundle id>.push-type.liveactivity` and priority 10. The frequent-updates Info.plist key stays off.
+Every Live Activity push has `apns-push-type: liveactivity`, topic `<bundle id>.push-type.liveactivity` and priority 10. The frequent-updates Info.plist key stays off. `timestamp` is in seconds and grows by at least 1 with every push to one activity ("Phases of an activity" below).
 
 Start (`aps`):
 
@@ -281,6 +281,8 @@ There is one `liveActivities` row per activity, in one of four phases. In the ta
 | `ended`, any other reason | The phone still lists it | `ended` | `end` directive in the reply |
 
 `shown` is the content the phone last accepted. Update and end pushes are never stored. `liveActivity.plan` computes the push from the instance when it is sent (`activityView`, then `nextCommand`), so a push that runs twice sends the same thing or nothing. Two jobs that run at the same moment can both send the same push. The phone shows one result.
+
+iOS shows the push with the largest `timestamp` and drops one that arrives with a smaller timestamp. The field is whole seconds, and two pushes sent in the same second can arrive in either order. `plan` is therefore a mutation: it gives each push of an activity the timestamp `max(now in seconds, the activity's last timestamp + 1)` and stores it in `liveActivities.pushTimestamp` (`nextPushTimestamp`). The start push sets the first value. A burst of pushes runs the timestamp a few seconds ahead of the clock. `liveActivity.settle` writes `shown` only for the update that carries the row's newest timestamp, because an older update that is answered late is not what the phone shows.
 
 Who asks for a push: `changeInstance` and `deleteInstances` (`instanceChanged`, `instanceGone`), a task edit that changes the label, screen sentence, pill description or steps (`taskTextChanged`), a report that brings an update token to an activity that is behind, and the tick's sweep. `instanceChanged` does nothing for the scheduler's own changes, because the tick calls `sweepLiveActivities` at the end of the same mutation. The sweep also retries a push that failed, each minute, and deletes ended rows 7 days after they ended.
 

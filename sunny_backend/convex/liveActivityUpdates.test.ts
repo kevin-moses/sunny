@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   APNS_SENT,
   alertsSent,
   answerEachToken,
+  providerMocks,
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
+import type { ApnsSendArgs } from "./deliveryMocks.helpers";
 import { ACTIVITY_CAP_MS } from "./lib/liveActivity";
 import { ENDED_KEPT_MS } from "./lib/liveActivitySync";
 import {
@@ -23,6 +25,7 @@ import {
   local,
   makePhoneBackend,
   outbox,
+  patchInstance,
   phoneHousehold,
   postConfirm,
   pressOnDisplay,
@@ -36,7 +39,7 @@ import {
   tick,
   updates,
 } from "./phoneHarness.helpers";
-import type { PhoneFixture } from "./phoneHarness.helpers";
+import type { ActivityAps, PhoneFixture } from "./phoneHarness.helpers";
 
 vi.mock("./apns", async (original) =>
   (await import("./deliveryMocks.helpers")).apnsModule(await original()),
@@ -256,6 +259,75 @@ describe("a multi-step task", () => {
       kind: "ended",
       reason: "confirmed",
     });
+  });
+});
+
+describe("the order of the pushes to one activity", () => {
+  const shower = {
+    title: "Shower",
+    time: "08:00",
+    type: "routine" as const,
+    checklistItems: SHOWER_STEPS,
+  };
+
+  function isUpdate(args: ApnsSendArgs): boolean {
+    const { aps } = JSON.parse(args.sends[0]!.message.body) as { aps: ActivityAps };
+    return aps.event === "update";
+  }
+
+  test("two updates in one second carry different timestamps, the later one larger", async () => {
+    const { f, instanceId } = await live(shower);
+    setNow(EIGHT + MIN);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    setNow(EIGHT + MIN + 400);
+    expect(await pressOnDisplay(f, instanceId, 1)).toBe("advanced");
+    await settle(f.t);
+    const [first, second] = updates().map((update) => update.aps.timestamp);
+    expect(updates()).toHaveLength(2);
+    expect(first).toBe((EIGHT + MIN) / 1000);
+    expect(second).toBe(first! + 1);
+  });
+
+  test("an update in the same second as the start carries a larger timestamp", async () => {
+    const f = await phoneHousehold(makePhoneBackend());
+    await reportStartToken(f);
+    const instanceId = await addTask(f, shower);
+    await tick(f, EIGHT);
+    await settle(f.t, 300);
+    expect(starts().map((start) => start.timestamp)).toEqual([EIGHT / 1000]);
+    expect(await reportUpdateToken(f)).toEqual([]);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t, 300);
+    expect(Date.now()).toBeLessThan(EIGHT + 1_000);
+    expect(updates().map((update) => update.aps.timestamp)).toEqual([EIGHT / 1000 + 1]);
+  });
+
+  test("an update answered after a newer one does not replace what the phone shows", async () => {
+    const { f, instanceId, activityId } = await live(shower);
+    let overtaken = false;
+    providerMocks.apnsSend.mockImplementation(async (args: ApnsSendArgs) => {
+      if (!overtaken && isUpdate(args)) {
+        overtaken = true;
+        await patchInstance(f, instanceId, { currentStep: 2 });
+        await f.t.action(internal.liveActivity.push, { activityId });
+      }
+      return args.sends.map(({ token }) => ({ token, ...APNS_SENT }));
+    });
+    setNow(EIGHT + MIN);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t);
+
+    const sent = updates().map((update) => ({
+      step: update.aps["content-state"].card.step,
+      timestamp: update.aps.timestamp,
+    }));
+    expect(sent.map((update) => update.step)).toEqual([1, 2]);
+    expect(sent[1]!.timestamp).toBeGreaterThan(sent[0]!.timestamp);
+    expect((await activity(f, activityId)).shown.card.step).toBe(2);
+
+    await tick(f, EIGHT + 2 * MIN);
+    await settle(f.t);
+    expect(updates()).toHaveLength(2);
   });
 });
 

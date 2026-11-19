@@ -72,6 +72,7 @@ export interface StartPlan extends ActivityStart {
   instanceId: Id<"taskInstances">;
   windowEnd: number;
   resume: Id<"liveActivities"> | null;
+  timestamp: number;
 }
 
 type Showing =
@@ -132,6 +133,14 @@ export type OpenPhase = Exclude<LiveActivityPhase, { kind: "ended" }>;
 
 export function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
   return phase.kind !== "ended";
+}
+
+export function nextPushTimestamp(
+  row: Pick<Doc<"liveActivities">, "pushTimestamp"> | null,
+  now: number,
+): number {
+  const nowSeconds = Math.floor(now / 1000);
+  return row === null ? nowSeconds : Math.max(nowSeconds, row.pushTimestamp + 1);
 }
 
 export function wantsActivity(
@@ -428,6 +437,7 @@ export async function planStart(
     instanceId: instance._id,
     windowEnd: instance.windowEnd,
     resume: resume?._id ?? null,
+    timestamp: nextPushTimestamp(resume, now),
   };
 }
 
@@ -447,9 +457,10 @@ export async function openActivity(
       windowEnd: plan.windowEnd,
       phase: { kind: "starting", outboxId: row._id, since: now },
       shown: plan.content,
+      pushTimestamp: plan.timestamp,
     });
   } else {
-    await ctx.db.patch(activityId, { shown: plan.content });
+    await ctx.db.patch(activityId, { shown: plan.content, pushTimestamp: plan.timestamp });
   }
   const attributes: ActivityAttributes = {
     activityKey: activityId,
@@ -459,7 +470,7 @@ export async function openActivity(
   const alert = { title: row.title, body: row.body };
   return {
     activityId,
-    message: liveActivityStartMessage(attributes, plan, alert, Math.floor(now / 1000)),
+    message: liveActivityStartMessage(attributes, plan, alert, plan.timestamp),
   };
 }
 
