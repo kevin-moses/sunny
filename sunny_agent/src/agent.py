@@ -789,6 +789,10 @@ def _forward_app_log(packet: rtc.DataPacket) -> None:
     )
 
 
+def voice_llm() -> anthropic.LLM:
+    return anthropic.LLM(model=LLM_MODEL, caching="ephemeral")
+
+
 def prewarm(proc: JobProcess) -> None:
     proc.userdata["vad"] = silero.VAD.load()
 
@@ -852,7 +856,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session: AgentSession[None] = AgentSession(
         stt=deepgram.STT(model=STT_MODEL, language=STT_LANGUAGE),
-        llm=anthropic.LLM(model=LLM_MODEL),
+        llm=voice_llm(),
         tts=cartesia.TTS(model=TTS_MODEL, voice=TTS_VOICE, speed=TTS_SPEED),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],

@@ -13,10 +13,8 @@ from livekit.agents.voice.run_result import (
     ChatMessageEvent,
     RunResult,
 )
-from livekit.plugins import anthropic
 
-from agent import Assistant
-from config import LLM_MODEL
+from agent import Assistant, voice_llm
 from convex_client import ConvexArgs
 from convex_types import AgentContext, AsNeededEntry, InstanceState, TodayEntry
 from prompts import format_user_context, render_system_prompt
@@ -25,7 +23,7 @@ TZ = "America/New_York"
 
 requires_llm = pytest.mark.skipif(
     not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="LLM-judged tests need ANTHROPIC_API_KEY",
+    reason="LLM tests need ANTHROPIC_API_KEY",
 )
 
 
@@ -123,7 +121,7 @@ async def _run(session: AgentSession[None], user_input: str) -> RunResult[None]:
 
 
 def _llm() -> llm.LLM:
-    return anthropic.LLM(model=LLM_MODEL)
+    return voice_llm()
 
 
 def _make_assistant(context: AgentContext | None = None) -> Assistant:
