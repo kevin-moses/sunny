@@ -1,5 +1,5 @@
 import type { Doc, Id } from "../_generated/dataModel";
-import type { ActivityRow } from "./liveActivity";
+import type { ActivityPhone, ActivityRow } from "./liveActivity";
 import type { ActivityContent, LiveActivityPhase } from "./validators";
 
 export const MIN = 60_000;
@@ -13,6 +13,10 @@ export const INSTANCE_ID = "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya" as Id<"taskInstanc
 export const ACTIVITY_KEY = "k97f2ea1p6d8s3m5x7c9v2b4n6q8w0zt";
 
 export const UPDATE_TOKEN = "ab".repeat(80);
+
+export const PHONE_USER_ID = "user_2phoneQ7dM4xV9bN1cK5hW0tS3r";
+
+export const PHONE: ActivityPhone = { userId: PHONE_USER_ID, canConfirm: true };
 
 const TASK_ID = "j57dq2m8v4x6b9n1c3k5h7w0t2s4r6ye" as Id<"tasks">;
 

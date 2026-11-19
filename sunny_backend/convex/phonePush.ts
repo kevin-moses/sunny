@@ -1,8 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import {
   deviceRoute,
   findDeviceByTokenHash,
@@ -120,6 +120,41 @@ export function parsePushStateRequest(body: Record<string, unknown>): PushStateR
   return report;
 }
 
+type ReportedTokens = Pick<Doc<"phonePush">, "liveActivityStart" | "widgetPush">;
+
+async function clearOnOtherPhones(
+  ctx: MutationCtx,
+  holders: Doc<"phonePush">[],
+  keeper: Id<"devices">,
+  field: keyof ReportedTokens,
+): Promise<void> {
+  for (const row of holders) {
+    if (row.deviceId !== keeper) await ctx.db.patch(row._id, { [field]: undefined });
+  }
+}
+
+async function takeTokensFromOtherPhones(
+  ctx: MutationCtx,
+  deviceId: Id<"devices">,
+  tokens: ReportedTokens,
+): Promise<void> {
+  const { liveActivityStart, widgetPush } = tokens;
+  if (liveActivityStart !== undefined) {
+    const holders = await ctx.db
+      .query("phonePush")
+      .withIndex("by_start_token", (q) => q.eq("liveActivityStart.token", liveActivityStart.token))
+      .collect();
+    await clearOnOtherPhones(ctx, holders, deviceId, "liveActivityStart");
+  }
+  if (widgetPush !== undefined) {
+    const holders = await ctx.db
+      .query("phonePush")
+      .withIndex("by_widget_token", (q) => q.eq("widgetPush.token", widgetPush.token))
+      .collect();
+    await clearOnOtherPhones(ctx, holders, deviceId, "widgetPush");
+  }
+}
+
 async function storeReportedTokens(
   ctx: MutationCtx,
   device: Doc<"devices">,
@@ -137,6 +172,7 @@ async function storeReportedTokens(
   if (widget !== undefined) {
     patch.widgetPush = widget.token === null ? undefined : { token: widget.token, reportedAt: now };
   }
+  await takeTokensFromOtherPhones(ctx, device._id, patch);
   const existing = await findPhonePush(ctx, device._id);
   if (existing === null) await ctx.db.insert("phonePush", { deviceId: device._id, ...patch });
   else await ctx.db.patch(existing._id, patch);
@@ -193,12 +229,14 @@ export const trailingRefresh = internalMutation({
 });
 
 export const refreshTarget = internalQuery({
-  args: { deviceId: v.id("devices") },
+  args: { deviceId: v.id("devices"), wakesApp: v.boolean() },
   handler: async (ctx, args): Promise<RefreshTarget | null> => {
     const device = await ctx.db.get(args.deviceId);
     const row = await findPhonePush(ctx, args.deviceId);
     if (device === null || device.kind !== "senior_phone" || row === null) return null;
-    if (row.widgetPush !== undefined) return { kind: "widgets", tokens: [row.widgetPush.token] };
+    if (!args.wakesApp && row.widgetPush !== undefined) {
+      return { kind: "widgets", tokens: [row.widgetPush.token] };
+    }
     const alertTokens = await ctx.db
       .query("pushTokens")
       .withIndex("by_user", (q) => q.eq("userId", device.userId))
@@ -207,26 +245,40 @@ export const refreshTarget = internalQuery({
   },
 });
 
+async function sendRefresh(
+  ctx: ActionCtx,
+  deviceId: Id<"devices">,
+  wakesApp: boolean,
+): Promise<null> {
+  const target: RefreshTarget | null = await ctx.runQuery(internal.phonePush.refreshTarget, {
+    deviceId,
+    wakesApp,
+  });
+  if (target === null || target.tokens.length === 0) return null;
+  const message = target.kind === "widgets" ? widgetReloadMessage() : backgroundRefreshMessage();
+  const { results }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
+    sends: target.tokens.map((token) => ({ token, message })),
+  });
+  const dead = results.filter((r) => r.outcome === "unregistered").map((r) => r.token);
+  if (dead.length === 0) return null;
+  if (target.kind === "background") {
+    await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
+    return null;
+  }
+  for (const token of dead) {
+    await ctx.runMutation(internal.phonePush.dropWidgetToken, { deviceId, token });
+  }
+  return null;
+}
+
 export const refreshWidgets = internalAction({
   args: { deviceId: v.id("devices") },
-  handler: async (ctx, args): Promise<null> => {
-    const target: RefreshTarget | null = await ctx.runQuery(internal.phonePush.refreshTarget, args);
-    if (target === null || target.tokens.length === 0) return null;
-    const message = target.kind === "widgets" ? widgetReloadMessage() : backgroundRefreshMessage();
-    const { results }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
-      sends: target.tokens.map((token) => ({ token, message })),
-    });
-    const dead = results.filter((r) => r.outcome === "unregistered").map((r) => r.token);
-    if (dead.length === 0) return null;
-    if (target.kind === "background") {
-      await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
-      return null;
-    }
-    for (const token of dead) {
-      await ctx.runMutation(internal.phonePush.dropWidgetToken, { deviceId: args.deviceId, token });
-    }
-    return null;
-  },
+  handler: async (ctx, args): Promise<null> => await sendRefresh(ctx, args.deviceId, false),
+});
+
+export const wakeToReport = internalAction({
+  args: { deviceId: v.id("devices") },
+  handler: async (ctx, args): Promise<null> => await sendRefresh(ctx, args.deviceId, true),
 });
 
 export const putPushState = deviceRoute("Could not store the push state", async (ctx, request) => {

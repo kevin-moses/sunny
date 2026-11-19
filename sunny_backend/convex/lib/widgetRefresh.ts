@@ -31,6 +31,20 @@ export async function sendWidgetRefresh(
   await ctx.scheduler.runAfter(0, internal.phonePush.refreshWidgets, { deviceId: push.deviceId });
 }
 
+function backgroundPushSentAt(push: Doc<"phonePush">, now: number): boolean {
+  return push.widgetPush === undefined && push.widgetRefresh?.sentAt === now;
+}
+
+export async function wakePhoneToReport(
+  ctx: MutationCtx,
+  deviceId: Id<"devices">,
+  now: number,
+): Promise<void> {
+  const push = await findPhonePush(ctx, deviceId);
+  if (push === null || backgroundPushSentAt(push, now)) return;
+  await ctx.scheduler.runAfter(0, internal.phonePush.wakeToReport, { deviceId });
+}
+
 async function refreshPhone(ctx: MutationCtx, deviceId: Id<"devices">, now: number): Promise<void> {
   const push = await findPhonePush(ctx, deviceId);
   if (push === null) return;
@@ -49,13 +63,17 @@ async function refreshPhone(ctx: MutationCtx, deviceId: Id<"devices">, now: numb
   }
 }
 
+export function phonePressedOn(actor: Actor): Id<"devices"> | null {
+  return actor.kind === "senior_device" ? actor.device._id : null;
+}
+
 export async function requestWidgetRefresh(
   ctx: MutationCtx,
   actor: Actor,
   householdId: Id<"households">,
 ): Promise<void> {
   if (actor.kind === "system") return;
-  const pressedOn = actor.kind === "senior_device" ? actor.device._id : null;
+  const pressedOn = phonePressedOn(actor);
   const devices = await ctx.db
     .query("devices")
     .withIndex("by_household", (q) => q.eq("householdId", householdId))

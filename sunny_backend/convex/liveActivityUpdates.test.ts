@@ -1,42 +1,51 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
   APNS_SENT,
   alertsSent,
   answerEachToken,
+  providerMocks,
+  pushesSent,
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
-import { ACTIVITY_CAP_MS } from "./lib/liveActivity";
+import type { ApnsSendArgs } from "./deliveryMocks.helpers";
+import { ACTIVITY_CAP_MS, PROOF_WAIT_MS, RECEIPT_MS } from "./lib/liveActivity";
 import { ENDED_KEPT_MS } from "./lib/liveActivitySync";
 import {
+  ALERT_TOKEN,
   MIN,
   UPDATE_TOKEN,
+  WIDGET_TOKEN,
   about,
   activities,
   activity,
   activityPushes,
   addTask,
+  backgroundPushes,
   confirmOnDisplay,
   ends,
   insertActivity,
   local,
   makePhoneBackend,
   outbox,
+  patchInstance,
   phoneHousehold,
+  phonePushRow,
   postConfirm,
   pressOnDisplay,
   proveStarts,
   putPushState,
   reportStartToken,
   reportUpdateToken,
+  secondPhone,
   setNow,
   settle,
   starts,
   tick,
   updates,
 } from "./phoneHarness.helpers";
-import type { PhoneFixture } from "./phoneHarness.helpers";
+import type { ActivityAps, PhoneFixture } from "./phoneHarness.helpers";
 
 vi.mock("./apns", async (original) =>
   (await import("./deliveryMocks.helpers")).apnsModule(await original()),
@@ -135,32 +144,135 @@ describe("a task confirmed on another surface", () => {
     expect(row.shown.closed).toMatchObject({ kind: "done" });
   });
 
-  test("sends nothing while the update token is unknown, then ends when it arrives", async () => {
+  test("an activity without an update token ends on the server at once, and the phone is woken to report", async () => {
     const { f, instanceId, activityId } = await shownOnPhone();
     await proveStarts(f);
+    resetProviderMocks();
+    setNow(EIGHT + 4 * MIN);
     await confirmOnDisplay(f, instanceId);
     await settle(f.t);
-    expect(activityPushes()).toHaveLength(1);
-    expect((await activity(f, activityId)).phase.kind).toBe("started");
 
-    expect(await reportUpdateToken(f)).toEqual([
-      expect.objectContaining({ key: activityId, directive: "end" }),
+    expect(activityPushes()).toEqual([]);
+    const row = await activity(f, activityId);
+    expect(row.phase).toEqual({ kind: "ended", at: about(EIGHT + 4 * MIN), reason: "confirmed" });
+    expect(row.shown.closed).toEqual({ kind: "done", at: about(EIGHT + 4 * MIN) });
+    expect(backgroundPushes().map((push) => push.tokens)).toEqual([[ALERT_TOKEN]]);
+
+    const response = await putPushState(f, {
+      activities: [{ key: activityId, token: UPDATE_TOKEN, state: "active" }],
+    });
+    expect(((await response.json()) as { activities: unknown[] }).activities).toEqual([
+      {
+        key: activityId,
+        directive: "end",
+        content: expect.objectContaining({ closed: { kind: "done", at: about(EIGHT + 4 * MIN) } }),
+      },
     ]);
     await settle(f.t);
-    expect(ends().map((end) => end.tokens)).toEqual([[UPDATE_TOKEN]]);
+    expect(ends()).toEqual([]);
+  });
+
+  test("a phone with a widget token is woken as well, because a WidgetKit push runs no app code", async () => {
+    const { f, instanceId } = await shownOnPhone();
+    expect((await putPushState(f, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
+    await proveStarts(f);
+    resetProviderMocks();
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    expect(
+      pushesSent()
+        .map((push) => [push.message.pushType, push.tokens])
+        .sort(),
+    ).toEqual([
+      ["background", [ALERT_TOKEN]],
+      ["widgets", [WIDGET_TOKEN]],
+    ]);
+  });
+
+  test("the wake is sent at once inside the ten minutes that hold back a widget refresh", async () => {
+    const f = await phoneHousehold(makePhoneBackend());
+    await reportStartToken(f);
+    const first = await addTask(f, { title: "Morning pills", time: "08:00" });
+    const second = await addTask(f, { title: "Eye drops", time: "08:00" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await proveStarts(f);
+    resetProviderMocks();
+
+    setNow(EIGHT + 2 * MIN);
+    await confirmOnDisplay(f, first);
+    await settle(f.t);
+    expect(backgroundPushes()).toHaveLength(1);
+    setNow(EIGHT + 3 * MIN);
+    await confirmOnDisplay(f, second);
+    await settle(f.t);
+    expect(backgroundPushes()).toHaveLength(2);
+    expect((await activities(f)).map((row) => row.phase.kind)).toEqual(["ended", "ended"]);
+  });
+
+  test("a press on the phone itself ends its activity without a token and sends it no wake", async () => {
+    const { f, instanceId, activityId } = await shownOnPhone();
+    await proveStarts(f);
+    resetProviderMocks();
+    const response = await postConfirm(f, f.deviceToken, {
+      instanceId,
+      pressedAgoMs: 0,
+      via: "widget",
+    });
+    expect(((await response.json()) as { status: string }).status).toBe("confirmed");
+    await settle(f.t);
     expect((await activity(f, activityId)).phase).toMatchObject({
       kind: "ended",
       reason: "confirmed",
     });
+    expect(pushesSent()).toEqual([]);
   });
 
-  test("an end that APNs keeps refusing is sent again by the next tick", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const { f, instanceId, activityId } = await live();
-    refuseUpdates(400);
+  test("three ended activities without tokens leave room for the next task's start", async () => {
+    const f = await phoneHousehold(makePhoneBackend());
+    await reportStartToken(f);
+    const ids = [];
+    for (const title of ["One", "Two", "Three"]) {
+      ids.push(await addTask(f, { title, time: "08:00", windowMinutes: 240 }));
+    }
+    await tick(f, EIGHT);
+    await settle(f.t);
+    await proveStarts(f);
+    setNow(EIGHT + 2 * MIN);
+    for (const id of ids) await confirmOnDisplay(f, id);
+    await settle(f.t);
+
+    const fourth = await addTask(f, { title: "Four", time: "08:30" });
+    await tick(f, EIGHT + 30 * MIN);
+    await settle(f.t);
+    expect(starts().map((start) => start.alert.title)).toContain("Four");
+    expect(alertsSent()).toEqual([]);
+    expect((await outbox(f, fourth)).map((row) => row.channel)).toEqual(["live_activity"]);
+  });
+
+  test("an activity still waiting for its proof ends when the proof check has run", async () => {
+    const { f, instanceId, activityId } = await shownOnPhone();
     await confirmOnDisplay(f, instanceId);
     await settle(f.t);
-    expect(ends()).toHaveLength(1);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "started",
+      proof: "awaited",
+    });
+    await settle(f.t, PROOF_WAIT_MS);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "ended",
+      reason: "confirmed",
+    });
+    expect(alertsSent()).toEqual([]);
+  });
+
+  test("an end whose retries ran out is sent again by the next tick", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { f, instanceId, activityId } = await live();
+    refuseUpdates(503, true);
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t, MIN);
+    expect(ends().length).toBeGreaterThan(1);
     expect((await activity(f, activityId)).phase.kind).toBe("live");
 
     resetProviderMocks();
@@ -171,6 +283,62 @@ describe("a task confirmed on another surface", () => {
     await tick(f, EIGHT + 3 * MIN);
     await settle(f.t);
     expect(ends()).toHaveLength(1);
+    errorSpy.mockRestore();
+  });
+
+  test("an end that APNs refuses for good drops the token, ends the row and wakes the phone", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { f, instanceId, activityId } = await live();
+    expect((await putPushState(f, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
+    resetProviderMocks();
+    refuseUpdates(400);
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    expect(ends()).toHaveLength(1);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "ended",
+      reason: "confirmed",
+    });
+    expect(backgroundPushes().map((push) => push.tokens)).toEqual([[ALERT_TOKEN]]);
+
+    for (const minute of [2, 3, 4]) {
+      await tick(f, EIGHT + minute * MIN);
+      await settle(f.t);
+    }
+    expect(ends()).toHaveLength(1);
+    errorSpy.mockRestore();
+  });
+
+  test("an update that APNs refuses for good drops the token until the phone reports one again", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { f, instanceId, activityId } = await live({
+      title: "Shower",
+      time: "08:00",
+      type: "routine",
+      checklistItems: SHOWER_STEPS,
+    });
+    refuseUpdates(400);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t);
+    expect(updates()).toHaveLength(1);
+    expect((await activity(f, activityId)).phase).toEqual({
+      kind: "started",
+      acceptedAt: about(EIGHT),
+      proof: "proven",
+    });
+    for (const minute of [2, 3, 4]) {
+      await tick(f, EIGHT + minute * MIN);
+      await settle(f.t);
+    }
+    expect(updates()).toHaveLength(1);
+
+    resetProviderMocks();
+    expect(await reportUpdateToken(f)).toEqual([
+      expect.objectContaining({ key: activityId, directive: "update" }),
+    ]);
+    await settle(f.t);
+    expect(updates().map((update) => update.aps["content-state"].card.step)).toEqual([1]);
+    expect((await activity(f, activityId)).phase.kind).toBe("live");
     errorSpy.mockRestore();
   });
 
@@ -188,19 +356,38 @@ describe("a task confirmed on another surface", () => {
     expect((await activity(f, activityId)).phase.kind).toBe("ended");
   });
 
-  test("a 410 drops the update token and stops the pushes", async () => {
+  test("a 410 on the end drops the update token, ends the row and wakes the phone", async () => {
     const { f, instanceId, activityId } = await live();
+    expect((await putPushState(f, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
+    resetProviderMocks();
     refuseUpdates(410);
     await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "ended",
+      reason: "confirmed",
+    });
+    expect(backgroundPushes().map((push) => push.tokens)).toEqual([[ALERT_TOKEN]]);
+    await tick(f, EIGHT + 2 * MIN);
+    await settle(f.t);
+    expect(ends()).toHaveLength(1);
+  });
+
+  test("a 410 on an update keeps the activity, without a token, while the task is due", async () => {
+    const { f, instanceId, activityId } = await live({
+      title: "Shower",
+      time: "08:00",
+      type: "routine",
+      checklistItems: SHOWER_STEPS,
+    });
+    refuseUpdates(410);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
     await settle(f.t);
     expect((await activity(f, activityId)).phase).toEqual({
       kind: "started",
       acceptedAt: about(EIGHT),
       proof: "proven",
     });
-    await tick(f, EIGHT + 2 * MIN);
-    await settle(f.t);
-    expect(ends()).toHaveLength(1);
   });
 });
 
@@ -259,6 +446,144 @@ describe("a multi-step task", () => {
   });
 });
 
+describe("the receipt after Done is pressed on the activity itself", () => {
+  const SECOND_ALERT_TOKEN = "f6".repeat(32);
+
+  const SECOND_UPDATE_TOKEN = "b9".repeat(80);
+
+  async function pressOnPhone(
+    f: PhoneFixture,
+    instanceId: Id<"taskInstances">,
+    via: "live_activity" | "widget",
+  ): Promise<void> {
+    const response = await postConfirm(f, f.deviceToken, { instanceId, pressedAgoMs: 0, via });
+    expect(((await response.json()) as { status: string }).status).toBe("confirmed");
+  }
+
+  test("the end push to that phone dismisses the activity ten seconds after the press", async () => {
+    const { f, instanceId } = await live();
+    setNow(EIGHT + 4 * MIN);
+    await pressOnPhone(f, instanceId, "live_activity");
+    await settle(f.t);
+    const [end] = ends();
+    expect(ends()).toHaveLength(1);
+    expect(end!.aps["content-state"].closed).toEqual({ kind: "done", at: about(EIGHT + 4 * MIN) });
+    expect(end!.aps["dismissal-date"]).toBe((EIGHT + 4 * MIN + RECEIPT_MS) / 1000);
+    expect(end!.aps["dismissal-date"]).toBeGreaterThan(end!.aps.timestamp);
+  });
+
+  test("a press on the same phone's widget dismisses the activity at once", async () => {
+    const { f, instanceId } = await live();
+    setNow(EIGHT + 4 * MIN);
+    await pressOnPhone(f, instanceId, "widget");
+    await settle(f.t);
+    expect(ends()).toHaveLength(1);
+    expect(ends()[0]!.aps["dismissal-date"]).toBeLessThan(ends()[0]!.aps.timestamp);
+  });
+
+  test("another phone that shows the task is dismissed at once", async () => {
+    const f = await phoneHousehold(makePhoneBackend());
+    const other = await secondPhone(f, SECOND_ALERT_TOKEN);
+    await reportStartToken(f);
+    expect(
+      (
+        await putPushState(other, {
+          liveActivityStart: { token: "7c".repeat(80), enabled: true },
+        })
+      ).status,
+    ).toBe(200);
+    const instanceId = await addTask(f, { title: "Morning pills", time: "08:00" });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    for (const row of await activities(f)) {
+      const mine = row.deviceId === f.phoneId;
+      const response = await putPushState(mine ? f : other, {
+        activities: [
+          { key: row._id, token: mine ? UPDATE_TOKEN : SECOND_UPDATE_TOKEN, state: "active" },
+        ],
+      });
+      expect(response.status).toBe(200);
+    }
+    setNow(EIGHT + 4 * MIN);
+    await pressOnPhone(f, instanceId, "live_activity");
+    await settle(f.t);
+
+    const dismissals = new Map(ends().map((end) => [end.tokens[0], end.aps["dismissal-date"]]));
+    expect(ends()).toHaveLength(2);
+    expect(dismissals.get(UPDATE_TOKEN)).toBe((EIGHT + 4 * MIN + RECEIPT_MS) / 1000);
+    expect(dismissals.get(SECOND_UPDATE_TOKEN)).toBeLessThan((EIGHT + 4 * MIN) / 1000);
+  });
+});
+
+describe("the order of the pushes to one activity", () => {
+  const shower = {
+    title: "Shower",
+    time: "08:00",
+    type: "routine" as const,
+    checklistItems: SHOWER_STEPS,
+  };
+
+  function isUpdate(args: ApnsSendArgs): boolean {
+    const { aps } = JSON.parse(args.sends[0]!.message.body) as { aps: ActivityAps };
+    return aps.event === "update";
+  }
+
+  test("two updates in one second carry different timestamps, the later one larger", async () => {
+    const { f, instanceId } = await live(shower);
+    setNow(EIGHT + MIN);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    setNow(EIGHT + MIN + 400);
+    expect(await pressOnDisplay(f, instanceId, 1)).toBe("advanced");
+    await settle(f.t);
+    const [first, second] = updates().map((update) => update.aps.timestamp);
+    expect(updates()).toHaveLength(2);
+    expect(first).toBe((EIGHT + MIN) / 1000);
+    expect(second).toBe(first! + 1);
+  });
+
+  test("an update in the same second as the start carries a larger timestamp", async () => {
+    const f = await phoneHousehold(makePhoneBackend());
+    await reportStartToken(f);
+    const instanceId = await addTask(f, shower);
+    await tick(f, EIGHT);
+    await settle(f.t, 300);
+    expect(starts().map((start) => start.timestamp)).toEqual([EIGHT / 1000]);
+    expect(await reportUpdateToken(f)).toEqual([]);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t, 300);
+    expect(Date.now()).toBeLessThan(EIGHT + 1_000);
+    expect(updates().map((update) => update.aps.timestamp)).toEqual([EIGHT / 1000 + 1]);
+  });
+
+  test("an update answered after a newer one does not replace what the phone shows", async () => {
+    const { f, instanceId, activityId } = await live(shower);
+    let overtaken = false;
+    providerMocks.apnsSend.mockImplementation(async (args: ApnsSendArgs) => {
+      if (!overtaken && isUpdate(args)) {
+        overtaken = true;
+        await patchInstance(f, instanceId, { currentStep: 2 });
+        await f.t.action(internal.liveActivity.push, { activityId });
+      }
+      return args.sends.map(({ token }) => ({ token, ...APNS_SENT }));
+    });
+    setNow(EIGHT + MIN);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t);
+
+    const sent = updates().map((update) => ({
+      step: update.aps["content-state"].card.step,
+      timestamp: update.aps.timestamp,
+    }));
+    expect(sent.map((update) => update.step)).toEqual([1, 2]);
+    expect(sent[1]!.timestamp).toBeGreaterThan(sent[0]!.timestamp);
+    expect((await activity(f, activityId)).shown.card.step).toBe(2);
+
+    await tick(f, EIGHT + 2 * MIN);
+    await settle(f.t);
+    expect(updates()).toHaveLength(2);
+  });
+});
+
 describe("the window closing", () => {
   test("ends a live activity as over", async () => {
     const { f, activityId } = await live();
@@ -277,14 +602,16 @@ describe("the window closing", () => {
     await proveStarts(f);
     await tick(f, EIGHT + HOUR - MIN);
     expect((await activity(f, activityId)).phase.kind).toBe("started");
+    resetProviderMocks();
     await tick(f, EIGHT + HOUR);
     await settle(f.t);
-    expect(activityPushes()).toHaveLength(1);
+    expect(activityPushes()).toEqual([]);
     expect((await activity(f, activityId)).phase).toEqual({
       kind: "ended",
       at: EIGHT + HOUR,
-      reason: "unreachable",
+      reason: "window_closed",
     });
+    expect(backgroundPushes()).toEqual([]);
   });
 
   test("a phone that still shows it afterwards is told to end it", async () => {
@@ -327,27 +654,28 @@ describe("a window longer than the system's eight hours", () => {
     expect(await activities(f)).toHaveLength(1);
   });
 
-  test("an activity without a token ends as unreachable at the same time", async () => {
+  test("an activity without a token ends as expired at the same time", async () => {
     const { f, activityId } = await shownOnPhone(long);
     await proveStarts(f);
     await tick(f, EIGHT + ACTIVITY_CAP_MS + MIN);
     expect((await activity(f, activityId)).phase).toMatchObject({
       kind: "ended",
-      reason: "unreachable",
+      reason: "expired",
     });
   });
 
   test("a live activity whose end never gets through is closed after twelve hours", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { f, activityId } = await live(long);
-    refuseUpdates(400);
+    refuseUpdates(503, true);
     await tick(f, EIGHT + 11 * HOUR + 59 * MIN);
-    await settle(f.t);
-    expect(ends()).toHaveLength(1);
+    await settle(f.t, 50_000);
+    const tried = ends().length;
+    expect(tried).toBeGreaterThan(1);
     expect((await activity(f, activityId)).phase.kind).toBe("live");
     await tick(f, EIGHT + 12 * HOUR + MIN);
     await settle(f.t);
-    expect(ends()).toHaveLength(1);
+    expect(ends()).toHaveLength(tried);
     expect((await activity(f, activityId)).phase.kind).toBe("ended");
     errorSpy.mockRestore();
   });
@@ -402,6 +730,23 @@ describe("a caregiver's edit while the activity is up", () => {
     });
   });
 
+  test("a deleted task ends an activity without a token and wakes the phone", async () => {
+    const { f, instanceId, activityId } = await shownOnPhone();
+    await proveStarts(f);
+    resetProviderMocks();
+    await f.t.withIdentity({ subject: f.caregiver }).mutation(api.tasks.remove, {
+      householdId: f.householdId,
+      taskId: await taskIdOf(f, instanceId),
+    });
+    await settle(f.t);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "ended",
+      reason: "instance_gone",
+    });
+    expect(backgroundPushes().length).toBeGreaterThan(0);
+    expect(activityPushes()).toEqual([]);
+  });
+
   test("a task that is deleted ends its activity as gone", async () => {
     const { f, instanceId, activityId } = await live();
     await f.t.withIdentity({ subject: f.caregiver }).mutation(api.tasks.remove, {
@@ -442,6 +787,28 @@ describe("a task that comes back after it was done", () => {
     ]);
   });
 
+  test("a quiet start the phone never reports marks it blind and sends no notification", async () => {
+    const { f, instanceId } = await live();
+    setNow(EIGHT + 2 * MIN);
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    setNow(EIGHT + 5 * MIN);
+    await reopen(f, instanceId);
+    await settle(f.t, PROOF_WAIT_MS + 10_000);
+
+    expect(starts()).toHaveLength(2);
+    expect(alertsSent()).toEqual([]);
+    expect((await phonePushRow(f))!.blindSince).toEqual(about(EIGHT + 5 * MIN + PROOF_WAIT_MS));
+    expect((await activities(f)).map((row) => row.phase)).toEqual([
+      expect.objectContaining({ kind: "ended", reason: "confirmed" }),
+      expect.objectContaining({ kind: "started", proof: "missed" }),
+    ]);
+    expect((await outbox(f, instanceId)).map((row) => [row.kind, row.channel])).toEqual([
+      ["senior_prompt", "live_activity"],
+      ["senior_reshow", "live_activity"],
+    ]);
+  });
+
   test("a phone where no Live Activity can start gets nothing, as before", async () => {
     const f = await phoneHousehold(makePhoneBackend());
     const instanceId = await addTask(f, { title: "Morning pills", time: "08:00" });
@@ -453,20 +820,62 @@ describe("a task that comes back after it was done", () => {
     await settle(f.t);
     expect(alertsSent()).toHaveLength(1);
     expect(activityPushes()).toEqual([]);
-    expect((await outbox(f, instanceId)).map((row) => [row.kind, row.state, row.detail])).toEqual([
-      ["senior_prompt", "sent", undefined],
-      ["senior_reshow", "skipped", "no_live_activity"],
+    expect((await outbox(f, instanceId)).map((row) => [row.kind, row.state])).toEqual([
+      ["senior_prompt", "sent"],
     ]);
   });
 
-  test("an activity that is still up is not started a second time", async () => {
+  test("a task done and reopened before the end push went out keeps its activity", async () => {
+    const { f, instanceId, activityId } = await live();
+    await confirmOnDisplay(f, instanceId);
+    await reopen(f, instanceId);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect(ends()).toEqual([]);
+    expect((await activity(f, activityId)).phase.kind).toBe("live");
+    expect((await outbox(f, instanceId)).map((row) => row.kind)).toEqual(["senior_prompt"]);
+  });
+
+  test("a blind phone gets no reshow row", async () => {
     const { f, instanceId } = await shownOnPhone();
+    await settle(f.t, PROOF_WAIT_MS);
+    expect((await phonePushRow(f))!.blindSince).toBeDefined();
+    await confirmOnDisplay(f, instanceId);
+    await reopen(f, instanceId);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    expect((await outbox(f, instanceId)).map((row) => row.kind)).toEqual([
+      "senior_prompt",
+      "senior_prompt",
+    ]);
+  });
+
+  test("a task done and reopened ends the activity without a token and starts a quiet new one", async () => {
+    const { f, instanceId, activityId } = await shownOnPhone();
     await proveStarts(f);
+    await confirmOnDisplay(f, instanceId);
+    await reopen(f, instanceId);
+    await settle(f.t);
+    expect(starts()).toHaveLength(2);
+    expect(starts()[1]!.alert).not.toHaveProperty("sound");
+    const rows = await activities(f);
+    expect(rows.map((row) => row.phase.kind)).toEqual(["ended", "started"]);
+    const response = await putPushState(f, {
+      activities: rows.map((row) => ({ key: row._id, token: null, state: "active" })),
+    });
+    expect(((await response.json()) as { activities: unknown[] }).activities).toEqual([
+      expect.objectContaining({ key: activityId, directive: "end" }),
+    ]);
+  });
+
+  test("an activity that is still up when its task is reopened is not started a second time", async () => {
+    const { f, instanceId } = await shownOnPhone();
     await confirmOnDisplay(f, instanceId);
     await reopen(f, instanceId);
     await settle(f.t);
     expect(starts()).toHaveLength(1);
     expect(await activities(f)).toHaveLength(1);
+    expect((await outbox(f, instanceId)).map((row) => row.kind)).toEqual(["senior_prompt"]);
   });
 
   test("a task confirmed early and reopened is opened by its own due cue, with sound", async () => {

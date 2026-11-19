@@ -230,6 +230,8 @@ export default defineSchema({
     windowEnd: v.number(),
     phase: liveActivityPhase,
     shown: activityContent,
+    pushTimestamp: v.number(),
+    quiet: v.boolean(),
   })
     .index("by_instance", ["taskInstanceId"])
     .index("by_household_phase", ["householdId", "phase.kind"])
@@ -243,7 +245,10 @@ export default defineSchema({
     widgetRefresh: v.optional(
       v.object({ sentAt: v.number(), trailingAt: v.union(v.number(), v.null()) }),
     ),
-  }).index("by_device", ["deviceId"]),
+  })
+    .index("by_device", ["deviceId"])
+    .index("by_start_token", ["liveActivityStart.token"])
+    .index("by_widget_token", ["widgetPush.token"]),
 
   digests: defineTable({
     householdId: v.id("households"),

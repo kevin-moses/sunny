@@ -22,6 +22,8 @@ import {
   ACTIVITY_KEY,
   INSTANCE_ID,
   MIN,
+  PHONE,
+  PHONE_USER_ID,
   WINDOW_START,
   instanceDoc,
   livePhase,
@@ -74,17 +76,15 @@ const pills: ActivitySubject = { instance: instanceDoc(), task: taskDoc() };
 
 const shower: ActivitySubject = { instance: instanceDoc(), task: showerTask() };
 
-const pillsShown = shown(
-  activityView({ subject: pills, row: null, phoneCanConfirm: true }, WINDOW_START),
-);
+const pillsShown = shown(activityView({ subject: pills, row: null, phone: PHONE }, WINDOW_START));
 
 const showerShown = shown(
-  activityView({ subject: shower, row: null, phoneCanConfirm: true }, WINDOW_START + 6 * MIN),
+  activityView({ subject: shower, row: null, phone: PHONE }, WINDOW_START + 6 * MIN),
 );
 
 function fromLive(subject: ActivitySubject, was: ActivityView, now: number): ActivityCommand {
   const row = rowOf(livePhase(ACCEPTED_AT), was.content);
-  return nextCommand(row, activityView({ subject, row, phoneCanConfirm: true }, now));
+  return nextCommand(row, activityView({ subject, row, phone: PHONE }, now));
 }
 
 const CASES: Record<string, ApnsMessage> = {
@@ -116,6 +116,25 @@ const CASES: Record<string, ApnsMessage> = {
         {
           ...pills,
           instance: instanceDoc({ state: "confirmed", confirmedAt: WINDOW_START + 12 * MIN }),
+        },
+        pillsShown,
+        WINDOW_START + 12 * MIN + 1_000,
+      ),
+    ),
+    ACCEPTED_AT,
+    seconds(WINDOW_START + 12 * MIN + 1_000),
+  ),
+  "end-done-receipt.json": liveActivityEndMessage(
+    endOf(
+      fromLive(
+        {
+          ...pills,
+          instance: instanceDoc({
+            state: "confirmed",
+            confirmedAt: WINDOW_START + 12 * MIN,
+            confirmedVia: "live_activity",
+            confirmedBy: PHONE_USER_ID,
+          }),
         },
         pillsShown,
         WINDOW_START + 12 * MIN + 1_000,

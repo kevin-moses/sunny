@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Id } from "../_generated/dataModel";
 import { seniorCanConfirm } from "./confirmRule";
 import { buildDeviceState, frameDoneTarget } from "./deviceState";
 import type { DayEvent, DeviceStateInput } from "./deviceState";
@@ -37,6 +38,14 @@ interface TaskSpec {
   snoozedUntil?: number | null;
 }
 
+function instanceId(name: string): Id<"taskInstances"> {
+  return name as Id<"taskInstances">;
+}
+
+function eventId(name: string): Id<"events"> {
+  return name as Id<"events">;
+}
+
 function task(id: string, label: string, time: string, spec: TaskSpec = {}): TimelineTask {
   const date = spec.date ?? DAY;
   const items = spec.items ?? [];
@@ -46,11 +55,12 @@ function task(id: string, label: string, time: string, spec: TaskSpec = {}): Tim
     ? at("00:00", addDays(date, 1))
     : windowStart + (spec.windowMinutes ?? 60) * MIN;
   return {
-    instanceId: id,
+    instanceId: instanceId(id),
     localDate: date,
     type: spec.type ?? "medication",
     displayLabel: label,
     spokenPrompt: `Time for ${label}.`,
+    screenSentence: spec.sentence ?? null,
     pillDescription: spec.detail ?? null,
     checklistItems: items,
     step: taskStep(items, spec.currentStep),
@@ -62,20 +72,19 @@ function task(id: string, label: string, time: string, spec: TaskSpec = {}): Tim
     snoozedUntil: spec.snoozedUntil ?? null,
     windowStart,
     windowEnd,
-    sentence: spec.sentence ?? null,
-  } as TimelineTask;
+  };
 }
 
 function event(id: string, label: string, time: string, date = DAY): DayEvent {
   return {
-    eventId: id,
+    eventId: eventId(id),
     label,
     startTime: time,
     visitorName: null,
     localDate: date,
     startsAt: at(time, date),
     endsAt: null,
-  } as DayEvent;
+  };
 }
 
 function input(tasks: TimelineTask[], events: DayEvent[] = []): TimelineInput {

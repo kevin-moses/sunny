@@ -47,18 +47,34 @@ export interface ActivityRow {
   windowEnd: number;
 }
 
-export type ViewInput = { phoneCanConfirm: boolean } & (
+export interface ActivityPhone {
+  userId: string | null;
+  canConfirm: boolean;
+}
+
+export type ViewInput = { phone: ActivityPhone } & (
   { subject: ActivitySubject; row: ActivityRow | null } | { subject: null; row: ActivityRow }
 );
 
 export type ActivityView =
   | { kind: "show"; content: ActivityContent; staleAt: number; relevance: number }
-  | { kind: "end"; content: ActivityContent; reason: ActivityEndReason };
+  | {
+      kind: "end";
+      content: ActivityContent;
+      reason: ActivityEndReason;
+      receiptUntil: number | null;
+    };
 
 export type ActivityCommand =
   | { kind: "none" }
   | { kind: "update"; token: string; content: ActivityContent; staleAt: number }
-  | { kind: "end"; token: string; content: ActivityContent; reason: ActivityEndReason };
+  | {
+      kind: "end";
+      token: string;
+      content: ActivityContent;
+      reason: ActivityEndReason;
+      receiptUntil: number | null;
+    };
 
 export interface ActivityStart {
   content: ActivityContent;
@@ -72,6 +88,7 @@ export interface StartPlan extends ActivityStart {
   instanceId: Id<"taskInstances">;
   windowEnd: number;
   resume: Id<"liveActivities"> | null;
+  timestamp: number;
 }
 
 type Showing =
@@ -99,7 +116,7 @@ function taskContent(subject: ActivitySubject, now: number): ActivityContent {
   const [current, ...later] = taskCards(timelineTask(subject.instance, subject.task, now));
   return fitContent(
     contentState({
-      card: current!,
+      card: current,
       nextSteps: later.flatMap((next) => (next.stepText === null ? [] : [next.stepText])),
       closed: null,
     }),
@@ -110,8 +127,21 @@ function ended(
   content: ActivityContent,
   closed: ActivityClosed,
   reason: ActivityEndReason,
+  receiptUntil: number | null = null,
 ): ActivityView {
-  return { kind: "end", content: { ...content, closed }, reason };
+  return { kind: "end", content: { ...content, closed }, reason, receiptUntil };
+}
+
+function receiptUntil(
+  instance: Pick<Doc<"taskInstances">, "confirmedVia" | "confirmedBy" | "confirmedAt">,
+  phone: ActivityPhone,
+): number | null {
+  const pressedOnThisActivity =
+    instance.confirmedVia === "live_activity" &&
+    phone.userId !== null &&
+    instance.confirmedBy === phone.userId;
+  if (!pressedOnThisActivity || instance.confirmedAt === undefined) return null;
+  return instance.confirmedAt + RECEIPT_MS;
 }
 
 function showing(row: ActivityRow | null): Showing {
@@ -134,6 +164,14 @@ export function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
   return phase.kind !== "ended";
 }
 
+export function nextPushTimestamp(
+  row: Pick<Doc<"liveActivities">, "pushTimestamp"> | null,
+  now: number,
+): number {
+  const nowSeconds = Math.floor(now / 1000);
+  return row === null ? nowSeconds : Math.max(nowSeconds, row.pushTimestamp + 1);
+}
+
 export function wantsActivity(
   instance: Pick<Doc<"taskInstances">, "state" | "scheduledTime" | "windowEnd">,
   now: number,
@@ -143,15 +181,22 @@ export function wantsActivity(
 
 export function activityView(input: ViewInput, now: number): ActivityView {
   const was = showing(input.row);
-  if (was.kind === "ended") return { kind: "end", content: was.shown, reason: was.reason };
+  if (was.kind === "ended") {
+    return { kind: "end", content: was.shown, reason: was.reason, receiptUntil: null };
+  }
   if (input.subject === null) {
     return ended(input.row.shown, { kind: "over", at: now }, "instance_gone");
   }
   const { instance } = input.subject;
   const content = taskContent(input.subject, now);
-  if (!input.phoneCanConfirm) return ended(content, { kind: "over", at: now }, "device_revoked");
+  if (!input.phone.canConfirm) return ended(content, { kind: "over", at: now }, "device_revoked");
   if (isDoneState(instance.state)) {
-    return ended(content, { kind: "done", at: instance.confirmedAt ?? now }, "confirmed");
+    return ended(
+      content,
+      { kind: "done", at: instance.confirmedAt ?? now },
+      "confirmed",
+      receiptUntil(instance, input.phone),
+    );
   }
   if (!wantsActivity(instance, now)) {
     return ended(content, { kind: "over", at: Math.min(now, instance.windowEnd) }, "window_closed");
@@ -170,7 +215,8 @@ export function nextCommand(row: ActivityRow, view: ActivityView): ActivityComma
   if (row.phase.kind !== "live") return { kind: "none" };
   const token = row.phase.updateToken;
   if (view.kind === "end") {
-    return { kind: "end", token, content: view.content, reason: view.reason };
+    const { content, reason, receiptUntil } = view;
+    return { kind: "end", token, content, reason, receiptUntil };
   }
   if (sameContent(row.shown, view.content)) return { kind: "none" };
   return { kind: "update", token, content: view.content, staleAt: view.staleAt };
@@ -180,12 +226,16 @@ export type ActivityDirective =
   | { key: string; directive: "update"; content: ActivityContent; staleAt: number }
   | { key: string; directive: "end"; content: ActivityContent | null };
 
+export function firstShownPhase(token: string | null, now: number): OpenPhase {
+  return token === null
+    ? { kind: "started", acceptedAt: now, proof: "proven" }
+    : { kind: "live", acceptedAt: now, updateToken: token, tokenAt: now };
+}
+
 export function reportedPhase(phase: OpenPhase, token: string | null, now: number): OpenPhase {
   switch (phase.kind) {
     case "starting":
-      return token === null
-        ? { kind: "started", acceptedAt: now, proof: "proven" }
-        : { kind: "live", acceptedAt: now, updateToken: token, tokenAt: now };
+      return firstShownPhase(token, now);
     case "started":
       if (token !== null) {
         return { kind: "live", acceptedAt: phase.acceptedAt, updateToken: token, tokenAt: now };
@@ -206,11 +256,12 @@ export async function loadActivityView(
   const instance = await ctx.db.get(row.taskInstanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
   const device = await ctx.db.get(row.deviceId);
-  const phoneCanConfirm = device !== null && device.tokenHash !== undefined;
-  if (instance === null || task === null) {
-    return activityView({ subject: null, row, phoneCanConfirm }, now);
-  }
-  return activityView({ subject: { instance, task }, row, phoneCanConfirm }, now);
+  const phone: ActivityPhone = {
+    userId: device?.userId ?? null,
+    canConfirm: device !== null && device.tokenHash !== undefined,
+  };
+  if (instance === null || task === null) return activityView({ subject: null, row, phone }, now);
+  return activityView({ subject: { instance, task }, row, phone }, now);
 }
 
 export async function endActivity(
@@ -261,6 +312,16 @@ function directiveFor(key: string, row: ActivityRow, view: ActivityView): Activi
   return [{ key, directive: "update", content: contentState(view.content), staleAt: view.staleAt }];
 }
 
+async function settleCueAsShown(
+  ctx: MutationCtx,
+  outboxId: Id<"notificationOutbox">,
+  now: number,
+): Promise<void> {
+  const cue = await ctx.db.get(outboxId);
+  if (cue === null || cue.state !== "pending") return;
+  await ctx.db.patch(cue._id, { state: "sent", channel: "live_activity", settledAt: now });
+}
+
 async function applyReportedActivity(
   ctx: MutationCtx,
   row: Doc<"liveActivities">,
@@ -268,15 +329,34 @@ async function applyReportedActivity(
   reported: ReportedActivity,
   now: number,
 ): Promise<ReportOutcome> {
+  if (phase.kind === "starting") await settleCueAsShown(ctx, phase.outboxId, now);
   const view = await loadActivityView(ctx, row, now);
   if (!isOnPhone(reported)) {
     await endAsViewed(ctx, row, view, now);
     return { directives: [], behind: [] };
   }
   const next = reportedPhase(phase, reported.token, now);
-  if (next !== phase) await ctx.db.patch(row._id, { phase: next });
   const directives = directiveFor(reported.key, row, view);
+  if (next.kind === "started" && view.kind === "end") {
+    await endActivity(ctx, row, view.reason, now, view.content);
+    return { directives, behind: [] };
+  }
+  if (next !== phase) await ctx.db.patch(row._id, { phase: next });
   return { directives, behind: next.kind === "live" && directives.length > 0 ? [row._id] : [] };
+}
+
+async function openForReport(
+  ctx: MutationCtx,
+  row: Doc<"liveActivities">,
+  reported: ReportedActivity,
+  now: number,
+): Promise<{ row: Doc<"liveActivities">; phase: OpenPhase } | null> {
+  const { phase } = row;
+  if (isOpenPhase(phase)) return { row, phase };
+  if (phase.reason !== "start_failed" || !isOnPhone(reported)) return null;
+  const shown = firstShownPhase(reported.token, now);
+  await ctx.db.patch(row._id, { phase: shown });
+  return { row: { ...row, phase: shown }, phase: shown };
 }
 
 export async function applyActivityReport(
@@ -297,13 +377,14 @@ export async function applyActivityReport(
     }
     if (listed.has(row._id)) continue;
     listed.add(row._id);
-    if (!isOpenPhase(row.phase)) {
+    const open = await openForReport(ctx, row, entry, now);
+    if (open === null) {
       if (isOnPhone(entry)) {
         directives.push({ key: entry.key, directive: "end", content: contentState(row.shown) });
       }
       continue;
     }
-    const outcome = await applyReportedActivity(ctx, row, row.phase, entry, now);
+    const outcome = await applyReportedActivity(ctx, open.row, open.phase, entry, now);
     directives.push(...outcome.directives);
     behind.push(...outcome.behind);
   }
@@ -361,31 +442,40 @@ function isStartOf(row: Doc<"liveActivities">, outboxId: Id<"notificationOutbox"
   return row.phase.kind === "starting" && row.phase.outboxId === outboxId;
 }
 
-export async function planStart(
+interface StartCue {
+  instanceId: Id<"taskInstances">;
+  outboxId: Id<"notificationOutbox"> | null;
+  quiet: boolean;
+}
+
+async function planStartOf(
   ctx: QueryCtx,
-  row: Doc<"notificationOutbox">,
+  cue: StartCue,
   device: Doc<"devices">,
   now: number,
 ): Promise<StartPlan | null> {
-  if (!isActivityCue(row) || device.kind !== "senior_phone") return null;
-  if (device.tokenHash === undefined) return null;
+  if (device.kind !== "senior_phone" || device.tokenHash === undefined) return null;
   const push = await findPhonePush(ctx, device._id);
   if (push === null || push.liveActivityStart === undefined || push.blindSince !== undefined) {
     return null;
   }
-  const instance = await ctx.db.get(row.taskInstanceId);
+  const instance = await ctx.db.get(cue.instanceId);
   const task = instance === null ? null : await ctx.db.get(instance.taskId);
   if (instance === null || task === null) return null;
   const rows = await activitiesFor(ctx, instance._id, device._id);
-  const resume = rows.find((r) => isStartOf(r, row._id)) ?? null;
+  const { outboxId } = cue;
+  const resume = outboxId === null ? null : (rows.find((r) => isStartOf(r, outboxId)) ?? null);
   const earlier = rows.filter((r) => r !== resume);
-  const blocked =
-    row.kind === "senior_reshow" ? earlier.some((r) => isOpenPhase(r.phase)) : earlier.length > 0;
+  const blocked = cue.quiet ? earlier.some((r) => isOpenPhase(r.phase)) : earlier.length > 0;
   if (blocked) return null;
   const open = (await openActivitiesOf(ctx, device._id)).filter((r) => r._id !== resume?._id);
   if (open.length >= MAX_OPEN_ACTIVITIES) return null;
   const view = activityView(
-    { subject: { instance, task }, row: resume, phoneCanConfirm: true },
+    {
+      subject: { instance, task },
+      row: resume,
+      phone: { userId: device.userId, canConfirm: true },
+    },
     now,
   );
   if (view.kind !== "show") return null;
@@ -394,11 +484,37 @@ export async function planStart(
     content: view.content,
     staleAt: view.staleAt,
     relevance: view.relevance,
-    quiet: row.kind === "senior_reshow",
+    quiet: cue.quiet,
     instanceId: instance._id,
     windowEnd: instance.windowEnd,
     resume: resume?._id ?? null,
+    timestamp: nextPushTimestamp(resume, now),
   };
+}
+
+export async function planStart(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+  device: Doc<"devices">,
+  now: number,
+): Promise<StartPlan | null> {
+  if (!isActivityCue(row)) return null;
+  const cue = {
+    instanceId: row.taskInstanceId,
+    outboxId: row._id,
+    quiet: row.kind === "senior_reshow",
+  };
+  return await planStartOf(ctx, cue, device, now);
+}
+
+export async function canShowAgain(
+  ctx: QueryCtx,
+  instanceId: Id<"taskInstances">,
+  device: Doc<"devices">,
+  now: number,
+): Promise<boolean> {
+  const cue = { instanceId, outboxId: null, quiet: true };
+  return (await planStartOf(ctx, cue, device, now)) !== null;
 }
 
 export async function openActivity(
@@ -417,9 +533,11 @@ export async function openActivity(
       windowEnd: plan.windowEnd,
       phase: { kind: "starting", outboxId: row._id, since: now },
       shown: plan.content,
+      pushTimestamp: plan.timestamp,
+      quiet: plan.quiet,
     });
   } else {
-    await ctx.db.patch(activityId, { shown: plan.content });
+    await ctx.db.patch(activityId, { shown: plan.content, pushTimestamp: plan.timestamp });
   }
   const attributes: ActivityAttributes = {
     activityKey: activityId,
@@ -429,7 +547,7 @@ export async function openActivity(
   const alert = { title: row.title, body: row.body };
   return {
     activityId,
-    message: liveActivityStartMessage(attributes, plan, alert, Math.floor(now / 1000)),
+    message: liveActivityStartMessage(attributes, plan, alert, plan.timestamp),
   };
 }
 

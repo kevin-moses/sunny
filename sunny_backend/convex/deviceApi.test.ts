@@ -1317,6 +1317,71 @@ describe("revokeDeviceToken", () => {
   });
 });
 
+describe("revokeOwnToken", () => {
+  test("a paired phone revokes its own token and stays paired", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    await t.withIdentity({ subject: "phone" }).mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await getState(t, token)).status).toBe(401);
+    const row = await deviceRow(t, f.phoneId);
+    expect(row).not.toBeNull();
+    expect(row!.tokenHash).toBeUndefined();
+    expect(row!.tokenIssuedAt).toBeUndefined();
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toEqual([
+      expect.objectContaining({
+        householdId: f.householdId,
+        actorKind: "senior_device",
+        actorUserId: "phone",
+        entity: "device",
+        entityId: f.phoneId,
+        detail: { hadToken: true },
+      }),
+    ]);
+    expect((await getState(t, await issue(t))).status).toBe(200);
+  });
+
+  test("a second call finds no token and is audited as such", async () => {
+    const t = makeBackend();
+    await household(t);
+    await issue(t);
+    const phone = t.withIdentity({ subject: "phone" });
+    await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    expect(
+      (await audits(t))
+        .filter((a) => a.action === "revoke_device_token")
+        .map((a) => (a.detail as { hadToken: boolean }).hadToken),
+    ).toEqual([true, false]);
+  });
+
+  test("one device's call leaves every other device's token working", async () => {
+    const t = makeBackend();
+    await household(t);
+    const theirs = await household(t, "z_");
+    const phoneToken = await issue(t);
+    const displayToken = await issue(t, "display");
+    const otherPhoneToken = await issue(t, "z_phone");
+    await t.withIdentity({ subject: "display" }).mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await getState(t, displayToken)).status).toBe(401);
+    expect((await getState(t, phoneToken)).status).toBe(200);
+    expect((await getState(t, otherPhoneToken)).status).toBe(200);
+    expect((await deviceRow(t, theirs.phoneId))!.tokenHash).toBeDefined();
+  });
+
+  test("a caregiver and a signed-out caller are refused, and no token is revoked", async () => {
+    const t = makeBackend();
+    await household(t);
+    const token = await issue(t);
+    await expect(
+      t.withIdentity({ subject: "pat" }).mutation(api.deviceApi.revokeOwnToken, {}),
+    ).rejects.toThrow(/Only the senior's devices can do this/);
+    await expect(t.mutation(api.deviceApi.revokeOwnToken, {})).rejects.toThrow(/Sign in first/);
+    expect((await getState(t, token)).status).toBe(200);
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toEqual([]);
+  });
+});
+
 describe("a device removed between the gate and the effect", () => {
   test("every by-token function finds nothing and writes nothing", async () => {
     const t = makeBackend();

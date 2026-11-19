@@ -122,7 +122,6 @@ export const activityCard = v.object({
   startsAt: v.number(),
   endsAt: v.number(),
 });
-export type ActivityCard = Infer<typeof activityCard>;
 
 export const activityClosed = v.object({
   kind: v.union(v.literal("done"), v.literal("over")),
@@ -142,7 +141,6 @@ export const activityEndReason = v.union(
   v.literal("window_closed"),
   v.literal("instance_gone"),
   v.literal("start_failed"),
-  v.literal("unreachable"),
   v.literal("ended_on_phone"),
   v.literal("expired"),
   v.literal("device_revoked"),
@@ -150,7 +148,6 @@ export const activityEndReason = v.union(
 export type ActivityEndReason = Infer<typeof activityEndReason>;
 
 export const startProof = v.union(v.literal("awaited"), v.literal("proven"), v.literal("missed"));
-export type StartProof = Infer<typeof startProof>;
 
 export const liveActivityPhase = v.union(
   v.object({

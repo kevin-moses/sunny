@@ -17,6 +17,7 @@ import {
   phoneHousehold,
   phonePushRow,
   putPushState,
+  secondPhone,
   setNow,
 } from "./phoneHarness.helpers";
 import type { PhoneFixture } from "./phoneHarness.helpers";
@@ -25,6 +26,8 @@ import { MAX_REPORTED_ACTIVITIES, parsePushStateRequest } from "./phonePush";
 const EIGHT = local("08:00");
 
 const OTHER_TOKEN = "f6".repeat(80);
+
+const SECOND_ALERT_TOKEN = "a7".repeat(32);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -209,6 +212,48 @@ describe("PUT /device/push-state", () => {
     expect(row.liveActivityStart!.token).toBe(START_TOKEN);
   });
 
+  test("a start token another phone reports later leaves the first phone's row", async () => {
+    const f = await setup();
+    const later = await secondPhone(f, SECOND_ALERT_TOKEN);
+    await putPushState(f, {
+      liveActivityStart: { token: START_TOKEN, enabled: true },
+      widgetPush: { token: WIDGET_TOKEN },
+    });
+    await putPushState(later, { liveActivityStart: { token: START_TOKEN, enabled: true } });
+    const first = (await phonePushRow(f))!;
+    expect(first.liveActivityStart).toBeUndefined();
+    expect(first.widgetPush!.token).toBe(WIDGET_TOKEN);
+    expect((await phonePushRow(later, later.phoneId))!.liveActivityStart!.token).toBe(START_TOKEN);
+  });
+
+  test("a widget token another phone reports later leaves the first phone's row", async () => {
+    const f = await setup();
+    const later = await secondPhone(f, SECOND_ALERT_TOKEN);
+    await putPushState(f, {
+      liveActivityStart: { token: START_TOKEN, enabled: true },
+      widgetPush: { token: WIDGET_TOKEN },
+    });
+    await putPushState(later, { widgetPush: { token: WIDGET_TOKEN } });
+    const first = (await phonePushRow(f))!;
+    expect(first.widgetPush).toBeUndefined();
+    expect(first.liveActivityStart!.token).toBe(START_TOKEN);
+    expect((await phonePushRow(later, later.phoneId))!.widgetPush!.token).toBe(WIDGET_TOKEN);
+  });
+
+  test("a phone that reports its own tokens again keeps them", async () => {
+    const f = await setup();
+    const report = {
+      liveActivityStart: { token: START_TOKEN, enabled: true },
+      widgetPush: { token: WIDGET_TOKEN },
+    };
+    await putPushState(f, report);
+    await putPushState(f, report);
+    expect(await phonePushRow(f)).toMatchObject({
+      liveActivityStart: { token: START_TOKEN },
+      widgetPush: { token: WIDGET_TOKEN },
+    });
+  });
+
   test("any report, even an empty one, clears the blind mark", async () => {
     const f = await setup();
     await f.t.run(async (ctx) => {
@@ -354,10 +399,10 @@ describe("reported activities", () => {
         },
       },
     ]);
-    expect((await activity(f, id)).phase.kind).toBe("started");
-    expect(await report(f, id, "ended")).toEqual([]);
     expect((await activity(f, id)).phase).toMatchObject({ kind: "ended", reason: "confirmed" });
     expect((await activity(f, id)).shown.closed).toEqual({ kind: "done", at: confirmedAt });
+    expect(await report(f, id, "ended")).toEqual([]);
+    expect((await activity(f, id)).phase).toMatchObject({ kind: "ended", reason: "confirmed" });
   });
 
   test("a step taken elsewhere tells the phone to update to the current step", async () => {
