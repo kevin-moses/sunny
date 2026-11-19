@@ -68,6 +68,18 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(queue.pressed(), [])
     }
 
+    func testAnAnswerWhoseMarkWasUndoneIsDroppedAfterTheMarkLifetime() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let id = UUID()
+        queue.answered(id, at: start)
+        let answers = { try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("answers").path) }
+        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime))
+        XCTAssertEqual(try answers(), [id.uuidString + ".json"])
+        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime + 1))
+        XCTAssertEqual(try answers(), [])
+    }
+
     func testDropsUnreadableFiles() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
@@ -85,6 +97,30 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(queue.pending(), [])
         XCTAssertEqual(queue.pressed(), [])
         XCTAssertFalse(try queue.removeAll())
+    }
+
+    func testAnUndoThatRacesTheAnswerLeavesNoMark() throws {
+        let directory = try temporaryDirectory()
+        let answering = PressQueue(directory: directory)
+        let undoing = PressQueue(directory: directory)
+        let key = PressKey(instanceId: "a", step: 0)
+        var cameBackInRound: Int?
+        for round in 0..<500 {
+            let id = UUID()
+            try answering.mark(id, key: key, at: start.addingTimeInterval(TimeInterval(round)))
+            DispatchQueue.concurrentPerform(iterations: 2) { side in
+                if side == 0 {
+                    answering.answered(id, at: start.addingTimeInterval(TimeInterval(round) + 1))
+                } else {
+                    undoing.removeMark(id)
+                }
+            }
+            if !PressQueue(directory: directory).pressed().isEmpty {
+                cameBackInRound = round
+                break
+            }
+        }
+        XCTAssertNil(cameBackInRound, "an Undo that ran while the answer was recorded came back")
     }
 
     func testTwoInterleavedWritersKeepEveryPress() throws {

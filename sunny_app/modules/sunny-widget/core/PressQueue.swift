@@ -30,18 +30,20 @@ public struct Press: Codable, Equatable, Sendable {
 public struct PressedMark: Codable, Equatable, Sendable {
     public let key: PressKey
     public let at: Date
-    public let answeredAt: Date?
 
-    public init(key: PressKey, at: Date, answeredAt: Date? = nil) {
+    public init(key: PressKey, at: Date) {
         self.key = key
         self.at = at
-        self.answeredAt = answeredAt
     }
 
-    func isSettled(byTimelineFetchedFrom fetchStartedAt: Date) -> Bool {
+    func isSettled(answeredAt: Date?, byTimelineFetchedFrom fetchStartedAt: Date) -> Bool {
         if let answeredAt { return answeredAt < fetchStartedAt }
         return fetchStartedAt.timeIntervalSince(at) > PressQueue.markLifetime
     }
+}
+
+struct PressAnswer: Codable, Equatable, Sendable {
+    let at: Date
 }
 
 public struct PressQueue: Sendable {
@@ -49,11 +51,13 @@ public struct PressQueue: Sendable {
 
     private let pressesDirectory: URL
     private let marksDirectory: URL
+    private let answersDirectory: URL
     private let stagingDirectory: URL
 
     public init(directory: URL) {
         pressesDirectory = directory.appendingPathComponent("presses", isDirectory: true)
         marksDirectory = directory.appendingPathComponent("marks", isDirectory: true)
+        answersDirectory = directory.appendingPathComponent("answers", isDirectory: true)
         stagingDirectory = directory.appendingPathComponent("staging", isDirectory: true)
     }
 
@@ -83,11 +87,7 @@ public struct PressQueue: Sendable {
     }
 
     public func answered(_ id: UUID, at answeredAt: Date) {
-        let markURL = fileURL(for: id, in: marksDirectory)
-        if let data = try? Data(contentsOf: markURL), let mark = try? JSONDecoder().decode(PressedMark.self, from: data) {
-            let answered = PressedMark(key: mark.key, at: mark.at, answeredAt: answeredAt)
-            try? replace(JSONEncoder().encode(answered), at: markURL)
-        }
+        try? replace(JSONEncoder().encode(PressAnswer(at: answeredAt)), at: fileURL(for: id, in: answersDirectory))
         try? FileManager.default.removeItem(at: fileURL(for: id, in: pressesDirectory))
     }
 
@@ -96,7 +96,7 @@ public struct PressQueue: Sendable {
     }
 
     public func removeMark(_ id: UUID) {
-        try? FileManager.default.removeItem(at: fileURL(for: id, in: marksDirectory))
+        removeMark(named: fileURL(for: id, in: marksDirectory).lastPathComponent)
     }
 
     public func pressed() -> Set<PressKey> {
@@ -104,15 +104,27 @@ public struct PressQueue: Sendable {
     }
 
     public func reconcile(withTimelineFetchedFrom fetchStartedAt: Date) {
-        for (url, mark) in marks() where mark.isSettled(byTimelineFetchedFrom: fetchStartedAt) {
-            try? FileManager.default.removeItem(at: url)
+        var marked: Set<String> = []
+        for (url, mark) in marks() {
+            let name = url.lastPathComponent
+            if mark.isSettled(answeredAt: answer(named: name)?.at, byTimelineFetchedFrom: fetchStartedAt) {
+                removeMark(named: name)
+            } else {
+                marked.insert(name)
+            }
+        }
+        for url in files(in: answersDirectory) where !marked.contains(url.lastPathComponent) {
+            let answeredAt = answer(named: url.lastPathComponent)?.at ?? .distantPast
+            if fetchStartedAt.timeIntervalSince(answeredAt) > Self.markLifetime {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
     @discardableResult
     public func removeAll() throws -> Bool {
         var removed = false
-        for directory in [pressesDirectory, marksDirectory, stagingDirectory]
+        for directory in [pressesDirectory, marksDirectory, answersDirectory, stagingDirectory]
         where FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
             removed = true
@@ -130,6 +142,17 @@ public struct PressQueue: Sendable {
             }
             return (url, mark)
         }
+    }
+
+    private func answer(named name: String) -> PressAnswer? {
+        let url = answersDirectory.appendingPathComponent(name)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PressAnswer.self, from: data)
+    }
+
+    private func removeMark(named name: String) {
+        try? FileManager.default.removeItem(at: marksDirectory.appendingPathComponent(name))
+        try? FileManager.default.removeItem(at: answersDirectory.appendingPathComponent(name))
     }
 
     private func files(in directory: URL) -> [URL] {
