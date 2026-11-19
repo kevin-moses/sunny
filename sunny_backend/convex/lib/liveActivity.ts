@@ -180,12 +180,16 @@ export type ActivityDirective =
   | { key: string; directive: "update"; content: ActivityContent; staleAt: number }
   | { key: string; directive: "end"; content: ActivityContent | null };
 
+export function firstShownPhase(token: string | null, now: number): OpenPhase {
+  return token === null
+    ? { kind: "started", acceptedAt: now, proof: "proven" }
+    : { kind: "live", acceptedAt: now, updateToken: token, tokenAt: now };
+}
+
 export function reportedPhase(phase: OpenPhase, token: string | null, now: number): OpenPhase {
   switch (phase.kind) {
     case "starting":
-      return token === null
-        ? { kind: "started", acceptedAt: now, proof: "proven" }
-        : { kind: "live", acceptedAt: now, updateToken: token, tokenAt: now };
+      return firstShownPhase(token, now);
     case "started":
       if (token !== null) {
         return { kind: "live", acceptedAt: phase.acceptedAt, updateToken: token, tokenAt: now };
@@ -261,6 +265,16 @@ function directiveFor(key: string, row: ActivityRow, view: ActivityView): Activi
   return [{ key, directive: "update", content: contentState(view.content), staleAt: view.staleAt }];
 }
 
+async function settleCueAsShown(
+  ctx: MutationCtx,
+  outboxId: Id<"notificationOutbox">,
+  now: number,
+): Promise<void> {
+  const cue = await ctx.db.get(outboxId);
+  if (cue === null || cue.state !== "pending") return;
+  await ctx.db.patch(cue._id, { state: "sent", channel: "live_activity", settledAt: now });
+}
+
 async function applyReportedActivity(
   ctx: MutationCtx,
   row: Doc<"liveActivities">,
@@ -268,6 +282,7 @@ async function applyReportedActivity(
   reported: ReportedActivity,
   now: number,
 ): Promise<ReportOutcome> {
+  if (phase.kind === "starting") await settleCueAsShown(ctx, phase.outboxId, now);
   const view = await loadActivityView(ctx, row, now);
   if (!isOnPhone(reported)) {
     await endAsViewed(ctx, row, view, now);
@@ -277,6 +292,20 @@ async function applyReportedActivity(
   if (next !== phase) await ctx.db.patch(row._id, { phase: next });
   const directives = directiveFor(reported.key, row, view);
   return { directives, behind: next.kind === "live" && directives.length > 0 ? [row._id] : [] };
+}
+
+async function openForReport(
+  ctx: MutationCtx,
+  row: Doc<"liveActivities">,
+  reported: ReportedActivity,
+  now: number,
+): Promise<{ row: Doc<"liveActivities">; phase: OpenPhase } | null> {
+  const { phase } = row;
+  if (isOpenPhase(phase)) return { row, phase };
+  if (phase.reason !== "start_failed" || !isOnPhone(reported)) return null;
+  const shown = firstShownPhase(reported.token, now);
+  await ctx.db.patch(row._id, { phase: shown });
+  return { row: { ...row, phase: shown }, phase: shown };
 }
 
 export async function applyActivityReport(
@@ -297,13 +326,14 @@ export async function applyActivityReport(
     }
     if (listed.has(row._id)) continue;
     listed.add(row._id);
-    if (!isOpenPhase(row.phase)) {
+    const open = await openForReport(ctx, row, entry, now);
+    if (open === null) {
       if (isOnPhone(entry)) {
         directives.push({ key: entry.key, directive: "end", content: contentState(row.shown) });
       }
       continue;
     }
-    const outcome = await applyReportedActivity(ctx, row, row.phase, entry, now);
+    const outcome = await applyReportedActivity(ctx, open.row, open.phase, entry, now);
     directives.push(...outcome.directives);
     behind.push(...outcome.behind);
   }

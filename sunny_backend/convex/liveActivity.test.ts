@@ -6,13 +6,16 @@ import {
   APNS_SENT,
   alertsSent,
   answerEachToken,
+  providerMocks,
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
+import type { ApnsSendArgs } from "./deliveryMocks.helpers";
 import { MAX_OPEN_ACTIVITIES, PROOF_WAIT_MS } from "./lib/liveActivity";
 import {
   ALERT_TOKEN,
   MIN,
   START_TOKEN,
+  UPDATE_TOKEN,
   about,
   activities,
   activityPushes,
@@ -408,6 +411,147 @@ describe("a start that APNs does not accept", () => {
       expect.objectContaining({ state: "sent", channel: "apns" }),
     ]);
     errorSpy.mockRestore();
+  });
+});
+
+describe("a start that reached the phone while APNs answered with a failure", () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  function loseTheFirstAnswer(f: PhoneFixture, reported: { token: string | null; state: string }) {
+    let lost = false;
+    providerMocks.apnsSend.mockImplementation(async (args: ApnsSendArgs) => {
+      const [send] = args.sends;
+      const aps = (JSON.parse(send!.message.body) as { aps: Partial<StartAps> }).aps;
+      if (lost || aps.event !== "start" || aps.attributes === undefined) {
+        return args.sends.map(({ token }) => ({ token, ...APNS_SENT }));
+      }
+      lost = true;
+      const response = await putPushState(f, {
+        activities: [{ key: aps.attributes.activityKey, ...reported }],
+      });
+      expect(response.status).toBe(200);
+      return args.sends.map(({ token }) => ({
+        token,
+        outcome: "failed" as const,
+        status: 0,
+        reason: "Closed",
+        retryable: true,
+      }));
+    });
+  }
+
+  test("the phone's report settles the cue, and no retry or notification follows", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    loseTheFirstAnswer(f, { token: UPDATE_TOKEN, state: "active" });
+    await tick(f, EIGHT);
+    await settle(f.t, 2 * MIN);
+
+    expect(starts()).toHaveLength(1);
+    expect(alertsSent()).toEqual([]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ kind: "senior_prompt", state: "sent", channel: "live_activity" }),
+    ]);
+    expect((await activities(f)).map((row) => row.phase)).toEqual([
+      expect.objectContaining({ kind: "live", updateToken: UPDATE_TOKEN }),
+    ]);
+    expect((await phonePushRow(f))!.blindSince).toBeUndefined();
+  });
+
+  test("an activity the senior swiped away before the answer gets no notification either", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    loseTheFirstAnswer(f, { token: null, state: "dismissed" });
+    await tick(f, EIGHT);
+    await settle(f.t, 2 * MIN);
+
+    expect(starts()).toHaveLength(1);
+    expect(alertsSent()).toEqual([]);
+    expect(await outbox(f, instanceId)).toEqual([
+      expect.objectContaining({ state: "sent", channel: "live_activity" }),
+    ]);
+    expect((await activities(f)).map((row) => row.phase.kind)).toEqual(["ended"]);
+  });
+
+  test("the retries run out before the phone reports: the phone keeps the activity it shows", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    const instanceId = await pills(f);
+    refuseStart({ status: 503, retryable: true });
+    await tick(f, EIGHT);
+    await settle(f.t, 2 * MIN);
+    expect(alertsSent()).toHaveLength(1);
+    const [row] = await activities(f);
+    expect(row!.phase).toMatchObject({ kind: "ended", reason: "start_failed" });
+
+    resetProviderMocks();
+    const response = await putPushState(f, {
+      activities: [{ key: row!._id, token: UPDATE_TOKEN, state: "active" }],
+    });
+    expect(((await response.json()) as { activities: unknown[] }).activities).toEqual([]);
+    expect((await activities(f)).map((r) => r.phase)).toEqual([
+      {
+        kind: "live",
+        acceptedAt: about(EIGHT + 2 * MIN),
+        updateToken: UPDATE_TOKEN,
+        tokenAt: about(EIGHT + 2 * MIN),
+      },
+    ]);
+
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    expect(activityPushes().map((push) => push.tokens)).toEqual([[UPDATE_TOKEN]]);
+    expect((await activities(f))[0]!.phase).toMatchObject({ kind: "ended", reason: "confirmed" });
+  });
+
+  test("a failed start the phone shows without an update token is kept as started", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    await pills(f);
+    refuseStart({ status: 503, retryable: true });
+    await tick(f, EIGHT);
+    await settle(f.t, 2 * MIN);
+    const [row] = await activities(f);
+
+    const response = await putPushState(f, {
+      activities: [{ key: row!._id, token: null, state: "active" }],
+    });
+    expect(((await response.json()) as { activities: unknown[] }).activities).toEqual([]);
+    expect((await activities(f))[0]!.phase).toEqual({
+      kind: "started",
+      acceptedAt: about(EIGHT + 2 * MIN),
+      proof: "proven",
+    });
+  });
+
+  test("a failed start the phone no longer shows stays ended", async () => {
+    const f = await setup();
+    await reportStartToken(f);
+    await pills(f);
+    refuseStart({ status: 503, retryable: true });
+    await tick(f, EIGHT);
+    await settle(f.t, 2 * MIN);
+    const [row] = await activities(f);
+
+    const response = await putPushState(f, {
+      activities: [{ key: row!._id, token: null, state: "dismissed" }],
+    });
+    expect(((await response.json()) as { activities: unknown[] }).activities).toEqual([]);
+    expect((await activities(f))[0]!.phase).toMatchObject({
+      kind: "ended",
+      reason: "start_failed",
+    });
   });
 });
 
