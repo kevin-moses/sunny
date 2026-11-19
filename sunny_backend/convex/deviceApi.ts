@@ -26,6 +26,7 @@ import { phoneRevoked } from "./lib/liveActivitySync";
 import { loadPhoneTimeline } from "./lib/phoneTimeline";
 import type { PhoneTimeline } from "./lib/phoneTimeline";
 import { appError, isAppError } from "./lib/errors";
+import { isJsonObject } from "./lib/http";
 import {
   NO_STORE,
   convexErrorResponse,
@@ -380,10 +381,7 @@ export async function readJsonObject(request: Request): Promise<Record<string, u
   } catch {
     return "The request body must be JSON";
   }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return "The request body must be a JSON object";
-  }
-  return body as Record<string, unknown>;
+  return isJsonObject(body) ? body : "The request body must be a JSON object";
 }
 
 export function unknownKey(
@@ -449,11 +447,9 @@ function parseInfoRequest(body: Record<string, unknown>): InfoRequest | string {
   if (extra !== null) return extra;
   const info: InfoRequest = {};
   if (body.screen !== undefined) {
-    const screen = body.screen as Record<string, unknown> | null;
+    const screen = body.screen;
     const sideMessage = `screen width and height must be whole numbers from ${SCREEN_SIDE.min} to ${SCREEN_SIDE.max}`;
-    if (typeof screen !== "object" || screen === null || Array.isArray(screen)) {
-      return "screen must be an object";
-    }
+    if (!isJsonObject(screen)) return "screen must be an object";
     const screenExtra = unknownKey(screen, ["width", "height", "greys"]);
     if (screenExtra !== null) return `screen: ${screenExtra}`;
     if (!isIntIn(screen.width, SCREEN_SIDE) || !isIntIn(screen.height, SCREEN_SIDE)) {

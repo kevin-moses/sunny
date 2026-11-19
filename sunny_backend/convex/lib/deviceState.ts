@@ -515,13 +515,22 @@ export async function loadDeviceDay(
   };
 }
 
+export function splitEvents<T extends Pick<DayEvent, "localDate">>(
+  events: T[],
+  today: string,
+): { eventsToday: T[]; upcoming: T[] } {
+  return {
+    eventsToday: events.filter((e) => e.localDate === today),
+    upcoming: events.filter((e) => e.localDate > today),
+  };
+}
+
 function deviceStateInput(day: DeviceDay, now: number): DeviceStateInput {
   return {
     seniorPreferredName: day.seniorPreferredName,
     timezone: day.timezone,
     tasks: day.entries,
-    eventsToday: day.events.filter((e) => e.localDate === day.today),
-    upcoming: day.events.filter((e) => e.localDate > day.today),
+    ...splitEvents(day.events, day.today),
     cueInputs: day.instances.map(({ instance, task }) => ({
       entry: instanceDayTask(instance, task, now),
       timing: instance,

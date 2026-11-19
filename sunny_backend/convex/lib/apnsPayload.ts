@@ -1,5 +1,6 @@
 import { fromBase64, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
+import { HOUR_MS } from "./time";
 import type { ActivityAttributes, ActivityCommand, ActivityStart } from "./liveActivity";
 import type { ActivityContent, ApnsMessage, NotificationKind, PushType } from "./validators";
 
@@ -19,7 +20,7 @@ export const CAREGIVER_ALERT_CATEGORY = "caregiver_alert";
 
 const ACTIVITY_ATTRIBUTES_TYPE = "SunnyTaskAttributes";
 
-export const ACTIVITY_LIFETIME_MS = 12 * 60 * 60_000;
+export const ACTIVITY_LIFETIME_MS = 12 * HOUR_MS;
 
 const TOPIC_SUFFIX: Record<PushType, string> = {
   alert: "",
@@ -115,7 +116,7 @@ function cutToFit(text: string, encode: (text: string) => string): string {
   return payload;
 }
 
-function seconds(ms: number): number {
+export function seconds(ms: number): number {
   return Math.floor(ms / 1000);
 }
 

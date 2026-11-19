@@ -10,6 +10,7 @@ import {
   loadDeviceDay,
   nowCard,
   pickNext,
+  splitEvents,
 } from "./deviceState";
 import type { DayEvent, DeviceDay } from "./deviceState";
 import { taskIcon } from "./deviceWording";
@@ -123,8 +124,7 @@ export function dayAt(input: TimelineInput, at: number): DayAt {
     today,
     time: localTime(at, input.timezone),
     tasks,
-    eventsToday: input.events.filter((e) => e.localDate === today),
-    upcoming: input.events.filter((e) => e.localDate > today),
+    ...splitEvents(input.events, today),
   };
 }
 
@@ -167,15 +167,13 @@ function clearCard(day: DayAt, tasks: TimelineTask[]): PhoneClearCard {
   const { allDone } = nowCard(tasks, doneTarget(tasks), day.eventsToday, day.time);
   const agenda = buildAgenda(tasks, day.eventsToday);
   const next = pickNext(agenda, day.upcoming, day.today, day.time, null);
-  if (next === null) return { kind: "clear", allDone, next: null };
-  return {
-    kind: "clear",
-    allDone,
-    next:
-      next.kind === "task"
+  const shown =
+    next === null
+      ? null
+      : next.kind === "task"
         ? { label: next.task.displayLabel, startsAt: next.task.windowStart }
-        : { label: next.event.label, startsAt: next.event.startsAt },
-  };
+        : { label: next.event.label, startsAt: next.event.startsAt };
+  return { kind: "clear", allDone, next: shown };
 }
 
 export function cardsAt(input: TimelineInput, at: number): PhoneCard[] {

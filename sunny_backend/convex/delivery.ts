@@ -11,6 +11,7 @@ import {
   providerFault,
   refusedTokens,
   resultDetail,
+  seconds,
 } from "./lib/apnsPayload";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import {
@@ -108,7 +109,7 @@ async function sendApns(
     route.body,
     route.data,
     route.style,
-    Math.floor(Date.now() / 1000),
+    seconds(Date.now()),
   );
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     sends: route.tokens.map((token) => ({ token, message })),

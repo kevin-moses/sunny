@@ -20,6 +20,7 @@ import {
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
 import { userPushTokens } from "./lib/delivery";
+import { isJsonObject } from "./lib/http";
 import { errorResponse, jsonResponse } from "./lib/httpResponse";
 import { applyActivityReport, findPhonePush } from "./lib/liveActivity";
 import type { ActivityDirective } from "./lib/liveActivity";
@@ -44,10 +45,6 @@ type PushStateResult =
   | { kind: "not_a_phone" }
   | { kind: "ok"; activities: ActivityDirective[] };
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function reportedToken(value: unknown): string | null | undefined {
   if (value === null) return null;
   return typeof value === "string" && isValidDeviceToken(value) ? value : undefined;
@@ -62,7 +59,7 @@ function parseSection(
   value: unknown,
   keys: readonly string[],
 ): Record<string, unknown> | string {
-  if (!isObject(value)) return `${name} must be an object`;
+  if (!isJsonObject(value)) return `${name} must be an object`;
   const extra = unknownKey(value, keys);
   if (extra !== null) return `${name}: ${extra}`;
   const missing = keys.find((key) => !(key in value));

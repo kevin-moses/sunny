@@ -13,6 +13,7 @@ import {
   isValidDeviceToken,
   loadApnsConfig,
   mapOutcome,
+  seconds,
 } from "./lib/apnsPayload";
 import { ConfigError } from "./lib/errors";
 import { parseJsonObject } from "./lib/http";
@@ -91,7 +92,7 @@ export const send = internalAction({
     let providerToken: string;
     try {
       config = loadApnsConfig();
-      providerToken = await getProviderToken(config, Math.floor(Date.now() / 1000));
+      providerToken = await getProviderToken(config, seconds(Date.now()));
     } catch (e) {
       if (e instanceof ConfigError) return { results: [], configError: e.message };
       throw e;

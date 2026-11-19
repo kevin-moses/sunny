@@ -141,10 +141,6 @@ export async function reshowIfDue(
   await queueReshow(ctx, instance, device);
 }
 
-function stepOf(instance: Pick<Doc<"taskInstances">, "currentStep">): number {
-  return instance.currentStep ?? 0;
-}
-
 export async function instanceChanged(
   ctx: MutationCtx,
   actor: Actor,
@@ -152,7 +148,9 @@ export async function instanceChanged(
   after: Doc<"taskInstances">,
 ): Promise<void> {
   if (actor.kind === "system") return;
-  if (before.state === after.state && stepOf(before) === stepOf(after)) return;
+  if (before.state === after.state && (before.currentStep ?? 0) === (after.currentStep ?? 0)) {
+    return;
+  }
   await requestWidgetRefresh(ctx, actor, after.householdId);
   await syncInstanceActivities(ctx, after._id, Date.now(), {
     kind: "by_view",

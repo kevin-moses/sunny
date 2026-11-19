@@ -1,7 +1,7 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { liveActivityStartMessage, utf8Length } from "./apnsPayload";
+import { liveActivityStartMessage, seconds, utf8Length } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
 import { canonicalJson, isDue } from "./deviceState";
 import { taskCards, timelineTask } from "./phoneTimeline";
@@ -162,7 +162,7 @@ export function nextPushTimestamp(
   row: Pick<Doc<"liveActivities">, "pushTimestamp"> | null,
   now: number,
 ): number {
-  const nowSeconds = Math.floor(now / 1000);
+  const nowSeconds = seconds(now);
   return row === null ? nowSeconds : Math.max(nowSeconds, row.pushTimestamp + 1);
 }
 
@@ -194,7 +194,7 @@ export function activityView(input: ViewInput, now: number): ActivityView {
     kind: "show",
     content,
     staleAt: Math.min(instance.windowEnd, capAt),
-    relevance: RELEVANCE_BASE_SECONDS - Math.floor(instance.windowStart / 1000),
+    relevance: RELEVANCE_BASE_SECONDS - seconds(instance.windowStart),
   };
 }
 
