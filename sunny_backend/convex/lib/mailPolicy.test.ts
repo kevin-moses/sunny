@@ -410,6 +410,35 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toMatchObject({ eventId: "evt_nurse" });
     });
 
+    test("a linked move that names another kind still asks before moving a phone call", () => {
+      const effects = effectsOf(
+        reschedule(
+          { kind: "other", date: "2030-01-01", time: null },
+          { kind: "eye_doctor", date: "2026-11-24", time: "22:00" },
+        ),
+        facts({
+          ics: invite(),
+          linked: { eventId: "evt_call", date: "2026-11-20", time: "10:00" },
+          events: [...EVENTS, CALL],
+        }),
+      );
+      expect(kinds(effects)).toEqual(["escalate:phone_call:true"]);
+      expect(effects[0]).toMatchObject({ eventId: "evt_call" });
+    });
+
+    test("a verified sender moves a video call Sunny added", () => {
+      const video: CalendarEventFact = { ...CALL, eventId: "evt_video", title: "Video call" };
+      const effects = effectsOf(
+        reschedule(
+          { kind: "video_call", date: "2026-11-20", time: "10:00" },
+          { kind: "video_call", date: "2026-11-24", time: "11:00" },
+        ),
+        facts({ events: [...EVENTS, video] }),
+      );
+      expect(kinds(effects)).toEqual(["reschedule_event", "tell_caregivers"]);
+      expect(effects[0]).toMatchObject({ eventId: "evt_video" });
+    });
+
     test("an escalation with no single match says Sunny moved nothing and names no event", () => {
       const effects = effectsOf(
         reschedule({ kind: "other", date: "2030-01-01", time: null }),

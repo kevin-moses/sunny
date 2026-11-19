@@ -1,6 +1,7 @@
 import {
   APPOINTMENT_KINDS,
   APPOINTMENT_KIND_NAMES,
+  APPOINTMENT_TITLES,
   SENIOR_SENTENCES,
   appointmentTitle,
 } from "./mailTypes";
@@ -88,15 +89,27 @@ function sharesWords(a: string, b: string): boolean {
   return [...titleWords(b)].some((w) => words.has(w));
 }
 
-const CONFIRMED_KINDS = APPOINTMENT_KIND_NAMES.flatMap((kind) => {
+const CONFIRMED = APPOINTMENT_KIND_NAMES.flatMap((kind) => {
   const { title, caregiverConfirms } = APPOINTMENT_KINDS[kind];
   return caregiverConfirms === null ? [] : [{ title, caregiverConfirms }];
 });
 
+const UNCONFIRMED_WORDS = new Set(
+  [...APPOINTMENT_TITLES]
+    .filter((title) => !CONFIRMED.some((k) => k.title === title))
+    .flatMap((title) => [...titleWords(title)]),
+);
+
+const CONFIRMING_WORDS = CONFIRMED.map(({ title, caregiverConfirms }) => ({
+  words: [...titleWords(title)].filter((word) => !UNCONFIRMED_WORDS.has(word)),
+  caregiverConfirms,
+}));
+
 function confirmsMove(kind: AppointmentKind, eventTitle: string): CaregiverConfirms | null {
+  const words = titleWords(eventTitle);
   return (
     APPOINTMENT_KINDS[kind].caregiverConfirms ??
-    CONFIRMED_KINDS.find((k) => sharesWords(eventTitle, k.title))?.caregiverConfirms ??
+    CONFIRMING_WORDS.find((k) => k.words.some((word) => words.has(word)))?.caregiverConfirms ??
     null
   );
 }

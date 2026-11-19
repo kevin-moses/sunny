@@ -1626,6 +1626,20 @@ describe("links belong to the sender's domain", () => {
     expect(slots(await rows(h, "events"))).toEqual(["2026-12-10 14:15"]);
   });
 
+  test("the clinic's update moves a video call Sunny added from its invite", async () => {
+    const h = await setup();
+    const uid = "tele-7@lakesideeye.example";
+    const added = await triageEmail(h, invitation(CLINIC, uid, [AT_SLOT]), { kind: "video_call" });
+    const [event] = await rows(h, "events");
+    expect(added.effects?.[0]).toEqual({ kind: "event_added", eventId: event!._id });
+    expect(event).toMatchObject({ title: "Video call" });
+    const update = await triageEmail(h, invitation(CLINIC, uid, [NEW_DAY, "SEQUENCE:1"]), {
+      kind: "video_call",
+    });
+    expect(update.effects?.[0]).toMatchObject({ kind: "event_rescheduled", eventId: event!._id });
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-12 10:00"]);
+  });
+
   test("a stranger's moved email never moves a phone call or a home visit", async () => {
     const h = await setup();
     const callId = await insertEvent(h.t, h.householdId, {
