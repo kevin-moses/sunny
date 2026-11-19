@@ -228,7 +228,7 @@ type Situation =
       case: "new";
       appointment: Appointment;
       fields: Appointment | null;
-      elsewhere: LinkedEvent | null;
+      elsewhere: CalendarEventFact | null;
       duplicate: string | null;
       conflict: CalendarEventFact | null;
     }
@@ -593,17 +593,28 @@ function sameSlot(a: { date: string; time: string }, b: { date: string; time: st
   return a.date === b.date && a.time === b.time;
 }
 
+type LinkPlace = { at: "slot" } | { at: "elsewhere"; fact: CalendarEventFact } | { at: "gone" };
+
+function linkPlace(linked: LinkedEvent, slot: Appointment, events: CalendarEventFact[]): LinkPlace {
+  const live = events.filter((e) => e.eventId === linked.eventId);
+  if (live.some((e) => sameSlot(e, slot))) return { at: "slot" };
+  const [fact] = live;
+  return fact === undefined ? { at: "gone" } : { at: "elsewhere", fact };
+}
+
 interface ScopedLink {
   linked: LinkedEvent | null;
-  elsewhere: LinkedEvent | null;
+  elsewhere: CalendarEventFact | null;
 }
 
 function scopedLink(appointment: Appointment | null, facts: PolicyFacts): ScopedLink {
   const { linked } = facts;
   if (linked === null || facts.ics !== null) return { linked, elsewhere: null };
-  return appointment !== null && sameSlot(linked, appointment)
-    ? { linked, elsewhere: null }
-    : { linked: null, elsewhere: linked };
+  if (appointment === null) return { linked: null, elsewhere: null };
+  const place = linkPlace(linked, appointment, facts.events);
+  return place.at === "elsewhere"
+    ? { linked: null, elsewhere: place.fact }
+    : { linked, elsewhere: null };
 }
 
 function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEventFact[] | null {
@@ -616,7 +627,7 @@ function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEve
 
 function newSituation(
   appointment: Appointment,
-  elsewhere: LinkedEvent | null,
+  elsewhere: CalendarEventFact | null,
   facts: PolicyFacts,
 ): Situation {
   const fields = appointmentFields(appointment, facts);
@@ -639,7 +650,7 @@ function newSituation(
 function situationOf(
   verdict: MailVerdict,
   facts: PolicyFacts,
-  elsewhere: LinkedEvent | null,
+  elsewhere: CalendarEventFact | null,
 ): Situation {
   switch (verdict.kind) {
     case "ignore":

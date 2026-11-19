@@ -1664,6 +1664,69 @@ describe("links belong to the sender's domain", () => {
     );
   });
 
+  test("a reminder for an appointment a caregiver moved and then cancelled changes nothing and posts nothing", async () => {
+    const h = await setup();
+    await triageEmail(h, clinic({ subject: "Confirmed" }), EYE_EXAM);
+    const [event] = await rows(h, "events");
+    await h.t.run(
+      async (ctx) =>
+        await ctx.db.patch(event!._id, {
+          startsOn: "2026-12-11",
+          startTime: "09:00",
+          deletedAt: NOW,
+        }),
+    );
+    const reminder = await triageEmail(h, clinic({ subject: "Reminder" }), EYE_EXAM);
+    expect(reminder.effects).toEqual([{ kind: "already_on_calendar", eventId: event!._id }]);
+    expect(await rows(h, "events")).toEqual([
+      expect.objectContaining({ startsOn: "2026-12-11", startTime: "09:00", deletedAt: NOW }),
+    ]);
+    expect(await rows(h, "chatPosts")).toHaveLength(1);
+    expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+  });
+
+  describe("with a hand-entered weekly therapy series", () => {
+    const THERAPY: JevSays = {
+      yes: ["confirms_appointment"],
+      kind: "physical_therapy",
+      when: { date: "2026-12-01", time: "10:00" },
+    };
+
+    async function weeklyTherapy(h: MailHousehold, repeatDays = [2]): Promise<Id<"events">> {
+      return await insertEvent(h.t, h.householdId, {
+        title: "Physical therapy",
+        startsOn: "2026-10-05",
+        startTime: "10:00",
+        durationMinutes: 45,
+        repeatDays,
+      });
+    }
+
+    test("a clinic's second reminder for one of its dates changes nothing and posts nothing", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h);
+      const first = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      const second = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(second.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      expect(await rows(h, "events")).toHaveLength(1);
+      expect(await rows(h, "chatPosts")).toHaveLength(0);
+      expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    });
+
+    test("a clinic's second reminder for a date the day after another of its dates changes nothing", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h, [1, 2]);
+      const first = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      const second = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(second.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      expect(await rows(h, "events")).toHaveLength(1);
+      expect(await rows(h, "chatPosts")).toHaveLength(0);
+      expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    });
+  });
+
   test("the clinic's update moves a video call Sunny added from its invite", async () => {
     const h = await setup();
     const uid = "tele-7@lakesideeye.example";
