@@ -101,6 +101,7 @@ export interface PolicyFacts {
   subject: string;
   receivedAt: number;
   gmailId: string;
+  ics: IcsEvent | null;
   events: CalendarEventFact[];
   linkedEventId: string | null;
 }

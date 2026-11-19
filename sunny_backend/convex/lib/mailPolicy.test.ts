@@ -1,0 +1,579 @@
+import { describe, expect, test } from "vitest";
+import {
+  appointmentFields,
+  appointmentKey,
+  caregiverText,
+  linkKey,
+  matchEvent,
+  noteExpiry,
+  planEffects,
+  seniorNoteText,
+} from "./mailPolicy";
+import type {
+  Appointment,
+  CalendarEventFact,
+  IcsEvent,
+  MailEffect,
+  MailVerdict,
+  PolicyFacts,
+  Triaged,
+} from "./mailTypes";
+import { DAY_MS, zonedInstant } from "./time";
+
+const NY = "America/New_York";
+const NOW = zonedInstant("2026-11-18", "09:00", NY);
+const CLOCK = { now: NOW, timezone: NY };
+
+const EVENTS: CalendarEventFact[] = [
+  {
+    eventId: "evt_eye",
+    title: "Eye exam with Dr. Rivera",
+    date: "2026-11-24",
+    time: "10:30",
+    durationMinutes: 60,
+  },
+  {
+    eventId: "evt_pt",
+    title: "Physical therapy",
+    date: "2026-11-20",
+    time: "14:00",
+    durationMinutes: 45,
+  },
+  {
+    eventId: "evt_dentist",
+    title: "Dentist cleaning",
+    date: "2026-12-02",
+    time: "09:00",
+    durationMinutes: null,
+  },
+];
+
+function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
+  return {
+    now: NOW,
+    timezone: NY,
+    sender: {
+      name: "Lakeside Eye Care",
+      address: "appointments@lakesideeye.example",
+      authenticated: true,
+    },
+    senderKnown: false,
+    subject: "Your appointment",
+    receivedAt: NOW - 3_600_000,
+    gmailId: "m1",
+    ics: null,
+    events: EVENTS,
+    linkedEventId: null,
+    ...overrides,
+  };
+}
+
+function model(verdict: MailVerdict | null): Triaged {
+  return {
+    stage: "model",
+    verdict,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    classifier: "test",
+  };
+}
+
+function appointment(overrides: Partial<Appointment> = {}): Appointment {
+  return {
+    title: "Hearing test",
+    date: "2026-12-10",
+    time: "14:15",
+    durationMinutes: 45,
+    place: "Brookfield Audiology",
+    ...overrides,
+  };
+}
+
+function newAppointment(overrides: Partial<Appointment> = {}): MailVerdict {
+  return {
+    kind: "appointment",
+    change: "new",
+    appointment: appointment(overrides),
+    summary: "A hearing test was booked.",
+  };
+}
+
+function reschedule(
+  previous: { date: string; time: string | null; title: string },
+  overrides: Partial<Appointment> = {},
+): MailVerdict {
+  return {
+    kind: "appointment",
+    change: "reschedule",
+    previous,
+    appointment: appointment({
+      title: "Physical therapy",
+      date: "2026-11-23",
+      time: "15:00",
+      ...overrides,
+    }),
+    summary: "The clinic moved the visit.",
+  };
+}
+
+function kinds(effects: MailEffect[]): string[] {
+  return effects.map((e) => (e.kind === "escalate" ? `escalate:${e.reason}:${e.push}` : e.kind));
+}
+
+describe("planEffects decision table", () => {
+  test("an unreadable model verdict escalates with a push", () => {
+    expect(kinds(planEffects(model(null), facts()))).toEqual(["escalate:unreadable:true"]);
+  });
+
+  test("ignore plans nothing", () => {
+    expect(planEffects(model({ kind: "ignore", summary: "A receipt." }), facts())).toEqual([]);
+  });
+
+  describe("new appointment", () => {
+    test("from an unverified sender escalates and is not added", () => {
+      const effects = planEffects(
+        model(newAppointment()),
+        facts({ sender: { ...facts().sender, authenticated: false } }),
+      );
+      expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
+    });
+
+    test("with rejected fields escalates as unclear", () => {
+      const effects = planEffects(model(newAppointment({ date: "2026-11-17" })), facts());
+      expect(kinds(effects)).toEqual(["escalate:unclear_appointment:true"]);
+    });
+
+    test("already linked to an event is already on the calendar", () => {
+      expect(planEffects(model(newAppointment()), facts({ linkedEventId: "evt_eye" }))).toEqual([
+        { kind: "already_on_calendar", eventId: "evt_eye" },
+      ]);
+    });
+
+    test("at the same date and time as a live event with a shared title word is already on the calendar", () => {
+      const verdict = newAppointment({
+        title: "Dr. Rivera follow-up",
+        date: "2026-11-24",
+        time: "10:30",
+      });
+      expect(planEffects(model(verdict), facts())).toEqual([
+        { kind: "already_on_calendar", eventId: "evt_eye" },
+      ]);
+    });
+
+    test("overlapping another live event escalates as a conflict and is not added", () => {
+      const verdict = newAppointment({ date: "2026-11-24", time: "11:00" });
+      const effects = planEffects(model(verdict), facts());
+      expect(kinds(effects)).toEqual(["escalate:conflict:true"]);
+      expect(effects[0]).toMatchObject({ eventId: null });
+    });
+
+    test("otherwise is added and caregivers are told without a push", () => {
+      const verdict = newAppointment({ title: "  Hearing   test ", place: " " });
+      const effects = planEffects(model(verdict), facts());
+      expect(effects[0]).toEqual({
+        kind: "add_event",
+        appointment: {
+          title: "Hearing test",
+          date: "2026-12-10",
+          time: "14:15",
+          durationMinutes: 45,
+          place: null,
+        },
+        appointmentKey: "appt:2026-12-10:14:15:hearing test",
+      });
+      expect(effects[1]).toMatchObject({ kind: "tell_caregivers", push: false });
+      expect(effects).toHaveLength(2);
+    });
+
+    test("from an invitation is keyed by its UID", () => {
+      const ics: IcsEvent = {
+        method: "REQUEST",
+        uid: "u-1",
+        start: { date: "2026-12-10", time: "14:15" },
+        durationMinutes: 45,
+        summary: "Hearing test",
+        location: null,
+      };
+      const effects = planEffects(model(newAppointment()), facts({ ics }));
+      expect(effects[0]).toMatchObject({ kind: "add_event", appointmentKey: "ics:u-1" });
+    });
+  });
+
+  describe("reschedule", () => {
+    const pt = { date: "2026-11-20", time: "14:00", title: "Physical therapy" };
+
+    test("with exactly one match moves the event and tells caregivers with a push", () => {
+      const effects = planEffects(model(reschedule(pt)), facts());
+      expect(effects[0]).toMatchObject({
+        kind: "reschedule_event",
+        eventId: "evt_pt",
+        appointment: { date: "2026-11-23", time: "15:00" },
+      });
+      expect(effects[1]).toMatchObject({ kind: "tell_caregivers", push: true });
+      const body = effects[1]?.kind === "tell_caregivers" ? effects[1].body : "";
+      expect(body).toContain(
+        "from Friday, November 20 at 2:00 PM to Monday, November 23 at 3:00 PM",
+      );
+    });
+
+    test("finds the event through the link before the previous time", () => {
+      const effects = planEffects(
+        model(reschedule({ date: "2030-01-01", time: null, title: "?" })),
+        facts({ linkedEventId: "evt_pt" }),
+      );
+      expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
+    });
+
+    test("to the time the event already has is already on the calendar", () => {
+      const effects = planEffects(
+        model(reschedule(pt, { date: "2026-11-20", time: "14:00" })),
+        facts(),
+      );
+      expect(effects).toEqual([{ kind: "already_on_calendar", eventId: "evt_pt" }]);
+    });
+
+    test.each([
+      [
+        "the sender is not verified",
+        reschedule(pt),
+        { sender: { name: "x", address: "x@x.example", authenticated: false } },
+        "evt_pt",
+      ],
+      [
+        "nothing matches",
+        reschedule({ date: "2026-11-21", time: "09:00", title: "Physical therapy" }),
+        {},
+        null,
+      ],
+      [
+        "several events match",
+        reschedule({ date: "2026-11-20", time: null, title: "therapy" }),
+        {
+          events: [
+            ...EVENTS,
+            {
+              eventId: "evt_ot",
+              title: "Occupational therapy",
+              date: "2026-11-20",
+              time: "16:00",
+              durationMinutes: 30,
+            },
+          ],
+        },
+        null,
+      ],
+      ["the new fields are rejected", reschedule(pt, { place: "Call 555-014-2233" }), {}, "evt_pt"],
+    ])("escalates as unclear when %s", (_, verdict, overrides, eventId) => {
+      const effects = planEffects(model(verdict), facts(overrides));
+      expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
+      expect(effects[0]).toMatchObject({ eventId });
+    });
+  });
+
+  test("a cancellation is escalated, never applied, with the event when exactly one matches", () => {
+    const cancel = (time: string | null): MailVerdict => ({
+      kind: "appointment",
+      change: "cancel",
+      previous: { date: "2026-12-02", time, title: "Dentist" },
+      summary: "The dentist cancelled.",
+    });
+    const matched = planEffects(model(cancel("09:00")), facts());
+    expect(kinds(matched)).toEqual(["escalate:cancellation:true"]);
+    expect(matched[0]).toMatchObject({ eventId: "evt_dentist" });
+    expect(planEffects(model(cancel("16:00")), facts())[0]).toMatchObject({ eventId: null });
+  });
+
+  describe("senior info", () => {
+    const info: MailVerdict = {
+      kind: "senior_info",
+      topic: "prescription",
+      note: "Your prescription is ready at the pharmacy.",
+      summary: "Refill ready.",
+    };
+
+    test("becomes a note that expires at the end of the next local day", () => {
+      expect(planEffects(model(info), facts())).toEqual([
+        {
+          kind: "senior_note",
+          text: "Your prescription is ready at the pharmacy.",
+          expiresAt: zonedInstant("2026-11-20", "00:00", NY),
+        },
+      ]);
+    });
+
+    test("from a stale email plans nothing", () => {
+      expect(planEffects(model(info), facts({ receivedAt: NOW - DAY_MS - 1 }))).toEqual([]);
+    });
+
+    test("from an unverified sender goes to caregivers without a push", () => {
+      const effects = planEffects(
+        model(info),
+        facts({ sender: { name: "Pharmacy", address: "rx@x.example", authenticated: false } }),
+      );
+      expect(kinds(effects)).toEqual(["tell_caregivers"]);
+      expect(effects[0]).toMatchObject({ push: false });
+    });
+
+    test("with a note the validator rejects goes to caregivers without a push", () => {
+      const effects = planEffects(model({ ...info, note: "Call the pharmacy today." }), facts());
+      expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
+    });
+  });
+
+  test("needs decision escalates with its reason and a push", () => {
+    const effects = planEffects(
+      model({ kind: "needs_decision", reason: "bill_or_payment", summary: "Electric bill due." }),
+      facts(),
+    );
+    expect(kinds(effects)).toEqual(["escalate:bill_or_payment:true"]);
+  });
+
+  test("suspicious mail escalates with its suspicion and never reaches the senior", () => {
+    const effects = planEffects(
+      model({ kind: "suspicious", suspicion: "money_request", summary: "Asks for gift cards." }),
+      facts(),
+    );
+    expect(kinds(effects)).toEqual(["escalate:money_request:true"]);
+  });
+
+  test("a stale email never pushes", () => {
+    const stale = facts({ receivedAt: NOW - 3 * DAY_MS });
+    expect(
+      kinds(planEffects(model({ kind: "suspicious", suspicion: "scam", summary: "x" }), stale)),
+    ).toEqual(["escalate:scam:false"]);
+    const moved = planEffects(
+      model(reschedule({ date: "2026-11-20", time: "14:00", title: "Physical therapy" })),
+      stale,
+    );
+    expect(moved[1]).toMatchObject({ kind: "tell_caregivers", push: false });
+  });
+
+  test("a gate verdict runs through the same table", () => {
+    const gateTriaged: Triaged = {
+      stage: "gate",
+      verdict: newAppointment(),
+      rule: "ics:request_new",
+    };
+    expect(kinds(planEffects(gateTriaged, facts()))).toEqual(["add_event", "tell_caregivers"]);
+  });
+});
+
+describe("appointmentFields", () => {
+  test("accepts and cleans a plain appointment", () => {
+    expect(
+      appointmentFields(
+        appointment({
+          title: " Eye  exam ",
+          place: "Lakeside Eye Care, 40 Harbor Road, Suite 300, Brookfield 02139",
+        }),
+        CLOCK,
+      ),
+    ).toEqual({
+      title: "Eye exam",
+      date: "2026-12-10",
+      time: "14:15",
+      durationMinutes: 45,
+      place: "Lakeside Eye Care, 40 Harbor Road, Suite 300, Brookfield 02139",
+    });
+    expect(
+      appointmentFields(appointment({ title: "Room 12 check-in", durationMinutes: null }), CLOCK),
+    ).not.toBeNull();
+  });
+
+  test.each([
+    ["a blank title", { title: "  " }],
+    ["a title over 60 characters", { title: "x".repeat(61) }],
+    ["a phone number in the title", { title: "Call 1-800-555-0188 to confirm" }],
+    ["three digits in the title", { title: "Visit 2 3 4" }],
+    ["a link in the title", { title: "Visit https://x.example" }],
+    ["a domain in the title", { title: "Login at medicare-help.example" }],
+    ["an @ in the title", { title: "Email help@clinic" }],
+    ["a currency sign in the title", { title: "Pay $20 fee" }],
+    ["a place over 120 characters", { place: "x".repeat(121) }],
+    ["a phone number in the place", { place: "Call (555) 014-2233" }],
+    ["a link in the place", { place: "www.clinic.example" }],
+    ["a currency sign in the place", { place: "Bring €50" }],
+    ["a malformed date", { date: "12/10/2026" }],
+    ["a malformed time", { time: "2:15 PM" }],
+    ["a time already past", { date: "2026-11-18", time: "08:59" }],
+    ["a date over 400 days out", { date: "2027-12-24" }],
+    ["a duration under 5 minutes", { durationMinutes: 4 }],
+    ["a duration over 480 minutes", { durationMinutes: 481 }],
+  ])("rejects %s", (_, overrides) => {
+    expect(appointmentFields(appointment(overrides), CLOCK)).toBeNull();
+  });
+
+  test("accepts the edges of the ranges", () => {
+    expect(
+      appointmentFields(appointment({ date: "2027-12-23", durationMinutes: 480 }), CLOCK),
+    ).not.toBeNull();
+    expect(
+      appointmentFields(
+        appointment({ date: "2026-11-18", time: "09:00", durationMinutes: 5 }),
+        CLOCK,
+      ),
+    ).not.toBeNull();
+  });
+});
+
+describe("seniorNoteText", () => {
+  test("accepts a short plain note and folds typographic quotes", () => {
+    expect(seniorNoteText("Anna’s kids loved  your cookies.", "family_news", true)).toBe(
+      "Anna's kids loved your cookies.",
+    );
+    expect(
+      seniorNoteText(
+        "A package is arriving this afternoon. It will be left at the door.",
+        "delivery",
+        false,
+      ),
+    ).toBe("A package is arriving this afternoon. It will be left at the door.");
+  });
+
+  test.each([
+    ["the topic other", "Nice weather today.", "other", true],
+    ["family news from an unknown sender", "Helen moved to Ohio.", "family_news", false],
+    ["more than 160 characters", `${"word ".repeat(33)}end.`, "delivery", false],
+    ["three sentences", "A package came. It is big. It is red.", "delivery", false],
+    ["a digit", "Your package arrives at 3.", "delivery", false],
+    ["a link", "See parcelpost.example for details.", "delivery", false],
+    ["an @", "Ask rx@pharmacy.", "prescription", false],
+    ["markup", "Your *prescription* is ready.", "prescription", false],
+    ["a character the display cannot draw", "Happy birthday \u{1F382}", "family_news", true],
+    ["an empty note", "  ", "delivery", false],
+  ])("rejects %s", (_, note, topic, known) => {
+    expect(seniorNoteText(note, topic as "delivery", known)).toBeNull();
+  });
+
+  test.each([
+    "call",
+    "Calling",
+    "phone",
+    "dial",
+    "pay",
+    "paid",
+    "payment",
+    "money",
+    "bank",
+    "cards",
+    "gift",
+    "wire",
+    "transfer",
+    "password",
+    "code",
+    "verify",
+    "verified",
+    "account",
+    "click",
+    "tap",
+    "link",
+    "opened",
+    "download",
+    "reply",
+    "send",
+    "urgent",
+    "prize",
+    "refund",
+    "Medicare",
+    "Social Security",
+  ])("rejects a note containing %s", (word) => {
+    expect(seniorNoteText(`Something about ${word} today.`, "service_visit", true)).toBeNull();
+  });
+});
+
+describe("caregiverText", () => {
+  test("starts with a header Sunny builds and removes links and long numbers from email text", () => {
+    const text = caregiverText(
+      facts({
+        sender: {
+          name: "Medicare Help www.medicare-help.example",
+          address: "help@medicare-help.example",
+          authenticated: false,
+        },
+        subject: `Urgent: ${"benefits ".repeat(20)}`,
+        receivedAt: zonedInstant("2026-11-18", "07:05", NY),
+      }),
+      [
+        "Sunny thinks this may be a scam.",
+        "Asks her to call 1-888-555-0199 and visit https://medicare-help.example/verify now.",
+      ],
+    );
+    const [from, subject, received, blank, ...body] = text.split("\n");
+    expect(from).toBe(
+      "From: Medicare Help [link removed] <help@medicare-help.example> (sender not verified)",
+    );
+    expect(subject?.length).toBeLessThanOrEqual("Subject: ".length + 120);
+    expect(subject?.endsWith("...")).toBe(true);
+    expect(received).toBe("Received: Wednesday, November 18 at 7:05 AM");
+    expect(blank).toBe("");
+    expect(body).toEqual([
+      "Sunny thinks this may be a scam.",
+      "Asks her to call [number removed] and visit [link removed] now.",
+    ]);
+  });
+
+  test("marks a verified sender and clips the body", () => {
+    const text = caregiverText(facts(), ["x".repeat(900)]);
+    expect(text.split("\n")[0]).toBe(
+      "From: Lakeside Eye Care <appointments@lakesideeye.example> (verified sender)",
+    );
+    expect(text.split("\n")[4]?.length).toBe(600);
+  });
+});
+
+describe("keys, matching and expiry", () => {
+  test("appointmentKey prefers the invitation UID", () => {
+    expect(appointmentKey(appointment({ title: "Hearing  Test" }), null)).toBe(
+      "appt:2026-12-10:14:15:hearing test",
+    );
+    const ics: IcsEvent = {
+      method: "REQUEST",
+      uid: "u-9",
+      start: null,
+      durationMinutes: null,
+      summary: "",
+      location: null,
+    };
+    expect(appointmentKey(appointment(), ics)).toBe("ics:u-9");
+  });
+
+  test("linkKey gives the key to look up for each verdict", () => {
+    expect(linkKey(newAppointment(), null)).toBe("appt:2026-12-10:14:15:hearing test");
+    expect(linkKey({ kind: "ignore", summary: "x" }, null)).toBeNull();
+    expect(
+      linkKey(null, {
+        method: "CANCEL",
+        uid: "u-2",
+        start: null,
+        durationMinutes: null,
+        summary: "",
+        location: null,
+      }),
+    ).toBe("ics:u-2");
+  });
+
+  test("matchEvent uses the time when given and title words otherwise", () => {
+    expect(
+      matchEvent({ date: "2026-11-24", time: "10:30", title: "" }, EVENTS).map((e) => e.eventId),
+    ).toEqual(["evt_eye"]);
+    expect(
+      matchEvent({ date: "2026-11-24", time: null, title: "Dr. Rivera" }, EVENTS).map(
+        (e) => e.eventId,
+      ),
+    ).toEqual(["evt_eye"]);
+    expect(matchEvent({ date: "2026-11-24", time: null, title: "Appointment" }, EVENTS)).toEqual(
+      [],
+    );
+    expect(matchEvent({ date: "2026-11-25", time: "10:30", title: "Eye exam" }, EVENTS)).toEqual(
+      [],
+    );
+  });
+
+  test("noteExpiry is the end of the next local day", () => {
+    expect(noteExpiry(zonedInstant("2026-11-18", "23:30", NY), NY)).toBe(
+      zonedInstant("2026-11-20", "00:00", NY),
+    );
+    expect(noteExpiry(zonedInstant("2026-11-01", "00:30", NY), NY)).toBe(
+      zonedInstant("2026-11-03", "00:00", NY),
+    );
+  });
+});
