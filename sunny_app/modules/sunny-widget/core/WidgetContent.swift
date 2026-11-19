@@ -136,7 +136,7 @@ public enum WidgetContent: Equatable, Sendable {
     case clear(ClearContent)
     case notice(Notice)
 
-    public static func from(_ pick: CardPick, timeZone: TimeZone, locale: Locale) -> WidgetContent {
+    public static func from(_ pick: PhoneCard, timeZone: TimeZone, locale: Locale) -> WidgetContent {
         let clock = { (date: Date) in ClockFormat.time(date, in: timeZone, locale: locale) }
         switch pick {
         case .task(let task):

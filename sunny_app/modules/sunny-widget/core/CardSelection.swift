@@ -1,10 +1,5 @@
 import Foundation
 
-public enum CardPick: Equatable, Sendable {
-    case task(TaskCard)
-    case clear(ClearCard)
-}
-
 extension DeviceTimeline {
     public func covers(_ date: Date) -> Bool {
         date < until
@@ -15,7 +10,7 @@ extension DeviceTimeline {
         return slices.last { $0.at <= date } ?? slices.first
     }
 
-    public func pick(at date: Date, pressed: Set<PressKey>) -> CardPick? {
+    public func pick(at date: Date, pressed: Set<PressKey>) -> PhoneCard? {
         guard let slice = slice(at: date) else { return nil }
         return Self.pick(from: slice, pressed: pressed)
     }
@@ -24,17 +19,10 @@ extension DeviceTimeline {
         slices.map(\.at).filter { $0 > date && $0 < until }
     }
 
-    static func pick(from slice: TimelineSlice, pressed: Set<PressKey>) -> CardPick? {
-        for card in slice.cards {
-            switch card {
-            case .task(let task) where !pressed.contains(task.key):
-                return .task(task)
-            case .task:
-                continue
-            case .clear(let clear):
-                return .clear(clear)
-            }
+    static func pick(from slice: TimelineSlice, pressed: Set<PressKey>) -> PhoneCard? {
+        slice.cards.first { card in
+            guard case .task(let task) = card else { return true }
+            return !pressed.contains(task.key)
         }
-        return nil
     }
 }
