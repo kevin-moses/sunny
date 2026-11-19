@@ -348,6 +348,27 @@ export function mapOutcome(token: string, status: number, reason: string | null)
   return { token, outcome: "failed", status, reason, retryable };
 }
 
+export const INVALID_TOKEN_REASON = "InvalidToken";
+
+const REASONS_ABOUT_THE_TOKEN_OR_PAYLOAD: ReadonlySet<string> = new Set([
+  INVALID_TOKEN_REASON,
+  "BadDeviceToken",
+  "DeviceTokenNotForTopic",
+  "MissingDeviceToken",
+  "PayloadEmpty",
+  "PayloadTooLarge",
+]);
+
+export function refusedThisToken(result: ApnsResult): boolean {
+  if (result.outcome === "unregistered") return true;
+  return (
+    result.outcome === "failed" &&
+    !result.retryable &&
+    result.reason !== null &&
+    REASONS_ABOUT_THE_TOKEN_OR_PAYLOAD.has(result.reason)
+  );
+}
+
 export function failureResult(token: string, reason: string): ApnsResult {
   return { token, outcome: "failed", status: 0, reason, retryable: true };
 }

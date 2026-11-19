@@ -275,7 +275,8 @@ There is one `liveActivities` row per activity, in one of four phases. In the ta
 | `started`, proof `proven` or `missed` | The view says end. Checked when the instance changes or is deleted, in a report, after the proof check, when an update token is dropped, and by the tick sweep | `ended` (the view's reason) | A background push that wakes the app when the reason is `confirmed` or `instance_gone` (below). None at the window end or at 7 h 50 min, because the stale date already removed Done |
 | `live` | The view's content differs from `shown` | `live` | Update push; `shown` is set when APNs accepts |
 | `live` | The instance no longer wants an activity | `ended` (`confirmed`, `window_closed`, `instance_gone`, `expired` or `device_revoked`) when APNs accepts | End push |
-| `live` | APNs answers 410, or refuses the push for good with any other answer | `started`, proof `proven`, and then the row above | Update token dropped. The phone's next report can bring a token again |
+| `live` | APNs answers 410, or refuses the push for good for a reason about the token or this payload (`BadDeviceToken`, `DeviceTokenNotForTopic`, `MissingDeviceToken`, `PayloadEmpty`, `PayloadTooLarge`) | `started`, proof `proven`, and then the row above | Update token dropped. The phone's next report can bring a token again |
+| `live` | APNs refuses the push for good for any other reason, for example a 403 about the provider token (`ExpiredProviderToken`, `InvalidProviderToken`, `MissingProviderToken`) or a 400 about the request's headers | `live` | Update token kept, because the answer says nothing about it and would come for every token during a key or configuration fault (`refusedThisToken` in `lib/apnsPayload.ts`). The tick sweep queues the push again each minute |
 | `live` | APNs fails in a way worth retrying and the delivery pool's retries run out | `live` | The tick sweep queues the push again each minute |
 | `live` | 12 hours after the start, still not ended | `ended` | None. iOS has removed it |
 | open | The phone reports it `ended` or `dismissed`, or leaves it out of `activities` more than 60 s after the start | `ended` (the view's reason, else `ended_on_phone`) | None |
@@ -304,7 +305,7 @@ At most one refresh goes to a phone per 10 minutes (`WIDGET_REFRESH_GAP_MS`, sta
 
 #### Platform facts: checked in the documentation, and still to check on a phone
 
-Checked in Apple's documentation on 2026-11-19: the `liveactivity`, `widgets` and `background` push types with their topics and priorities; the `aps` keys above; that a start needs an `alert`; that content is decoded with default strategies; the 4 KB limit; 8 hours active plus up to 4 more on the Lock Screen; that a push-started activity wakes the app, which then receives the update token; that `input-push-token` is for iOS 18.
+Checked in Apple's documentation on 2026-11-19: the `liveactivity`, `widgets` and `background` push types with their topics and priorities; the `aps` keys above; that a start needs an `alert`; that content is decoded with default strategies; the 4 KB limit; 8 hours active plus up to 4 more on the Lock Screen; that a push-started activity wakes the app, which then receives the update token; that `input-push-token` is for iOS 18; the APNs error reasons ("Handling notification responses from APNs"), of which only `BadDeviceToken`, `DeviceTokenNotForTopic`, `MissingDeviceToken`, the 410 reasons `Unregistered` and `ExpiredToken`, `PayloadEmpty` and `PayloadTooLarge` are about the device token or the payload, while every 403 reason is about the provider's certificate or token.
 
 Not verified, to check on a phone before the pilot:
 

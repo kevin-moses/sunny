@@ -1,7 +1,11 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation } from "./_generated/server";
-import { liveActivityEndMessage, liveActivityUpdateMessage } from "./lib/apnsPayload";
+import {
+  liveActivityEndMessage,
+  liveActivityUpdateMessage,
+  refusedThisToken,
+} from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
 import { endActivity, loadActivityView, nextCommand, nextPushTimestamp } from "./lib/liveActivity";
 import { endTokenlessIfOver, proofMissed, reshowIfDue } from "./lib/liveActivitySync";
@@ -106,6 +110,10 @@ export const push = internalAction({
     if (result.outcome === "failed") {
       const detail = `${result.status} ${result.reason ?? "unknown"}`;
       if (result.retryable) throw new Error(`Live Activity push failed, will retry: ${detail}`);
+      if (!refusedThisToken(result)) {
+        console.error(`Live Activity push refused for a fault not in its token, kept: ${detail}`);
+        return null;
+      }
       console.error(`Live Activity push refused, so its update token is dropped: ${detail}`);
     }
     await ctx.runMutation(internal.liveActivity.settle, {

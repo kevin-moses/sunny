@@ -98,13 +98,13 @@ async function live(spec?: Parameters<typeof addTask>[1]): Promise<Shown> {
   return shown;
 }
 
-function refuseUpdates(status: number, retryable = false): void {
+function refuseUpdates(status: number, reason: string, retryable = false): void {
   answerEachToken((token) =>
     token === UPDATE_TOKEN
       ? {
           outcome: status === 410 ? "unregistered" : "failed",
           status,
-          reason: "Refused",
+          reason,
           retryable,
         }
       : APNS_SENT,
@@ -297,7 +297,7 @@ describe("a task confirmed on another surface", () => {
   test("an end whose retries ran out is sent again by the next tick", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { f, instanceId, activityId } = await live();
-    refuseUpdates(503, true);
+    refuseUpdates(503, "ServiceUnavailable", true);
     await confirmOnDisplay(f, instanceId);
     await settle(f.t, MIN);
     expect(ends().length).toBeGreaterThan(1);
@@ -319,7 +319,7 @@ describe("a task confirmed on another surface", () => {
     const { f, instanceId, activityId } = await live();
     expect((await putPushState(f, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
     resetProviderMocks();
-    refuseUpdates(400);
+    refuseUpdates(400, "BadDeviceToken");
     await confirmOnDisplay(f, instanceId);
     await settle(f.t);
     expect(ends()).toHaveLength(1);
@@ -345,7 +345,7 @@ describe("a task confirmed on another surface", () => {
       type: "routine",
       checklistItems: SHOWER_STEPS,
     });
-    refuseUpdates(400);
+    refuseUpdates(400, "BadDeviceToken");
     expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
     await settle(f.t);
     expect(updates()).toHaveLength(1);
@@ -370,6 +370,53 @@ describe("a task confirmed on another surface", () => {
     errorSpy.mockRestore();
   });
 
+  test.each([
+    [403, "ExpiredProviderToken"],
+    [403, "InvalidProviderToken"],
+    [403, "MissingProviderToken"],
+    [400, "BadTopic"],
+  ])(
+    "a %i %s says nothing about the update token, so it is kept and the end is sent again",
+    async (status, reason) => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { f, instanceId, activityId } = await live();
+      refuseUpdates(status, reason);
+      await confirmOnDisplay(f, instanceId);
+      await settle(f.t);
+      expect(ends()).toHaveLength(1);
+      expect((await activity(f, activityId)).phase).toMatchObject({
+        kind: "live",
+        updateToken: UPDATE_TOKEN,
+      });
+
+      resetProviderMocks();
+      await tick(f, EIGHT + 2 * MIN);
+      await settle(f.t);
+      expect(ends()).toHaveLength(1);
+      expect((await activity(f, activityId)).phase).toMatchObject({
+        kind: "ended",
+        reason: "confirmed",
+      });
+      errorSpy.mockRestore();
+    },
+  );
+
+  test.each([
+    [400, "DeviceTokenNotForTopic"],
+    [413, "PayloadTooLarge"],
+  ])("a %i %s drops the update token", async (status, reason) => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { f, instanceId, activityId } = await live();
+    refuseUpdates(status, reason);
+    await confirmOnDisplay(f, instanceId);
+    await settle(f.t);
+    expect((await activity(f, activityId)).phase).toMatchObject({
+      kind: "ended",
+      reason: "confirmed",
+    });
+    errorSpy.mockRestore();
+  });
+
   test("a retryable failure is retried by the pool until the end is accepted", async () => {
     const { f, instanceId, activityId } = await live();
     let refusals = 1;
@@ -388,7 +435,7 @@ describe("a task confirmed on another surface", () => {
     const { f, instanceId, activityId } = await live();
     expect((await putPushState(f, { widgetPush: { token: WIDGET_TOKEN } })).status).toBe(200);
     resetProviderMocks();
-    refuseUpdates(410);
+    refuseUpdates(410, "Unregistered");
     await confirmOnDisplay(f, instanceId);
     await settle(f.t);
     expect((await activity(f, activityId)).phase).toMatchObject({
@@ -408,7 +455,7 @@ describe("a task confirmed on another surface", () => {
       type: "routine",
       checklistItems: SHOWER_STEPS,
     });
-    refuseUpdates(410);
+    refuseUpdates(410, "Unregistered");
     expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
     await settle(f.t);
     expect((await activity(f, activityId)).phase).toEqual({
@@ -695,7 +742,7 @@ describe("a window longer than the system's eight hours", () => {
   test("a live activity whose end never gets through is closed after twelve hours", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { f, activityId } = await live(long);
-    refuseUpdates(503, true);
+    refuseUpdates(503, "ServiceUnavailable", true);
     await tick(f, EIGHT + 11 * HOUR + 59 * MIN);
     await settle(f.t, 50_000);
     const tried = ends().length;

@@ -7,6 +7,7 @@ import { internalAction } from "./_generated/server";
 import {
   apnsHost,
   buildHeaders,
+  INVALID_TOKEN_REASON,
   failureResult,
   getProviderToken,
   isValidDeviceToken,
@@ -36,7 +37,13 @@ function sendOne(
 ): Promise<ApnsResult> {
   return new Promise((resolve) => {
     if (!isValidDeviceToken(token)) {
-      resolve({ token, outcome: "failed", status: 0, reason: "InvalidToken", retryable: false });
+      resolve({
+        token,
+        outcome: "failed",
+        status: 0,
+        reason: INVALID_TOKEN_REASON,
+        retryable: false,
+      });
       return;
     }
     let settled = false;
