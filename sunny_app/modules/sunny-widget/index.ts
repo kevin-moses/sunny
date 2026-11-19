@@ -2,13 +2,6 @@ import { requireNativeModule } from 'expo';
 
 export type FlushResult = 'clean' | 'pending' | 'unauthorized' | 'noCredentials';
 
-export interface UnsentPress {
-  id: string;
-  instanceId: string;
-  step: number;
-  pressedAt: number;
-}
-
 export interface SunnyWidgetBridge {
   storedSiteUrl(): string | null;
   setCredentials(token: string, siteUrl: string): Promise<void>;

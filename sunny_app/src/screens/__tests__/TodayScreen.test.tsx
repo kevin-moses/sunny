@@ -242,7 +242,7 @@ describe('TodayScreen states', () => {
   it('shows a task pressed on the widget or the Lock Screen as done while that press is unsent', () => {
     mockUnsentPresses.mockReturnValue([
       {
-        id: 'F2B4E6A8-0000-4000-8000-000000000001',
+        pressId: 'F2B4E6A8-0000-4000-8000-000000000001',
         instanceId: 'pills',
         step: 0,
         pressedAt: NOW - 60_000,
@@ -260,7 +260,7 @@ describe('TodayScreen states', () => {
   it('keeps showing the next step of a step task pressed elsewhere', () => {
     mockUnsentPresses.mockReturnValue([
       {
-        id: 'F2B4E6A8-0000-4000-8000-000000000002',
+        pressId: 'F2B4E6A8-0000-4000-8000-000000000002',
         instanceId: 'pills',
         step: 0,
         pressedAt: NOW - 60_000,

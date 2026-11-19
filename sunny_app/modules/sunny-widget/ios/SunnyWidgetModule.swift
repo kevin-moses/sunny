@@ -55,7 +55,7 @@ public final class SunnyWidgetModule: Module {
         Function("unsentPresses") { () -> [[String: Any]] in
             (WidgetSync.live()?.unsentPresses() ?? []).map { press in
                 [
-                    "id": press.id.uuidString,
+                    "pressId": press.id.uuidString,
                     "instanceId": press.instanceId,
                     "step": press.step,
                     "pressedAt": press.pressedAt.timeIntervalSince1970 * 1000,

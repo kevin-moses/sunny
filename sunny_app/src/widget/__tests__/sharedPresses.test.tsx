@@ -90,7 +90,7 @@ afterEach(() => {
 describe('useUnsentWidgetPresses', () => {
   it("gives the app the widget's and the Lock Screen's unsent presses", () => {
     mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
     ]);
     act(() => {
       renderer = create(<Probe />);
@@ -102,7 +102,7 @@ describe('useUnsentWidgetPresses', () => {
 
   it('shows a press the widget sent as gone after the next read', () => {
     mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
     ]);
     act(() => {
       renderer = create(<Probe />);
@@ -114,7 +114,7 @@ describe('useUnsentWidgetPresses', () => {
 
   it('drops a Lock Screen press once it was sent, so a task reopened later shows as due', async () => {
     mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1_795_098_600_000 },
     ]);
     act(() => {
       renderer = create(<Probe />);
@@ -133,10 +133,10 @@ describe('useUnsentWidgetPresses', () => {
 
   it('leaves out anything the native side sends that is not a press', () => {
     mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0.5, pressedAt: 1 },
-      { id: 7, instanceId: 'pills', step: 0, pressedAt: 1 },
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0.5, pressedAt: 1 },
+      { pressId: 7, instanceId: 'pills', step: 0, pressedAt: 1 },
       null,
-      { id: PRESS_ID, instanceId: 'tea', step: 2, pressedAt: 5 },
+      { pressId: PRESS_ID, instanceId: 'tea', step: 2, pressedAt: 5 },
     ]);
     act(() => {
       renderer = create(<Probe />);
@@ -146,7 +146,7 @@ describe('useUnsentWidgetPresses', () => {
 
   it('keeps the last good list when the native read throws', () => {
     mockBridge.unsentPresses.mockReturnValue([
-      { id: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1 },
+      { pressId: PRESS_ID, instanceId: 'pills', step: 0, pressedAt: 1 },
     ]);
     act(() => {
       renderer = create(<Probe />);
