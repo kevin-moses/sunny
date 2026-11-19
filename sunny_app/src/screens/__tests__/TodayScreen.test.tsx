@@ -7,7 +7,6 @@ import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData, EventOccurrence } from '../../day/types';
 import { confirmQueue } from '../../day/pendingConfirms';
 import type { DayViewState } from '../../day/useDayView';
-import { phoneClockTime } from '../../phone/model';
 import { TodayScreen } from '../TodayScreen';
 
 const mockStore = new Map<string, string>();
@@ -277,11 +276,7 @@ describe('TodayScreen states', () => {
         .props.onPress();
       await jest.advanceTimersByTimeAsync(0);
     });
-    expect(words(root).slice(0, 3)).toEqual([
-      'Morning pills done.',
-      'Undo',
-      `Noted at ${phoneClockTime(NOW)}`,
-    ]);
+    expect(words(root).slice(0, 3)).toEqual(['Morning pills done.', 'Undo', 'Noted at 9:41 AM']);
     expect(buttonLabels(root)).toEqual(['Undo Morning pills done', 'Talk to Sunny']);
     const row = root.find(
       (n) =>

@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import type { DayTask } from '../day/types';
 import type { UndoLineData } from '../day/useDoneAction';
-import { doneKeyLabel, notedAt } from './model';
+import { doneKeyLabel } from './model';
 import { PaperText } from './PaperText';
 import { layout, paper, roles, shadows, type TextRole } from './theme';
 
@@ -76,8 +76,7 @@ export function DoneKey({
   );
 }
 
-export function NotedPanel({ pressedAt }: { pressedAt: number }) {
-  const text = notedAt(pressedAt);
+export function NotedPanel({ text }: { text: string }) {
   return (
     <View accessible accessibilityLabel={text} style={[styles.key, styles.panel]}>
       <KeyFace

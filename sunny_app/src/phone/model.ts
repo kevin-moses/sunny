@@ -8,6 +8,7 @@ import {
   SPOKEN,
   stepCounter,
 } from '../day/format';
+import { localClockTime } from '../day/localDate';
 import type { AgendaItem, DayTask, DayViewData, EventOccurrence } from '../day/types';
 import type { UndoLineData } from '../day/useDoneAction';
 
@@ -27,7 +28,7 @@ export type ScreenMode =
       undo: UndoLineData | null;
       message: string | null;
     }
-  | { kind: 'noted'; undo: UndoLineData; message: string | null }
+  | { kind: 'noted'; undo: UndoLineData; noted: string; message: string | null }
   | { kind: 'notice'; message: string }
   | { kind: 'clear'; next: string | null };
 
@@ -36,11 +37,13 @@ export interface ModeInput {
   message: string | null;
   undo: UndoLineData | null;
   next: string | null;
+  timezone: string;
 }
 
-export function screenMode({ task, message, undo, next }: ModeInput): ScreenMode {
+export function screenMode({ task, message, undo, next, timezone }: ModeInput): ScreenMode {
   if (task !== null) return { kind: 'task', task, early: task.state === 'upcoming', undo, message };
-  if (undo !== null) return { kind: 'noted', undo, message };
+  if (undo !== null)
+    return { kind: 'noted', undo, noted: notedAt(undo.pressedAt, timezone), message };
   if (message !== null) return { kind: 'notice', message };
   return { kind: 'clear', next };
 }
@@ -75,13 +78,13 @@ function twoDigits(value: number): string {
   return String(value).padStart(2, '0');
 }
 
-export function phoneClockTime(epochMs: number): string {
+function phoneClock(epochMs: number): string {
   const date = new Date(epochMs);
-  return displayTime(`${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`);
+  return `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
 }
 
-export function notedAt(pressedAt: number): string {
-  return `Noted at ${phoneClockTime(pressedAt)}`;
+export function notedAt(pressedAt: number, timezone: string): string {
+  return `Noted at ${displayTime(localClockTime(timezone, pressedAt) ?? phoneClock(pressedAt))}`;
 }
 
 export function eventIsOver(

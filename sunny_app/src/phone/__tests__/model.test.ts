@@ -10,7 +10,6 @@ import {
   eventIsOver,
   nextLine,
   notedAt,
-  phoneClockTime,
   screenMode,
   stepTag,
   taskHeadline,
@@ -67,7 +66,9 @@ const UNDO: UndoLineData = { label: 'Morning pills', text: 'Morning pills done.'
 describe('screenMode', () => {
   it('shows the task when there is one, even while an Undo is still offered', () => {
     const shown = task();
-    expect(screenMode({ task: shown, message: null, undo: UNDO, next: 'Next: x' })).toEqual({
+    expect(
+      screenMode({ task: shown, message: null, undo: UNDO, next: 'Next: x', timezone: 'UTC' }),
+    ).toEqual({
       kind: 'task',
       task: shown,
       early: false,
@@ -82,27 +83,35 @@ describe('screenMode', () => {
       message: null,
       undo: null,
       next: null,
+      timezone: 'UTC',
     });
     expect(mode.kind === 'task' && mode.early).toBe(true);
   });
 
   it('shows the noted state while Undo is offered and nothing is on the key', () => {
-    expect(screenMode({ task: null, message: 'm', undo: UNDO, next: 'Next: x' })).toEqual({
+    expect(
+      screenMode({ task: null, message: 'm', undo: UNDO, next: 'Next: x', timezone: 'UTC' }),
+    ).toEqual({
       kind: 'noted',
       undo: UNDO,
+      noted: 'Noted at 12:00 AM',
       message: 'm',
     });
   });
 
   it('shows a message on its own when nothing else is up', () => {
-    expect(screenMode({ task: null, message: 'Wait', undo: null, next: 'Next: x' })).toEqual({
+    expect(
+      screenMode({ task: null, message: 'Wait', undo: null, next: 'Next: x', timezone: 'UTC' }),
+    ).toEqual({
       kind: 'notice',
       message: 'Wait',
     });
   });
 
   it('is clear with the next item otherwise', () => {
-    expect(screenMode({ task: null, message: null, undo: null, next: 'Next: x' })).toEqual({
+    expect(
+      screenMode({ task: null, message: null, undo: null, next: 'Next: x', timezone: 'UTC' }),
+    ).toEqual({
       kind: 'clear',
       next: 'Next: x',
     });
@@ -163,14 +172,20 @@ describe('doneKeyLabel', () => {
 });
 
 describe('notedAt', () => {
-  it('uses the phone clock for the time of the press', () => {
-    const pressedAt = new Date(2026, 10, 9, 9, 41, 30).getTime();
-    expect(notedAt(pressedAt)).toBe('Noted at 9:41 AM');
+  it("says the time of the press in the household's zone, as the list does", () => {
+    const pressedAt = Date.parse('2026-11-09T14:41:30Z');
+    expect(notedAt(pressedAt, 'America/Los_Angeles')).toBe('Noted at 6:41 AM');
+    expect(notedAt(pressedAt, 'Europe/London')).toBe('Noted at 2:41 PM');
   });
 
   it('writes noon and midnight in the 12-hour form', () => {
-    expect(phoneClockTime(new Date(2026, 10, 9, 12, 5).getTime())).toBe('12:05 PM');
-    expect(phoneClockTime(new Date(2026, 10, 9, 0, 5).getTime())).toBe('12:05 AM');
+    expect(notedAt(Date.parse('2026-11-09T12:05:00Z'), 'UTC')).toBe('Noted at 12:05 PM');
+    expect(notedAt(Date.parse('2026-11-09T00:05:00Z'), 'UTC')).toBe('Noted at 12:05 AM');
+  });
+
+  it("falls back to the phone's clock when the household zone is unknown", () => {
+    const pressedAt = new Date(2026, 10, 9, 9, 41).getTime();
+    expect(notedAt(pressedAt, 'Mars/Olympus')).toBe('Noted at 9:41 AM');
   });
 });
 

@@ -58,6 +58,22 @@ export function yearOf(time: number): number {
   return new Date(time).getUTCFullYear();
 }
 
+export function localClockTime(timezone: string, at: number): string | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(at));
+    const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
+    const time = `${get('hour')}:${get('minute')}`;
+    return /^\d{2}:\d{2}$/.test(time) ? time : null;
+  } catch {
+    return null;
+  }
+}
+
 export function currentLocalDate(timezone: string, now: number): string | null {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', {

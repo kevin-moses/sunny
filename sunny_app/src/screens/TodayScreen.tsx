@@ -50,6 +50,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
         message: done.message ?? (stale ? STALE_DAY_MESSAGE : null),
         undo: done.undo,
         next: stale ? null : nextLine(day, agenda, now),
+        timezone: day.timezone,
       })
     : null;
   const shown = mode?.kind === 'task' ? mode.task : null;

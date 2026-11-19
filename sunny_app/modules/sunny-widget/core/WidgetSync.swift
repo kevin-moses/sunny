@@ -144,6 +144,10 @@ public struct WidgetSync: Sendable {
         return PushStateReport(liveActivityStart: nil, activities: nil, widgetPush: widgetPush)
     }
 
+    public func householdTimeZone() -> TimeZone {
+        storage.loadCache()?.timeline.timeZone ?? .autoupdatingCurrent
+    }
+
     public func cachedPlan(locale: Locale) -> TimelinePlan {
         let now = clock()
         guard client() != nil else { return TimelinePlanner.notice(.openSunny, at: now) }

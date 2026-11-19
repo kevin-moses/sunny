@@ -128,11 +128,18 @@ const EARLY = task({
 const UNDO: UndoLineData = {
   label: 'Morning pills',
   text: 'Morning pills done.',
-  pressedAt: new Date(2026, 10, 9, 9, 41).getTime(),
+  pressedAt: Date.parse('2026-11-09T09:41:00Z'),
 };
 
 function mode(input: Partial<Parameters<typeof screenMode>[0]>): ScreenMode {
-  return screenMode({ task: null, message: null, undo: null, next: null, ...input });
+  return screenMode({
+    task: null,
+    message: null,
+    undo: null,
+    next: null,
+    timezone: 'UTC',
+    ...input,
+  });
 }
 
 describe('TagRow', () => {

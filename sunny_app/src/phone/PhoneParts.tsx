@@ -156,7 +156,7 @@ function DoneContent({ mode, onDone }: { mode: ScreenMode; onDone: () => void })
     case 'task':
       return <DoneKey task={mode.task} early={mode.early} onPress={onDone} />;
     case 'noted':
-      return <NotedPanel pressedAt={mode.undo.pressedAt} />;
+      return <NotedPanel text={mode.noted} />;
     case 'clear':
       return mode.next === null ? null : <NextPanel text={mode.next} />;
     case 'notice':
