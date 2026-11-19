@@ -53,10 +53,14 @@ function changedOnPhone(actor: Actor, after: Doc<"taskInstances">): Id<"devices"
 }
 
 type SyncRule =
-  | { kind: "by_view"; changedOn: Id<"devices"> | null; startingEndsAs: ActivityEndReason | null }
+  | {
+      kind: "by_view";
+      noWake: ReadonlySet<Id<"devices">>;
+      startingEndsAs: ActivityEndReason | null;
+    }
   | { kind: "end_as"; reason: ActivityEndReason };
 
-const BY_VIEW: SyncRule = { kind: "by_view", changedOn: null, startingEndsAs: null };
+const BY_VIEW: SyncRule = { kind: "by_view", noWake: new Set(), startingEndsAs: null };
 
 export async function syncActivity(
   ctx: MutationCtx,
@@ -83,8 +87,8 @@ export async function syncActivity(
   const view = known ?? (await loadActivityView(ctx, row, now));
   if (view.kind !== "end") return;
   await endActivity(ctx, row, view.reason, now, view.content);
-  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && row.deviceId !== rule.changedOn) {
-    await wakePhoneToReport(ctx, row.deviceId, now);
+  if (ENDS_THE_PHONE_CANNOT_PREDICT.has(view.reason) && !rule.noWake.has(row.deviceId)) {
+    await wakePhoneToReport(ctx, row.deviceId);
   }
 }
 
@@ -152,10 +156,12 @@ export async function instanceChanged(
   if (before.state === after.state && (before.currentStep ?? 0) === (after.currentStep ?? 0)) {
     return;
   }
-  await requestWidgetRefresh(ctx, actor, after.householdId);
+  const noWake = await requestWidgetRefresh(ctx, actor, after.householdId);
+  const changedOn = changedOnPhone(actor, after);
+  if (changedOn !== null) noWake.add(changedOn);
   await syncInstanceActivities(ctx, after._id, Date.now(), {
     kind: "by_view",
-    changedOn: changedOnPhone(actor, after),
+    noWake,
     startingEndsAs: null,
   });
   if (isDoneState(before.state) && isDueEntry(after) && wasPrompted(after)) {
@@ -171,7 +177,7 @@ export async function instanceGone(
 ): Promise<void> {
   await syncInstanceActivities(ctx, instance._id, Date.now(), {
     kind: "by_view",
-    changedOn: null,
+    noWake: new Set(),
     startingEndsAs: "instance_gone",
   });
 }

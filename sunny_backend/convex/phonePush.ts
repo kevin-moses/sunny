@@ -177,7 +177,7 @@ export const reportByToken = internalMutation({
     const { activities } = args.report;
     if (activities === undefined) return { kind: "ok", activities: [] };
     const { directives, behind } = await applyActivityReport(ctx, device, activities, now);
-    const rule = { kind: "by_view", changedOn: device._id, startingEndsAs: null } as const;
+    const rule = { kind: "by_view", noWake: new Set([device._id]), startingEndsAs: null } as const;
     for (const { row, view } of behind) await syncActivity(ctx, row, now, rule, view);
     return { kind: "ok", activities: directives };
   },

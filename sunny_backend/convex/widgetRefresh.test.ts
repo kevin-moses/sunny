@@ -279,6 +279,25 @@ describe("the ten-minute throttle", () => {
     expect(refreshes()).toHaveLength(2);
   });
 
+  test("two refresh requests in one mutation send one push and hold nothing back", async () => {
+    const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
+    const instanceId = await atGapStart(f);
+    expect(await pressOnDisplay(f, instanceId, 0)).toBe("advanced");
+    await settle(f.t, WIDGET_REFRESH_GAP_MS + MIN);
+    expect(refreshes()).toHaveLength(1);
+    const taskId = await f.t.run(async (ctx) => (await ctx.db.get(instanceId))!.taskId);
+    await f.t.withIdentity({ subject: f.caregiver }).mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId,
+      checklistItems: ["Fill the kettle.", "Pour."],
+    });
+    await settle(f.t);
+    expect(refreshes()).toHaveLength(2);
+    expect((await phonePushRow(f))!.widgetRefresh!.trailingAt).toBeNull();
+    await settle(f.t, 2 * WIDGET_REFRESH_GAP_MS);
+    expect(refreshes()).toHaveLength(2);
+  });
+
   test("a change after the trailing send waits for its own gap", async () => {
     const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
     const instanceId = await atGapStart(f);

@@ -32,35 +32,45 @@ export async function sendWidgetRefresh(
   await ctx.scheduler.runAfter(0, internal.phonePush.refreshWidgets, { deviceId: push.deviceId });
 }
 
-function backgroundPushSentAt(push: Doc<"phonePush">, now: number): boolean {
-  return push.widgetPush === undefined && push.widgetRefresh?.sentAt === now;
-}
-
-export async function wakePhoneToReport(
-  ctx: MutationCtx,
-  deviceId: Id<"devices">,
-  now: number,
-): Promise<void> {
-  const push = await findPhonePush(ctx, deviceId);
-  if (push === null || backgroundPushSentAt(push, now)) return;
+export async function wakePhoneToReport(ctx: MutationCtx, deviceId: Id<"devices">): Promise<void> {
+  if ((await findPhonePush(ctx, deviceId)) === null) return;
   await ctx.scheduler.runAfter(0, internal.phonePush.wakeToReport, { deviceId });
 }
 
-async function refreshPhone(ctx: MutationCtx, deviceId: Id<"devices">, now: number): Promise<void> {
+const sentByMutation = new WeakMap<MutationCtx["db"], Set<Id<"devices">>>();
+
+function sentInThisMutation(ctx: MutationCtx): Set<Id<"devices">> {
+  const known = sentByMutation.get(ctx.db);
+  if (known !== undefined) return known;
+  const sent = new Set<Id<"devices">>();
+  sentByMutation.set(ctx.db, sent);
+  return sent;
+}
+
+async function refreshPhone(
+  ctx: MutationCtx,
+  deviceId: Id<"devices">,
+  now: number,
+): Promise<boolean> {
   const push = await findPhonePush(ctx, deviceId);
-  if (push === null) return;
+  if (push === null) return false;
+  const wakesApp = push.widgetPush === undefined;
+  const sent = sentInThisMutation(ctx);
+  if (sent.has(deviceId)) return wakesApp;
   const decision = refreshDecision(push.widgetRefresh, now);
   switch (decision.kind) {
     case "fold":
-      return;
+      return false;
     case "send":
       await sendWidgetRefresh(ctx, push, now);
-      return;
+      sent.add(deviceId);
+      return wakesApp;
     case "trail":
       await ctx.db.patch(push._id, { widgetRefresh: decision.state });
       await ctx.scheduler.runAt(decision.state.trailingAt, internal.phonePush.trailingRefresh, {
         deviceId,
       });
+      return false;
   }
 }
 
@@ -72,11 +82,13 @@ export async function requestWidgetRefresh(
   ctx: MutationCtx,
   actor: Actor,
   householdId: Id<"households">,
-): Promise<void> {
-  if (actor.kind === "system") return;
+): Promise<Set<Id<"devices">>> {
+  const woken = new Set<Id<"devices">>();
+  if (actor.kind === "system") return woken;
   const pressedOn = phonePressedOn(actor);
   const now = Date.now();
   for (const phone of await seniorPhones(ctx, householdId)) {
-    if (phone._id !== pressedOn) await refreshPhone(ctx, phone._id, now);
+    if (phone._id !== pressedOn && (await refreshPhone(ctx, phone._id, now))) woken.add(phone._id);
   }
+  return woken;
 }
