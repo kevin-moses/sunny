@@ -116,7 +116,7 @@ function taskContent(subject: ActivitySubject, now: number): ActivityContent {
   const [current, ...later] = taskCards(timelineTask(subject.instance, subject.task, now));
   return fitContent(
     contentState({
-      card: current!,
+      card: current,
       nextSteps: later.flatMap((next) => (next.stepText === null ? [] : [next.stepText])),
       closed: null,
     }),

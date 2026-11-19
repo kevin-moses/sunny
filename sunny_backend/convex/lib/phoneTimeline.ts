@@ -35,8 +35,9 @@ export const TIMELINE_HORIZON_MS = DAY_MS;
 export interface TimelineTask extends DayTask {
   windowStart: number;
   windowEnd: number;
-  sentence: string | null;
 }
+
+export type NonEmptyList<T> = [T, ...T[]];
 
 export interface TimelineInput {
   timezone: string;
@@ -96,7 +97,6 @@ export function timelineTask(
     ...instanceDayTask(instance, task, now),
     windowStart: instance.windowStart,
     windowEnd: instance.windowEnd,
-    sentence: task.screenSentence ?? null,
   };
 }
 
@@ -141,28 +141,35 @@ export function dayAt(input: TimelineInput, at: number): DayAt {
   };
 }
 
-function stepsLeft(task: DayTask): (TaskStep | null)[] {
+function stepsLeft(task: DayTask): NonEmptyList<TaskStep | null> {
   const { step } = task;
   if (step === null) return [null];
-  return task.checklistItems
-    .slice(step.index)
-    .map((text, n) => ({ index: step.index + n, count: step.count, text }));
+  const after = step.index + 1;
+  const later = task.checklistItems
+    .slice(after)
+    .map((text, n) => ({ index: after + n, count: step.count, text }));
+  return [step, ...later];
 }
 
-export function taskCards(task: TimelineTask): PhoneTaskCard[] {
-  return stepsLeft(task).map((step) => ({
+function stepCard(task: TimelineTask, step: TaskStep | null): PhoneTaskCard {
+  return {
     kind: "task",
     instanceId: task.instanceId,
     step: stepIndex(step),
     stepCount: step?.count ?? 1,
     stepText: step?.text ?? null,
     label: task.displayLabel,
-    sentence: task.sentence,
+    sentence: task.screenSentence,
     detail: task.pillDescription,
     icon: taskIcon(task.type),
     startsAt: task.windowStart,
     endsAt: task.windowEnd,
-  }));
+  };
+}
+
+export function taskCards(task: TimelineTask): NonEmptyList<PhoneTaskCard> {
+  const [current, ...later] = stepsLeft(task);
+  return [stepCard(task, current), ...later.map((step) => stepCard(task, step))];
 }
 
 function confirmed<T extends DayTask>(task: T): T {
