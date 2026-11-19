@@ -187,8 +187,8 @@ export interface DeviceState {
   tuning: DeviceTuning;
 }
 
-export type AgendaItem =
-  | { kind: "task"; id: string; time: string; task: DayTask }
+export type AgendaItem<T extends DayTask = DayTask> =
+  | { kind: "task"; id: string; time: string; task: T }
   | { kind: "event"; id: string; time: string; event: DayEvent };
 
 function isMissed(task: Pick<DayTask, "state">): boolean {
@@ -217,15 +217,15 @@ export function frameDoneTarget(state: Pick<DeviceState, "done">): DoneTarget | 
   return state.done !== null && !state.done.early ? state.done : null;
 }
 
-export function buildAgenda(tasks: DayTask[], events: DayEvent[]): AgendaItem[] {
-  const items: AgendaItem[] = [
-    ...tasks.map((task): AgendaItem => ({
+export function buildAgenda<T extends DayTask>(tasks: T[], events: DayEvent[]): AgendaItem<T>[] {
+  const items: AgendaItem<T>[] = [
+    ...tasks.map((task): AgendaItem<T> => ({
       kind: "task",
       id: `task-${task.instanceId}`,
       time: task.scheduledTime,
       task,
     })),
-    ...events.map((event): AgendaItem => ({
+    ...events.map((event): AgendaItem<T> => ({
       kind: "event",
       id: `event-${event.eventId}-${event.localDate}`,
       time: event.startTime,
@@ -285,18 +285,18 @@ export function isPastEvent(event: Pick<DayEvent, "startsAt" | "endsAt">, now: n
   return now >= (event.endsAt ?? event.startsAt + EVENT_DEFAULT_MS);
 }
 
-export type NextPick =
-  | { kind: "task"; task: DayTask }
+export type NextPick<T extends DayTask = DayTask> =
+  | { kind: "task"; task: T }
   | { kind: "event"; event: DayEvent }
   | { kind: "laterEvent"; event: DayEvent };
 
-export function pickNext(
-  agenda: AgendaItem[],
+export function pickNext<T extends DayTask>(
+  agenda: AgendaItem<T>[],
   upcoming: DayEvent[],
   today: string,
   time: string,
   nowTaskId: string | null,
-): NextPick | null {
+): NextPick<T> | null {
   for (const item of agenda) {
     if (item.kind === "event") {
       if (item.event.startTime > time) return { kind: "event", event: item.event };
