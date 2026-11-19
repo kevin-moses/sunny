@@ -19,6 +19,7 @@ import {
   verdict,
 } from "./mailMocks.helpers";
 import type { MailHousehold, RawEmail } from "./mailMocks.helpers";
+import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
 import { insertEvent, makeBackend } from "./testing.helpers";
 
 vi.mock("./lib/google", async (original) =>
@@ -479,6 +480,30 @@ describe("the item lifecycle", () => {
     expect(posts[0]!.body).toContain("Sunny could not read an email");
     expect(posts[0]!.body).toContain("Subject: Your appointment is confirmed");
     expect(posts[0]!.body).toContain("appointments@lakesideeye.example");
+    expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+  });
+
+  test("a row whose triage never finishes is failed with one post once it passes the attempt cap", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    let now = NOW;
+    const claims: string[] = [];
+    for (let round = 0; round < MAX_TRIAGE_ATTEMPTS + 3; round += 1) {
+      const claim = await h.t.mutation(internal.mailTriage.claimItem, { itemId });
+      claims.push(claim.kind);
+      now += 16 * MINUTE;
+      vi.setSystemTime(now);
+      await h.t.mutation(internal.mailTriage.sweepStuck, {});
+    }
+    expect(claims.filter((k) => k === "claimed")).toHaveLength(MAX_TRIAGE_ATTEMPTS);
+    expect(await item(h, itemId)).toMatchObject({
+      state: "failed",
+      attempt: MAX_TRIAGE_ATTEMPTS,
+    });
+    const posts = await rows(h, "chatPosts");
+    expect(posts.map((p) => p.body)).toEqual([
+      "Sunny could not read an email. Please look at the inbox in Gmail.",
+    ]);
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 

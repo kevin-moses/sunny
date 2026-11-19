@@ -24,6 +24,7 @@ import { MINUTE_MS, addDays, localDate } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 import type { ClassifierRecord, StoredSender, StoredVerdict } from "./lib/validators";
 
+export const MAX_TRIAGE_ATTEMPTS = 10;
 const LEASE_MS = 10 * MINUTE_MS;
 const EVENT_HORIZON_DAYS = 400;
 const SWEEP_BATCH = 100;
@@ -102,6 +103,10 @@ export const claimItem = internalMutation({
     if (!item || item.state !== "queued") return { kind: "skip", reason: "not queued" };
     const household = await ctx.db.get(item.householdId);
     if (household?.backgroundPaused) return { kind: "skip", reason: "household paused" };
+    if (item.attempt >= MAX_TRIAGE_ATTEMPTS) {
+      await failUnread(ctx, item);
+      return { kind: "skip", reason: "attempts used up" };
+    }
     const mailbox = await ctx.db
       .query("mailboxes")
       .withIndex("by_household", (q) => q.eq("householdId", item.householdId))
@@ -346,6 +351,15 @@ export const triage = internalAction({
   },
 });
 
+async function failUnread(ctx: MutationCtx, item: Doc<"mailItems">): Promise<void> {
+  await ctx.db.patch(item._id, { state: "failed", leaseUntil: undefined });
+  const household = await ctx.db.get(item.householdId);
+  if (household) {
+    const now = Date.now();
+    await postMail(ctx, household, item._id, unreadPost(item, household, now), now);
+  }
+}
+
 function unreadPost(item: Doc<"mailItems">, household: Doc<"households">, now: number): string {
   const { sender, subject, receivedAt } = item;
   if (sender === undefined || subject === undefined || receivedAt === undefined) {
@@ -375,12 +389,7 @@ export const onMailJobComplete = internalMutation({
     const item = await ctx.db.get(context.itemId);
     if (!item || (item.state !== "queued" && item.state !== "triaging")) return null;
     console.error(`Mail triage failed: ${result.error}`);
-    await ctx.db.patch(item._id, { state: "failed", leaseUntil: undefined });
-    const household = await ctx.db.get(item.householdId);
-    if (household) {
-      const now = Date.now();
-      await postMail(ctx, household, item._id, unreadPost(item, household, now), now);
-    }
+    await failUnread(ctx, item);
     return null;
   },
 });
