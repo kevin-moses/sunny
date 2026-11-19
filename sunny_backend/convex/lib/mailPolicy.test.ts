@@ -647,10 +647,19 @@ describe("keys, matching and expiry", () => {
     ).toBe("ics:u-2");
   });
 
-  test("matchEvent uses the time when given and title words otherwise", () => {
+  test("matchEvent needs a shared title word and uses the time when given", () => {
     expect(
-      matchEvent({ date: "2026-11-24", time: "10:30", title: "" }, EVENTS).map((e) => e.eventId),
+      matchEvent({ date: "2026-11-24", time: "10:30", title: "Eye exam" }, EVENTS).map(
+        (e) => e.eventId,
+      ),
     ).toEqual(["evt_eye"]);
+    expect(matchEvent({ date: "2026-11-24", time: "10:30", title: "" }, EVENTS)).toEqual([]);
+    expect(
+      matchEvent({ date: "2026-11-24", time: "10:30", title: "Hair appointment" }, EVENTS),
+    ).toEqual([]);
+    expect(matchEvent({ date: "2026-11-24", time: "11:00", title: "Eye exam" }, EVENTS)).toEqual(
+      [],
+    );
     expect(
       matchEvent({ date: "2026-11-24", time: null, title: "Dr. Rivera" }, EVENTS).map(
         (e) => e.eventId,

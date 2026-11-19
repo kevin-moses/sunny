@@ -124,7 +124,8 @@ export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): Ca
   return events.filter(
     (e) =>
       e.date === ref.date &&
-      (ref.time === null ? sharesWords(e.title, ref.title) : e.time === ref.time),
+      (ref.time === null || e.time === ref.time) &&
+      sharesWords(e.title, ref.title),
   );
 }
 
