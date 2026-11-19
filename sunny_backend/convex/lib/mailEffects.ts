@@ -8,14 +8,13 @@ import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, reachableMembers } from "./delivery";
-import { STALE_AFTER_MS, caregiverText } from "./mailPolicy";
+import { STALE_AFTER_MS, caregiverMessage } from "./mailPolicy";
 import type { Appointment, EscalationReason, MailEffect, PolicyFacts } from "./mailTypes";
 import { DAY_MS, dateLabel, formatTime12, localDate, weekdayName, zonedInstant } from "./time";
 import type { MailEffectRecord, NotificationKind } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
-const PUSH_LINES = 4;
-const MAX_PUSH_BODY = 300;
+const MAX_PUSH_BODY = 178;
 const SENIOR_NOTE_TITLE = "Sunny";
 const MAX_NOTES_PER_DAY = 3;
 
@@ -91,15 +90,7 @@ function eventOf(scope: EffectScope, eventId: string): Doc<"events"> {
 }
 
 function pushBody(text: string): string {
-  const lines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "")
-    .slice(0, PUSH_LINES)
-    .join("\n");
-  return lines.length <= MAX_PUSH_BODY
-    ? lines
-    : `${lines.slice(0, MAX_PUSH_BODY - 3).trimEnd()}...`;
+  return text.length <= MAX_PUSH_BODY ? text : `${text.slice(0, MAX_PUSH_BODY - 3).trimEnd()}...`;
 }
 
 export async function pushToCaregivers(
@@ -203,7 +194,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
       const { ctx, household } = scope;
       if ((await notesWrittenToday(scope)) >= MAX_NOTES_PER_DAY) {
         const line = `Sunny held back this note for the senior because the daily limit of ${MAX_NOTES_PER_DAY} notes was reached: ${effect.text}`;
-        const body = caregiverText(scope.facts, [line, scope.summary]);
+        const { body } = caregiverMessage(scope.facts, line, scope.summary);
         await postMail(ctx, household, scope.item._id, body, scope.facts.now);
         return { kind: "told_caregivers", pushed: false };
       }
@@ -238,7 +229,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         (await pushToCaregivers(scope.ctx, scope.household, {
           kind: "mail_update",
           title: updateTitle(scope, effects),
-          body: effect.body,
+          body: effect.notice,
           payload: { mailItemId: scope.item._id },
         }));
       return { kind: "told_caregivers", pushed };
@@ -254,7 +245,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
           {
             kind: "mail_escalation",
             title: escalationTitle(scope),
-            body: effect.body,
+            body: effect.notice,
             payload: { mailItemId: scope.item._id },
           },
           async () =>
@@ -294,7 +285,7 @@ function escalation(
   return {
     kind: "escalate",
     reason,
-    body: caregiverText(facts, [line, scope.summary]),
+    ...caregiverMessage(facts, line, scope.summary),
     push: facts.receivedAt >= facts.now - DAY_MS,
     eventId,
   };

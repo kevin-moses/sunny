@@ -116,6 +116,11 @@ export type EscalationReason =
   | "conflict"
   | "unreadable";
 
+export interface CaregiverMessage {
+  body: string;
+  notice: string;
+}
+
 export type MailEffect =
   | { kind: "add_event"; appointment: Appointment; appointmentKey: string }
   | {
@@ -126,11 +131,10 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | { kind: "tell_caregivers"; body: string; push: boolean }
-  | {
+  | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
+  | ({
       kind: "escalate";
       reason: EscalationReason;
-      body: string;
       push: boolean;
       eventId: string | null;
-    };
+    } & CaregiverMessage);

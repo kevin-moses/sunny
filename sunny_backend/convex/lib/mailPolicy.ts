@@ -3,6 +3,7 @@ import type {
   Appointment,
   AppointmentRef,
   CalendarEventFact,
+  CaregiverMessage,
   DecisionReason,
   EscalationReason,
   IcsEvent,
@@ -210,6 +211,14 @@ export function caregiverText(facts: PolicyFacts, lines: string[]): string {
   ].join("\n");
 }
 
+export function caregiverMessage(
+  facts: PolicyFacts,
+  line: string,
+  summary: string,
+): CaregiverMessage {
+  return { body: caregiverText(facts, [line, summary]), notice: scrub(line) };
+}
+
 export function noteExpiry(receivedAt: number, timezone: string): number {
   return zonedInstant(addDays(localDate(receivedAt, timezone), 2), "00:00", timezone);
 }
@@ -271,10 +280,14 @@ function escalate(
   return {
     kind: "escalate",
     reason,
-    body: caregiverText(c.facts, [line, c.summary]),
+    ...caregiverMessage(c.facts, line, c.summary),
     push: true,
     eventId,
   };
+}
+
+function tell(c: Context, line: string, push: boolean): MailEffect {
+  return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
 }
 
 function domainOf(address: string): string {
@@ -297,13 +310,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     {
       rule: "any",
       plan: (_, c) => [
-        {
-          kind: "escalate",
-          reason: "unreadable",
-          body: caregiverText(c.facts, ["Sunny could not sort this email. Please look at it."]),
-          push: true,
-          eventId: null,
-        },
+        escalate(c, "unreadable", "Sunny could not sort this email. Please look at it."),
       ],
     },
   ],
@@ -364,14 +371,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 appointment: s.fields,
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
-              {
-                kind: "tell_caregivers",
-                body: caregiverText(c.facts, [
-                  `Sunny added ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, to the calendar.`,
-                  c.summary,
-                ]),
-                push: false,
-              },
+              tell(
+                c,
+                `Sunny added ${s.fields.title}, ${when(s.fields.date, s.fields.time)}, to the calendar.`,
+                false,
+              ),
             ],
     },
   ],
@@ -420,14 +424,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             appointment: s.fields,
             appointmentKey: appointmentKey(s.fields, c.facts.ics),
           },
-          {
-            kind: "tell_caregivers",
-            body: caregiverText(c.facts, [
-              `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
-              c.summary,
-            ]),
-            push: true,
-          },
+          tell(
+            c,
+            `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
+            true,
+          ),
         ];
       },
     },
@@ -453,14 +454,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         c.authenticated && s.note !== null
           ? null
           : [
-              {
-                kind: "tell_caregivers",
-                body: caregiverText(c.facts, [
-                  "Sunny did not pass this on to the senior because it did not pass Sunny's checks.",
-                  c.summary,
-                ]),
-                push: false,
-              },
+              tell(
+                c,
+                "Sunny did not pass this on to the senior because it did not pass Sunny's checks.",
+                false,
+              ),
             ],
     },
     {

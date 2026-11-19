@@ -230,7 +230,9 @@ describe("an appointment email", () => {
     expect(kinds(pushes)).toEqual(["mail_update", "mail_update", "mail_update"]);
     expect(pushes.map((p) => p.recipientUserId).sort()).toEqual(["max", "pat", "val"]);
     expect(pushes[0]!.title).toBe("Sunny moved an appointment");
-    expect(pushes[0]!.body).toContain("From: Lakeside");
+    expect(pushes[0]!.body).toBe(
+      "Sunny moved Eye exam with Dr. Rivera from Thursday, December 10 at 2:15 PM to Saturday, December 12 at 10:00 AM.",
+    );
   });
 
   test("a reschedule of a hand-entered event escalates and changes nothing", async () => {
@@ -391,6 +393,22 @@ describe("other verdicts", () => {
     expect(pushes.every((p) => p.recipientDeviceId === undefined)).toBe(true);
     expect(pushes).toHaveLength(3);
     expect(await rows(h, "seniorNotes")).toHaveLength(0);
+  });
+
+  test("an escalation push says what Sunny needs, without the subject or the sender's name", async () => {
+    const h = await setup();
+    await triageEmail(
+      h,
+      clinic({ from: "Grandson Tom <tom@example.org>", subject: "Grandma please help now" }),
+      PHISHING,
+    );
+    const pushes = await rows(h, "notificationOutbox");
+    expect(pushes).toHaveLength(3);
+    for (const push of pushes) {
+      expect(push.body).toBe(
+        "Sunny thinks this email may be a scam and did not tell the senior about it.",
+      );
+    }
   });
 
   test("the seventh escalation in an hour posts without a push", async () => {
@@ -723,7 +741,12 @@ describe("carrying out a plan", () => {
         },
         [
           { kind: "add_event", appointment, appointmentKey: "appt:x" },
-          { kind: "tell_caregivers", body: "Sunny added Eye exam.", push: false },
+          {
+            kind: "tell_caregivers",
+            body: "Sunny added Eye exam.",
+            notice: "Sunny added Eye exam.",
+            push: false,
+          },
         ],
       );
     });
