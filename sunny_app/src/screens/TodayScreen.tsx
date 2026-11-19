@@ -10,6 +10,7 @@ import type { DayViewState } from '../day/useDayView';
 import { dayIsCurrent, doneTarget, STALE_DAY_MESSAGE, useDoneAction } from '../day/useDoneAction';
 import { usePendingConfirms } from '../day/usePendingConfirms';
 import { useTick } from '../day/useTick';
+import { usePaperFonts } from '../display/theme';
 import { dayRows, nextLine, screenMode } from '../phone/model';
 import {
   DayList,
@@ -19,7 +20,7 @@ import {
   OfflineNote,
   TagRow,
 } from '../phone/PhoneParts';
-import { layout, paper, usePhoneFonts } from '../phone/theme';
+import { layout, paper } from '../phone/theme';
 import { TalkButton } from '../voice/TalkButton';
 import { useUnsentWidgetPresses } from '../widget/sharedPresses';
 
@@ -28,7 +29,7 @@ const TICK_MS = 30_000;
 export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const { day, errorMessage, isOffline } = dayView;
   const insets = useSafeAreaInsets();
-  const fontsReady = usePhoneFonts();
+  const fontsReady = usePaperFonts();
   const { isWebSocketConnected } = useConvexConnectionState();
   const now = useTick(TICK_MS);
   const queued = usePendingConfirms(confirmQueue);

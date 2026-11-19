@@ -1,14 +1,6 @@
-import {
-  AtkinsonHyperlegibleNext_500Medium,
-  AtkinsonHyperlegibleNext_600SemiBold,
-  AtkinsonHyperlegibleNext_700Bold,
-  AtkinsonHyperlegibleNext_800ExtraBold,
-} from '@expo-google-fonts/atkinson-hyperlegible-next';
-import { Literata_700Bold } from '@expo-google-fonts/literata';
-import { useFonts } from 'expo-font';
 import type { BoxShadowValue, TextStyle } from 'react-native';
 
-import { ink } from '../display/theme';
+import { FONT_FAMILY, ink } from '../display/theme';
 
 export const paper = {
   paper: ink.paper,
@@ -57,14 +49,6 @@ export interface TextRole {
   maxScale: number;
 }
 
-const FAMILY = {
-  serif: 'Literata_700Bold',
-  medium: 'AtkinsonHyperlegibleNext_500Medium',
-  semiBold: 'AtkinsonHyperlegibleNext_600SemiBold',
-  bold: 'AtkinsonHyperlegibleNext_700Bold',
-  extraBold: 'AtkinsonHyperlegibleNext_800ExtraBold',
-} as const;
-
 function role(
   fontFamily: string,
   fontSize: number,
@@ -75,21 +59,21 @@ function role(
 }
 
 export const roles = {
-  tag: role(FAMILY.extraBold, 20, 24, 1.4),
-  step: role(FAMILY.bold, 20, 24, 1.4),
-  headline: role(FAMILY.serif, 40, 44, 1.2),
-  detail: role(FAMILY.medium, 22, 28, 1.3),
-  undoLine: role(FAMILY.serif, 28, 34, 1.2),
-  undoNote: role(FAMILY.bold, 22, 28, 1.3),
-  doneKey: role(FAMILY.bold, 40, 48, 1.2),
-  earlyKey: role(FAMILY.bold, 36, 44, 1.2),
-  keyStatus: role(FAMILY.bold, 28, 34, 1.2),
-  next: role(FAMILY.bold, 22, 28, 1.3),
-  rowTime: role(FAMILY.bold, 22, 28, 1.3),
-  rowLabel: role(FAMILY.semiBold, 22, 28, 1.3),
-  rowStrong: role(FAMILY.extraBold, 22, 28, 1.3),
-  talk: role(FAMILY.extraBold, 28, 34, 1.2),
-  offline: role(FAMILY.bold, 20, 24, 1.3),
+  tag: role(FONT_FAMILY.extraBold, 20, 24, 1.4),
+  step: role(FONT_FAMILY.bold, 20, 24, 1.4),
+  headline: role(FONT_FAMILY.serifBold, 40, 44, 1.2),
+  detail: role(FONT_FAMILY.medium, 22, 28, 1.3),
+  undoLine: role(FONT_FAMILY.serifBold, 28, 34, 1.2),
+  undoNote: role(FONT_FAMILY.bold, 22, 28, 1.3),
+  doneKey: role(FONT_FAMILY.bold, 40, 48, 1.2),
+  earlyKey: role(FONT_FAMILY.bold, 36, 44, 1.2),
+  keyStatus: role(FONT_FAMILY.bold, 28, 34, 1.2),
+  next: role(FONT_FAMILY.bold, 22, 28, 1.3),
+  rowTime: role(FONT_FAMILY.bold, 22, 28, 1.3),
+  rowLabel: role(FONT_FAMILY.semiBold, 22, 28, 1.3),
+  rowStrong: role(FONT_FAMILY.extraBold, 22, 28, 1.3),
+  talk: role(FONT_FAMILY.extraBold, 28, 34, 1.2),
+  offline: role(FONT_FAMILY.bold, 20, 24, 1.3),
 } as const;
 
 export function cappedScale(fontScale: number, textRole: TextRole): number {
@@ -121,14 +105,3 @@ export const shadows = {
     shadow(withAlpha(paper.talkGlow, 0.45), 2, 4),
   ],
 } as const satisfies Record<string, readonly BoxShadowValue[]>;
-
-export function usePhoneFonts(): boolean {
-  const [loaded, error] = useFonts({
-    Literata_700Bold,
-    AtkinsonHyperlegibleNext_500Medium,
-    AtkinsonHyperlegibleNext_600SemiBold,
-    AtkinsonHyperlegibleNext_700Bold,
-    AtkinsonHyperlegibleNext_800ExtraBold,
-  });
-  return loaded || error !== null;
-}

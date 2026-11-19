@@ -22,7 +22,7 @@ export const TAB_SEPARATOR = '  ·  ';
 
 export const CANVAS = { width: 1194, height: 834 } as const;
 
-const FAMILY = {
+export const FONT_FAMILY = {
   serifBold: 'Literata_700Bold',
   serifMedium: 'Literata_500Medium',
   regular: 'AtkinsonHyperlegibleNext_400Regular',
@@ -46,31 +46,31 @@ function textStyle(
 }
 
 export const font = {
-  header: textStyle(FAMILY.serifBold, 72, 105),
-  date: textStyle(FAMILY.serifMedium, 32, 120),
-  tab: textStyle(FAMILY.extraBold, 30, 120),
-  nextLabel: textStyle(FAMILY.bold, 30, 120),
-  taskTitle: textStyle(FAMILY.extraBold, 72, 110),
-  stepTitle: textStyle(FAMILY.extraBold, 64, 110),
-  clearTitle: textStyle(FAMILY.extraBold, 56, 115),
-  taskDetail: textStyle(FAMILY.regular, 40, 120),
-  prompt: textStyle(FAMILY.bold, 34, 120),
-  keycap: textStyle(FAMILY.extraBold, 32, 120),
-  nextTitle: textStyle(FAMILY.extraBold, 44, 115),
-  nextTime: textStyle(FAMILY.bold, 36, 120),
-  rowTime: textStyle(FAMILY.bold, 34, 120),
-  rowLabel: textStyle(FAMILY.semiBold, 36, 120),
-  rowLabelNow: textStyle(FAMILY.extraBold, 36, 120),
-  stripLead: textStyle(FAMILY.extraBold, 30, 130),
-  stripItems: textStyle(FAMILY.medium, 30, 130),
-  voiceTitle: textStyle(FAMILY.extraBold, 64, 110),
-  answer: textStyle(FAMILY.semiBold, 44, 125),
-  answerWide: textStyle(FAMILY.semiBold, 52, 125),
-  key: textStyle(FAMILY.extraBold, 40, 120),
-  keyStatus: textStyle(FAMILY.bold, 26, 125),
+  header: textStyle(FONT_FAMILY.serifBold, 72, 105),
+  date: textStyle(FONT_FAMILY.serifMedium, 32, 120),
+  tab: textStyle(FONT_FAMILY.extraBold, 30, 120),
+  nextLabel: textStyle(FONT_FAMILY.bold, 30, 120),
+  taskTitle: textStyle(FONT_FAMILY.extraBold, 72, 110),
+  stepTitle: textStyle(FONT_FAMILY.extraBold, 64, 110),
+  clearTitle: textStyle(FONT_FAMILY.extraBold, 56, 115),
+  taskDetail: textStyle(FONT_FAMILY.regular, 40, 120),
+  prompt: textStyle(FONT_FAMILY.bold, 34, 120),
+  keycap: textStyle(FONT_FAMILY.extraBold, 32, 120),
+  nextTitle: textStyle(FONT_FAMILY.extraBold, 44, 115),
+  nextTime: textStyle(FONT_FAMILY.bold, 36, 120),
+  rowTime: textStyle(FONT_FAMILY.bold, 34, 120),
+  rowLabel: textStyle(FONT_FAMILY.semiBold, 36, 120),
+  rowLabelNow: textStyle(FONT_FAMILY.extraBold, 36, 120),
+  stripLead: textStyle(FONT_FAMILY.extraBold, 30, 130),
+  stripItems: textStyle(FONT_FAMILY.medium, 30, 130),
+  voiceTitle: textStyle(FONT_FAMILY.extraBold, 64, 110),
+  answer: textStyle(FONT_FAMILY.semiBold, 44, 125),
+  answerWide: textStyle(FONT_FAMILY.semiBold, 52, 125),
+  key: textStyle(FONT_FAMILY.extraBold, 40, 120),
+  keyStatus: textStyle(FONT_FAMILY.bold, 26, 125),
 } as const;
 
-export function useDisplayFonts(): boolean {
+export function usePaperFonts(): boolean {
   const [loaded, error] = useFonts({
     Literata_500Medium,
     Literata_700Bold,

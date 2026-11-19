@@ -54,9 +54,9 @@ jest.mock('../../logging/logger', () => ({
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 62, bottom: 34, left: 0, right: 0 }),
 }));
-jest.mock('../../phone/theme', () => ({
-  ...jest.requireActual<object>('../../phone/theme'),
-  usePhoneFonts: () => mockFontsReady,
+jest.mock('../../display/theme', () => ({
+  ...jest.requireActual<object>('../../display/theme'),
+  usePaperFonts: () => mockFontsReady,
 }));
 jest.mock('../../voice/voiceContext', () => ({
   useVoice: () => ({ connect: async () => undefined, connectionState: 'disconnected' }),
