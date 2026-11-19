@@ -5,9 +5,9 @@ import type { ClientHttp2Session } from "node:http2";
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import {
+  alertMessage,
   apnsHost,
   buildHeaders,
-  buildPayload,
   failureResult,
   getProviderToken,
   isValidDeviceToken,
@@ -17,6 +17,7 @@ import {
 import { ConfigError } from "./lib/errors";
 import { parseJsonObject } from "./lib/http";
 import type { ApnsConfig, ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
+import type { ApnsMessage } from "./lib/validators";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -31,8 +32,7 @@ function sendOne(
   config: ApnsConfig,
   providerToken: string,
   token: string,
-  body: string,
-  data: Record<string, string> | undefined,
+  message: ApnsMessage,
 ): Promise<ApnsResult> {
   return new Promise((resolve) => {
     if (!isValidDeviceToken(token)) {
@@ -46,7 +46,7 @@ function sendOne(
       resolve(result);
     };
     try {
-      const headers = buildHeaders(config, providerToken, data, Math.floor(Date.now() / 1000));
+      const headers = buildHeaders(config, providerToken, message);
       const req = session.request({
         ":method": "POST",
         ":path": `/3/device/${token}`,
@@ -70,7 +70,7 @@ function sendOne(
       });
       req.on("error", (e: Error) => finish(failureResult(token, e.message)));
       req.on("close", () => finish(failureResult(token, "Closed")));
-      req.end(body);
+      req.end(message.body);
     } catch (e) {
       finish(failureResult(token, e instanceof Error ? e.message : "Request failed"));
     }
@@ -97,10 +97,13 @@ export const send = internalAction({
       throw e;
     }
     if (args.tokens.length === 0) return { results: [] };
-    const payload = buildPayload(args.title, args.body, args.data, {
-      interruptionLevel: args.interruptionLevel,
-      category: args.category,
-    });
+    const message = alertMessage(
+      args.title,
+      args.body,
+      args.data,
+      { interruptionLevel: args.interruptionLevel, category: args.category },
+      Math.floor(Date.now() / 1000),
+    );
     const session = connect(`https://${apnsHost(config.environment)}`);
     session.on("error", () => {});
     const connectTimer = setTimeout(
@@ -111,7 +114,7 @@ export const send = internalAction({
     let broken = false;
     try {
       const results = await Promise.all(
-        args.tokens.map((t) => sendOne(session, config, providerToken, t, payload, args.data)),
+        args.tokens.map((t) => sendOne(session, config, providerToken, t, message)),
       );
       broken = results.some((r) => r.outcome === "failed" && r.retryable);
       for (const r of results) {

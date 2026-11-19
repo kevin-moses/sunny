@@ -1,0 +1,47 @@
+{
+  "headers": {
+    "authorization": "bearer PROVIDER_TOKEN",
+    "apns-topic": "com.kmsunny.sunny.push-type.liveactivity",
+    "apns-push-type": "liveactivity",
+    "apns-priority": "10",
+    "apns-expiration": "1795096800",
+    "content-type": "application/json"
+  },
+  "payload": {
+    "aps": {
+      "timestamp": 1795093560,
+      "event": "start",
+      "attributes-type": "SunnyTaskAttributes",
+      "attributes": {
+        "activityKey": "k97f2ea1p6d8s3m5x7c9v2b4n6q8w0zt",
+        "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+        "icon": "clock",
+        "receiptMs": 10000
+      },
+      "content-state": {
+        "card": {
+          "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+          "step": 0,
+          "stepCount": 3,
+          "stepText": "Turn on the water.",
+          "label": "Shower",
+          "sentence": "Take your shower.",
+          "detail": null,
+          "startsAt": 1795093200000,
+          "endsAt": 1795096800000
+        },
+        "nextSteps": [
+          "Wash and rinse.",
+          "Dry off and dress."
+        ],
+        "closed": null
+      },
+      "alert": {
+        "title": "Shower",
+        "body": "Time for your shower. Step 1 of 3: Turn on the water."
+      },
+      "stale-date": 1795096800,
+      "relevance-score": 2204906800
+    }
+  }
+}

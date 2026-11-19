@@ -1,4 +1,4 @@
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { EARLY_CONFIRM_MS, seniorCanConfirm } from "./confirmRule";
 import {
@@ -84,15 +84,23 @@ export interface PhoneTimeline {
   entries: TimelineEntry[];
 }
 
+export function timelineTask(
+  instance: Doc<"taskInstances">,
+  task: Doc<"tasks">,
+  now: number,
+): TimelineTask {
+  return {
+    ...instanceDayTask(instance, task, now),
+    windowStart: instance.windowStart,
+    windowEnd: instance.windowEnd,
+    sentence: task.screenSentence ?? null,
+  };
+}
+
 export function timelineInput(day: DeviceDay, now: number): TimelineInput {
   return {
     timezone: day.timezone,
-    tasks: day.instances.map(({ instance, task }) => ({
-      ...instanceDayTask(instance, task, now),
-      windowStart: instance.windowStart,
-      windowEnd: instance.windowEnd,
-      sentence: task.screenSentence ?? null,
-    })),
+    tasks: day.instances.map(({ instance, task }) => timelineTask(instance, task, now)),
     events: day.events,
   };
 }
@@ -138,7 +146,7 @@ function stepsLeft(task: DayTask): (TaskStep | null)[] {
     .map((text, n) => ({ index: step.index + n, count: step.count, text }));
 }
 
-function taskCards(task: TimelineTask): PhoneTaskCard[] {
+export function taskCards(task: TimelineTask): PhoneTaskCard[] {
   return stepsLeft(task).map((step) => ({
     kind: "task",
     instanceId: task.instanceId,

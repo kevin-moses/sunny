@@ -1,0 +1,34 @@
+{
+  "headers": {
+    "authorization": "bearer PROVIDER_TOKEN",
+    "apns-topic": "com.kmsunny.sunny.push-type.liveactivity",
+    "apns-push-type": "liveactivity",
+    "apns-priority": "10",
+    "apns-expiration": "1795096800",
+    "content-type": "application/json"
+  },
+  "payload": {
+    "aps": {
+      "timestamp": 1795093740,
+      "event": "update",
+      "content-state": {
+        "card": {
+          "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+          "step": 1,
+          "stepCount": 3,
+          "stepText": "Wash and rinse.",
+          "label": "Shower",
+          "sentence": "Take your shower.",
+          "detail": null,
+          "startsAt": 1795093200000,
+          "endsAt": 1795096800000
+        },
+        "nextSteps": [
+          "Dry off and dress."
+        ],
+        "closed": null
+      },
+      "stale-date": 1795096800
+    }
+  }
+}
