@@ -21,11 +21,13 @@ import {
   activityPushes,
   addTask,
   confirmOnDisplay,
+  displayToken,
   local,
   makePhoneBackend,
   outbox,
   phoneHousehold,
   phonePushRow,
+  postConfirm,
   proveStarts,
   putPushState,
   reportStartToken,
@@ -668,6 +670,57 @@ describe("a blind phone", () => {
     expect(await outbox(f, walk)).toEqual([
       expect.objectContaining({ state: "sent", channel: "live_activity" }),
     ]);
+  });
+});
+
+describe("the 4 KB limit of a push", () => {
+  function bytes(text: string): number {
+    return new TextEncoder().encode(text).length;
+  }
+
+  test.each([
+    ["three-byte characters", "\u8a9e"],
+    ["control characters, which JSON writes as six bytes each", "\u0001"],
+  ])("a task at every length limit in %s still fits its start and its update", async (_n, char) => {
+    const f = await setup();
+    await reportStartToken(f);
+    const text = (length: number) => char.repeat(length);
+    const instanceId = await addTask(f, {
+      title: text(60),
+      time: "08:00",
+      type: "routine",
+      spokenPrompt: text(300),
+      screenSentence: text(60),
+      pillDescription: text(200),
+      checklistItems: Array.from({ length: 50 }, () => text(200)),
+    });
+    await tick(f, EIGHT);
+    await settle(f.t);
+    expect(starts()).toHaveLength(1);
+    await putPushState(f, {
+      activities: (await activities(f)).map((row) => ({
+        key: row._id,
+        token: UPDATE_TOKEN,
+        state: "active",
+      })),
+    });
+    const response = await postConfirm(f, await displayToken(f), {
+      instanceId,
+      pressedAgoMs: 0,
+      via: "button",
+      step: 0,
+    });
+    expect(((await response.json()) as { status: string }).status).toBe("advanced");
+    await settle(f.t);
+
+    expect(activityPushes().map((push) => (push.payload.aps as StartAps).event)).toEqual([
+      "start",
+      "update",
+    ]);
+    for (const push of activityPushes()) {
+      expect(bytes(push.message.body)).toBeLessThanOrEqual(4096);
+    }
+    expect(alertsSent()).toEqual([]);
   });
 });
 
