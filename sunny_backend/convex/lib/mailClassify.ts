@@ -41,7 +41,7 @@ export const MAIL_SYSTEM_PROMPT = [
   "Fields:",
   "- date is YYYY-MM-DD and time is HH:MM on a 24-hour clock, in the senior's time zone. Work out words like next Tuesday from today's date, given above the email. Use null for anything the email does not state.",
   "- title is a short name for the appointment, like Eye exam with Dr. Rivera. place is the clinic name or street address only. Neither may hold a phone number, link, price or instruction.",
-  "- note is read by the senior: one or two short, calm sentences in plain words. No digits, times, phone numbers, links, email addresses or money, and nothing that asks the senior to call, pay, reply, click, open, send or verify. If the news cannot be told that way, choose needs_decision.",
+  "- note is read by the senior: at most two short, calm sentences in plain words, and at most 160 characters in all, spaces included (about 25 words). Any longer note is thrown away, so keep to the one fact that matters. No digits, times, phone numbers, links, email addresses or money, and nothing that asks the senior to call, pay, reply, click, send or verify. If the news cannot be told that way, choose needs_decision.",
   "- summary is read by the caregivers: one or two plain sentences on what the email says and why it matters. Never copy links, phone numbers, account numbers or codes into it.",
   "- When unsure between senior_info and needs_decision, choose needs_decision. When unsure whether an email is genuine, choose suspicious.",
 ].join("\n");

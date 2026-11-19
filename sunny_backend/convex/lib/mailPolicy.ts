@@ -48,38 +48,47 @@ const CURRENCY = /\p{Sc}/u;
 const TITLE_DIGITS = /\d(?:[\s().-]*\d){2,}/;
 const PLACE_DIGITS = /\d(?:[\s().-]*\d){6,}/;
 const MARKUP = /[<>{}[\]*_`#|\\=]/;
-const DENIED_WORDS = new RegExp(
-  `\\b(?:${[
-    "call",
-    "phone",
-    "dial",
-    "pay",
-    "money",
-    "bank",
-    "card",
-    "gift",
-    "wire",
-    "transfer",
-    "password",
-    "code",
-    "verify",
-    "account",
-    "click",
-    "tap",
-    "link",
-    "open",
-    "download",
-    "reply",
-    "send",
-    "urgent",
-    "prize",
-    "refund",
-    "medicare",
-  ].join(
-    "|",
-  )})(?:s|es|ed|d|ing|er|ers|ment|ments|ly)?\\b|\\bpaid\\b|\\bsocial\\s+security\\b|\\bverif(?:ied|ication)\\b`,
-  "i",
-);
+const MONEY_AND_CREDENTIAL_WORDS = [
+  "pay",
+  "money",
+  "bank",
+  "card",
+  "gift",
+  "wire",
+  "transfer",
+  "password",
+  "code",
+  "verify",
+  "account",
+  "prize",
+  "refund",
+  "medicare",
+];
+const ACTION_WORDS = [
+  "call",
+  "phone",
+  "dial",
+  "click",
+  "tap",
+  "link",
+  "download",
+  "reply",
+  "send",
+  "urgent",
+];
+const INFLECTION = "(?:s|es|ed|d|ing|er|ers|ment|ments|ly)?";
+const EXTRA_MONEY_AND_CREDENTIAL_FORMS =
+  "\\bpaid\\b|\\bsocial\\s+security\\b|\\bverif(?:ied|ication)\\b";
+
+function wordPattern(words: string[]): RegExp {
+  return new RegExp(
+    `\\b(?:${words.join("|")})${INFLECTION}\\b|${EXTRA_MONEY_AND_CREDENTIAL_FORMS}`,
+    "i",
+  );
+}
+
+const DENIED_IN_TITLES = wordPattern(MONEY_AND_CREDENTIAL_WORDS);
+const DENIED_IN_NOTES = wordPattern([...MONEY_AND_CREDENTIAL_WORDS, ...ACTION_WORDS]);
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
 
 export function appointmentKey(appointment: Appointment, ics: IcsEvent | null): string {
@@ -125,7 +134,7 @@ export function appointmentFields(
   if (TITLE_DIGITS.test(title) || LINK.test(title) || CURRENCY.test(title)) return null;
   if (place.length > MAX_PLACE || PLACE_DIGITS.test(place)) return null;
   if (LINK.test(place) || CURRENCY.test(place)) return null;
-  if (DENIED_WORDS.test(title) || DENIED_WORDS.test(place)) return null;
+  if (DENIED_IN_TITLES.test(title) || DENIED_IN_TITLES.test(place)) return null;
   if (!isLocalDate(date) || !isLocalTime(time)) return null;
   if (zonedInstant(date, time, clock.timezone) < clock.now) return null;
   if (daysBetween(localDate(clock.now, clock.timezone), date) > MAX_DAYS_AHEAD) return null;
@@ -162,7 +171,7 @@ export function seniorNoteText(
   if (text.length === 0 || text.length > MAX_NOTE) return null;
   if (sentenceCount(text) > MAX_NOTE_SENTENCES) return null;
   if (/\d/.test(text) || LINK.test(text) || MARKUP.test(text) || CURRENCY.test(text)) return null;
-  if (DENIED_WORDS.test(text)) return null;
+  if (DENIED_IN_NOTES.test(text)) return null;
   return cleanText(text) === text ? text : null;
 }
 
@@ -377,7 +386,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           escalate(
             c,
             "unclear_reschedule",
-            `Sunny did not move any appointment. The email asks to move one to ${when(s.appointment.date, s.appointment.time)}.`,
+            match === null
+              ? `Sunny did not move any appointment. The email asks to move one to ${when(s.appointment.date, s.appointment.time)}.`
+              : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${when(s.appointment.date, s.appointment.time)}. Tell Sunny in chat to move it.`,
             match?.eventId ?? null,
           ),
         ];

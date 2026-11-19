@@ -251,6 +251,27 @@ describe("planEffects decision table", () => {
       expect(effects).toEqual([{ kind: "already_on_calendar", eventId: "evt_pt" }]);
     });
 
+    test("an escalation with one match names the event, both times and what to tell Sunny", () => {
+      const effects = planEffects(
+        model(reschedule(pt)),
+        facts({ sender: { name: "x", address: "x@x.example", authenticated: false } }),
+      );
+      const body = effects[0]?.kind === "escalate" ? effects[0].body : "";
+      expect(body).toContain(
+        "Sunny did not move Physical therapy, Friday, November 20 at 2:00 PM. The email asks to move it to Monday, November 23 at 3:00 PM. Tell Sunny in chat to move it.",
+      );
+    });
+
+    test("an escalation with no single match says Sunny moved nothing and names no event", () => {
+      const effects = planEffects(
+        model(reschedule({ date: "2030-01-01", time: null, title: "?" })),
+        facts({ sender: PT_SENDER }),
+      );
+      const body = effects[0]?.kind === "escalate" ? effects[0].body : "";
+      expect(body).toContain("Sunny did not move any appointment.");
+      expect(body).not.toContain("Tell Sunny in chat");
+    });
+
     test.each([
       [
         "the sender is not verified",
@@ -437,8 +458,12 @@ describe("appointmentFields", () => {
     ["a phone number in the place", { place: "Call (555) 014-2233" }],
     ["a link in the place", { place: "www.clinic.example" }],
     ["a currency sign in the place", { place: "Bring €50" }],
-    ["an instruction word in the title", { title: "Medicare card verification - bring bank card" }],
-    ["an instruction word in the place", { place: "Kiosk - verify your account first" }],
+    [
+      "money and credential words in the title",
+      { title: "Medicare card verification - bring bank card" },
+    ],
+    ["a credential word in the place", { place: "Kiosk - verify your account first" }],
+    ["a payment word in the place", { place: "Pay at the front desk" }],
     ["a malformed date", { date: "12/10/2026" }],
     ["a malformed time", { time: "2:15 PM" }],
     ["a time already past", { date: "2026-11-18", time: "08:59" }],
@@ -447,6 +472,15 @@ describe("appointmentFields", () => {
     ["a duration over 480 minutes", { durationMinutes: 481 }],
   ])("rejects %s", (_, overrides) => {
     expect(appointmentFields(appointment(overrides), CLOCK)).toBeNull();
+  });
+
+  test.each([
+    ["a video call title", { title: "Video call with David" }],
+    ["a phone consultation title", { title: "Phone consultation with Dr. Lee" }],
+    ["a place with a call-in note", { place: "Call the front desk on arrival" }],
+    ["a place that says open", { place: "Open Door Clinic" }],
+  ])("accepts %s because action words only matter in senior notes", (_, overrides) => {
+    expect(appointmentFields(appointment(overrides), CLOCK)).not.toBeNull();
   });
 
   test("accepts the edges of the ranges", () => {
@@ -491,6 +525,22 @@ describe("seniorNoteText", () => {
     expect(seniorNoteText(note, topic as "delivery", known)).toBeNull();
   });
 
+  test("accepts a note that says a place is open", () => {
+    expect(seniorNoteText("The pharmacy is open until six.", "prescription", true)).toBe(
+      "The pharmacy is open until six.",
+    );
+    expect(
+      seniorNoteText("Your prescription is ready. They open early.", "prescription", true),
+    ).toBe("Your prescription is ready. They open early.");
+  });
+
+  test("keeps the 160 character limit exact", () => {
+    const at = `${"a".repeat(155)} done.`;
+    expect(at).toHaveLength(161);
+    expect(seniorNoteText(at.slice(1), "delivery", true)).not.toBeNull();
+    expect(seniorNoteText(at, "delivery", true)).toBeNull();
+  });
+
   test.each([
     "call",
     "Calling",
@@ -513,7 +563,6 @@ describe("seniorNoteText", () => {
     "click",
     "tap",
     "link",
-    "opened",
     "download",
     "reply",
     "send",
