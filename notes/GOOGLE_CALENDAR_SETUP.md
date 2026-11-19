@@ -46,7 +46,15 @@ Open the printed link once, within 5 minutes, in the browser where you sign in a
 
 ## 6. Gmail (reading the senior's mail)
 
-Sunny reads the senior's Gmail with the read-only scope `https://www.googleapis.com/auth/gmail.readonly`. It uses the same OAuth client and environment variables as the calendar.
+Sunny reads the senior's Gmail with the read-only scope `https://www.googleapis.com/auth/gmail.readonly`. It uses the same OAuth client and environment variables as the calendar, plus two model keys on the Convex deployment: `TYPESAFE_API_KEY` (TypeSafe's Jev judges each email) and `ANTHROPIC_API_KEY` (Claude Haiku writes the summary for caregivers; the chat agent already needs this key).
+
+Set the TypeSafe key from `sunny_backend/` (add `--prod` for production):
+
+```bash
+npx convex env set TYPESAFE_API_KEY <key>
+```
+
+Then, in the Google Cloud console:
 
 1. **APIs & Services > Library**: search **Gmail API** and click **Enable**.
 2. **Google Auth Platform > Data access > Add or remove scopes**: add `https://www.googleapis.com/auth/gmail.readonly`. Save. This is a restricted scope; it works for test users while the app stays in **Testing**, and public use needs Google's verification.
@@ -58,4 +66,6 @@ cd sunny_backend
 npx tsx scripts/caregiver.ts gmail
 ```
 
-Only a primary caregiver or member can connect. Sunny backfills the last 7 days (at most 50 messages) and then checks for new mail every 5 minutes, except while the household is paused. Connecting again replaces the grant. The app can show the mailbox with `gmail:mailboxStatus` and remove it with `gmail:disconnect`, which also revokes the grant at Google.
+Only a primary caregiver or member can connect. Sunny backfills the last 7 days (at most 50 messages) and then checks for new mail every 5 minutes, except while the household is paused. Connecting again replaces the grant. The app can show the mailbox with `gmail:mailboxStatus` and remove it with `gmail:disconnect`. Disconnecting revokes the grant at Google when no other Sunny connection uses that Google account.
+
+To check that it worked: `gmail:mailboxStatus` shows `active`, and the caregiver chat has a post "Sunny now reads <address>." Sunny acts by itself only on senders that a caregiver has trusted, so the first email from each sender arrives as a question in the chat. Reply there to add the appointment and to trust the sender.
