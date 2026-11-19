@@ -5,11 +5,6 @@ public struct CachedTimeline: Sendable {
     public let etag: String?
 }
 
-private struct CacheEnvelope: Codable {
-    let etag: String?
-    let body: Data
-}
-
 public struct WidgetStorage: Sendable {
     private let directory: URL
     public let presses: PressQueue
@@ -20,20 +15,22 @@ public struct WidgetStorage: Sendable {
     }
 
     private var cacheURL: URL { directory.appendingPathComponent("timeline.json") }
+    private var etagURL: URL { directory.appendingPathComponent("timeline.etag") }
     private var lockURL: URL { directory.appendingPathComponent("credentials.lock") }
     private var widgetPushURL: URL { directory.appendingPathComponent("widgetPush.json") }
 
     public func loadCache() -> CachedTimeline? {
-        guard
-            let data = try? Data(contentsOf: cacheURL),
-            let envelope = try? JSONDecoder().decode(CacheEnvelope.self, from: data),
-            let timeline = try? DeviceTimeline.decode(envelope.body)
-        else { return nil }
-        return CachedTimeline(timeline: timeline, etag: envelope.etag)
+        guard let body = try? Data(contentsOf: cacheURL), let timeline = try? DeviceTimeline.decode(body) else {
+            return nil
+        }
+        let etag = (try? Data(contentsOf: etagURL)).flatMap { String(data: $0, encoding: .utf8) }
+        return CachedTimeline(timeline: timeline, etag: etag)
     }
 
     public func saveCache(body: Data, etag: String?) throws {
-        try write(JSONEncoder().encode(CacheEnvelope(etag: etag, body: body)), to: cacheURL)
+        try removeIfPresent(etagURL)
+        try write(body, to: cacheURL)
+        if let etag { try write(Data(etag.utf8), to: etagURL) }
     }
 
     public func loadWidgetPush() -> WidgetPushReport? {
@@ -47,9 +44,13 @@ public struct WidgetStorage: Sendable {
 
     public func removeAll() throws {
         try presses.removeAll()
-        if FileManager.default.fileExists(atPath: cacheURL.path) {
-            try FileManager.default.removeItem(at: cacheURL)
-        }
+        try removeIfPresent(etagURL)
+        try removeIfPresent(cacheURL)
+    }
+
+    private func removeIfPresent(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
     }
 
     private func write(_ data: Data, to url: URL) throws {

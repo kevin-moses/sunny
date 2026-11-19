@@ -111,22 +111,24 @@ public struct PressQueue: Sendable {
         Set(marks().map(\.mark.key))
     }
 
-    public func reconcile(withTimelineFetchedFrom fetchStartedAt: Date) {
-        var marked: Set<String> = []
+    @discardableResult
+    public func reconcile(withTimelineFetchedFrom fetchStartedAt: Date) -> Set<PressKey> {
+        var kept: [String: PressKey] = [:]
         for (url, mark) in marks() {
             let name = url.lastPathComponent
             if mark.isSettled(answeredAt: answer(named: name)?.at, byTimelineFetchedFrom: fetchStartedAt) {
                 removeMark(named: name)
             } else {
-                marked.insert(name)
+                kept[name] = mark.key
             }
         }
-        for url in files(in: answersDirectory) where !marked.contains(url.lastPathComponent) {
+        for url in files(in: answersDirectory) where kept[url.lastPathComponent] == nil {
             let answeredAt = answer(named: url.lastPathComponent)?.at ?? .distantPast
             if fetchStartedAt.timeIntervalSince(answeredAt) > Self.markLifetime {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        return Set(kept.values)
     }
 
     public func removeAll() throws {

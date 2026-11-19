@@ -375,6 +375,28 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(sync.reporterLaunch(), .observe)
     }
 
+    func testATimelineCachedInTheOldEnvelopeIsFetchedAgainWithoutAnETag() async throws {
+        let body = try Fixture.data("due-task")
+        let envelope = try JSONSerialization.data(withJSONObject: ["etag": "\"v0\"", "body": body.base64EncodedString()])
+        try envelope.write(to: directory.appendingPathComponent("timeline.json"))
+        XCTAssertNil(WidgetStorage(directory: directory).loadCache())
+        transport.queueTimeline(200, body: body, headers: ["ETag": "\"v1\""])
+        let plan = await makeSync().refresh(locale: Fixture.unitedStates)
+        guard case .due = firstContent(plan) else { return XCTFail("expected the due task") }
+        XCTAssertNil(transport.timelineRequests.first?.headers["If-None-Match"])
+        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.etag, "\"v1\"")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("timeline.json")), body)
+    }
+
+    func testATimelineWithoutAnETagForgetsTheOldOne() throws {
+        let storage = WidgetStorage(directory: directory)
+        let body = try Fixture.data("due-task")
+        try storage.saveCache(body: body, etag: "\"v1\"")
+        try storage.saveCache(body: body, etag: nil)
+        XCTAssertNotNil(storage.loadCache())
+        XCTAssertNil(storage.loadCache()?.etag)
+    }
+
     func testStoreCredentialsWritesTokenAndSite() throws {
         tokens = MemoryTokenStore(nil)
         sites = MemorySiteStore(nil)

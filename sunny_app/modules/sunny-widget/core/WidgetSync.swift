@@ -91,19 +91,23 @@ public struct WidgetSync: Sendable {
         via: PressVia,
         showPress: (Date) async -> Void = { _ in }
     ) async -> FlushResult {
-        if case .notPaired = credentials() { return .noCredentials }
+        let credentials = credentials()
+        if case .notPaired = credentials { return .noCredentials }
         let press = Press(instanceId: instanceId, step: step, via: via, pressedAt: clock())
         do {
             try storage.presses.append(press)
         } catch {
-            return await sendUnqueued(press, showPress: showPress)
+            return await sendUnqueued(press, with: credentials, showPress: showPress)
         }
         await showPress(press.pressedAt)
-        return await replayPresses(timeout: Self.pressTimeout)
+        return await replay(with: credentials, timeout: Self.pressTimeout)
     }
 
-    private func sendUnqueued(_ press: Press, showPress: (Date) async -> Void) async -> FlushResult {
-        let credentials = credentials()
+    private func sendUnqueued(
+        _ press: Press,
+        with credentials: Credentials,
+        showPress: (Date) async -> Void
+    ) async -> FlushResult {
         guard let client = credentials.client else { return credentials.unsentResult }
         let outcome = await client.confirm(press, at: clock(), timeout: Self.pressTimeout)
         switch PressReplay.decision(for: outcome) {
@@ -120,7 +124,10 @@ public struct WidgetSync: Sendable {
     }
 
     public func replayPresses(timeout: TimeInterval) async -> FlushResult {
-        let credentials = credentials()
+        await replay(with: credentials(), timeout: timeout)
+    }
+
+    private func replay(with credentials: Credentials, timeout: TimeInterval) async -> FlushResult {
         guard let client = credentials.client else { return credentials.unsentResult }
         let deadline = clock().addingTimeInterval(timeout)
         var held: Set<String> = []
@@ -168,7 +175,7 @@ public struct WidgetSync: Sendable {
 
     public func cachedPlan(locale: Locale) -> TimelinePlan {
         let now = clock()
-        guard client() != nil else { return TimelinePlanner.notice(.openSunny, at: now) }
+        guard credentials().client != nil else { return TimelinePlanner.notice(.openSunny, at: now) }
         return TimelinePlanner.plan(
             at: now,
             timeline: storage.loadCache()?.timeline,
@@ -178,8 +185,9 @@ public struct WidgetSync: Sendable {
     }
 
     public func refresh(locale: Locale) async -> TimelinePlan {
-        guard let client = client() else { return TimelinePlanner.notice(.openSunny, at: clock()) }
-        if await replayPresses(timeout: Self.pressTimeout) == .unauthorized {
+        let credentials = credentials()
+        guard let client = credentials.client else { return TimelinePlanner.notice(.openSunny, at: clock()) }
+        if await replay(with: credentials, timeout: Self.pressTimeout) == .unauthorized {
             return TimelinePlanner.notice(.openSunny, at: clock())
         }
         let cache = storage.loadCache()
@@ -222,13 +230,8 @@ public struct WidgetSync: Sendable {
         }
     }
 
-    private func client() -> DeviceClient? {
-        credentials().client
-    }
-
     private func reconciledPressed(since fetchStartedAt: Date) -> Set<PressKey> {
         storage.presses.reconcile(withTimelineFetchedFrom: fetchStartedAt)
-        return storage.presses.pressed()
     }
 
     private func dropToken(_ token: String) {
