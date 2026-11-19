@@ -12,11 +12,11 @@ import {
   GoogleApiError,
   calendarExists,
   deleteEvent,
-  refreshAccessToken,
   upsertEvent,
 } from "./lib/google";
 import { buildGoogleEvent, eventSyncPayload, googleEventId } from "./lib/googleEvent";
-import { SecretUnreadable, decryptSecret, encryptSecret } from "./lib/secretBox";
+import { AccessTokens } from "./lib/googleTokens";
+import { SecretUnreadable } from "./lib/secretBox";
 
 const REVOKED_MESSAGE = "Google access was revoked; reconnect Google Calendar.";
 const CALENDAR_MISSING_MESSAGE = "The Sunny calendar was deleted in Google; reconnect.";
@@ -27,8 +27,6 @@ const FORBIDDEN_MESSAGE =
 const SYNC_FAILED_MESSAGE = "Some events could not be synced to Google; Sunny will retry.";
 
 const FAILED_RETRY_DELAY_MS = 10 * 60 * 1000;
-
-const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 
 type PushOutcome =
   "created" | "updated" | "deleted" | "skipped" | "revoked" | "calendar_missing" | "failed";
@@ -144,48 +142,6 @@ export const markConnection = internalMutation({
 
 type Work = Extract<BeginResult, { kind: "work" }>;
 
-interface AccessToken {
-  accessToken: string;
-  expiresAt: number;
-}
-
-class AccessTokens {
-  private current: AccessToken | null = null;
-
-  constructor(
-    private readonly work: Work,
-    private readonly save: (encrypted: string, expiresAt: number) => Promise<void>,
-  ) {}
-
-  async load(): Promise<AccessTokens> {
-    const { accessToken, accessTokenExpiresAt } = this.work;
-    if (accessToken !== null && accessTokenExpiresAt !== null) {
-      try {
-        this.current = {
-          accessToken: await decryptSecret(accessToken),
-          expiresAt: accessTokenExpiresAt,
-        };
-      } catch {
-        this.current = null;
-      }
-    }
-    return this;
-  }
-
-  async get(): Promise<string> {
-    if (this.current && this.current.expiresAt - TOKEN_EXPIRY_MARGIN_MS > Date.now()) {
-      return this.current.accessToken;
-    }
-    this.current = await refreshAccessToken(await decryptSecret(this.work.refreshToken));
-    await this.save(await encryptSecret(this.current.accessToken), this.current.expiresAt);
-    return this.current.accessToken;
-  }
-
-  invalidate(): void {
-    this.current = null;
-  }
-}
-
 async function pushToGoogle(
   work: Work,
   accessToken: string,
@@ -206,19 +162,6 @@ async function pushToGoogle(
     outcome: saved.created ? "created" : "updated",
     link: { externalEventId: saved.id, etag: saved.etag },
   };
-}
-
-async function pushWithRefresh(
-  work: Work,
-  tokens: AccessTokens,
-): Promise<{ outcome: PushOutcome; link: { externalEventId: string; etag?: string } | null }> {
-  try {
-    return await pushToGoogle(work, await tokens.get());
-  } catch (e) {
-    if (!(e instanceof GoogleApiError && e.status === 401)) throw e;
-    tokens.invalidate();
-    return await pushToGoogle(work, await tokens.get());
-  }
 }
 
 async function settleError(
@@ -278,7 +221,9 @@ export const push = internalAction({
       });
     }).load();
     try {
-      const { outcome, link } = await pushWithRefresh(start, tokens);
+      const { outcome, link } = await tokens.withToken((accessToken) =>
+        pushToGoogle(start, accessToken),
+      );
       await ctx.runMutation(internal.calendarPush.recordPush, {
         connectionId: start.connectionId,
         eventId: start.event._id,
