@@ -66,6 +66,8 @@ final class WidgetContentTests: XCTestCase {
         XCTAssertEqual(clear.headline, "Nothing to do right now.")
         let next = try XCTUnwrap(clear.next)
         XCTAssertEqual(normalizedSpaces(next.panelText), "Next: Lunch at 12:30 PM")
+        XCTAssertEqual(next.leadText, "Next: Lunch")
+        XCTAssertEqual(normalizedSpaces(next.atTimeText), "at 12:30 PM")
         XCTAssertEqual(normalizedSpaces(next.shortText), "Next: Lunch 12:30 PM")
         XCTAssertEqual(normalizedSpaces(next.shortestText), "Next: 12:30 PM")
     }

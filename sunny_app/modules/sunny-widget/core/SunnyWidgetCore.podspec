@@ -5,6 +5,7 @@ Pod::Spec.new do |s|
   s.description    = 'Timeline decoding, card selection, press queue, credentials and the device API client used by the Sunny widget extension and the app.'
   s.license        = 'UNLICENSED'
   s.author         = 'Sunny'
+  s.homepage       = 'https://docs.expo.dev/modules/'
   s.platforms      = { :ios => '17.2' }
   s.swift_version  = '5.9'
   s.source         = { git: '' }

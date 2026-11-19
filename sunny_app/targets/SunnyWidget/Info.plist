@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+	<key>SunnyAppGroup</key>
+	<string>group.com.kmsunny.sunny</string>
+	<key>SunnyKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)com.kmsunny.sunny.shared</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Literata-Bold.ttf</string>
+		<string>AtkinsonHyperlegibleNext-Bold.ttf</string>
+		<string>AtkinsonHyperlegibleNext-ExtraBold.ttf</string>
+	</array>
+</dict>
+</plist>

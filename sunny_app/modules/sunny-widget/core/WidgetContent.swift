@@ -19,6 +19,15 @@ public struct DueContent: Equatable, Sendable {
     public let line: String?
     public let detail: String?
 
+    public init(instanceId: String, step: Int, time: String, label: String, line: String?, detail: String?) {
+        self.instanceId = instanceId
+        self.step = step
+        self.time = time
+        self.label = label
+        self.line = line
+        self.detail = detail
+    }
+
     public var spokenSummary: String {
         "\(WidgetWords.now), \(time), \(line ?? label)"
     }
@@ -36,8 +45,21 @@ public struct NextContent: Equatable, Sendable {
     public let label: String
     public let time: String
 
+    public init(label: String, time: String) {
+        self.label = label
+        self.time = time
+    }
+
+    public var leadText: String {
+        "\(WidgetWords.next): \(label)"
+    }
+
+    public var atTimeText: String {
+        "at \(time)"
+    }
+
     public var panelText: String {
-        "\(WidgetWords.next): \(label) at \(time)"
+        "\(leadText) \(atTimeText)"
     }
 
     public var shortText: String {
@@ -52,6 +74,11 @@ public struct NextContent: Equatable, Sendable {
 public struct ClearContent: Equatable, Sendable {
     public let headline: String
     public let next: NextContent?
+
+    public init(headline: String, next: NextContent?) {
+        self.headline = headline
+        self.next = next
+    }
 }
 
 public enum Notice: Equatable, Sendable {
