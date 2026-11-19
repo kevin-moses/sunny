@@ -270,11 +270,9 @@ export interface PolicyFacts {
   calendarChangesToday: number;
 }
 
-export interface LinkedEvent {
-  eventId: string;
-  date: string;
-  time: string;
-}
+export type LinkedEvent =
+  | { eventId: string; occurs: true }
+  | { eventId: string; occurs: false; date: string; time: string };
 
 export const ESCALATION_REASONS = [
   ...DECISION_REASONS,

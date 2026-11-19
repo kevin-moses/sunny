@@ -3,6 +3,7 @@ import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { scheduleGrantRevoke } from "./googleTokens";
+import { canStillOccur } from "./occurrences";
 import { localDate } from "./time";
 
 const MAX_PARALLEL_PUSHES = 5;
@@ -90,11 +91,6 @@ export async function queueEventSync(ctx: MutationCtx, eventId: Id<"events">): P
   for (const connection of await activeConnections(ctx, event.householdId)) {
     await queueSync(ctx, eventId, connection._id);
   }
-}
-
-function canStillOccur(event: Doc<"events">, today: string): boolean {
-  if (event.repeatDays === undefined) return event.startsOn >= today;
-  return event.repeatUntil === undefined || event.repeatUntil >= today;
 }
 
 export interface FanOutArgs {

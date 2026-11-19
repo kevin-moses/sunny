@@ -80,12 +80,17 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
   };
 }
 
-const CANCELLED_HEARING: LinkedEvent = { eventId: "evt_gone", date: "2026-12-10", time: "14:15" };
+const CANCELLED_HEARING: LinkedEvent = {
+  eventId: "evt_gone",
+  occurs: false,
+  date: "2026-12-10",
+  time: "14:15",
+};
 
 function linkTo(eventId: string): LinkedEvent {
   const event = EVENTS.find((e) => e.eventId === eventId);
   if (event === undefined) throw new Error(eventId);
-  return { eventId, date: event.date, time: event.time };
+  return { eventId, occurs: true };
 }
 
 function invite(overrides: Partial<IcsEvent> = {}): IcsEvent {
@@ -274,7 +279,12 @@ describe("planWithRule decision table", () => {
     });
 
     test("an invitation linked to an event that is not live escalates a new slot with the proposal", () => {
-      const gone: LinkedEvent = { eventId: "evt_gone", date: "2026-12-03", time: "10:00" };
+      const gone: LinkedEvent = {
+        eventId: "evt_gone",
+        occurs: false,
+        date: "2026-12-03",
+        time: "10:00",
+      };
       const effects = effectsOf(newAppointment(), facts({ ics: invite(), linked: gone }));
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
       expect(effects[0]).toMatchObject({
@@ -406,7 +416,7 @@ describe("planWithRule decision table", () => {
         ),
         facts({
           ics: invite(),
-          linked: { eventId: "evt_nurse", date: "2026-11-21", time: "09:00" },
+          linked: { eventId: "evt_nurse", occurs: true },
           events: [...EVENTS, NURSE],
         }),
       );
@@ -422,7 +432,7 @@ describe("planWithRule decision table", () => {
         ),
         facts({
           ics: invite(),
-          linked: { eventId: "evt_call", date: "2026-11-20", time: "10:00" },
+          linked: { eventId: "evt_call", occurs: true },
           events: [...EVENTS, CALL],
         }),
       );

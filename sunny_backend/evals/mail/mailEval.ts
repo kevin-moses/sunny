@@ -295,7 +295,9 @@ function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
   const event = [...events, ...offCalendar].find((e) => e.eventId === eventId);
   if (event === undefined)
     throw new Error(`Fixture ${fixture.id} links ${eventId}, which it lists nowhere`);
-  return { eventId, date: event.date, time: event.time };
+  return offCalendar.includes(event)
+    ? { eventId, occurs: false, date: event.date, time: event.time }
+    : { eventId, occurs: true };
 }
 
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {

@@ -1719,6 +1719,64 @@ describe("links belong to the sender's domain", () => {
       expect(await rows(h, "notificationOutbox")).toHaveLength(0);
     });
 
+    test("a clinic's second reminder for a date a caregiver moved the series off changes nothing and asks", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h);
+      await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      await h.t.run(async (ctx) => await ctx.db.patch(seriesId, { repeatDays: [4] }));
+      const second = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(second.effects).toEqual([
+        {
+          kind: "escalated",
+          reason: "unclear_appointment",
+          pushed: true,
+          eventId: seriesId,
+          proposed: { kind: "physical_therapy", date: "2026-12-01", time: "10:00" },
+        },
+      ]);
+      expect(await rows(h, "events")).toEqual([
+        expect.objectContaining({ startsOn: "2026-10-05", startTime: "10:00", repeatDays: [4] }),
+      ]);
+      expect((await rows(h, "notificationOutbox")).length).toBeGreaterThan(0);
+      const posts = await rows(h, "chatPosts");
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.body).toContain(
+        "The email gives Physical therapy, Tuesday, December 1 at 10:00 AM. Sunny's calendar no longer has this appointment at that time, so Sunny changed nothing. Tell Sunny in chat which time is right.",
+      );
+    });
+
+    test("a clinic's invite moved to the series' stored start, which is none of its weekdays, changes nothing and asks", async () => {
+      const h = await setup();
+      const seriesId = await insertEvent(h.t, h.householdId, {
+        title: "Physical therapy",
+        startsOn: "2026-11-30",
+        startTime: "10:00",
+        durationMinutes: 45,
+        repeatDays: [2],
+      });
+      const uid = "therapy-9@lakesideeye.example";
+      const first = await triageEmail(h, invitation(CLINIC, uid, ["DTSTART:20261201T150000Z"]), {
+        kind: "physical_therapy",
+      });
+      expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      const moved = await triageEmail(
+        h,
+        invitation(CLINIC, uid, ["DTSTART:20261130T150000Z", "SEQUENCE:1"]),
+        { kind: "physical_therapy" },
+      );
+      expect(moved.effects).toEqual([
+        {
+          kind: "escalated",
+          reason: "unclear_reschedule",
+          pushed: true,
+          proposed: { kind: "physical_therapy", date: "2026-11-30", time: "10:00" },
+        },
+      ]);
+      expect(await rows(h, "events")).toEqual([
+        expect.objectContaining({ startsOn: "2026-11-30", startTime: "10:00", repeatDays: [2] }),
+      ]);
+    });
+
     test("a clinic's second reminder after a caregiver cancelled the series changes nothing and posts nothing", async () => {
       const h = await setup();
       const seriesId = await weeklyTherapy(h);

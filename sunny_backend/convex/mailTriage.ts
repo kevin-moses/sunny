@@ -17,25 +17,26 @@ import { parseGmailMessage } from "./lib/mailParse";
 import {
   MAX_CALENDAR_CHANGES_PER_DAY,
   caregiverText,
+  factsCover,
   linkKey,
   planWithRule,
 } from "./lib/mailPolicy";
 import type {
   CalendarEventFact,
   KnownInvite,
+  LinkedEvent,
   MailSender,
   MailVerdict,
   PolicyFacts,
 } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
-import { expandOccurrences, liveEvents } from "./lib/occurrences";
+import { canStillOccur, expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 
 export const MAX_TRIAGE_ATTEMPTS = 10;
 const LEASE_MS = 10 * MINUTE_MS;
-const EVENT_HORIZON_DAYS = 400;
 const SWEEP_BATCH = 100;
 const MAX_NAME = 120;
 const MAX_STORED_SUBJECT = 200;
@@ -202,9 +203,7 @@ async function calendarFacts(
   now: number,
   verdict: MailVerdict,
 ): Promise<{ events: Doc<"events">[]; facts: CalendarEventFact[] }> {
-  const today = localDate(now, household.timezone);
-  const last = addDays(today, EVENT_HORIZON_DAYS);
-  const inHorizon = (date: string) => date >= today && date <= last;
+  const inHorizon = (date: string) => factsCover(date, { now, timezone: household.timezone });
   const live = await liveEvents(ctx, household._id);
   const singles = live.filter((e) => e.repeatDays === undefined && inHorizon(e.startsOn));
   const series = live.filter((e) => e.repeatDays !== undefined);
@@ -216,6 +215,12 @@ async function calendarFacts(
     ...occurrences.map((o) => eventFact(o.event, o.localDate)),
   ];
   return { events: [...singles, ...series], facts };
+}
+
+function linkedEvent(event: Doc<"events">, today: string): LinkedEvent {
+  return canStillOccur(event, today)
+    ? { eventId: event._id, occurs: true }
+    : { eventId: event._id, occurs: false, date: event.startsOn, time: event.startTime };
 }
 
 const triageInput = {
@@ -276,10 +281,7 @@ async function planned(
     gmailId: item.gmailId,
     ics: email.ics,
     events: calendar.facts,
-    linked:
-      linked === null
-        ? null
-        : { eventId: linked._id, date: linked.startsOn, time: linked.startTime },
+    linked: linked === null ? null : linkedEvent(linked, localDate(now, household.timezone)),
     calendarChangesToday: await calendarChangesToday(ctx, household, now),
   };
   return { item, household, facts, events };

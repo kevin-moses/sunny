@@ -129,6 +129,11 @@ export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): Ca
   );
 }
 
+export function factsCover(date: string, clock: { now: number; timezone: string }): boolean {
+  const today = localDate(clock.now, clock.timezone);
+  return date >= today && daysBetween(today, date) <= MAX_DAYS_AHEAD;
+}
+
 export function appointmentFields(
   appointment: Appointment,
   clock: { now: number; timezone: string },
@@ -136,7 +141,7 @@ export function appointmentFields(
   const { date, time, durationMinutes } = appointment;
   if (!isLocalDate(date) || !isLocalTime(time)) return null;
   if (zonedInstant(date, time, clock.timezone) < clock.now) return null;
-  if (daysBetween(localDate(clock.now, clock.timezone), date) > MAX_DAYS_AHEAD) return null;
+  if (!factsCover(date, clock)) return null;
   if (
     durationMinutes !== null &&
     (!Number.isInteger(durationMinutes) ||
@@ -228,7 +233,7 @@ type Situation =
       case: "new";
       appointment: Appointment;
       fields: Appointment | null;
-      elsewhere: CalendarEventFact | null;
+      elsewhere: Elsewhere | null;
       duplicate: string | null;
       conflict: CalendarEventFact | null;
     }
@@ -336,18 +341,23 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
     {
       rule: "the sender's link has this appointment at another time",
-      plan: (s, c) =>
-        s.elsewhere === null
-          ? null
-          : [
-              escalate(
-                c,
-                "unclear_appointment",
-                `The email gives ${described(s.appointment)}. Sunny's calendar has this appointment on ${when(s.elsewhere.date, s.elsewhere.time)}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
-                s.elsewhere.eventId,
-                s.appointment,
-              ),
-            ],
+      plan: (s, c) => {
+        if (s.elsewhere === null) return null;
+        const { seen } = s.elsewhere;
+        const has =
+          seen === null
+            ? "no longer has this appointment at that time"
+            : `has this appointment on ${when(seen.date, seen.time)}`;
+        return [
+          escalate(
+            c,
+            "unclear_appointment",
+            `The email gives ${described(s.appointment)}. Sunny's calendar ${has}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
+            s.elsewhere.eventId,
+            s.appointment,
+          ),
+        ];
+      },
     },
     {
       rule: "appointmentFields rejects",
@@ -593,47 +603,62 @@ function sameSlot(a: { date: string; time: string }, b: { date: string; time: st
   return a.date === b.date && a.time === b.time;
 }
 
-type LinkPlace = { at: "slot" } | { at: "elsewhere"; fact: CalendarEventFact } | { at: "gone" };
+interface Elsewhere {
+  eventId: string;
+  seen: CalendarEventFact | null;
+}
 
-function linkPlace(linked: LinkedEvent, slot: Appointment, events: CalendarEventFact[]): LinkPlace {
-  const live = events.filter((e) => e.eventId === linked.eventId);
+type LinkPlace =
+  | { at: "slot" }
+  | { at: "elsewhere"; elsewhere: Elsewhere }
+  | { at: "outside_facts" }
+  | { at: "over"; date: string; time: string };
+
+function linkPlace(linked: LinkedEvent, slot: Appointment, facts: PolicyFacts): LinkPlace {
+  const { eventId } = linked;
+  const live = facts.events.filter((e) => e.eventId === eventId);
   if (live.some((e) => sameSlot(e, slot))) return { at: "slot" };
-  const [fact] = live;
-  return fact === undefined ? { at: "gone" } : { at: "elsewhere", fact };
+  const [seen] = live;
+  if (seen !== undefined) return { at: "elsewhere", elsewhere: { eventId, seen } };
+  if (!linked.occurs) return { at: "over", date: linked.date, time: linked.time };
+  return factsCover(slot.date, facts)
+    ? { at: "elsewhere", elsewhere: { eventId, seen: null } }
+    : { at: "outside_facts" };
 }
 
 interface ScopedLink {
   linked: LinkedEvent | null;
-  elsewhere: CalendarEventFact | null;
+  elsewhere: Elsewhere | null;
 }
 
 function scopedLink(appointment: Appointment | null, facts: PolicyFacts): ScopedLink {
   const { linked } = facts;
   if (linked === null || facts.ics !== null) return { linked, elsewhere: null };
   if (appointment === null) return { linked: null, elsewhere: null };
-  const place = linkPlace(linked, appointment, facts.events);
+  const place = linkPlace(linked, appointment, facts);
   return place.at === "elsewhere"
-    ? { linked: null, elsewhere: place.fact }
+    ? { linked: null, elsewhere: place.elsewhere }
     : { linked, elsewhere: null };
 }
 
 function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEventFact[] | null {
   const { linked } = facts;
   if (facts.ics === null || linked === null) return null;
-  const place = linkPlace(linked, appointment, facts.events);
+  const place = linkPlace(linked, appointment, facts);
   switch (place.at) {
     case "slot":
+    case "outside_facts":
       return null;
     case "elsewhere":
-      return [place.fact];
-    case "gone":
-      return sameSlot(linked, appointment) ? null : [];
+      return place.elsewhere.seen === null ? [] : [place.elsewhere.seen];
+    case "over":
+      return sameSlot(place, appointment) ? null : [];
   }
 }
 
 function newSituation(
   appointment: Appointment,
-  elsewhere: CalendarEventFact | null,
+  elsewhere: Elsewhere | null,
   facts: PolicyFacts,
 ): Situation {
   const fields = appointmentFields(appointment, facts);
@@ -656,7 +681,7 @@ function newSituation(
 function situationOf(
   verdict: MailVerdict,
   facts: PolicyFacts,
-  elsewhere: CalendarEventFact | null,
+  elsewhere: Elsewhere | null,
 ): Situation {
   switch (verdict.kind) {
     case "ignore":

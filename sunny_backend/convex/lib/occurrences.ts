@@ -106,6 +106,12 @@ export function expandOccurrences(
   return out;
 }
 
+export function canStillOccur(event: Doc<"events">, today: string): boolean {
+  if (event.deletedAt !== undefined) return false;
+  if (event.repeatDays === undefined) return event.startsOn >= today;
+  return event.repeatUntil === undefined || event.repeatUntil >= today;
+}
+
 export async function liveEvents(
   ctx: QueryCtx,
   householdId: Id<"households">,
