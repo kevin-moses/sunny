@@ -38,7 +38,7 @@ type Handlers = {
   [K in EffectKind]: (scope: EffectScope, effect: EffectOf<K>) => Promise<MailEffectRecord>;
 };
 
-export interface CaregiverNotice {
+interface CaregiverNotice {
   kind: NotificationKind;
   title: string;
   body: string;

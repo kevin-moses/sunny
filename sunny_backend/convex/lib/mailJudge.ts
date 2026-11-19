@@ -23,9 +23,9 @@ export const JEV_MODEL = "jev-1.14.0";
 
 const JEV_TIMEOUT_MS = 20_000;
 
-export const YES = 0.7;
-export const NO = 0.3;
-export const PART_SURE = 0.7;
+const YES = 0.7;
+const NO = 0.3;
+const PART_SURE = 0.7;
 const NEXT_YEAR_AFTER_DAYS = 31;
 
 function noul(
@@ -41,7 +41,7 @@ function choice(instructions: string, criteria: Record<string, string | null>): 
   return { type: "choice", instructions, criteria };
 }
 
-export const FLAG_QUESTIONS = {
+const FLAG_QUESTIONS = {
   addresses_assistant: noul(
     {
       question:
@@ -308,17 +308,17 @@ export interface Readings {
   invite: Invite | null;
 }
 
-export interface Pick {
+export interface Picked {
   choice: string;
   probability: number;
 }
 
 export type SlotPicks = Record<
   "date_form" | "month" | "day" | "year" | "weekday" | "week" | "hour" | "minute" | "half",
-  Pick
+  Picked
 >;
 
-function sure(pick: Pick): string | null {
+function sure(pick: Picked): string | null {
   return pick.probability >= PART_SURE ? pick.choice : null;
 }
 
@@ -400,7 +400,7 @@ export function resolveSlot(picks: SlotPicks, anchor: string): Slot | null {
   return date === null ? null : { date, time: resolveTime(picks) };
 }
 
-export interface Decision {
+interface Decision {
   verdict: MailVerdict;
   summary: string;
 }
@@ -762,7 +762,7 @@ export function decide(readings: Readings): Decision & { rule: string } {
   throw new Error("The mail truth table has no matching row");
 }
 
-export type JevQuestions = Record<string, NoulQuestion | ChoiceQuestion>;
+type JevQuestions = Record<string, NoulQuestion | ChoiceQuestion>;
 
 export interface JevRequest {
   model: string;
@@ -839,14 +839,14 @@ function probabilityOf(answers: JevAnswers, name: string): number {
   throw new Error(`No Noul answer for ${name}`);
 }
 
-function pickOf(answers: JevAnswers, name: string): Pick {
+function pickOf(answers: JevAnswers, name: string): Picked {
   const answer = answers[name];
   if (typeof answer === "object") return answer;
   throw new Error(`No Choice answer for ${name}`);
 }
 
 function slotPicks(answers: JevAnswers, slot: SlotName): SlotPicks {
-  const read = (part: keyof SlotPicks): Pick => pickOf(answers, `${slot}_${part}`);
+  const read = (part: keyof SlotPicks): Picked => pickOf(answers, `${slot}_${part}`);
   return {
     date_form: read("date_form"),
     month: read("month"),
@@ -878,34 +878,26 @@ export function readAnswers(answers: JevAnswers, anchor: string, ics: IcsEvent |
   };
 }
 
-export function jevRequest(email: ParsedEmail, clock: Clock): JevRequest {
-  const anchor = localDate(email.receivedAt, clock.timezone);
-  return {
-    model: JEV_MODEL,
-    state: judgeState(email),
-    questions: judgeQuestions(Number(anchor.slice(0, 4)), clock.timezone),
-  };
-}
-
-export async function judgeEmail(email: ParsedEmail, clock: Clock, ask: AskJev): Promise<Triaged> {
-  const reply = await ask(jevRequest(email, clock));
-  const anchor = localDate(email.receivedAt, clock.timezone);
-  const { verdict, summary, rule } = decide(readAnswers(reply.answers, anchor, email.ics));
-  return {
-    stage: "model",
-    verdict,
-    summary,
-    rule,
-    classifier: { name: reply.model, usage: reply.usage },
-    answers: reply.answers,
-  };
-}
-
 export async function triageEmail(
   email: ParsedEmail,
   clock: Clock,
   known: KnownInvite | null,
   ask: AskJev,
 ): Promise<Triaged> {
-  return gate(email, known) ?? (await judgeEmail(email, clock, ask));
+  const settled = gate(email, known);
+  if (settled !== null) return settled;
+  const anchor = localDate(email.receivedAt, clock.timezone);
+  const reply = await ask({
+    model: JEV_MODEL,
+    state: judgeState(email),
+    questions: judgeQuestions(Number(anchor.slice(0, 4)), clock.timezone),
+  });
+  const { verdict, summary, rule } = decide(readAnswers(reply.answers, anchor, email.ics));
+  return {
+    verdict,
+    summary,
+    rule,
+    classifier: { name: reply.model, usage: reply.usage },
+    answers: reply.answers,
+  };
 }

@@ -60,10 +60,6 @@ function holdsClaim(item: Doc<"mailItems"> | null, attempt: number): item is Doc
   return item !== null && item.state === "triaging" && item.attempt === attempt;
 }
 
-function truncate(text: string, max: number): string {
-  return text.slice(0, max);
-}
-
 function storedHeader(header: MailHeader): {
   sender: StoredSender;
   subject: string;
@@ -72,11 +68,11 @@ function storedHeader(header: MailHeader): {
   const { sender } = header;
   return {
     sender: {
-      name: truncate(sender.name, MAX_NAME),
-      address: truncate(sender.address, MAX_ADDRESS),
+      name: sender.name.slice(0, MAX_NAME),
+      address: sender.address.slice(0, MAX_ADDRESS),
       authenticated: sender.authenticated,
     },
-    subject: truncate(header.subject, MAX_STORED_SUBJECT),
+    subject: header.subject.slice(0, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
   };
 }
@@ -389,30 +385,18 @@ async function failUnread(ctx: MutationCtx, item: Doc<"mailItems">): Promise<voi
   const household = await ctx.db.get(item.householdId);
   if (household) {
     const now = Date.now();
-    await postMail(ctx, household, item._id, unreadPost(item, household, now), now);
+    await postMail(ctx, household, item._id, unreadPost(item, household), now);
   }
 }
 
-function unreadPost(item: Doc<"mailItems">, household: Doc<"households">, now: number): string {
+function unreadPost(item: Doc<"mailItems">, household: Doc<"households">): string {
   const { sender, subject, receivedAt } = item;
   if (sender === undefined || subject === undefined || receivedAt === undefined) {
     return "Sunny could not read an email. Please look at the inbox in Gmail.";
   }
-  return caregiverText(
-    {
-      now,
-      timezone: household.timezone,
-      sender,
-      senderTrusted: false,
-      subject,
-      receivedAt,
-      gmailId: item.gmailId,
-      ics: null,
-      events: [],
-      linkedEventId: null,
-    },
-    ["Sunny could not read an email. Please look at it in Gmail."],
-  );
+  return caregiverText({ timezone: household.timezone, sender, subject, receivedAt }, [
+    "Sunny could not read an email. Please look at it in Gmail.",
+  ]);
 }
 
 export const onMailJobComplete = internalMutation({

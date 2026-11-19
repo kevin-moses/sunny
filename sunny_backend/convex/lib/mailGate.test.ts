@@ -40,7 +40,6 @@ describe("gate", () => {
     "CATEGORY_FORUMS",
   ])("ignores mail Gmail filed as %s, invite or not", (label) => {
     expect(gate(email({ labels: ["UNREAD", label], ics: invite() }), null)).toMatchObject({
-      stage: "gate",
       verdict: { kind: "ignore" },
       rule: `gate:label:${label}`,
       answers: null,

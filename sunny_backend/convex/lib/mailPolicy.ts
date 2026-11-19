@@ -129,7 +129,10 @@ export function when(date: string, time: string): string {
   return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
 }
 
-export function caregiverText(facts: PolicyFacts, lines: string[]): string {
+export function caregiverText(
+  facts: Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">,
+  lines: string[],
+): string {
   const { sender } = facts;
   const name = scrub(sender.name);
   const from = name === "" ? sender.address : `${name} <${sender.address}>`;
@@ -206,7 +209,7 @@ interface Row<S> {
   plan: (s: S, c: Context) => MailEffect[] | null;
 }
 
-export interface Plan {
+interface Plan {
   rule: string;
   effects: MailEffect[];
 }

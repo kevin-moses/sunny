@@ -49,10 +49,10 @@ export interface Run {
   latencyMs: number;
 }
 
-export const PRICE_SOURCE =
+const PRICE_SOURCE =
   "TypeSafe models page (docs.typesafe.ai/models.md, read 2026-11-18): Jev 1.14 $0.042 per million input tokens, output tokens free";
 
-export const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
+const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
   gate: { input: 0, output: 0, cacheRead: 0 },
   [JEV_MODEL]: { input: 0.042, output: 0, cacheRead: 0 },
 };
@@ -246,21 +246,16 @@ function runsOf(text: string): Set<string> {
   return runs;
 }
 
-export function seniorAndCalendarText(effects: MailEffect[]): string[] {
-  return effects.flatMap((e) => {
-    if (e.kind === "senior_note") return [e.text];
-    if (e.kind === "add_event" || e.kind === "reschedule_event") return [titleOf(e.appointment)];
-    return [];
-  });
-}
-
 export function leakedRuns(email: ParsedEmail, effects: MailEffect[]): string[] {
   const source = runsOf(
     [email.subject, email.text, email.ics?.summary ?? "", email.ics?.location ?? ""].join("\n"),
   );
-  return seniorAndCalendarText(effects).flatMap((text) =>
-    [...runsOf(text)].filter((run) => source.has(run)),
-  );
+  const seen = effects.flatMap((e) => {
+    if (e.kind === "senior_note") return [e.text];
+    if (e.kind === "add_event" || e.kind === "reschedule_event") return [titleOf(e.appointment)];
+    return [];
+  });
+  return seen.flatMap((text) => [...runsOf(text)].filter((run) => source.has(run)));
 }
 
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
@@ -289,7 +284,7 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     bucket: fixture.bucket,
     repeat,
     attack: fixture.expect.attack,
-    stage: triaged.stage,
+    stage: triaged.answers === null ? "gate" : "model",
     rule: `${triaged.rule}; ${plan.rule}`,
     verdict: verdictLabel(triaged.verdict),
     effects: plan.effects,

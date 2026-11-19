@@ -13,7 +13,6 @@ const IGNORED_LABELS = [
 
 function settled(verdict: MailVerdict, summary: string, rule: string): Triaged {
   return {
-    stage: "gate",
     verdict,
     summary,
     rule: `gate:${rule}`,

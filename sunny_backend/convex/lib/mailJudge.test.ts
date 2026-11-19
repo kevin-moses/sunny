@@ -591,7 +591,6 @@ describe("askJev through triage", () => {
     jevSays(EYE_EXAM);
     const triaged = await triageEmail(email(), CLOCK, null, askJev);
     expect(triaged).toMatchObject({
-      stage: "model",
       rule: "confirms an appointment with a date and start time",
       summary: "The email confirms an appointment.",
       classifier: {
@@ -619,7 +618,7 @@ describe("askJev through triage", () => {
   test("mail the gate settles never reaches Jev", async () => {
     jevSays(EYE_EXAM);
     const triaged = await triageEmail(email({ labels: ["SPAM"] }), CLOCK, null, askJev);
-    expect(triaged).toMatchObject({ stage: "gate", rule: "gate:label:SPAM", answers: null });
+    expect(triaged).toMatchObject({ rule: "gate:label:SPAM", answers: null });
     expect(jevCalls).toHaveLength(0);
   });
 

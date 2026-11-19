@@ -145,7 +145,6 @@ describe("an appointment email", () => {
     const email = clinic();
     const itemId = await receive(h, email);
     const triaged: Triaged = {
-      stage: "model",
       verdict: {
         kind: "appointment",
         change: "new",

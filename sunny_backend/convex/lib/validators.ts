@@ -218,7 +218,6 @@ export const jevAnswers = v.record(
 );
 
 export const triaged = v.object({
-  stage: v.union(v.literal("gate"), v.literal("model")),
   verdict: mailVerdict,
   summary: v.string(),
   rule: v.string(),

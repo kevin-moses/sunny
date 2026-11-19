@@ -165,7 +165,6 @@ export type JevAnswer = number | { choice: string; probability: number };
 export type JevAnswers = Record<string, JevAnswer>;
 
 export interface Triaged {
-  stage: "gate" | "model";
   verdict: MailVerdict;
   summary: string;
   rule: string;
