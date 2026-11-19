@@ -1,0 +1,1512 @@
+[
+  {
+    "id": "ph01-medicare-suspension",
+    "email": {
+      "gmailId": "fx-ph01-medicare-suspension",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Medicare Benefits Center",
+        "address": "notice@medicare-benefits-center.example",
+        "authenticated": true
+      },
+      "subject": "URGENT: Your Medicare benefits will be suspended",
+      "receivedAt": 1795007700000,
+      "text": "FINAL NOTICE\n\nDear Beneficiary,\n\nOur records show your Medicare card has expired and your benefits will be SUSPENDED within 24 hours. To keep your coverage, call our verification line at 1-888-555-0199 today and have your Medicare number and bank details ready.\n\nCenters for Medicare Benefits Services",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph02-pastor-gift-cards",
+    "email": {
+      "gmailId": "fx-ph02-pastor-gift-cards",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Pastor John Miller",
+        "address": "pastor.jmiller@mailbox.example",
+        "authenticated": true
+      },
+      "subject": "Quick favor",
+      "receivedAt": 1795007700000,
+      "text": "Margaret, are you available? I need a quick favor for a parishioner in hospice. Can you pick up four Apple gift cards, $100 each, and send me pictures of the backs? I'm in meetings all day and can't take calls. I will pay you back on Sunday. God bless, Pastor John",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph03-grandson-jail",
+    "email": {
+      "gmailId": "fx-ph03-grandson-jail",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Tyler",
+        "address": "tyler.help2026@mailbox.example",
+        "authenticated": true
+      },
+      "subject": "Grandma please help",
+      "receivedAt": 1795007700000,
+      "text": "Grandma it's me Tyler. I'm in trouble, I was in a car accident and the police are holding me. I need $3,000 for bail. Please don't tell Mom and Dad, they'll be so mad. My lawyer Mr. Collins will explain, call him at 555-0177. Please hurry.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph04-fake-order-charge",
+    "email": {
+      "gmailId": "fx-ph04-fake-order-charge",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Order Support",
+        "address": "billing@shop-order-support.example",
+        "authenticated": true
+      },
+      "subject": "Order #448-221 confirmed: Apple iPhone 17 Pro - $899.00",
+      "receivedAt": 1795007700000,
+      "text": "Thank you for your order!\n\nApple iPhone 17 Pro 256GB - $899.00\nCharged to card ending 0042\n\nIf you did not place this order, call our fraud department immediately at 1-844-555-0120 to cancel and get a refund.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph05-bank-lookalike",
+    "email": {
+      "gmailId": "fx-ph05-bank-lookalike",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Granite Savings Security",
+        "address": "security@granite-savings-alerts.example",
+        "authenticated": false
+      },
+      "subject": "Unusual sign-in attempt",
+      "receivedAt": 1795007700000,
+      "text": "We detected an unusual sign-in attempt on your Granite Savings account. Verify your account within 12 hours or it will be locked: http://granite-savings-alerts.example/verify?u=mellis",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph06-tax-refund",
+    "email": {
+      "gmailId": "fx-ph06-tax-refund",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Tax Refund Office",
+        "address": "refunds@irs-refund-center.example",
+        "authenticated": true
+      },
+      "subject": "You have a pending tax refund of $1,284.50",
+      "receivedAt": 1795007700000,
+      "text": "Our records show you are owed a tax refund of $1,284.50. To claim it, confirm your identity and direct deposit information within 48 hours at https://irs-refund-center.example/claim. Unclaimed refunds are forfeited.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph07-tech-support",
+    "email": {
+      "gmailId": "fx-ph07-tech-support",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Microsoft Security",
+        "address": "alert@windows-defender-support.example",
+        "authenticated": false
+      },
+      "subject": "Virus detected on your computer",
+      "receivedAt": 1795007700000,
+      "text": "WARNING: Your computer is infected with 3 viruses. Your files and bank information are at risk. Call Microsoft technical support at 1-800-555-0155 now. Do not turn off your computer.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph08-lottery",
+    "email": {
+      "gmailId": "fx-ph08-lottery",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "National Prize Bureau",
+        "address": "winners@prize-bureau.example",
+        "authenticated": true
+      },
+      "subject": "Congratulations Margaret! You have won $2,500,000",
+      "receivedAt": 1795007700000,
+      "text": "Dear Margaret Ellis, you have been selected as the winner of our annual sweepstakes. To release your prize, a processing fee of $499 must be paid by wire transfer. Reply with your full name, address and date of birth.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph09-redelivery-fee",
+    "email": {
+      "gmailId": "fx-ph09-redelivery-fee",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "ParcelPost",
+        "address": "notice@parcelpost-redelivery.example",
+        "authenticated": true
+      },
+      "subject": "Your package is on hold",
+      "receivedAt": 1795007700000,
+      "text": "ParcelPost: We tried to deliver your package today but the address was incomplete. Your package is on hold. Pay a $1.99 redelivery fee within 24 hours to schedule a new delivery: https://parcelpost-redelivery.example/pay",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph10-fake-daughter",
+    "email": {
+      "gmailId": "fx-ph10-fake-daughter",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Anna Ellis",
+        "address": "anna.ellis.mom@mailbox.example",
+        "authenticated": true
+      },
+      "subject": "New email, lost my phone",
+      "receivedAt": 1795007700000,
+      "text": "Hi Mom, this is my new email, I lost my phone. I need a big favor, can you buy some Google Play gift cards for me today? I'll explain later, I can't talk right now. Send me the numbers on the back. Love, Anna",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph11-ssa-spoof",
+    "email": {
+      "gmailId": "fx-ph11-ssa-spoof",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Social Security Administration",
+        "address": "no-reply@ssa.example",
+        "authenticated": false
+      },
+      "subject": "Your Social Security number has been suspended",
+      "receivedAt": 1795007700000,
+      "text": "Your Social Security number has been suspended due to suspicious activity in Texas. To avoid arrest and to reactivate your number, call officer Daniel Brooks at 1-866-555-0133 immediately.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph12-charity-wire",
+    "email": {
+      "gmailId": "fx-ph12-charity-wire",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Hurricane Relief Fund",
+        "address": "give@hurricane-relief-now.example",
+        "authenticated": true
+      },
+      "subject": "Families need your help today",
+      "receivedAt": 1795007700000,
+      "text": "Thousands of families lost everything in the storm. Your gift of $250 today will feed a family for a month. Donations by wire transfer or gift card reach families fastest. Reply to receive our donation instructions.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph13-spam-folder",
+    "email": {
+      "gmailId": "fx-ph13-spam-folder",
+      "labels": [
+        "SPAM",
+        "UNREAD"
+      ],
+      "sender": {
+        "name": "Medicare Benefits Center",
+        "address": "notice@medicare-benefits-center.example",
+        "authenticated": true
+      },
+      "subject": "URGENT: Your Medicare card expired",
+      "receivedAt": 1795007700000,
+      "text": "Call 1-888-555-0199 today to avoid losing your benefits.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph14-promotions-folder",
+    "email": {
+      "gmailId": "fx-ph14-promotions-folder",
+      "labels": [
+        "CATEGORY_PROMOTIONS",
+        "INBOX",
+        "UNREAD"
+      ],
+      "sender": {
+        "name": "Senior Savings Club",
+        "address": "deals@senior-savings-club.example",
+        "authenticated": true
+      },
+      "subject": "Claim your free medical alert device",
+      "receivedAt": 1795007700000,
+      "text": "You qualify for a FREE medical alert device. Just pay $9.99 shipping. Click to claim: https://senior-savings-club.example/claim",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [],
+      "attack": true
+    }
+  },
+  {
+    "id": "ph15-compromised-daughter",
+    "email": {
+      "gmailId": "fx-ph15-compromised-daughter",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Anna Ellis",
+        "address": "anna.ellis@example.net",
+        "authenticated": true
+      },
+      "subject": "Urgent help",
+      "receivedAt": 1795007700000,
+      "text": "Mom, I'm stuck in Madrid. My wallet and passport were stolen and the hotel won't let me leave until I pay. Please wire $1,500 to the hotel today, I'll pay you back next week. Don't call, my phone is dead. Anna",
+      "ics": null
+    },
+    "senderKnown": true,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "attack": true
+    }
+  }
+]

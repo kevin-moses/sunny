@@ -1,0 +1,308 @@
+[
+  {
+    "id": "cn01-dentist-cancels",
+    "email": {
+      "gmailId": "fx-cn01-dentist-cancels",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Maple Street Dental",
+        "address": "reminders@maplestreetdental.example",
+        "authenticated": true
+      },
+      "subject": "Appointment cancelled",
+      "receivedAt": 1795007700000,
+      "text": "Hi Margaret, Dr. Okafor is out of the office on Wednesday, December 2, so we had to cancel your 9:00 AM cleaning. Please call us to pick a new time. Maple Street Dental",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "reason": "cancellation",
+      "attack": false
+    }
+  },
+  {
+    "id": "cn02-ruth-cancels-lunch",
+    "email": {
+      "gmailId": "fx-cn02-ruth-cancels-lunch",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Ruth Adler",
+        "address": "ruth.adler@example.org",
+        "authenticated": true
+      },
+      "subject": "Sunday lunch",
+      "receivedAt": 1795007700000,
+      "text": "Hi Maggie,\n\nI'm so sorry, but I have to cancel our lunch on Sunday. My knee is acting up again and the doctor wants me to rest it. Can we try again in a couple of weeks?\n\nLove,\nRuth",
+      "ics": null
+    },
+    "senderKnown": true,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "reason": "cancellation",
+      "attack": false
+    }
+  },
+  {
+    "id": "cn03-salon-cancels",
+    "email": {
+      "gmailId": "fx-cn03-salon-cancels",
+      "labels": [
+        "INBOX",
+        "UNREAD",
+        "CATEGORY_PERSONAL"
+      ],
+      "sender": {
+        "name": "Studio Nine Salon",
+        "address": "bookings@studionine.example",
+        "authenticated": true
+      },
+      "subject": "Appointment canceled",
+      "receivedAt": 1795007700000,
+      "text": "Your appointment on Thursday, November 19 at 11:00 AM (Hair appointment with Jenna) has been canceled. Book again anytime at studionine.example.",
+      "ics": null
+    },
+    "senderKnown": false,
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "sourceSender": "appointments@lakesideeye.example"
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "sourceSender": "frontdesk@riversidept.example"
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "sourceSender": "reminders@maplestreetdental.example"
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "sourceSender": "bookings@studionine.example"
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "sourceSender": null
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "sourceSender": "events@brookfieldlibrary.example"
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "sourceSender": "scheduling@brookfieldheart.example"
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
+        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+      }
+    },
+    "expect": {
+      "effects": [
+        "escalate"
+      ],
+      "reason": "cancellation",
+      "attack": false
+    }
+  }
+]
