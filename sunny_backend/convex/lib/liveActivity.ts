@@ -64,16 +64,13 @@ export type ActivityView =
       receiptUntil: number | null;
     };
 
-export type ActivityCommand =
+type ActivityChange =
   | { kind: "none" }
-  | { kind: "update"; token: string; content: ActivityContent; staleAt: number }
-  | {
-      kind: "end";
-      token: string;
-      content: ActivityContent;
-      reason: ActivityEndReason;
-      receiptUntil: number | null;
-    };
+  | { kind: "update"; content: ActivityContent; staleAt: number }
+  | Extract<ActivityView, { kind: "end" }>;
+
+export type ActivityCommand =
+  { kind: "none" } | (Exclude<ActivityChange, { kind: "none" }> & { token: string });
 
 export interface ActivityStart {
   content: ActivityContent;
@@ -209,15 +206,16 @@ export function activityView(input: ViewInput, now: number): ActivityView {
   };
 }
 
+function activityChange(shown: ActivityContent, view: ActivityView): ActivityChange {
+  if (view.kind === "end") return view;
+  if (sameContent(shown, view.content)) return { kind: "none" };
+  return { kind: "update", content: view.content, staleAt: view.staleAt };
+}
+
 export function nextCommand(row: ActivityRow, view: ActivityView): ActivityCommand {
   if (row.phase.kind !== "live") return { kind: "none" };
-  const token = row.phase.updateToken;
-  if (view.kind === "end") {
-    const { content, reason, receiptUntil } = view;
-    return { kind: "end", token, content, reason, receiptUntil };
-  }
-  if (sameContent(row.shown, view.content)) return { kind: "none" };
-  return { kind: "update", token, content: view.content, staleAt: view.staleAt };
+  const change = activityChange(row.shown, view);
+  return change.kind === "none" ? change : { ...change, token: row.phase.updateToken };
 }
 
 export type ActivityDirective =
@@ -303,11 +301,22 @@ interface ReportOutcome {
 }
 
 function directiveFor(key: string, row: ActivityRow, view: ActivityView): ActivityDirective[] {
-  if (view.kind === "end") {
-    return [{ key, directive: "end", content: contentState(view.content) }];
+  const change = activityChange(row.shown, view);
+  switch (change.kind) {
+    case "none":
+      return [];
+    case "end":
+      return [{ key, directive: "end", content: contentState(change.content) }];
+    case "update":
+      return [
+        {
+          key,
+          directive: "update",
+          content: contentState(change.content),
+          staleAt: change.staleAt,
+        },
+      ];
   }
-  if (sameContent(row.shown, view.content)) return [];
-  return [{ key, directive: "update", content: contentState(view.content), staleAt: view.staleAt }];
 }
 
 async function settleCueAsShown(
