@@ -16,6 +16,7 @@ import { ignoredLabel } from "./lib/mailGate";
 import { carryOut, linkByKey, linkForEvent } from "./lib/mailEffects";
 import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
+import { NO_USAGE } from "./lib/mailTypes";
 import type {
   CalendarEventFact,
   KnownInvite,
@@ -35,9 +36,8 @@ const EVENT_HORIZON_DAYS = 400;
 const SWEEP_BATCH = 100;
 const MAX_NAME = 120;
 const MAX_ADDRESS = 320;
-const MAX_SUBJECT = 200;
+const MAX_STORED_SUBJECT = 200;
 const MAX_SUMMARY = 600;
-const NO_USAGE = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
 type Claim =
   | { kind: "skip"; reason: string }
@@ -67,7 +67,7 @@ function holdsClaim(item: Doc<"mailItems"> | null, attempt: number): item is Doc
   return item !== null && item.state === "triaging" && item.attempt === attempt;
 }
 
-function clip(text: string, max: number): string {
+function truncate(text: string, max: number): string {
   return text.slice(0, max);
 }
 
@@ -79,19 +79,19 @@ function storedHeader(header: MailHeader): {
   const { sender } = header;
   return {
     sender: {
-      name: clip(sender.name, MAX_NAME),
-      address: clip(sender.address, MAX_ADDRESS),
+      name: truncate(sender.name, MAX_NAME),
+      address: truncate(sender.address, MAX_ADDRESS),
       authenticated: sender.authenticated,
       known: sender.known,
     },
-    subject: clip(header.subject, MAX_SUBJECT),
+    subject: truncate(header.subject, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
   };
 }
 
 function storedVerdict(verdict: MailVerdict | null): StoredVerdict {
   if (verdict === null) return { kind: "unreadable", summary: "" };
-  return { kind: verdict.kind, summary: clip(verdict.summary, MAX_SUMMARY) };
+  return { kind: verdict.kind, summary: truncate(verdict.summary, MAX_SUMMARY) };
 }
 
 function classifierOf(triaged: Triaged): ClassifierRecord {

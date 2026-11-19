@@ -41,7 +41,7 @@ const MAX_DURATION_MINUTES = 480;
 const ASSUMED_DURATION_MINUTES = 30;
 export const MAX_NOTE = 160;
 const MAX_NOTE_SENTENCES = 2;
-const MAX_SUBJECT = 120;
+const MAX_SHOWN_SUBJECT = 120;
 const MAX_CAREGIVER_BODY = 600;
 const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
 const LINK_REMOVED = "[link removed]";
@@ -188,11 +188,11 @@ function scrub(text: string): string {
     .replace(/\d(?:[\s().-]*\d){6,}/g, NUMBER_REMOVED);
 }
 
-function clip(text: string, max: number): string {
+export function ellipsize(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 3).trimEnd()}...`;
 }
 
-function when(date: string, time: string): string {
+export function when(date: string, time: string): string {
   return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
 }
 
@@ -207,11 +207,15 @@ export function caregiverText(facts: PolicyFacts, lines: string[]): string {
   const body = lines.map(scrub).filter((line) => line !== "");
   return [
     `From: ${from} (${sender.authenticated ? "verified sender" : "sender not verified"})`,
-    `Subject: ${clip(scrub(facts.subject), MAX_SUBJECT)}`,
+    `Subject: ${ellipsize(scrub(facts.subject), MAX_SHOWN_SUBJECT)}`,
     `Received: ${received}`,
     "",
-    clip(body.join("\n"), MAX_CAREGIVER_BODY),
+    ellipsize(body.join("\n"), MAX_CAREGIVER_BODY),
   ].join("\n");
+}
+
+export function isStale(facts: { receivedAt: number; now: number }): boolean {
+  return facts.receivedAt < facts.now - STALE_AFTER_MS;
 }
 
 export function caregiverMessage(
@@ -596,7 +600,7 @@ export function planWithRule(triaged: Triaged, facts: PolicyFacts): Plan {
   const context: Context = {
     facts,
     authenticated: facts.sender.authenticated,
-    stale: facts.receivedAt < facts.now - STALE_AFTER_MS,
+    stale: isStale(facts),
     summary: verdict === null ? "" : verdict.summary,
   };
   const plan = planFor(situationOf(verdict, facts), context);

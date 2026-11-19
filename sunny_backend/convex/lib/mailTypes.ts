@@ -87,6 +87,8 @@ export interface Usage {
   cacheReadTokens: number;
 }
 
+export const NO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+
 export type Triaged =
   | { stage: "gate"; verdict: MailVerdict; rule: string }
   | { stage: "model"; verdict: MailVerdict | null; usage: Usage; classifier: string };

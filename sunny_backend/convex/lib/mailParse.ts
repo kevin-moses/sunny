@@ -1,4 +1,5 @@
 import { fromBase64Url } from "./base64";
+import { isRecord } from "./http";
 import type { IcsEvent, MailSender, ParsedEmail } from "./mailTypes";
 import { oneLine } from "./text";
 import { MINUTE_MS, canonicalTimezone, localDate, localTime, zonedInstant } from "./time";
@@ -18,10 +19,6 @@ interface MimePart {
   headers: MailHeader[];
   data: string | null;
   parts: MimePart[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readHeaders(raw: unknown): MailHeader[] {

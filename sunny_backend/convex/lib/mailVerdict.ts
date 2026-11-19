@@ -1,9 +1,30 @@
 import { DECISION_REASONS, INFO_TOPICS, SUSPICIONS } from "./mailTypes";
 import type { DecisionReason, InfoTopic, MailVerdict, Suspicion } from "./mailTypes";
+import { isRecord } from "./http";
 import { isLocalDate, isLocalTime } from "./time";
 
-const VERDICT_KINDS = ["ignore", "appointment", "senior_info", "needs_decision", "suspicious"];
-const CHANGES = ["new", "reschedule", "cancel"];
+type VerdictKind = MailVerdict["kind"];
+type Change = Extract<MailVerdict, { kind: "appointment" }>["change"];
+type ShapeOf<V> = V extends { kind: "appointment"; change: infer C extends string }
+  ? `appointment:${C}`
+  : V extends { kind: infer K extends string }
+    ? K
+    : never;
+type ShapeKey = ShapeOf<MailVerdict>;
+
+function everyOf<T extends string>() {
+  return <const A extends readonly T[]>(values: A & ([T] extends [A[number]] ? unknown : never)) =>
+    values;
+}
+
+const VERDICT_KINDS = everyOf<VerdictKind>()([
+  "ignore",
+  "appointment",
+  "senior_info",
+  "needs_decision",
+  "suspicious",
+]);
+const CHANGES = everyOf<Change>()(["new", "reschedule", "cancel"]);
 
 function nullable(schema: Record<string, unknown>): Record<string, unknown> {
   return { anyOf: [schema, { type: "null" }] };
@@ -40,7 +61,7 @@ export const VERDICT_SCHEMA = {
   additionalProperties: false,
 };
 
-const SHAPES: Record<string, ReadonlySet<Field>> = {
+const SHAPES: Record<ShapeKey, ReadonlySet<Field>> = {
   ignore: new Set(),
   "appointment:new": new Set(["change", "title", "date", "time", "duration_minutes", "place"]),
   "appointment:reschedule": new Set([
@@ -59,10 +80,6 @@ const SHAPES: Record<string, ReadonlySet<Field>> = {
   needs_decision: new Set(["reason"]),
   suspicious: new Set(["suspicion"]),
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function oneOf<T extends string>(values: readonly T[], value: unknown): T | null {
   return values.find((v) => v === value) ?? null;
@@ -94,14 +111,20 @@ function minutes(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
+function shapeOf(kind: VerdictKind, change: unknown): ShapeKey | null {
+  if (kind !== "appointment") return kind;
+  const known = oneOf(CHANGES, change);
+  return known === null ? null : `appointment:${known}`;
+}
+
 export function parseVerdict(input: unknown): MailVerdict | null {
   if (!isRecord(input)) return null;
   const summary = text(input.summary);
   const kind = oneOf(VERDICT_KINDS, input.kind);
   if (summary === null || kind === null) return null;
-  const shapeKey = kind === "appointment" ? `appointment:${String(input.change)}` : kind;
+  const shapeKey = shapeOf(kind, input.change);
+  if (shapeKey === null) return null;
   const allowed = SHAPES[shapeKey];
-  if (allowed === undefined) return null;
   for (const key of Object.keys(input)) {
     if (key === "summary" || key === "kind") continue;
     if (!isField(key)) return null;

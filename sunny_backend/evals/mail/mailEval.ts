@@ -1,7 +1,8 @@
 import { MAIL_MODEL, triageEmail } from "../../convex/lib/mailClassify";
 import type { Classification, Classifier } from "../../convex/lib/mailClassify";
 import { linkKey, planWithRule } from "../../convex/lib/mailPolicy";
-import { DECISION_REASONS, SUSPICIONS } from "../../convex/lib/mailTypes";
+import { isRecord } from "../../convex/lib/http";
+import { DECISION_REASONS, NO_USAGE, SUSPICIONS } from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -82,10 +83,6 @@ const ESCALATION_REASONS: readonly EscalationReason[] = [
 
 function oneOf<T extends string>(values: readonly T[], value: string, where: string): T {
   return values.find((v) => v === value) ?? fail(where, `unknown value ${value}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function fail(where: string, problem: string): never {
@@ -278,10 +275,7 @@ export async function runFixture(
     rule: triaged.stage === "gate" ? `gate ${triaged.rule}; ${plan.rule}` : plan.rule,
     verdict: verdictLabel(triaged.verdict),
     effects: plan.effects,
-    usage:
-      triaged.stage === "model"
-        ? triaged.usage
-        : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    usage: triaged.stage === "model" ? triaged.usage : NO_USAGE,
     classifier: triaged.stage === "model" ? triaged.classifier : "gate",
     latencyMs,
   };

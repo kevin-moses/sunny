@@ -7,7 +7,6 @@ import {
   triageEmail,
 } from "./mailClassify";
 import type { Classifier } from "./mailClassify";
-import { MAX_NOTE } from "./mailPolicy";
 import type { ParsedEmail } from "./mailTypes";
 import { VERDICT_SCHEMA } from "./mailVerdict";
 import { zonedInstant } from "./time";

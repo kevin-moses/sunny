@@ -8,18 +8,9 @@ import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, reachableMembers } from "./delivery";
-import { STALE_AFTER_MS, caregiverMessage } from "./mailPolicy";
-import type { Appointment, EscalationReason, MailEffect, PolicyFacts, Slot } from "./mailTypes";
-import {
-  DAY_MS,
-  dateLabel,
-  formatTime12,
-  isLocalDate,
-  isLocalTime,
-  localDate,
-  weekdayName,
-  zonedInstant,
-} from "./time";
+import { STALE_AFTER_MS, caregiverMessage, ellipsize, isStale, when } from "./mailPolicy";
+import type { EscalationReason, MailEffect, PolicyFacts, Slot } from "./mailTypes";
+import { isLocalDate, isLocalTime, localDate, zonedInstant } from "./time";
 import type { MailEffectRecord, NotificationKind } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
@@ -102,7 +93,7 @@ function eventOf(scope: EffectScope, eventId: string): Doc<"events"> {
 }
 
 function pushBody(text: string): string {
-  return text.length <= MAX_PUSH_BODY ? text : `${text.slice(0, MAX_PUSH_BODY - 3).trimEnd()}...`;
+  return ellipsize(text, MAX_PUSH_BODY);
 }
 
 export async function pushToCaregivers(
@@ -287,11 +278,6 @@ async function runEffect<K extends EffectKind>(
   return await handlers[kind](scope, effect);
 }
 
-function when(appointment: Appointment): string {
-  const { date, time } = appointment;
-  return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
-}
-
 function escalation(
   scope: EffectScope,
   reason: EscalationReason,
@@ -304,7 +290,7 @@ function escalation(
     kind: "escalate",
     reason,
     ...caregiverMessage(facts, line, scope.summary),
-    push: facts.receivedAt >= facts.now - DAY_MS,
+    push: !isStale(facts),
     eventId,
     proposed,
   };
@@ -321,7 +307,7 @@ function refusedWrite(
     return escalation(
       scope,
       "unclear_appointment",
-      `Sunny could not add ${appointment.title}, ${when(appointment)}, to the calendar.`,
+      `Sunny could not add ${appointment.title}, ${when(appointment.date, appointment.time)}, to the calendar.`,
       null,
       null,
     );
@@ -331,7 +317,7 @@ function refusedWrite(
     return escalation(
       scope,
       "unclear_reschedule",
-      `Sunny could not move ${event.title} to ${when(effect.appointment)}.`,
+      `Sunny could not move ${event.title} to ${when(effect.appointment.date, effect.appointment.time)}.`,
       effect.eventId,
       { date: effect.appointment.date, time: effect.appointment.time },
     );
