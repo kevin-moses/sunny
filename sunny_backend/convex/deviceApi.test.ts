@@ -627,6 +627,7 @@ describe("GET /device/timeline", () => {
         label: "Morning pills",
         sentence: "Take your morning pills.",
         detail: "1 white tablet",
+        icon: "pills",
         startsAt: local("08:00"),
         endsAt: local("09:00"),
       },

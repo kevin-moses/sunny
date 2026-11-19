@@ -1,19 +1,32 @@
 import { fromBase64, toBase64Url } from "./base64";
 import { ConfigError } from "./errors";
-import type { NotificationKind } from "./validators";
+import type { ActivityAttributes, ActivityCommand, ActivityStart } from "./liveActivity";
+import type { ActivityContent, ApnsMessage, NotificationKind, PushType } from "./validators";
 
 export const APNS_NOT_CONFIGURED = "APNs is not configured";
 
 const SANDBOX_HOST = "api.sandbox.push.apple.com";
 const PRODUCTION_HOST = "api.push.apple.com";
 const DEFAULT_BUNDLE_ID = "com.kmsunny.sunny";
-const EXPIRATION_SECONDS = 3 * 60 * 60;
+const ALERT_EXPIRATION_SECONDS = 3 * 60 * 60;
+const ALERT_SOUND = "default";
 const TOKEN_BUCKET_SECONDS = 30 * 60;
 
 const APNS_COLLAPSE_ID_MAX_BYTES = 64;
 const MAX_PAYLOAD_BYTES = 4096;
 
 export const CAREGIVER_ALERT_CATEGORY = "caregiver_alert";
+
+export const ACTIVITY_ATTRIBUTES_TYPE = "SunnyTaskAttributes";
+
+export const ACTIVITY_LIFETIME_MS = 12 * 60 * 60_000;
+
+export const TOPIC_SUFFIX: Record<PushType, string> = {
+  alert: "",
+  background: "",
+  liveactivity: ".push-type.liveactivity",
+  widgets: ".push-type.widgets",
+};
 
 export type PushStyle = {
   interruptionLevel?: "time-sensitive";
@@ -88,45 +101,182 @@ export function isValidDeviceToken(token: string): boolean {
   return /^[0-9a-fA-F]{64,200}$/.test(token);
 }
 
-export function buildPayload(
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function cutToFit(text: string, encode: (text: string) => string): string {
+  let kept = text;
+  let payload = encode(kept);
+  while (utf8Length(payload) > MAX_PAYLOAD_BYTES && kept.length > 0) {
+    kept = kept.slice(0, Math.floor(kept.length * 0.8));
+    payload = encode(kept);
+  }
+  return payload;
+}
+
+function seconds(ms: number): number {
+  return Math.floor(ms / 1000);
+}
+
+export function alertMessage(
   title: string,
   body: string,
-  data?: Record<string, string>,
-  style: PushStyle = {},
-): string {
+  data: Record<string, string> | undefined,
+  style: PushStyle,
+  nowSeconds: number,
+): ApnsMessage {
   const extra: Record<string, string> = {};
   if (style.interruptionLevel !== undefined) extra["interruption-level"] = style.interruptionLevel;
   if (style.category !== undefined) extra["category"] = style.category;
-  const encode = (text: string): string =>
-    JSON.stringify({
-      ...data,
-      aps: { alert: { title, body: text }, sound: "default", ...extra },
-    });
-  let text = body;
-  let payload = encode(text);
-  while (new TextEncoder().encode(payload).length > MAX_PAYLOAD_BYTES && text.length > 0) {
-    text = text.slice(0, Math.floor(text.length * 0.8));
-    payload = encode(text);
-  }
-  return payload;
+  const message: ApnsMessage = {
+    pushType: "alert",
+    priority: 10,
+    expiresAt: nowSeconds + ALERT_EXPIRATION_SECONDS,
+    body: cutToFit(body, (text) =>
+      JSON.stringify({
+        ...data,
+        aps: { alert: { title, body: text }, sound: ALERT_SOUND, ...extra },
+      }),
+    ),
+  };
+  const taskId = data?.task_instance_id;
+  if (taskId) message.collapseId = taskId.slice(0, APNS_COLLAPSE_ID_MAX_BYTES);
+  return message;
+}
+
+export function contentState(content: ActivityContent): ActivityContent {
+  const { card, closed } = content;
+  return {
+    card: {
+      instanceId: card.instanceId,
+      step: card.step,
+      stepCount: card.stepCount,
+      stepText: card.stepText,
+      label: card.label,
+      sentence: card.sentence,
+      detail: card.detail,
+      icon: card.icon,
+      startsAt: card.startsAt,
+      endsAt: card.endsAt,
+    },
+    nextSteps: [...content.nextSteps],
+    closed: closed === null ? null : { kind: closed.kind, at: closed.at },
+  };
+}
+
+function startAlert(
+  title: string,
+  body: string,
+  quiet: boolean,
+): { title: string; body: string; sound?: string } {
+  return quiet ? { title, body } : { title, body, sound: ALERT_SOUND };
+}
+
+export function liveActivityStartMessage(
+  attributes: ActivityAttributes,
+  start: ActivityStart,
+  alert: { title: string; body: string },
+  nowSeconds: number,
+): ApnsMessage {
+  const staleDate = seconds(start.staleAt);
+  return {
+    pushType: "liveactivity",
+    priority: 10,
+    expiresAt: staleDate,
+    body: cutToFit(alert.body, (text) =>
+      JSON.stringify({
+        aps: {
+          timestamp: nowSeconds,
+          event: "start",
+          "attributes-type": ACTIVITY_ATTRIBUTES_TYPE,
+          attributes: {
+            activityKey: attributes.activityKey,
+            instanceId: attributes.instanceId,
+            receiptMs: attributes.receiptMs,
+          },
+          "content-state": contentState(start.content),
+          alert: startAlert(alert.title, text, start.quiet),
+          "stale-date": staleDate,
+          "relevance-score": start.relevance,
+        },
+      }),
+    ),
+  };
+}
+
+export function liveActivityUpdateMessage(
+  command: Extract<ActivityCommand, { kind: "update" }>,
+  nowSeconds: number,
+): ApnsMessage {
+  const staleDate = seconds(command.staleAt);
+  return {
+    pushType: "liveactivity",
+    priority: 10,
+    expiresAt: staleDate,
+    body: JSON.stringify({
+      aps: {
+        timestamp: nowSeconds,
+        event: "update",
+        "content-state": contentState(command.content),
+        "stale-date": staleDate,
+      },
+    }),
+  };
+}
+
+export function liveActivityEndMessage(
+  command: Extract<ActivityCommand, { kind: "end" }>,
+  acceptedAt: number,
+  nowSeconds: number,
+): ApnsMessage {
+  return {
+    pushType: "liveactivity",
+    priority: 10,
+    expiresAt: seconds(acceptedAt + ACTIVITY_LIFETIME_MS),
+    body: JSON.stringify({
+      aps: {
+        timestamp: nowSeconds,
+        event: "end",
+        "content-state": contentState(command.content),
+        "dismissal-date": seconds(acceptedAt),
+      },
+    }),
+  };
+}
+
+export function backgroundRefreshMessage(): ApnsMessage {
+  return {
+    pushType: "background",
+    priority: 5,
+    expiresAt: 0,
+    body: JSON.stringify({ aps: { "content-available": 1 } }),
+  };
+}
+
+export function widgetReloadMessage(): ApnsMessage {
+  return {
+    pushType: "widgets",
+    priority: 10,
+    expiresAt: 0,
+    body: JSON.stringify({ aps: { "content-changed": true } }),
+  };
 }
 
 export function buildHeaders(
   config: ApnsConfig,
   providerToken: string,
-  data: Record<string, string> | undefined,
-  nowSeconds: number,
+  message: ApnsMessage,
 ): Record<string, string> {
   const headers: Record<string, string> = {
     authorization: `bearer ${providerToken}`,
-    "apns-topic": config.bundleId,
-    "apns-push-type": "alert",
-    "apns-priority": "10",
-    "apns-expiration": String(nowSeconds + EXPIRATION_SECONDS),
+    "apns-topic": `${config.bundleId}${TOPIC_SUFFIX[message.pushType]}`,
+    "apns-push-type": message.pushType,
+    "apns-priority": String(message.priority),
+    "apns-expiration": String(message.expiresAt),
     "content-type": "application/json",
   };
-  const taskId = data?.task_instance_id;
-  if (taskId) headers["apns-collapse-id"] = taskId.slice(0, APNS_COLLAPSE_ID_MAX_BYTES);
+  if (message.collapseId !== undefined) headers["apns-collapse-id"] = message.collapseId;
   return headers;
 }
 

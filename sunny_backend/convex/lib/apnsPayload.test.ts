@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { fromBase64Url } from "./base64";
 import {
+  alertMessage,
   apnsHost,
+  backgroundRefreshMessage,
   CAREGIVER_ALERT_CATEGORY,
   isValidDeviceToken,
   pushStyle,
   buildHeaders,
-  buildPayload,
   getProviderToken,
   jwtClaims,
   loadApnsConfig,
@@ -14,7 +15,16 @@ import {
   resetProviderTokenCache,
   signProviderToken,
 } from "./apnsPayload";
-import type { ApnsConfig } from "./apnsPayload";
+import type { ApnsConfig, PushStyle } from "./apnsPayload";
+
+function alertBody(
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+  style: PushStyle = {},
+): string {
+  return alertMessage(title, body, data, style, 1000).body;
+}
 
 async function makeKey(): Promise<{ pem: string; publicKey: CryptoKey }> {
   const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
@@ -114,27 +124,27 @@ describe("apnsHost", () => {
   });
 });
 
-describe("buildPayload", () => {
+describe("alertMessage body", () => {
   test("wraps title and body in aps with the default sound", () => {
-    expect(JSON.parse(buildPayload("T", "B"))).toEqual({
+    expect(JSON.parse(alertBody("T", "B"))).toEqual({
       aps: { alert: { title: "T", body: "B" }, sound: "default" },
     });
   });
 
   test("keeps snake_case data keys at the top level", () => {
-    const p = JSON.parse(buildPayload("T", "B", { task_instance_id: "abc" }));
+    const p = JSON.parse(alertBody("T", "B", { task_instance_id: "abc" }));
     expect(p.task_instance_id).toBe("abc");
     expect(p.aps.alert.title).toBe("T");
   });
 
   test("data cannot override aps", () => {
-    const p = JSON.parse(buildPayload("T", "B", { aps: "evil" }));
+    const p = JSON.parse(alertBody("T", "B", { aps: "evil" }));
     expect(p.aps.alert).toEqual({ title: "T", body: "B" });
   });
 
   test("a style adds interruption-level and category inside aps, data stays outside", () => {
     const style = { interruptionLevel: "time-sensitive" as const, category: "caregiver_alert" };
-    const p = JSON.parse(buildPayload("T", "B", { kind: "caregiver_alert" }, style));
+    const p = JSON.parse(alertBody("T", "B", { kind: "caregiver_alert" }, style));
     expect(p).toEqual({
       kind: "caregiver_alert",
       aps: {
@@ -148,7 +158,7 @@ describe("buildPayload", () => {
 
   test("a long body is still cut under 4 KB with a style", () => {
     const style = { interruptionLevel: "time-sensitive" as const, category: "caregiver_alert" };
-    const payload = buildPayload("T", "x".repeat(10_000), undefined, style);
+    const payload = alertBody("T", "x".repeat(10_000), undefined, style);
     expect(new TextEncoder().encode(payload).length).toBeLessThanOrEqual(4096);
     expect(JSON.parse(payload).aps.category).toBe("caregiver_alert");
   });
@@ -201,37 +211,37 @@ describe("device tokens and payload size", () => {
   });
 
   test("a long body is cut so the payload stays under 4 KB", () => {
-    const payload = buildPayload("Title", "x".repeat(10_000), { task_instance_id: "i" });
+    const payload = alertBody("Title", "x".repeat(10_000), { task_instance_id: "i" });
     expect(new TextEncoder().encode(payload).length).toBeLessThanOrEqual(4096);
     expect(JSON.parse(payload).aps.alert.title).toBe("Title");
     expect(JSON.parse(payload).aps.alert.body.length).toBeGreaterThan(2000);
   });
 
   test("a short body is left alone", () => {
-    expect(JSON.parse(buildPayload("T", "short")).aps.alert.body).toBe("short");
+    expect(JSON.parse(alertBody("T", "short")).aps.alert.body).toBe("short");
   });
 });
 
-describe("buildHeaders", () => {
+describe("alertMessage headers", () => {
   test("sets topic, push type, priority, expiration and authorization", () => {
-    const h = buildHeaders(config(), "jwt", undefined, 1000);
-    expect(h).toMatchObject({
+    const h = buildHeaders(config(), "jwt", alertMessage("T", "B", undefined, {}, 1000));
+    expect(h).toEqual({
       authorization: "bearer jwt",
       "apns-topic": "com.kmsunny.sunny",
       "apns-push-type": "alert",
       "apns-priority": "10",
       "apns-expiration": String(1000 + 3 * 3600),
+      "content-type": "application/json",
     });
-    expect(h["apns-collapse-id"]).toBeUndefined();
   });
 
   test("uses task_instance_id as the collapse id, capped at 64 bytes", () => {
-    expect(buildHeaders(config(), "j", { task_instance_id: "abc" }, 0)["apns-collapse-id"]).toBe(
-      "abc",
-    );
-    const long = "x".repeat(100);
-    const h = buildHeaders(config(), "j", { task_instance_id: long }, 0);
-    expect(h["apns-collapse-id"]).toHaveLength(64);
+    const collapse = (id: string): string | undefined =>
+      buildHeaders(config(), "j", alertMessage("T", "B", { task_instance_id: id }, {}, 0))[
+        "apns-collapse-id"
+      ];
+    expect(collapse("abc")).toBe("abc");
+    expect(collapse("x".repeat(100))).toHaveLength(64);
   });
 
   test("two caregiver alerts about one task share a collapse id; other tasks do not", () => {
@@ -239,16 +249,28 @@ describe("buildHeaders", () => {
       buildHeaders(
         config(),
         "j",
-        {
-          notification_id: id,
-          kind: "caregiver_alert",
-          household_id: "h",
-          task_instance_id: instance,
-        },
-        0,
+        alertMessage(
+          "T",
+          "B",
+          {
+            notification_id: id,
+            kind: "caregiver_alert",
+            household_id: "h",
+            task_instance_id: instance,
+          },
+          {},
+          0,
+        ),
       )["apns-collapse-id"];
     expect(collapse("n1", "inst1")).toBe(collapse("n2", "inst1"));
     expect(collapse("n1", "inst1")).not.toBe(collapse("n3", "inst2"));
+  });
+
+  test("the topic takes the push type's suffix and the bundle id from the configuration", () => {
+    const other = { ...config(), bundleId: "com.example.app" };
+    expect(buildHeaders(other, "j", backgroundRefreshMessage())["apns-topic"]).toBe(
+      "com.example.app",
+    );
   });
 });
 

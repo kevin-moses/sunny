@@ -5,7 +5,10 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { findMember, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
-import type { NotificationKind } from "./validators";
+import { isDueEntry } from "./dueTask";
+import { openActivity, planStart } from "./liveActivity";
+import type { StartPlan } from "./liveActivity";
+import type { ApnsMessage, NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
 
@@ -35,6 +38,7 @@ export const SMS_KIND_POLICY: Record<
   digest: { retryOnTimeout: false, hidesOlderAlert: false },
   agent_flag: { retryOnTimeout: true, hidesOlderAlert: true },
   family_message: { retryOnTimeout: false, hidesOlderAlert: true },
+  senior_reshow: { retryOnTimeout: false, hidesOlderAlert: false },
 };
 
 const SMS_MAX_CHARS = 1_500;
@@ -58,9 +62,27 @@ export type ApnsRoute = {
   smsFallback: SmsRoute | null;
 };
 
-export type Route = ApnsRoute | SmsRoute | { kind: "skip"; reason: string };
+export type LiveActivityRoute = {
+  kind: "live_activity";
+  activityId: Id<"liveActivities">;
+  deviceId: Id<"devices">;
+  token: string;
+  message: ApnsMessage;
+  alertFallback: ApnsRoute | null;
+};
 
-export type SendRoute = Exclude<Route, { kind: "skip" }>;
+type StartRoute = {
+  kind: "live_activity_start";
+  device: Doc<"devices">;
+  start: StartPlan;
+  alertFallback: ApnsRoute | null;
+};
+
+type SkipRoute = { kind: "skip"; reason: string };
+
+export type SendRoute = ApnsRoute | SmsRoute | LiveActivityRoute;
+
+export type Route = SendRoute | SkipRoute;
 
 export async function insertNotification(
   ctx: MutationCtx,
@@ -95,9 +117,8 @@ async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promi
   if (!instance) return "instance_gone";
   const done = instance.state === "confirmed" || instance.state === "resolved";
   if (row.kind === "caregiver_alert" && done) return "instance_closed";
-  if (row.kind === "senior_prompt" && instance.state !== "due" && instance.state !== "escalated") {
-    return "instance_closed";
-  }
+  const promptsSenior = row.kind === "senior_prompt" || row.kind === "senior_reshow";
+  if (promptsSenior && !isDueEntry(instance)) return "instance_closed";
   return null;
 }
 
@@ -147,14 +168,21 @@ async function deviceRoute(
   ctx: QueryCtx,
   row: Doc<"notificationOutbox">,
   deviceId: Id<"devices">,
-): Promise<Route> {
+  now: number,
+): Promise<ApnsRoute | StartRoute | SkipRoute> {
   const device = await ctx.db.get(deviceId);
   if (!device || device.householdId !== row.householdId) {
     return { kind: "skip", reason: "device_removed" };
   }
   const tokens = await userPushTokens(ctx, device.userId);
-  if (tokens.length === 0) return { kind: "skip", reason: "no_push_tokens" };
-  return apnsRoute(row, tokens, { kind: "device" }, null);
+  const alert = tokens.length > 0 ? apnsRoute(row, tokens, { kind: "device" }, null) : null;
+  const reshow = row.kind === "senior_reshow";
+  const start = row.pushState === "gave_up" ? null : await planStart(ctx, row, device, now);
+  if (start !== null) {
+    return { kind: "live_activity_start", device, start, alertFallback: reshow ? null : alert };
+  }
+  if (reshow) return { kind: "skip", reason: "no_live_activity" };
+  return alert ?? { kind: "skip", reason: "no_push_tokens" };
 }
 
 function smsRoute(
@@ -175,7 +203,7 @@ async function memberRoute(
   ctx: QueryCtx,
   row: Doc<"notificationOutbox">,
   userId: string,
-): Promise<Route> {
+): Promise<ApnsRoute | SmsRoute | SkipRoute> {
   const member = await findMember(ctx, row.householdId, userId);
   if (!member) return { kind: "skip", reason: "recipient_left" };
   const sms = smsRoute(row, member);
@@ -210,23 +238,53 @@ export async function reachableMembers(
   return reachable;
 }
 
-export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<Route> {
+async function planRoute(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+  now: number,
+): Promise<ApnsRoute | SmsRoute | StartRoute | SkipRoute> {
   const stale = await staleReason(ctx, row);
   if (stale !== null) return { kind: "skip", reason: stale };
-  if (row.recipientDeviceId !== undefined)
-    return await deviceRoute(ctx, row, row.recipientDeviceId);
+  if (row.recipientDeviceId !== undefined) {
+    return await deviceRoute(ctx, row, row.recipientDeviceId, now);
+  }
   if (row.recipientUserId !== undefined) return await memberRoute(ctx, row, row.recipientUserId);
   return { kind: "skip", reason: "no_recipient" };
 }
 
-export async function textAfterPushGaveUp(
+export async function resolveRoute(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  now: number,
+): Promise<Route> {
+  const route = await planRoute(ctx, row, now);
+  if (route.kind !== "live_activity_start") return route;
+  const opened = await openActivity(ctx, row, route.device, route.start, now);
+  return {
+    kind: "live_activity",
+    activityId: opened.activityId,
+    deviceId: route.device._id,
+    token: route.start.token,
+    message: opened.message,
+    alertFallback: route.alertFallback,
+  };
+}
+
+async function hasFallbackAfterPush(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+): Promise<boolean> {
+  if (row.recipientUserId === undefined) return row.kind === "senior_prompt";
+  const member = await findMember(ctx, row.householdId, row.recipientUserId);
+  return member !== null && verifiedPhone(member) !== undefined;
+}
+
+export async function fallbackAfterPushGaveUp(
   ctx: MutationCtx,
   row: Doc<"notificationOutbox">,
   error: string,
 ): Promise<boolean> {
-  if (row.pushState !== "retrying" || row.recipientUserId === undefined) return false;
-  const member = await findMember(ctx, row.householdId, row.recipientUserId);
-  if (!member || verifiedPhone(member) === undefined) return false;
+  if (row.pushState !== "retrying" || !(await hasFallbackAfterPush(ctx, row))) return false;
   await ctx.db.patch(row._id, { pushState: "gave_up", detail: `push gave up: ${error}` });
   await queueDelivery(ctx, row._id);
   return true;

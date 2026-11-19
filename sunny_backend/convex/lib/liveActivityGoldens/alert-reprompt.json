@@ -1,0 +1,25 @@
+{
+  "headers": {
+    "authorization": "bearer PROVIDER_TOKEN",
+    "apns-topic": "com.kmsunny.sunny",
+    "apns-push-type": "alert",
+    "apns-priority": "10",
+    "apns-expiration": "1795104900",
+    "content-type": "application/json",
+    "apns-collapse-id": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya"
+  },
+  "payload": {
+    "notification_id": "kd7x1c3v5b7n9m2q4w6e8r0t1y3u5p7a",
+    "kind": "senior_prompt",
+    "household_id": "jn7a1b2c3d4e5f6g7h8j9k0m1n2p3q4r",
+    "task_instance_id": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
+    "aps": {
+      "alert": {
+        "title": "Morning pills",
+        "body": "It's 8 o'clock. Time for your morning pills, the small white ones."
+      },
+      "sound": "default",
+      "interruption-level": "time-sensitive"
+    }
+  }
+}

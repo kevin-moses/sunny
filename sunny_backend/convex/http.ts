@@ -8,6 +8,7 @@ import {
 import { getFrame as deviceFrame } from "./deviceFrame";
 import { callback as googleCallback, start as googleStart } from "./googleCalendar";
 import { pair } from "./pairing";
+import { putPushState as devicePushState } from "./phonePush";
 import { inbound as twilioInbound } from "./sms";
 
 const http = httpRouter();
@@ -21,5 +22,6 @@ http.route({ path: "/device/timeline", method: "GET", handler: deviceTimeline })
 http.route({ path: "/device/frame", method: "GET", handler: deviceFrame });
 http.route({ path: "/device/confirm", method: "POST", handler: deviceConfirm });
 http.route({ path: "/device/info", method: "PUT", handler: deviceInfo });
+http.route({ path: "/device/push-state", method: "PUT", handler: devicePushState });
 
 export default http;
