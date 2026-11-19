@@ -774,6 +774,19 @@ describe("a caregiver's edit while the activity is up", () => {
     expect((await activity(f, activityId)).shown.card.label).toBe("Morning tablets");
   });
 
+  test("a new type is pushed as an update with its icon", async () => {
+    const { f, instanceId, activityId } = await live();
+    await f.t.withIdentity({ subject: f.caregiver }).mutation(api.tasks.update, {
+      householdId: f.householdId,
+      taskId: await taskIdOf(f, instanceId),
+      type: "reminder",
+    });
+    await settle(f.t);
+    expect(updates()).toHaveLength(1);
+    expect(updates()[0]!.aps["content-state"].card.icon).toBe("bell");
+    expect((await activity(f, activityId)).shown.card.icon).toBe("bell");
+  });
+
   test("an edit that changes nothing the phone shows sends nothing", async () => {
     const { f, instanceId } = await live();
     await f.t.withIdentity({ subject: f.caregiver }).mutation(api.tasks.update, {

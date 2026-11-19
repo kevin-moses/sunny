@@ -16,6 +16,7 @@ import {
   nextCommand,
   openActivitiesOf,
 } from "./liveActivity";
+import { taskCards, timelineTask } from "./phoneTimeline";
 import { DAY_MS } from "./time";
 import type { ActivityEndReason, ConfirmVia } from "./validators";
 import { phonePressedOn, requestWidgetRefresh, wakePhoneToReport } from "./widgetRefresh";
@@ -151,13 +152,8 @@ export async function instanceGone(
   }
 }
 
-function shownText(task: Doc<"tasks">): string {
-  return JSON.stringify([
-    task.displayLabel,
-    task.screenSentence ?? null,
-    task.pillDescription ?? null,
-    task.checklistItems,
-  ]);
+function shownCards(instance: Doc<"taskInstances">, task: Doc<"tasks">, now: number): string {
+  return JSON.stringify(taskCards(timelineTask(instance, task, now)));
 }
 
 export async function taskTextChanged(
@@ -165,13 +161,16 @@ export async function taskTextChanged(
   before: Doc<"tasks">,
   after: Doc<"tasks">,
 ): Promise<void> {
-  if (shownText(before) === shownText(after)) return;
+  const now = Date.now();
   for (const state of ["due", "escalated"] as const) {
     const instances = await ctx.db
       .query("taskInstances")
       .withIndex("by_task_state", (q) => q.eq("taskId", after._id).eq("state", state))
       .collect();
-    for (const instance of instances) await syncActivities(ctx, instance._id, Date.now(), null);
+    for (const instance of instances) {
+      if (shownCards(instance, before, now) === shownCards(instance, after, now)) continue;
+      await syncActivities(ctx, instance._id, now, null);
+    }
   }
 }
 
