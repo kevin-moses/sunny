@@ -319,6 +319,10 @@ final class ActivityPressTests: XCTestCase {
         }
     }
 
+    func testOnlyActiveAndStaleActivitiesAreOnScreen() {
+        XCTAssertEqual(ReportedActivityState.allCases.filter(\.isOnScreen), [.active, .stale])
+    }
+
     func testAnUnauthorizedPressEndsEveryActivity() async throws {
         let store = FakeActivityStore([
             shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-pills"))),

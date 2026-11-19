@@ -26,7 +26,7 @@ public struct ShownActivity: Equatable, Sendable {
 
     public var key: String { attributes.activityKey }
 
-    public var isOnScreen: Bool { phase == .active || phase == .stale }
+    public var isOnScreen: Bool { phase.isOnScreen }
 
     public var report: ActivityReport {
         ActivityReport(key: key, token: token, state: phase)

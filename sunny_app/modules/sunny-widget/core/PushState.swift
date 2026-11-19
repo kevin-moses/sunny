@@ -1,10 +1,12 @@
 import Foundation
 
-public enum ReportedActivityState: String, Codable, Sendable {
+public enum ReportedActivityState: String, Codable, Sendable, CaseIterable {
     case active
     case stale
     case ended
     case dismissed
+
+    public var isOnScreen: Bool { self == .active || self == .stale }
 }
 
 public struct StartTokenReport: Equatable, Sendable {

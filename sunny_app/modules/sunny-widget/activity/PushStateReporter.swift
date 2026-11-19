@@ -7,7 +7,7 @@ public actor PushStateReporter {
     public static let shared = PushStateReporter()
 
     private let lane = SyncLane { reloadingWidget in await PushStateReporter.sendSnapshot(reloadingWidget: reloadingWidget) }
-    private var watched: Set<String> = []
+    private var watched: [String: Task<Void, Never>] = [:]
     private var observing = false
 
     public nonisolated func start() {
@@ -83,14 +83,22 @@ public actor PushStateReporter {
     }
 
     private func watch(_ activity: Activity<SunnyTaskAttributes>) {
-        guard watched.insert(activity.id).inserted else { return }
-        Task {
+        guard watched[activity.id] == nil else { return }
+        watched[activity.id] = Task {
             for await _ in activity.pushTokenUpdates { await self.sync(.activityChange) }
         }
         Task {
-            for await _ in activity.activityStateUpdates { await self.sync(.activityChange) }
+            for await state in activity.activityStateUpdates {
+                await self.sync(.activityChange)
+                if !ActivityKitStore.phase(state).isOnScreen { break }
+            }
+            self.unwatch(activity.id)
         }
         Task { await self.sync(.activityChange) }
+    }
+
+    private func unwatch(_ id: String) {
+        watched.removeValue(forKey: id)?.cancel()
     }
 
     private static func sendSnapshot(reloadingWidget: Bool) async {
