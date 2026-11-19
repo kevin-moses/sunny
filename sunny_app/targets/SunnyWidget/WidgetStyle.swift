@@ -202,10 +202,23 @@ enum TypeScale {
     }
 
     static func fitted(requested: CGFloat, floor: CGFloat, fits: (CGFloat) -> Bool) -> CGFloat {
-        var scale = requested
-        while scale > floor && !fits(scale) {
-            scale -= 0.01
+        ScaleSearch.largestFitting(requested: requested, floor: floor, fits: fits)
+    }
+
+    static func fitted<Measured>(
+        requested: CGFloat,
+        floor: CGFloat,
+        measure: (CGFloat) -> Measured,
+        fits: (Measured, CGFloat) -> Bool
+    ) -> (scale: CGFloat, measured: Measured) {
+        var lastFit: (scale: CGFloat, measured: Measured)?
+        let scale = fitted(requested: requested, floor: floor) { candidate in
+            let measured = measure(candidate)
+            guard fits(measured, candidate) else { return false }
+            lastFit = (candidate, measured)
+            return true
         }
-        return max(scale, floor)
+        if let lastFit, lastFit.scale == scale { return lastFit }
+        return (scale, measure(scale))
     }
 }

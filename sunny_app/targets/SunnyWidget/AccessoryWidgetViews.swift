@@ -39,7 +39,12 @@ struct RectangularAccessoryView: View {
 
     private var width: CGFloat { size.width }
 
-    static func contentHeight(_ content: WidgetContent, width: CGFloat, scale: CGFloat) -> CGFloat {
+    static func noticeLines(_ content: WidgetContent, width: CGFloat, scale: CGFloat) -> [String] {
+        guard case .notice(let notice) = content else { return [] }
+        return TextMeasure.lines(notice.text, style: .accessoryNotice, scale: scale, width: width, maxLines: noticeMaxLines)
+    }
+
+    static func contentHeight(_ content: WidgetContent, noticeLineCount: Int, scale: CGFloat) -> CGFloat {
         let when = WhenMetrics.accessory.height(scale) + gap
         let label = TypeStyle.accessoryLabel.line(scale)
         switch content {
@@ -48,16 +53,19 @@ struct RectangularAccessoryView: View {
             return when + label + detail
         case .clear(let clear):
             return clear.next == nil ? label : when + label
-        case .notice(let notice):
-            let lines = TextMeasure.lines(notice.text, style: .accessoryNotice, scale: scale, width: width, maxLines: noticeMaxLines)
-            return CGFloat(max(1, lines.count)) * TypeStyle.accessoryNotice.line(scale)
+        case .notice:
+            return CGFloat(max(1, noticeLineCount)) * TypeStyle.accessoryNotice.line(scale)
         }
     }
 
     var body: some View {
-        let scale = TypeScale.fitted(requested: requestedScale, floor: 1) { scale in
-            Self.contentHeight(content, width: width, scale: scale) <= size.height
-        }
+        let fit = TypeScale.fitted(
+            requested: requestedScale,
+            floor: 1,
+            measure: { scale in Self.noticeLines(content, width: width, scale: scale) },
+            fits: { lines, scale in Self.contentHeight(content, noticeLineCount: lines.count, scale: scale) <= size.height }
+        )
+        let scale = fit.scale
         VStack(alignment: .leading, spacing: Self.gap) {
             switch content {
             case .due(let due):
@@ -78,14 +86,7 @@ struct RectangularAccessoryView: View {
                     StyledLine(text: WidgetWords.appName, style: .accessoryLabel, scale: scale, color: inks.text)
                 }
             case .notice(let notice):
-                WrappedLines(
-                    text: notice.text,
-                    style: .accessoryNotice,
-                    scale: scale,
-                    width: width,
-                    maxLines: Self.noticeMaxLines,
-                    color: inks.text
-                )
+                WrappedLines(text: notice.text, lines: fit.measured, style: .accessoryNotice, scale: scale, color: inks.text)
             }
         }
         .frame(width: size.width, height: size.height, alignment: .leading)
