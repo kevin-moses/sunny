@@ -12,6 +12,7 @@ const mockNative = {
   clearCredentials: jest.fn<AnyMock>(),
   syncSurfaces: jest.fn<AnyMock>(),
   flushPresses: jest.fn<AnyMock>(),
+  unsentPresses: jest.fn<() => unknown>(),
 };
 const mockCallAction = jest.fn<AnyMock>();
 const mockLogger = { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() };
@@ -49,6 +50,7 @@ beforeEach(() => {
   mockNative.clearCredentials.mockResolvedValue(true);
   mockNative.flushPresses.mockResolvedValue('clean');
   mockNative.syncSurfaces.mockResolvedValue(undefined);
+  mockNative.unsentPresses.mockReturnValue([]);
   mockCallAction.mockResolvedValue({ deviceToken: 'tok-1' });
 });
 
@@ -144,6 +146,16 @@ describe('syncWidget', () => {
     mockNative.setCredentials.mockRejectedValueOnce(new Error('keychain'));
     await syncWidget();
     expect(mockNative.flushPresses).not.toHaveBeenCalled();
+  });
+
+  it('reads the presses the widget still has to send once the flush is over', async () => {
+    const { syncWidget } = loadModule();
+    mockNative.storedSiteUrl.mockReturnValue(SITE);
+    await syncWidget();
+    expect(mockNative.unsentPresses).toHaveBeenCalledTimes(1);
+    expect(mockNative.flushPresses.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNative.unsentPresses.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('shares one run between overlapping calls', async () => {

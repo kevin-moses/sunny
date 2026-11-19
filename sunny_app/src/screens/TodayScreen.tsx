@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { buildAgenda } from '../day/format';
 import { confirmQueue } from '../day/pendingConfirms';
-import { applyPending } from '../day/pendingEntries';
+import { applyPending, overlayEntries } from '../day/pendingEntries';
 import type { DayViewState } from '../day/useDayView';
 import { dayIsCurrent, doneTarget, STALE_DAY_MESSAGE, useDoneAction } from '../day/useDoneAction';
 import { usePendingConfirms } from '../day/usePendingConfirms';
@@ -21,6 +21,7 @@ import {
 } from '../phone/PhoneParts';
 import { layout, paper, usePhoneFonts } from '../phone/theme';
 import { TalkButton } from '../voice/TalkButton';
+import { useUnsentWidgetPresses } from '../widget/sharedPresses';
 
 const TICK_MS = 30_000;
 
@@ -30,12 +31,14 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const fontsReady = usePhoneFonts();
   const { isWebSocketConnected } = useConvexConnectionState();
   const now = useTick(TICK_MS);
-  const pending = usePendingConfirms(confirmQueue);
-  const tasks = useMemo(() => applyPending(day?.tasks ?? [], pending), [day, pending]);
+  const queued = usePendingConfirms(confirmQueue);
+  const elsewhere = useUnsentWidgetPresses();
+  const pressed = useMemo(() => overlayEntries(queued, elsewhere), [queued, elsewhere]);
+  const tasks = useMemo(() => applyPending(day?.tasks ?? [], pressed), [day, pressed]);
   const agenda = useMemo(
     () =>
-      pending.length === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
-    [dayView.agenda, pending, day, tasks],
+      pressed.length === 0 ? dayView.agenda : buildAgenda(day === null ? null : { ...day, tasks }),
+    [dayView.agenda, pressed, day, tasks],
   );
   const stale = day !== null && !dayIsCurrent(day, now);
   const target = stale ? null : doneTarget(tasks, isWebSocketConnected);

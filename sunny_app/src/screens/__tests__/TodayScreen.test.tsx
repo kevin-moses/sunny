@@ -14,6 +14,7 @@ const mockStore = new Map<string, string>();
 let mockConnected = true;
 let mockFontsReady = true;
 const mockMutation = jest.fn<(...args: unknown[]) => Promise<unknown>>();
+const mockUnsentPresses = jest.fn<() => unknown[]>();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -24,6 +25,10 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'press-0000000000000001' }));
+jest.mock('../../../modules/sunny-widget', () => ({
+  __esModule: true,
+  default: { unsentPresses: () => mockUnsentPresses() },
+}));
 jest.mock('../../backend/convex', () => ({
   convex: {
     mutation: (...args: unknown[]) => mockMutation(...args),
@@ -176,6 +181,7 @@ beforeEach(() => {
   mockFontsReady = true;
   mockMutation.mockReset();
   mockMutation.mockResolvedValue({ status: 'confirmed' });
+  mockUnsentPresses.mockReturnValue([]);
 });
 
 afterEach(async () => {
@@ -282,6 +288,45 @@ describe('TodayScreen states', () => {
         (n.type as unknown) === 'View' && n.props.accessibilityLabel === '9:30 AM, Morning pills',
     );
     expect(row.props.accessibilityValue).toEqual({ text: 'Done' });
+  });
+
+  it('shows a task pressed on the widget or the Lock Screen as done while that press is unsent', () => {
+    mockUnsentPresses.mockReturnValue([
+      {
+        id: 'F2B4E6A8-0000-4000-8000-000000000001',
+        instanceId: 'pills',
+        step: 0,
+        pressedAt: NOW - 60_000,
+      },
+    ]);
+    const root = render(dayView([BREAKFAST, task(), LUNCH]));
+    expect(buttonLabels(root)).toEqual(['Talk to Sunny']);
+    const row = root.find(
+      (n) =>
+        (n.type as unknown) === 'View' && n.props.accessibilityLabel === '9:30 AM, Morning pills',
+    );
+    expect(row.props.accessibilityValue).toEqual({ text: 'Done' });
+  });
+
+  it('keeps showing the next step of a step task pressed elsewhere', () => {
+    mockUnsentPresses.mockReturnValue([
+      {
+        id: 'F2B4E6A8-0000-4000-8000-000000000002',
+        instanceId: 'pills',
+        step: 0,
+        pressedAt: NOW - 60_000,
+      },
+    ]);
+    const stepped = task({
+      checklistItems: ['Fill a glass', 'Take the small white ones with water.', 'Rinse'],
+      step: { index: 0, count: 3, text: 'Fill a glass' },
+    });
+    const root = render(dayView([stepped]));
+    expect(words(root).slice(0, 3)).toEqual([
+      'Now',
+      'Step 2 of 3',
+      'Take the small white ones with water.',
+    ]);
   });
 
   it('with nothing due says so and names the next item', () => {

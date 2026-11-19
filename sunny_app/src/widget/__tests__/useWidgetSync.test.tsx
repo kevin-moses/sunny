@@ -5,6 +5,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { SessionDecision } from '../../backend/pairing';
 import type { DayViewData } from '../../day/types';
+import { widgetPressMirror } from '../sharedPresses';
 import { useSurfaceSync, useWidgetSync } from '../useWidgetSync';
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
@@ -12,6 +13,8 @@ type AnyMock = (...args: unknown[]) => Promise<unknown>;
 const mockSync = jest.fn<AnyMock>();
 const mockClear = jest.fn<AnyMock>();
 const mockSurfaceSync = jest.fn<() => void>();
+const mockStopWatching = jest.fn();
+const mockWatchPresses = jest.fn((_watcher: unknown) => mockStopWatching);
 
 jest.mock('../widgetSync', () => {
   const actual = jest.requireActual<typeof import('../widgetSync')>('../widgetSync');
@@ -25,6 +28,10 @@ jest.mock('../widgetSync', () => {
 });
 
 jest.mock('../../../modules/sunny-widget', () => ({ __esModule: true, default: {} }));
+
+jest.mock('../../day/pendingConfirms', () => ({
+  confirmQueue: { watchPresses: (watcher: unknown) => mockWatchPresses(watcher) },
+}));
 
 jest.mock('../../backend/api', () => ({ callAction: jest.fn() }));
 
@@ -102,6 +109,14 @@ describe('useWidgetSync', () => {
     );
     expect(mockClear).toHaveBeenCalledTimes(1);
     expect(mockSync).not.toHaveBeenCalled();
+  });
+
+  it("mirrors the app's presses to the widget only while the phone is the paired senior phone", () => {
+    render(<SyncProbe decision={seniorPhone} />);
+    expect(mockWatchPresses).toHaveBeenCalledWith(widgetPressMirror);
+    render(<SyncProbe decision={{ state: 'signedOut' }} />);
+    expect(mockStopWatching).toHaveBeenCalledTimes(1);
+    expect(mockWatchPresses).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing while the session loads', () => {

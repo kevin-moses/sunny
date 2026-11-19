@@ -91,6 +91,14 @@ public struct PressQueue: Sendable {
         try? FileManager.default.removeItem(at: fileURL(for: id, in: pressesDirectory))
     }
 
+    public func mark(_ id: UUID, key: PressKey, at pressedAt: Date) throws {
+        try replace(JSONEncoder().encode(PressedMark(key: key, at: pressedAt)), at: fileURL(for: id, in: marksDirectory))
+    }
+
+    public func removeMark(_ id: UUID) {
+        try? FileManager.default.removeItem(at: fileURL(for: id, in: marksDirectory))
+    }
+
     public func pressed() -> Set<PressKey> {
         Set(marks().map(\.mark.key))
     }
@@ -146,6 +154,7 @@ public struct PressQueue: Sendable {
 
     private func replace(_ data: Data, at destination: URL) throws {
         let staged = try stage(data)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard rename(staged.path, destination.path) == 0 else {
             try? FileManager.default.removeItem(at: staged)
             throw CocoaError(.fileWriteUnknown)

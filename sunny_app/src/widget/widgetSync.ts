@@ -6,6 +6,7 @@ import { CONVEX_SITE_URL } from '../config';
 import type { DayViewData } from '../day/types';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
+import { readUnsentPresses } from './sharedPresses';
 
 export type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
 
@@ -62,6 +63,7 @@ export function syncWidget(): Promise<void> {
     .catch((e: unknown) => logger.warning('Widget', `Widget sync failed: ${errorMessage(e)}`))
     .finally(() => {
       syncRun = null;
+      readUnsentPresses();
     });
   return syncRun;
 }

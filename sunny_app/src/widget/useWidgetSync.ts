@@ -2,9 +2,11 @@ import { useEffect, useMemo } from 'react';
 import { AppState } from 'react-native';
 
 import type { SessionDecision } from '../backend/pairing';
+import { confirmQueue } from '../day/pendingConfirms';
 import type { DayViewData } from '../day/types';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
+import { widgetPressMirror } from './sharedPresses';
 import {
   clearWidget,
   syncSurfaces,
@@ -24,11 +26,15 @@ export function useWidgetSync(decision: SessionDecision): void {
       );
       return;
     }
+    const stopMirroring = confirmQueue.watchPresses(widgetPressMirror);
     void syncWidget();
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') void syncWidget();
     });
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      stopMirroring();
+    };
   }, [holder]);
 }
 

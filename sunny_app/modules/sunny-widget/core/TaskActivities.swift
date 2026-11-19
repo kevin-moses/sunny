@@ -133,4 +133,21 @@ extension WidgetSync {
         if result == .unauthorized { await TaskActivities.endAll(in: store) }
         return result
     }
+
+    public func markAppPress(id: UUID, instanceId: String, step: Int, pressedAt: Date, in store: TaskActivityStore) async throws {
+        try storage.presses.mark(id, key: PressKey(instanceId: instanceId, step: step), at: pressedAt)
+        await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, in: store)
+    }
+
+    public func answerAppPress(id: UUID) {
+        storage.presses.answered(id, at: clock())
+    }
+
+    public func withdrawAppPress(id: UUID) {
+        storage.presses.removeMark(id)
+    }
+
+    public func unsentPresses() -> [Press] {
+        storage.presses.pending()
+    }
 }

@@ -23,6 +23,11 @@ public actor PushStateReporter {
         await sync()
     }
 
+    public func markAppPress(_ widgetSync: WidgetSync, id: UUID, instanceId: String, step: Int, pressedAt: Date) async throws {
+        try await widgetSync.markAppPress(id: id, instanceId: instanceId, step: step, pressedAt: pressedAt, in: ActivityKitStore())
+        await sync()
+    }
+
     public func refreshFromPush() async {
         let flushed = await WidgetSync.live()?.replayPresses(timeout: WidgetSync.pressTimeout)
         await endAllIfUnauthorized(flushed, in: ActivityKitStore())

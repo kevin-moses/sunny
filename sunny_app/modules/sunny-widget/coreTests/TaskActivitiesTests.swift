@@ -320,3 +320,85 @@ final class LockedFlag: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+final class AppPressTests: XCTestCase {
+    private var directory: URL!
+    private var transport: FakeTransport!
+    private var clock: TestClock!
+    private let appPressId = UUID()
+
+    override func setUpWithError() throws {
+        directory = try temporaryDirectory()
+        transport = FakeTransport()
+        clock = TestClock(Fixture.generatedAt.addingTimeInterval(minutes(1)))
+    }
+
+    private func makeSync() -> WidgetSync {
+        let clock = self.clock!
+        return WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: MemoryTokenStore("token-1"),
+            sites: MemorySiteStore(URL(string: "https://example.convex.site")),
+            transport: transport,
+            clock: { clock.now }
+        )
+    }
+
+    private func pills() -> FakeActivityStore {
+        FakeActivityStore([shownActivity(key: "a", state: Sample.state(Sample.card(instanceId: "inst-morning-pills")))])
+    }
+
+    private func shown(_ plan: TimelinePlan) -> WidgetContent? { plan.entries.first?.content }
+
+    private func pressInApp(_ store: TaskActivityStore) async throws {
+        try await makeSync().markAppPress(
+            id: appPressId,
+            instanceId: "inst-morning-pills",
+            step: 0,
+            pressedAt: clock.now,
+            in: store
+        )
+    }
+
+    func testAnAppPressHidesTheCardOnTheWidgetAndShowsTheReceiptOnTheLockScreen() async throws {
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        let store = pills()
+        try await pressInApp(store)
+        guard case .clear = shown(makeSync().cachedPlan(locale: Fixture.unitedStates)) else {
+            return XCTFail("the widget shows a task the app already marked done")
+        }
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        guard case .clear = shown(await makeSync().refresh(locale: Fixture.unitedStates)) else {
+            return XCTFail("a fetch before the app's press reached the server shows it due again")
+        }
+        XCTAssertEqual(store.shown().first?.state.closed?.kind, .done)
+        XCTAssertEqual(makeSync().unsentPresses(), [])
+    }
+
+    func testAnUndoInTheAppShowsTheCardAgain() async throws {
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        try await pressInApp(pills())
+        makeSync().withdrawAppPress(id: appPressId)
+        guard case .due = shown(makeSync().cachedPlan(locale: Fixture.unitedStates)) else {
+            return XCTFail("the undone task is due again")
+        }
+    }
+
+    func testTheMarkGoesWithTheFirstFetchAfterTheServerAnsweredTheApp() async throws {
+        try await pressInApp(pills())
+        makeSync().answerAppPress(id: appPressId)
+        clock.advance(1)
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        guard case .due = shown(await makeSync().refresh(locale: Fixture.unitedStates)) else {
+            return XCTFail("the server's own answer decides once it has the press")
+        }
+    }
+
+    func testTheAppSeesPressesTheWidgetAndTheLockScreenHaveNotSent() async throws {
+        transport.queueConfirmFailure()
+        _ = await makeSync().pressDone(instanceId: "inst-morning-pills", step: 0, via: .widget)
+        XCTAssertEqual(makeSync().unsentPresses().map(\.key), [PressKey(instanceId: "inst-morning-pills", step: 0)])
+    }
+}
