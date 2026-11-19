@@ -200,3 +200,32 @@ describe("hasSentTo", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("a malformed Gmail answer", () => {
+  function raw(text: string): Response {
+    return new Response(text, { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  test.each([
+    ["listHistory", () => listHistory("tok", "100")],
+    ["listRecent", () => listRecent("tok", Date.now() - 86_400_000, 10)],
+    ["getProfile", () => getProfile("tok")],
+    ["getMessage", () => getMessage("tok", "m1")],
+    ["hasSentTo", () => hasSentTo("tok", "a@example.com")],
+  ])("is a GoogleApiError from %s", async (_, call) => {
+    for (const body of ["null", "[]", "not json", '"text"']) {
+      fetchMock.mockResolvedValueOnce(raw(body));
+      expect(await rejection(call())).toBeInstanceOf(GoogleApiError);
+    }
+  });
+
+  test("history records with odd shapes are skipped, not thrown", async () => {
+    fetchMock.mockResolvedValue(
+      json(200, {
+        history: [null, 5, { messagesAdded: [null, { message: null }, { message: { id: "a" } }] }],
+        historyId: "7",
+      }),
+    );
+    expect(await listHistory("tok", "100")).toEqual({ ids: ["a"], lastHistoryId: "7", next: null });
+  });
+});
