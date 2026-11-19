@@ -1,11 +1,9 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { isAnytimeInstance } from "./anytime";
 import { liveActivityStartMessage, utf8Length } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
-import { canonicalJson } from "./deviceState";
-import { isDueEntry } from "./dueTask";
+import { canonicalJson, isDue } from "./deviceState";
 import { taskCards, timelineTask } from "./phoneTimeline";
 import { minutes } from "./time";
 import type {
@@ -168,13 +166,6 @@ export function nextPushTimestamp(
   return row === null ? nowSeconds : Math.max(nowSeconds, row.pushTimestamp + 1);
 }
 
-function wantsActivity(
-  instance: Pick<Doc<"taskInstances">, "state" | "scheduledTime" | "windowEnd">,
-  now: number,
-): boolean {
-  return isDueEntry(instance) && !isAnytimeInstance(instance) && now < instance.windowEnd;
-}
-
 export function activityView(input: ViewInput, now: number): ActivityView {
   const was = showing(input.row);
   if (was.kind === "ended") {
@@ -194,7 +185,7 @@ export function activityView(input: ViewInput, now: number): ActivityView {
       receiptUntil(instance, input.phone),
     );
   }
-  if (!wantsActivity(instance, now)) {
+  if (!isDue(instance) || now >= instance.windowEnd) {
     return ended(content, { kind: "over", at: Math.min(now, instance.windowEnd) }, "window_closed");
   }
   const capAt = (was.kind === "open" ? was.since : now) + ACTIVITY_CAP_MS;
