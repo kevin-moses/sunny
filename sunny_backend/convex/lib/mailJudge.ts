@@ -22,6 +22,8 @@ import { addDays, daysBetween, isLocalDate, isoWeekday, localDate, WEEKDAY_NAMES
 export const JEV_MODEL = "jev-1.14.0";
 
 const JEV_TIMEOUT_MS = 20_000;
+export const MAX_JEV_BODY = 20_000;
+const BREAKS = ["\n\n", "\n", " "];
 
 const SURE = 0.7;
 const PAST_DATE_DAYS = 180;
@@ -299,6 +301,23 @@ export function judgeQuestions(
   };
 }
 
+function cutBody(text: string): string {
+  const head = text.slice(0, MAX_JEV_BODY + 1);
+  for (const separator of BREAKS) {
+    const at = head.lastIndexOf(separator);
+    if (at > MAX_JEV_BODY / 2) return text.slice(0, at).trimEnd();
+  }
+  return text.slice(0, MAX_JEV_BODY);
+}
+
+function bodyOf(text: string): Record<string, string> {
+  if (text.length <= MAX_JEV_BODY) return { body: text };
+  return {
+    body: cutBody(text),
+    body_cut: `The body was cut after ${MAX_JEV_BODY} characters; the rest is not shown.`,
+  };
+}
+
 export function judgeState(email: ParsedEmail): { email: Record<string, string> } {
   const invitation =
     email.ics === null
@@ -312,7 +331,7 @@ export function judgeState(email: ParsedEmail): { email: Record<string, string> 
       sender_name: email.sender.name,
       sender_address: email.sender.address,
       subject: email.subject,
-      body: email.text,
+      ...bodyOf(email.text),
       ...invitation,
     },
   };
