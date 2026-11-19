@@ -45,17 +45,21 @@ public protocol TaskActivityStore: Sendable {
 }
 
 public enum TaskActivities {
-    public static func showPress(instanceId: String, step: Int, at now: Date, in store: TaskActivityStore) async {
+    public static func showPress(
+        instanceId: String,
+        step: Int,
+        at now: Date,
+        withReceipt: Bool,
+        in store: TaskActivityStore
+    ) async {
         for activity in onScreen(store) where activity.attributes.instanceId == instanceId {
             switch PressEffect.after(activity.state, pressedStep: step, at: now) {
             case .advance(let next):
                 await store.update(id: activity.id, to: next, staleAt: activity.staleAt)
             case .finish(let receipt):
-                await store.end(
-                    id: activity.id,
-                    with: receipt,
-                    dismissal: .after(now.addingTimeInterval(activity.attributes.receiptDuration))
-                )
+                let dismissal: ActivityDismissal =
+                    withReceipt ? .after(now.addingTimeInterval(activity.attributes.receiptDuration)) : .immediate
+                await store.end(id: activity.id, with: receipt, dismissal: dismissal)
             case nil:
                 continue
             }
@@ -132,7 +136,7 @@ extension WidgetSync {
             return .noCredentials
         }
         let result = await pressDone(instanceId: instanceId, step: step, via: .liveActivity) { pressedAt in
-            await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, in: store)
+            await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, withReceipt: true, in: store)
         }
         if result == .unauthorized { await TaskActivities.endAll(in: store) }
         return result
@@ -140,7 +144,7 @@ extension WidgetSync {
 
     public func markAppPress(id: UUID, instanceId: String, step: Int, pressedAt: Date, in store: TaskActivityStore) async throws {
         try storage.presses.mark(id, key: PressKey(instanceId: instanceId, step: step), at: pressedAt)
-        await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, in: store)
+        await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, withReceipt: false, in: store)
     }
 
     public func answerAppPress(id: UUID) {

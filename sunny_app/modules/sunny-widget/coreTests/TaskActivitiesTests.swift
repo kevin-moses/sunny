@@ -77,14 +77,14 @@ final class TaskActivitiesTests: XCTestCase {
 
     func testAPressOnTheLastStepEndsWithTheReceiptForTheReceiptTime() async {
         let store = FakeActivityStore([shownActivity(key: "a", state: pills), shownActivity(key: "b", state: Sample.tea)])
-        await TaskActivities.showPress(instanceId: "inst-pills", step: 0, at: now, in: store)
+        await TaskActivities.showPress(instanceId: "inst-pills", step: 0, at: now, withReceipt: true, in: store)
         let receipt = Sample.state(Sample.card(instanceId: "inst-pills"), closed: ActivityClosed(kind: .done, at: now))
         XCTAssertEqual(store.calls, [.end(id: "id-a", state: receipt, dismissal: .after(now.addingTimeInterval(10)))])
     }
 
     func testAPressOnAnEarlierStepUpdatesToTheNextStepAndKeepsTheStaleDate() async {
         let store = FakeActivityStore([shownActivity(key: "b", state: Sample.tea)])
-        await TaskActivities.showPress(instanceId: "inst-tea", step: 0, at: now, in: store)
+        await TaskActivities.showPress(instanceId: "inst-tea", step: 0, at: now, withReceipt: true, in: store)
         guard case .update(let id, let state, let staleAt) = store.calls.first, store.calls.count == 1 else {
             return XCTFail("expected one update, got \(store.calls)")
         }
@@ -95,7 +95,7 @@ final class TaskActivitiesTests: XCTestCase {
 
     func testAPressOnAStepTheActivityNoLongerShowsLeavesItAlone() async {
         let store = FakeActivityStore([shownActivity(key: "b", state: Sample.tea)])
-        await TaskActivities.showPress(instanceId: "inst-tea", step: 2, at: now, in: store)
+        await TaskActivities.showPress(instanceId: "inst-tea", step: 2, at: now, withReceipt: true, in: store)
         XCTAssertEqual(store.calls, [])
     }
 
@@ -412,7 +412,7 @@ final class AppPressTests: XCTestCase {
         )
     }
 
-    func testAnAppPressHidesTheCardOnTheWidgetAndShowsTheReceiptOnTheLockScreen() async throws {
+    func testAnAppPressHidesTheCardOnTheWidgetAndEndsTheLockScreenActivity() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         let store = pills()
@@ -424,8 +424,24 @@ final class AppPressTests: XCTestCase {
         guard case .clear = shown(await makeSync().refresh(locale: Fixture.unitedStates)) else {
             return XCTFail("a fetch before the app's press reached the server shows it due again")
         }
-        XCTAssertEqual(store.shown().first?.state.closed?.kind, .done)
+        XCTAssertEqual(store.shown().first?.phase, .ended)
         XCTAssertEqual(makeSync().unsentPresses(), [])
+    }
+
+    func testAnAppPressOnTheLastStepEndsTheActivityAtOnceWithNoReceipt() async throws {
+        let store = pills()
+        try await pressInApp(store)
+        guard case .end(_, _, let dismissal) = store.calls.first, store.calls.count == 1 else {
+            return XCTFail("expected one end, got \(store.calls)")
+        }
+        XCTAssertEqual(dismissal, .immediate, "the Lock Screen kept a receipt the server's end push dismisses")
+    }
+
+    func testAnAppPressOnAnEarlierStepShowsTheNextStep() async throws {
+        let store = FakeActivityStore([shownActivity(key: "b", state: Sample.tea)])
+        try await makeSync().markAppPress(id: appPressId, instanceId: "inst-tea", step: 0, pressedAt: clock.now, in: store)
+        XCTAssertEqual(store.shown().first?.state.card.step, 1)
+        XCTAssertEqual(store.shown().first?.phase, .active)
     }
 
     func testAnUndoInTheAppShowsTheCardAgain() async throws {
