@@ -318,12 +318,28 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         try queue.append(Press(instanceId: "inst", step: 0, via: .widget, pressedAt: clock.now))
-        XCTAssertTrue(try makeSync().clear())
+        let removed = try await makeSync().clear()
+        XCTAssertTrue(removed)
         XCTAssertNil(tokens.read())
         XCTAssertNil(sites.read())
         XCTAssertNil(WidgetStorage(directory: directory).loadCache())
         XCTAssertEqual(queue.pending(), [])
-        XCTAssertFalse(try makeSync().clear())
+        let removedAgain = try await makeSync().clear()
+        XCTAssertFalse(removedAgain)
+    }
+
+    func testClearSendsQueuedPressesWithTheOldTokenBeforeItForgetsThem() async throws {
+        let start = clock.now
+        try queue.append(Press(instanceId: "inst-a", step: 0, via: .widget, pressedAt: start))
+        try queue.append(Press(instanceId: "inst-b", step: 0, via: .liveActivity, pressedAt: start.addingTimeInterval(1)))
+        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        transport.queueConfirmFailure()
+        let removed = try await makeSync().clear()
+        XCTAssertTrue(removed)
+        XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-a", "inst-b"])
+        XCTAssertEqual(transport.requests.first?.headers["Authorization"], "Bearer token-1")
+        XCTAssertNil(tokens.read())
+        XCTAssertEqual(queue.pending(), [])
     }
 
     func testStoreCredentialsWritesTokenAndSite() throws {

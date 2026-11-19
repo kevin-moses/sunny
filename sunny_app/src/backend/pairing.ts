@@ -6,6 +6,7 @@ import * as Crypto from 'expo-crypto';
 import { CONVEX_SITE_URL } from '../config';
 import { logger } from '../logging/logger';
 import { confirmQueue } from '../day/pendingConfirms';
+import { withTimeout } from '../day/withTimeout';
 import { unregisterStoredPushToken } from '../notifications/push';
 import { clearWidget } from '../widget/widgetSync';
 import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE } from './api';
@@ -54,6 +55,7 @@ const SIGN_IN_FAILED_MESSAGE = 'Could not finish connecting this device. Please 
 const PAIR_TIMEOUT_MESSAGE = 'Connecting took too long. Please try again.';
 export const UNREACHABLE_NOTICE = "Can't reach Sunny right now. Retrying...";
 const REMOVAL_RETRY_DELAYS_MS = [2000, 5000, 15_000, 30_000];
+export const UNPAIR_SEND_MS = 3000;
 let unpairRun: Promise<void> | null = null;
 
 export interface SessionInputs {
@@ -223,6 +225,9 @@ async function runUnpair(): Promise<void> {
   });
   if (hasSession) await attempt('unregister push token', unregisterStoredPushToken);
   await attempt('clear pairing attempt', () => AsyncStorage.removeItem(ATTEMPT_KEY));
+  await attempt('send pending confirms', () =>
+    withTimeout(confirmQueue.replay(), UNPAIR_SEND_MS, 'Sending the queued presses took too long'),
+  );
   await attempt('clear pending confirms', () => confirmQueue.clear());
   await attempt('clear widget', clearWidget);
   if (hasSession) await attempt('sign out', () => getClerkInstance().signOut());

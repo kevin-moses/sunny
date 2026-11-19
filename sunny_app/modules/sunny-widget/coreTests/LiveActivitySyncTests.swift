@@ -119,7 +119,7 @@ final class PushStateSyncTests: XCTestCase {
         _ = await sync.reportPushState(sync.storeWidgetPush(token: "0b0c"))
         XCTAssertEqual(transport.pushStateRequests.first?.json?.keys.sorted(), ["widgetPush"])
         XCTAssertEqual(sync.storedWidgetPush(), WidgetPushReport(token: "0b0c"))
-        try sync.clear()
+        try await sync.clear()
         XCTAssertEqual(makeSync().storedWidgetPush(), WidgetPushReport(token: "0b0c"))
     }
 }

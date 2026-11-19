@@ -36,7 +36,12 @@ public actor PushStateReporter {
         await lane.run {
             await TaskActivities.endAll(in: ActivityKitStore())
             _ = await widgetSync.reportPushState(.cleared)
-            let result = Result { try widgetSync.clear() }
+            let result: Result<Bool, Error>
+            do {
+                result = .success(try await widgetSync.clear())
+            } catch {
+                result = .failure(error)
+            }
             WidgetCenter.shared.reloadAllTimelines()
             return result
         }

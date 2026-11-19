@@ -11,6 +11,7 @@ public struct WidgetSync: Sendable {
     public static let fetchTimeout: TimeInterval = 10
     public static let pressTimeout: TimeInterval = 4
     public static let reportTimeout: TimeInterval = 10
+    public static let clearTimeout: TimeInterval = 3
 
     let storage: WidgetStorage
     let tokens: TokenStore
@@ -44,7 +45,8 @@ public struct WidgetSync: Sendable {
     }
 
     @discardableResult
-    public func clear() throws -> Bool {
+    public func clear() async throws -> Bool {
+        _ = await replayPresses(timeout: Self.clearTimeout)
         let removedCredentials = try storage.withCredentialsLock {
             let removedToken = tokens.remove(ifEqualTo: nil)
             let removedSite = sites.remove()
