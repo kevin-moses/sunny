@@ -12,6 +12,7 @@ import { getMessage, hasSentTo } from "./lib/gmailApi";
 import { AccessTokens } from "./lib/googleTokens";
 import type { StoredGrant } from "./lib/googleTokens";
 import { haikuClassifier, triageEmail } from "./lib/mailClassify";
+import { ignoredLabel } from "./lib/mailGate";
 import { carryOut, linkByKey, linkForEvent } from "./lib/mailEffects";
 import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
@@ -332,7 +333,9 @@ async function triageClaimed(
     await ctx.runMutation(internal.mailTriage.closeUnread, { itemId, attempt, rule });
     return rule;
   }
-  const known = await tokens.withToken((token) => hasSentTo(token, email.sender.address));
+  const known =
+    ignoredLabel(email) === null &&
+    (await tokens.withToken((token) => hasSentTo(token, email.sender.address)));
   const header = {
     sender: { ...email.sender, known },
     subject: email.subject,

@@ -39,9 +39,13 @@ function inviteSummary(ics: IcsEvent, start: { date: string; time: string }, wha
   return `${what}: ${ics.summary === "" ? "untitled event" : ics.summary} on ${start.date} at ${start.time}.`;
 }
 
+export function ignoredLabel(email: ParsedEmail): string | null {
+  return IGNORED_LABELS.find((l) => email.labels.includes(l)) ?? null;
+}
+
 export function gate(email: ParsedEmail, known: KnownInvite | null): GateResult {
-  const label = IGNORED_LABELS.find((l) => email.labels.includes(l));
-  if (label !== undefined) {
+  const label = ignoredLabel(email);
+  if (label !== null) {
     return settled({ kind: "ignore", summary: `Filed by Gmail as ${label}.` }, `label:${label}`);
   }
   const ics = email.ics;

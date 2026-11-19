@@ -539,6 +539,14 @@ describe("other verdicts", () => {
     expect((await rows(h, "chatPosts"))[0]!.body).toContain("could not sort this email");
   });
 
+  test("mail Gmail filed as a promotion is ignored without searching the sent folder", async () => {
+    const h = await setup();
+    const done = await triageEmail(h, clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }));
+    expect(done).toMatchObject({ state: "done", rule: "ignore: any", effects: [] });
+    expect(gmailMocks.hasSentTo).not.toHaveBeenCalled();
+    expect(modelCalls).toHaveLength(0);
+  });
+
   test("a message Gmail no longer has is done with no effects", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());
