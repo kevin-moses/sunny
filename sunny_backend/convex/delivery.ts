@@ -178,8 +178,9 @@ async function sendStart(
   }
   const unregistered = apnsAnswer(result) === "token_refused";
   if (unregistered) {
-    await ctx.runMutation(internal.phonePush.dropStartToken, {
+    await ctx.runMutation(internal.phonePush.dropToken, {
       deviceId: route.deviceId,
+      field: "liveActivityStart",
       token: route.token,
     });
   }

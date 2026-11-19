@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import type { Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
@@ -120,7 +121,9 @@ export function parsePushStateRequest(body: Record<string, unknown>): PushStateR
   return report;
 }
 
-type TokenField = "liveActivityStart" | "widgetPush";
+const tokenField = v.union(v.literal("liveActivityStart"), v.literal("widgetPush"));
+
+type TokenField = Infer<typeof tokenField>;
 
 function reportedTokens(report: PushStateReport): [TokenField, string | null][] {
   const tokens: [TokenField, string | null][] = [];
@@ -183,23 +186,16 @@ export const reportByToken = internalMutation({
   },
 });
 
-export const dropStartToken = internalMutation({
-  args: { deviceId: v.id("devices"), token: v.string() },
-  handler: async (ctx, args): Promise<null> => {
-    const row = await findPhonePush(ctx, args.deviceId);
-    if (row !== null && row.liveActivityStart?.token === args.token) {
-      await ctx.db.patch(row._id, { liveActivityStart: undefined });
-    }
-    return null;
+export const dropToken = internalMutation({
+  args: {
+    deviceId: v.id("devices"),
+    field: tokenField,
+    token: v.string(),
   },
-});
-
-export const dropWidgetToken = internalMutation({
-  args: { deviceId: v.id("devices"), token: v.string() },
   handler: async (ctx, args): Promise<null> => {
     const row = await findPhonePush(ctx, args.deviceId);
-    if (row !== null && row.widgetPush?.token === args.token) {
-      await ctx.db.patch(row._id, { widgetPush: undefined });
+    if (row !== null && row[args.field]?.token === args.token) {
+      await ctx.db.patch(row._id, { [args.field]: undefined });
     }
     return null;
   },
@@ -251,7 +247,7 @@ async function sendRefresh(
     return null;
   }
   for (const token of dead) {
-    await ctx.runMutation(internal.phonePush.dropWidgetToken, { deviceId, token });
+    await ctx.runMutation(internal.phonePush.dropToken, { deviceId, field: "widgetPush", token });
   }
   return null;
 }
