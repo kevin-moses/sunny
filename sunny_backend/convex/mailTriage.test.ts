@@ -35,6 +35,7 @@ vi.mock("./lib/secretBox", async (original) =>
 
 const NOW = Date.parse("2026-11-18T14:00:00Z");
 const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -341,6 +342,43 @@ describe("other verdicts", () => {
       seniorNoteId: note!._id,
     });
     expect(await rows(h, "chatPosts")).toHaveLength(0);
+  });
+
+  test("the fourth senior note of a local day goes to the caregivers without a push", async () => {
+    const h = await setup();
+    const done = [];
+    for (let i = 0; i < 4; i += 1) {
+      vi.setSystemTime(NOW + i * 60 * MINUTE);
+      done.push(
+        await triageEmail(h, clinic({ receivedAt: NOW + (i - 1) * 60 * MINUTE }), DELIVERY),
+      );
+    }
+    expect(done.map((d) => d.effects?.[0]?.kind)).toEqual([
+      "senior_note",
+      "senior_note",
+      "senior_note",
+      "told_caregivers",
+    ]);
+    expect(done[3]!.effects).toEqual([{ kind: "told_caregivers", pushed: false }]);
+    expect(await rows(h, "seniorNotes")).toHaveLength(3);
+    const pushes = await rows(h, "notificationOutbox");
+    expect(pushes.map((p) => p.kind)).toEqual(["senior_note", "senior_note", "senior_note"]);
+    const posts = await rows(h, "chatPosts");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toContain("daily limit");
+    expect(posts[0]!.body).toContain("Your package from the pharmacy arrives today.");
+  });
+
+  test("the note limit starts again on the next local day", async () => {
+    const h = await setup();
+    for (let i = 0; i < 3; i += 1) await triageEmail(h, clinic(), DELIVERY);
+    vi.setSystemTime(Date.parse("2026-11-19T05:30:00Z"));
+    const next = await triageEmail(
+      h,
+      clinic({ receivedAt: Date.parse("2026-11-19T05:00:00Z") }),
+      DELIVERY,
+    );
+    expect(next.effects?.[0]?.kind).toBe("senior_note");
   });
 
   test("a phishing email reaches the caregivers and never the senior", async () => {
@@ -737,21 +775,38 @@ describe("where Sunny's reading shows up", () => {
     expect((await context()).mailNotes).toEqual([]);
   });
 
-  test("the device state keeps the three newest unexpired notes", async () => {
+  test("the device state keeps the three newest unexpired notes among many rows", async () => {
     const h = await setup();
-    for (let i = 0; i < 4; i += 1) {
-      await triageEmail(
-        h,
-        clinic({ from: "Northgate <rx@northgate.example>", receivedAt: NOW - (40 - i) * MINUTE }),
-        DELIVERY,
-      );
-    }
+    await h.t.run(async (ctx) => {
+      const mailItemId = await ctx.db.insert("mailItems", {
+        householdId: h.householdId,
+        account: MAILBOX,
+        gmailId: "older",
+        state: "done",
+        attempt: 1,
+      });
+      const note = (receivedAt: number, expiresAt: number) =>
+        ctx.db.insert("seniorNotes", {
+          householdId: h.householdId,
+          mailItemId,
+          text: `Note ${receivedAt}`,
+          receivedAt,
+          expiresAt,
+        });
+      await note(NOW - 3 * DAY, NOW - DAY);
+      for (let i = 0; i < 60; i += 1) {
+        await note(NOW - DAY - i * MINUTE, Date.parse("2026-11-19T05:00:00Z"));
+      }
+      for (let i = 0; i < 3; i += 1) {
+        await note(NOW - (40 - i) * MINUTE, Date.parse("2026-11-20T05:00:00Z"));
+      }
+    });
     const notes = (await h.t.run(async (ctx) => await loadDeviceState(ctx, h.householdId, NOW)))
       .notes;
     expect(notes.map((n) => n.receivedAt)).toEqual([
-      NOW - 37 * MINUTE,
       NOW - 38 * MINUTE,
       NOW - 39 * MINUTE,
+      NOW - 40 * MINUTE,
     ]);
   });
 

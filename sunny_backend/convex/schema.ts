@@ -344,7 +344,7 @@ export default defineSchema({
     text: v.string(),
     receivedAt: v.number(),
     expiresAt: v.number(),
-  }).index("by_household_expires", ["householdId", "expiresAt"]),
+  }).index("by_household_received", ["householdId", "receivedAt"]),
 
   mailEventLinks: defineTable({
     householdId: v.id("households"),

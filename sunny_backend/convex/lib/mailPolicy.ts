@@ -29,7 +29,7 @@ import {
   zonedInstant,
 } from "./time";
 
-const STALE_AFTER_MS = DAY_MS;
+export const STALE_AFTER_MS = DAY_MS;
 const MAX_TITLE = 60;
 const MAX_PLACE = 120;
 const MAX_DAYS_AHEAD = 400;

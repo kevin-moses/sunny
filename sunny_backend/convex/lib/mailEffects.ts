@@ -8,15 +8,16 @@ import { householdCaregivers } from "./access";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, reachableMembers } from "./delivery";
-import { caregiverText } from "./mailPolicy";
+import { STALE_AFTER_MS, caregiverText } from "./mailPolicy";
 import type { Appointment, EscalationReason, MailEffect, PolicyFacts } from "./mailTypes";
-import { DAY_MS, dateLabel, formatTime12, weekdayName } from "./time";
+import { DAY_MS, dateLabel, formatTime12, localDate, weekdayName, zonedInstant } from "./time";
 import type { MailEffectRecord, NotificationKind } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
 const PUSH_LINES = 4;
 const MAX_PUSH_BODY = 300;
 const SENIOR_NOTE_TITLE = "Sunny";
+const MAX_NOTES_PER_DAY = 3;
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   mailEscalationPush: { kind: "token bucket", rate: 6, period: HOUR, capacity: 6 },
@@ -132,6 +133,22 @@ function escalationTitle(scope: EffectScope): string {
   return `Email for ${scope.household.seniorPreferredName} needs you`;
 }
 
+async function notesWrittenToday(scope: EffectScope): Promise<number> {
+  const { ctx, household, facts } = scope;
+  const startOfToday = zonedInstant(
+    localDate(facts.now, household.timezone),
+    "00:00",
+    household.timezone,
+  );
+  const recent = await ctx.db
+    .query("seniorNotes")
+    .withIndex("by_household_received", (q) =>
+      q.eq("householdId", household._id).gte("receivedAt", startOfToday - STALE_AFTER_MS),
+    )
+    .collect();
+  return recent.filter((note) => note._creationTime >= startOfToday).length;
+}
+
 function makeHandlers(effects: readonly MailEffect[]): Handlers {
   return {
     add_event: async (scope, effect) => {
@@ -184,6 +201,12 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
     },
     senior_note: async (scope, effect) => {
       const { ctx, household } = scope;
+      if ((await notesWrittenToday(scope)) >= MAX_NOTES_PER_DAY) {
+        const line = `Sunny held back this note for the senior because the daily limit of ${MAX_NOTES_PER_DAY} notes was reached: ${effect.text}`;
+        const body = caregiverText(scope.facts, [line, scope.summary]);
+        await postMail(ctx, household, scope.item._id, body, scope.facts.now);
+        return { kind: "told_caregivers", pushed: false };
+      }
       const noteId = await ctx.db.insert("seniorNotes", {
         householdId: household._id,
         mailItemId: scope.item._id,
