@@ -123,6 +123,7 @@ describe("the due cue on a phone that reported a start token", () => {
         activityKey: row!._id,
         instanceId,
         receiptMs: 10_000,
+        timeZone: "America/New_York",
       },
       "content-state": {
         card: {

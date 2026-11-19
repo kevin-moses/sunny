@@ -282,7 +282,7 @@ export interface ActivityAps {
 
 export interface StartAps extends ActivityAps {
   "attributes-type": string;
-  attributes: { activityKey: string; instanceId: string; receiptMs: number };
+  attributes: { activityKey: string; instanceId: string; receiptMs: number; timeZone: string };
   alert: { title: string; body: string; sound?: string };
   "stale-date": number;
   "relevance-score": number;

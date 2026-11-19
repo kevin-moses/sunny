@@ -1,6 +1,7 @@
 import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { loadHousehold } from "./access";
 import { isAnytimeInstance } from "./anytime";
 import { contentState, liveActivityStartMessage } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
@@ -34,6 +35,7 @@ export interface ActivityAttributes {
   activityKey: string;
   instanceId: Id<"taskInstances">;
   receiptMs: number;
+  timeZone: string;
 }
 
 export interface ActivitySubject {
@@ -539,10 +541,12 @@ export async function openActivity(
   } else {
     await ctx.db.patch(activityId, { shown: plan.content, pushTimestamp: plan.timestamp });
   }
+  const household = await loadHousehold(ctx, row.householdId);
   const attributes: ActivityAttributes = {
     activityKey: activityId,
     instanceId: plan.instanceId,
     receiptMs: RECEIPT_MS,
+    timeZone: household.timezone,
   };
   const alert = { title: row.title, body: row.body };
   return {

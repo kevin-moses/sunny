@@ -351,20 +351,6 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(sites.read(), site)
     }
 
-    func testTheLockScreenTellsTimeInTheHouseholdZoneOnceATimelineIsCached() async throws {
-        XCTAssertEqual(makeSync().householdTimeZone(), .autoupdatingCurrent)
-        var payload = try Fixture.object("due-task")
-        payload["timezone"] = "Asia/Tokyo"
-        transport.queueTimeline(200, body: try Fixture.json(payload))
-        _ = await makeSync().refresh(locale: Fixture.unitedStates)
-        let zone = makeSync().householdTimeZone()
-        XCTAssertEqual(zone.identifier, "Asia/Tokyo")
-        let pressed = Sample.state(Sample.card(), closed: ActivityClosed(kind: .done, at: Fixture.generatedAt))
-        let face = TaskActivityFace(state: pressed, isStale: false, timeZone: zone, locale: Fixture.unitedStates)
-        guard case .receipt(_, let noted) = face else { return XCTFail("expected the receipt") }
-        XCTAssertEqual(normalizedSpaces(noted), "Noted at 11:30 PM")
-    }
-
     func testCachedPlanUsesNoNetwork() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)

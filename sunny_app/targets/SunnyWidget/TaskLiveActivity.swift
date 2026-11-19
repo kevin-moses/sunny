@@ -30,7 +30,7 @@ struct TaskLiveActivity: Widget {
         TaskActivityFace(
             state: context.state,
             isStale: context.isStale,
-            timeZone: WidgetSync.live()?.householdTimeZone() ?? .autoupdatingCurrent,
+            timeZone: context.attributes.householdTimeZone,
             locale: .autoupdatingCurrent
         )
     }

@@ -59,7 +59,12 @@ func shownActivity(
 ) -> ShownActivity {
     ShownActivity(
         id: id ?? "id-\(key)",
-        attributes: SunnyTaskAttributes(activityKey: key, instanceId: state.card.instanceId, receiptMs: 10_000),
+        attributes: SunnyTaskAttributes(
+            activityKey: key,
+            instanceId: state.card.instanceId,
+            receiptMs: 10_000,
+            timeZone: "America/New_York"
+        ),
         state: state,
         staleAt: staleAt,
         token: token,

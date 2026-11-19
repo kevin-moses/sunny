@@ -202,13 +202,13 @@ Start (`aps`):
 ```
 "timestamp": seconds, "event": "start",
 "attributes-type": "SunnyTaskAttributes",
-"attributes": { "activityKey": string, "instanceId": string, "receiptMs": 10000 },
+"attributes": { "activityKey": string, "instanceId": string, "receiptMs": 10000, "timeZone": string },
 "content-state": ContentState,
 "alert": { "title", "body", "sound": "default" },
 "stale-date": seconds, "relevance-score": number
 ```
 
-- `activityKey` is the id of the activity's `liveActivities` row. `receiptMs` is how long the phone shows the receipt after a Done press.
+- `activityKey` is the id of the activity's `liveActivities` row. `receiptMs` is how long the phone shows the receipt after a Done press. `timeZone` is the household's IANA zone, in which the phone shows every time on the activity.
 - `alert` holds the prompt's own title and spoken sentence, so the start and the notification say the same words. A start for a task that came back after an undo or a reopen has no `sound` key. `startAlert` in `lib/apnsPayload.ts` is the one place that decides this. The alert body is cut until the payload fits 4,096 bytes.
 - `stale-date` is the window end, or 7 hours 50 minutes after the start if that is sooner (`ACTIVITY_CAP_MS`). The push expires at the same instant, so a phone that comes back online later does not get an activity that is already stale.
 - `relevance-score` is 4,000,000,000 minus the window start in seconds. An earlier task ranks higher.
@@ -492,7 +492,7 @@ Files:
 
 | Path | What it is |
 | --- | --- |
-| `core/SunnyTaskAttributes.swift` | `SunnyTaskAttributes` (`activityKey`, `instanceId`, `receiptMs`) and its content state `TaskActivityState` (`card`, `nextSteps`, `closed`). The card is the timeline's `TaskCard`, which now also decodes and encodes the optional `icon`. Times are epoch milliseconds, read and written with a plain `JSONDecoder` and `JSONEncoder`. |
+| `core/SunnyTaskAttributes.swift` | `SunnyTaskAttributes` (`activityKey`, `instanceId`, `receiptMs`, `timeZone`) and its content state `TaskActivityState` (`card`, `nextSteps`, `closed`). The card is the timeline's `TaskCard`, which now also decodes and encodes the optional `icon`. Times are epoch milliseconds, read and written with a plain `JSONDecoder` and `JSONEncoder`. |
 | `core/TaskActivityFace.swift` | `TaskActivityFace`, the one mapping from content and `isStale` to what is drawn: `due`, `receipt` (after Done on the last step of this activity, "Noted at 9:41 AM" where Done was) or `over` (dimmed, no Done). `PressEffect` is the one rule the phone applies before the server answers: a press on the last step gives the receipt, and a press on an earlier step shows the next step from `nextSteps`. |
 | `core/TaskActivities.swift` | What the phone does to its activities, written against the `TaskActivityStore` protocol so it is tested without ActivityKit: show a press, apply the report's directives, end duplicates, end all, and build the report. |
 | `core/PushState.swift` | The report's encoding, the reply's directives, and `RefreshPush`, which recognizes the background refresh push. |
@@ -533,7 +533,7 @@ Not verified, since nothing was run on a simulator or device:
 
 The widget extension cannot end activities on a 401 it gets itself (from a timeline request). The token is removed then, and the app's next report ends every activity when the keychain says the token item does not exist (`errSecItemNotFound`). A keychain it cannot read, for example before the first unlock after a restart, is not treated as missing credentials, and that report sends nothing and ends nothing.
 
-Times on the Live Activity, the "Noted at" receipt included, are in the household's zone from the cached timeline, as on the widget, and in the phone's zone only before the first timeline is cached. A Done in the app that is undone after the app marked it natively cannot bring back an activity that the press already ended; the server starts one again only when the Undo reaches it and reopens a task it had confirmed. When the press and the Undo are both made offline, the task shows as due again in the app and on the widget, but has no Live Activity while the phone stays offline. Once it is online, the app sends the press and then the Undo, the server confirms the task and reopens it, and the reopen queues a reshow (`senior_reshow`) that starts the activity again.
+Times on the Live Activity, the "Noted at" receipt included, are in the household's zone that the start push carries in its attributes, as on the widget. A zone that iOS does not know falls back to the phone's zone. A Done in the app that is undone after the app marked it natively cannot bring back an activity that the press already ended; the server starts one again only when the Undo reaches it and reopens a task it had confirmed. When the press and the Undo are both made offline, the task shows as due again in the app and on the widget, but has no Live Activity while the phone stays offline. Once it is online, the app sends the press and then the Undo, the server confirms the task and reopens it, and the reopen queues a reshow (`senior_reshow`) that starts the activity again.
 
 ## sunny_agent
 

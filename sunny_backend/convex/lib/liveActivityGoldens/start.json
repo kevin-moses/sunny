@@ -15,7 +15,8 @@
       "attributes": {
         "activityKey": "k97f2ea1p6d8s3m5x7c9v2b4n6q8w0zt",
         "instanceId": "jd7c4zq9x2m5k8v1b3n6h0w4t6s2r8ya",
-        "receiptMs": 10000
+        "receiptMs": 10000,
+        "timeZone": "America/New_York"
       },
       "content-state": {
         "card": {
