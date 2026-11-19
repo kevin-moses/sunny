@@ -1,11 +1,12 @@
 import { JEV_MODEL, triageEmail } from "../../convex/lib/mailJudge";
 import type { AskJev, JevReply } from "../../convex/lib/mailJudge";
-import { linkKey, planWithRule, titleOf } from "../../convex/lib/mailPolicy";
+import { icsKey, linkKey, planWithRule } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
 import {
   APPOINTMENT_TITLES,
   ESCALATION_REASONS,
   SENIOR_SENTENCES,
+  appointmentTitle,
 } from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
@@ -255,7 +256,7 @@ export function exactViolations(effects: readonly MailEffect[]): string[] {
           : [`senior note is not one of Sunny's sentences: ${JSON.stringify(e.text)}`];
       case "add_event":
       case "reschedule_event": {
-        const title = titleOf(e.appointment);
+        const title = appointmentTitle(e.appointment.kind, e.appointment.time);
         return [
           ...(APPOINTMENT_TITLES.has(title)
             ? []
@@ -282,8 +283,7 @@ function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
   const { email, household } = fixture;
   const clock = { now: household.now, timezone: household.timezone };
-  const known =
-    email.ics !== null && `ics:${email.ics.uid}` in household.links ? { sequence: 0 } : null;
+  const known = email.ics !== null && icsKey(email.ics) in household.links ? { sequence: 0 } : null;
   const started = performance.now();
   const triaged = await triageEmail(email, clock, known, ask);
   const latencyMs = performance.now() - started;

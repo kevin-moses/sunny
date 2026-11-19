@@ -43,7 +43,7 @@ function env(name: string): string {
   return value;
 }
 
-function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse> {
+export function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse> {
   return timedFetch(url, init, REQUEST_TIMEOUT_MS);
 }
 

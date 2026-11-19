@@ -1,4 +1,3 @@
-import { APIConnectionError, APIError, TypeSafeError } from "@typesafe-ai/sdk";
 import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -22,9 +21,10 @@ import {
 } from "./lib/access";
 import { audit } from "./lib/audit";
 import { postMailbox } from "./lib/chatPosts";
+import { pushToCaregivers } from "./lib/delivery";
 import { ConfigError, appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
-import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError } from "./lib/google";
+import { GMAIL_SCOPE } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
 import {
   AccessTokens,
@@ -32,11 +32,12 @@ import {
   revokeUnusedGrant,
   scheduleGrantRevoke,
 } from "./lib/googleTokens";
-import { pushToCaregivers } from "./lib/mailEffects";
-import { JevAnswerError } from "./lib/mailJudge";
+import type { StoredGrant } from "./lib/googleTokens";
+import { mailFailure } from "./lib/mailFailure";
 import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
-import { SecretUnreadable, encryptSecret } from "./lib/secretBox";
+import type { FlowOwner } from "./lib/oauthFlow";
+import { encryptSecret } from "./lib/secretBox";
 import { DAY_MS } from "./lib/time";
 import type {
   MailboxStatus,
@@ -45,7 +46,6 @@ import type {
   StoredSender,
   VerdictKind,
 } from "./lib/validators";
-import type { FlowOwner } from "./googleOauth";
 
 const BACKFILL_WINDOW_MS = 7 * DAY_MS;
 const BACKFILL_MAX_MESSAGES = 50;
@@ -55,11 +55,7 @@ const POLL_ALL_PAGE = 100;
 const DEFAULT_RECENT_MAIL = 20;
 const MAX_RECENT_MAIL = 100;
 
-const REVOKED_MESSAGE = "Google access was revoked; reconnect the senior's Gmail.";
-const UNREADABLE_MESSAGE = "Reconnect Gmail: Sunny could not read the saved Google sign-in.";
-const FORBIDDEN_MESSAGE = "Google denied Sunny access to the mailbox; reconnect Gmail.";
 const POLL_FAILED_MESSAGE = "Sunny could not check the mailbox; it will try again.";
-const RETRYABLE_JEV_STATUSES = new Set([408, 429]);
 
 type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "failed";
 
@@ -129,6 +125,12 @@ async function insertUnseen(
   return inserted;
 }
 
+export function assertMailboxEditor(member: Doc<"householdMembers">): void {
+  if (!EDITOR_ROLES.includes(member.role)) {
+    throw appError("forbidden", "Only a primary caregiver or member can connect the mailbox");
+  }
+}
+
 export const saveMailbox = internalMutation({
   args: {
     householdId: v.id("households"),
@@ -139,10 +141,7 @@ export const saveMailbox = internalMutation({
     ids: v.array(v.string()),
   },
   handler: async (ctx, args): Promise<Id<"mailboxes">> => {
-    const member = await requireCaregiverMember(ctx, args.householdId, args.userId);
-    if (!EDITOR_ROLES.includes(member.role)) {
-      throw appError("forbidden", "Only a primary caregiver or member can connect the mailbox");
-    }
+    assertMailboxEditor(await requireCaregiverMember(ctx, args.householdId, args.userId));
     const fields = {
       connectedBy: args.userId,
       accountEmail: googleAccount(args.accountEmail),
@@ -324,34 +323,14 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
-export type MailFailure =
-  | { kind: "mailbox"; status: "revoked" | "error"; error: string }
-  | { kind: "permanent" }
-  | { kind: "retry" };
-
-export function mailFailure(e: unknown): MailFailure {
-  if (e instanceof SecretUnreadable) {
-    return { kind: "mailbox", status: "error", error: UNREADABLE_MESSAGE };
-  }
-  if (e instanceof GoogleAccessRevoked) {
-    return { kind: "mailbox", status: "revoked", error: REVOKED_MESSAGE };
-  }
-  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
-    return { kind: "mailbox", status: "error", error: FORBIDDEN_MESSAGE };
-  }
-  if (e instanceof ConfigError || e instanceof JevAnswerError) return { kind: "permanent" };
-  if (e instanceof GoogleApiError) {
-    return !e.retryable && e.status !== 401 ? { kind: "permanent" } : { kind: "retry" };
-  }
-  if (e instanceof APIError) {
-    return e.status < 500 && !RETRYABLE_JEV_STATUSES.has(e.status)
-      ? { kind: "permanent" }
-      : { kind: "retry" };
-  }
-  if (e instanceof TypeSafeError && !(e instanceof APIConnectionError)) {
-    return { kind: "permanent" };
-  }
-  return { kind: "retry" };
+export async function mailboxTokens(
+  ctx: ActionCtx,
+  mailboxId: Id<"mailboxes">,
+  grant: StoredGrant,
+): Promise<AccessTokens> {
+  return await new AccessTokens(grant, async (accessToken, expiresAt) => {
+    await ctx.runMutation(internal.gmail.saveMailboxToken, { mailboxId, accessToken, expiresAt });
+  }).load();
 }
 
 async function settlePollError(
@@ -385,9 +364,7 @@ export const poll = internalAction({
       console.log(`Gmail poll skipped: ${start.reason}`);
       return "skipped";
     }
-    const tokens = await new AccessTokens(start, async (accessToken, expiresAt) => {
-      await ctx.runMutation(internal.gmail.saveMailboxToken, { mailboxId, accessToken, expiresAt });
-    }).load();
+    const tokens = await mailboxTokens(ctx, mailboxId, start);
     try {
       const found = await gather(tokens, start);
       await ctx.runMutation(internal.gmail.recordNew, {

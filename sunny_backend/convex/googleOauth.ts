@@ -9,10 +9,10 @@ import {
   internalQuery,
 } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { EDITOR_ROLES, isDeviceIdentity, requireCaregiverMember, SYSTEM_ACTOR } from "./lib/access";
+import { isDeviceIdentity, requireCaregiverMember, SYSTEM_ACTOR } from "./lib/access";
 import { audit } from "./lib/audit";
 import { appError, errorText, isAppError } from "./lib/errors";
-import { finishMailbox } from "./gmail";
+import { assertMailboxEditor, finishMailbox } from "./gmail";
 import { finishCalendar } from "./googleCalendar";
 import {
   CALENDAR_SCOPE,
@@ -37,14 +37,10 @@ import {
   readFlowCookie,
   sha256Base64Url,
 } from "./lib/oauthFlow";
+import type { FlowOwner } from "./lib/oauthFlow";
 import { constantTimeEqual, decryptSecret, encryptSecret, randomToken } from "./lib/secretBox";
 import { oauthPurpose } from "./lib/validators";
 import type { OAuthPurpose } from "./lib/validators";
-
-export interface FlowOwner {
-  userId: string;
-  householdId: Id<"households">;
-}
 
 interface PurposeConfig {
   scope: string;
@@ -52,7 +48,7 @@ interface PurposeConfig {
   finish(ctx: ActionCtx, flow: FlowOwner, tokens: GoogleGrant): Promise<Response>;
 }
 
-export const GOOGLE_PURPOSES: Record<OAuthPurpose, PurposeConfig> = {
+const GOOGLE_PURPOSES: Record<OAuthPurpose, PurposeConfig> = {
   calendar: { scope: CALENDAR_SCOPE, prompt: "consent", finish: finishCalendar },
   mailbox: { scope: GMAIL_SCOPE, prompt: "consent select_account", finish: finishMailbox },
 };
@@ -78,9 +74,7 @@ export const assertMayConnect = internalQuery({
   args: { householdId: v.id("households"), userId: v.string(), purpose: oauthPurpose },
   handler: async (ctx, { householdId, userId, purpose }): Promise<null> => {
     const member = await requireCaregiverMember(ctx, householdId, userId);
-    if (purpose === "mailbox" && !EDITOR_ROLES.includes(member.role)) {
-      throw appError("forbidden", "Only a primary caregiver or member can connect the mailbox");
-    }
+    if (purpose === "mailbox") assertMailboxEditor(member);
     return null;
   },
 });
@@ -229,11 +223,12 @@ export const accountInUse = internalQuery({
       .query("mailboxes")
       .withIndex("by_account", (q) => q.eq("accountEmail", accountEmail))
       .first();
+    if (mailbox !== null) return true;
     const calendar = await ctx.db
       .query("calendarConnections")
       .withIndex("by_account", (q) => q.eq("accountEmail", accountEmail))
       .first();
-    return mailbox !== null || calendar !== null;
+    return calendar !== null;
   },
 });
 

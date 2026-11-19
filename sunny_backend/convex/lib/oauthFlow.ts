@@ -1,3 +1,4 @@
+import type { Id } from "../_generated/dataModel";
 import { toBase64Url } from "./base64";
 import { NO_STORE } from "./httpResponse";
 import { minutes } from "./time";
@@ -6,6 +7,11 @@ export const OAUTH_TICKET_TTL_MS = minutes(5);
 export const OAUTH_FLOW_TTL_MS = minutes(10);
 export const FLOW_COOKIE = "__Host-sunny_google_flow";
 const COOKIE_ATTRIBUTES = "Path=/; Secure; HttpOnly; SameSite=Lax";
+
+export interface FlowOwner {
+  userId: string;
+  householdId: Id<"households">;
+}
 
 export async function sha256Base64Url(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -30,7 +36,7 @@ export function readFlowCookie(request: Request): string | null {
   return null;
 }
 
-export function escapeHtml(text: string): string {
+function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 

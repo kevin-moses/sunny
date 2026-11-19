@@ -5,13 +5,13 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { mailFailure } from "./gmail";
+import { mailboxTokens } from "./gmail";
 import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
-import { AccessTokens } from "./lib/googleTokens";
-import type { StoredGrant } from "./lib/googleTokens";
+import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { carryOut, linkByKey } from "./lib/mailEffects";
+import { mailFailure } from "./lib/mailFailure";
 import { askJev, triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
 import {
@@ -25,7 +25,7 @@ import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
-import { MINUTE_MS, addDays, localDate, zonedInstant } from "./lib/time";
+import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 import type { StoredSender } from "./lib/validators";
 
@@ -237,11 +237,7 @@ async function calendarChangesToday(
   household: Doc<"households">,
   now: number,
 ): Promise<number> {
-  const startOfToday = zonedInstant(
-    localDate(now, household.timezone),
-    "00:00",
-    household.timezone,
-  );
+  const startOfToday = localMidnight(now, household.timezone);
   const changed = await ctx.db
     .query("mailItems")
     .withIndex("by_household_calendar_changed", (q) =>
@@ -396,13 +392,7 @@ export const triage = internalAction({
   handler: async (ctx, { itemId }): Promise<TriageOutcome> => {
     const claim: Claim = await ctx.runMutation(internal.mailTriage.claimItem, { itemId });
     if (claim.kind === "skip") return "skipped";
-    const tokens = await new AccessTokens(claim.grant, async (accessToken, expiresAt) => {
-      await ctx.runMutation(internal.gmail.saveMailboxToken, {
-        mailboxId: claim.mailboxId,
-        accessToken,
-        expiresAt,
-      });
-    }).load();
+    const tokens = await mailboxTokens(ctx, claim.mailboxId, claim.grant);
     try {
       return await triageClaimed(ctx, itemId, claim, tokens);
     } catch (e) {
