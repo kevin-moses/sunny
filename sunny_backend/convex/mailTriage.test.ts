@@ -1,3 +1,4 @@
+import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -496,9 +497,10 @@ describe("the item lifecycle", () => {
         receivedAt: NOW - 30 * MINUTE,
       }),
     );
+    const workId = (await item(h, itemId)).jobId!;
     const complete = () =>
       h.t.mutation(internal.mailTriage.onMailJobComplete, {
-        workId: "w" as never,
+        workId,
         context: { itemId },
         result: { kind: "failed", error: "boom" },
       });
@@ -537,11 +539,34 @@ describe("the item lifecycle", () => {
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 
+  test("a failed job leaves alone a row that a newer job holds", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    const firstJob = (await item(h, itemId)).jobId;
+    vi.setSystemTime(NOW + 16 * MINUTE);
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
+    const secondJob = (await item(h, itemId)).jobId;
+    expect(secondJob).toBeDefined();
+    expect(secondJob).not.toBe(firstJob);
+    const fail = (workId: WorkId) =>
+      h.t.mutation(internal.mailTriage.onMailJobComplete, {
+        workId,
+        context: { itemId },
+        result: { kind: "failed", error: "boom" },
+      });
+    await fail(firstJob!);
+    expect((await item(h, itemId)).state).toBe("queued");
+    expect(await rows(h, "chatPosts")).toHaveLength(0);
+    await fail(secondJob!);
+    expect((await item(h, itemId)).state).toBe("failed");
+    expect(await rows(h, "chatPosts")).toHaveLength(1);
+  });
+
   test("a job that fails before reading the message posts without sender or subject", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());
     await h.t.mutation(internal.mailTriage.onMailJobComplete, {
-      workId: "w" as never,
+      workId: (await item(h, itemId)).jobId!,
       context: { itemId },
       result: { kind: "failed", error: "boom" },
     });

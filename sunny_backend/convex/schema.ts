@@ -1,3 +1,4 @@
+import { vWorkIdValidator } from "@convex-dev/workpool";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
@@ -324,6 +325,7 @@ export default defineSchema({
     state: mailItemState,
     attempt: v.number(),
     leaseUntil: v.optional(v.number()),
+    jobId: v.optional(vWorkIdValidator),
     sender: v.optional(mailSender),
     subject: v.optional(v.string()),
     receivedAt: v.optional(v.number()),

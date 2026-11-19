@@ -383,10 +383,11 @@ function unreadPost(item: Doc<"mailItems">, household: Doc<"households">, now: n
 
 export const onMailJobComplete = internalMutation({
   args: vOnCompleteArgs(v.object({ itemId: v.id("mailItems") })),
-  handler: async (ctx, { context, result }): Promise<null> => {
+  handler: async (ctx, { workId, context, result }): Promise<null> => {
     if (result.kind !== "failed") return null;
     const item = await ctx.db.get(context.itemId);
-    if (!item || (item.state !== "queued" && item.state !== "triaging")) return null;
+    if (!item || item.jobId !== workId) return null;
+    if (item.state !== "queued" && item.state !== "triaging") return null;
     console.error(`Mail triage failed: ${result.error}`);
     await failUnread(ctx, item);
     return null;
