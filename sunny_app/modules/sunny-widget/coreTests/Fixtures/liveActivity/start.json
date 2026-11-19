@@ -1,0 +1,36 @@
+{
+  "aps": {
+    "timestamp": 1795098600,
+    "event": "start",
+    "attributes-type": "SunnyTaskAttributes",
+    "attributes": {
+      "activityKey": "act-pills-1",
+      "instanceId": "inst-pills",
+      "receiptMs": 10000
+    },
+    "content-state": {
+      "card": {
+        "kind": "task",
+        "instanceId": "inst-pills",
+        "step": 0,
+        "stepCount": 1,
+        "stepText": null,
+        "label": "Morning pills",
+        "sentence": "Take your morning pills.",
+        "detail": "the small white ones",
+        "startsAt": 1795098600000,
+        "endsAt": 1795102200000,
+        "icon": "pills"
+      },
+      "nextSteps": [],
+      "closed": null
+    },
+    "alert": {
+      "title": "Morning pills",
+      "body": "Take your morning pills.",
+      "sound": "default"
+    },
+    "stale-date": 1795102200,
+    "relevance-score": 2204901400
+  }
+}

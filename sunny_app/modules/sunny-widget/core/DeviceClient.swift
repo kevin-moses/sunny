@@ -30,6 +30,12 @@ public enum FetchOutcome: Equatable, Sendable {
     case failed
 }
 
+public enum PushStateOutcome: Equatable, Sendable {
+    case answered(PushStateReply)
+    case unauthorized
+    case failed
+}
+
 public struct DeviceClient: Sendable {
     let siteURL: URL
     let token: String
@@ -64,6 +70,21 @@ public struct DeviceClient: Sendable {
         return request
     }
 
+    public func pushStateRequest(_ report: PushStateReport, timeout: TimeInterval) -> URLRequest {
+        var request = authorized(path: "device/push-state", timeout: timeout)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? report.encoded()
+        return request
+    }
+
+    public func reportPushState(_ report: PushStateReport, timeout: TimeInterval) async -> PushStateOutcome {
+        guard let (data, response) = try? await transport.send(pushStateRequest(report, timeout: timeout)) else {
+            return .failed
+        }
+        return Self.pushStateOutcome(status: response.statusCode, body: data)
+    }
+
     public func fetchTimeline(etag: String?, timeout: TimeInterval) async -> FetchOutcome {
         guard let (data, response) = try? await transport.send(timelineRequest(etag: etag, timeout: timeout)) else {
             return .failed
@@ -94,6 +115,14 @@ public struct DeviceClient: Sendable {
         case 400: return .unreadable
         case 401: return .unauthorized
         case 429: return .rateLimited(retryAfter: retryAfter(headers))
+        default: return .failed
+        }
+    }
+
+    static func pushStateOutcome(status: Int, body: Data) -> PushStateOutcome {
+        switch status {
+        case 200: return .answered(PushStateReply.decode(body))
+        case 401: return .unauthorized
         default: return .failed
         }
     }

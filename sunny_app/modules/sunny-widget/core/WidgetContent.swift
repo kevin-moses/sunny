@@ -9,6 +9,10 @@ public enum WidgetWords {
     public static let openSunny = "Open Sunny to see your day."
     public static let appName = "Sunny"
     public static let next = "Next"
+
+    public static func noted(at time: String) -> String {
+        "Noted at \(time)"
+    }
 }
 
 public struct DueContent: Equatable, Sendable {
@@ -18,14 +22,40 @@ public struct DueContent: Equatable, Sendable {
     public let label: String
     public let line: String?
     public let detail: String?
+    public let icon: TaskIcon?
 
-    public init(instanceId: String, step: Int, time: String, label: String, line: String?, detail: String?) {
+    public init(
+        instanceId: String,
+        step: Int,
+        time: String,
+        label: String,
+        line: String?,
+        detail: String?,
+        icon: TaskIcon?
+    ) {
         self.instanceId = instanceId
         self.step = step
         self.time = time
         self.label = label
         self.line = line
         self.detail = detail
+        self.icon = icon
+    }
+
+    public static func from(_ task: TaskCard, timeZone: TimeZone, locale: Locale) -> DueContent {
+        DueContent(
+            instanceId: task.instanceId,
+            step: task.step,
+            time: ClockFormat.time(task.startsAt, in: timeZone, locale: locale),
+            label: task.label,
+            line: task.stepCount > 1 ? task.stepText : task.sentence,
+            detail: task.detail,
+            icon: task.icon
+        )
+    }
+
+    public var symbolName: String {
+        TaskIcon.symbolName(icon)
     }
 
     public var spokenSummary: String {
@@ -102,16 +132,7 @@ public enum WidgetContent: Equatable, Sendable {
         let clock = { (date: Date) in ClockFormat.time(date, in: timeZone, locale: locale) }
         switch pick {
         case .task(let task):
-            return .due(
-                DueContent(
-                    instanceId: task.instanceId,
-                    step: task.step,
-                    time: clock(task.startsAt),
-                    label: task.label,
-                    line: task.stepCount > 1 ? task.stepText : task.sentence,
-                    detail: task.detail
-                )
-            )
+            return .due(DueContent.from(task, timeZone: timeZone, locale: locale))
         case .clear(let clear):
             return .clear(
                 ClearContent(

@@ -10,6 +10,7 @@ public enum FlushResult: String, Equatable, Sendable {
 public struct WidgetSync: Sendable {
     public static let fetchTimeout: TimeInterval = 10
     public static let pressTimeout: TimeInterval = 4
+    public static let reportTimeout: TimeInterval = 10
 
     let storage: WidgetStorage
     let tokens: TokenStore
@@ -90,6 +91,29 @@ public struct WidgetSync: Sendable {
             }
         }
         return .clean
+    }
+
+    public func reportPushState(_ report: PushStateReport) async -> PushStateReply? {
+        guard let client = client() else { return nil }
+        switch await client.reportPushState(report, timeout: Self.reportTimeout) {
+        case .answered(let reply):
+            return reply
+        case .unauthorized:
+            dropToken(client.token)
+            return nil
+        case .failed:
+            return nil
+        }
+    }
+
+    public func storedWidgetPush() -> WidgetPushReport? {
+        storage.loadWidgetPush()
+    }
+
+    public func recordWidgetPush(token: String) async {
+        let report = WidgetPushReport(token: token)
+        try? storage.saveWidgetPush(report)
+        _ = await reportPushState(PushStateReport(liveActivityStart: nil, activities: nil, widgetPush: report))
     }
 
     public func cachedPlan(locale: Locale) -> TimelinePlan {

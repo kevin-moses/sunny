@@ -21,6 +21,7 @@ public struct WidgetStorage: Sendable {
 
     private var cacheURL: URL { directory.appendingPathComponent("timeline.json") }
     private var lockURL: URL { directory.appendingPathComponent("credentials.lock") }
+    private var widgetPushURL: URL { directory.appendingPathComponent("widgetPush.json") }
 
     public func loadCache() -> CachedTimeline? {
         guard
@@ -35,6 +36,17 @@ public struct WidgetStorage: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(CacheEnvelope(etag: etag, body: body))
         try data.write(to: cacheURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    public func loadWidgetPush() -> WidgetPushReport? {
+        guard let data = try? Data(contentsOf: widgetPushURL) else { return nil }
+        return try? JSONDecoder().decode(WidgetPushReport.self, from: data)
+    }
+
+    public func saveWidgetPush(_ report: WidgetPushReport) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(report)
+        try data.write(to: widgetPushURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     @discardableResult

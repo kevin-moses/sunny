@@ -28,7 +28,8 @@ struct SunnyEntry: TimelineEntry {
                     time: time,
                     label: "Morning pills",
                     line: "Take your morning pills.",
-                    detail: "the small white ones"
+                    detail: "the small white ones",
+                    icon: .pills
                 )
             )
         )

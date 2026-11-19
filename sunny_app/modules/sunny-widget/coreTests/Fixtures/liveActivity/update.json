@@ -1,0 +1,24 @@
+{
+  "aps": {
+    "timestamp": 1795099500,
+    "event": "update",
+    "content-state": {
+      "card": {
+        "kind": "task",
+        "instanceId": "inst-tea",
+        "step": 1,
+        "stepCount": 3,
+        "stepText": "Put a tea bag in the blue cup on the counter by the window.",
+        "label": "Make tea",
+        "sentence": "Time to make tea.",
+        "detail": null,
+        "startsAt": 1795098600000,
+        "endsAt": 1795102200000,
+        "icon": "checklist"
+      },
+      "nextSteps": ["Pour the water."],
+      "closed": null
+    },
+    "stale-date": 1795102200
+  }
+}

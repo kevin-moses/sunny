@@ -122,6 +122,7 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var timelineReplies: [Reply?] = []
     private var confirmReplies: [Reply?] = []
+    private var pushStateReplies: [Reply?] = []
     private(set) var requests: [RecordedRequest] = []
 
     func queueTimeline(_ status: Int, body: Data = Data(), headers: [String: String] = [:]) {
@@ -146,6 +147,18 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
         lock.lock()
         confirmReplies.append(nil)
         lock.unlock()
+    }
+
+    func queuePushState(_ status: Int, body: Data = Data()) {
+        lock.lock()
+        pushStateReplies.append((status, body, [:]))
+        lock.unlock()
+    }
+
+    var pushStateRequests: [RecordedRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests.filter { $0.path == "/device/push-state" }
     }
 
     var confirmBodies: [[String: Any]] {
@@ -176,6 +189,10 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
             if url.path == "/device/confirm" {
                 guard !confirmReplies.isEmpty else { return nil }
                 return confirmReplies.removeFirst()
+            }
+            if url.path == "/device/push-state" {
+                guard !pushStateReplies.isEmpty else { return nil }
+                return pushStateReplies.removeFirst()
             }
             guard !timelineReplies.isEmpty else { return nil }
             return timelineReplies.removeFirst()

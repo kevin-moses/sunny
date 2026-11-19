@@ -1,0 +1,24 @@
+{
+  "aps": {
+    "timestamp": 1795102200,
+    "event": "end",
+    "content-state": {
+      "card": {
+        "kind": "task",
+        "instanceId": "inst-pills",
+        "step": 0,
+        "stepCount": 1,
+        "stepText": null,
+        "label": "Morning pills",
+        "sentence": "Take your morning pills.",
+        "detail": "the small white ones",
+        "startsAt": 1795098600000,
+        "endsAt": 1795102200000,
+        "icon": "pills"
+      },
+      "nextSteps": [],
+      "closed": { "kind": "over", "at": 1795102200000 }
+    },
+    "dismissal-date": 1795102200
+  }
+}
