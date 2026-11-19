@@ -1,4 +1,5 @@
 import type { Doc, Id } from "../_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { isAnytimeInstance } from "./anytime";
 import { contentState } from "./apnsPayload";
 import { isDoneState } from "./confirmRule";
@@ -11,6 +12,7 @@ import type {
   ActivityContent,
   ActivityEndReason,
   LiveActivityPhase,
+  ReportedActivity,
 } from "./validators";
 
 export const ACTIVITY_CAP_MS = minutes(470);
@@ -18,6 +20,8 @@ export const ACTIVITY_CAP_MS = minutes(470);
 export const RECEIPT_MS = 10_000;
 
 export const CONTENT_MAX_BYTES = 3_000;
+
+export const REPORT_GRACE_MS = 60_000;
 
 const RELEVANCE_BASE_SECONDS = 4_000_000_000;
 
@@ -113,7 +117,9 @@ function showing(row: ActivityRow | null): Showing {
   }
 }
 
-export function isOpenPhase(phase: LiveActivityPhase): boolean {
+export type OpenPhase = Exclude<LiveActivityPhase, { kind: "ended" }>;
+
+export function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
   return phase.kind !== "ended";
 }
 
@@ -157,4 +163,139 @@ export function nextCommand(row: ActivityRow, view: ActivityView): ActivityComma
   }
   if (sameContent(row.shown, view.content)) return { kind: "none" };
   return { kind: "update", token, content: view.content, staleAt: view.staleAt };
+}
+
+export type ActivityDirective =
+  | { key: string; directive: "update"; content: ActivityContent; staleAt: number }
+  | { key: string; directive: "end"; content: ActivityContent | null };
+
+export function reportedPhase(phase: OpenPhase, token: string | null, now: number): OpenPhase {
+  switch (phase.kind) {
+    case "starting":
+      return token === null
+        ? { kind: "started", acceptedAt: now, proof: "proven" }
+        : { kind: "live", acceptedAt: now, updateToken: token, tokenAt: now };
+    case "started":
+      if (token !== null) {
+        return { kind: "live", acceptedAt: phase.acceptedAt, updateToken: token, tokenAt: now };
+      }
+      return phase.proof === "proven" ? phase : { ...phase, proof: "proven" };
+    case "live":
+      return token === null || token === phase.updateToken
+        ? phase
+        : { ...phase, updateToken: token, tokenAt: now };
+  }
+}
+
+export async function loadActivityView(
+  ctx: QueryCtx,
+  row: Doc<"liveActivities">,
+  now: number,
+): Promise<ActivityView> {
+  const instance = await ctx.db.get(row.taskInstanceId);
+  const task = instance === null ? null : await ctx.db.get(instance.taskId);
+  const device = await ctx.db.get(row.deviceId);
+  const phoneCanConfirm = device !== null && device.tokenHash !== undefined;
+  if (instance === null || task === null) {
+    return activityView({ subject: null, row, phoneCanConfirm }, now);
+  }
+  return activityView({ subject: { instance, task }, row, phoneCanConfirm }, now);
+}
+
+export async function endActivity(
+  ctx: MutationCtx,
+  row: Doc<"liveActivities">,
+  reason: ActivityEndReason,
+  now: number,
+  shown: ActivityContent = row.shown,
+): Promise<void> {
+  await ctx.db.patch(row._id, { phase: { kind: "ended", at: now, reason }, shown });
+}
+
+async function endAsViewed(
+  ctx: MutationCtx,
+  row: Doc<"liveActivities">,
+  view: ActivityView,
+  now: number,
+): Promise<void> {
+  if (view.kind === "end") await endActivity(ctx, row, view.reason, now, view.content);
+  else await endActivity(ctx, row, "ended_on_phone", now);
+}
+
+export async function openActivitiesOf(
+  ctx: QueryCtx,
+  deviceId: Id<"devices">,
+): Promise<Doc<"liveActivities">[]> {
+  const rows = await ctx.db
+    .query("liveActivities")
+    .withIndex("by_device", (q) => q.eq("deviceId", deviceId))
+    .collect();
+  return rows.filter((row) => isOpenPhase(row.phase));
+}
+
+function isOnPhone(reported: ReportedActivity): boolean {
+  return reported.state === "active" || reported.state === "stale";
+}
+
+async function applyReportedActivity(
+  ctx: MutationCtx,
+  row: Doc<"liveActivities">,
+  phase: OpenPhase,
+  reported: ReportedActivity,
+  now: number,
+): Promise<ActivityDirective[]> {
+  const view = await loadActivityView(ctx, row, now);
+  if (!isOnPhone(reported)) {
+    await endAsViewed(ctx, row, view, now);
+    return [];
+  }
+  const next = reportedPhase(phase, reported.token, now);
+  if (next !== phase) await ctx.db.patch(row._id, { phase: next });
+  if (view.kind === "end") {
+    return [{ key: reported.key, directive: "end", content: contentState(view.content) }];
+  }
+  if (sameContent(row.shown, view.content)) return [];
+  return [
+    {
+      key: reported.key,
+      directive: "update",
+      content: contentState(view.content),
+      staleAt: view.staleAt,
+    },
+  ];
+}
+
+export async function applyActivityReport(
+  ctx: MutationCtx,
+  device: Doc<"devices">,
+  reported: ReportedActivity[],
+  now: number,
+): Promise<ActivityDirective[]> {
+  const listed = new Set<Id<"liveActivities">>();
+  const directives: ActivityDirective[] = [];
+  for (const entry of reported) {
+    const id = ctx.db.normalizeId("liveActivities", entry.key);
+    const row = id === null ? null : await ctx.db.get(id);
+    if (row === null || row.deviceId !== device._id) {
+      if (isOnPhone(entry)) directives.push({ key: entry.key, directive: "end", content: null });
+      continue;
+    }
+    if (listed.has(row._id)) continue;
+    listed.add(row._id);
+    if (!isOpenPhase(row.phase)) {
+      if (isOnPhone(entry)) {
+        directives.push({ key: entry.key, directive: "end", content: contentState(row.shown) });
+      }
+      continue;
+    }
+    directives.push(...(await applyReportedActivity(ctx, row, row.phase, entry, now)));
+  }
+  for (const row of await openActivitiesOf(ctx, device._id)) {
+    if (listed.has(row._id) || row.phase.kind === "ended" || row.phase.kind === "starting") {
+      continue;
+    }
+    if (now - row.phase.acceptedAt < REPORT_GRACE_MS) continue;
+    await endAsViewed(ctx, row, await loadActivityView(ctx, row, now), now);
+  }
+  return directives;
 }

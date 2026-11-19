@@ -91,6 +91,7 @@ import type * as lib_voiceTasks from "../lib/voiceTasks.js";
 import type * as lists from "../lists.js";
 import type * as pairing from "../pairing.js";
 import type * as phone from "../phone.js";
+import type * as phonePush from "../phonePush.js";
 import type * as profile from "../profile.js";
 import type * as scheduler from "../scheduler.js";
 import type * as sms from "../sms.js";
@@ -187,6 +188,7 @@ declare const fullApi: ApiFromModules<{
   lists: typeof lists;
   pairing: typeof pairing;
   phone: typeof phone;
+  phonePush: typeof phonePush;
   profile: typeof profile;
   scheduler: typeof scheduler;
   sms: typeof sms;

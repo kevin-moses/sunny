@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
+  activityContent,
   actorKind,
   calendarConnectionStatus,
   calendarSyncState,
@@ -16,12 +17,14 @@ import {
   joinGrant,
   lifeCategory,
   listActorKind,
+  liveActivityPhase,
   memberRole,
   memorySource,
   messageSender,
   notificationKind,
   outboxState,
   questionOutcome,
+  reportedPushToken,
   taskCreator,
   taskType,
   toolCall,
@@ -219,6 +222,25 @@ export default defineSchema({
     .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
     .index("by_state", ["state"]),
+
+  liveActivities: defineTable({
+    householdId: v.id("households"),
+    deviceId: v.id("devices"),
+    taskInstanceId: v.id("taskInstances"),
+    windowEnd: v.number(),
+    phase: liveActivityPhase,
+    shown: activityContent,
+  })
+    .index("by_instance", ["taskInstanceId"])
+    .index("by_household_phase", ["householdId", "phase.kind"])
+    .index("by_device", ["deviceId"]),
+
+  phonePush: defineTable({
+    deviceId: v.id("devices"),
+    liveActivityStart: v.optional(reportedPushToken),
+    widgetPush: v.optional(reportedPushToken),
+    blindSince: v.optional(v.number()),
+  }).index("by_device", ["deviceId"]),
 
   digests: defineTable({
     householdId: v.id("households"),

@@ -219,3 +219,27 @@ export const calendarSyncState = v.union(
   v.literal("running"),
   v.literal("dirty"),
 );
+
+export const REPORTED_ACTIVITY_STATES = ["active", "stale", "ended", "dismissed"] as const;
+export const reportedActivityState = v.union(
+  ...REPORTED_ACTIVITY_STATES.map((state) => v.literal(state)),
+);
+export type ReportedActivityState = Infer<typeof reportedActivityState>;
+
+export const reportedActivity = v.object({
+  key: v.string(),
+  token: v.union(v.string(), v.null()),
+  state: reportedActivityState,
+});
+export type ReportedActivity = Infer<typeof reportedActivity>;
+
+export const pushStateReport = v.object({
+  liveActivityStart: v.optional(
+    v.object({ token: v.union(v.string(), v.null()), enabled: v.boolean() }),
+  ),
+  activities: v.optional(v.array(reportedActivity)),
+  widgetPush: v.optional(v.object({ token: v.union(v.string(), v.null()) })),
+});
+export type PushStateReport = Infer<typeof pushStateReport>;
+
+export const reportedPushToken = v.object({ token: v.string(), reportedAt: v.number() });

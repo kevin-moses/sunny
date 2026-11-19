@@ -338,7 +338,7 @@ export async function gate(ctx: ActionCtx, request: Request): Promise<string | R
   return tokenHash;
 }
 
-async function readJsonObject(request: Request): Promise<Record<string, unknown> | string> {
+export async function readJsonObject(request: Request): Promise<Record<string, unknown> | string> {
   const tooLarge = "The request body is too large";
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_CHARS) return tooLarge;
   const text = await request.text();
@@ -355,7 +355,10 @@ async function readJsonObject(request: Request): Promise<Record<string, unknown>
   return body as Record<string, unknown>;
 }
 
-function unknownKey(body: Record<string, unknown>, allowed: readonly string[]): string | null {
+export function unknownKey(
+  body: Record<string, unknown>,
+  allowed: readonly string[],
+): string | null {
   const extra = Object.keys(body).find((k) => !allowed.includes(k));
   return extra === undefined ? null : `Unknown field ${extra}`;
 }
