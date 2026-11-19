@@ -14,12 +14,13 @@ import {
   endActivity,
   findPhonePush,
   loadActivityView,
+  loadSubject,
   nextCommand,
   openActivitiesOf,
 } from "./liveActivity";
 import { taskCards, timelineTask } from "./phoneTimeline";
 import { DAY_MS } from "./time";
-import type { ActivityView } from "./liveActivity";
+import type { ActivitySubject, ActivityView } from "./liveActivity";
 import type { ActivityEndReason, ConfirmVia } from "./validators";
 import { phonePressedOn, requestWidgetRefresh, wakePhoneToReport } from "./widgetRefresh";
 
@@ -101,6 +102,23 @@ function wasPrompted(instance: Pick<Doc<"taskInstances">, "firedSteps">): boolea
   return instance.firedSteps.some((step) => step.action === "prompt_senior");
 }
 
+async function queueSeniorCue(
+  ctx: MutationCtx,
+  kind: "senior_prompt" | "senior_reshow",
+  { instance, task }: ActivitySubject,
+  deviceId: Id<"devices">,
+  payload: Record<string, unknown> = {},
+): Promise<void> {
+  await insertNotification(ctx, {
+    householdId: instance.householdId,
+    kind,
+    taskInstanceId: instance._id,
+    recipientDeviceId: deviceId,
+    ...seniorPromptWords(task, instance),
+    payload: { taskId: task._id, localDate: instance.localDate, ...payload },
+  });
+}
+
 async function queueReshow(
   ctx: MutationCtx,
   instance: Doc<"taskInstances">,
@@ -108,14 +126,7 @@ async function queueReshow(
 ): Promise<void> {
   const task = await ctx.db.get(instance.taskId);
   if (task === null || !(await canShowAgain(ctx, instance._id, device, Date.now()))) return;
-  await insertNotification(ctx, {
-    householdId: instance.householdId,
-    kind: "senior_reshow",
-    taskInstanceId: instance._id,
-    recipientDeviceId: device._id,
-    ...seniorPromptWords(task, instance),
-    payload: { taskId: task._id, localDate: instance.localDate },
-  });
+  await queueSeniorCue(ctx, "senior_reshow", { instance, task }, device._id);
 }
 
 export async function reshowIfDue(
@@ -210,16 +221,10 @@ export async function proofMissed(
   if (push !== null) await ctx.db.patch(push._id, { blindSince: now });
   await syncActivity(ctx, missed, now);
   if (row.quiet) return;
-  const instance = await ctx.db.get(row.taskInstanceId);
-  const task = instance === null ? null : await ctx.db.get(instance.taskId);
-  if (instance === null || task === null || !isDueEntry(instance)) return;
-  await insertNotification(ctx, {
-    householdId: row.householdId,
-    kind: "senior_prompt",
-    taskInstanceId: instance._id,
-    recipientDeviceId: row.deviceId,
-    ...seniorPromptWords(task, instance),
-    payload: { taskId: task._id, localDate: instance.localDate, unprovenActivity: row._id },
+  const subject = await loadSubject(ctx, row.taskInstanceId);
+  if (subject === null || !isDueEntry(subject.instance)) return;
+  await queueSeniorCue(ctx, "senior_prompt", subject, row.deviceId, {
+    unprovenActivity: row._id,
   });
 }
 

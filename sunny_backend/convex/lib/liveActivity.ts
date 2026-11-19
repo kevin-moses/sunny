@@ -236,20 +236,27 @@ function reportedPhase(phase: OpenPhase, token: string | null, now: number): Ope
   }
 }
 
+export async function loadSubject(
+  ctx: QueryCtx,
+  instanceId: Id<"taskInstances">,
+): Promise<ActivitySubject | null> {
+  const instance = await ctx.db.get(instanceId);
+  const task = instance === null ? null : await ctx.db.get(instance.taskId);
+  return instance === null || task === null ? null : { instance, task };
+}
+
 export async function loadActivityView(
   ctx: QueryCtx,
   row: Doc<"liveActivities">,
   now: number,
 ): Promise<ActivityView> {
-  const instance = await ctx.db.get(row.taskInstanceId);
-  const task = instance === null ? null : await ctx.db.get(instance.taskId);
+  const subject = await loadSubject(ctx, row.taskInstanceId);
   const device = await ctx.db.get(row.deviceId);
   const phone: ActivityPhone = {
     userId: device?.userId ?? null,
     canConfirm: device !== null && device.tokenHash !== undefined,
   };
-  if (instance === null || task === null) return activityView({ subject: null, row, phone }, now);
-  return activityView({ subject: { instance, task }, row, phone }, now);
+  return activityView({ subject, row, phone }, now);
 }
 
 export async function endActivity(
@@ -411,7 +418,7 @@ export async function findPhonePush(
     .unique();
 }
 
-function isActivityCue(row: Doc<"notificationOutbox">): row is Doc<"notificationOutbox"> & {
+export function isSeniorCue(row: Doc<"notificationOutbox">): row is Doc<"notificationOutbox"> & {
   taskInstanceId: Id<"taskInstances">;
   recipientDeviceId: Id<"devices">;
 } {
@@ -462,9 +469,9 @@ async function planStartOf(
   if (push === null || push.liveActivityStart === undefined || push.blindSince !== undefined) {
     return null;
   }
-  const instance = await ctx.db.get(cue.instanceId);
-  const task = instance === null ? null : await ctx.db.get(instance.taskId);
-  if (instance === null || task === null) return null;
+  const subject = await loadSubject(ctx, cue.instanceId);
+  if (subject === null) return null;
+  const { instance } = subject;
   const rows = await activitiesFor(ctx, instance._id, device._id);
   const { outboxId } = cue;
   const resume = outboxId === null ? null : (rows.find((r) => isStartOf(r, outboxId)) ?? null);
@@ -474,11 +481,7 @@ async function planStartOf(
   const open = (await openActivitiesOf(ctx, device._id)).filter((r) => r._id !== resume?._id);
   if (open.length >= MAX_OPEN_ACTIVITIES) return null;
   const view = activityView(
-    {
-      subject: { instance, task },
-      row: resume,
-      phone: { userId: device.userId, canConfirm: true },
-    },
+    { subject, row: resume, phone: { userId: device.userId, canConfirm: true } },
     now,
   );
   if (view.kind !== "show") return null;
@@ -500,7 +503,7 @@ export async function planStart(
   device: Doc<"devices">,
   now: number,
 ): Promise<StartPlan | null> {
-  if (!isActivityCue(row)) return null;
+  if (!isSeniorCue(row)) return null;
   const cue = {
     instanceId: row.taskInstanceId,
     outboxId: row._id,
@@ -553,7 +556,7 @@ async function startOf(
   ctx: QueryCtx,
   row: Doc<"notificationOutbox">,
 ): Promise<Doc<"liveActivities"> | null> {
-  if (!isActivityCue(row)) return null;
+  if (!isSeniorCue(row)) return null;
   const rows = await activitiesFor(ctx, row.taskInstanceId, row.recipientDeviceId);
   return rows.find((r) => isStartOf(r, row._id)) ?? null;
 }

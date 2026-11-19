@@ -6,7 +6,7 @@ import { findMember, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
 import { isDueEntry } from "./dueTask";
-import { openActivity, planStart } from "./liveActivity";
+import { isSeniorCue, openActivity, planStart } from "./liveActivity";
 import type { ApnsMessage, NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
@@ -108,8 +108,7 @@ async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promi
   if (!instance) return "instance_gone";
   const done = instance.state === "confirmed" || instance.state === "resolved";
   if (row.kind === "caregiver_alert" && done) return "instance_closed";
-  const promptsSenior = row.kind === "senior_prompt" || row.kind === "senior_reshow";
-  if (promptsSenior && !isDueEntry(instance)) return "instance_closed";
+  if (isSeniorCue(row) && !isDueEntry(instance)) return "instance_closed";
   return null;
 }
 
