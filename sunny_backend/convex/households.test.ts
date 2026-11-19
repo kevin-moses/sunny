@@ -50,9 +50,10 @@ async function pairDevice(
   t: TestConvex,
   householdId: Id<"households">,
   userId: string,
+  editor = "user_a",
 ): Promise<Id<"devices">> {
   const { code } = await t
-    .withIdentity({ subject: "user_a" })
+    .withIdentity({ subject: editor })
     .mutation(api.households.createJoinCode, { householdId, grants: "home_display" });
   const result = await t.mutation(internal.households.pairDevice, { code, userId });
   return result.deviceId;
@@ -1031,7 +1032,26 @@ describe("push tokens", () => {
     expect(await owners(t, TOK_1)).toEqual(["user_a"]);
   });
 
-  test("a token owned by a paired device is not taken over by another device", async () => {
+  test("a phone paired again after an offline unpair takes its token from the old device row", async () => {
+    const t = makeBackend();
+    const first = await createHousehold(t);
+    await pairDevice(t, first, "device_1");
+    await t.withIdentity({ subject: "device_1" }).mutation(api.households.registerPushToken, {
+      token: TOK_1,
+    });
+    const second = await t.withIdentity({ subject: "user_b" }).mutation(api.households.create, {
+      seniorPreferredName: "Joe",
+      timezone: NY,
+      caregiverDisplayName: "Bea",
+    });
+    await pairDevice(t, second, "device_2", "user_b");
+    await t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
+      token: TOK_1,
+    });
+    expect(await owners(t, TOK_1)).toEqual(["device_2"]);
+  });
+
+  test("a device account that is not paired does not take a paired device's token", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     await pairDevice(t, householdId, "device_1");
@@ -1039,9 +1059,9 @@ describe("push tokens", () => {
       token: TOK_1,
     });
     await expect(
-      t.withIdentity({ subject: "device_2" }).mutation(api.households.registerPushToken, {
-        token: TOK_1,
-      }),
+      t
+        .withIdentity({ subject: "device_new", sunny_kind: "device" })
+        .mutation(api.households.registerPushToken, { token: TOK_1 }),
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
     expect(await owners(t, TOK_1)).toEqual(["device_1"]);
   });

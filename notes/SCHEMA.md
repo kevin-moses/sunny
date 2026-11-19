@@ -39,8 +39,9 @@ Rules:
 - A household always keeps at least one primary: the last primary cannot be demoted or removed.
 - A device's `userId` is a Clerk user made at pairing. Re-pairing creates a new user, so a push token held by an orphaned user (no device row, no membership) may be taken over.
   - Between caregivers, a token moves to whoever registers it last. One phone has one token, and the newest caregiver to sign in on it holds that token. An earlier caregiver whose sign-out could not unregister the token therefore stops getting that household's pushes on that phone.
-  - A paired device's token never moves, and a device never takes a live caregiver's token (`households.registerPushToken`).
-- Takeover lets a caregiver who knows another caregiver's raw APNs token move it to their own account. We accept this because:
+  - A paired device's token moves only to another paired device that registers it. One phone has one token and one signed-in account, so a paired device that registers a token another device row holds is that phone paired again, for example after an unpair made offline that left the old row in place. The old row loses the token, in any household, as the start and widget tokens do (`phonePush`), so the old row's notifications stop reaching the phone under its new pairing.
+  - A caregiver never takes a paired device's token, and a device never takes a live caregiver's token (`households.registerPushToken`).
+- Takeover lets a caregiver who knows another caregiver's raw APNs token, or a paired device that knows another device's, move it to their own account. We accept this because:
   - the token is never shown to other users;
   - APNs still delivers only to the physical phone that owns it;
   - the previous owner's rows then reach them by SMS, or not at all without a verified phone, as for anyone without the app;

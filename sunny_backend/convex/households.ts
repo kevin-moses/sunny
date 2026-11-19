@@ -426,9 +426,10 @@ async function mayTakeOverToken(
   callerId: string,
 ): Promise<boolean> {
   if (await isOrphanedUser(ctx, ownerId)) return true;
-  if (await findDevice(ctx, ownerId)) return false;
+  const callerDevice = await findDevice(ctx, callerId);
+  if (await findDevice(ctx, ownerId)) return callerDevice !== null;
   const identity = await ctx.auth.getUserIdentity();
-  return !isDeviceAccount(identity, await findDevice(ctx, callerId));
+  return !isDeviceAccount(identity, callerDevice);
 }
 
 export const registerPushToken = mutation({
