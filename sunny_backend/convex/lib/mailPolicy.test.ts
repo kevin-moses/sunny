@@ -80,6 +80,8 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
   };
 }
 
+const CANCELLED_HEARING: LinkedEvent = { eventId: "evt_gone", date: "2026-12-10", time: "14:15" };
+
 function linkTo(eventId: string): LinkedEvent {
   const event = EVENTS.find((e) => e.eventId === eventId);
   if (event === undefined) throw new Error(eventId);
@@ -172,13 +174,21 @@ describe("planWithRule decision table", () => {
       expect(kinds(effects)).toEqual(["escalate:unclear_appointment:true"]);
     });
 
-    test("already linked to an event is already on the calendar", () => {
-      expect(effectsOf(newAppointment(), facts({ linked: linkTo("evt_eye") }))).toEqual([
+    test("linked to a cancelled event at its slot is already on the calendar and not added again", () => {
+      expect(effectsOf(newAppointment(), facts({ linked: CANCELLED_HEARING }))).toEqual([
         {
           kind: "already_on_calendar",
-          eventId: "evt_eye",
+          eventId: "evt_gone",
           appointmentKey: "appt:2026-12-10:14:15:hearing appointment",
         },
+      ]);
+    });
+
+    test("a slot link whose event has moved away is not the appointment, so it is added", () => {
+      const moved: LinkedEvent = { eventId: "evt_eye", date: "2026-11-24", time: "10:30" };
+      expect(kinds(effectsOf(newAppointment(), facts({ linked: moved })))).toEqual([
+        "add_event",
+        "tell_caregivers",
       ]);
     });
 
@@ -306,7 +316,7 @@ describe("planWithRule decision table", () => {
     test("finds the event through the link before the previous time", () => {
       const effects = effectsOf(
         reschedule({ kind: "other", date: "2030-01-01", time: null }),
-        facts({ linked: linkTo("evt_pt"), sender: PT_SENDER }),
+        facts({ ics: invite(), linked: linkTo("evt_pt"), sender: PT_SENDER }),
       );
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
     });
@@ -335,12 +345,70 @@ describe("planWithRule decision table", () => {
       ]);
     });
 
-    test("an escalation with one match names the event, both times and what to tell Sunny", () => {
+    test("an unverified sender's escalation names the event, both times and why", () => {
       const effects = effectsOf(reschedule(pt), facts(UNVERIFIED));
       const body = effects[0]?.kind === "escalate" ? effects[0].body : "";
       expect(body).toContain(
-        "Sunny did not move Physical therapy, Friday, November 20 at 2:00 PM. The email asks to move it to Monday, November 23 at 3:00 PM. Tell Sunny in chat to move it.",
+        "Sunny did not move Physical therapy, Friday, November 20 at 2:00 PM, because Gmail could not verify the sender. The email asks to move it to Monday, November 23 at 3:00 PM. Tell Sunny in chat to move it if the email is genuine.",
       );
+    });
+
+    const CALL: CalendarEventFact = {
+      eventId: "evt_call",
+      title: "Phone call with Dr. Lee",
+      date: "2026-11-20",
+      time: "10:00",
+      durationMinutes: 15,
+      repeating: false,
+    };
+    const NURSE: CalendarEventFact = {
+      eventId: "evt_nurse",
+      title: "Home service: nurse visit",
+      date: "2026-11-21",
+      time: "09:00",
+      durationMinutes: 60,
+      repeating: false,
+    };
+
+    test("a phone call is never moved without a caregiver", () => {
+      const effects = effectsOf(
+        reschedule(
+          { kind: "phone_call", date: "2026-11-20", time: "10:00" },
+          {
+            kind: "phone_call",
+            date: "2026-11-24",
+            time: "03:00",
+          },
+        ),
+        facts({ events: [...EVENTS, CALL] }),
+      );
+      expect(kinds(effects)).toEqual(["escalate:phone_call:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: "evt_call",
+        proposed: { kind: "phone_call", date: "2026-11-24", time: "03:00" },
+        notice:
+          "Sunny did not move Phone call with Dr. Lee, Friday, November 20 at 10:00 AM, to Tuesday, November 24 at 3:00 AM, because someone would phone the senior. Tell Sunny in chat to move it once you have checked the call.",
+      });
+    });
+
+    test("a linked move that names another kind still asks before moving a home visit", () => {
+      const effects = effectsOf(
+        reschedule(
+          { kind: "other", date: "2030-01-01", time: null },
+          {
+            kind: "eye_doctor",
+            date: "2026-11-24",
+            time: "22:00",
+          },
+        ),
+        facts({
+          ics: invite(),
+          linked: { eventId: "evt_nurse", date: "2026-11-21", time: "09:00" },
+          events: [...EVENTS, NURSE],
+        }),
+      );
+      expect(kinds(effects)).toEqual(["escalate:home_visit:true"]);
+      expect(effects[0]).toMatchObject({ eventId: "evt_nurse" });
     });
 
     test("an escalation with no single match says Sunny moved nothing and names no event", () => {
@@ -447,7 +515,7 @@ describe("planWithRule decision table", () => {
         kinds(
           effectsOf(
             newAppointment(),
-            facts({ linked: linkTo("evt_eye"), calendarChangesToday: 9 }),
+            facts({ linked: CANCELLED_HEARING, calendarChangesToday: 9 }),
           ),
         ),
       ).toEqual(["already_on_calendar"]);
@@ -517,10 +585,10 @@ describe("planWithRule decision table", () => {
     test("an appointment already on the calendar still escalates the decision", () => {
       const effects = effectsOf(
         { ...newAppointment(), ...bill },
-        facts({ linked: linkTo("evt_eye") }),
+        facts({ linked: CANCELLED_HEARING }),
       );
       expect(kinds(effects)).toEqual(["already_on_calendar", "escalate:bill_or_payment:true"]);
-      expect(effects[1]).toMatchObject({ eventId: "evt_eye" });
+      expect(effects[1]).toMatchObject({ eventId: "evt_gone" });
     });
 
     test("a cancellation's escalation carries the decision too", () => {

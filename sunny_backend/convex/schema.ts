@@ -359,11 +359,10 @@ export default defineSchema({
     householdId: v.id("households"),
     eventId: v.id("events"),
     appointmentKey: v.string(),
+    senderDomain: v.string(),
     mailItemId: v.id("mailItems"),
     sequence: v.optional(v.number()),
-  })
-    .index("by_household_key", ["householdId", "appointmentKey"])
-    .index("by_event", ["eventId"]),
+  }).index("by_household_domain_key", ["householdId", "senderDomain", "appointmentKey"]),
 
   oauthFlows: defineTable({
     ticketHash: v.string(),

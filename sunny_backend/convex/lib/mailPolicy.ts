@@ -1,20 +1,30 @@
-import { APPOINTMENT_KINDS, SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
+import {
+  APPOINTMENT_KINDS,
+  APPOINTMENT_KIND_NAMES,
+  SENIOR_SENTENCES,
+  appointmentTitle,
+} from "./mailTypes";
 import type {
   Appointment,
+  AppointmentKind,
   AppointmentRef,
   CalendarEventFact,
+  CaregiverConfirms,
   CaregiverMessage,
   DecisionReason,
   EscalationReason,
   IcsEvent,
   InfoTopic,
+  LinkedEvent,
   MailEffect,
+  MailSender,
   MailVerdict,
   PolicyFacts,
   Proposed,
   Suspicion,
   Triaged,
 } from "./mailTypes";
+import { domainOf } from "./mailParse";
 import { noteExpiry } from "./seniorNotes";
 import { ellipsize, oneLine, textKey } from "./text";
 import {
@@ -55,6 +65,10 @@ export function appointmentKey(appointment: Appointment, ics: IcsEvent | null): 
   return `appt:${appointment.date}:${appointment.time}:${textKey(appointmentTitle(appointment.kind, appointment.time))}`;
 }
 
+export function linkDomain(sender: MailSender): string | null {
+  return sender.authenticated ? domainOf(sender.address) : null;
+}
+
 export function linkKey(verdict: MailVerdict | null, ics: IcsEvent | null): string | null {
   if (ics !== null) return icsKey(ics);
   if (verdict?.kind !== "appointment" || verdict.change === "cancel") return null;
@@ -72,6 +86,19 @@ function titleWords(title: string): Set<string> {
 function sharesWords(a: string, b: string): boolean {
   const words = titleWords(a);
   return [...titleWords(b)].some((w) => words.has(w));
+}
+
+const CONFIRMED_KINDS = APPOINTMENT_KIND_NAMES.flatMap((kind) => {
+  const { title, caregiverConfirms } = APPOINTMENT_KINDS[kind];
+  return caregiverConfirms === null ? [] : [{ title, caregiverConfirms }];
+});
+
+function confirmsMove(kind: AppointmentKind, eventTitle: string): CaregiverConfirms | null {
+  return (
+    APPOINTMENT_KINDS[kind].caregiverConfirms ??
+    CONFIRMED_KINDS.find((k) => sharesWords(eventTitle, k.title))?.caregiverConfirms ??
+    null
+  );
 }
 
 export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): CalendarEventFact[] {
@@ -373,7 +400,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
             : match.repeating
               ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-              : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
+              : !c.authenticated
+                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because Gmail could not verify the sender. The email asks to move it to ${asked}. Tell Sunny in chat to move it if the email is genuine.`
+                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
         return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
       },
     },
@@ -387,6 +416,24 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           match.time === s.fields.time
           ? onCalendar(c, match.eventId, appointmentKey(s.fields, c.facts.ics))
           : null;
+      },
+    },
+    {
+      rule: "a caregiver confirms moving this kind first",
+      plan: (s, c) => {
+        const match = only(s.matches);
+        if (match === null || s.fields === null) return null;
+        const confirms = confirmsMove(s.appointment.kind, match.title);
+        if (confirms === null) return null;
+        return [
+          escalate(
+            c,
+            confirms.reason,
+            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(s.fields.date, s.fields.time)}, because ${confirms.because}. Tell Sunny in chat to move it once you have checked ${confirms.checked}.`,
+            match.eventId,
+            s.fields,
+          ),
+        ];
       },
     },
     {
@@ -487,8 +534,11 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
-  const { linked } = facts;
+function matchesFor(
+  ref: AppointmentRef | null,
+  linked: LinkedEvent | null,
+  facts: PolicyFacts,
+): CalendarEventFact[] {
   if (linked !== null) return facts.events.filter((e) => e.eventId === linked.eventId);
   return ref === null ? [] : matchEvent(ref, facts.events);
 }
@@ -497,9 +547,22 @@ function sameSlot(a: { date: string; time: string }, b: { date: string; time: st
   return a.date === b.date && a.time === b.time;
 }
 
-function newSituation(appointment: Appointment, facts: PolicyFacts): Situation {
-  const fields = appointmentFields(appointment, facts);
+function linkedFor(verdict: MailVerdict, facts: PolicyFacts): LinkedEvent | null {
   const { linked } = facts;
+  if (linked === null || facts.ics !== null) return linked;
+  return verdict.kind === "appointment" &&
+    verdict.change !== "cancel" &&
+    sameSlot(linked, verdict.appointment)
+    ? linked
+    : null;
+}
+
+function newSituation(
+  appointment: Appointment,
+  linked: LinkedEvent | null,
+  facts: PolicyFacts,
+): Situation {
+  const fields = appointmentFields(appointment, facts);
   const live = facts.events.find((e) => e.eventId === linked?.eventId);
   if (live !== undefined && facts.ics !== null && !sameSlot(live, appointment)) {
     return { case: "reschedule", appointment, fields, matches: [live] };
@@ -531,22 +594,23 @@ function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
     case "suspicious":
       return { case: "suspicious", suspicion: verdict.suspicion };
   }
+  const linked = linkedFor(verdict, facts);
   switch (verdict.change) {
     case "cancel":
       return {
         case: "cancel",
         previous: verdict.previous,
-        matches: matchesFor(verdict.previous, facts),
+        matches: matchesFor(verdict.previous, linked, facts),
       };
     case "reschedule":
       return {
         case: "reschedule",
         appointment: verdict.appointment,
         fields: appointmentFields(verdict.appointment, facts),
-        matches: matchesFor(verdict.previous, facts),
+        matches: matchesFor(verdict.previous, linked, facts),
       };
     case "new":
-      return newSituation(verdict.appointment, facts);
+      return newSituation(verdict.appointment, linked, facts);
   }
 }
 

@@ -88,8 +88,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {
@@ -186,8 +192,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {
@@ -283,8 +295,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {
@@ -380,8 +398,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {
@@ -476,8 +500,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {
@@ -574,8 +604,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {
@@ -672,8 +708,14 @@
         }
       ],
       "links": {
-        "ics:bookclub-2026-11@brookfieldlibrary.example": "evt_book",
-        "ics:osei-0042@brookfieldheart.example": "evt_cardio"
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
       }
     },
     "expect": {

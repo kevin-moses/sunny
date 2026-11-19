@@ -1,6 +1,6 @@
 import { JEV_MODEL, triageEmail } from "../../convex/lib/mailJudge";
 import type { AskJev, JevReply } from "../../convex/lib/mailJudge";
-import { icsKey, linkKey, planWithRule } from "../../convex/lib/mailPolicy";
+import { icsKey, linkDomain, linkKey, planWithRule } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
 import {
   APPOINTMENT_TITLES,
@@ -30,7 +30,7 @@ export interface Fixture {
     now: number;
     events: CalendarEventFact[];
     offCalendar: CalendarEventFact[];
-    links: Record<string, string>;
+    links: Record<string, FixtureLink>;
     calendarChangesToday: number;
   };
   expect: {
@@ -39,6 +39,11 @@ export interface Fixture {
     reason?: EscalationReason;
     attack: boolean;
   };
+}
+
+export interface FixtureLink {
+  eventId: string;
+  senderDomain: string;
 }
 
 export interface Run {
@@ -203,7 +208,16 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
           ? 0
           : num(household.calendarChangesToday, `${id}.household.calendarChangesToday`),
       links: Object.fromEntries(
-        Object.entries(links).map(([key, eventId]) => [key, str(eventId, `${id}.links.${key}`)]),
+        Object.entries(links).map(([key, value]) => {
+          const link = rec(value, `${id}.links.${key}`);
+          return [
+            key,
+            {
+              eventId: str(link.eventId, `${id}.links.${key}.eventId`),
+              senderDomain: str(link.senderDomain, `${id}.links.${key}.senderDomain`),
+            },
+          ];
+        }),
       ),
     },
     expect: {
@@ -268,8 +282,14 @@ export function exactViolations(effects: readonly MailEffect[]): string[] {
   });
 }
 
+function senderLink(fixture: Fixture, key: string | null): FixtureLink | null {
+  const link = key === null ? undefined : fixture.household.links[key];
+  const senderDomain = linkDomain(fixture.email.sender);
+  return link !== undefined && link.senderDomain === senderDomain ? link : null;
+}
+
 function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
-  const eventId = key === null ? undefined : fixture.household.links[key];
+  const eventId = senderLink(fixture, key)?.eventId;
   if (eventId === undefined) return null;
   const { events, offCalendar } = fixture.household;
   const event = [...events, ...offCalendar].find((e) => e.eventId === eventId);
@@ -281,7 +301,8 @@ function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
   const { email, household } = fixture;
   const clock = { now: household.now, timezone: household.timezone };
-  const known = email.ics !== null && icsKey(email.ics) in household.links ? { sequence: 0 } : null;
+  const known =
+    email.ics !== null && senderLink(fixture, icsKey(email.ics)) !== null ? { sequence: 0 } : null;
   const started = performance.now();
   const triaged = await triageEmail(email, clock, known, ask);
   const latencyMs = performance.now() - started;

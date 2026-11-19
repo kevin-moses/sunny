@@ -289,8 +289,9 @@ describe("an appointment email", () => {
       },
       { kind: "told_caregivers", pushed: true },
     ]);
-    const [link] = await rows(h, "mailEventLinks");
-    expect(link!.appointmentKey).toBe("appt:2026-12-12:10:00:eye exam");
+    expect(
+      (await rows(h, "mailEventLinks")).map((l) => [l.appointmentKey, l.senderDomain, l.eventId]),
+    ).toContainEqual(["appt:2026-12-12:10:00:eye exam", "lakesideeye.example", event!._id]);
     const pushes = await rows(h, "notificationOutbox");
     expect(kinds(pushes)).toEqual(["mail_update", "mail_update", "mail_update"]);
     expect(pushes.map((p) => p.recipientUserId).sort()).toEqual(["max", "pat", "val"]);
@@ -342,8 +343,8 @@ describe("an appointment email", () => {
       startTime: "14:15",
     });
     expect(await rows(h, "mailEventLinks")).toHaveLength(0);
-    expect((await rows(h, "notificationOutbox"))[0]!.body).toBe(
-      "Sunny did not move Eye exam, Thursday, December 10 at 2:15 PM. The email asks to move it to Saturday, December 12 at 10:00 AM. Tell Sunny in chat to move it.",
+    expect((await rows(h, "chatPosts"))[0]!.body).toContain(
+      "Sunny did not move Eye exam, Thursday, December 10 at 2:15 PM, because Gmail could not verify the sender. The email asks to move it to Saturday, December 12 at 10:00 AM. Tell Sunny in chat to move it if the email is genuine.",
     );
     expect(kinds(await rows(h, "notificationOutbox"))).toEqual([
       "mail_escalation",
@@ -686,6 +687,7 @@ describe("an appointment email", () => {
           householdId: h.householdId,
           eventId: seriesId,
           appointmentKey: "ics:visit-42@lakesideeye.example",
+          senderDomain: "lakesideeye.example",
           mailItemId,
           sequence: 0,
         }),
@@ -1395,6 +1397,211 @@ describe("where Sunny's reading shows up", () => {
     expect(lines[heading + 1]).toMatch(
       /^ {2}\S+ \S+: money_request; mail_item_id \w+; sender domain lakesideeye\.example$/,
     );
+  });
+});
+
+describe("links belong to the sender's domain", () => {
+  const STRANGER = "Desk <events@attacker.example>";
+  const CLINIC = "Lakeside <appointments@lakesideeye.example>";
+  const CLINIC_UID = "visit-42@lakesideeye.example";
+
+  function invitation(from: string, uid: string, lines: string[]): RawEmail {
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "METHOD:REQUEST",
+      "BEGIN:VEVENT",
+      `UID:${uid}`,
+      "DURATION:PT30M",
+      "SUMMARY:Eye exam",
+      ...lines,
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n");
+    return clinic({ from, subject: "Invitation", text: "See the invitation.", ics });
+  }
+
+  const AT_SLOT = "DTSTART:20261210T191500Z";
+  const NEW_DAY = "DTSTART:20261212T150000Z";
+
+  async function handEnteredEyeExam(h: MailHousehold): Promise<Id<"events">> {
+    return await insertEvent(h.t, h.householdId, {
+      title: "Eye exam with Dr. Rivera",
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+      place: "Lakeside Eye Care",
+    });
+  }
+
+  function slots(events: { startsOn: string; startTime: string }[]): string[] {
+    return events.map((e) => `${e.startsOn} ${e.startTime}`);
+  }
+
+  test("a verified invite at a hand-entered event's slot links its UID for its own domain", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    const done = await triageEmail(h, invitation(CLINIC, CLINIC_UID, [AT_SLOT]), {
+      kind: "eye_doctor",
+    });
+    expect(done.effects).toEqual([{ kind: "already_on_calendar", eventId }]);
+    expect(await rows(h, "mailEventLinks")).toEqual([
+      expect.objectContaining({
+        eventId,
+        appointmentKey: `ics:${CLINIC_UID}`,
+        senderDomain: "lakesideeye.example",
+        sequence: 0,
+      }),
+    ]);
+  });
+
+  test("two domains each hold a link on one event", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(STRANGER, "evil-1@attacker.example", [AT_SLOT]), {
+      kind: "eye_doctor",
+    });
+    await triageEmail(h, invitation(CLINIC, CLINIC_UID, [AT_SLOT]), { kind: "eye_doctor" });
+    const links = await rows(h, "mailEventLinks");
+    expect(links.map((l) => [l.senderDomain, l.appointmentKey, l.eventId]).sort()).toEqual([
+      ["attacker.example", "ics:evil-1@attacker.example", eventId],
+      ["lakesideeye.example", `ics:${CLINIC_UID}`, eventId],
+    ]);
+  });
+
+  test("a stranger's link on the event does not stop the clinic's update from moving it", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(STRANGER, "evil-1@attacker.example", [AT_SLOT]), {
+      kind: "eye_doctor",
+    });
+    await triageEmail(h, invitation(CLINIC, CLINIC_UID, [AT_SLOT]), { kind: "eye_doctor" });
+    const update = await triageEmail(h, invitation(CLINIC, CLINIC_UID, [NEW_DAY, "SEQUENCE:1"]), {
+      kind: "eye_doctor",
+    });
+    expect(update.effects?.[0]).toEqual({
+      kind: "event_rescheduled",
+      eventId,
+      fromDate: "2026-12-10",
+      fromTime: "14:15",
+    });
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-12 10:00"]);
+  });
+
+  test("a stranger's high SEQUENCE on the clinic's UID changes nothing the clinic's mail sees", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(CLINIC, CLINIC_UID, [AT_SLOT]), { kind: "eye_doctor" });
+    await triageEmail(h, invitation(STRANGER, CLINIC_UID, [AT_SLOT, "SEQUENCE:999999"]), {
+      kind: "eye_doctor",
+    });
+    const update = await triageEmail(h, invitation(CLINIC, CLINIC_UID, [NEW_DAY, "SEQUENCE:1"]), {
+      kind: "eye_doctor",
+    });
+    expect(update.judgeRule).not.toBe("gate:ics:older_sequence");
+    expect(update.effects?.[0]).toMatchObject({ kind: "event_rescheduled", eventId });
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-12 10:00"]);
+    const clinicLink = (await rows(h, "mailEventLinks")).find(
+      (l) => l.senderDomain === "lakesideeye.example",
+    );
+    expect(clinicLink).toMatchObject({ appointmentKey: `ics:${CLINIC_UID}`, sequence: 1 });
+  });
+
+  test("a UID a stranger linked first does not steer the clinic's own invite", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(STRANGER, CLINIC_UID, [AT_SLOT]), { kind: "eye_doctor" });
+    const genuine = await triageEmail(h, invitation(CLINIC, CLINIC_UID, [NEW_DAY]), {
+      kind: "eye_doctor",
+    });
+    expect(kinds(genuine.effects ?? [])).toEqual(["event_added", "told_caregivers"]);
+    const events = await rows(h, "events");
+    expect(events.find((e) => e._id === eventId)).toMatchObject({
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+    });
+  });
+
+  test("a stranger's linked update that claims a phone call escalates and moves nothing", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(STRANGER, "evil-1@attacker.example", [AT_SLOT]), {
+      kind: "eye_doctor",
+    });
+    const moved = await triageEmail(
+      h,
+      invitation(STRANGER, "evil-1@attacker.example", ["DTSTART:20261211T030000Z", "SEQUENCE:1"]),
+      { kind: "phone_call" },
+    );
+    expect(moved.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "phone_call",
+        pushed: true,
+        eventId,
+        proposed: { kind: "phone_call", date: "2026-12-10", time: "22:00" },
+      },
+    ]);
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-10 14:15"]);
+  });
+
+  test("a stranger's linked update of a phone call that claims another kind escalates", async () => {
+    const h = await setup();
+    const eventId = await insertEvent(h.t, h.householdId, {
+      title: "Phone call",
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+    });
+    const first = await triageEmail(h, invitation(STRANGER, "evil-2@attacker.example", [AT_SLOT]), {
+      kind: "phone_call",
+    });
+    expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId }]);
+    const moved = await triageEmail(
+      h,
+      invitation(STRANGER, "evil-2@attacker.example", ["DTSTART:20261211T030000Z", "SEQUENCE:1"]),
+      { kind: "eye_doctor" },
+    );
+    expect(moved.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "phone_call",
+        pushed: true,
+        eventId,
+        proposed: { kind: "eye_doctor", date: "2026-12-10", time: "22:00" },
+      },
+    ]);
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-10 14:15"]);
+  });
+
+  test("a stranger's moved email never moves a phone call or a home visit", async () => {
+    const h = await setup();
+    const callId = await insertEvent(h.t, h.householdId, {
+      title: "Phone call with Dr. Lee",
+      startsOn: "2026-12-10",
+      startTime: "14:15",
+    });
+    const visitId = await insertEvent(h.t, h.householdId, {
+      title: "Home service: nurse visit",
+      startsOn: "2026-12-11",
+      startTime: "09:00",
+    });
+    const call = await triageEmail(h, clinic({ from: STRANGER, subject: "Moved" }), {
+      yes: ["appointment_moved"],
+      kind: "phone_call",
+      when: { date: "2026-12-12", time: "03:00" },
+      before: { date: "2026-12-10", time: "14:15" },
+    });
+    const visit = await triageEmail(h, clinic({ from: STRANGER, subject: "Moved" }), {
+      yes: ["appointment_moved"],
+      kind: "home_service",
+      when: { date: "2026-12-13", time: "22:00" },
+      before: { date: "2026-12-11", time: "09:00" },
+    });
+    expect(call.effects).toEqual([
+      expect.objectContaining({ kind: "escalated", reason: "phone_call", eventId: callId }),
+    ]);
+    expect(visit.effects).toEqual([
+      expect.objectContaining({ kind: "escalated", reason: "home_visit", eventId: visitId }),
+    ]);
+    expect(slots(await rows(h, "events")).sort()).toEqual(["2026-12-10 14:15", "2026-12-11 09:00"]);
   });
 });
 

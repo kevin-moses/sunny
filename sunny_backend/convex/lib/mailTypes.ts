@@ -46,7 +46,7 @@ export const APPOINTMENT_KIND_NAMES = [
 export type AppointmentKind = (typeof APPOINTMENT_KIND_NAMES)[number];
 
 export interface CaregiverConfirms {
-  reason: EscalationReason;
+  reason: Extract<EscalationReason, "home_visit" | "phone_call">;
   because: string;
   checked: string;
 }

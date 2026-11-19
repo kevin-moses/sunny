@@ -10,7 +10,7 @@ import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
-import { carryOut, linkByKey } from "./lib/mailEffects";
+import { carryOut, senderLink } from "./lib/mailEffects";
 import { mailFailure } from "./lib/mailFailure";
 import { askJev, triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
@@ -170,7 +170,8 @@ export const recordParsed = internalMutation({
     const item = await ctx.db.get(itemId);
     if (!holdsClaim(item, attempt)) return null;
     await ctx.db.patch(itemId, storedHeader(header));
-    const link = icsKey === null ? null : await linkByKey(ctx, item.householdId, icsKey);
+    const link =
+      icsKey === null ? null : await senderLink(ctx, item.householdId, header.sender, icsKey);
     return { known: link === null ? null : { sequence: link.sequence ?? 0 } };
   },
 });
@@ -263,10 +264,10 @@ async function planned(
   const calendar = await calendarFacts(ctx, household, now, triaged.verdict);
   const events = new Map<string, Doc<"events">>(calendar.events.map((e) => [e._id, e]));
   const key = linkKey(triaged.verdict, email.ics);
-  const link = key === null ? null : await linkByKey(ctx, household._id, key);
+  const header = storedHeader(email);
+  const link = key === null ? null : await senderLink(ctx, household._id, header.sender, key);
   const linked = link === null ? null : await ctx.db.get(link.eventId);
   if (linked !== null) events.set(linked._id, linked);
-  const header = storedHeader(email);
   const facts: PolicyFacts = {
     now,
     timezone: household.timezone,

@@ -13,11 +13,12 @@ import {
   described,
   icsKey,
   isStale,
+  linkDomain,
   proposed,
   when,
 } from "./mailPolicy";
 import { appointmentTitle } from "./mailTypes";
-import type { EscalationReason, MailEffect, PolicyFacts, Proposed } from "./mailTypes";
+import type { EscalationReason, MailEffect, MailSender, PolicyFacts, Proposed } from "./mailTypes";
 import { isLocalDate, isLocalTime, localMidnight } from "./time";
 import type { MailEffectRecord } from "./validators";
 
@@ -44,41 +45,54 @@ type Handlers = {
   [K in EffectKind]: (scope: EffectScope, effect: EffectOf<K>) => Promise<MailEffectRecord>;
 };
 
-export async function linkByKey(
+async function linkOf(
   ctx: QueryCtx,
   householdId: Id<"households">,
+  senderDomain: string,
   appointmentKey: string,
 ): Promise<Doc<"mailEventLinks"> | null> {
   return await ctx.db
     .query("mailEventLinks")
-    .withIndex("by_household_key", (q) =>
-      q.eq("householdId", householdId).eq("appointmentKey", appointmentKey),
+    .withIndex("by_household_domain_key", (q) =>
+      q
+        .eq("householdId", householdId)
+        .eq("senderDomain", senderDomain)
+        .eq("appointmentKey", appointmentKey),
     )
-    .first();
+    .unique();
 }
 
-async function linkEvent(
-  scope: EffectScope,
-  eventId: Id<"events">,
-  key: string,
-  keepOtherKey: boolean,
-): Promise<void> {
-  const { ics } = scope.facts;
+export async function senderLink(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  sender: MailSender,
+  appointmentKey: string,
+): Promise<Doc<"mailEventLinks"> | null> {
+  const senderDomain = linkDomain(sender);
+  return senderDomain === null
+    ? null
+    : await linkOf(ctx, householdId, senderDomain, appointmentKey);
+}
+
+async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
+  const { ics, sender } = scope.facts;
+  const senderDomain = linkDomain(sender);
+  if (senderDomain === null) {
+    throw new Error("The mail plan links an event for a sender Gmail did not verify");
+  }
   const sequence = ics !== null && key === icsKey(ics) ? ics.sequence : undefined;
-  const existing = await scope.ctx.db
-    .query("mailEventLinks")
-    .withIndex("by_event", (q) => q.eq("eventId", eventId))
-    .first();
+  const existing = await linkOf(scope.ctx, scope.household._id, senderDomain, key);
   if (existing === null) {
     await scope.ctx.db.insert("mailEventLinks", {
       householdId: scope.household._id,
       eventId,
       appointmentKey: key,
+      senderDomain,
       mailItemId: scope.item._id,
       sequence,
     });
-  } else if (existing.appointmentKey === key ? existing.sequence !== sequence : !keepOtherKey) {
-    await scope.ctx.db.patch(existing._id, { appointmentKey: key, sequence });
+  } else if (existing.eventId !== eventId || existing.sequence !== sequence) {
+    await scope.ctx.db.patch(existing._id, { eventId, sequence });
   }
 }
 
@@ -123,7 +137,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         },
         scope.facts.now,
       );
-      await linkEvent(scope, added.eventId, effect.appointmentKey, false);
+      await linkEvent(scope, added.eventId, effect.appointmentKey);
       return { kind: "event_added", eventId: added.eventId };
     },
     reschedule_event: async (scope, effect) => {
@@ -141,7 +155,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         },
         scope.facts.now,
       );
-      await linkEvent(scope, event._id, effect.appointmentKey, false);
+      await linkEvent(scope, event._id, effect.appointmentKey);
       return {
         kind: "event_rescheduled",
         eventId: event._id,
@@ -151,7 +165,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
     },
     already_on_calendar: async (scope, effect) => {
       const event = eventOf(scope, effect.eventId);
-      await linkEvent(scope, event._id, effect.appointmentKey, true);
+      await linkEvent(scope, event._id, effect.appointmentKey);
       return { kind: "already_on_calendar", eventId: event._id };
     },
     senior_note: async (scope, effect) => {

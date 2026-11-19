@@ -82,15 +82,16 @@ test("a polled message runs through the workpool to an event and a caregiver cha
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
   const refreshToken = await encryptSecret("refresh-1");
-  const mailboxId = await t.run(async (ctx) =>
-    ctx.db.insert("mailboxes", {
-      householdId,
-      connectedBy: "pat",
-      accountEmail: MAILBOX,
-      refreshToken,
-      status: "active",
-      historyId: "100",
-    }),
+  const mailboxId = await t.run(
+    async (ctx) =>
+      await ctx.db.insert("mailboxes", {
+        householdId,
+        connectedBy: "pat",
+        accountEmail: MAILBOX,
+        refreshToken,
+        status: "active",
+        historyId: "100",
+      }),
   );
 
   await t.mutation(internal.gmail.recordNew, {
