@@ -7,6 +7,11 @@ public enum FlushResult: String, Equatable, Sendable {
     case noCredentials
 }
 
+public enum ReporterLaunch: Equatable, Sendable {
+    case observe
+    case endActivities
+}
+
 public enum ReportOutcome: Equatable, Sendable {
     case sent(PushStateOutcome)
     case notPaired
@@ -57,6 +62,10 @@ public struct WidgetSync: Sendable {
 
     public func storedSiteURL() -> URL? {
         tokens.read() == nil ? nil : sites.read()
+    }
+
+    public func reporterLaunch() -> ReporterLaunch {
+        tokens.lookup() == .absent ? .endActivities : .observe
     }
 
     public func storeCredentials(token: String, siteURL: URL) throws {

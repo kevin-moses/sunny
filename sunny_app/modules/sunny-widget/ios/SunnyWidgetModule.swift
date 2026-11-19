@@ -31,11 +31,12 @@ public final class SunnyWidgetModule: Module {
             WidgetSync.live()?.storedSiteURL()?.absoluteString
         }
 
-        AsyncFunction("setCredentials") { (token: String, siteUrl: String) throws in
+        AsyncFunction("setCredentials") { (token: String, siteUrl: String) async throws in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             guard let url = SiteURL.parse(siteUrl) else { throw BridgeError.unsafeSiteURL() }
             try sync.storeCredentials(token: token, siteURL: url)
             WidgetCenter.shared.reloadAllTimelines()
+            await PushStateReporter.shared.startObserving()
         }
 
         AsyncFunction("clearCredentials") { () async throws in

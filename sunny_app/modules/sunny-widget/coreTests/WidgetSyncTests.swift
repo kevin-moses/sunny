@@ -356,6 +356,25 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(queue.pending(), [])
     }
 
+    func testThePairedPhoneWatchesItsActivitiesFromLaunch() {
+        XCTAssertEqual(makeSync().reporterLaunch(), .observe)
+    }
+
+    func testAPhoneWithoutATokenOnlyEndsItsActivitiesAtLaunch() {
+        tokens = MemoryTokenStore(nil)
+        XCTAssertEqual(makeSync().reporterLaunch(), .endActivities)
+    }
+
+    func testAPhoneThatCannotReadItsKeychainYetStillWatchesAtLaunch() {
+        let sync = WidgetSync(
+            storage: WidgetStorage(directory: directory),
+            tokens: LockedKeychainTokenStore(),
+            sites: sites,
+            transport: transport
+        )
+        XCTAssertEqual(sync.reporterLaunch(), .observe)
+    }
+
     func testStoreCredentialsWritesTokenAndSite() throws {
         tokens = MemoryTokenStore(nil)
         sites = MemorySiteStore(nil)

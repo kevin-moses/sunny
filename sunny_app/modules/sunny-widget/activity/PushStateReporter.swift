@@ -8,9 +8,14 @@ public actor PushStateReporter {
 
     private let lane = SyncLane { reloadingWidget in await PushStateReporter.sendSnapshot(reloadingWidget: reloadingWidget) }
     private var watched: Set<String> = []
+    private var observing = false
 
     public nonisolated func start() {
-        Task { await self.observe() }
+        Task { await self.launch() }
+    }
+
+    public func startObserving() {
+        observe()
     }
 
     public func sync(_ trigger: SyncTrigger) async {
@@ -51,7 +56,19 @@ public actor PushStateReporter {
         }.get()
     }
 
+    private func launch() async {
+        guard let widgetSync = WidgetSync.live() else { return }
+        switch widgetSync.reporterLaunch() {
+        case .observe:
+            observe()
+        case .endActivities:
+            await TaskActivities.endAll(in: ActivityKitStore())
+        }
+    }
+
     private func observe() {
+        guard !observing else { return }
+        observing = true
         Task {
             for await _ in Activity<SunnyTaskAttributes>.pushToStartTokenUpdates { await self.sync(.startToken) }
         }
