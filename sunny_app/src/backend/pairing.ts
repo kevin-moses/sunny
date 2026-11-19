@@ -9,7 +9,7 @@ import { confirmQueue } from '../day/pendingConfirms';
 import { withTimeout } from '../day/withTimeout';
 import { unregisterStoredPushToken } from '../notifications/push';
 import { clearWidget } from '../widget/widgetSync';
-import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE } from './api';
+import { BackendError, GENERIC_ERROR_MESSAGE, OFFLINE_ERROR_MESSAGE, callMutation } from './api';
 import { api, type HouseholdId } from './convexApi';
 
 export type MineResult = FunctionReturnType<typeof api.households.mine>;
@@ -230,7 +230,10 @@ async function runUnpair(): Promise<void> {
   );
   await attempt('clear pending confirms', () => confirmQueue.clear());
   await attempt('clear widget', clearWidget);
-  if (hasSession) await attempt('sign out', () => getClerkInstance().signOut());
+  if (hasSession) {
+    await attempt('revoke device token', () => callMutation(api.deviceApi.revokeOwnToken, {}));
+    await attempt('sign out', () => getClerkInstance().signOut());
+  }
 }
 
 export function unpair(): Promise<void> {

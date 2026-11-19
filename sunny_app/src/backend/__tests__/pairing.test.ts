@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { getFunctionName, type FunctionReference } from 'convex/server';
 
 import { BackendError } from '../api';
 import { confirmQueue } from '../../day/pendingConfirms';
@@ -32,6 +33,7 @@ const mockSignInCreate = jest.fn<AnyMock>();
 const mockSetActive = jest.fn<AnyMock>();
 const mockRandomUUID = jest.fn<() => string>();
 const mockFetch = jest.fn<AnyMock>();
+const mockMutation = jest.fn<AnyMock>();
 const mockClerk: { session: unknown; client: unknown; throws: boolean } = {
   session: null,
   client: undefined,
@@ -87,6 +89,7 @@ jest.mock('../../config', () => ({ CONVEX_SITE_URL: 'https://site.example' }));
 
 jest.mock('../convex', () => ({
   convex: {
+    mutation: (...args: unknown[]) => mockMutation(...args),
     connectionState: () => ({ isWebSocketConnected: false, hasEverConnected: false }),
     subscribeToConnectionState: () => () => undefined,
   },
@@ -124,8 +127,12 @@ beforeEach(() => {
   mockSignInCreate.mockResolvedValue({ status: 'complete', createdSessionId: 'sess_1' });
   mockSetActive.mockResolvedValue(undefined);
   mockUnregister.mockImplementation(async () => void mockCalls.push('push'));
-  mockClearWidget.mockResolvedValue(undefined);
   mockSignOut.mockImplementation(async () => void mockCalls.push('signOut'));
+  mockMutation.mockImplementation(async (reference) => {
+    mockCalls.push(getFunctionName(reference as FunctionReference<'mutation'>));
+    return null;
+  });
+  mockClearWidget.mockImplementation(async () => void mockCalls.push('clearWidget'));
   global.fetch = mockFetch as unknown as typeof fetch;
 });
 
@@ -304,10 +311,15 @@ describe('pairErrorFromBody', () => {
 });
 
 describe('unpair', () => {
-  it('unregisters the push token, then signs out', async () => {
+  it('unregisters the push token, clears the widget, revokes the device token, then signs out', async () => {
     mockClerk.session = { id: 's' };
     await unpair();
-    expect(mockCalls).toEqual(['push', 'signOut']);
+    expect(mockCalls).toEqual(['push', 'clearWidget', 'deviceApi:revokeOwnToken', 'signOut']);
+  });
+
+  it('revokes no device token without a session', async () => {
+    await unpair();
+    expect(mockMutation).not.toHaveBeenCalled();
   });
 
   it('sends the queued Done presses and Undos before it drops them', async () => {
@@ -392,6 +404,13 @@ describe('unpair resilience', () => {
   it('still signs out when unregistering the push token throws', async () => {
     mockClerk.session = { id: 's' };
     mockUnregister.mockRejectedValue(new Error('boom'));
+    await expect(unpair()).resolves.toBeUndefined();
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('still signs out when revoking the device token fails', async () => {
+    mockClerk.session = { id: 's' };
+    mockMutation.mockRejectedValue(new Error('offline'));
     await expect(unpair()).resolves.toBeUndefined();
     expect(mockSignOut).toHaveBeenCalledTimes(1);
   });

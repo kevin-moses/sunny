@@ -83,6 +83,7 @@ const BAD_ID_MESSAGE = "instanceId must be a task instance id";
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   tokenIssues: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
+  tokenRevokes: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
   refusedPresses: { kind: "token bucket", rate: 20, period: HOUR, capacity: 20 },
   deviceRequests: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 120 },
   deviceAuthFailedGlobal: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 60 },
@@ -164,6 +165,8 @@ export const revokeOwnToken = mutation({
   args: {},
   handler: async (ctx): Promise<null> => {
     const device = await requireOwnDevice(ctx);
+    const limit = await rateLimiter.limit(ctx, "tokenRevokes", { key: device._id });
+    if (!limit.ok) throw appError("limit", "Too many device token revokes. Try again later.");
     await revokeTokenOf(ctx, deviceActor(device), device);
     return null;
   },

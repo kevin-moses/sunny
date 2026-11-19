@@ -46,7 +46,7 @@ Rules:
   - the previous owner's rows then reach them by SMS, or not at all without a verified phone, as for anyone without the app;
   - nothing can be read through a token.
 - `pairingNonce` and `pairedAt` let a device retry a lost `/pair` response for 10 minutes. `listDevices` strips the nonce and `tokenHash`.
-- A device token is `sunny_dev_` plus 32 random bytes, base64url. It is made only in an action and stored only as its hash. Issuing a new token replaces the hash, at most 10 times an hour. `households.revokeDeviceToken` (editors only, audited `revoke_device_token`) clears the hash and keeps the device paired; `deviceApi.revokeOwnToken` does the same for the calling device's own row, audited with the device as the actor; removing the device deletes the row. Each of the three revokes the token at once.
+- A device token is `sunny_dev_` plus 32 random bytes, base64url. It is made only in an action and stored only as its hash. Issuing a new token replaces the hash, at most 10 times an hour. `households.revokeDeviceToken` (editors only, audited `revoke_device_token`) clears the hash and keeps the device paired; `deviceApi.revokeOwnToken` does the same for the calling device's own row, at most 10 times an hour, audited with the device as the actor; removing the device deletes the row. Each of the three revokes the token at once.
 - Removing a member drops their Google connections, links and pending syncs, and revokes the grants.
 - Every workflow step and workpool job, the scheduler and the digest read `backgroundPaused`. Resuming (`households.update`) pushes the calendars again.
 

@@ -1369,6 +1369,20 @@ describe("revokeOwnToken", () => {
     expect((await deviceRow(t, theirs.phoneId))!.tokenHash).toBeDefined();
   });
 
+  test("a device may revoke 10 times an hour, then is refused until the bucket refills", async () => {
+    const t = makeBackend();
+    await household(t);
+    const phone = t.withIdentity({ subject: "phone" });
+    for (let i = 0; i < 10; i++) await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    await expect(phone.mutation(api.deviceApi.revokeOwnToken, {})).rejects.toThrow(
+      /Too many device token revokes/,
+    );
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toHaveLength(10);
+    setNow(Date.parse(START) + 7 * MIN);
+    await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toHaveLength(11);
+  });
+
   test("a caregiver and a signed-out caller are refused, and no token is revoked", async () => {
     const t = makeBackend();
     await household(t);
