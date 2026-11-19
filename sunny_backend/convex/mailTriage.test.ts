@@ -1714,6 +1714,19 @@ describe("links belong to the sender's domain", () => {
       expect(await rows(h, "notificationOutbox")).toHaveLength(0);
     });
 
+    test("a clinic's invite sent again for a date the day after another of its dates changes nothing", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h, [1, 2]);
+      const email = () =>
+        invitation(CLINIC, "therapy-9@lakesideeye.example", ["DTSTART:20261201T150000Z"]);
+      const first = await triageEmail(h, email(), { kind: "physical_therapy" });
+      expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      const second = await triageEmail(h, email(), { kind: "physical_therapy" });
+      expect(second.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
+      expect(await rows(h, "chatPosts")).toHaveLength(0);
+      expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    });
+
     test("a clinic's second reminder for a date the day after another of its dates changes nothing", async () => {
       const h = await setup();
       const seriesId = await weeklyTherapy(h, [1, 2]);

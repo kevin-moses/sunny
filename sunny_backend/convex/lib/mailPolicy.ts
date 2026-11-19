@@ -620,9 +620,15 @@ function scopedLink(appointment: Appointment | null, facts: PolicyFacts): Scoped
 function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEventFact[] | null {
   const { linked } = facts;
   if (facts.ics === null || linked === null) return null;
-  const live = facts.events.find((e) => e.eventId === linked.eventId);
-  if (live === undefined) return sameSlot(linked, appointment) ? null : [];
-  return sameSlot(live, appointment) ? null : [live];
+  const place = linkPlace(linked, appointment, facts.events);
+  switch (place.at) {
+    case "slot":
+      return null;
+    case "elsewhere":
+      return [place.fact];
+    case "gone":
+      return sameSlot(linked, appointment) ? null : [];
+  }
 }
 
 function newSituation(
