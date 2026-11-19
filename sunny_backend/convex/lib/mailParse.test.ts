@@ -271,20 +271,31 @@ describe("parseSender", () => {
   const authenticated = (headers: { name: string; value: string }[]) =>
     parseSender(headers)?.authenticated;
 
-  test("never verifies an address longer than 254 characters and keeps it whole", () => {
-    const address = `${"x".repeat(300)}@lakesideeye.example.attacker.example`;
-    const sender = parseSender([
-      results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
-      from(`Lakeside <${address}>`),
-    ]);
-    expect(sender).toEqual({ name: "Lakeside", address, authenticated: false });
-    const fits = `${"x".repeat(254 - "@attacker.example".length)}@attacker.example`;
-    expect(
-      parseSender([
-        results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
-        from(`Lakeside <${fits}>`),
-      ]),
-    ).toEqual({ name: "Lakeside", address: fits, authenticated: true });
+  const addressOf = (length: number) =>
+    `${"x".repeat(length - "@attacker.example".length)}@attacker.example`;
+
+  test("reads an address of 254 characters as a sender Gmail can verify", () => {
+    const address = addressOf(254);
+    for (const value of [`Lakeside <${address}>`, `${address} (Lakeside)`]) {
+      expect(
+        parseSender([
+          results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
+          from(value),
+        ]),
+      ).toEqual({ name: "Lakeside", address, authenticated: true });
+    }
+  });
+
+  test("reads no sender from an address of 255 characters", () => {
+    const address = addressOf(255);
+    for (const value of [`Lakeside <${address}>`, `${address} (Lakeside)`, address]) {
+      expect(
+        parseSender([
+          results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
+          from(value),
+        ]),
+      ).toBeNull();
+    }
   });
 
   test("reads no sender from an address with a second @", () => {

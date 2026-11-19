@@ -176,7 +176,6 @@ function passes(result: AuthResult, fromDomain: string): boolean {
 }
 
 function verifiedFor(headers: MailHeader[], address: string): boolean {
-  if (address.length > MAX_ADDRESS) return false;
   const parsed = headers
     .filter((h) => h.name.toLowerCase() === "authentication-results")
     .map((h) => authResults(h.value));
@@ -189,7 +188,8 @@ function verifiedFor(headers: MailHeader[], address: string): boolean {
 
 export function parseSender(headers: MailHeader[]): MailSender | null {
   const from = parseAddress(header(headers, "From") ?? "");
-  return from === null ? null : { ...from, authenticated: verifiedFor(headers, from.address) };
+  if (from === null || from.address.length > MAX_ADDRESS) return null;
+  return { ...from, authenticated: verifiedFor(headers, from.address) };
 }
 
 const VOID_TAGS = new Set([
