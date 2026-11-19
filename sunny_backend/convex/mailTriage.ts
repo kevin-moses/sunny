@@ -14,13 +14,18 @@ import type { StoredGrant } from "./lib/googleTokens";
 import { carryOut, linkByKey } from "./lib/mailEffects";
 import { askJev, triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
-import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
+import {
+  MAX_CALENDAR_CHANGES_PER_DAY,
+  caregiverText,
+  linkKey,
+  planWithRule,
+} from "./lib/mailPolicy";
 import type { CalendarEventFact, KnownInvite, MailVerdict, PolicyFacts } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
-import { MINUTE_MS, addDays, localDate } from "./lib/time";
+import { MINUTE_MS, addDays, localDate, zonedInstant } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
 import type { StoredSender } from "./lib/validators";
 
@@ -227,6 +232,25 @@ interface Planned {
   events: Map<string, Doc<"events">>;
 }
 
+async function calendarChangesToday(
+  ctx: QueryCtx,
+  household: Doc<"households">,
+  now: number,
+): Promise<number> {
+  const startOfToday = zonedInstant(
+    localDate(now, household.timezone),
+    "00:00",
+    household.timezone,
+  );
+  const changed = await ctx.db
+    .query("mailItems")
+    .withIndex("by_household_calendar_changed", (q) =>
+      q.eq("householdId", household._id).gte("calendarChangedAt", startOfToday),
+    )
+    .take(MAX_CALENDAR_CHANGES_PER_DAY);
+  return changed.length;
+}
+
 async function planned(
   ctx: QueryCtx,
   { itemId, attempt, email, triaged }: TriageInput,
@@ -257,6 +281,7 @@ async function planned(
       linked === null
         ? null
         : { eventId: linked._id, date: linked.startsOn, time: linked.startTime },
+    calendarChangesToday: await calendarChangesToday(ctx, household, now),
   };
   return { item, household, facts, events };
 }
@@ -297,6 +322,11 @@ export const applyTriage = internalMutation({
       judgeAnswers: triaged.answers ?? undefined,
       effects,
       escalatedAt: effects.some((e) => e.kind === "escalated") ? now : undefined,
+      calendarChangedAt: effects.some(
+        (e) => e.kind === "event_added" || e.kind === "event_rescheduled",
+      )
+        ? now
+        : undefined,
       classifier: triaged.classifier,
     });
     return true;

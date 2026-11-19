@@ -27,6 +27,7 @@ export interface Fixture {
     events: CalendarEventFact[];
     offCalendar: CalendarEventFact[];
     links: Record<string, string>;
+    calendarChangesToday: number;
   };
   expect: {
     effects: EffectKind[];
@@ -194,6 +195,10 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
       offCalendar: list(household.offCalendar ?? [], `${id}.household.offCalendar`).map((e, i) =>
         readEvent(e, `${id}.household.offCalendar[${i}]`),
       ),
+      calendarChangesToday:
+        household.calendarChangesToday === undefined
+          ? 0
+          : num(household.calendarChangesToday, `${id}.household.calendarChangesToday`),
       links: Object.fromEntries(
         Object.entries(links).map(([key, eventId]) => [key, str(eventId, `${id}.links.${key}`)]),
       ),
@@ -293,6 +298,7 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     ics: email.ics,
     events: household.events,
     linked: linkedEvent(fixture, key),
+    calendarChangesToday: household.calendarChangesToday,
   });
   return {
     id: fixture.id,

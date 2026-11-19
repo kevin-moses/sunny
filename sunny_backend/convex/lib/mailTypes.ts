@@ -55,29 +55,66 @@ export const APPOINTMENT_KIND_NAMES = [
 
 export type AppointmentKind = (typeof APPOINTMENT_KIND_NAMES)[number];
 
-export const APPOINTMENT_KINDS: Record<AppointmentKind, { describe: string; title: string }> = {
+export const APPOINTMENT_KINDS: Record<
+  AppointmentKind,
+  { describe: string; title: string; comesHome: boolean }
+> = {
   doctor_visit: {
     describe: "A visit with a doctor, nurse or other clinician",
     title: "Doctor visit",
+    comesHome: false,
   },
-  dentist: { describe: "A dentist visit or teeth cleaning", title: "Dentist appointment" },
-  eye_doctor: { describe: "An eye exam or a visit to an eye doctor", title: "Eye exam" },
-  hearing: { describe: "A hearing test or a hearing aid visit", title: "Hearing appointment" },
-  physical_therapy: { describe: "Physical or occupational therapy", title: "Physical therapy" },
+  dentist: {
+    describe: "A dentist visit or teeth cleaning",
+    title: "Dentist appointment",
+    comesHome: false,
+  },
+  eye_doctor: {
+    describe: "An eye exam or a visit to an eye doctor",
+    title: "Eye exam",
+    comesHome: false,
+  },
+  hearing: {
+    describe: "A hearing test or a hearing aid visit",
+    title: "Hearing appointment",
+    comesHome: false,
+  },
+  physical_therapy: {
+    describe: "Physical or occupational therapy",
+    title: "Physical therapy",
+    comesHome: false,
+  },
   medical_test: {
     describe: "A lab test, blood draw, scan, X-ray, MRI or other medical test",
     title: "Medical test",
+    comesHome: false,
   },
-  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment" },
-  hair: { describe: "A haircut or a salon visit", title: "Hair appointment" },
-  group_activity: { describe: "A class, club or group activity", title: "Group activity" },
-  meal: { describe: "A breakfast, lunch, dinner or coffee with someone", title: "Meal" },
-  family_visit: { describe: "A visit with family or friends", title: "Family visit" },
-  video_call: { describe: "A video call", title: "Video call" },
-  phone_call: { describe: "A phone call", title: "Phone call" },
-  meeting: { describe: "A meeting or counseling session", title: "Meeting" },
-  home_service: { describe: "A worker coming to the home", title: "Home service visit" },
-  other: { describe: "Any other kind of appointment", title: "Appointment" },
+  vaccine: { describe: "A vaccine or a shot", title: "Vaccine appointment", comesHome: false },
+  hair: { describe: "A haircut or a salon visit", title: "Hair appointment", comesHome: false },
+  group_activity: {
+    describe: "A class, club or group activity",
+    title: "Group activity",
+    comesHome: false,
+  },
+  meal: {
+    describe: "A breakfast, lunch, dinner or coffee with someone",
+    title: "Meal",
+    comesHome: false,
+  },
+  family_visit: {
+    describe: "A visit with family or friends",
+    title: "Family visit",
+    comesHome: false,
+  },
+  video_call: { describe: "A video call", title: "Video call", comesHome: false },
+  phone_call: { describe: "A phone call", title: "Phone call", comesHome: false },
+  meeting: { describe: "A meeting or counseling session", title: "Meeting", comesHome: false },
+  home_service: {
+    describe: "A worker coming to the home",
+    title: "Home service visit",
+    comesHome: true,
+  },
+  other: { describe: "Any other kind of appointment", title: "Appointment", comesHome: false },
 };
 
 const MEAL_TITLES: [string, string][] = [
@@ -131,6 +168,7 @@ export const DECISION_REASONS = [
   "reply_needed",
   "legal_or_government",
   "health_result",
+  "home_visit",
   "other",
 ] as const;
 export type DecisionReason = (typeof DECISION_REASONS)[number];
@@ -203,6 +241,7 @@ export interface PolicyFacts {
   ics: IcsEvent | null;
   events: CalendarEventFact[];
   linked: LinkedEvent | null;
+  calendarChangesToday: number;
 }
 
 export interface LinkedEvent {
@@ -219,6 +258,7 @@ export const ESCALATION_REASONS = [
   "unclear_appointment",
   "unclear_reschedule",
   "conflict",
+  "daily_limit",
 ] as const;
 export type EscalationReason = (typeof ESCALATION_REASONS)[number];
 

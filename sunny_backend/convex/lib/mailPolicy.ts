@@ -1,4 +1,4 @@
-import { SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
+import { APPOINTMENT_KINDS, SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
 import type {
   Appointment,
   AppointmentRef,
@@ -33,6 +33,8 @@ import {
 
 export const STALE_AFTER_MS = DAY_MS;
 const MAX_DAYS_AHEAD = 400;
+export const MAX_CALENDAR_CHANGES_PER_DAY = 5;
+const DAILY_LIMIT = `the daily limit of ${MAX_CALENDAR_CHANGES_PER_DAY} calendar changes from email was reached`;
 const MIN_DURATION_MINUTES = 5;
 const MAX_DURATION_MINUTES = 480;
 const ASSUMED_DURATION_MINUTES = 30;
@@ -168,6 +170,7 @@ interface Context {
   authenticated: boolean;
   trusted: boolean;
   stale: boolean;
+  atDailyLimit: boolean;
   summary: string;
   decision: DecisionReason | null;
 }
@@ -179,6 +182,7 @@ const ALSO_NEEDS: Record<DecisionReason, string> = {
   reply_needed: "The email also asks a question that needs an answer.",
   legal_or_government: "The email is also from a government, court or tax office.",
   health_result: "The email is also about medical test results.",
+  home_visit: "The email also says someone will come to the home.",
   other: "The email may also need a reply, a payment or a decision.",
 };
 
@@ -318,6 +322,21 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
+      rule: "a person would come to the home",
+      plan: (s, c) =>
+        !APPOINTMENT_KINDS[s.appointment.kind].comesHome
+          ? null
+          : [
+              escalate(
+                c,
+                "home_visit",
+                `${described(s.appointment)}. Sunny has not added it because someone would come to the home. Tell Sunny in chat to add it once you have checked the visit.`,
+                null,
+                s.appointment,
+              ),
+            ],
+    },
+    {
       rule: "overlaps another live event",
       plan: (s, c) =>
         s.conflict === null || s.fields === null
@@ -327,6 +346,21 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 c,
                 "conflict",
                 `Sunny did not add ${described(s.fields)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
+                null,
+                s.fields,
+              ),
+            ],
+    },
+    {
+      rule: "daily limit of calendar changes reached",
+      plan: (s, c) =>
+        !c.atDailyLimit || s.fields === null
+          ? null
+          : [
+              escalate(
+                c,
+                "daily_limit",
+                `Sunny did not add ${described(s.fields)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
                 null,
                 s.fields,
               ),
@@ -375,6 +409,22 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           match.time === s.fields.time
           ? onCalendar(c, match.eventId, appointmentKey(s.fields, c.facts.ics))
           : null;
+      },
+    },
+    {
+      rule: "daily limit of calendar changes reached",
+      plan: (s, c) => {
+        const match = only(s.matches);
+        if (!c.atDailyLimit || match === null || s.fields === null) return null;
+        return [
+          escalate(
+            c,
+            "daily_limit",
+            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(s.fields.date, s.fields.time)}, because ${DAILY_LIMIT}. Tell Sunny in chat to move it.`,
+            match.eventId,
+            s.fields,
+          ),
+        ];
       },
     },
     {
@@ -570,6 +620,7 @@ export function planWithRule(
     authenticated: facts.sender.authenticated,
     trusted: facts.sender.authenticated && facts.senderTrusted,
     stale: isStale(facts),
+    atDailyLimit: facts.calendarChangesToday >= MAX_CALENDAR_CHANGES_PER_DAY,
     summary: triaged.summary,
     decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
   };

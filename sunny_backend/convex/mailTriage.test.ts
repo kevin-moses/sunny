@@ -165,6 +165,42 @@ describe("an appointment email", () => {
     ]);
   });
 
+  test("mail changes the calendar at most five times a local day, then escalates", async () => {
+    const h = await setup();
+    for (let day = 10; day < 15; day += 1) {
+      const done = await triageEmail(h, clinic(), {
+        ...EYE_EXAM,
+        when: { date: `2026-12-${day}`, time: "14:15" },
+      });
+      expect(done.effects?.[0]).toMatchObject({ kind: "event_added" });
+      expect(done.calendarChangedAt).toBeGreaterThanOrEqual(NOW);
+    }
+    const sixth = await triageEmail(h, clinic(), {
+      ...EYE_EXAM,
+      when: { date: "2026-12-16", time: "14:15" },
+    });
+    expect(sixth.effects).toEqual([
+      {
+        kind: "escalated",
+        reason: "daily_limit",
+        pushed: true,
+        proposed: { kind: "eye_doctor", date: "2026-12-16", time: "14:15" },
+      },
+    ]);
+    expect(sixth.calendarChangedAt).toBeUndefined();
+    expect(await rows(h, "events")).toHaveLength(5);
+    expect((await rows(h, "notificationOutbox")).at(-1)!.body).toContain(
+      "because the daily limit of 5 calendar changes from email was reached",
+    );
+
+    vi.setSystemTime(NOW + DAY);
+    const nextDay = await triageEmail(h, clinic({ receivedAt: NOW + DAY - MINUTE }), {
+      ...EYE_EXAM,
+      when: { date: "2026-12-16", time: "14:15" },
+    });
+    expect(nextDay.effects?.[0]).toMatchObject({ kind: "event_added" });
+  });
+
   test("the same triage applied twice, or late after a re-claim, adds nothing more", async () => {
     const h = await setup();
     const email = clinic();
@@ -1147,6 +1183,7 @@ describe("carrying out a plan", () => {
             ics: null,
             events: [],
             linked: null,
+            calendarChangesToday: 0,
           },
           events: new Map(),
           summary: "An eye exam.",

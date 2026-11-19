@@ -74,6 +74,7 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     ics: null,
     events: EVENTS,
     linked: null,
+    calendarChangesToday: 0,
     ...overrides,
   };
 }
@@ -443,6 +444,64 @@ describe("planWithRule decision table", () => {
     expect(kinds(matched)).toEqual(["escalate:cancellation:true"]);
     expect(matched[0]).toMatchObject({ eventId: "evt_dentist", proposed: null });
     expect(effectsOf(cancel("16:00"), facts())[0]).toMatchObject({ eventId: null });
+  });
+
+  describe("limits on what mail changes by itself", () => {
+    const pt: AppointmentRef = { kind: "physical_therapy", date: "2026-11-20", time: "14:00" };
+
+    test("a fifth change today is still made", () => {
+      expect(kinds(effectsOf(newAppointment(), facts({ calendarChangesToday: 4 })))).toEqual([
+        "add_event",
+        "tell_caregivers",
+      ]);
+    });
+
+    test("an add over the daily limit escalates with a push and the proposal", () => {
+      const effects = effectsOf(newAppointment(), facts({ calendarChangesToday: 5 }));
+      expect(kinds(effects)).toEqual(["escalate:daily_limit:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: null,
+        proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
+        notice:
+          "Sunny did not add Hearing appointment, Thursday, December 10 at 2:15 PM, because the daily limit of 5 calendar changes from email was reached. Tell Sunny in chat to add it.",
+      });
+    });
+
+    test("a move over the daily limit escalates with the event and the proposal", () => {
+      const effects = effectsOf(
+        reschedule(pt),
+        facts({ sender: PT_SENDER, calendarChangesToday: 5 }),
+      );
+      expect(kinds(effects)).toEqual(["escalate:daily_limit:true"]);
+      expect(effects[0]).toMatchObject({
+        eventId: "evt_pt",
+        proposed: { kind: "physical_therapy", date: "2026-11-23", time: "15:00" },
+        notice: expect.stringContaining(
+          "the daily limit of 5 calendar changes from email was reached",
+        ),
+      });
+    });
+
+    test("an appointment already on the calendar is not a change", () => {
+      expect(
+        kinds(
+          effectsOf(
+            newAppointment(),
+            facts({ linked: linkTo("evt_eye"), calendarChangesToday: 9 }),
+          ),
+        ),
+      ).toEqual(["already_on_calendar"]);
+    });
+
+    test("a person coming to the home is never added by itself", () => {
+      const effects = effectsOf(newAppointment({ kind: "home_service" }), facts());
+      expect(kinds(effects)).toEqual(["escalate:home_visit:true"]);
+      expect(effects[0]).toMatchObject({
+        proposed: { kind: "home_service", date: "2026-12-10", time: "14:15" },
+        notice:
+          "Home service visit, Thursday, December 10 at 2:15 PM. Sunny has not added it because someone would come to the home. Tell Sunny in chat to add it once you have checked the visit.",
+      });
+    });
   });
 
   describe("an appointment that also needs a decision", () => {
