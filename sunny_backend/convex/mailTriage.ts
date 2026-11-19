@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import type { Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalAction, internalMutation } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { mailFailure } from "./gmail";
 import { postMail } from "./lib/chatPosts";
@@ -17,6 +17,7 @@ import { parseGmailMessage } from "./lib/mailParse";
 import { caregiverText, linkKey, planWithRule } from "./lib/mailPolicy";
 import type { CalendarEventFact, KnownInvite, MailVerdict, PolicyFacts } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
+import { summarizeForCaregivers } from "./lib/mailSummary";
 import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate } from "./lib/time";
@@ -210,56 +211,87 @@ async function calendarFacts(
   return { events: [...singles, ...series], facts };
 }
 
-export const applyTriage = internalMutation({
-  args: {
-    itemId: v.id("mailItems"),
-    attempt: v.number(),
-    email: v.object({ ...mailHeader.fields, ics: v.union(v.null(), icsEvent) }),
-    triaged: triagedValidator,
+const triageInput = {
+  itemId: v.id("mailItems"),
+  attempt: v.number(),
+  email: v.object({ ...mailHeader.fields, ics: v.union(v.null(), icsEvent) }),
+  triaged: triagedValidator,
+};
+
+const triageInputObject = v.object(triageInput);
+
+type TriageInput = Infer<typeof triageInputObject>;
+
+interface Planned {
+  item: Doc<"mailItems">;
+  household: Doc<"households">;
+  facts: PolicyFacts;
+  events: Map<string, Doc<"events">>;
+  key: string | null;
+}
+
+async function planned(
+  ctx: QueryCtx,
+  { itemId, attempt, email, triaged }: TriageInput,
+  now: number,
+): Promise<Planned | "lost" | "no_household"> {
+  const item = await ctx.db.get(itemId);
+  if (!holdsClaim(item, attempt)) return "lost";
+  const household = await ctx.db.get(item.householdId);
+  if (!household) return "no_household";
+  const calendar = await calendarFacts(ctx, household, now, triaged.verdict);
+  const events = new Map<string, Doc<"events">>(calendar.events.map((e) => [e._id, e]));
+  const key = linkKey(triaged.verdict, email.ics);
+  const link = key === null ? null : await linkByKey(ctx, household._id, key);
+  const linked = link === null ? null : await ctx.db.get(link.eventId);
+  if (linked !== null) events.set(linked._id, linked);
+  const header = storedHeader(email);
+  const facts: PolicyFacts = {
+    now,
+    timezone: household.timezone,
+    sender: header.sender,
+    senderTrusted: (await trustedSender(ctx, household._id, header.sender.address)) !== null,
+    subject: header.subject,
+    receivedAt: header.receivedAt,
+    gmailId: item.gmailId,
+    ics: email.ics,
+    events: calendar.facts,
+    linkedEventId: linked?._id ?? null,
+  };
+  return { item, household, facts, events, key };
+}
+
+export const postsToCaregivers = internalQuery({
+  args: triageInput,
+  handler: async (ctx, input): Promise<boolean> => {
+    const ready = await planned(ctx, input, Date.now());
+    if (typeof ready === "string") return false;
+    return planWithRule(input.triaged, ready.facts).effects.some(
+      (e) => e.kind === "tell_caregivers" || e.kind === "escalate",
+    );
   },
-  handler: async (ctx, { itemId, attempt, email, triaged }): Promise<boolean> => {
-    const item = await ctx.db.get(itemId);
-    if (!holdsClaim(item, attempt)) return false;
-    const household = await ctx.db.get(item.householdId);
-    if (!household) {
-      await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
+});
+
+export const applyTriage = internalMutation({
+  args: { ...triageInput, caregiverSummary: v.union(v.null(), v.string()) },
+  handler: async (ctx, { caregiverSummary, ...input }): Promise<boolean> => {
+    const now = Date.now();
+    const ready = await planned(ctx, input, now);
+    if (ready === "lost") return false;
+    if (ready === "no_household") {
+      await ctx.db.patch(input.itemId, { state: "failed", leaseUntil: undefined });
       return false;
     }
-    const now = Date.now();
-    const calendar = await calendarFacts(ctx, household, now, triaged.verdict);
-    const events = new Map<string, Doc<"events">>(calendar.events.map((e) => [e._id, e]));
-    const key = linkKey(triaged.verdict, email.ics);
-    const link = key === null ? null : await linkByKey(ctx, household._id, key);
-    const linked = link === null ? null : await ctx.db.get(link.eventId);
-    if (linked !== null) events.set(linked._id, linked);
-    const header = storedHeader(email);
-    const facts: PolicyFacts = {
-      now,
-      timezone: household.timezone,
-      sender: header.sender,
-      senderTrusted: (await trustedSender(ctx, household._id, header.sender.address)) !== null,
-      subject: header.subject,
-      receivedAt: header.receivedAt,
-      gmailId: item.gmailId,
-      ics: email.ics,
-      events: calendar.facts,
-      linkedEventId: linked?._id ?? null,
-    };
-    const plan = planWithRule(triaged, facts);
+    const { item, household, facts, events, key } = ready;
+    const { triaged } = input;
+    const summary = caregiverSummary ?? triaged.summary;
+    const plan = planWithRule({ verdict: triaged.verdict, summary }, facts);
     const effects = await carryOut(
-      {
-        ctx,
-        household,
-        item,
-        facts,
-        events,
-        linkKey: key,
-        summary: triaged.summary,
-      },
+      { ctx, household, item, facts, events, linkKey: key, summary },
       plan.effects,
     );
-    await ctx.db.patch(itemId, {
-      ...header,
+    await ctx.db.patch(item._id, {
+      ...storedHeader(input.email),
       state: "done",
       leaseUntil: undefined,
       verdict: triaged.verdict.kind,
@@ -321,11 +353,13 @@ async function triageClaimed(
   });
   if (parsed === null) return "lost";
   const triaged = await triageEmail(email, { now: claim.now, timezone }, parsed.known, askJev);
+  const input = { itemId, attempt, email: { ...header, ics: email.ics }, triaged };
+  const caregiverSummary = (await ctx.runQuery(internal.mailTriage.postsToCaregivers, input))
+    ? await summarizeForCaregivers(email)
+    : null;
   const applied = await ctx.runMutation(internal.mailTriage.applyTriage, {
-    itemId,
-    attempt,
-    email: { ...header, ics: email.ics },
-    triaged,
+    ...input,
+    caregiverSummary,
   });
   return applied ? "applied" : "lost";
 }

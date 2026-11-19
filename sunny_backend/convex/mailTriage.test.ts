@@ -18,6 +18,7 @@ import {
   mailHousehold,
   receive,
   rows,
+  summaryCalls,
   triageEmail,
 } from "./mailMocks.helpers";
 import type { JevSays, MailHousehold, RawEmail } from "./mailMocks.helpers";
@@ -43,6 +44,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   resetGoogleMocks();
   jevCalls.length = 0;
+  summaryCalls.length = 0;
   vi.spyOn(console, "error").mockImplementation(() => undefined);
   vi.spyOn(console, "log").mockImplementation(() => undefined);
 });
@@ -173,7 +175,13 @@ describe("an appointment email", () => {
       ics: null,
     };
     const apply = (attempt: number) =>
-      h.t.mutation(internal.mailTriage.applyTriage, { itemId, attempt, email: header, triaged });
+      h.t.mutation(internal.mailTriage.applyTriage, {
+        itemId,
+        attempt,
+        email: header,
+        triaged,
+        caregiverSummary: null,
+      });
 
     await h.t.mutation(internal.mailTriage.claimItem, { itemId });
     vi.setSystemTime(NOW + 11 * MINUTE);
@@ -1150,5 +1158,63 @@ describe("a sender the caregivers come to trust", () => {
     expect(done.effects).toEqual([{ kind: "escalated", reason: "money_request", pushed: true }]);
     expect(await rows(h, "events")).toHaveLength(0);
     expect(await rows(h, "seniorNotes")).toHaveLength(0);
+  });
+});
+
+describe("the caregiver summary", () => {
+  test("a caregiver post carries Haiku's summary; pushes, notes, events and the briefing never do", async () => {
+    const h = await setup();
+    jevSays(PHISHING, "Someone signing as Tom asks for gift cards to pay bail.");
+    const done = await triageEmail(
+      h,
+      clinic({ from: "Grandson Tom <tom@example.org>", subject: "Grandma help" }),
+    );
+    expect(summaryCalls).toHaveLength(1);
+    expect(JSON.stringify(summaryCalls[0])).toContain("<email>");
+    const [post] = await rows(h, "chatPosts");
+    expect(post!.body.split("\n").slice(4)).toEqual([
+      "Sunny thinks this email may be a scam and did not tell the senior about it.",
+      "Someone signing as Tom asks for gift cards to pay bail.",
+    ]);
+    for (const push of await rows(h, "notificationOutbox")) {
+      expect(push.body).not.toContain("gift cards");
+    }
+    const briefing = await h.t.run(
+      async (ctx) => await buildBriefing(ctx, h.householdId, "pat", NOW),
+    );
+    expect(briefing).toContain(`money_request; mail_item_id ${done._id}`);
+    expect(briefing).not.toContain("gift cards");
+  });
+
+  test("is not asked for when Sunny posts nothing to the caregivers", async () => {
+    const h = await setup();
+    await triageEmail(h, clinic({ from: "Northgate <rx@northgate.example>" }), DELIVERY);
+    await triageEmail(h, clinic(), { yes: ["receipt"] });
+    await triageEmail(h, clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }));
+    expect(summaryCalls).toHaveLength(0);
+    expect(await rows(h, "chatPosts")).toHaveLength(0);
+  });
+
+  test("a failed summary falls back to Sunny's sentence and the triage still finishes", async () => {
+    const h = await setup();
+    jevSays(PHISHING, { status: 500 });
+    const done = await triageEmail(h, clinic());
+    expect(done.state).toBe("done");
+    expect((await rows(h, "chatPosts"))[0]!.body.split("\n").slice(4)).toEqual([
+      "Sunny thinks this email may be a scam and did not tell the senior about it.",
+      "The email asks for money by gift card, wire transfer, cash or another hard-to-trace way.",
+    ]);
+  });
+
+  test("a summary that times out falls back to Sunny's sentence", async () => {
+    const h = await setup();
+    jevSays(PHISHING, "hang");
+    const itemId = await receive(h, clinic());
+    const triage = h.t.action(internal.mailTriage.triage, { itemId });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await triage).toBe("applied");
+    expect((await rows(h, "chatPosts"))[0]!.body).toContain(
+      "The email asks for money by gift card, wire transfer, cash or another hard-to-trace way.",
+    );
   });
 });

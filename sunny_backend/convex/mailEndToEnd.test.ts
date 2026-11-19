@@ -2,7 +2,14 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import { toBase64 } from "./lib/base64";
 import { encryptSecret } from "./lib/secretBox";
-import { JEV_URL, MAILBOX, jevReply, rawEmail } from "./mailMocks.helpers";
+import {
+  ANTHROPIC_URL,
+  JEV_URL,
+  MAILBOX,
+  jevReply,
+  rawEmail,
+  summaryReply,
+} from "./mailMocks.helpers";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 
 const NOW = Date.parse("2026-11-18T14:00:00Z");
@@ -13,6 +20,7 @@ const ENV: Record<string, string> = {
   GOOGLE_CLIENT_ID: "client-id",
   GOOGLE_CLIENT_SECRET: "client-secret",
   TYPESAFE_API_KEY: "test-key",
+  ANTHROPIC_API_KEY: "test-key",
 };
 
 const MESSAGE = rawEmail({
@@ -39,6 +47,9 @@ function network(input: string | URL | Request, init?: RequestInit): Promise<Res
     return Promise.resolve(json({ access_token: "access-1", expires_in: 3600 }));
   }
   if (url.pathname === "/gmail/v1/users/me/messages/e2e-1") return Promise.resolve(json(MESSAGE));
+  if (url.href === ANTHROPIC_URL) {
+    return summaryReply("Lakeside Eye Care confirmed an eye exam on December 10 at 2:15 PM.", init);
+  }
   if (url.href === JEV_URL) {
     return Promise.resolve(
       jevReply(
@@ -120,12 +131,13 @@ test("a polled message runs through the workpool to an event and a caregiver cha
     "From: Lakeside Eye Care <appointments@lakesideeye.example> (verified sender)",
   );
   expect(posts[0]!.body).toContain(
-    "Sunny added Eye exam, Thursday, December 10 at 2:15 PM, to the calendar.",
+    "Sunny added Eye exam, Thursday, December 10 at 2:15 PM, to the calendar.\nLakeside Eye Care confirmed an eye exam on December 10 at 2:15 PM.",
   );
   expect(requests).toEqual([
     "oauth2.googleapis.com/token",
     "gmail.googleapis.com/gmail/v1/users/me/messages/e2e-1",
     "api.typesafe.ai/v1/systemone",
+    "api.anthropic.com/v1/messages",
   ]);
   const mailbox = await t.run(async (ctx) => await ctx.db.get(mailboxId));
   expect(mailbox!.accessToken).toBeDefined();

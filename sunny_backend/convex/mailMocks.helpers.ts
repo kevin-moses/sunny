@@ -197,11 +197,50 @@ export function jevReply(says: JevSays, init: RequestInit | undefined): Response
   });
 }
 
-export function jevSays(says: JevSays | { status: number }): void {
+export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+
+export const DEFAULT_SUMMARY = "Lakeside Eye Care wrote about an eye exam.";
+
+export const summaryCalls: unknown[] = [];
+
+export type SummarySays = string | { status: number } | "hang";
+
+export function summaryReply(says: SummarySays, init: RequestInit | undefined): Promise<Response> {
+  summaryCalls.push(JSON.parse(String(init?.body)));
+  if (says === "hang") {
+    return new Promise((_, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("aborted", "AbortError")),
+      );
+    });
+  }
+  if (typeof says !== "string") {
+    return Promise.resolve(json({ type: "error", error: { type: "api_error" } }, says.status));
+  }
+  return Promise.resolve(
+    json({
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      model: "claude-haiku-5-5",
+      content: [{ type: "text", text: says }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 900, output_tokens: 30 },
+    }),
+  );
+}
+
+export function jevSays(
+  says: JevSays | { status: number },
+  summary: SummarySays = DEFAULT_SUMMARY,
+): void {
   vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+  vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url) === ANTHROPIC_URL) return await summaryReply(summary, init);
       if (String(url) !== JEV_URL) throw new Error(`unexpected fetch ${String(url)}`);
       if ("status" in says) return json({ detail: "refused" }, says.status);
       return jevReply(says, init);
