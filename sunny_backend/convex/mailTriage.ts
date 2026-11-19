@@ -29,7 +29,6 @@ import type {
 } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
-import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
@@ -272,7 +271,6 @@ async function planned(
     now,
     timezone: household.timezone,
     sender: header.sender,
-    senderTrusted: (await trustedSender(ctx, household._id, header.sender.address)) !== null,
     subject: header.subject,
     receivedAt: header.receivedAt,
     gmailId: item.gmailId,

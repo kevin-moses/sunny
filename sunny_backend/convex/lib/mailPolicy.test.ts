@@ -52,6 +52,19 @@ const EVENTS: CalendarEventFact[] = [
   },
 ];
 
+const UNVERIFIED = { authenticated: false };
+
+function from(sender: Partial<PolicyFacts["sender"]>): Pick<PolicyFacts, "sender"> {
+  return {
+    sender: {
+      name: "Hillcrest Hearing",
+      address: "desk@hillcresthearing.example",
+      authenticated: true,
+      ...sender,
+    },
+  };
+}
+
 const PT_SENDER = {
   name: "Riverside Physical Therapy",
   address: "frontdesk@riversidept.example",
@@ -67,7 +80,6 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
       address: "appointments@lakesideeye.example",
       authenticated: true,
     },
-    senderTrusted: true,
     subject: "Your appointment",
     receivedAt: NOW - 3_600_000,
     gmailId: "m1",
@@ -141,39 +153,40 @@ describe("planWithRule decision table", () => {
   });
 
   describe("new appointment", () => {
-    test("from an unverified sender escalates with the proposal and is not added", () => {
-      const effects = effectsOf(
-        newAppointment(),
-        facts({ sender: { ...facts().sender, authenticated: false } }),
-      );
-      expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
-      expect(effects[0]).toMatchObject({
-        proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
+    test("from a verified sender Sunny has never seen is added", () => {
+      const effects = effectsOf(newAppointment(), facts(from({})));
+      expect(kinds(effects)).toEqual(["add_event", "tell_caregivers"]);
+      expect(effects[0]).toEqual({
+        kind: "add_event",
+        appointment: appointment(),
+        appointmentKey: "appt:2026-12-10:14:15:hearing appointment",
       });
     });
 
-    test("from an authenticated sender no caregiver trusts escalates as a new sender and is not added", () => {
-      const effects = effectsOf(newAppointment(), facts({ senderTrusted: false }));
-      expect(kinds(effects)).toEqual(["escalate:new_sender:true"]);
+    test("the same email from an unverified sender escalates with the proposal and is not added", () => {
+      const effects = effectsOf(newAppointment(), facts(from(UNVERIFIED)));
+      expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
       expect(effects[0]).toMatchObject({
         eventId: null,
         proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
         notice:
-          "Hearing appointment, Thursday, December 10 at 2:15 PM. Sunny has not added it because this sender is new to Sunny. Tell Sunny in chat to add it and to trust this sender.",
+          "Hearing appointment, Thursday, December 10 at 2:15 PM. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.",
       });
     });
 
-    test("from an untrusted sender that repeats a live event is already on the calendar and links nothing", () => {
-      expect(
-        effectsOf(newAppointment(), facts({ senderTrusted: false, linked: linkTo("evt_eye") })),
-      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_eye", appointmentKey: null }]);
-      expect(
-        effectsOf(
+    test.each([
+      ["linked to it", { linked: linkTo("evt_eye") }],
+      ["at its slot with a new invitation UID", { ics: invite({ uid: "attacker" }) }],
+    ])(
+      "from an unverified sender that repeats a live event %s escalates and links nothing",
+      (_, overrides) => {
+        const effects = effectsOf(
           newAppointment({ kind: "eye_doctor", date: "2026-11-24", time: "10:30" }),
-          facts({ senderTrusted: false, ics: invite({ uid: "attacker" }) }),
-        ),
-      ).toEqual([{ kind: "already_on_calendar", eventId: "evt_eye", appointmentKey: null }]);
-    });
+          facts({ ...from(UNVERIFIED), ...overrides }),
+        );
+        expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
+      },
+    );
 
     test("with a date in the past escalates as unclear", () => {
       const effects = effectsOf(newAppointment({ date: "2026-11-17" }), facts());
@@ -203,7 +216,7 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toMatchObject({ eventId: null });
     });
 
-    test("from a trusted sender is added with a title built from its kind and caregivers are told without a push", () => {
+    test("from a verified sender is added with a title built from its kind and caregivers are told without a push", () => {
       const effects = effectsOf(newAppointment(), facts());
       expect(effects[0]).toEqual({
         kind: "add_event",
@@ -260,10 +273,10 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toMatchObject({ eventId: "evt_pt", appointmentKey: "ics:u-1" });
     });
 
-    test("the same linked invitation from an untrusted sender escalates instead", () => {
+    test("the same linked invitation from an unverified sender escalates instead", () => {
       const effects = effectsOf(
         newAppointment({ kind: "physical_therapy", date: "2026-11-23", time: "15:00" }),
-        facts({ ics: invite(), linked: linkTo("evt_pt"), senderTrusted: false }),
+        facts({ ics: invite(), linked: linkTo("evt_pt"), ...from(UNVERIFIED) }),
       );
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);
     });
@@ -297,7 +310,7 @@ describe("planWithRule decision table", () => {
   describe("reschedule", () => {
     const pt: AppointmentRef = { kind: "physical_therapy", date: "2026-11-20", time: "14:00" };
 
-    test("from a trusted sender with exactly one match moves it and tells caregivers with a push", () => {
+    test("from a verified sender with exactly one match moves it and tells caregivers with a push", () => {
       const effects = effectsOf(reschedule(pt), facts({ sender: PT_SENDER }));
       expect(effects[0]).toMatchObject({
         kind: "reschedule_event",
@@ -319,7 +332,7 @@ describe("planWithRule decision table", () => {
       expect(effects[0]).toMatchObject({ kind: "reschedule_event", eventId: "evt_pt" });
     });
 
-    test("from a trusted sender moves the one matching event, whoever entered it", () => {
+    test("from a verified sender Sunny has never seen moves the one matching event, whoever entered it", () => {
       const effects = effectsOf(
         reschedule({ kind: "dentist", date: "2026-12-02", time: "09:00" }),
         facts({
@@ -352,17 +365,6 @@ describe("planWithRule decision table", () => {
       expect(body).toContain(
         "Sunny did not move Physical therapy, Friday, November 20 at 2:00 PM. The email asks to move it to Monday, November 23 at 3:00 PM. Tell Sunny in chat to move it.",
       );
-    });
-
-    test("an untrusted sender's escalation offers to trust the sender", () => {
-      const effects = effectsOf(reschedule(pt), facts({ sender: PT_SENDER, senderTrusted: false }));
-      expect(effects[0]).toMatchObject({
-        reason: "unclear_reschedule",
-        eventId: "evt_pt",
-        proposed: { kind: "physical_therapy", date: "2026-11-23", time: "15:00" },
-        notice:
-          "Sunny did not move Physical therapy, Friday, November 20 at 2:00 PM, because this sender is new to Sunny. The email asks to move it to Monday, November 23 at 3:00 PM. Tell Sunny in chat to move it and to trust this sender.",
-      });
     });
 
     test("an escalation with no single match says Sunny moved nothing and names no event", () => {
@@ -407,19 +409,6 @@ describe("planWithRule decision table", () => {
         null,
       ],
       ["the new date is in the past", reschedule(pt, { date: "2026-11-01" }), {}, "evt_pt"],
-      [
-        "the sender is a lookalike of a trusted address",
-        reschedule({ kind: "eye_doctor", date: "2026-11-24", time: "10:30" }),
-        {
-          sender: {
-            name: "Lakeside Eye Care",
-            address: "appointments@lakeside-eyecare.example",
-            authenticated: true,
-          },
-          senderTrusted: false,
-        },
-        "evt_eye",
-      ],
       [
         "the match is one date of a repeating event",
         reschedule(pt),
@@ -509,7 +498,7 @@ describe("planWithRule decision table", () => {
     const bill = { decision: "bill_or_payment" as const };
     const ALSO = "The email is also about a bill or a payment.";
 
-    test("from a trusted sender is added and the decision escalates with a push in one post", () => {
+    test("from a verified sender is added and the decision escalates with a push in one post", () => {
       const effects = effectsOf({ ...newAppointment(), ...bill }, facts());
       expect(kinds(effects)).toEqual(["add_event", "escalate:bill_or_payment:true"]);
       expect(effects[1]).toMatchObject({
@@ -519,16 +508,16 @@ describe("planWithRule decision table", () => {
       });
     });
 
-    test("from an untrusted sender is one escalation that carries both facts", () => {
-      const effects = effectsOf({ ...newAppointment(), ...bill }, facts({ senderTrusted: false }));
-      expect(kinds(effects)).toEqual(["escalate:new_sender:true"]);
+    test("from an unverified sender is one escalation that carries both facts", () => {
+      const effects = effectsOf({ ...newAppointment(), ...bill }, facts(from(UNVERIFIED)));
+      expect(kinds(effects)).toEqual(["escalate:unverified_sender:true"]);
       expect(effects[0]).toMatchObject({
         proposed: { kind: "hearing", date: "2026-12-10", time: "14:15" },
         notice: expect.stringContaining(ALSO),
       });
     });
 
-    test("a move from a trusted sender moves the event and escalates the decision", () => {
+    test("a move from a verified sender moves the event and escalates the decision", () => {
       const effects = effectsOf({ ...reschedule(pt), ...bill }, facts({ sender: PT_SENDER }));
       expect(kinds(effects)).toEqual(["reschedule_event", "escalate:bill_or_payment:true"]);
       expect(effects[1]).toMatchObject({
@@ -606,8 +595,8 @@ describe("planWithRule decision table", () => {
   describe("senior info", () => {
     const info: MailVerdict = { kind: "senior_info", topic: "prescription_ready" };
 
-    test("from a trusted sender becomes Sunny's sentence for the topic, expiring at the end of the next local day", () => {
-      expect(effectsOf(info, facts())).toEqual([
+    test("from a verified sender Sunny has never seen becomes Sunny's sentence for the topic, expiring at the end of the next local day", () => {
+      expect(effectsOf(info, facts(from({})))).toEqual([
         {
           kind: "senior_note",
           text: SENIOR_SENTENCES.prescription_ready,
@@ -620,21 +609,12 @@ describe("planWithRule decision table", () => {
       expect(effectsOf(info, facts({ receivedAt: NOW - DAY_MS - 1 }))).toEqual([]);
     });
 
-    test("from an unverified sender goes to caregivers without a push", () => {
-      const effects = effectsOf(
-        info,
-        facts({ sender: { name: "Pharmacy", address: "rx@x.example", authenticated: false } }),
-      );
-      expect(kinds(effects)).toEqual(["tell_caregivers"]);
-      expect(effects[0]).toMatchObject({ push: false });
-    });
-
-    test("from an authenticated sender no caregiver trusts goes to caregivers without a push", () => {
-      const effects = effectsOf(info, facts({ senderTrusted: false }));
+    test("the same news from an unverified sender goes to caregivers without a push", () => {
+      const effects = effectsOf(info, facts(from(UNVERIFIED)));
       expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
       expect(effects[0]).toMatchObject({
         notice:
-          "Sunny did not tell the senior about this email because this sender is new to Sunny.",
+          "Sunny did not tell the senior about this email because Gmail could not verify the sender.",
       });
     });
   });
@@ -644,7 +624,7 @@ describe("planWithRule decision table", () => {
     expect(kinds(effects)).toEqual(["escalate:bill_or_payment:true"]);
   });
 
-  test("suspicious mail from a trusted sender escalates and never reaches the senior or the calendar", () => {
+  test("suspicious mail from a verified sender escalates and never reaches the senior or the calendar", () => {
     const effects = effectsOf({ kind: "suspicious", suspicion: "money_request" }, facts());
     expect(kinds(effects)).toEqual(["escalate:money_request:true"]);
   });

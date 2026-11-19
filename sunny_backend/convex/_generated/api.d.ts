@@ -78,7 +78,6 @@ import type * as lib_mailParse from "../lib/mailParse.js";
 import type * as lib_mailPolicy from "../lib/mailPolicy.js";
 import type * as lib_mailPool from "../lib/mailPool.js";
 import type * as lib_mailSummary from "../lib/mailSummary.js";
-import type * as lib_mailTrust from "../lib/mailTrust.js";
 import type * as lib_mailTypes from "../lib/mailTypes.js";
 import type * as lib_managedAgents from "../lib/managedAgents.js";
 import type * as lib_memoryLimits from "../lib/memoryLimits.js";
@@ -188,7 +187,6 @@ declare const fullApi: ApiFromModules<{
   "lib/mailPolicy": typeof lib_mailPolicy;
   "lib/mailPool": typeof lib_mailPool;
   "lib/mailSummary": typeof lib_mailSummary;
-  "lib/mailTrust": typeof lib_mailTrust;
   "lib/mailTypes": typeof lib_mailTypes;
   "lib/managedAgents": typeof lib_managedAgents;
   "lib/memoryLimits": typeof lib_memoryLimits;

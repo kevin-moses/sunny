@@ -271,7 +271,6 @@ export const mailEffectRecord = v.union(
   v.object({
     kind: v.literal("told_caregivers"),
     pushed: v.boolean(),
-    senderNotTrusted: v.optional(v.literal(true)),
   }),
   v.object({
     kind: v.literal("escalated"),
@@ -279,7 +278,6 @@ export const mailEffectRecord = v.union(
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
     proposed: v.optional(v.object({ kind: appointmentKind, date: v.string(), time: v.string() })),
-    senderNotTrusted: v.optional(v.literal(true)),
   }),
 );
 export type MailEffectRecord = Infer<typeof mailEffectRecord>;

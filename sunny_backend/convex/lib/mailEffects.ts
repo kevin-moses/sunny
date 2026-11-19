@@ -107,10 +107,6 @@ async function notesWrittenToday(scope: EffectScope): Promise<number> {
   return recent.filter((note) => note._creationTime >= startOfToday).length;
 }
 
-function heldRecord(effect: { senderNotTrusted: boolean }): { senderNotTrusted?: true } {
-  return effect.senderNotTrusted ? { senderNotTrusted: true } : {};
-}
-
 function makeHandlers(effects: readonly MailEffect[]): Handlers {
   return {
     add_event: async (scope, effect) => {
@@ -202,7 +198,7 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
           body: effect.notice,
           payload: { mailItemId: scope.item._id },
         }));
-      return { kind: "told_caregivers", pushed, ...heldRecord(effect) };
+      return { kind: "told_caregivers", pushed };
     },
     escalate: async (scope, effect) => {
       const { ctx, household } = scope;
@@ -231,7 +227,6 @@ function makeHandlers(effects: readonly MailEffect[]): Handlers {
         isLocalTime(effect.proposed.time)
           ? { proposed: effect.proposed }
           : {}),
-        ...heldRecord(effect),
       };
     },
   };
@@ -261,7 +256,6 @@ function escalation(
     push: !isStale(facts),
     eventId,
     proposed,
-    senderNotTrusted: false,
   };
 }
 

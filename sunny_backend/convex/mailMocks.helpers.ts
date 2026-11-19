@@ -1,7 +1,6 @@
 import { vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
 import { gmailMocks } from "./googleMocks.helpers";
 import { toBase64Url } from "./lib/base64";
 import { JEV_MODEL } from "./lib/mailJudge";
@@ -13,12 +12,6 @@ import { createFamilyHousehold } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
 export const MAILBOX = "mom@example.com";
-
-export const TRUSTED_SENDERS = [
-  "appointments@lakesideeye.example",
-  "reminders@lakesideeye.example",
-  "rx@northgate.example",
-];
 
 export interface RawEmail {
   id: string;
@@ -163,8 +156,6 @@ export function jevAnswers(
   );
 }
 
-const NOW_FOR_TRUST = Date.parse("2026-11-01T12:00:00Z");
-
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 
 export const jevCalls: Array<{ state: unknown; questions: Record<string, WireQuestion> }> = [];
@@ -268,33 +259,6 @@ export function jevRepliesWith(says: JevSays, change: (reply: JevWireReply) => u
   );
 }
 
-export async function seedTrustedSender(
-  ctx: MutationCtx,
-  householdId: Id<"households">,
-  address: string,
-  addedAt: number,
-): Promise<Id<"mailTrustedSenders">> {
-  const mailItemId = await ctx.db.insert("mailItems", {
-    householdId,
-    account: MAILBOX,
-    gmailId: `trusted-${address}`,
-    state: "done",
-    attempt: 1,
-    sender: { name: "", address, authenticated: true },
-    subject: "First email",
-    receivedAt: addedAt,
-    verdict: "appointment",
-    effects: [{ kind: "escalated", reason: "new_sender", pushed: true, senderNotTrusted: true }],
-  });
-  return await ctx.db.insert("mailTrustedSenders", {
-    householdId,
-    address,
-    addedBy: "pat",
-    addedAt,
-    mailItemId,
-  });
-}
-
 export interface MailHousehold {
   t: TestConvex;
   householdId: Id<"households">;
@@ -326,9 +290,6 @@ export async function mailHousehold(t: TestConvex): Promise<MailHousehold> {
       status: "active",
       historyId: "100",
     });
-    for (const address of TRUSTED_SENDERS) {
-      await seedTrustedSender(ctx, householdId, address, NOW_FOR_TRUST);
-    }
     return { mailboxId, phoneId: phone._id, displayId };
   });
   return { t, householdId, ...ids };

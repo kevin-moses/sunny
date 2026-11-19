@@ -347,14 +347,6 @@ export default defineSchema({
     .index("by_household_escalated", ["householdId", "escalatedAt"])
     .index("by_household_calendar_changed", ["householdId", "calendarChangedAt"]),
 
-  mailTrustedSenders: defineTable({
-    householdId: v.id("households"),
-    address: v.string(),
-    addedBy: v.string(),
-    addedAt: v.number(),
-    mailItemId: v.id("mailItems"),
-  }).index("by_household_address", ["householdId", "address"]),
-
   seniorNotes: defineTable({
     householdId: v.id("households"),
     mailItemId: v.id("mailItems"),

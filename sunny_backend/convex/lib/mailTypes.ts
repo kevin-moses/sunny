@@ -227,7 +227,6 @@ export interface PolicyFacts {
   now: number;
   timezone: string;
   sender: MailSender;
-  senderTrusted: boolean;
   subject: string;
   receivedAt: number;
   gmailId: string;
@@ -246,7 +245,6 @@ export interface LinkedEvent {
 export const ESCALATION_REASONS = [
   ...DECISION_REASONS,
   ...SUSPICIONS,
-  "new_sender",
   "unverified_sender",
   "unclear_appointment",
   "unclear_reschedule",
@@ -280,12 +278,11 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string; appointmentKey: string | null }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | ({ kind: "tell_caregivers"; push: boolean; senderNotTrusted: boolean } & CaregiverMessage)
+  | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
   | ({
       kind: "escalate";
       reason: EscalationReason;
       push: boolean;
       eventId: string | null;
       proposed: Proposed | null;
-      senderNotTrusted: boolean;
     } & CaregiverMessage);

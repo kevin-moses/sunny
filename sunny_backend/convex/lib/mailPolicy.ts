@@ -45,7 +45,6 @@ const LINK_REMOVED = "[link removed]";
 const NUMBER_REMOVED = "[number removed]";
 
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
-const NEW_SENDER = "this sender is new to Sunny";
 
 export function icsKey(ics: IcsEvent): string {
   return `ics:${ics.uid}`;
@@ -160,7 +159,6 @@ function overlaps(a: Appointment, b: CalendarEventFact, timezone: string): boole
 interface Context {
   facts: PolicyFacts;
   authenticated: boolean;
-  trusted: boolean;
   stale: boolean;
   atDailyLimit: boolean;
   summary: string;
@@ -229,7 +227,6 @@ function escalate(
     push: true,
     eventId,
     proposed: appointment === null ? null : proposed(appointment),
-    senderNotTrusted: false,
   };
 }
 
@@ -239,21 +236,14 @@ function tell(c: Context, line: string, push: boolean): MailEffect {
     kind: "tell_caregivers",
     ...caregiverMessage(c.facts, line, c.summary),
     push,
-    senderNotTrusted: false,
   };
-}
-
-function heldForTrust(c: Context, effect: MailEffect): MailEffect {
-  if (!c.authenticated || c.trusted) return effect;
-  if (effect.kind !== "escalate" && effect.kind !== "tell_caregivers") return effect;
-  return { ...effect, senderNotTrusted: true };
 }
 
 function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
   const already: MailEffect = {
     kind: "already_on_calendar",
     eventId,
-    appointmentKey: c.trusted ? key : null,
+    appointmentKey: c.authenticated ? key : null,
   };
   if (c.decision === null) return [already];
   return [
@@ -309,24 +299,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         s.duplicate === null
           ? null
           : onCalendar(c, s.duplicate, appointmentKey(s.appointment, c.facts.ics)),
-    },
-    {
-      rule: "sender not trusted",
-      plan: (s, c) =>
-        c.trusted
-          ? null
-          : [
-              heldForTrust(
-                c,
-                escalate(
-                  c,
-                  "new_sender",
-                  `${described(s.appointment)}. Sunny has not added it because ${NEW_SENDER}. Tell Sunny in chat to add it and to trust this sender.`,
-                  null,
-                  s.appointment,
-                ),
-              ),
-            ],
     },
     {
       rule: "a person would come to the home",
@@ -390,25 +362,18 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule: [
     {
-      rule: "not authenticated, not trusted, no single match, the match repeats, or new fields rejected",
+      rule: "not authenticated, no single match, the match repeats, or new fields rejected",
       plan: (s, c) => {
         const match = only(s.matches);
-        if (c.trusted && match !== null && !match.repeating && s.fields !== null) return null;
+        if (c.authenticated && match !== null && !match.repeating && s.fields !== null) return null;
         const asked = when(s.appointment.date, s.appointment.time);
         const line =
           match === null
             ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
             : match.repeating
               ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-              : c.authenticated && !c.trusted
-                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because ${NEW_SENDER}. The email asks to move it to ${asked}. Tell Sunny in chat to move it and to trust this sender.`
-                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
-        return [
-          heldForTrust(
-            c,
-            escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment),
-          ),
-        ];
+              : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
+        return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
       },
     },
     {
@@ -476,18 +441,15 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   senior_info: [
     { rule: "stale", plan: (_, c) => (c.stale ? [] : null) },
     {
-      rule: "not authenticated, or not trusted",
+      rule: "not authenticated",
       plan: (_, c) =>
-        c.trusted
+        c.authenticated
           ? null
           : [
-              heldForTrust(
+              tell(
                 c,
-                tell(
-                  c,
-                  `Sunny did not tell the senior about this email because ${NEW_SENDER}.`,
-                  false,
-                ),
+                "Sunny did not tell the senior about this email because Gmail could not verify the sender.",
+                false,
               ),
             ],
     },
@@ -625,7 +587,6 @@ export function planWithRule(
   const context: Context = {
     facts,
     authenticated: facts.sender.authenticated,
-    trusted: facts.sender.authenticated && facts.senderTrusted,
     stale: isStale(facts),
     atDailyLimit: facts.calendarChangesToday >= MAX_CALENDAR_CHANGES_PER_DAY,
     summary: triaged.summary,

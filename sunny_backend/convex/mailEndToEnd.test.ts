@@ -8,13 +8,11 @@ import {
   MAILBOX,
   jevReply,
   rawEmail,
-  seedTrustedSender,
   summaryReply,
 } from "./mailMocks.helpers";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
 
 const NOW = Date.parse("2026-11-18T14:00:00Z");
-const DAY = 86_400_000;
 
 const ENV: Record<string, string> = {
   CALENDAR_TOKEN_KEY: toBase64(new Uint8Array(32).fill(7)),
@@ -84,17 +82,16 @@ test("a polled message runs through the workpool to an event and a caregiver cha
   const t = makeBackend();
   const householdId = await createFamilyHousehold(t);
   const refreshToken = await encryptSecret("refresh-1");
-  const mailboxId = await t.run(async (ctx) => {
-    await seedTrustedSender(ctx, householdId, "appointments@lakesideeye.example", NOW - DAY);
-    return await ctx.db.insert("mailboxes", {
+  const mailboxId = await t.run(async (ctx) =>
+    ctx.db.insert("mailboxes", {
       householdId,
       connectedBy: "pat",
       accountEmail: MAILBOX,
       refreshToken,
       status: "active",
       historyId: "100",
-    });
-  });
+    }),
+  );
 
   await t.mutation(internal.gmail.recordNew, {
     mailboxId,

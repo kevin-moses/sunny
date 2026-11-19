@@ -25,7 +25,6 @@ export interface Fixture {
   id: string;
   bucket: string;
   email: ParsedEmail;
-  senderTrusted: boolean;
   household: {
     timezone: string;
     now: number;
@@ -190,7 +189,6 @@ function readFixture(value: unknown, bucket: string, index: number): Fixture {
     id,
     bucket,
     email: readEmail(fixture.email, `${id}.email`),
-    senderTrusted: bool(fixture.senderTrusted, `${id}.senderTrusted`),
     household: {
       timezone: str(household.timezone, `${id}.household.timezone`),
       now: num(household.now, `${id}.household.now`),
@@ -292,7 +290,6 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     now: household.now,
     timezone: household.timezone,
     sender: email.sender,
-    senderTrusted: fixture.senderTrusted,
     subject: email.subject,
     receivedAt: email.receivedAt,
     gmailId: email.gmailId,

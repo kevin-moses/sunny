@@ -12,8 +12,6 @@ import { isAnytimeTask } from "./anytime";
 import { ALERT_MINUTES, alertsCaregivers } from "./escalation";
 import { appError, type AppErrorData } from "./errors";
 import type { OccurrenceJson } from "./occurrences";
-import { MAIL_TRUST_HANDLERS, MAIL_TRUST_TOOLS } from "./mailTrust";
-import type { MailTrustToolName } from "./mailTrust";
 import { isAsNeededTask } from "./taskDraft";
 import { booleanField, changesOf, idField, stringField } from "./toolInput";
 import type { ToolContext, ToolHandler } from "./toolInput";
@@ -248,7 +246,6 @@ export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
     },
   },
   ...SETUP_TOOLS,
-  ...MAIL_TRUST_TOOLS,
 ];
 
 function stringListField(value: unknown, key: string): string[] {
@@ -550,7 +547,6 @@ function occurrenceForModel(o: OccurrenceJson): Record<string, unknown> {
 
 type ToolName =
   | SetupToolName
-  | MailTrustToolName
   | "get_tasks"
   | "add_task"
   | "update_task"
@@ -610,7 +606,6 @@ const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   cancel_event: async (ctx, { householdId, actor, now }, input) =>
     await cancelEventCore(ctx, actor, householdId, idOf(ctx, "events", input), now),
   ...SETUP_TOOL_HANDLERS,
-  ...MAIL_TRUST_HANDLERS,
 };
 
 const WORDING_TOOLS: ReadonlySet<string> = new Set(["add_task", "update_task"]);
