@@ -70,10 +70,16 @@ export function linkDomain(sender: MailSender): string | null {
   return sender.authenticated ? domainOf(sender.address) : null;
 }
 
+function appointmentOf(verdict: MailVerdict | null): Appointment | null {
+  return verdict?.kind === "appointment" && verdict.change !== "cancel"
+    ? verdict.appointment
+    : null;
+}
+
 export function linkKey(verdict: MailVerdict | null, ics: IcsEvent | null): string | null {
   if (ics !== null) return icsKey(ics);
-  if (verdict?.kind !== "appointment" || verdict.change === "cancel") return null;
-  return appointmentKey(verdict.appointment, null);
+  const appointment = appointmentOf(verdict);
+  return appointment === null ? null : appointmentKey(appointment, null);
 }
 
 function titleWords(title: string): Set<string> {
@@ -693,10 +699,6 @@ function planFor(situation: Situation, context: Context): Plan {
     case "suspicious":
       return runTable(DECISION_TABLE.suspicious, situation, context);
   }
-}
-
-function appointmentOf(verdict: MailVerdict): Appointment | null {
-  return verdict.kind === "appointment" && verdict.change !== "cancel" ? verdict.appointment : null;
 }
 
 export function planWithRule(

@@ -79,7 +79,7 @@ async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string)
   if (senderDomain === null) {
     throw new Error("The mail plan links an event for a sender Gmail did not verify");
   }
-  const sequence = ics === null ? undefined : ics.sequence;
+  const sequence = ics?.sequence;
   const existing = await linkOf(scope.ctx, scope.household._id, senderDomain, key);
   if (existing === null) {
     await scope.ctx.db.insert("mailEventLinks", {
