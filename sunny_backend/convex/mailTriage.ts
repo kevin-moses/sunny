@@ -20,14 +20,19 @@ import {
   linkKey,
   planWithRule,
 } from "./lib/mailPolicy";
-import type { CalendarEventFact, KnownInvite, MailVerdict, PolicyFacts } from "./lib/mailTypes";
+import type {
+  CalendarEventFact,
+  KnownInvite,
+  MailSender,
+  MailVerdict,
+  PolicyFacts,
+} from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { trustedSender } from "./lib/mailTrust";
 import { expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
 import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
-import type { StoredSender } from "./lib/validators";
 
 export const MAX_TRIAGE_ATTEMPTS = 10;
 const LEASE_MS = 10 * MINUTE_MS;
@@ -66,7 +71,7 @@ function holdsClaim(item: Doc<"mailItems"> | null, attempt: number): item is Doc
 }
 
 function storedHeader(header: MailHeader): {
-  sender: StoredSender;
+  sender: MailSender;
   subject: string;
   receivedAt: number;
 } {

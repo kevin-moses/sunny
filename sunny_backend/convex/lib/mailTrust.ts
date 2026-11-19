@@ -9,7 +9,7 @@ import { appError } from "./errors";
 import { localDate } from "./time";
 import { idField, rejectUnknownKeys } from "./toolInput";
 import type { ToolHandler } from "./toolInput";
-import type { StoredSender } from "./validators";
+import type { MailSender } from "./mailTypes";
 
 const MAX_TRUSTED_SENDERS = 100;
 
@@ -55,7 +55,7 @@ function heldBackForTrust(item: Doc<"mailItems">): boolean {
   );
 }
 
-function trustableSender(item: Doc<"mailItems">): StoredSender {
+function trustableSender(item: Doc<"mailItems">): MailSender {
   const { sender } = item;
   if (sender === undefined) throw appError("invalid", "Sunny has no sender for that email");
   if (!sender.authenticated) {

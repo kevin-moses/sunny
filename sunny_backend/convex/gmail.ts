@@ -38,14 +38,9 @@ import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
+import type { MailSender } from "./lib/mailTypes";
 import { DAY_MS } from "./lib/time";
-import type {
-  MailboxStatus,
-  MailEffectRecord,
-  MailItemState,
-  StoredSender,
-  VerdictKind,
-} from "./lib/validators";
+import type { MailboxStatus, MailEffectRecord, MailItemState, VerdictKind } from "./lib/validators";
 
 const BACKFILL_WINDOW_MS = 7 * DAY_MS;
 const BACKFILL_MAX_MESSAGES = 50;
@@ -71,7 +66,7 @@ interface MailboxView {
 interface MailItemView {
   id: Id<"mailItems">;
   state: MailItemState;
-  sender: StoredSender | null;
+  sender: MailSender | null;
   subject: string | null;
   receivedAt: number | null;
   verdict: VerdictKind | null;

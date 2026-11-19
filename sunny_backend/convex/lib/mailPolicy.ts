@@ -15,11 +15,11 @@ import type {
   Suspicion,
   Triaged,
 } from "./mailTypes";
+import { noteExpiry } from "./seniorNotes";
 import { ellipsize, oneLine, textKey } from "./text";
 import {
   DAY_MS,
   MINUTE_MS,
-  addDays,
   dateLabel,
   daysBetween,
   formatTime12,
@@ -147,10 +147,6 @@ export function caregiverMessage(
   const place = facts.ics?.location ?? null;
   const placeLine = place === null ? [] : [`Place in the invitation: ${place}`];
   return { body: caregiverText(facts, [line, ...placeLine, summary]), notice: scrub(line) };
-}
-
-export function noteExpiry(receivedAt: number, timezone: string): number {
-  return zonedInstant(addDays(localDate(receivedAt, timezone), 2), "00:00", timezone);
 }
 
 function overlaps(a: Appointment, b: CalendarEventFact, timezone: string): boolean {

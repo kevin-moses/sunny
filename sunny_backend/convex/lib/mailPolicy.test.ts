@@ -5,10 +5,10 @@ import {
   caregiverText,
   linkKey,
   matchEvent,
-  noteExpiry,
   planWithRule,
 } from "./mailPolicy";
 import { SENIOR_SENTENCES } from "./mailTypes";
+import { noteExpiry } from "./seniorNotes";
 import type {
   Appointment,
   AppointmentRef,
