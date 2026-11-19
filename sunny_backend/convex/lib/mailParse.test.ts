@@ -1,12 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { toBase64Url } from "./base64";
-import {
-  MAX_EMAIL_TEXT,
-  authenticated,
-  htmlToText,
-  parseGmailMessage,
-  parseIcs,
-} from "./mailParse";
+import { MAX_EMAIL_TEXT, htmlToText, parseGmailMessage, parseIcs, parseSender } from "./mailParse";
 
 const NY = "America/New_York";
 
@@ -271,9 +265,41 @@ describe("parseGmailMessage", () => {
   });
 });
 
-describe("authenticated", () => {
+describe("parseSender", () => {
   const from = (value: string) => ({ name: "From", value });
   const results = (value: string) => ({ name: "Authentication-Results", value });
+  const authenticated = (headers: { name: string; value: string }[]) =>
+    parseSender(headers)?.authenticated;
+
+  test("never verifies an address longer than 254 characters and keeps it whole", () => {
+    const address = `${"x".repeat(300)}@lakesideeye.example.attacker.example`;
+    const sender = parseSender([
+      results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
+      from(`Lakeside <${address}>`),
+    ]);
+    expect(sender).toEqual({ name: "Lakeside", address, authenticated: false });
+    const fits = `${"x".repeat(254 - "@attacker.example".length)}@attacker.example`;
+    expect(
+      parseSender([
+        results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
+        from(`Lakeside <${fits}>`),
+      ]),
+    ).toEqual({ name: "Lakeside", address: fits, authenticated: true });
+  });
+
+  test("reads no sender from an address with a second @", () => {
+    for (const value of [
+      "Lakeside <appointments@lakesideeye.example@attacker.example>",
+      "appointments@lakesideeye.example@attacker.example",
+    ]) {
+      expect(
+        parseSender([
+          results("mx.google.com; dkim=pass header.d=attacker.example; dmarc=fail"),
+          from(value),
+        ]),
+      ).toBeNull();
+    }
+  });
 
   test("trusts Gmail's own DMARC or aligned DKIM pass", () => {
     expect(authenticated([results(GMAIL_AUTH), from("x@lakesideeye.example")])).toBe(true);

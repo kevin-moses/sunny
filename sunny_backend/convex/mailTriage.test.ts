@@ -1385,6 +1385,18 @@ describe("where Sunny's reading shows up", () => {
     expect(text).not.toContain("ignore.all.rules");
   });
 
+  test("the briefing never shows a shortened or altered domain", async () => {
+    const h = await setup();
+    await triageEmail(
+      h,
+      clinic({ from: "Clinic <x@lakesideeye.example!>", verified: false }),
+      PHISHING,
+    );
+    const text = await h.t.run(async (ctx) => await buildBriefing(ctx, h.householdId, "pat", NOW));
+    expect(text).toContain("sender domain unknown");
+    expect(text).not.toContain("sender domain lakesideeye.example");
+  });
+
   test("a busy inbox does not hide an escalation from the briefing", async () => {
     const h = await setup();
     await triageEmail(h, clinic({ receivedAt: NOW - 2 * DAY }), PHISHING);
@@ -1512,6 +1524,55 @@ describe("links belong to the sender's domain", () => {
       startsOn: "2026-12-10",
       startTime: "14:15",
     });
+  });
+
+  const LONG_STRANGER = `Lakeside <${"x".repeat(300)}@lakesideeye.example.attacker.example>`;
+
+  test("an over-long verified address is unverified and leaves the clinic's link alone", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(CLINIC, CLINIC_UID, [AT_SLOT]), { kind: "eye_doctor" });
+    const poison = await triageEmail(
+      h,
+      invitation(LONG_STRANGER, CLINIC_UID, [AT_SLOT, "SEQUENCE:999999"]),
+      { kind: "eye_doctor" },
+    );
+    expect(poison.sender).toMatchObject({
+      address: `${"x".repeat(300)}@lakesideeye.example.attacker.example`,
+      authenticated: false,
+    });
+    expect(poison.effects).toEqual([
+      expect.objectContaining({ kind: "escalated", reason: "unverified_sender" }),
+    ]);
+    expect(await rows(h, "mailEventLinks")).toEqual([
+      expect.objectContaining({ senderDomain: "lakesideeye.example", sequence: 0, eventId }),
+    ]);
+    const update = await triageEmail(h, invitation(CLINIC, CLINIC_UID, [NEW_DAY, "SEQUENCE:1"]), {
+      kind: "eye_doctor",
+    });
+    expect(update.effects?.[0]).toMatchObject({ kind: "event_rescheduled", eventId });
+  });
+
+  test("an over-long verified address cannot move the clinic's linked event", async () => {
+    const h = await setup();
+    const eventId = await handEnteredEyeExam(h);
+    await triageEmail(h, invitation(CLINIC, CLINIC_UID, [AT_SLOT]), { kind: "eye_doctor" });
+    const moved = await triageEmail(
+      h,
+      invitation(LONG_STRANGER, CLINIC_UID, [NEW_DAY, "SEQUENCE:1"]),
+      { kind: "eye_doctor" },
+    );
+    expect(moved.effects).toEqual([
+      expect.objectContaining({ kind: "escalated", reason: "unverified_sender" }),
+    ]);
+    expect(slots(await rows(h, "events"))).toEqual(["2026-12-10 14:15"]);
+    expect(await rows(h, "mailEventLinks")).toEqual([
+      expect.objectContaining({ senderDomain: "lakesideeye.example", sequence: 0, eventId }),
+    ]);
+    const [post] = await rows(h, "chatPosts");
+    expect(post!.body.split("\n")[0]).toMatch(
+      /@lakesideeye\.example\.attacker\.example> \(sender not verified\)$/,
+    );
   });
 
   test("a stranger's linked update that claims a phone call escalates and moves nothing", async () => {

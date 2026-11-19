@@ -6,6 +6,7 @@ import { MINUTE_MS, canonicalTimezone, localDate, localTime, zonedInstant } from
 
 export const MAX_EMAIL_TEXT = 6000;
 const MAX_BODY_SOURCE = 256 * 1024;
+const MAX_ADDRESS = 254;
 const GMAIL_AUTHSERV = "mx.google.com";
 
 export interface MailHeader {
@@ -89,7 +90,7 @@ function decodeHeaderValue(value: string): string {
 
 function parseAddress(value: string): { name: string; address: string } | null {
   const decoded = oneLine(decodeHeaderValue(value));
-  const angled = /^(.*?)<([^<>\s@]+@[^<>\s]+)>$/.exec(decoded);
+  const angled = /^(.*?)<([^<>\s@]+@[^<>\s@]+)>$/.exec(decoded);
   if (angled) {
     const name = angled[1]!
       .trim()
@@ -98,7 +99,7 @@ function parseAddress(value: string): { name: string; address: string } | null {
       .trim();
     return { name, address: angled[2]!.toLowerCase() };
   }
-  const bare = /^([^\s<>()@]+@[^\s<>()]+)(?:\s*\((.*)\))?$/.exec(decoded);
+  const bare = /^([^\s<>()@]+@[^\s<>()@]+)(?:\s*\((.*)\))?$/.exec(decoded);
   if (bare) return { name: (bare[2] ?? "").trim(), address: bare[1]!.toLowerCase() };
   return null;
 }
@@ -174,17 +175,21 @@ function passes(result: AuthResult, fromDomain: string): boolean {
   return signers.some((signer) => signer !== "" && aligned(signer, fromDomain));
 }
 
-export function authenticated(headers: MailHeader[]): boolean {
-  const from = parseAddress(header(headers, "From") ?? "");
-  if (!from) return false;
+function verifiedFor(headers: MailHeader[], address: string): boolean {
+  if (address.length > MAX_ADDRESS) return false;
   const parsed = headers
     .filter((h) => h.name.toLowerCase() === "authentication-results")
     .map((h) => authResults(h.value));
   if (parsed.some((p) => p === null)) return false;
   const gmail = parsed.filter((p) => p?.authserv === GMAIL_AUTHSERV);
   if (gmail.length !== 1) return false;
-  const fromDomain = domainOf(from.address);
+  const fromDomain = domainOf(address);
   return gmail[0]!.results.some((result) => passes(result, fromDomain));
+}
+
+export function parseSender(headers: MailHeader[]): MailSender | null {
+  const from = parseAddress(header(headers, "From") ?? "");
+  return from === null ? null : { ...from, authenticated: verifiedFor(headers, from.address) };
 }
 
 const VOID_TAGS = new Set([
@@ -397,14 +402,13 @@ export function parseGmailMessage(raw: unknown, timezone: string): ParsedEmail |
   const payload = readPart(raw.payload);
   const receivedAt = typeof raw.internalDate === "string" ? Number(raw.internalDate) : NaN;
   if (payload === null || !Number.isSafeInteger(receivedAt) || receivedAt <= 0) return null;
-  const from = parseAddress(header(payload.headers, "From") ?? "");
-  if (from === null) return null;
+  const sender = parseSender(payload.headers);
+  if (sender === null) return null;
   const parts = leaves(payload);
   const icsText = parts
     .filter(isCalendarPart)
     .map(partText)
     .find((t): t is string => t !== null);
-  const sender: MailSender = { ...from, authenticated: authenticated(payload.headers) };
   return {
     gmailId: raw.id,
     labels: Array.isArray(raw.labelIds)

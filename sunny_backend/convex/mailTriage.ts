@@ -38,7 +38,6 @@ const LEASE_MS = 10 * MINUTE_MS;
 const EVENT_HORIZON_DAYS = 400;
 const SWEEP_BATCH = 100;
 const MAX_NAME = 120;
-const MAX_ADDRESS = 320;
 const MAX_STORED_SUBJECT = 200;
 
 type Claim =
@@ -77,9 +76,8 @@ function storedHeader(header: MailHeader): {
   const { sender } = header;
   return {
     sender: {
+      ...sender,
       name: sender.name.slice(0, MAX_NAME),
-      address: sender.address.slice(0, MAX_ADDRESS),
-      authenticated: sender.authenticated,
     },
     subject: header.subject.slice(0, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
@@ -169,9 +167,10 @@ export const recordParsed = internalMutation({
   ): Promise<{ known: KnownInvite | null } | null> => {
     const item = await ctx.db.get(itemId);
     if (!holdsClaim(item, attempt)) return null;
-    await ctx.db.patch(itemId, storedHeader(header));
+    const stored = storedHeader(header);
+    await ctx.db.patch(itemId, stored);
     const link =
-      icsKey === null ? null : await senderLink(ctx, item.householdId, header.sender, icsKey);
+      icsKey === null ? null : await senderLink(ctx, item.householdId, stored.sender, icsKey);
     return { known: link === null ? null : { sequence: link.sequence ?? 0 } };
   },
 });

@@ -101,14 +101,11 @@ async function digestLines(
 
 type Escalated = Extract<MailEffectRecord, { kind: "escalated" }>;
 
-const NOT_DOMAIN_CHARACTER = /[^a-z0-9.-]/g;
-const MAX_DOMAIN = 253;
+const SHOWN_DOMAIN = /^[a-z0-9.-]{1,253}$/;
 
 function senderDomain(row: Doc<"mailItems">): string {
-  const domain = domainOf(row.sender?.address ?? "")
-    .replace(NOT_DOMAIN_CHARACTER, "")
-    .slice(0, MAX_DOMAIN);
-  return domain === "" ? "unknown" : domain;
+  const domain = domainOf(row.sender?.address ?? "");
+  return SHOWN_DOMAIN.test(domain) ? domain : "unknown";
 }
 
 function receivedStamp(row: Doc<"mailItems">, timezone: string): string {
