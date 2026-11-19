@@ -2,9 +2,11 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation } from "./_generated/server";
 import {
+  apnsAnswer,
   liveActivityEndMessage,
   liveActivityUpdateMessage,
-  refusedThisToken,
+  providerFault,
+  resultDetail,
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
 import { endActivity, loadActivityView, nextCommand, nextPushTimestamp } from "./lib/liveActivity";
@@ -101,20 +103,23 @@ export const push = internalAction({
     const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
       sends: [{ token: planned.token, message: planned.message }],
     });
-    if (configError !== undefined) {
-      console.warn(`Live Activity push not sent (${configError})`);
+    const fault = configError ?? providerFault(results);
+    if (fault !== undefined) {
+      console.warn(`Live Activity push not sent (${fault})`);
       return null;
     }
     const result = results[0];
     if (result === undefined) throw new Error("Live Activity push got no result from APNs");
-    if (result.outcome === "failed") {
-      const detail = `${result.status} ${result.reason ?? "unknown"}`;
-      if (result.retryable) throw new Error(`Live Activity push failed, will retry: ${detail}`);
-      if (!refusedThisToken(result)) {
+    const detail = resultDetail(result);
+    switch (apnsAnswer(result)) {
+      case "retry":
+        throw new Error(`Live Activity push failed, will retry: ${detail}`);
+      case "refused":
         console.error(`Live Activity push refused for a fault not in its token, kept: ${detail}`);
         return null;
-      }
-      console.error(`Live Activity push refused, so its update token is dropped: ${detail}`);
+      case "token_refused":
+      case "payload_refused":
+        console.error(`Live Activity push refused, so its update token is dropped: ${detail}`);
     }
     await ctx.runMutation(internal.liveActivity.settle, {
       activityId: args.activityId,

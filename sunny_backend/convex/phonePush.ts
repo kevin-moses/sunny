@@ -14,6 +14,7 @@ import {
 import {
   backgroundRefreshMessage,
   isValidDeviceToken,
+  refusedTokens,
   widgetReloadMessage,
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
@@ -248,7 +249,7 @@ async function sendRefresh(
   const { results }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     sends: target.tokens.map((token) => ({ token, message })),
   });
-  const dead = results.filter((r) => r.outcome === "unregistered").map((r) => r.token);
+  const dead = refusedTokens(results);
   if (dead.length === 0) return null;
   if (target.kind === "background") {
     await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });

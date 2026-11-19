@@ -5,7 +5,13 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { requeueStuckDigests } from "./digest";
-import { alertMessage } from "./lib/apnsPayload";
+import {
+  alertMessage,
+  apnsAnswer,
+  providerFault,
+  refusedTokens,
+  resultDetail,
+} from "./lib/apnsPayload";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import {
   MAX_ATTEMPTS,
@@ -89,7 +95,7 @@ export const record = internalMutation({
 
 function apnsDetail(results: ApnsResult[]): string {
   const bad = results.find((r) => r.outcome === "failed");
-  return bad ? `${bad.status} ${bad.reason ?? "unknown"}` : "no result from APNs";
+  return bad ? resultDetail(bad) : "no result from APNs";
 }
 
 async function sendApns(
@@ -107,25 +113,22 @@ async function sendApns(
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     sends: route.tokens.map((token) => ({ token, message })),
   });
-  if (configError !== undefined) {
-    if (route.smsFallback !== null) {
-      console.warn(`Push not sent (${configError}); sending the text instead`);
-      return route.smsFallback;
-    }
-    await ctx.runMutation(internal.delivery.record, {
-      outboxId,
-      outcome: "retry",
-      detail: configError,
-    });
-    return "config";
-  }
-  const dead = results.filter((r) => r.outcome === "unregistered").map((r) => r.token);
+  const dead = refusedTokens(results);
   if (dead.length > 0) await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
   if (results.some((r) => r.outcome === "sent")) {
     await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "sent", channel: "apns" });
     return "sent";
   }
-  const retryable = results.some((r) => r.outcome === "failed" && r.retryable);
+  const fault = configError ?? providerFault(results);
+  if (fault !== undefined) {
+    if (route.smsFallback !== null) {
+      console.warn(`Push not sent (${fault}); sending the text instead`);
+      return route.smsFallback;
+    }
+    await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "retry", detail: fault });
+    return "config";
+  }
+  const retryable = results.some((r) => apnsAnswer(r) === "retry");
   if (!retryable && route.smsFallback !== null) {
     const why = dead.length === results.length ? "tokens unregistered" : apnsDetail(results);
     console.warn(`Push not delivered (${why}); sending the text instead`);
@@ -155,12 +158,9 @@ async function sendStart(
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     sends: [{ token: route.token, message: route.message }],
   });
-  if (configError !== undefined) {
-    await ctx.runMutation(internal.delivery.record, {
-      outboxId,
-      outcome: "retry",
-      detail: configError,
-    });
+  const fault = configError ?? providerFault(results);
+  if (fault !== undefined) {
+    await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "retry", detail: fault });
     return "config";
   }
   const result = results[0];
@@ -173,10 +173,10 @@ async function sendStart(
     return "sent";
   }
   const detail = apnsDetail(results);
-  if (result === undefined || result.retryable) {
+  if (result === undefined || apnsAnswer(result) === "retry") {
     throw new Error(`Live Activity start failed, will retry: ${detail}`);
   }
-  const unregistered = result.outcome === "unregistered";
+  const unregistered = apnsAnswer(result) === "token_refused";
   if (unregistered) {
     await ctx.runMutation(internal.phonePush.dropStartToken, {
       deviceId: route.deviceId,
@@ -184,7 +184,7 @@ async function sendStart(
     });
   }
   if (route.alertFallback !== null) {
-    const why = unregistered ? "start token unregistered" : detail;
+    const why = unregistered ? "start token refused" : detail;
     console.warn(`Live Activity not started (${why}); sending the notification instead`);
     return route.alertFallback;
   }

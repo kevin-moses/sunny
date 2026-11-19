@@ -350,23 +350,43 @@ export function mapOutcome(token: string, status: number, reason: string | null)
 
 export const INVALID_TOKEN_REASON = "InvalidToken";
 
-const REASONS_ABOUT_THE_TOKEN_OR_PAYLOAD: ReadonlySet<string> = new Set([
+const REASONS_ABOUT_THE_TOKEN: ReadonlySet<string> = new Set([
   INVALID_TOKEN_REASON,
   "BadDeviceToken",
   "DeviceTokenNotForTopic",
   "MissingDeviceToken",
-  "PayloadEmpty",
-  "PayloadTooLarge",
 ]);
 
-export function refusedThisToken(result: ApnsResult): boolean {
-  if (result.outcome === "unregistered") return true;
-  return (
-    result.outcome === "failed" &&
-    !result.retryable &&
-    result.reason !== null &&
-    REASONS_ABOUT_THE_TOKEN_OR_PAYLOAD.has(result.reason)
-  );
+const REASONS_ABOUT_THE_PAYLOAD: ReadonlySet<string> = new Set(["PayloadEmpty", "PayloadTooLarge"]);
+
+const PROVIDER_STATUS = 403;
+
+type ApnsAnswer =
+  "sent" | "retry" | "token_refused" | "provider_refused" | "payload_refused" | "refused";
+
+export function apnsAnswer(result: ApnsResult): ApnsAnswer {
+  if (result.outcome === "sent") return "sent";
+  if (result.outcome === "unregistered") return "token_refused";
+  if (result.retryable) return "retry";
+  if (result.status === PROVIDER_STATUS) return "provider_refused";
+  if (result.reason !== null && REASONS_ABOUT_THE_TOKEN.has(result.reason)) return "token_refused";
+  if (result.reason !== null && REASONS_ABOUT_THE_PAYLOAD.has(result.reason)) {
+    return "payload_refused";
+  }
+  return "refused";
+}
+
+export function resultDetail(result: ApnsResult): string {
+  return `${result.status} ${result.reason ?? "unknown"}`;
+}
+
+export function refusedTokens(results: ApnsResult[]): string[] {
+  return results.filter((r) => apnsAnswer(r) === "token_refused").map((r) => r.token);
+}
+
+export function providerFault(results: ApnsResult[]): string | undefined {
+  const refused = results.find((r) => apnsAnswer(r) === "provider_refused");
+  return refused === undefined ? undefined : resultDetail(refused);
 }
 
 export function failureResult(token: string, reason: string): ApnsResult {

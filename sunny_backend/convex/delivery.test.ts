@@ -195,15 +195,67 @@ describe("APNs routing", () => {
         token: "tok-1",
         outcome: "failed",
         status: 400,
-        reason: "BadDeviceToken",
+        reason: "BadTopic",
         retryable: false,
       },
     ]);
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("failed");
     const row = await outboxRow(f, id);
-    expect(row).toMatchObject({ state: "failed", detail: "400 BadDeviceToken" });
+    expect(row).toMatchObject({ state: "failed", detail: "400 BadTopic" });
     expect(row.channel).toBeUndefined();
+  });
+
+  test("a token APNs refuses as bad is deleted like an unregistered one", async () => {
+    const f = await setup();
+    providerMocks.apnsSend.mockResolvedValue([
+      {
+        token: "tok-1",
+        outcome: "failed",
+        status: 400,
+        reason: "BadDeviceToken",
+        retryable: false,
+      },
+      { token: "tok-2", outcome: "sent", status: 200, reason: null, retryable: false },
+    ]);
+    const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+    expect(await deliver(f, id)).toBe("sent");
+    const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+    expect(left.map((t) => t.token)).toEqual(["tok-2"]);
+  });
+
+  test("an alert refused for the provider token is held for a retry, not failed", async () => {
+    const f = await setup();
+    providerMocks.apnsSend.mockResolvedValue([
+      {
+        token: "tok-1",
+        outcome: "failed",
+        status: 403,
+        reason: "ExpiredProviderToken",
+        retryable: false,
+      },
+      {
+        token: "tok-2",
+        outcome: "failed",
+        status: 403,
+        reason: "ExpiredProviderToken",
+        retryable: false,
+      },
+    ]);
+    const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+    expect(await deliver(f, id)).toBe("config");
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "pending",
+      detail: "403 ExpiredProviderToken",
+    });
+    expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toHaveLength(
+      2,
+    );
+    resetProviderMocks();
+    vi.setSystemTime(NOW + STUCK_AFTER_MS + 1_000);
+    expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(1);
+    await drivePool(f, id);
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", attempts: 2 });
   });
 
   test("a configuration result leaves the row pending with the detail, without a retry", async () => {
@@ -243,7 +295,7 @@ describe("APNs routing", () => {
         token: "tok-1",
         outcome: "failed",
         status: 400,
-        reason: "BadDeviceToken",
+        reason: "BadTopic",
         retryable: false,
       },
     ]);
@@ -624,7 +676,7 @@ describe("caregiver push", () => {
         token: "pat-bad",
         outcome: "failed",
         status: 400,
-        reason: "BadDeviceToken",
+        reason: "BadTopic",
         retryable: false,
       },
     ]);

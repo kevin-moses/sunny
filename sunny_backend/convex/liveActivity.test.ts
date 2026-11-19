@@ -76,13 +76,13 @@ async function deliverPrompt(f: PhoneFixture, instanceId: Id<"taskInstances">): 
   return await f.t.action(internal.delivery.deliver, { outboxId: row._id });
 }
 
-function refuseStart(result: { status: number; retryable?: boolean }): void {
+function refuseStart(result: { status: number; reason?: string; retryable?: boolean }): void {
   answerEachToken((token) =>
     token === START_TOKEN
       ? {
           outcome: result.status === 410 ? "unregistered" : "failed",
           status: result.status,
-          reason: "Refused",
+          reason: result.reason ?? "Refused",
           retryable: result.retryable ?? false,
         }
       : APNS_SENT,
@@ -314,25 +314,31 @@ describe("a start that APNs does not accept", () => {
     warnSpy.mockRestore();
   });
 
-  test("a 410 deletes the start token and sends the notification in the same run", async () => {
-    const f = await setup();
-    await reportStartToken(f);
-    const instanceId = await pills(f);
-    refuseStart({ status: 410 });
-    await tick(f, EIGHT);
-    expect(await deliverPrompt(f, instanceId)).toBe("sent");
-    expect(starts()).toHaveLength(1);
-    expect(alertsSent()).toEqual([
-      expect.objectContaining({ tokens: [ALERT_TOKEN], title: "Morning pills" }),
-    ]);
-    expect((await phonePushRow(f))!.liveActivityStart).toBeUndefined();
-    expect((await activities(f)).map((row) => row.phase)).toEqual([
-      { kind: "ended", at: about(EIGHT), reason: "start_failed" },
-    ]);
-    expect(await outbox(f, instanceId)).toEqual([
-      expect.objectContaining({ state: "sent", channel: "apns", attempts: 1 }),
-    ]);
-  });
+  test.each([
+    [410, "Unregistered"],
+    [400, "BadDeviceToken"],
+  ])(
+    "a %i %s deletes the start token and sends the notification in the same run",
+    async (status, reason) => {
+      const f = await setup();
+      await reportStartToken(f);
+      const instanceId = await pills(f);
+      refuseStart({ status, reason });
+      await tick(f, EIGHT);
+      expect(await deliverPrompt(f, instanceId)).toBe("sent");
+      expect(starts()).toHaveLength(1);
+      expect(alertsSent()).toEqual([
+        expect.objectContaining({ tokens: [ALERT_TOKEN], title: "Morning pills" }),
+      ]);
+      expect((await phonePushRow(f))!.liveActivityStart).toBeUndefined();
+      expect((await activities(f)).map((row) => row.phase)).toEqual([
+        { kind: "ended", at: about(EIGHT), reason: "start_failed" },
+      ]);
+      expect(await outbox(f, instanceId)).toEqual([
+        expect.objectContaining({ state: "sent", channel: "apns", attempts: 1 }),
+      ]);
+    },
+  );
 
   test("another permanent refusal also falls back, and keeps the start token", async () => {
     const f = await setup();
