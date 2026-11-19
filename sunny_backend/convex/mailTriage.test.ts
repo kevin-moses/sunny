@@ -411,6 +411,36 @@ describe("the item lifecycle", () => {
     expect((await item(h, itemId)).state).toBe("done");
   });
 
+  test("a row waits while the mailbox is revoked and is triaged after a reconnect to the same address", async () => {
+    const h = await setup();
+    replyWith(PHISHING);
+    const itemId = await receive(h, clinic());
+    for (const status of ["revoked", "error"] as const) {
+      await h.t.run(async (ctx) => ctx.db.patch(h.mailboxId, { status }));
+      expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
+      expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 0 });
+    }
+    vi.setSystemTime(NOW + 16 * MINUTE);
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
+
+    await h.t.run(async (ctx) => ctx.db.patch(h.mailboxId, { status: "active" }));
+    vi.setSystemTime(NOW + 32 * MINUTE);
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
+    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("applied");
+    expect((await item(h, itemId)).state).toBe("done");
+  });
+
+  test("the sweeper hands a row whose mailbox is gone to a claim that fails it quietly", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    await h.t.run(async (ctx) => ctx.db.delete(h.mailboxId));
+    vi.setSystemTime(NOW + 16 * MINUTE);
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
+    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
+    expect((await item(h, itemId)).state).toBe("failed");
+    expect(await rows(h, "chatPosts")).toHaveLength(0);
+  });
+
   test("a row for a disconnected mailbox fails quietly", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());
@@ -559,12 +589,12 @@ describe("the item lifecycle", () => {
     expect(pushes.map((p) => [p.kind, p.title])).toEqual(
       Array.from({ length: 3 }, () => ["mail_escalation", "Reconnect Gmail for Mom"]),
     );
-    expect((await item(h, otherId)).state).toBe("failed");
+    expect((await item(h, otherId)).state).toBe("queued");
     expect((await item(h, itemId)).state).toBe("queued");
     vi.setSystemTime(NOW + 16 * MINUTE);
-    await h.t.mutation(internal.mailTriage.sweepStuck, {});
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
-    expect((await item(h, itemId)).state).toBe("failed");
+    expect((await item(h, itemId)).state).toBe("queued");
   });
 
   test("Google denying access during triage marks the mailbox once with one notice and no item posts", async () => {

@@ -93,6 +93,21 @@ function classifierOf(triaged: Triaged): ClassifierRecord {
     : { name: triaged.classifier, usage: triaged.usage };
 }
 
+async function mailboxOf(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Doc<"mailboxes"> | null> {
+  const mailbox = await ctx.db
+    .query("mailboxes")
+    .withIndex("by_household", (q) => q.eq("householdId", item.householdId))
+    .unique();
+  return mailbox?.accountEmail === item.account ? mailbox : null;
+}
+
+async function waitsToBeClaimed(ctx: QueryCtx, item: Doc<"mailItems">): Promise<boolean> {
+  const household = await ctx.db.get(item.householdId);
+  if (household?.backgroundPaused) return true;
+  const mailbox = await mailboxOf(ctx, item);
+  return mailbox !== null && mailbox.status !== "active";
+}
+
 export const claimItem = internalMutation({
   args: { itemId: v.id("mailItems") },
   handler: async (ctx, { itemId }): Promise<Claim> => {
@@ -100,22 +115,15 @@ export const claimItem = internalMutation({
     if (!item || item.state !== "queued") return { kind: "skip", reason: "not queued" };
     const household = await ctx.db.get(item.householdId);
     if (household?.backgroundPaused) return { kind: "skip", reason: "household paused" };
+    const mailbox = await mailboxOf(ctx, item);
+    if (!household || !mailbox) {
+      await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
+      return { kind: "skip", reason: "mailbox gone" };
+    }
+    if (mailbox.status !== "active") return { kind: "skip", reason: "mailbox not active" };
     if (item.attempt >= MAX_TRIAGE_ATTEMPTS) {
       await failUnread(ctx, item);
       return { kind: "skip", reason: "attempts used up" };
-    }
-    const mailbox = await ctx.db
-      .query("mailboxes")
-      .withIndex("by_household", (q) => q.eq("householdId", item.householdId))
-      .unique();
-    if (
-      !household ||
-      !mailbox ||
-      mailbox.status !== "active" ||
-      mailbox.accountEmail !== item.account
-    ) {
-      await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
-      return { kind: "skip", reason: "mailbox not readable" };
     }
     const now = Date.now();
     const attempt = item.attempt + 1;
@@ -397,8 +405,7 @@ async function requeueOverdue(
   let queued = 0;
   for (const row of rows) {
     await ctx.db.patch(row._id, { state: "queued", leaseUntil: now + TRIAGE_PICKUP_MS });
-    const household = await ctx.db.get(row.householdId);
-    if (household?.backgroundPaused) continue;
+    if (await waitsToBeClaimed(ctx, row)) continue;
     await enqueueTriage(ctx, row._id);
     queued += 1;
   }
