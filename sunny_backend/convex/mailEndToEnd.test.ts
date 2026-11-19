@@ -8,6 +8,7 @@ import {
   MAILBOX,
   jevReply,
   rawEmail,
+  seedTrustedSender,
   summaryReply,
 } from "./mailMocks.helpers";
 import { createFamilyHousehold, makeBackend } from "./testing.helpers";
@@ -84,12 +85,7 @@ test("a polled message runs through the workpool to an event and a caregiver cha
   const householdId = await createFamilyHousehold(t);
   const refreshToken = await encryptSecret("refresh-1");
   const mailboxId = await t.run(async (ctx) => {
-    await ctx.db.insert("mailTrustedSenders", {
-      householdId,
-      address: "appointments@lakesideeye.example",
-      addedBy: "pat",
-      addedAt: NOW - DAY,
-    });
+    await seedTrustedSender(ctx, householdId, "appointments@lakesideeye.example", NOW - DAY);
     return await ctx.db.insert("mailboxes", {
       householdId,
       connectedBy: "pat",
@@ -107,7 +103,15 @@ test("a polled message runs through the workpool to an event and a caregiver cha
     lastHistoryId: "101",
   });
   const state = async () =>
-    (await t.run(async (ctx) => await ctx.db.query("mailItems").first()))!.state;
+    (await t.run(
+      async (ctx) =>
+        await ctx.db
+          .query("mailItems")
+          .withIndex("by_household_account_gmail", (q) =>
+            q.eq("householdId", householdId).eq("account", MAILBOX).eq("gmailId", "e2e-1"),
+          )
+          .unique(),
+    ))!.state;
   for (let i = 0; i < 50 && (await state()) !== "done"; i += 1) {
     let finished = false;
     void t.finishInProgressScheduledFunctions().then(() => {

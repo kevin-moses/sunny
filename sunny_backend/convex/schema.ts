@@ -352,7 +352,7 @@ export default defineSchema({
     address: v.string(),
     addedBy: v.string(),
     addedAt: v.number(),
-    mailItemId: v.optional(v.id("mailItems")),
+    mailItemId: v.id("mailItems"),
   }).index("by_household_address", ["householdId", "address"]),
 
   seniorNotes: defineTable({

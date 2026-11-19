@@ -237,12 +237,24 @@ function escalate(
     push: true,
     eventId,
     proposed: appointment === null ? null : proposed(appointment),
+    senderNotTrusted: false,
   };
 }
 
 function tell(c: Context, line: string, push: boolean): MailEffect {
   if (c.decision !== null) return escalate(c, c.decision, line, null, null);
-  return { kind: "tell_caregivers", ...caregiverMessage(c.facts, line, c.summary), push };
+  return {
+    kind: "tell_caregivers",
+    ...caregiverMessage(c.facts, line, c.summary),
+    push,
+    senderNotTrusted: false,
+  };
+}
+
+function heldForTrust(c: Context, effect: MailEffect): MailEffect {
+  if (!c.authenticated || c.trusted) return effect;
+  if (effect.kind !== "escalate" && effect.kind !== "tell_caregivers") return effect;
+  return { ...effect, senderNotTrusted: true };
 }
 
 function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
@@ -312,12 +324,15 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         c.trusted
           ? null
           : [
-              escalate(
+              heldForTrust(
                 c,
-                "new_sender",
-                `${described(s.appointment)}. Sunny has not added it because ${NEW_SENDER}. Tell Sunny in chat to add it and to trust this sender.`,
-                null,
-                s.appointment,
+                escalate(
+                  c,
+                  "new_sender",
+                  `${described(s.appointment)}. Sunny has not added it because ${NEW_SENDER}. Tell Sunny in chat to add it and to trust this sender.`,
+                  null,
+                  s.appointment,
+                ),
               ),
             ],
     },
@@ -396,7 +411,12 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
               : c.authenticated && !c.trusted
                 ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because ${NEW_SENDER}. The email asks to move it to ${asked}. Tell Sunny in chat to move it and to trust this sender.`
                 : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
-        return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
+        return [
+          heldForTrust(
+            c,
+            escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment),
+          ),
+        ];
       },
     },
     {
@@ -469,10 +489,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         c.trusted
           ? null
           : [
-              tell(
+              heldForTrust(
                 c,
-                `Sunny did not tell the senior about this email because ${NEW_SENDER}.`,
-                false,
+                tell(
+                  c,
+                  `Sunny did not tell the senior about this email because ${NEW_SENDER}.`,
+                  false,
+                ),
               ),
             ],
     },

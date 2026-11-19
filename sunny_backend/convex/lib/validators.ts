@@ -271,13 +271,18 @@ export const mailEffectRecord = v.union(
   }),
   v.object({ kind: v.literal("already_on_calendar"), eventId: v.id("events") }),
   v.object({ kind: v.literal("senior_note"), noteId: v.id("seniorNotes") }),
-  v.object({ kind: v.literal("told_caregivers"), pushed: v.boolean() }),
+  v.object({
+    kind: v.literal("told_caregivers"),
+    pushed: v.boolean(),
+    senderNotTrusted: v.optional(v.literal(true)),
+  }),
   v.object({
     kind: v.literal("escalated"),
     reason: literals(ESCALATION_REASONS),
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
     proposed: v.optional(v.object({ kind: appointmentKind, date: v.string(), time: v.string() })),
+    senderNotTrusted: v.optional(v.literal(true)),
   }),
 );
 export type MailEffectRecord = Infer<typeof mailEffectRecord>;

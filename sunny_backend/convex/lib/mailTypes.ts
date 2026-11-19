@@ -287,11 +287,12 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string; appointmentKey: string | null }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
+  | ({ kind: "tell_caregivers"; push: boolean; senderNotTrusted: boolean } & CaregiverMessage)
   | ({
       kind: "escalate";
       reason: EscalationReason;
       push: boolean;
       eventId: string | null;
       proposed: Proposed | null;
+      senderNotTrusted: boolean;
     } & CaregiverMessage);

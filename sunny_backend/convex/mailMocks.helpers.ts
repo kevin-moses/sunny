@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { gmailMocks } from "./googleMocks.helpers";
 import { toBase64Url } from "./lib/base64";
 import { JEV_MODEL } from "./lib/mailJudge";
@@ -267,6 +268,33 @@ export function jevRepliesWith(says: JevSays, change: (reply: JevWireReply) => u
   );
 }
 
+export async function seedTrustedSender(
+  ctx: MutationCtx,
+  householdId: Id<"households">,
+  address: string,
+  addedAt: number,
+): Promise<Id<"mailTrustedSenders">> {
+  const mailItemId = await ctx.db.insert("mailItems", {
+    householdId,
+    account: MAILBOX,
+    gmailId: `trusted-${address}`,
+    state: "done",
+    attempt: 1,
+    sender: { name: "", address, authenticated: true },
+    subject: "First email",
+    receivedAt: addedAt,
+    verdict: "appointment",
+    effects: [{ kind: "escalated", reason: "new_sender", pushed: true, senderNotTrusted: true }],
+  });
+  return await ctx.db.insert("mailTrustedSenders", {
+    householdId,
+    address,
+    addedBy: "pat",
+    addedAt,
+    mailItemId,
+  });
+}
+
 export interface MailHousehold {
   t: TestConvex;
   householdId: Id<"households">;
@@ -299,12 +327,7 @@ export async function mailHousehold(t: TestConvex): Promise<MailHousehold> {
       historyId: "100",
     });
     for (const address of TRUSTED_SENDERS) {
-      await ctx.db.insert("mailTrustedSenders", {
-        householdId,
-        address,
-        addedBy: "pat",
-        addedAt: NOW_FOR_TRUST,
-      });
+      await seedTrustedSender(ctx, householdId, address, NOW_FOR_TRUST);
     }
     return { mailboxId, phoneId: phone._id, displayId };
   });
