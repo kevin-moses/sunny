@@ -1,7 +1,7 @@
-import { MAIL_MODEL, triageEmail } from "./mailClassify";
-import type { Classification, Classifier } from "./mailClassify";
-import { linkKey, planWithRule } from "./mailPolicy";
-import { DECISION_REASONS, SUSPICIONS } from "./mailTypes";
+import { MAIL_MODEL, triageEmail } from "../../convex/lib/mailClassify";
+import type { Classification, Classifier } from "../../convex/lib/mailClassify";
+import { linkKey, planWithRule } from "../../convex/lib/mailPolicy";
+import { DECISION_REASONS, SUSPICIONS } from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -10,7 +10,7 @@ import type {
   MailVerdict,
   ParsedEmail,
   Usage,
-} from "./mailTypes";
+} from "../../convex/lib/mailTypes";
 
 export type EffectKind = MailEffect["kind"];
 

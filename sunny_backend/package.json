@@ -7,11 +7,11 @@
   "scripts": {
     "dev": "convex dev",
     "deploy": "convex deploy",
-    "typecheck": "tsc --noEmit -p convex && tsc --noEmit -p scripts",
+    "typecheck": "tsc --noEmit -p convex && tsc --noEmit -p scripts && tsc --noEmit -p evals",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "format": "prettier --write convex scripts",
-    "format:check": "prettier --check convex scripts",
+    "format": "prettier --write convex scripts \"evals/**/*.ts\"",
+    "format:check": "prettier --check convex scripts \"evals/**/*.ts\"",
     "setup:agent": "tsx --env-file-if-exists=../.env --env-file-if-exists=.env.local scripts/setup_managed_agent.ts",
     "caregiver": "tsx scripts/caregiver.ts"
   },

@@ -11,8 +11,8 @@ import {
   replayClassifier,
   runFixture,
   scoreRuns,
-} from "../convex/lib/mailEval";
-import type { Fixture, Recording, Run } from "../convex/lib/mailEval";
+} from "../evals/mail/mailEval";
+import type { Fixture, Recording, Run } from "../evals/mail/mailEval";
 
 const EVAL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "evals", "mail");
 const FIXTURE_DIR = join(EVAL_DIR, "fixtures");

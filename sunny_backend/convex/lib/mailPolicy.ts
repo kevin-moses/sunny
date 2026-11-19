@@ -36,7 +36,7 @@ const MAX_DAYS_AHEAD = 400;
 const MIN_DURATION_MINUTES = 5;
 const MAX_DURATION_MINUTES = 480;
 const ASSUMED_DURATION_MINUTES = 30;
-const MAX_NOTE = 160;
+export const MAX_NOTE = 160;
 const MAX_NOTE_SENTENCES = 2;
 const MAX_SUBJECT = 120;
 const MAX_CAREGIVER_BODY = 600;
@@ -88,7 +88,8 @@ function wordPattern(words: string[]): RegExp {
 }
 
 const DENIED_IN_TITLES = wordPattern(MONEY_AND_CREDENTIAL_WORDS);
-const DENIED_IN_NOTES = wordPattern([...MONEY_AND_CREDENTIAL_WORDS, ...ACTION_WORDS]);
+export const NOTE_DENIED_WORDS = [...MONEY_AND_CREDENTIAL_WORDS, ...ACTION_WORDS];
+const DENIED_IN_NOTES = wordPattern(NOTE_DENIED_WORDS);
 const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
 
 export function appointmentKey(appointment: Appointment, ics: IcsEvent | null): string {

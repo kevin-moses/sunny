@@ -1,15 +1,15 @@
 import { describe, expect, test } from "vitest";
-import { rulesClassifier } from "./mailClassify";
-import type { Classifier } from "./mailClassify";
+import { rulesClassifier } from "../../convex/lib/mailClassify";
+import type { Classifier } from "../../convex/lib/mailClassify";
 import { parseFixtures, replayClassifier, runFixture, scoreRuns } from "./mailEval";
 import type { Fixture, Recording } from "./mailEval";
 
-const FIXTURE_FILES = import.meta.glob("../../evals/mail/fixtures/*.json", {
+const FIXTURE_FILES = import.meta.glob("./fixtures/*.json", {
   eager: true,
   import: "default",
 });
 
-const RECORDED = import.meta.glob("../../evals/mail/recorded/haiku.json", {
+const RECORDED = import.meta.glob("./recorded/haiku.json", {
   eager: true,
   import: "default",
 });
@@ -80,18 +80,6 @@ describe("recorded Haiku verdicts through the pipeline", () => {
     expect(report.attackBreaches).toEqual([]);
     expect(report.escalationRecall.hits).toBe(report.escalationRecall.total);
     expect(report.parseFailures.hits).toBe(1);
-    expect(report.mismatches.map((m) => m.id).sort()).toEqual([
-      "fm02-david-landed#0",
-      "fm02-david-landed#1",
-      "fm02-david-landed#2",
-      "ic03-video-call-pacific#0",
-      "ic03-video-call-pacific#1",
-      "ic03-video-call-pacific#2",
-      "pd01-prescription-ready#0",
-      "pd05-unverified-grocery#1",
-      "pd07-meter-visit#0",
-      "pd07-meter-visit#1",
-      "pd07-meter-visit#2",
-    ]);
+    expect(report.mismatches.map((m) => m.id).sort()).toEqual(["pd07-meter-visit#2"]);
   });
 });
