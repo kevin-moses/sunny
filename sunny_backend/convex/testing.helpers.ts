@@ -16,6 +16,7 @@ export function makeBackend() {
   workflowTest.register(t);
   workpoolTest.register(t, "calendarSyncPool");
   workpoolTest.register(t, "deliveryPool");
+  workpoolTest.register(t, "mailPool");
   return t;
 }
 

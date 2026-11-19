@@ -43,3 +43,19 @@ npx tsx scripts/caregiver.ts google
 ```
 
 Open the printed link once, within 5 minutes, in the browser where you sign in as a test user. The link sets a cookie that the callback checks, so a different browser or a second use shows "Link expired". Allow access, and a calendar named after the senior ("Mom (Sunny)" when her preferred name is Mom) appears in Google Calendar with every Sunny event. Each event has a popup reminder at the household's event notice time on the day of the event, or an hour before it when the event starts earlier than that. Sunny pushes later edits automatically (a few seconds apart at most; repeated edits merge). The app can list the connection with `googleCalendar:myConnections` and remove it with `googleCalendar:disconnect`; the Google calendar itself is left in place.
+
+## 6. Gmail (reading the senior's mail)
+
+Sunny reads the senior's Gmail with the read-only scope `https://www.googleapis.com/auth/gmail.readonly`. It uses the same OAuth client and environment variables as the calendar.
+
+1. **APIs & Services > Library**: search **Gmail API** and click **Enable**.
+2. **Google Auth Platform > Data access > Add or remove scopes**: add `https://www.googleapis.com/auth/gmail.readonly`. Save. This is a restricted scope; it works for test users while the app stays in **Testing**, and public use needs Google's verification.
+3. **Audience**: add the senior's Google account as a test user. Test-mode refresh tokens expire after 7 days, so reconnect weekly until the app is verified.
+4. Connect, signed in as the senior's Google account, in the browser that opens the link:
+
+```bash
+cd sunny_backend
+npx tsx scripts/caregiver.ts gmail
+```
+
+Only a primary caregiver or member can connect. Sunny backfills the last 7 days (at most 50 messages) and then checks for new mail every 5 minutes, except while the household is paused. Connecting again replaces the grant. The app can show the mailbox with `gmail:mailboxStatus` and remove it with `gmail:disconnect`, which also revokes the grant at Google.

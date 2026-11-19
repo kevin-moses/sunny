@@ -10,6 +10,18 @@ export const googleMocks = {
   revokeRefreshToken: vi.fn(),
 };
 
+export const gmailMocks = {
+  getProfile: vi.fn(),
+  listHistory: vi.fn(),
+  listRecent: vi.fn(),
+  getMessage: vi.fn(),
+  hasSentTo: vi.fn(),
+};
+
+export function gmailMock<T extends object>(original: T): T {
+  return { ...original, ...gmailMocks };
+}
+
 export function googleMock<T extends object>(original: T): T {
   return { ...original, ...googleMocks };
 }
@@ -37,7 +49,14 @@ export function secretBoxMock<T extends object>(original: T): T {
 }
 
 export function resetGoogleMocks(): void {
-  for (const mock of Object.values(googleMocks)) mock.mockReset();
+  for (const mock of [...Object.values(googleMocks), ...Object.values(gmailMocks)]) {
+    mock.mockReset();
+  }
+  gmailMocks.getProfile.mockResolvedValue({ email: "margaret@example.com", historyId: "100" });
+  gmailMocks.listRecent.mockResolvedValue([]);
+  gmailMocks.listHistory.mockResolvedValue({ ids: [], lastHistoryId: "100", next: null });
+  gmailMocks.getMessage.mockResolvedValue(null);
+  gmailMocks.hasSentTo.mockResolvedValue(false);
   googleMocks.refreshAccessToken.mockResolvedValue({
     accessToken: "access-1",
     expiresAt: Date.now() + 3_600_000,

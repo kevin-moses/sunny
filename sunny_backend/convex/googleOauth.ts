@@ -9,12 +9,14 @@ import {
   internalQuery,
 } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { isDeviceIdentity, requireCaregiverMember, SYSTEM_ACTOR } from "./lib/access";
+import { EDITOR_ROLES, isDeviceIdentity, requireCaregiverMember, SYSTEM_ACTOR } from "./lib/access";
 import { audit } from "./lib/audit";
 import { appError, errorText, isAppError } from "./lib/errors";
+import { finishMailbox } from "./gmail";
 import { finishCalendar } from "./googleCalendar";
 import {
   CALENDAR_SCOPE,
+  GMAIL_SCOPE,
   consentUrl,
   exchangeCode,
   revokeRefreshToken,
@@ -51,6 +53,7 @@ interface PurposeConfig {
 
 export const GOOGLE_PURPOSES: Record<OAuthPurpose, PurposeConfig> = {
   calendar: { scope: CALENDAR_SCOPE, finish: finishCalendar },
+  mailbox: { scope: GMAIL_SCOPE, finish: finishMailbox },
 };
 
 const OAUTH_SWEEP_BATCH = 200;
@@ -73,7 +76,10 @@ interface ClaimedFlow extends FlowOwner {
 export const assertMayConnect = internalQuery({
   args: { householdId: v.id("households"), userId: v.string(), purpose: oauthPurpose },
   handler: async (ctx, { householdId, userId, purpose }): Promise<null> => {
-    await requireCaregiverMember(ctx, householdId, userId);
+    const member = await requireCaregiverMember(ctx, householdId, userId);
+    if (purpose === "mailbox" && !EDITOR_ROLES.includes(member.role)) {
+      throw appError("forbidden", "Only a primary caregiver or member can connect the mailbox");
+    }
     return null;
   },
 });

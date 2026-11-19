@@ -3,6 +3,8 @@ import { v } from "convex/values";
 import {
   actorKind,
   calendarConnectionStatus,
+  mailboxStatus,
+  mailItemState,
   oauthPurpose,
   calendarSyncState,
   agentRequestStatus,
@@ -276,6 +278,33 @@ export default defineSchema({
     .index("by_event_connection", ["eventId", "connectionId"])
     .index("by_connection", ["connectionId"])
     .index("by_updated", ["updatedAt"]),
+
+  mailboxes: defineTable({
+    householdId: v.id("households"),
+    connectedBy: v.string(),
+    accountEmail: v.string(),
+    refreshToken: v.string(),
+    accessToken: v.optional(v.string()),
+    accessTokenExpiresAt: v.optional(v.number()),
+    status: mailboxStatus,
+    error: v.optional(v.string()),
+    historyId: v.string(),
+    lastPolledAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+  })
+    .index("by_household", ["householdId"])
+    .index("by_status", ["status"]),
+
+  mailItems: defineTable({
+    householdId: v.id("households"),
+    account: v.string(),
+    gmailId: v.string(),
+    state: mailItemState,
+    attempt: v.number(),
+    leaseUntil: v.optional(v.number()),
+  })
+    .index("by_household_account_gmail", ["householdId", "account", "gmailId"])
+    .index("by_state_lease", ["state", "leaseUntil"]),
 
   oauthFlows: defineTable({
     ticketHash: v.string(),

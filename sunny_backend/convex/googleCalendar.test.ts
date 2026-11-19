@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { connectPath, connectUrl, finish, startFlow, startedFrom } from "./googleFlow.helpers";
 import { googleMocks, resetGoogleMocks } from "./googleMocks.helpers";
 import { signState } from "./lib/google";
 import { FLOW_COOKIE, sha256Base64Url } from "./lib/oauthFlow";
@@ -51,72 +52,6 @@ afterEach(() => {
     else process.env[name] = savedEnv[name];
   }
 });
-
-interface StartedFlow {
-  res: Response;
-  setCookie: string;
-  cookie: string;
-  secret: string;
-  state: string;
-  flowId: string;
-  challenge: string;
-}
-
-async function connectUrl(
-  t: TestConvex,
-  householdId: Id<"households">,
-  userId = "user_a",
-): Promise<URL> {
-  return new URL(
-    await t
-      .withIdentity({ subject: userId })
-      .action(api.googleOauth.connectUrl, { householdId, purpose: "calendar" }),
-  );
-}
-
-async function connectPath(
-  t: TestConvex,
-  householdId: Id<"households">,
-  userId = "user_a",
-): Promise<string> {
-  const url = await connectUrl(t, householdId, userId);
-  return `${url.pathname}${url.search}`;
-}
-
-function startedFrom(res: Response): StartedFlow {
-  expect(res.status).toBe(302);
-  const consent = new URL(res.headers.get("Location")!);
-  const setCookie = res.headers.get("Set-Cookie")!;
-  const cookie = setCookie.split(";")[0]!;
-  const state = consent.searchParams.get("state")!;
-  return {
-    res,
-    setCookie,
-    cookie,
-    secret: cookie.slice(FLOW_COOKIE.length + 1),
-    state,
-    flowId: state.split(".")[0]!,
-    challenge: consent.searchParams.get("code_challenge")!,
-  };
-}
-
-async function startFlow(
-  t: TestConvex,
-  householdId: Id<"households">,
-  userId = "user_a",
-): Promise<StartedFlow> {
-  return startedFrom(await t.fetch(await connectPath(t, householdId, userId)));
-}
-
-function finish(
-  t: TestConvex,
-  flow: { state: string; cookie: string | null },
-  code = "c",
-): Promise<Response> {
-  return t.fetch(`/google/callback?code=${code}&state=${encodeURIComponent(flow.state)}`, {
-    headers: flow.cookie === null ? {} : { Cookie: flow.cookie },
-  });
-}
 
 async function refusals(t: TestConvex): Promise<unknown[]> {
   const rows = await t.run(async (ctx) => await ctx.db.query("auditLog").collect());

@@ -143,8 +143,19 @@ export const calendarConnectionStatus = v.union(
 );
 export type CalendarConnectionStatus = Infer<typeof calendarConnectionStatus>;
 
-export const oauthPurpose = v.literal("calendar");
+export const oauthPurpose = v.union(v.literal("calendar"), v.literal("mailbox"));
 export type OAuthPurpose = Infer<typeof oauthPurpose>;
+
+export const mailboxStatus = v.union(v.literal("active"), v.literal("revoked"), v.literal("error"));
+export type MailboxStatus = Infer<typeof mailboxStatus>;
+
+export const mailItemState = v.union(
+  v.literal("queued"),
+  v.literal("triaging"),
+  v.literal("done"),
+  v.literal("failed"),
+);
+export type MailItemState = Infer<typeof mailItemState>;
 
 export const calendarSyncState = v.union(
   v.literal("queued"),

@@ -15,4 +15,6 @@ crons.interval("sweep expired phone verifications", { hours: 1 }, internal.phone
 crons.interval("sweep handled inbound texts", { hours: 1 }, internal.sms.sweepInbound, {});
 crons.interval("sweep expired oauth flows", { hours: 1 }, internal.googleOauth.sweepOauthFlows, {});
 
+crons.interval("poll gmail mailboxes", { minutes: 5 }, internal.gmail.pollAll, {});
+
 export default crons;

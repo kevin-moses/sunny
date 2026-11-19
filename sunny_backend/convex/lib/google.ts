@@ -10,6 +10,7 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
+export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
