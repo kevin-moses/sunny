@@ -154,6 +154,8 @@ function showing(row: ActivityRow | null): Showing {
 
 type OpenPhase = Exclude<LiveActivityPhase, { kind: "ended" }>;
 
+const OPEN_KINDS = ["starting", "started", "live"] as const satisfies OpenPhase["kind"][];
+
 function isOpenPhase(phase: LiveActivityPhase): phase is OpenPhase {
   return phase.kind !== "ended";
 }
@@ -283,11 +285,16 @@ export async function openActivitiesOf(
   ctx: QueryCtx,
   deviceId: Id<"devices">,
 ): Promise<Doc<"liveActivities">[]> {
-  const rows = await ctx.db
-    .query("liveActivities")
-    .withIndex("by_device", (q) => q.eq("deviceId", deviceId))
-    .collect();
-  return rows.filter((row) => isOpenPhase(row.phase));
+  const open: Doc<"liveActivities">[] = [];
+  for (const kind of OPEN_KINDS) {
+    open.push(
+      ...(await ctx.db
+        .query("liveActivities")
+        .withIndex("by_device_phase", (q) => q.eq("deviceId", deviceId).eq("phase.kind", kind))
+        .collect()),
+    );
+  }
+  return open;
 }
 
 function isOnPhone(reported: ReportedActivity): boolean {
