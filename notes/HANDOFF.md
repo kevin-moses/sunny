@@ -267,7 +267,7 @@ Tapping an alert opens Home, tapping a digest opens Chat, and tapping anything e
 
 A phone's token belongs to the caregiver who registered it last. A paired device's token never moves (`households.registerPushToken`). If permission is denied, the caregiver stays on SMS. A caregiver with a verified phone is texted whenever their push cannot be delivered: when there is no APNs configuration, when the tokens are dead, or when push retries run out (`notes/SCHEMA.md`). The paired senior device keeps its own wiring (`push.ts` `usePushNotifications` in `VoiceProvider`), where a tap starts a voice session. Time-sensitive pushes need the `com.apple.developer.usernotifications.time-sensitive` entitlement in `app.json`, so a change to it needs a new development build.
 
-Not built: the e-ink display client and the Live Activity. Their backend is ready. It consists of the device token and the HTTP device API (`sunny_backend/convex/deviceApi.ts`, described in `notes/SCHEMA.md` "Device API"), including the phone timeline for the widget and the Live Activity (`GET /device/timeline`, see "Phone timeline" above) and the server-drawn display frames (`GET /device/frame`, see "Display frames" above). The iPad display still draws its own React Native screens.
+Not built: the e-ink display client. Its backend is ready. It consists of the device token and the HTTP device API (`sunny_backend/convex/deviceApi.ts`, described in `notes/SCHEMA.md` "Device API"), including the server-drawn display frames (`GET /device/frame`, see "Display frames" above). The iPad display still draws its own React Native screens.
 
 ### Senior phone widget
 
@@ -277,20 +277,22 @@ Layout:
 
 | Path | What it is |
 | --- | --- |
-| `sunny_app/targets/SunnyWidget/` | The widget extension, generated into the Xcode project by `@bacons/apple-targets` from `expo-target.config.js` (bundle id `com.kmsunny.sunny.widget`, iOS 17.2, the app group and the shared keychain group). Swift files: `SunnyWidget.swift` (widget, timeline provider, gallery sample), `ConfirmTaskIntent.swift` (Done), `SunnyWidgetView.swift` (family switch), `SystemWidgetViews.swift` (small and medium), `AccessoryWidgetViews.swift` (inline, rectangular, circular), `WidgetParts.swift`, `WidgetStyle.swift`. `Fonts/` holds the three faces the widget uses and their OFL texts; `Info.plist` lists them in `UIAppFonts`. `pods.rb` adds the `SunnyWidgetCore` pod to the extension. |
-| `sunny_app/modules/sunny-widget/core/` | `SunnyWidgetCore`, the Foundation and Security only logic shared by the extension and the app. It is one CocoaPods pod linked into both targets, so no source file is copied. It holds timeline decoding, card choice, content and wording, time formatting, the reload policy, the press queue and its replay, the device API client, the keychain and app group stores, and `WidgetSync`, which ties them together. |
+| `sunny_app/targets/SunnyWidget/` | The widget extension, generated into the Xcode project by `@bacons/apple-targets` from `expo-target.config.js` (bundle id `com.kmsunny.sunny.widget`, iOS 17.2, the app group, the shared keychain group, ActivityKit and `aps-environment` for WidgetKit pushes). Swift files: `SunnyWidget.swift` (widget, timeline provider, gallery sample, the widget bundle), `ConfirmTaskIntent.swift` (Done), `SunnyWidgetView.swift` (family switch), `SystemWidgetViews.swift` (small and medium), `AccessoryWidgetViews.swift` (inline, rectangular, circular), `WidgetParts.swift`, `WidgetStyle.swift`, and the Live Activity files listed under "Live Activity" below. `Fonts/` holds the four faces the widget and the Live Activity use and their OFL texts; `Info.plist` lists them in `UIAppFonts`. `pods.rb` adds the `SunnyWidgetCore` and `SunnyLiveActivity` pods to the extension. |
+| `sunny_app/modules/sunny-widget/core/` | `SunnyWidgetCore`, the logic shared by the extension and the app. It is one CocoaPods pod linked into both targets, so no source file is copied. It holds timeline decoding, card choice, content and wording, time formatting, the reload policy, the press queue and its replay, the device API client, the keychain and app group stores, and `WidgetSync`, which ties them together. It also holds the Live Activity's types and rules (see below). It uses only Foundation and Security, apart from one line that makes `SunnyTaskAttributes` an ActivityKit type when it is built for iOS, so it still builds on macOS for `swift test`. |
+| `sunny_app/modules/sunny-widget/activity/` | `SunnyLiveActivity`, the pod that calls ActivityKit and WidgetKit for the Live Activity. It is linked into the app and the extension. |
 | `sunny_app/modules/sunny-widget/coreTests/` | Swift unit tests and JSON fixtures. `modules/sunny-widget/Package.swift` makes the core a Swift package for these tests. |
-| `sunny_app/modules/sunny-widget/ios/`, `index.ts` | The local Expo module `SunnyWidget` (pod `SunnyWidgetBridge`): `storedSiteUrl`, `setCredentials`, `clearCredentials`, `reloadTimelines`, `flushPresses`. |
-| `sunny_app/src/widget/` | The app side: `widgetSync.ts` (which session gets a token, issuing it, replaying presses) and `useWidgetSync.ts` (`useWidgetSync` in `Root`, `useWidgetReload` in `PairedHome`). |
+| `sunny_app/modules/sunny-widget/ios/`, `index.ts` | The local Expo module `SunnyWidget` (pod `SunnyWidgetBridge`): `storedSiteUrl`, `setCredentials`, `clearCredentials`, `syncSurfaces`, `flushPresses`. The same pod holds `SunnyAppDelegateSubscriber`, which starts the Live Activity reporter at launch and handles background refresh pushes. |
+| `sunny_app/src/widget/` | The app side: `widgetSync.ts` (which session gets a token, issuing it, replaying presses, asking the native side to sync) and `useWidgetSync.ts` (`useWidgetSync` in `Root`, `useSurfaceSync` in `PairedHome`). |
 
 Credentials. Only a session that is `paired` with device kind `senior_phone` gets a token. The app calls `deviceApi.issueToken` when the bridge has no token for the current `CONVEX_SITE_URL`, and stores it with `setCredentials`. It issues again only when no token is stored, which happens after a 401 removed it. The token is a keychain item (service `com.kmsunny.sunny.widget`, account `deviceToken`, accessible after first unlock on this device only) in the access group `$(AppIdentifierPrefix)com.kmsunny.sunny.shared`. The site URL is in the app group defaults (`group.com.kmsunny.sunny`, key `sunny.widget.siteUrl`). Both targets read the group names from their Info.plist keys `SunnyAppGroup` and `SunnyKeychainGroup`. The app lists its own `$(AppIdentifierPrefix)com.kmsunny.sunny` first in `keychain-access-groups`, so Clerk and expo-secure-store items keep their default group. Unpair, sign-out and any session other than the senior phone (caregiver, home display, signed out) clear the token, the site URL, the cached timeline and the press queue, and reload the widget. If storing a token fails, the app stops issuing until the next clear, so a broken keychain cannot burn the limit of 10 tokens an hour.
 
 Files in the app group container, under `SunnyWidget/`:
 
 - `timeline.json`: the last good `GET /device/timeline` body with its ETag. A body is stored only after it decodes and passes the checks (ascending entries, the first at `generatedAt`, every card list ending in exactly one clear card, steps in range, a known time zone).
-- `presses/<press id>.json`: one file per Done press. It holds the instance, step, `via` and press time. A press is written to `staging/` and renamed into place, and it is removed by deleting its own file once the server has answered it. No process rewrites a shared list, so the widget extension and the app (and a later Live Activity intent) can append at the same time.
+- `presses/<press id>.json`: one file per Done press. It holds the instance, step, `via` and press time. A press is written to `staging/` and renamed into place, and it is removed by deleting its own file once the server has answered it. No process rewrites a shared list, so the widget extension and the app, where the Live Activity's Done runs, can append at the same time.
 - `marks/<press id>.json`: one "pressed since the fetch" mark per press. The widget hides a card whose instance and step have a mark.
 - `credentials.lock`: a `flock` lock held only while the token is written or removed, so a 401 removes a token only if it is still the one that got the 401.
+- `widgetPush.json`: the WidgetKit push token on iOS 26 and later. Clearing the credentials keeps it, because it belongs to the phone and not to the pairing.
 
 Presses. `WidgetSync.pressDone(instanceId:step:via:)` is the one entry point for a Done press. It appends the press, then replays the queue with a 4 second timeout, and returns. `WidgetSync.replayPresses(timeout:)` sends queued presses oldest first as `POST /device/confirm` with `pressedAgoMs` computed at send time. Any 200 answer (`confirmed`, `advanced`, `rejected`) and a 400 delete the press. A 401 keeps the queue, deletes the token and stops. A 429, a 5xx or no network keep the press and stop, so steps of one task never go out of order. The queue is replayed by every timeline request, every Done press and by the app when it comes to the foreground. The client sends every press and leaves the judgment to the server. A press the server refused is deleted after the answer, and the next fresh timeline shows the task again, because on a fresh timeline (200 or 304) every mark is dropped unless its press is still queued or was made after the fetch started.
 
@@ -303,6 +305,55 @@ Build: `cd sunny_app && npx expo prebuild --platform ios --clean`, then build th
 Not verified, since nothing was run on a simulator or device: the widget on a home or lock screen, the keychain sharing between the app and the extension (it needs a signed build), Done through the intent, the fonts as rendered by WidgetKit, VoiceOver, and the widget under Assistive Access. The layouts were checked by rendering the same SwiftUI views on macOS at several widget sizes and text sizes.
 
 Contract assumptions about `GET /device/timeline` that the backend must match: a 304 means the cached payload's entries are still right, and an unknown card `kind` makes the whole payload malformed, so the widget keeps its last good cache.
+
+#### Live Activity
+
+The phone side of the Live Activity described in the backend's "Live Activity" section. The server starts, updates and ends each activity by push. The phone draws it, takes Done on it, and reports its tokens to `PUT /device/push-state`.
+
+Files:
+
+| Path | What it is |
+| --- | --- |
+| `core/SunnyTaskAttributes.swift` | `SunnyTaskAttributes` (`activityKey`, `instanceId`, `receiptMs`) and its content state `TaskActivityState` (`card`, `nextSteps`, `closed`). The card is the timeline's `TaskCard`, which now also decodes and encodes the optional `icon`. Times are epoch milliseconds, read and written with a plain `JSONDecoder` and `JSONEncoder`. |
+| `core/TaskActivityFace.swift` | `TaskActivityFace`, the one mapping from content and `isStale` to what is drawn: `due`, `receipt` (after this phone's Done on the last step, "Noted at 9:41 AM" where Done was) or `over` (dimmed, no Done). `PressEffect` is the one rule the phone applies before the server answers: a press on the last step gives the receipt, and a press on an earlier step shows the next step from `nextSteps`. |
+| `core/TaskActivities.swift` | What the phone does to its activities, written against the `TaskActivityStore` protocol so it is tested without ActivityKit: show a press, apply the report's directives, end duplicates, end all, and build the report. |
+| `core/PushState.swift` | The report's encoding, the reply's directives, and `RefreshPush`, which recognizes the background refresh push. |
+| `core/SyncLane.swift` | Runs report sends one at a time. Requests that arrive while a send is waiting to start join that send, so a burst of token events at launch makes one or two reports. |
+| `activity/ActivityKitStore.swift` | The `TaskActivityStore` over `Activity<SunnyTaskAttributes>`. |
+| `activity/PushStateReporter.swift` | Observes the push-to-start token, whether Live Activities are enabled, new activities, and each activity's update token and state. Each change triggers a report. It also runs the Done press and the background refresh. |
+| `ios/SunnyAppDelegateSubscriber.swift` | Starts the reporter in `didFinishLaunching` and handles `content-available` pushes. |
+| `targets/SunnyWidget/TaskLiveActivity.swift`, `TaskActivityViews.swift` | The `ActivityConfiguration` and its views: Lock Screen banner, Dynamic Island expanded, compact and minimal. |
+| `targets/SunnyWidget/_shared/ConfirmActivityIntent.swift` | Done on the activity, a `LiveActivityIntent`. Files in `_shared` are compiled into the app target as well as the extension, which the system needs to run the intent in the app's process. Prebuild must run again when a file is added to or removed from `_shared`. |
+| `targets/SunnyWidget/WidgetPushTokenHandler.swift` | The WidgetKit push handler on iOS 26 and later. `SunnyWidget` attaches it only on those versions. |
+| `coreTests/Fixtures/liveActivity/` | Copies of the backend's payload goldens (`sunny_backend/convex/lib/liveActivityGoldens/`), byte for byte. The decode tests read every file in this folder, so replacing the folder with new goldens needs no test change. Prettier skips the folder. |
+
+Who runs where:
+
+- The app process runs the reporter, the Done intent and the background refresh. The system runs a `LiveActivityIntent` in the app's process and launches the app in the background for it.
+- The extension draws the activity and owns the WidgetKit push token. When the token changes it stores it in `widgetPush.json` and sends a report with only the `widgetPush` section. The app's later reports include the stored token, so a send that failed in the extension is repeated by the app.
+- React Native handles no token. It calls `syncSurfaces` when the app comes to the foreground and whenever the day view changes, which covers an in-app Done or Undo once the server has answered it.
+
+Reports. The phone sends one at every process launch, on every token, enablement, new-activity or activity-state change, after a Done press on the activity, when a background refresh push arrives, and when React Native calls `syncSurfaces`. Each report is read from ActivityKit when it is built. Nothing is queued. A failed send is repeated by the next trigger. Every report run also reloads the widget timelines. Before each report the phone ends any second activity with the same `activityKey`. It keeps the first one that ActivityKit lists. The report lists each key once, activities on screen first, and at most 8 activities.
+
+Applying the reply. An `update` directive changes an activity on screen only when its content or stale date differs, and an `end` directive ends it at once, with its current content when the directive's content is null. A directive for a key that is not on screen does nothing, so applying the same reply twice changes nothing the second time. A 401 to the report, or to a press replayed by the intent or the refresh push, ends every activity on the phone. The 401 also removes the token by the widget's rule.
+
+Done on the activity. The intent stores the press through `WidgetSync.pressDone` with `via: "live_activity"`, which also replays the queue with a 4 second timeout. Then it applies `PressEffect` to the activity (on the last step it ends the activity with the receipt and dismisses it `receiptMs` later), then sends a report.
+
+Unpair and sign-out. `clearCredentials` ends every activity, sends a report that clears all three sections, then clears the credentials, in the same queue as the reports, so no report with the old tokens can follow it.
+
+Layout. The banner follows the Figma measurements (386 x 112, inset 14). The banner shows the label, then the step's text for a task with steps or the detail otherwise. The expanded island shows the sentence or step text when it fits on one line, else the label. The compact view shows the task's symbol and a "Now" tag that becomes a yellow dot when only a 28-point circle is available. Each `icon` maps to an SF Symbol in `TaskIcon.symbolName` (`pills` is `pill`; a card without a known icon gets `clock`), and the accessory widgets use the same mapping. Text in the activity does not follow Dynamic Type, because the system caps the banner's height. The views were checked by rendering them on macOS for each face, with the Dynamic Island regions placed by hand, since ActivityKit and the Dynamic Island do not exist on macOS.
+
+Not verified, since nothing was run on a simulator or device:
+
+- that a push-started activity appears, and that ActivityKit matches `"attributes-type": "SunnyTaskAttributes"` to the type, which is declared in the `SunnyWidgetCore` module;
+- that the app is launched for the Done intent, including after a force-quit, and that a locked phone asks the senior to unlock before the press counts;
+- that `didFinishLaunching` runs before the token sequences deliver their first values on a background launch, and how soon the first report reaches the server;
+- that `Activity.activities` lists activities in the order they started, which decides which duplicate is kept;
+- the WidgetKit push token on iOS 26, and that the extension's send finishes before the system suspends it;
+- the fonts and the glow as WidgetKit draws them on the Lock Screen and in the Dynamic Island;
+- VoiceOver on the activity.
+
+The widget extension cannot end activities on a 401 it gets itself (from a timeline request). The token is removed then, and the next report finds no credentials, so it neither sends nor ends anything.
 
 ## sunny_agent
 
