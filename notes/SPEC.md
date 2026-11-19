@@ -2,7 +2,7 @@
 
 This file is the living spec and the source of truth; change it whenever a product decision changes, and add a line to the change log at the end. It began as an export of the Claude Doc "Memory-Care Agent — POC Feature Spec" (https://claude.ai/artifact/XBuzb5G7QUsSEoevKWnkHn) on 2026-10-24; that doc is no longer kept in sync.
 
-Last updated: 2026-11-15.
+Last updated: 2026-11-19.
 
 ## Goal and scope
 
@@ -168,6 +168,24 @@ Voice does three jobs: prompt, confirm and answer anything. It is a full persona
 - Slow speech rate; caregiver sets the volume
 - Keep transcripts, discard audio by default; caregivers see topics in the digest, and full transcripts only if the senior agreed at onboarding
 
+## Mail
+
+Sunny reads the senior's Gmail, so that appointments and news that arrive by email reach the calendar and the family without the senior doing anything. A caregiver who can edit connects the mailbox once by signing in to the senior's Google account. Sunny's access is read-only: it never sends, deletes or labels mail. One mailbox per household.
+
+| Feature | What it does |
+| --- | --- |
+| Trusted senders | Sunny acts by itself only on mail from an address that a caregiver has approved, and only when Gmail verified the sender. The first email from a new sender goes to the caregivers, who can tell Sunny in chat to trust that sender. A caregiver can list the trusted senders and remove one in chat |
+| Appointments | A confirmation or reminder from a trusted sender is added to the calendar, and the caregivers are told in chat. A reminder of an event that is already there adds nothing. A new time from a trusted sender moves the one event it matches, and every caregiver gets a push with the old and the new time. A cancellation is never applied: the caregivers are asked, and they can tell Sunny to cancel |
+| News for the senior | A package, a prescription, a visit to the home or a personal note from a trusted sender becomes one sentence for the senior, as a notification on the phone and read by voice when the senior asks about mail. At most 3 a day, each kept until the end of the next day. The sentences are stored in a form that the display can show later |
+| Escalation | Mail that needs a decision (a bill, an account notice, a test result, a question, government mail) and mail that looks like a scam goes to the caregivers as a post from Sunny in chat with a push, at most 6 pushes an hour. The post names the sender, the subject and the time, says what Sunny did, and gives a summary of two sentences. Mail that Sunny judges to be a scam is not shown to the senior |
+| Old mail | Mail that is more than a day old when Sunny reads it (at first connection, or after a break) can still add an event or post in chat, but sends no push and no sentence to the senior |
+
+**No words from email:** the senior's sentences and the titles of events contain no word from an email and no word written by a model. Sunny writes the senior's sentences itself and picks one by the type of news. Sunny also writes the title of an event ("Eye exam") from the type of appointment. One field is an exception: the place of an event can come from a calendar invitation that a trusted sender sent. The caregivers see the sender, the subject and a summary, because they can judge them.
+
+**How Sunny decides:** mail that Gmail files as promotions, social or spam is skipped. For the rest, a decision model (TypeSafe's Jev) answers yes-or-no and pick-one questions about the email, such as whether it asks for money or confirms an appointment at a stated time. Rules in the code turn those answers into what Sunny does, so the rules can be read and tested. Claude Haiku writes the summary for the caregivers and nothing else. Email bodies are not stored.
+
+Known limits: while the Google project is in testing, the sign-in expires about every 7 days and a caregiver has to reconnect; Sunny tells the caregivers when that happens. The app has no Connect Gmail button yet; the link comes from `scripts/caregiver.ts gmail`.
+
 ## Agent and backend
 
 The backend runs the schedule, the escalation ladder and the digest. This is where the agent lives; the surfaces only display and confirm.
@@ -331,3 +349,4 @@ Steps 6 and 7 start when a board that can be flashed arrives (expected around 20
 - 2026-11-14: No on-call caregiver. At +30 minutes every caregiver is alerted at once and anyone who may claim can claim; the separate +45 step and the on-call setting are gone, and voice flags go to every reachable caregiver. Stored ladders from before are rewritten by a one-off migration (`npx convex run migrations:removeOnCall`); until it runs, an old ladder alerts everyone at +30 and again at +45 if nobody claimed. A window that closes before any caregiver was alerted now alerts them as it closes. Caregiver setup by chat, first half: Sunny reads and changes the life profile, hard-question guidance and remembered facts through the About tab's own rules; sets the digest time, weather place and sharing preference; a caregiver turns only their own digest copy on or off (provisional); a wording card under Sunny's reply shows each changed task's label and spoken sentence with a play button. Settings changes are now in the audit log.
 - 2026-11-15: No custom escalation policies: medications and high-priority tasks alert caregivers, every other task only prompts the senior. Multi-step tasks track their current step on the backend, and the ladder runs until the last step is done. No digest opt-out in v1. Legacy fields from earlier designs (on-call caregiver and similar) are removed once the data is migrated. For the POC: one shared agent key, the US only, and `CALENDAR_TOKEN_KEY` is not rotated (a rotation policy comes later). Google sign-in is tied to the browser that started it.
 - 2026-11-15: A reminder the senior sets by voice keeps its full wording for speech; its display label is clipped at a word to fit the 60-character label. Presses carry the step they were made on; a step Done clears a snooze; changing a task's steps restarts today's instance at step 1; caregiver rows show the step and high priority together.
+- 2026-11-19: Sunny reads the senior's Gmail (new Mail section). It acts by itself only on mail from senders that a caregiver approved. The senior sees only sentences that Sunny wrote, and event titles are written by Sunny from the type of appointment. Decisions and likely scams go to the caregivers; a cancellation in an email is never applied. TypeSafe's Jev judges each email and Claude Haiku writes the summary for caregivers.
