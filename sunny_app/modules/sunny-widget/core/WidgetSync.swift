@@ -66,16 +66,13 @@ public struct WidgetSync: Sendable {
         }
     }
 
-    @discardableResult
-    public func clear() async throws -> Bool {
+    public func clear() async throws {
         _ = await replayPresses(timeout: Self.clearTimeout)
-        let removedCredentials = try storage.withCredentialsLock {
-            let removedToken = tokens.remove(ifEqualTo: nil)
-            let removedSite = sites.remove()
-            return removedToken || removedSite
+        try storage.withCredentialsLock {
+            tokens.remove(ifEqualTo: nil)
+            sites.remove()
         }
-        let removedFiles = try storage.removeAll()
-        return removedCredentials || removedFiles
+        try storage.removeAll()
     }
 
     public func pressDone(
@@ -225,6 +222,6 @@ public struct WidgetSync: Sendable {
     }
 
     private func dropToken(_ token: String) {
-        _ = try? storage.withCredentialsLock { tokens.remove(ifEqualTo: token) }
+        try? storage.withCredentialsLock { tokens.remove(ifEqualTo: token) }
     }
 }

@@ -38,9 +38,9 @@ public final class SunnyWidgetModule: Module {
             WidgetCenter.shared.reloadAllTimelines()
         }
 
-        AsyncFunction("clearCredentials") { () async throws -> Bool in
+        AsyncFunction("clearCredentials") { () async throws in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
-            return try await PushStateReporter.shared.clear(sync).get()
+            try await PushStateReporter.shared.clear(sync)
         }
 
         AsyncFunction("syncSurfaces") { () async in

@@ -5,7 +5,7 @@ export type FlushResult = 'clean' | 'pending' | 'unauthorized' | 'noCredentials'
 export interface SunnyWidgetBridge {
   storedSiteUrl(): string | null;
   setCredentials(token: string, siteUrl: string): Promise<void>;
-  clearCredentials(): Promise<boolean>;
+  clearCredentials(): Promise<void>;
   syncSurfaces(): Promise<void>;
   flushPresses(): Promise<FlushResult>;
   unsentPresses(): unknown;

@@ -334,14 +334,13 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         try queue.append(Press(instanceId: "inst", step: 0, via: .widget, pressedAt: clock.now))
-        let removed = try await makeSync().clear()
-        XCTAssertTrue(removed)
+        try await makeSync().clear()
         XCTAssertNil(tokens.read())
         XCTAssertNil(sites.read())
         XCTAssertNil(WidgetStorage(directory: directory).loadCache())
         XCTAssertEqual(queue.pending(), [])
-        let removedAgain = try await makeSync().clear()
-        XCTAssertFalse(removedAgain)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["credentials.lock"])
+        try await makeSync().clear()
     }
 
     func testClearSendsQueuedPressesWithTheOldTokenBeforeItForgetsThem() async throws {
@@ -350,8 +349,7 @@ final class WidgetSyncTests: XCTestCase {
         try queue.append(Press(instanceId: "inst-b", step: 0, via: .liveActivity, pressedAt: start.addingTimeInterval(1)))
         transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
         transport.queueConfirmFailure()
-        let removed = try await makeSync().clear()
-        XCTAssertTrue(removed)
+        try await makeSync().clear()
         XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-a", "inst-b"])
         XCTAssertEqual(transport.requests.first?.headers["Authorization"], "Bearer token-1")
         XCTAssertNil(tokens.read())
@@ -398,12 +396,11 @@ final class RotatingTokenStore: TokenStore, @unchecked Sendable {
 
     func write(_ token: String) throws {}
 
-    func remove(ifEqualTo expected: String?) -> Bool {
+    func remove(ifEqualTo expected: String?) {
         lock.lock()
         defer { lock.unlock() }
-        guard expected == nil || expected == token else { return false }
+        guard expected == nil || expected == token else { return }
         token = nil
-        return true
     }
 
     var current: String? {

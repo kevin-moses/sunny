@@ -52,7 +52,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockNative.storedSiteUrl.mockReturnValue(null);
   mockNative.setCredentials.mockResolvedValue(undefined);
-  mockNative.clearCredentials.mockResolvedValue(true);
+  mockNative.clearCredentials.mockResolvedValue(undefined);
   mockNative.flushPresses.mockResolvedValue('clean');
   mockNative.syncSurfaces.mockResolvedValue(undefined);
   mockNative.unsentPresses.mockReturnValue([]);

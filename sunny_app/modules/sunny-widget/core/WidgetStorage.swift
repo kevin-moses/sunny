@@ -45,14 +45,11 @@ public struct WidgetStorage: Sendable {
         try write(JSONEncoder().encode(report), to: widgetPushURL)
     }
 
-    @discardableResult
-    public func removeAll() throws -> Bool {
-        var removed = try presses.removeAll()
+    public func removeAll() throws {
+        try presses.removeAll()
         if FileManager.default.fileExists(atPath: cacheURL.path) {
             try FileManager.default.removeItem(at: cacheURL)
-            removed = true
         }
-        return removed
     }
 
     private func write(_ data: Data, to url: URL) throws {

@@ -91,12 +91,14 @@ final class PressQueueTests: XCTestCase {
     }
 
     func testRemoveAllClearsPressesAndMarks() throws {
-        let queue = PressQueue(directory: try temporaryDirectory())
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
         try queue.append(press("a"))
-        XCTAssertTrue(try queue.removeAll())
+        try queue.removeAll()
         XCTAssertEqual(queue.pending(), [])
         XCTAssertEqual(queue.pressed(), [])
-        XCTAssertFalse(try queue.removeAll())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
+        try queue.removeAll()
     }
 
     func testAnUndoThatRacesTheAnswerLeavesNoMark() throws {

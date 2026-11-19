@@ -34,19 +34,20 @@ public actor PushStateReporter {
         await sync()
     }
 
-    public func clear(_ widgetSync: WidgetSync) async -> Result<Bool, Error> {
-        await lane.run {
+    public func clear(_ widgetSync: WidgetSync) async throws {
+        try await lane.run {
             await TaskActivities.endAll(in: ActivityKitStore())
             _ = await widgetSync.reportPushState(.cleared)
-            let result: Result<Bool, Error>
+            let result: Result<Void, Error>
             do {
-                result = .success(try await widgetSync.clear())
+                try await widgetSync.clear()
+                result = .success(())
             } catch {
                 result = .failure(error)
             }
             WidgetCenter.shared.reloadAllTimelines()
             return result
-        }
+        }.get()
     }
 
     private func endAllIfUnauthorized(_ flushed: FlushResult?, in store: ActivityKitStore) async {

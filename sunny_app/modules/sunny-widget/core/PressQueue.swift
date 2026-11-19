@@ -129,15 +129,11 @@ public struct PressQueue: Sendable {
         }
     }
 
-    @discardableResult
-    public func removeAll() throws -> Bool {
-        var removed = false
+    public func removeAll() throws {
         for directory in [pressesDirectory, marksDirectory, answersDirectory, stagingDirectory]
         where FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
-            removed = true
         }
-        return removed
     }
 
     private func marks() -> [(url: URL, mark: PressedMark)] {
