@@ -2,7 +2,12 @@ import type { WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { deliveryFixture, providerMocks, resetProviderMocks } from "./deliveryMocks.helpers";
+import {
+  alertsSent,
+  deliveryFixture,
+  providerMocks,
+  resetProviderMocks,
+} from "./deliveryMocks.helpers";
 import type { DeliveryFixture } from "./deliveryMocks.helpers";
 import {
   factsForPrompt,
@@ -674,7 +679,7 @@ describe("chat thread", () => {
       await f.t.action(internal.delivery.deliver, { outboxId: row._id });
     }
     expect(providerMocks.apnsSend).toHaveBeenCalledTimes(1);
-    expect(providerMocks.apnsSend.mock.calls[0]![0]).toMatchObject({
+    expect(alertsSent()[0]!).toMatchObject({
       tokens: ["val-1"],
       title: "Mom's day",
       body: GOOD_REPLY,

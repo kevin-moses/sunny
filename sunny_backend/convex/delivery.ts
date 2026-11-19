@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { requeueStuckDigests } from "./digest";
+import { alertMessage } from "./lib/apnsPayload";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import {
   MAX_ATTEMPTS,
@@ -92,12 +93,15 @@ async function sendApns(
   outboxId: Id<"notificationOutbox">,
   route: ApnsRoute,
 ): Promise<DeliveryOutcome | SmsRoute> {
+  const message = alertMessage(
+    route.title,
+    route.body,
+    route.data,
+    route.style,
+    Math.floor(Date.now() / 1000),
+  );
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
-    tokens: route.tokens,
-    title: route.title,
-    body: route.body,
-    data: route.data,
-    ...route.style,
+    sends: route.tokens.map((token) => ({ token, message })),
   });
   if (configError !== undefined) {
     if (route.smsFallback !== null) {

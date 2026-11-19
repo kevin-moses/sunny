@@ -5,7 +5,6 @@ import type { ClientHttp2Session } from "node:http2";
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
 import {
-  alertMessage,
   apnsHost,
   buildHeaders,
   failureResult,
@@ -17,6 +16,7 @@ import {
 import { ConfigError } from "./lib/errors";
 import { parseJsonObject } from "./lib/http";
 import type { ApnsConfig, ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
+import { apnsMessage } from "./lib/validators";
 import type { ApnsMessage } from "./lib/validators";
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -78,14 +78,7 @@ function sendOne(
 }
 
 export const send = internalAction({
-  args: {
-    tokens: v.array(v.string()),
-    title: v.string(),
-    body: v.string(),
-    data: v.optional(v.record(v.string(), v.string())),
-    interruptionLevel: v.optional(v.literal("time-sensitive")),
-    category: v.optional(v.string()),
-  },
+  args: { sends: v.array(v.object({ token: v.string(), message: apnsMessage })) },
   handler: async (_ctx, args): Promise<ApnsSendResult> => {
     let config: ApnsConfig;
     let providerToken: string;
@@ -96,14 +89,7 @@ export const send = internalAction({
       if (e instanceof ConfigError) return { results: [], configError: e.message };
       throw e;
     }
-    if (args.tokens.length === 0) return { results: [] };
-    const message = alertMessage(
-      args.title,
-      args.body,
-      args.data,
-      { interruptionLevel: args.interruptionLevel, category: args.category },
-      Math.floor(Date.now() / 1000),
-    );
+    if (args.sends.length === 0) return { results: [] };
     const session = connect(`https://${apnsHost(config.environment)}`);
     session.on("error", () => {});
     const connectTimer = setTimeout(
@@ -114,7 +100,7 @@ export const send = internalAction({
     let broken = false;
     try {
       const results = await Promise.all(
-        args.tokens.map((t) => sendOne(session, config, providerToken, t, message)),
+        args.sends.map((s) => sendOne(session, config, providerToken, s.token, s.message)),
       );
       broken = results.some((r) => r.outcome === "failed" && r.retryable);
       for (const r of results) {
