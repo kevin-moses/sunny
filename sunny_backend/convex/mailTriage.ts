@@ -1,4 +1,3 @@
-import { APIError } from "@anthropic-ai/sdk";
 import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
@@ -6,11 +5,10 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { mailboxFailure } from "./gmail";
+import { mailFailure } from "./gmail";
 import { postMail } from "./lib/chatPosts";
-import { ConfigError, errorText } from "./lib/errors";
+import { errorText } from "./lib/errors";
 import { getMessage, hasSentTo } from "./lib/gmailApi";
-import { GoogleApiError } from "./lib/google";
 import { AccessTokens } from "./lib/googleTokens";
 import type { StoredGrant } from "./lib/googleTokens";
 import { haikuClassifier, triageEmail } from "./lib/mailClassify";
@@ -33,7 +31,6 @@ const MAX_ADDRESS = 320;
 const MAX_SUBJECT = 200;
 const MAX_SUMMARY = 600;
 const NO_USAGE = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
-const PERMANENT_MODEL_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
 
 type Claim =
   | { kind: "skip"; reason: string }
@@ -263,29 +260,23 @@ export const applyTriage = internalMutation({
   },
 });
 
-function isPermanent(e: unknown): boolean {
-  if (e instanceof GoogleApiError) return !e.retryable && e.status !== 401;
-  return e instanceof APIError && e.status !== undefined && PERMANENT_MODEL_STATUSES.has(e.status);
-}
-
 async function settleTriageError(
   ctx: ActionCtx,
   itemId: Id<"mailItems">,
   claim: Extract<Claim, { kind: "claimed" }>,
   e: unknown,
 ): Promise<TriageOutcome> {
-  if (e instanceof ConfigError || isPermanent(e)) {
-    throw new NonRetryableError(errorText(e), { cause: e });
+  const failure = mailFailure(e);
+  if (failure.kind === "permanent") throw new NonRetryableError(errorText(e), { cause: e });
+  if (failure.kind === "mailbox") {
+    await ctx.runMutation(internal.gmail.markMailbox, {
+      mailboxId: claim.mailboxId,
+      status: failure.status,
+      error: failure.error,
+    });
   }
-  const release = async () =>
-    await ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt });
-  const failure = mailboxFailure(e);
-  if (failure !== null) {
-    await ctx.runMutation(internal.gmail.markMailbox, { mailboxId: claim.mailboxId, ...failure });
-    await release();
-    return "mailbox_lost";
-  }
-  await release();
+  await ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt });
+  if (failure.kind === "mailbox") return "mailbox_lost";
   throw e;
 }
 

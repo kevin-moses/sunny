@@ -567,6 +567,22 @@ describe("the item lifecycle", () => {
     expect((await item(h, itemId)).state).toBe("failed");
   });
 
+  test("Google denying access during triage marks the mailbox once with one notice and no item posts", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    const otherId = await receive(h, clinic());
+    gmailMocks.getMessage.mockRejectedValue(new GoogleApiError(403, "insufficientPermissions"));
+    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("mailbox_lost");
+    expect(await h.t.action(internal.mailTriage.triage, { itemId: otherId })).toBe("skipped");
+    const mailbox = await h.t.run(async (ctx) => await ctx.db.get(h.mailboxId));
+    expect(mailbox).toMatchObject({ status: "error" });
+    const posts = await rows(h, "chatPosts");
+    expect(posts.map((p) => p.kind)).toEqual(["mailbox"]);
+    expect((await rows(h, "notificationOutbox")).map((p) => p.kind)).toEqual(
+      Array.from({ length: 3 }, () => "mail_escalation"),
+    );
+  });
+
   test("new mail is queued with a pickup deadline and a triage job", async () => {
     const h = await setup();
     const itemId: Id<"mailItems"> = await receive(h, clinic());
