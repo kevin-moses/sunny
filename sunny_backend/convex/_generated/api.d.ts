@@ -74,6 +74,7 @@ import type * as lib_http from "../lib/http.js";
 import type * as lib_httpResponse from "../lib/httpResponse.js";
 import type * as lib_mailConstants from "../lib/mailConstants.js";
 import type * as lib_mailEffects from "../lib/mailEffects.js";
+import type * as lib_mailFacts from "../lib/mailFacts.js";
 import type * as lib_mailFailure from "../lib/mailFailure.js";
 import type * as lib_mailGate from "../lib/mailGate.js";
 import type * as lib_mailJudge from "../lib/mailJudge.js";
@@ -188,6 +189,7 @@ declare const fullApi: ApiFromModules<{
   "lib/httpResponse": typeof lib_httpResponse;
   "lib/mailConstants": typeof lib_mailConstants;
   "lib/mailEffects": typeof lib_mailEffects;
+  "lib/mailFacts": typeof lib_mailFacts;
   "lib/mailFailure": typeof lib_mailFailure;
   "lib/mailGate": typeof lib_mailGate;
   "lib/mailJudge": typeof lib_mailJudge;

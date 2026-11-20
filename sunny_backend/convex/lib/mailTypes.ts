@@ -43,6 +43,12 @@ export interface KnownInvite {
   sequence: number;
 }
 
+export interface MailHeader {
+  sender: MailSender;
+  subject: string;
+  receivedAt: number;
+}
+
 export interface ParsedEmail {
   gmailId: string;
   labels: string[];

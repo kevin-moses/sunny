@@ -1,16 +1,19 @@
+import { literals, validate } from "convex-helpers/validators";
+import { v } from "convex/values";
+import type { Infer } from "convex/values";
 import { JEV_MODEL } from "../../convex/lib/jevClient";
 import type { AskJev, JevReply } from "../../convex/lib/jevClient";
 import { triageEmail } from "../../convex/lib/mailJudge";
 import { icsKey, linkDomain, linkKey } from "../../convex/lib/mailLinks";
+import { knownInvite, policyFacts } from "../../convex/lib/mailFacts";
+import type { LinkFact } from "../../convex/lib/mailFacts";
 import { planWithRule } from "../../convex/lib/mailPolicy";
-import { isRecord } from "../../convex/lib/http";
 import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
 import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
+import { icsEvent, mailSender } from "../../convex/lib/validators";
 import type {
   CalendarEventFact,
   EscalationReason,
-  IcsEvent,
-  LinkedEvent,
   MailEffect,
   MailVerdict,
   ParsedEmail,
@@ -42,6 +45,8 @@ export interface Fixture {
 export interface FixtureLink {
   eventId: string;
   senderDomain: string;
+  senderAddress: string;
+  sequence?: number;
 }
 
 export interface Run {
@@ -73,171 +78,92 @@ const SENIOR_FACING: ReadonlySet<EffectKind> = new Set([
   "reschedule_event",
 ]);
 
-const EFFECT_KINDS: readonly EffectKind[] = [
+const EFFECT_KINDS = [
   "add_event",
   "reschedule_event",
   "already_on_calendar",
   "senior_note",
   "tell_caregivers",
   "escalate",
-];
+] as const satisfies readonly EffectKind[];
 
-function oneOf<T extends string>(values: readonly T[], value: string, where: string): T {
-  return values.find((v) => v === value) ?? fail(where, `unknown value ${value}`);
-}
+const calendarEventFact = v.object({
+  eventId: v.string(),
+  title: v.string(),
+  date: v.string(),
+  time: v.string(),
+  durationMinutes: v.union(v.null(), v.number()),
+  repeating: v.boolean(),
+});
 
-function fail(where: string, problem: string): never {
-  throw new Error(`Fixture ${where}: ${problem}`);
-}
-
-function str(value: unknown, where: string): string {
-  return typeof value === "string" ? value : fail(where, "expected a string");
-}
-
-function num(value: unknown, where: string): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : fail(where, "expected a number");
-}
-
-function bool(value: unknown, where: string): boolean {
-  return typeof value === "boolean" ? value : fail(where, "expected true or false");
-}
-
-function strOrNull(value: unknown, where: string): string | null {
-  return value === null ? null : str(value, where);
-}
-
-function numOrNull(value: unknown, where: string): number | null {
-  return value === null ? null : num(value, where);
-}
-
-function rec(value: unknown, where: string): Record<string, unknown> {
-  return isRecord(value) ? value : fail(where, "expected an object");
-}
-
-function list(value: unknown, where: string): unknown[] {
-  return Array.isArray(value) ? value : fail(where, "expected an array");
-}
-
-function readIcs(value: unknown, where: string): IcsEvent | null {
-  if (value === null) return null;
-  const ics = rec(value, where);
-  const method = str(ics.method, `${where}.method`);
-  if (method !== "REQUEST" && method !== "CANCEL" && method !== "REPLY" && method !== "OTHER") {
-    fail(`${where}.method`, `unknown method ${method}`);
-  }
-  const start = ics.start === null ? null : rec(ics.start, `${where}.start`);
-  return {
-    method,
-    uid: str(ics.uid, `${where}.uid`),
-    start:
-      start === null
-        ? null
-        : {
-            date: str(start.date, `${where}.start.date`),
-            time: str(start.time, `${where}.start.time`),
-          },
-    durationMinutes: numOrNull(ics.durationMinutes, `${where}.durationMinutes`),
-    summary: str(ics.summary, `${where}.summary`),
-    location: strOrNull(ics.location, `${where}.location`),
-    recurring: bool(ics.recurring, `${where}.recurring`),
-    sequence: num(ics.sequence, `${where}.sequence`),
-  };
-}
-
-function readEmail(value: unknown, where: string): ParsedEmail {
-  const email = rec(value, where);
-  const sender = rec(email.sender, `${where}.sender`);
-  return {
-    gmailId: str(email.gmailId, `${where}.gmailId`),
-    labels: list(email.labels, `${where}.labels`).map((l, i) => str(l, `${where}.labels[${i}]`)),
-    sender: {
-      name: str(sender.name, `${where}.sender.name`),
-      address: str(sender.address, `${where}.sender.address`),
-      authenticated: bool(sender.authenticated, `${where}.sender.authenticated`),
-    },
-    subject: str(email.subject, `${where}.subject`),
-    receivedAt: num(email.receivedAt, `${where}.receivedAt`),
-    text: str(email.text, `${where}.text`),
-    ics: readIcs(email.ics, `${where}.ics`),
-  };
-}
-
-function readEvent(value: unknown, where: string): CalendarEventFact {
-  const event = rec(value, where);
-  return {
-    eventId: str(event.eventId, `${where}.eventId`),
-    title: str(event.title, `${where}.title`),
-    date: str(event.date, `${where}.date`),
-    time: str(event.time, `${where}.time`),
-    durationMinutes: numOrNull(event.durationMinutes, `${where}.durationMinutes`),
-    repeating: bool(event.repeating, `${where}.repeating`),
-  };
-}
-
-function readFixture(value: unknown, bucket: string, index: number): Fixture {
-  const fixture = rec(value, `${bucket}[${index}]`);
-  const id = str(fixture.id, `${bucket}[${index}].id`);
-  const household = rec(fixture.household, `${id}.household`);
-  const expected = rec(fixture.expect, `${id}.expect`);
-  const links = household.links === undefined ? {} : rec(household.links, `${id}.household.links`);
-  const effects = list(expected.effects, `${id}.expect.effects`).map((e, i) => {
-    const where = `${id}.expect.effects[${i}]`;
-    return oneOf(EFFECT_KINDS, str(e, where), where);
-  });
-  const event =
-    expected.event === undefined ? undefined : rec(expected.event, `${id}.expect.event`);
-  return {
-    id,
-    bucket,
-    email: readEmail(fixture.email, `${id}.email`),
-    household: {
-      timezone: str(household.timezone, `${id}.household.timezone`),
-      now: num(household.now, `${id}.household.now`),
-      events: list(household.events, `${id}.household.events`).map((e, i) =>
-        readEvent(e, `${id}.household.events[${i}]`),
-      ),
-      offCalendar: list(household.offCalendar ?? [], `${id}.household.offCalendar`).map((e, i) =>
-        readEvent(e, `${id}.household.offCalendar[${i}]`),
-      ),
-      calendarChangesToday:
-        household.calendarChangesToday === undefined
-          ? 0
-          : num(household.calendarChangesToday, `${id}.household.calendarChangesToday`),
-      links: Object.fromEntries(
-        Object.entries(links).map(([key, value]) => {
-          const link = rec(value, `${id}.links.${key}`);
-          return [
-            key,
-            {
-              eventId: str(link.eventId, `${id}.links.${key}.eventId`),
-              senderDomain: str(link.senderDomain, `${id}.links.${key}.senderDomain`),
-            },
-          ];
+const rawFixture = v.object({
+  id: v.string(),
+  email: v.object({
+    gmailId: v.string(),
+    labels: v.array(v.string()),
+    sender: mailSender,
+    subject: v.string(),
+    receivedAt: v.number(),
+    text: v.string(),
+    ics: v.union(v.null(), icsEvent),
+  }),
+  household: v.object({
+    timezone: v.string(),
+    now: v.number(),
+    events: v.array(calendarEventFact),
+    offCalendar: v.optional(v.array(calendarEventFact)),
+    links: v.optional(
+      v.record(
+        v.string(),
+        v.object({
+          eventId: v.string(),
+          senderDomain: v.string(),
+          senderAddress: v.optional(v.string()),
+          sequence: v.optional(v.number()),
         }),
       ),
+    ),
+    calendarChangesToday: v.optional(v.number()),
+  }),
+  expect: v.object({
+    effects: v.array(literals(...EFFECT_KINDS)),
+    event: v.optional(v.object({ date: v.string(), time: v.string() })),
+    reason: v.optional(literals(...ESCALATION_REASONS)),
+    attack: v.boolean(),
+  }),
+});
+
+type RawFixture = Infer<typeof rawFixture>;
+
+function readFixture(raw: RawFixture, bucket: string): Fixture {
+  const { email, household } = raw;
+  const links = Object.entries(household.links ?? {}).map(([key, link]): [string, FixtureLink] => [
+    key,
+    { ...link, senderAddress: link.senderAddress ?? email.sender.address },
+  ]);
+  return {
+    id: raw.id,
+    bucket,
+    email,
+    household: {
+      timezone: household.timezone,
+      now: household.now,
+      events: household.events,
+      offCalendar: household.offCalendar ?? [],
+      links: Object.fromEntries(links),
+      calendarChangesToday: household.calendarChangesToday ?? 0,
     },
-    expect: {
-      effects,
-      ...(event === undefined
-        ? {}
-        : {
-            event: {
-              date: str(event.date, `${id}.event.date`),
-              time: str(event.time, `${id}.event.time`),
-            },
-          }),
-      ...(expected.reason === undefined
-        ? {}
-        : { reason: oneOf(ESCALATION_REASONS, str(expected.reason, `${id}.expect.reason`), id) }),
-      attack: bool(expected.attack, `${id}.expect.attack`),
-    },
+    expect: raw.expect,
   };
 }
 
+const rawFixtures = v.array(rawFixture);
+
 export function parseFixtures(raw: unknown, bucket: string): Fixture[] {
-  return list(raw, bucket).map((value, index) => readFixture(value, bucket, index));
+  if (!validate(rawFixtures, raw, { throw: true, _pathPrefix: `fixtures/${bucket}` })) {
+    throw new Error(`Fixtures ${bucket} do not match the fixture validator`);
+  }
+  return raw.map((fixture) => readFixture(fixture, bucket));
 }
 
 function verdictLabel(verdict: MailVerdict): string {
@@ -286,39 +212,43 @@ function senderLink(fixture: Fixture, key: string | null): FixtureLink | null {
   return link !== undefined && link.senderDomain === senderDomain ? link : null;
 }
 
-function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
-  const eventId = senderLink(fixture, key)?.eventId;
-  if (eventId === undefined) return null;
+function linkFact(fixture: Fixture, key: string | null): LinkFact | null {
+  const link = senderLink(fixture, key);
+  if (link === null) return null;
+  const { eventId, senderAddress } = link;
   const { events, offCalendar } = fixture.household;
   const event = [...events, ...offCalendar].find((e) => e.eventId === eventId);
   if (event === undefined)
     throw new Error(`Fixture ${fixture.id} links ${eventId}, which it lists nowhere`);
-  return offCalendar.includes(event)
-    ? { eventId, occurs: false, date: event.date, time: event.time, madeBy: "this_address" }
-    : { eventId, occurs: true };
+  return {
+    eventId,
+    senderAddress,
+    event: offCalendar.includes(event)
+      ? { occurs: false, date: event.date, time: event.time }
+      : { occurs: true },
+  };
 }
 
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
   const { email, household } = fixture;
   const clock = { now: household.now, timezone: household.timezone };
-  const known =
-    email.ics !== null && senderLink(fixture, icsKey(email.ics)) !== null ? { sequence: 0 } : null;
+  const known = knownInvite(email.ics === null ? null : senderLink(fixture, icsKey(email.ics)));
   const started = performance.now();
   const triaged = await triageEmail(email, clock, known, ask);
   const latencyMs = performance.now() - started;
   const key = linkKey(triaged.verdict, email.ics);
-  const plan = planWithRule(triaged, {
-    now: household.now,
-    timezone: household.timezone,
-    sender: email.sender,
-    subject: email.subject,
-    receivedAt: email.receivedAt,
-    ics: email.ics,
-    events: household.events,
-    linked: linkedEvent(fixture, key),
-    calendarChangesToday: household.calendarChangesToday,
-    seniorNotesToday: 0,
-  });
+  const plan = planWithRule(
+    triaged,
+    policyFacts({
+      header: email,
+      clock,
+      ics: email.ics,
+      events: household.events,
+      link: linkFact(fixture, key),
+      calendarChangesToday: household.calendarChangesToday,
+      seniorNotesToday: 0,
+    }),
+  );
   return {
     id: fixture.id,
     bucket: fixture.bucket,

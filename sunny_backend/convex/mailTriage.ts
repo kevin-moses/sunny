@@ -12,6 +12,8 @@ import { getMessage } from "./lib/gmailApi";
 import { storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { carryOut, senderLink } from "./lib/mailEffects";
+import { knownInvite, policyFacts } from "./lib/mailFacts";
+import type { LinkedEventState } from "./lib/mailFacts";
 import { mailFailure } from "./lib/mailFailure";
 import { askJev } from "./lib/jevClient";
 import { triageEmail } from "./lib/mailJudge";
@@ -22,8 +24,7 @@ import { caregiverMessage, caregiverText } from "./lib/mailProse";
 import type {
   CalendarEventFact,
   KnownInvite,
-  LinkedEvent,
-  MailSender,
+  MailHeader,
   MailVerdict,
   ParsedEmail,
   PolicyFacts,
@@ -64,8 +65,6 @@ const mailHeader = v.object({
 });
 
 const unreadRule = v.union(v.literal("gone"), v.literal("unparseable"));
-
-type MailHeader = Infer<typeof mailHeader>;
 
 function holdsClaim(item: Doc<"mailItems"> | null, attempt: number): item is Doc<"mailItems"> {
   return item !== null && item.state === "triaging" && item.attempt === attempt;
@@ -178,7 +177,7 @@ export const recordParsed = internalMutation({
     await ctx.db.patch(itemId, stored);
     const link =
       icsKey === null ? null : await senderLink(ctx, item.householdId, stored.sender, icsKey);
-    return { known: link === null ? null : { sequence: link.sequence ?? 0 } };
+    return { known: knownInvite(link) };
   },
 });
 
@@ -223,20 +222,10 @@ async function calendarFacts(
   return { events: [...singles, ...series], facts };
 }
 
-function linkedEvent(
-  link: Doc<"mailEventLinks">,
-  event: Doc<"events">,
-  sender: MailSender,
-  today: string,
-): LinkedEvent {
-  if (canStillOccur(event, today)) return { eventId: event._id, occurs: true };
-  return {
-    eventId: event._id,
-    occurs: false,
-    date: event.startsOn,
-    time: event.startTime,
-    madeBy: link.senderAddress === sender.address ? "this_address" : "another_address",
-  };
+function eventState(event: Doc<"events">, today: string): LinkedEventState {
+  return canStillOccur(event, today)
+    ? { occurs: true }
+    : { occurs: false, date: event.startsOn, time: event.startTime };
 }
 
 const triageInput = v.object({
@@ -305,19 +294,22 @@ async function planned(
   const linked = link === null ? null : await ctx.db.get(link.eventId);
   if (linked !== null) events.set(linked._id, linked);
   const today = localDate(now, household.timezone);
-  const facts: PolicyFacts = {
-    now,
-    timezone: household.timezone,
-    sender: header.sender,
-    subject: header.subject,
-    receivedAt: header.receivedAt,
+  const facts = policyFacts({
+    header,
+    clock: { now, timezone: household.timezone },
     ics,
     events: calendar.facts,
-    linked:
-      link === null || linked === null ? null : linkedEvent(link, linked, header.sender, today),
+    link:
+      link === null || linked === null
+        ? null
+        : {
+            eventId: linked._id,
+            senderAddress: link.senderAddress,
+            event: eventState(linked, today),
+          },
     calendarChangesToday: await calendarChangesToday(ctx, household, now),
     seniorNotesToday: await seniorNotesToday(ctx, household, now),
-  };
+  });
   return { item, household, facts, events };
 }
 
