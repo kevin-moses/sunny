@@ -223,21 +223,19 @@ async function calendarFacts(
   return { events: [...singles, ...series], facts };
 }
 
-async function linkedEvent(
-  ctx: QueryCtx,
+function linkedEvent(
   link: Doc<"mailEventLinks">,
   event: Doc<"events">,
   sender: MailSender,
   today: string,
-): Promise<LinkedEvent> {
+): LinkedEvent {
   if (canStillOccur(event, today)) return { eventId: event._id, occurs: true };
-  const madeByAddress = link.senderAddress ?? (await ctx.db.get(link.mailItemId))?.sender?.address;
   return {
     eventId: event._id,
     occurs: false,
     date: event.startsOn,
     time: event.startTime,
-    madeBy: madeByAddress === sender.address ? "this_address" : "another_address",
+    madeBy: link.senderAddress === sender.address ? "this_address" : "another_address",
   };
 }
 
@@ -316,9 +314,7 @@ async function planned(
     ics,
     events: calendar.facts,
     linked:
-      link === null || linked === null
-        ? null
-        : await linkedEvent(ctx, link, linked, header.sender, today),
+      link === null || linked === null ? null : linkedEvent(link, linked, header.sender, today),
     calendarChangesToday: await calendarChangesToday(ctx, household, now),
     seniorNotesToday: await seniorNotesToday(ctx, household, now),
   };
