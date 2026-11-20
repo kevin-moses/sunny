@@ -272,11 +272,11 @@ async function planned(
   ctx: QueryCtx,
   { itemId, attempt, email, triaged }: TriageInput,
   now: number,
-): Promise<Planned | "lost" | "no_household"> {
+): Promise<Planned | "lost" | "mailbox_gone"> {
   const item = await ctx.db.get(itemId);
   if (!holdsClaim(item, attempt)) return "lost";
   const household = await ctx.db.get(item.householdId);
-  if (!household) return "no_household";
+  if (!household || !(await mailboxOf(ctx, item))) return "mailbox_gone";
   const calendar = await calendarFacts(ctx, household, now, triaged.verdict);
   const events = new Map<string, Doc<"events">>(calendar.events.map((e) => [e._id, e]));
   const key = linkKey(triaged.verdict, email.ics);
@@ -320,7 +320,7 @@ export const applyTriage = internalMutation({
     const now = Date.now();
     const ready = await planned(ctx, input, now);
     if (ready === "lost") return false;
-    if (ready === "no_household") {
+    if (ready === "mailbox_gone") {
       await ctx.db.patch(input.itemId, { state: "failed", leaseUntil: undefined });
       return false;
     }

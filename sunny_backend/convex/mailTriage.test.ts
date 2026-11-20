@@ -17,6 +17,7 @@ import {
   jevRepliesWith,
   jevSays,
   mailHousehold,
+  rawEmail,
   receive,
   rows,
   summaryCalls,
@@ -104,6 +105,17 @@ const DELIVERY: JevSays = { yes: ["about_package"] };
 
 async function setup(): Promise<MailHousehold> {
   return await mailHousehold(makeBackend());
+}
+
+async function reconnectAs(h: MailHousehold, accountEmail: string): Promise<void> {
+  await h.t.mutation(internal.gmail.saveMailbox, {
+    householdId: h.householdId,
+    userId: "pat",
+    accountEmail,
+    refreshToken: "box:refresh-2",
+    historyId: "900",
+    ids: [],
+  });
 }
 
 function kinds<T extends { kind: string }>(list: T[]): string[] {
@@ -1187,6 +1199,53 @@ describe("the item lifecycle", () => {
     expect((await rows(h, "notificationOutbox")).map((p) => p.kind)).toEqual(
       Array.from({ length: 3 }, () => "mail_escalation"),
     );
+  });
+
+  test("an email of the old account whose triage finishes after a reconnect to another account changes nothing", async () => {
+    const h = await setup();
+    jevSays(EYE_EXAM);
+    const email = clinic();
+    const itemId = await receive(h, email);
+    gmailMocks.getMessage.mockImplementationOnce(async () => {
+      await reconnectAs(h, "other@example.com");
+      return rawEmail(email);
+    });
+
+    await h.t.action(internal.mailTriage.triage, { itemId });
+
+    expect(await rows(h, "events")).toEqual([]);
+    expect(await rows(h, "seniorNotes")).toEqual([]);
+    expect((await rows(h, "chatPosts")).map((p) => p.body)).toEqual([
+      "Sunny now reads other@example.com.",
+    ]);
+    expect(await rows(h, "notificationOutbox")).toEqual([]);
+    expect((await item(h, itemId)).state).toBe("failed");
+  });
+
+  test("revoked access of the old account during triage after a reconnect leaves the new account active and quiet", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (reconnected && refresh === "refresh-1") throw new GoogleAccessRevoked("invalid_grant");
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+    gmailMocks.getMessage.mockImplementationOnce(async () => {
+      await reconnectAs(h, "other@example.com");
+      reconnected = true;
+      throw new GoogleApiError(401, "unauthorized");
+    });
+
+    await h.t.action(internal.mailTriage.triage, { itemId });
+    await h.t.action(internal.mailTriage.triage, { itemId });
+
+    const mailbox = await h.t.run(async (ctx) => await ctx.db.get(h.mailboxId));
+    expect(mailbox).toMatchObject({ accountEmail: "other@example.com", status: "active" });
+    expect((await item(h, itemId)).state).toBe("failed");
+    expect((await rows(h, "chatPosts")).map((p) => p.body)).toEqual([
+      "Sunny now reads other@example.com.",
+    ]);
+    expect(await rows(h, "notificationOutbox")).toEqual([]);
   });
 
   test("new mail is queued with a pickup deadline and a triage job", async () => {
