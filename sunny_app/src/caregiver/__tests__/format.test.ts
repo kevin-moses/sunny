@@ -704,9 +704,9 @@ describe('buildTranscript', () => {
     });
   });
 
-  it('shows only the body of a mail post without a header', () => {
+  it('labels a mail post without a header as Mail and keeps its text', () => {
     const [entry] = buildTranscript([makePost({ kind: 'mail', body: 'Just this.' })], 'user_a');
-    expect(entry).toMatchObject({ kind: 'sunny', label: null, text: 'Just this.' });
+    expect(entry).toMatchObject({ kind: 'sunny', label: 'Mail', text: 'Just this.' });
   });
 
   it('keeps header-like lines in a mail body as body text', () => {

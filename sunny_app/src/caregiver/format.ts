@@ -32,6 +32,8 @@ export type MailHeader = NonNullable<ChatPost['mailHeader']>;
 
 export const DIGEST_LABEL = 'Daily summary';
 
+export const MAIL_LABEL = 'Mail';
+
 export const HIGH_PRIORITY_DETAIL = 'High priority';
 
 export const WEEK_LENGTH = 7;
@@ -505,7 +507,7 @@ function postEntry(post: ChatPost): TranscriptEntry {
     case 'mail':
       return {
         ...entry,
-        label: post.mailHeader === null ? null : mailHeaderLabel(post.mailHeader),
+        label: post.mailHeader === null ? MAIL_LABEL : mailHeaderLabel(post.mailHeader),
       };
     case 'mailbox':
       return { ...entry, kind: 'notice' };

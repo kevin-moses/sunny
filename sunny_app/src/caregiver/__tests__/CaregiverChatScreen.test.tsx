@@ -232,7 +232,7 @@ describe('CaregiverChatScreen', () => {
     expect(texts(renderer)).toContain('Added to the calendar:\nCheckup, Tuesday at 2:00 PM.');
   });
 
-  it('shows only the body of a mail post that has no header', async () => {
+  it('labels a mail post that has no header as Mail above its body', async () => {
     const mail = {
       type: 'post',
       id: 'p4',
@@ -245,7 +245,7 @@ describe('CaregiverChatScreen', () => {
     };
     const renderer = await renderChat(true, [mail]);
     const message = renderer.root.findByType(AgentMessage);
-    expect(message.props.label).toBeNull();
+    expect(message.props.label).toBe('Mail');
     expect(texts(renderer)).toContain(
       'Sunny could not read an email. Please look at the inbox in Gmail.',
     );
