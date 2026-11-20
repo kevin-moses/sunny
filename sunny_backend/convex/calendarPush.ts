@@ -143,7 +143,7 @@ async function settleError(
     case "grant":
       await recordLostGrant(ctx, row, work.grant.refreshToken, failure);
       return failure.status === "revoked" ? "revoked" : "failed";
-    case "setup":
+    case "hold":
       throw new NonRetryableError(errorText(e), { cause: e });
     case "permanent":
       console.error(`Google push ended without retry: ${errorText(e)}`);

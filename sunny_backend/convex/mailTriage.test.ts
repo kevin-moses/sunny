@@ -995,6 +995,25 @@ describe("the item lifecycle", () => {
     },
   );
 
+  test("a Google project quota holds the row and leaves the mailbox active without a notice", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    gmailMocks.getMessage.mockRejectedValue(
+      new GoogleApiError(
+        403,
+        '{"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"dailyLimitExceeded"}]}}',
+      ),
+    );
+    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
+    expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+    const mailbox = await h.t.run(async (ctx) => await ctx.db.get(h.mailboxId));
+    expect(mailbox).toMatchObject({ status: "active" });
+    expect(await rows(h, "chatPosts")).toHaveLength(0);
+    expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    vi.setSystemTime(NOW + 16 * MINUTE);
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
+  });
+
   test("held claims are left out of the attempt cap and the claims around them count", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());

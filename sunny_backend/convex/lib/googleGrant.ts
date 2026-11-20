@@ -27,7 +27,7 @@ const GRANT_MESSAGES: Record<GrantTable, GrantMessages> = {
 
 export type GoogleFailure =
   | { kind: "grant"; status: GrantStatus; error: string }
-  | { kind: "setup" }
+  | { kind: "hold" }
   | { kind: "permanent" }
   | { kind: "retry" };
 
@@ -39,8 +39,9 @@ export function googleFailure(e: unknown, table: GrantTable): GoogleFailure | nu
   if (e instanceof GoogleAccessRevoked) {
     return { kind: "grant", status: "revoked", error: messages.revoked };
   }
-  if (e instanceof ConfigError) return { kind: "setup" };
+  if (e instanceof ConfigError) return { kind: "hold" };
   if (!(e instanceof GoogleApiError)) return null;
+  if (e.projectQuota) return { kind: "hold" };
   if (e.status === 403 && !e.retryable) {
     return { kind: "grant", status: "error", error: messages.forbidden };
   }

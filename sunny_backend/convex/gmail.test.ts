@@ -54,6 +54,9 @@ afterEach(() => {
   }
 });
 
+const DAILY_LIMIT =
+  '{"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"dailyLimitExceeded","message":"Daily Limit Exceeded"}]}}';
+
 function grant(scopes: string[]) {
   return { accessToken: "acc", refreshToken: "refresh-new", scopes, email: "someone@example.com" };
 }
@@ -657,6 +660,19 @@ describe("Polling", () => {
       name: "NonRetryableError",
     });
     expect((await mailboxRows(t))[0]).toMatchObject({ status: "active" });
+  });
+
+  test("a project quota error ends the poll without a retry, leaves the mailbox active and tells nobody", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await watchPushes(t);
+    const mailboxId = await addMailbox(t, householdId);
+    gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, DAILY_LIMIT));
+    await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
+      name: "NonRetryableError",
+    });
+    expect((await mailboxRows(t))[0]).toMatchObject({ status: "active", historyId: "100" });
+    expect(await caregiverNotices(t)).toEqual({ posts: [], pushes: [] });
   });
 
   test("a transient Google error is rethrown for the pool to retry and leaves the mailbox active", async () => {

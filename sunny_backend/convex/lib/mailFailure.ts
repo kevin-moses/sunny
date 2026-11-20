@@ -14,7 +14,7 @@ function classify(e: unknown): GoogleFailure {
   if (google !== null) return google;
   if (e instanceof JevAnswerError) return { kind: "permanent" };
   if (e instanceof APIError) {
-    if (REJECTED_KEY_STATUSES.has(e.status)) return { kind: "setup" };
+    if (REJECTED_KEY_STATUSES.has(e.status)) return { kind: "hold" };
     return e.status < 500 && !RETRYABLE_JEV_STATUSES.has(e.status)
       ? { kind: "permanent" }
       : { kind: "retry" };

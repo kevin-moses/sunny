@@ -269,7 +269,7 @@ async function settlePollError(
   switch (failure.kind) {
     case "grant":
       return failure.status === "revoked" ? "revoked" : "failed";
-    case "setup":
+    case "hold":
       throw new NonRetryableError(errorText(e), { cause: e });
     case "permanent":
       console.error(`Gmail poll ended without retry: ${errorText(e)}`);

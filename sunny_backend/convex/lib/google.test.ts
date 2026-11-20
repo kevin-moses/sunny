@@ -166,6 +166,19 @@ describe("GoogleApiError", () => {
     ).toBe(true);
     expect(new GoogleApiError(403, '{"errors":[{"reason":"forbidden"}]}').retryable).toBe(false);
   });
+
+  test("a daily project limit is a project quota and is not retried", () => {
+    for (const status of [403, 429]) {
+      const e = new GoogleApiError(status, '{"errors":[{"reason":"dailyLimitExceeded"}]}');
+      expect([e.projectQuota, e.retryable]).toEqual([true, false]);
+    }
+    for (const reason of ["rateLimitExceeded", "userRateLimitExceeded", "forbidden"]) {
+      expect(new GoogleApiError(403, `{"errors":[{"reason":"${reason}"}]}`).projectQuota).toBe(
+        false,
+      );
+    }
+    expect(new GoogleApiError(500, "dailyLimitExceeded").projectQuota).toBe(false);
+  });
 });
 
 describe("exchangeCode", () => {

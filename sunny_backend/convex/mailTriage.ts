@@ -368,8 +368,8 @@ async function settleTriageError(
     case "grant":
       await release(false);
       return "mailbox_lost";
-    case "setup":
-      console.error(`Mail triage held until the deployment is fixed: ${errorText(e)}`);
+    case "hold":
+      console.error(`Mail triage held until the shared cause clears: ${errorText(e)}`);
       await release(true);
       return "held";
     case "retry":

@@ -323,6 +323,19 @@ describe("errors", () => {
     await expect(runPush(t)).rejects.toThrow("rateLimitExceeded");
   });
 
+  test("a project quota 403 is not retried and leaves the connection active", async () => {
+    const t = makeBackend();
+    const { connectionId } = await setupSynced(t);
+    googleMocks.upsertEvent.mockRejectedValue(
+      new GoogleApiError(403, '{"error":{"errors":[{"reason":"dailyLimitExceeded"}]}}'),
+    );
+    const failure = await runPush(t).catch((e: unknown) => e);
+    expect(JSON.stringify((failure as { data?: unknown }).data ?? "")).toContain(
+      "__convexWorkpoolNonRetryable",
+    );
+    expect(await connectionRow(t, connectionId)).toMatchObject({ status: "active" });
+  });
+
   test("an unreadable refresh token marks the connection in error without retrying", async () => {
     const t = makeBackend();
     const { connectionId } = await setupSynced(t);

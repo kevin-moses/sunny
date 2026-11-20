@@ -14,18 +14,22 @@ export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
+const PROJECT_QUOTA_REASONS = /\bdailyLimitExceeded/;
 
 export class GoogleApiError extends Error {
   status: number;
   retryable: boolean;
+  projectQuota: boolean;
   gone: boolean;
 
   constructor(status: number, message: string) {
     super(`Google API ${status}: ${message}`);
     this.name = "GoogleApiError";
     this.status = status;
+    this.projectQuota = (status === 403 || status === 429) && PROJECT_QUOTA_REASONS.test(message);
     this.retryable =
-      status === 429 || status >= 500 || (status === 403 && RATE_LIMIT_REASONS.test(message));
+      !this.projectQuota &&
+      (status === 429 || status >= 500 || (status === 403 && RATE_LIMIT_REASONS.test(message)));
     this.gone = status === 404 || status === 410;
   }
 }
