@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { jevAnswers } from "../mailMocks.helpers";
 import { cleanText } from "./frameText";
 import { compactAnswers } from "./jevClient";
-import { FLAGS, FLAG_GROUPS } from "./jevQuestions";
+import { FLAGS, flagGroup } from "./jevQuestions";
 import type { Flag } from "./jevQuestions";
 import type { Level } from "./jevConfidence";
 import { TRUTH_TABLE, decide, readAnswers } from "./mailJudge";
@@ -280,7 +280,7 @@ describe("truth table", () => {
     expect(result.summary.length).toBeGreaterThan(0);
   });
 
-  test.each(FLAGS.filter((f) => FLAG_GROUPS[f] !== "follow_up"))(
+  test.each(FLAGS.filter((f) => flagGroup(f) !== "follow_up"))(
     "an unsettled %s on its own goes to the caregivers",
     (flag) => {
       expect(decide(readings({ [flag]: "unsure" })).verdict.kind).toBe("needs_decision");

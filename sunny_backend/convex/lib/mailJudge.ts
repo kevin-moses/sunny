@@ -2,8 +2,8 @@ import { JEV_MODEL } from "./jevClient";
 import type { AskJev } from "./jevClient";
 import { level, oneOf, sure } from "./jevConfidence";
 import type { Level, Picked } from "./jevConfidence";
-import { FLAGS, FLAG_GROUPS, judgeQuestions, judgeState } from "./jevQuestions";
-import type { Flag, FlagGroup, SlotName } from "./jevQuestions";
+import { FLAGS, flagsIn, judgeQuestions, judgeState } from "./jevQuestions";
+import type { Flag, SlotName } from "./jevQuestions";
 import { resolveSlot } from "./mailDates";
 import type { Slot, SlotPicks } from "./mailDates";
 import { gate } from "./mailGate";
@@ -23,10 +23,6 @@ import type {
   Triaged,
 } from "./mailTypes";
 import { localDate } from "./time";
-
-function flagsIn(...groups: FlagGroup[]): Flag[] {
-  return FLAGS.filter((f) => groups.includes(FLAG_GROUPS[f]));
-}
 
 export interface Invite {
   method: "REQUEST" | "CANCEL";
@@ -82,7 +78,14 @@ const is = (r: Readings, flag: Flag): boolean => r.flags.get(flag) === "yes";
 const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
   flags.some((f) => r.flags.get(f) === "unsure");
 
-const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: string }[] = [
+interface NamedDecision {
+  rule: string;
+  flag: Flag;
+  reason: DecisionReason;
+  summary: string;
+}
+
+const NAMED_DECISIONS: NamedDecision[] = [
   {
     rule: "test results",
     flag: "about_test_results",
@@ -113,16 +116,17 @@ const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: st
     reason: "reply_needed",
     summary: "The email asks the senior a question that needs an answer.",
   },
-  {
-    rule: "payment, reply, signature or decision needed",
-    flag: "needs_action",
-    reason: "other",
-    summary: "The email needs a payment, a reply, a signature or a decision.",
-  },
 ];
 
+const NEEDS_ACTION: NamedDecision = {
+  rule: "payment, reply, signature or decision needed",
+  flag: "needs_action",
+  reason: "other",
+  summary: "The email needs a payment, a reply, a signature or a decision.",
+};
+
 function decisionOf(r: Readings): DecisionReason | null {
-  const named = DECISIONS.find(({ flag }) => DECISION_FLAGS.includes(flag) && is(r, flag));
+  const named = NAMED_DECISIONS.find(({ flag }) => is(r, flag));
   if (named !== undefined) return named.reason;
   return anyUnsure(r, DECISION_FLAGS) ? "other" : null;
 }
@@ -312,7 +316,7 @@ export const TRUTH_TABLE: Row[] = [
         : null;
     },
   },
-  ...DECISIONS.map(({ rule, flag, reason, summary }): Row => ({
+  ...[...NAMED_DECISIONS, NEEDS_ACTION].map(({ rule, flag, reason, summary }): Row => ({
     rule,
     decide: (r) => (is(r, flag) ? decision(reason, summary) : null),
   })),
