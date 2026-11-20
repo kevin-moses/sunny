@@ -114,6 +114,8 @@ Terms in this section. A verdict is what the classifier concludes about one emai
   | `over`, made by this address | `new_on_calendar` with the linked event when the invite names the stored date and time, else a reschedule of nothing | `new_on_calendar` with the linked event | the linked event, which has no fact, so nothing matches |
   | `over`, made by another address | a reschedule of nothing when the invite names another date or time, else as plain mail | `new_on_calendar` with a same-slot event, else `new_linked_by_another_address` | the same as made by this address |
 
+  A new appointment needs fields that `appointmentFields` accepts in every situation but `new_linked_elsewhere`; when it rejects them the situation is `new_rejected` instead. A reschedule (an invite moved through its link counts as one) is `reschedule_no_match` unless exactly one event matched, `reschedule_repeating` when the match is one date of a series, `reschedule_rejected` when `appointmentFields` rejects the new fields, and `reschedule` otherwise. The verdict's appointment must have a date and a time that parse; planning throws otherwise.
+
   In `new_linked_elsewhere` the link never picks an event to move and never counts as already on the calendar, and Sunny changes nothing. Its post names the event's date and time when a fact shows them and otherwise says that the calendar no longer has the appointment at that time. `new_linked_by_another_address` also changes nothing, because addresses on one domain share links and a stranger's cancelled appointment must not silence a clinic on the same mail domain. Its post does not show the other address. A link stays after its event is cancelled or past, so for the address that made it, another email about that appointment closes as `already_on_calendar` with no post and never adds it again. A reschedule matches an event at the previous slot only on the same date with a word shared with Sunny's title for the kind, and on the same time when the email gives one. A cancellation uses its link when it has one (only an invite's UID gives a cancellation a link) and otherwise matches the previous slot the same way.
 - **Decision table** (`lib/mailPolicy.ts`, `DECISION_TABLE`). Verified means `sender.authenticated` (see Sender check). It shows that the mail came from the domain in its address, not who owns that domain, so mail from a lookalike domain is verified. Each situation from link resolution has its own rows. The first row whose guard holds decides, and the row is stored as `rule`.
 
@@ -122,14 +124,17 @@ Terms in this section. A verdict is what the classifier concludes about one emai
   | ignore | any | none |
   | every new case | sender not authenticated | escalate `unverified_sender`, push, with the proposed appointment |
   | new_linked_elsewhere | otherwise | escalate `unclear_appointment`, push, with the event and the proposed appointment |
-  | new, new_on_calendar, new_linked_by_another_address | appointmentFields rejects | escalate `unclear_appointment`, push |
+  | new_rejected | otherwise | escalate `unclear_appointment`, push, with the proposed appointment |
   | new_on_calendar | otherwise | `already_on_calendar` |
   | new_linked_by_another_address | otherwise | escalate `unclear_appointment`, push, with the proposed appointment |
   | new | a caregiver confirms this kind first | escalate `home_visit` or `phone_call`, push, with the proposed appointment |
   | new | overlaps another live event | escalate `conflict`, push |
   | new | daily limit of calendar changes reached | escalate `daily_limit`, push, with the proposed appointment |
   | new | otherwise | `add_event`, `tell_caregivers` without push |
-  | reschedule | not authenticated, no single match, the match repeats, or new fields rejected | escalate `unclear_reschedule`, push, with the event when exactly one matched and the proposed appointment |
+  | reschedule_no_match | otherwise | escalate `unclear_reschedule`, push, with the proposed appointment |
+  | reschedule_repeating | otherwise | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
+  | reschedule_rejected, reschedule | sender not authenticated | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
+  | reschedule_rejected | otherwise | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
   | reschedule | the match already has the new date and time | `already_on_calendar` |
   | reschedule | a caregiver confirms moving this kind first | escalate `home_visit` or `phone_call`, push, with the event and the proposed appointment |
   | reschedule | daily limit of calendar changes reached | escalate `daily_limit`, push, with the event and the proposed appointment |

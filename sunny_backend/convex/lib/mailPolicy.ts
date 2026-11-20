@@ -240,37 +240,26 @@ const ALSO_NEEDS: Record<DecisionReason, string> = {
   other: "The email may also need a reply, a payment or a decision.",
 };
 
+declare const SLOT_CHECKED: unique symbol;
+
+type CheckedAppointment = Appointment & { readonly [SLOT_CHECKED]: true };
+
 type Situation =
   | { case: "ignore" }
-  | {
-      case: "new";
-      appointment: CheckedAppointment;
-      fields: CheckedAppointment | null;
-      conflict: CalendarEventFact | null;
-    }
-  | {
-      case: "new_on_calendar";
-      appointment: CheckedAppointment;
-      fields: CheckedAppointment | null;
-      eventId: string;
-    }
+  | { case: "new"; appointment: CheckedAppointment; conflict: CalendarEventFact | null }
+  | { case: "new_rejected"; appointment: CheckedAppointment }
+  | { case: "new_on_calendar"; appointment: CheckedAppointment; eventId: string }
   | {
       case: "new_linked_elsewhere";
       appointment: CheckedAppointment;
       eventId: string;
       seen: CalendarEventFact | null;
     }
-  | {
-      case: "new_linked_by_another_address";
-      appointment: CheckedAppointment;
-      fields: CheckedAppointment | null;
-    }
-  | {
-      case: "reschedule";
-      appointment: CheckedAppointment;
-      fields: CheckedAppointment | null;
-      matches: CalendarEventFact[];
-    }
+  | { case: "new_linked_by_another_address"; appointment: CheckedAppointment }
+  | { case: "reschedule"; appointment: CheckedAppointment; match: CalendarEventFact }
+  | { case: "reschedule_rejected"; appointment: CheckedAppointment; match: CalendarEventFact }
+  | { case: "reschedule_repeating"; appointment: CheckedAppointment; match: CalendarEventFact }
+  | { case: "reschedule_no_match"; appointment: CheckedAppointment }
   | { case: "cancel"; previous: AppointmentRef; matches: CalendarEventFact[] }
   | { case: "senior_info"; topic: InfoTopic }
   | { case: "needs_decision"; reason: DecisionReason }
@@ -287,10 +276,6 @@ interface Plan {
   rule: string;
   effects: MailEffect[];
 }
-
-declare const SLOT_CHECKED: unique symbol;
-
-type CheckedAppointment = Appointment & { readonly [SLOT_CHECKED]: true };
 
 function checked(appointment: Appointment): CheckedAppointment {
   const { date, time } = appointment;
@@ -321,21 +306,17 @@ function tell(line: string): Draft {
   return { kind: "tell_caregivers", line, push: false };
 }
 
-function onCalendar(eventId: string, key: string): Draft[] {
-  return [{ kind: "already_on_calendar", eventId, appointmentKey: key }];
-}
-
 function notMoved(
   match: CalendarEventFact,
-  fields: Appointment,
+  appointment: Appointment,
   because: string,
   ask: string,
 ): string {
-  return `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(fields.date, fields.time)}, because ${because}. Tell Sunny in chat to move it${ask}.`;
+  return `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(appointment.date, appointment.time)}, because ${because}. Tell Sunny in chat to move it${ask}.`;
 }
 
-function only(matches: CalendarEventFact[]): CalendarEventFact | null {
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+function asked(appointment: Appointment): string {
+  return when(appointment.date, appointment.time);
 }
 
 export function described(appointment: Appointment): string {
@@ -357,17 +338,20 @@ const NEW_UNVERIFIED: Row<{ appointment: CheckedAppointment }> = {
         ],
 };
 
-const NEW_REJECTED: Row<{ appointment: CheckedAppointment; fields: CheckedAppointment | null }> = {
-  rule: "new: appointmentFields rejects",
-  plan: (s, c) =>
-    s.fields !== null
+const UNCLEAR_RESCHEDULE =
+  "reschedule: not authenticated, no single match, the match repeats, or new fields rejected";
+
+const RESCHEDULE_UNVERIFIED: Row<{ appointment: CheckedAppointment; match: CalendarEventFact }> = {
+  rule: UNCLEAR_RESCHEDULE,
+  plan: ({ appointment, match }, c) =>
+    c.facts.sender.authenticated
       ? null
       : [
           escalate(
-            "unclear_appointment",
-            `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
-            null,
-            s.appointment,
+            "unclear_reschedule",
+            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because Gmail could not verify the sender. The email asks to move it to ${asked(appointment)}. Tell Sunny in chat to move it if the email is genuine.`,
+            match.eventId,
+            appointment,
           ),
         ],
 };
@@ -378,7 +362,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     NEW_UNVERIFIED,
     {
       rule: "new: the sender's link has this appointment at another time, and no live event has the email's date, time and title words",
-      plan: (s, c) => {
+      plan: (s) => {
         const has =
           s.seen === null
             ? "no longer has this appointment at that time"
@@ -394,20 +378,38 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
   ],
+  new_rejected: [
+    NEW_UNVERIFIED,
+    {
+      rule: "new: appointmentFields rejects",
+      plan: (s) => [
+        escalate(
+          "unclear_appointment",
+          `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
+          null,
+          s.appointment,
+        ),
+      ],
+    },
+  ],
   new_on_calendar: [
     NEW_UNVERIFIED,
-    NEW_REJECTED,
     {
       rule: "new: already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
-      plan: (s, c) => onCalendar(s.eventId, appointmentKey(s.appointment, c.facts.ics)),
+      plan: (s, c) => [
+        {
+          kind: "already_on_calendar",
+          eventId: s.eventId,
+          appointmentKey: appointmentKey(s.appointment, c.facts.ics),
+        },
+      ],
     },
   ],
   new_linked_by_another_address: [
     NEW_UNVERIFIED,
-    NEW_REJECTED,
     {
       rule: "new: the link's event is over, and another address at the sender's domain made it",
-      plan: (s, c) => [
+      plan: (s) => [
         escalate(
           "unclear_appointment",
           `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
@@ -419,10 +421,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   new: [
     NEW_UNVERIFIED,
-    NEW_REJECTED,
     {
       rule: "new: a caregiver confirms this kind first",
-      plan: (s, c) => {
+      plan: (s) => {
         const confirms = APPOINTMENT_KINDS[s.appointment.kind].caregiverConfirms;
         if (confirms === null) return null;
         return [
@@ -437,144 +438,158 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
     {
       rule: "new: overlaps another live event",
-      plan: (s, c) =>
-        s.conflict === null || s.fields === null
+      plan: (s) =>
+        s.conflict === null
           ? null
           : [
               escalate(
                 "conflict",
-                `Sunny did not add ${described(s.fields)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
+                `Sunny did not add ${described(s.appointment)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
                 null,
-                s.fields,
+                s.appointment,
               ),
             ],
     },
     {
       rule: "new: daily limit of calendar changes reached",
       plan: (s, c) =>
-        !c.atDailyLimit || s.fields === null
-          ? null
-          : [
+        c.atDailyLimit
+          ? [
               escalate(
                 "daily_limit",
-                `Sunny did not add ${described(s.fields)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
+                `Sunny did not add ${described(s.appointment)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
                 null,
-                s.fields,
+                s.appointment,
               ),
-            ],
+            ]
+          : null,
     },
     {
       rule: "new: otherwise",
-      plan: (s, c) =>
-        s.fields === null
-          ? null
-          : [
-              {
-                kind: "add_event",
-                appointment: s.fields,
-                appointmentKey: appointmentKey(s.fields, c.facts.ics),
-              },
-              tell(`Sunny added ${described(s.fields)}, to the calendar.`),
-            ],
+      plan: (s, c) => [
+        {
+          kind: "add_event",
+          appointment: s.appointment,
+          appointmentKey: appointmentKey(s.appointment, c.facts.ics),
+        },
+        tell(`Sunny added ${described(s.appointment)}, to the calendar.`),
+      ],
+    },
+  ],
+  reschedule_no_match: [
+    {
+      rule: UNCLEAR_RESCHEDULE,
+      plan: (s) => [
+        escalate(
+          "unclear_reschedule",
+          `Sunny did not move any appointment. The email asks to move one to ${asked(s.appointment)}.`,
+          null,
+          s.appointment,
+        ),
+      ],
+    },
+  ],
+  reschedule_repeating: [
+    {
+      rule: UNCLEAR_RESCHEDULE,
+      plan: ({ appointment, match }) => [
+        escalate(
+          "unclear_reschedule",
+          `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked(appointment)}. Tell Sunny in chat what to change.`,
+          match.eventId,
+          appointment,
+        ),
+      ],
+    },
+  ],
+  reschedule_rejected: [
+    RESCHEDULE_UNVERIFIED,
+    {
+      rule: UNCLEAR_RESCHEDULE,
+      plan: ({ appointment, match }) => [
+        escalate(
+          "unclear_reschedule",
+          `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked(appointment)}. Tell Sunny in chat to move it.`,
+          match.eventId,
+          appointment,
+        ),
+      ],
     },
   ],
   reschedule: [
-    {
-      rule: "reschedule: not authenticated, no single match, the match repeats, or new fields rejected",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (c.facts.sender.authenticated && match !== null && !match.repeating && s.fields !== null)
-          return null;
-        const asked = when(s.appointment.date, s.appointment.time);
-        const line =
-          match === null
-            ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
-            : match.repeating
-              ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-              : !c.facts.sender.authenticated
-                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because Gmail could not verify the sender. The email asks to move it to ${asked}. Tell Sunny in chat to move it if the email is genuine.`
-                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
-        return [escalate("unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
-      },
-    },
+    RESCHEDULE_UNVERIFIED,
     {
       rule: "reschedule: the match already has the new date and time",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        return match !== null &&
-          s.fields !== null &&
-          match.date === s.fields.date &&
-          match.time === s.fields.time
-          ? onCalendar(match.eventId, appointmentKey(s.fields, c.facts.ics))
-          : null;
-      },
+      plan: ({ appointment, match }, c) =>
+        match.date === appointment.date && match.time === appointment.time
+          ? [
+              {
+                kind: "already_on_calendar",
+                eventId: match.eventId,
+                appointmentKey: appointmentKey(appointment, c.facts.ics),
+              },
+            ]
+          : null,
     },
     {
       rule: "reschedule: a caregiver confirms moving this kind first",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (match === null || s.fields === null) return null;
-        const confirms = confirmsMove(s.appointment.kind, match.title);
+      plan: ({ appointment, match }) => {
+        const confirms = confirmsMove(appointment.kind, match.title);
         if (confirms === null) return null;
         return [
           escalate(
             confirms.reason,
             notMoved(
               match,
-              s.fields,
+              appointment,
               confirms.because,
               ` once you have checked ${confirms.checked}`,
             ),
             match.eventId,
-            s.fields,
+            appointment,
           ),
         ];
       },
     },
     {
       rule: "reschedule: daily limit of calendar changes reached",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (!c.atDailyLimit || match === null || s.fields === null) return null;
-        return [
-          escalate(
-            "daily_limit",
-            notMoved(match, s.fields, DAILY_LIMIT, ""),
-            match.eventId,
-            s.fields,
-          ),
-        ];
-      },
+      plan: ({ appointment, match }, c) =>
+        c.atDailyLimit
+          ? [
+              escalate(
+                "daily_limit",
+                notMoved(match, appointment, DAILY_LIMIT, ""),
+                match.eventId,
+                appointment,
+              ),
+            ]
+          : null,
     },
     {
       rule: "reschedule: exactly one match",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (match === null || s.fields === null) return null;
-        return [
-          {
-            kind: "reschedule_event",
-            eventId: match.eventId,
-            appointment: s.fields,
-            appointmentKey: appointmentKey(s.fields, c.facts.ics),
-          },
-          {
-            kind: "tell_caregivers",
-            line: `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
-            push: true,
-            title: "Sunny moved an appointment",
-          },
-        ];
-      },
+      plan: ({ appointment, match }, c) => [
+        {
+          kind: "reschedule_event",
+          eventId: match.eventId,
+          appointment,
+          appointmentKey: appointmentKey(appointment, c.facts.ics),
+        },
+        {
+          kind: "tell_caregivers",
+          line: `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${asked(appointment)}.`,
+          push: true,
+          title: "Sunny moved an appointment",
+        },
+      ],
     },
   ],
   cancel: [
     {
       rule: "cancel: any",
-      plan: (s, c) => {
-        const match = only(s.matches);
+      plan: (s) => {
+        const match = s.matches.length === 1 ? s.matches[0] : undefined;
         const line =
-          match === null
+          match === undefined
             ? `The sender cancelled an appointment on ${dateLabel(s.previous.date)}. Sunny found no single matching event and changed nothing.`
             : `The sender cancelled ${match.title}, ${when(match.date, match.time)}. Sunny left it on the calendar; tell Sunny in chat to cancel it.`;
         return [escalate("cancellation", line, match?.eventId ?? null, null)];
@@ -619,13 +634,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   needs_decision: [
     {
       rule: "needs_decision: any",
-      plan: (s, c) => [escalate(s.reason, "This email needs a decision.", null, null)],
+      plan: (s) => [escalate(s.reason, "This email needs a decision.", null, null)],
     },
   ],
   suspicious: [
     {
       rule: "suspicious: any",
-      plan: (s, c) => [
+      plan: (s) => [
         escalate(
           s.suspicion,
           "Sunny thinks this email may be a scam and did not tell the senior about it.",
@@ -673,50 +688,43 @@ function moving(
   matches: CalendarEventFact[],
   facts: PolicyFacts,
 ): Situation {
-  return {
-    case: "reschedule",
-    appointment,
-    fields: appointmentFields(appointment, facts),
-    matches,
-  };
-}
-
-function sameSlotEvent(fields: CheckedAppointment | null, facts: PolicyFacts): string | null {
-  return fields === null ? null : (matchEvent(fields, facts.events)[0]?.eventId ?? null);
-}
-
-function unlinked(appointment: CheckedAppointment, facts: PolicyFacts): Situation {
+  const match = matches.length === 1 ? matches[0] : undefined;
+  if (match === undefined) return { case: "reschedule_no_match", appointment };
+  if (match.repeating) return { case: "reschedule_repeating", appointment, match };
   const fields = appointmentFields(appointment, facts);
+  return fields === null
+    ? { case: "reschedule_rejected", appointment, match }
+    : { case: "reschedule", appointment: fields, match };
+}
+
+function sameSlotEvent(fields: Appointment, facts: PolicyFacts): string | null {
+  return matchEvent(fields, facts.events)[0]?.eventId ?? null;
+}
+
+function unlinked(fields: CheckedAppointment, facts: PolicyFacts): Situation {
   const eventId = sameSlotEvent(fields, facts);
-  if (eventId !== null) return { case: "new_on_calendar", appointment, fields, eventId };
-  return {
-    case: "new",
-    appointment,
-    fields,
-    conflict:
-      fields === null
-        ? null
-        : (facts.events.find((e) => overlaps(fields, e, facts.timezone)) ?? null),
-  };
+  if (eventId !== null) return { case: "new_on_calendar", appointment: fields, eventId };
+  const conflict = facts.events.find((e) => overlaps(fields, e, facts.timezone)) ?? null;
+  return { case: "new", appointment: fields, conflict };
 }
 
 function resolveLink(verdict: AppointmentChange, facts: PolicyFacts): Situation {
   const appointment = checked(verdict.appointment);
   const { linked } = facts;
+  const fields = appointmentFields(appointment, facts);
+  const rejected: Situation = { case: "new_rejected", appointment };
   if (linked === null) {
-    return verdict.change === "new"
-      ? unlinked(appointment, facts)
-      : moving(appointment, previousMatches(verdict.previous, facts), facts);
+    if (verdict.change === "reschedule") {
+      return moving(appointment, previousMatches(verdict.previous, facts), facts);
+    }
+    return fields === null ? rejected : unlinked(fields, facts);
   }
   const invite = facts.ics !== null;
   const place = linkPlace(linked, appointment, facts);
-  const fields = appointmentFields(appointment, facts);
-  const linkedHere: Situation = {
-    case: "new_on_calendar",
-    appointment,
-    fields,
-    eventId: linked.eventId,
-  };
+  const linkedHere: Situation =
+    fields === null
+      ? rejected
+      : { case: "new_on_calendar", appointment: fields, eventId: linked.eventId };
   switch (place.at) {
     case "slot":
     case "outside_facts":
@@ -731,10 +739,10 @@ function resolveLink(verdict: AppointmentChange, facts: PolicyFacts): Situation 
         return moving(appointment, matches, facts);
       }
       if (invite) return moving(appointment, place.seen === null ? [] : [place.seen], facts);
-      const eventId = sameSlotEvent(fields, facts);
-      return eventId === null
+      const eventId = fields === null ? null : sameSlotEvent(fields, facts);
+      return fields === null || eventId === null
         ? { case: "new_linked_elsewhere", appointment, eventId: linked.eventId, seen: place.seen }
-        : { case: "new_on_calendar", appointment, fields, eventId };
+        : { case: "new_on_calendar", appointment: fields, eventId };
     }
     case "over": {
       if (verdict.change === "reschedule") {
@@ -742,10 +750,11 @@ function resolveLink(verdict: AppointmentChange, facts: PolicyFacts): Situation 
       }
       if (invite && !sameSlot(place, appointment)) return moving(appointment, [], facts);
       if (place.madeBy === "this_address") return linkedHere;
+      if (fields === null) return rejected;
       const eventId = sameSlotEvent(fields, facts);
       return eventId === null
-        ? { case: "new_linked_by_another_address", appointment, fields }
-        : { case: "new_on_calendar", appointment, fields, eventId };
+        ? { case: "new_linked_by_another_address", appointment: fields }
+        : { case: "new_on_calendar", appointment: fields, eventId };
     }
   }
 }
@@ -842,6 +851,8 @@ function planFor(situation: Situation, context: Context): Drafted {
       return runTable(DECISION_TABLE.ignore, situation, context);
     case "new":
       return runTable(DECISION_TABLE.new, situation, context);
+    case "new_rejected":
+      return runTable(DECISION_TABLE.new_rejected, situation, context);
     case "new_on_calendar":
       return runTable(DECISION_TABLE.new_on_calendar, situation, context);
     case "new_linked_elsewhere":
@@ -850,6 +861,12 @@ function planFor(situation: Situation, context: Context): Drafted {
       return runTable(DECISION_TABLE.new_linked_by_another_address, situation, context);
     case "reschedule":
       return runTable(DECISION_TABLE.reschedule, situation, context);
+    case "reschedule_rejected":
+      return runTable(DECISION_TABLE.reschedule_rejected, situation, context);
+    case "reschedule_repeating":
+      return runTable(DECISION_TABLE.reschedule_repeating, situation, context);
+    case "reschedule_no_match":
+      return runTable(DECISION_TABLE.reschedule_no_match, situation, context);
     case "cancel":
       return runTable(DECISION_TABLE.cancel, situation, context);
     case "senior_info":
