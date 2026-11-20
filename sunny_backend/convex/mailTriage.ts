@@ -5,7 +5,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { tokensFor } from "./googleGrant";
+import { recordLostGrant, tokensFor } from "./googleGrant";
 import { itemHeader, postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
@@ -392,13 +392,19 @@ async function settleTriageError(
   claim: Extract<Claim, { kind: "claimed" }>,
   e: unknown,
 ): Promise<TriageOutcome> {
-  const failure = await mailFailure(ctx, claim.mailboxId, claim.grant.refreshToken, e);
+  const failure = mailFailure(e);
   const release = (held: boolean) =>
     ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
   switch (failure.kind) {
     case "permanent":
       throw new NonRetryableError(errorText(e), { cause: e });
     case "grant":
+      await recordLostGrant(
+        ctx,
+        { table: "mailboxes", id: claim.mailboxId },
+        claim.grant.refreshToken,
+        failure,
+      );
       await release(false);
       return "mailbox_lost";
     case "hold":

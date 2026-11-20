@@ -10,7 +10,7 @@ import {
   query,
 } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { tokensFor } from "./googleGrant";
+import { recordLostGrant, tokensFor } from "./googleGrant";
 import {
   EDITOR_ROLES,
   loadHousehold,
@@ -265,9 +265,10 @@ async function settlePollError(
   refreshToken: string,
   e: unknown,
 ): Promise<PollOutcome> {
-  const failure = await mailFailure(ctx, mailboxId, refreshToken, e);
+  const failure = mailFailure(e);
   switch (failure.kind) {
     case "grant":
+      await recordLostGrant(ctx, { table: "mailboxes", id: mailboxId }, refreshToken, failure);
       return failure.status === "revoked" ? "revoked" : "failed";
     case "hold":
       throw new NonRetryableError(errorText(e), { cause: e });
