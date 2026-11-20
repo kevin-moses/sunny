@@ -210,12 +210,21 @@ function overlaps(a: Appointment, b: CalendarEventFact, timezone: string): boole
 
 interface Context {
   facts: PolicyFacts;
-  authenticated: boolean;
   stale: boolean;
   atDailyLimit: boolean;
-  summary: string;
-  decision: DecisionReason | null;
 }
+
+type Draft =
+  | Exclude<MailEffect, { kind: "tell_caregivers" | "escalate" }>
+  | { kind: "tell_caregivers"; line: string; push: boolean }
+  | {
+      kind: "escalate";
+      reason: EscalationReason;
+      line: string;
+      push: boolean;
+      eventId: string | null;
+      proposed: Proposed | null;
+    };
 
 const ALSO_NEEDS: Record<DecisionReason, string> = {
   cancellation: "The email also mentions a cancellation.",
@@ -264,7 +273,7 @@ type Case = Situation["case"];
 
 interface Row<S> {
   rule: string;
-  plan: (s: S, c: Context) => MailEffect[] | null;
+  plan: (s: S, c: Context) => Draft[] | null;
 }
 
 interface Plan {
@@ -277,43 +286,27 @@ export function proposed(appointment: Appointment): Proposed {
 }
 
 function escalate(
-  c: Context,
   reason: EscalationReason,
   line: string,
   eventId: string | null,
   appointment: Appointment | null,
-): MailEffect {
-  const also = c.decision === null ? "" : ` ${ALSO_NEEDS[c.decision]}`;
+): Draft {
   return {
     kind: "escalate",
     reason,
-    ...caregiverMessage(c.facts, `${line}${also}`, c.summary),
+    line,
     push: true,
     eventId,
     proposed: appointment === null ? null : proposed(appointment),
   };
 }
 
-function tell(c: Context, line: string, push: boolean): MailEffect {
-  if (c.decision !== null) return escalate(c, c.decision, line, null, null);
-  return {
-    kind: "tell_caregivers",
-    ...caregiverMessage(c.facts, line, c.summary),
-    push,
-  };
+function tell(line: string, push: boolean): Draft {
+  return { kind: "tell_caregivers", line, push };
 }
 
-function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
-  const already: MailEffect = {
-    kind: "already_on_calendar",
-    eventId,
-    appointmentKey: key,
-  };
-  if (c.decision === null) return [already];
-  return [
-    already,
-    escalate(c, c.decision, "The appointment is already on the calendar.", eventId, null),
-  ];
+function onCalendar(eventId: string, key: string): Draft[] {
+  return [{ kind: "already_on_calendar", eventId, appointmentKey: key }];
 }
 
 function notMoved(
@@ -336,11 +329,10 @@ export function described(appointment: Appointment): string {
 const NEW_UNVERIFIED: Row<{ appointment: Appointment }> = {
   rule: "new: sender not authenticated",
   plan: (s, c) =>
-    c.authenticated
+    c.facts.sender.authenticated
       ? null
       : [
           escalate(
-            c,
             "unverified_sender",
             `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
             null,
@@ -356,7 +348,6 @@ const NEW_REJECTED: Row<{ appointment: Appointment; fields: Appointment | null }
       ? null
       : [
           escalate(
-            c,
             "unclear_appointment",
             `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
             null,
@@ -378,7 +369,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             : `has this appointment on ${when(s.seen.date, s.seen.time)}`;
         return [
           escalate(
-            c,
             "unclear_appointment",
             `The email gives ${described(s.appointment)}. Sunny's calendar ${has}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
             s.eventId,
@@ -393,7 +383,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     NEW_REJECTED,
     {
       rule: "new: already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
-      plan: (s, c) => onCalendar(c, s.eventId, appointmentKey(s.appointment, c.facts.ics)),
+      plan: (s, c) => onCalendar(s.eventId, appointmentKey(s.appointment, c.facts.ics)),
     },
   ],
   new_linked_by_another_address: [
@@ -403,7 +393,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       rule: "new: the link's event is over, and another address at the sender's domain made it",
       plan: (s, c) => [
         escalate(
-          c,
           "unclear_appointment",
           `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
           null,
@@ -422,7 +411,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         if (confirms === null) return null;
         return [
           escalate(
-            c,
             confirms.reason,
             `${described(s.appointment)}. Sunny has not added it because ${confirms.because}. Tell Sunny in chat to add it once you have checked ${confirms.checked}.`,
             null,
@@ -438,7 +426,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           ? null
           : [
               escalate(
-                c,
                 "conflict",
                 `Sunny did not add ${described(s.fields)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
                 null,
@@ -453,7 +440,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           ? null
           : [
               escalate(
-                c,
                 "daily_limit",
                 `Sunny did not add ${described(s.fields)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
                 null,
@@ -472,7 +458,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 appointment: s.fields,
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
-              tell(c, `Sunny added ${described(s.fields)}, to the calendar.`, false),
+              tell(`Sunny added ${described(s.fields)}, to the calendar.`, false),
             ],
     },
   ],
@@ -481,17 +467,18 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       rule: "reschedule: not authenticated, no single match, the match repeats, or new fields rejected",
       plan: (s, c) => {
         const match = only(s.matches);
-        if (c.authenticated && match !== null && !match.repeating && s.fields !== null) return null;
+        if (c.facts.sender.authenticated && match !== null && !match.repeating && s.fields !== null)
+          return null;
         const asked = when(s.appointment.date, s.appointment.time);
         const line =
           match === null
             ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
             : match.repeating
               ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-              : !c.authenticated
+              : !c.facts.sender.authenticated
                 ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because Gmail could not verify the sender. The email asks to move it to ${asked}. Tell Sunny in chat to move it if the email is genuine.`
                 : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
-        return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
+        return [escalate("unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
       },
     },
     {
@@ -502,7 +489,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           s.fields !== null &&
           match.date === s.fields.date &&
           match.time === s.fields.time
-          ? onCalendar(c, match.eventId, appointmentKey(s.fields, c.facts.ics))
+          ? onCalendar(match.eventId, appointmentKey(s.fields, c.facts.ics))
           : null;
       },
     },
@@ -515,7 +502,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         if (confirms === null) return null;
         return [
           escalate(
-            c,
             confirms.reason,
             notMoved(
               match,
@@ -536,7 +522,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
         if (!c.atDailyLimit || match === null || s.fields === null) return null;
         return [
           escalate(
-            c,
             "daily_limit",
             notMoved(match, s.fields, DAILY_LIMIT, ""),
             match.eventId,
@@ -558,7 +543,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             appointmentKey: appointmentKey(s.fields, c.facts.ics),
           },
           tell(
-            c,
             `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
             true,
           ),
@@ -575,7 +559,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           match === null
             ? `The sender cancelled an appointment on ${dateLabel(s.previous.date)}. Sunny found no single matching event and changed nothing.`
             : `The sender cancelled ${match.title}, ${when(match.date, match.time)}. Sunny left it on the calendar; tell Sunny in chat to cancel it.`;
-        return [escalate(c, "cancellation", line, match?.eventId ?? null, null)];
+        return [escalate("cancellation", line, match?.eventId ?? null, null)];
       },
     },
   ],
@@ -584,11 +568,10 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     {
       rule: "senior_info: not authenticated",
       plan: (_, c) =>
-        c.authenticated
+        c.facts.sender.authenticated
           ? null
           : [
               tell(
-                c,
                 "Sunny did not tell the senior about this email because Gmail could not verify the sender.",
                 false,
               ),
@@ -608,7 +591,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   needs_decision: [
     {
       rule: "needs_decision: any",
-      plan: (s, c) => [escalate(c, s.reason, "This email needs a decision.", null, null)],
+      plan: (s, c) => [escalate(s.reason, "This email needs a decision.", null, null)],
     },
   ],
   suspicious: [
@@ -616,7 +599,6 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       rule: "suspicious: any",
       plan: (s, c) => [
         escalate(
-          c,
           s.suspicion,
           "Sunny thinks this email may be a scam and did not tell the senior about it.",
           null,
@@ -761,19 +743,69 @@ function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
   };
 }
 
+interface Drafted {
+  rule: string;
+  drafts: Draft[];
+}
+
 function runTable<K extends Case>(
   rows: Row<Extract<Situation, { case: K }>>[],
   situation: Extract<Situation, { case: K }>,
   context: Context,
-): Plan {
+): Drafted {
   for (const row of rows) {
-    const effects = row.plan(situation, context);
-    if (effects !== null) return { rule: row.rule, effects };
+    const drafts = row.plan(situation, context);
+    if (drafts !== null) return { rule: row.rule, drafts };
   }
-  return { rule: `${situation.case}: no row`, effects: [] };
+  return { rule: `${situation.case}: no row`, drafts: [] };
 }
 
-function planFor(situation: Situation, context: Context): Plan {
+function withDecision(drafts: Draft[], decision: DecisionReason | null): Draft[] {
+  if (decision === null) return drafts;
+  const also = ALSO_NEEDS[decision];
+  return drafts.flatMap((draft): Draft[] => {
+    switch (draft.kind) {
+      case "escalate":
+        return [{ ...draft, line: `${draft.line} ${also}` }];
+      case "tell_caregivers":
+        return [escalate(decision, `${draft.line} ${also}`, null, null)];
+      case "already_on_calendar":
+        return [
+          draft,
+          escalate(
+            decision,
+            `The appointment is already on the calendar. ${also}`,
+            draft.eventId,
+            null,
+          ),
+        ];
+      default:
+        return [draft];
+    }
+  });
+}
+
+function withoutPushes(drafts: Draft[]): Draft[] {
+  return drafts.map((draft) =>
+    draft.kind === "escalate" || draft.kind === "tell_caregivers"
+      ? { ...draft, push: false }
+      : draft,
+  );
+}
+
+function rendered(draft: Draft, facts: PolicyFacts, summary: string): MailEffect {
+  switch (draft.kind) {
+    case "escalate":
+    case "tell_caregivers": {
+      const { line, ...effect } = draft;
+      return { ...effect, ...caregiverMessage(facts, line, summary) };
+    }
+    default:
+      return draft;
+  }
+}
+
+function planFor(situation: Situation, context: Context): Drafted {
   switch (situation.case) {
     case "ignore":
       return runTable(DECISION_TABLE.ignore, situation, context);
@@ -802,20 +834,14 @@ export function planWithRule(
   triaged: Pick<Triaged, "verdict" | "summary">,
   facts: PolicyFacts,
 ): Plan {
+  const { verdict, summary } = triaged;
   const context: Context = {
     facts,
-    authenticated: facts.sender.authenticated,
     stale: isStale(facts),
     atDailyLimit: facts.calendarChangesToday >= MAX_CALENDAR_CHANGES_PER_DAY,
-    summary: triaged.summary,
-    decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
   };
-  const plan = planFor(situationOf(triaged.verdict, facts), context);
-  if (!context.stale) return plan;
-  return {
-    rule: plan.rule,
-    effects: plan.effects.map((e) =>
-      (e.kind === "escalate" || e.kind === "tell_caregivers") && e.push ? { ...e, push: false } : e,
-    ),
-  };
+  const { rule, drafts } = planFor(situationOf(verdict, facts), context);
+  const decided = withDecision(drafts, verdict.kind === "appointment" ? verdict.decision : null);
+  const pushed = context.stale ? withoutPushes(decided) : decided;
+  return { rule, effects: pushed.map((draft) => rendered(draft, facts, summary)) };
 }
