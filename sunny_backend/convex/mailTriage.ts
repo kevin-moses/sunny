@@ -456,7 +456,10 @@ export const triage = internalAction({
   args: { itemId: v.id("mailItems") },
   handler: async (ctx, { itemId }): Promise<TriageOutcome> => {
     const claim: Claim = await ctx.runMutation(internal.mailTriage.claimItem, { itemId });
-    if (claim.kind === "skip") return "skipped";
+    if (claim.kind === "skip") {
+      console.log(`Mail triage skipped: ${claim.reason}`);
+      return "skipped";
+    }
     const tokens = await tokensFor(ctx, { table: "mailboxes", id: claim.mailboxId }, claim.grant);
     try {
       return await triageClaimed(ctx, itemId, claim, tokens);

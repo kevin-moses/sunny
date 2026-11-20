@@ -904,6 +904,7 @@ describe("the item lifecycle", () => {
     await h.t.run(async (ctx) => ctx.db.patch(h.householdId, { backgroundPaused: true }));
     const itemId = await receive(h, clinic());
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
+    expect(console.log).toHaveBeenCalledWith("Mail triage skipped: household paused");
     expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 0 });
 
     vi.setSystemTime(NOW + 16 * MINUTE);

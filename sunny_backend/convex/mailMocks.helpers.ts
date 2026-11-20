@@ -7,7 +7,7 @@ import { JEV_MODEL } from "./lib/jevClient";
 import type { Flag } from "./lib/jevQuestions";
 import type { AppointmentKind } from "./lib/mailTypes";
 import { isRecord } from "./lib/http";
-import { weekdayName } from "./lib/time";
+import { MONTH_NAMES, weekdayName } from "./lib/time";
 import { createFamilyHousehold } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
@@ -77,21 +77,6 @@ export function rawEmail(email: RawEmail): Record<string, unknown> {
   };
 }
 
-const MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-
 export interface JevSays {
   yes?: Flag[];
   unsure?: Flag[];
@@ -110,7 +95,7 @@ function slotChoices(prefix: string, slot: JevSays["when"]): Record<string, stri
   const [year, month, day] = slot.date.split("-");
   const choices: Record<string, string> = {
     [`${prefix}_date_form`]: "calendar_date",
-    [`${prefix}_month`]: MONTHS[Number(month) - 1] ?? "",
+    [`${prefix}_month`]: MONTH_NAMES[Number(month) - 1] ?? "",
     [`${prefix}_day`]: String(Number(day)),
     [`${prefix}_year`]: year ?? "",
     [`${prefix}_weekday`]: weekdayName(slot.date),
