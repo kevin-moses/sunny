@@ -75,6 +75,7 @@ async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string)
       eventId,
       appointmentKey: key,
       senderDomain,
+      senderAddress: sender.address,
       mailItemId: scope.item._id,
       sequence,
     });

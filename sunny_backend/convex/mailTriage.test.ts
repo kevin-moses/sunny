@@ -1863,11 +1863,30 @@ describe("links belong to the sender's domain", () => {
       expect((await rows(h, "chatPosts")).at(-1)!.body).toContain(OVER_ELSEWHERE);
     });
 
-    test("a reminder whose link's email Sunny no longer has is treated as from another address", async () => {
+    test("a reminder from the address that made the link stays linked after its first email is gone", async () => {
+      const h = await setup();
+      const first = await triageEmail(h, clinic({ from: GMAIL_CLINIC }), EYE_EXAM);
+      const eventId = await cancelOnly(h);
+      await h.t.run(async (ctx) => await ctx.db.delete(first._id));
+      const reminder = await triageEmail(
+        h,
+        clinic({ from: GMAIL_CLINIC, subject: "Reminder" }),
+        EYE_EXAM,
+      );
+      expect(reminder.effects).toEqual([{ kind: "already_on_calendar", eventId }]);
+      expect(await liveSlots(h)).toEqual([]);
+    });
+
+    test("a reminder whose link has no stored address and whose email Sunny no longer has is treated as from another address", async () => {
       const h = await setup();
       const first = await triageEmail(h, clinic({ from: GMAIL_CLINIC }), EYE_EXAM);
       await cancelOnly(h);
-      await h.t.run(async (ctx) => await ctx.db.delete(first._id));
+      await h.t.run(async (ctx) => {
+        await ctx.db.delete(first._id);
+        for (const link of await ctx.db.query("mailEventLinks").collect()) {
+          await ctx.db.patch(link._id, { senderAddress: undefined });
+        }
+      });
       const reminder = await triageEmail(
         h,
         clinic({ from: GMAIL_CLINIC, subject: "Reminder" }),

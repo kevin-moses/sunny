@@ -231,13 +231,13 @@ async function linkedEvent(
   today: string,
 ): Promise<LinkedEvent> {
   if (canStillOccur(event, today)) return { eventId: event._id, occurs: true };
-  const maker = await ctx.db.get(link.mailItemId);
+  const madeByAddress = link.senderAddress ?? (await ctx.db.get(link.mailItemId))?.sender?.address;
   return {
     eventId: event._id,
     occurs: false,
     date: event.startsOn,
     time: event.startTime,
-    madeBy: maker?.sender?.address === sender.address ? "this_address" : "another_address",
+    madeBy: madeByAddress === sender.address ? "this_address" : "another_address",
   };
 }
 
