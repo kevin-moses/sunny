@@ -342,6 +342,7 @@ export default defineSchema({
     escalatedAt: v.optional(v.number()),
     calendarChangedAt: v.optional(v.number()),
     classifier: v.optional(classifierRecord),
+    caregiverPost: v.optional(v.object({ postId: v.id("chatPosts"), line: v.string() })),
   })
     .index("by_household_account_gmail", ["householdId", "account", "gmailId"])
     .index("by_state_lease", ["state", "leaseUntil"])
@@ -364,6 +365,7 @@ export default defineSchema({
     eventId: v.id("events"),
     appointmentKey: v.string(),
     senderDomain: v.string(),
+    senderAddress: v.string(),
     mailItemId: v.id("mailItems"),
     sequence: v.optional(v.number()),
   }).index("by_household_domain_key", ["householdId", "senderDomain", "appointmentKey"]),
