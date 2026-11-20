@@ -115,7 +115,7 @@ interface Row<S> {
   plan: (s: S, c: Context) => Draft[] | null;
 }
 
-interface Plan {
+export interface Plan {
   rule: string;
   effects: MailEffect[];
 }

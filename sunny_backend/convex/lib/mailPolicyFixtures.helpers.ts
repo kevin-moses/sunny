@@ -1,7 +1,13 @@
+import { policyFacts } from "./mailFacts";
+import type { FactInputs } from "./mailFacts";
+import { planWithRule } from "./mailPolicy";
+import type { Plan } from "./mailPolicy";
 import type {
   Appointment,
   CalendarEventFact,
   IcsEvent,
+  MailEffect,
+  MailSender,
   MailVerdict,
   PolicyFacts,
 } from "./mailTypes";
@@ -10,6 +16,12 @@ import { zonedInstant } from "./time";
 export const NY = "America/New_York";
 export const NOW = zonedInstant("2026-11-18", "09:00", NY);
 export const CLOCK = { now: NOW, timezone: NY };
+
+export const CLINIC: MailSender = {
+  name: "Lakeside Eye Care",
+  address: "appointments@lakesideeye.example",
+  authenticated: true,
+};
 
 export const EVENTS: CalendarEventFact[] = [
   {
@@ -42,11 +54,7 @@ export function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
   return {
     now: NOW,
     timezone: NY,
-    sender: {
-      name: "Lakeside Eye Care",
-      address: "appointments@lakesideeye.example",
-      authenticated: true,
-    },
+    sender: CLINIC,
     subject: "Your appointment",
     receivedAt: NOW - 3_600_000,
     ics: null,
@@ -56,6 +64,19 @@ export function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     seniorNotesToday: 0,
     ...overrides,
   };
+}
+
+export function factsFrom(overrides: Partial<FactInputs> = {}): PolicyFacts {
+  return policyFacts({
+    header: { sender: CLINIC, subject: "Your appointment", receivedAt: NOW - 3_600_000 },
+    clock: CLOCK,
+    ics: null,
+    events: EVENTS,
+    link: null,
+    calendarChangesToday: 0,
+    seniorNotesToday: 0,
+    ...overrides,
+  });
 }
 
 export function invite(overrides: Partial<IcsEvent> = {}): IcsEvent {
@@ -83,4 +104,12 @@ export function newAppointment(overrides: Partial<Appointment> = {}): MailVerdic
     appointment: appointment(overrides),
     decision: null,
   };
+}
+
+export function planOf(verdict: MailVerdict, policyFacts: PolicyFacts): Plan {
+  return planWithRule({ verdict, summary: "Sunny's sentence." }, policyFacts);
+}
+
+export function kinds(effects: MailEffect[]): string[] {
+  return effects.map((e) => (e.kind === "escalate" ? `escalate:${e.reason}:${e.push}` : e.kind));
 }
