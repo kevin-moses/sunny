@@ -96,6 +96,7 @@ test("a polled message runs through the workpool to an event and a caregiver cha
 
   await t.mutation(internal.gmail.recordNew, {
     mailboxId,
+    refreshToken,
     ids: ["e2e-1"],
     expectedHistoryId: "100",
     lastHistoryId: "101",

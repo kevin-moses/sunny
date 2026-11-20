@@ -299,6 +299,7 @@ export async function receive(h: MailHousehold, email: RawEmail): Promise<Id<"ma
   gmailMocks.getMessage.mockResolvedValue(rawEmail(email));
   await h.t.mutation(internal.gmail.recordNew, {
     mailboxId: h.mailboxId,
+    refreshToken: "box:refresh-1",
     ids: [email.id],
     expectedHistoryId: "none",
     lastHistoryId: "none",

@@ -29,6 +29,7 @@ import type { GoogleGrant } from "./lib/google";
 import {
   AccessTokens,
   googleAccount,
+  holdsGrant,
   revokeUnusedGrant,
   scheduleGrantRevoke,
 } from "./lib/googleTokens";
@@ -232,9 +233,14 @@ export const pollContext = internalQuery({
 });
 
 export const saveMailboxToken = internalMutation({
-  args: { mailboxId: v.id("mailboxes"), accessToken: v.string(), expiresAt: v.number() },
-  handler: async (ctx, { mailboxId, accessToken, expiresAt }): Promise<null> => {
-    if (await ctx.db.get(mailboxId)) {
+  args: {
+    mailboxId: v.id("mailboxes"),
+    refreshToken: v.string(),
+    accessToken: v.string(),
+    expiresAt: v.number(),
+  },
+  handler: async (ctx, { mailboxId, refreshToken, accessToken, expiresAt }): Promise<null> => {
+    if (holdsGrant(await ctx.db.get(mailboxId), refreshToken)) {
       await ctx.db.patch(mailboxId, { accessToken, accessTokenExpiresAt: expiresAt });
     }
     return null;
@@ -244,12 +250,13 @@ export const saveMailboxToken = internalMutation({
 export const markMailbox = internalMutation({
   args: {
     mailboxId: v.id("mailboxes"),
+    refreshToken: v.string(),
     status: v.union(v.literal("revoked"), v.literal("error")),
     error: v.string(),
   },
-  handler: async (ctx, { mailboxId, status, error }): Promise<null> => {
+  handler: async (ctx, { mailboxId, refreshToken, status, error }): Promise<null> => {
     const mailbox = await ctx.db.get(mailboxId);
-    if (!mailbox || mailbox.status !== "active") return null;
+    if (!holdsGrant(mailbox, refreshToken) || mailbox.status !== "active") return null;
     await ctx.db.patch(mailboxId, {
       status,
       error: error.slice(0, 2000),
@@ -273,16 +280,19 @@ export const markMailbox = internalMutation({
 export const recordNew = internalMutation({
   args: {
     mailboxId: v.id("mailboxes"),
+    refreshToken: v.string(),
     ids: v.array(v.string()),
     expectedHistoryId: v.string(),
     lastHistoryId: v.string(),
   },
   handler: async (
     ctx,
-    { mailboxId, ids, expectedHistoryId, lastHistoryId },
+    { mailboxId, refreshToken, ids, expectedHistoryId, lastHistoryId },
   ): Promise<{ inserted: number; moved: boolean }> => {
     const mailbox = await ctx.db.get(mailboxId);
-    if (!mailbox || mailbox.status !== "active") return { inserted: 0, moved: false };
+    if (!holdsGrant(mailbox, refreshToken) || mailbox.status !== "active") {
+      return { inserted: 0, moved: false };
+    }
     const inserted = await insertUnseen(ctx, mailbox.householdId, mailbox.accountEmail, ids);
     const moved = mailbox.historyId === expectedHistoryId;
     await ctx.db.patch(mailboxId, {
@@ -325,13 +335,19 @@ export async function mailboxTokens(
   grant: StoredGrant,
 ): Promise<AccessTokens> {
   return await new AccessTokens(grant, async (accessToken, expiresAt) => {
-    await ctx.runMutation(internal.gmail.saveMailboxToken, { mailboxId, accessToken, expiresAt });
+    await ctx.runMutation(internal.gmail.saveMailboxToken, {
+      mailboxId,
+      refreshToken: grant.refreshToken,
+      accessToken,
+      expiresAt,
+    });
   }).load();
 }
 
 async function settlePollError(
   ctx: ActionCtx,
   mailboxId: Id<"mailboxes">,
+  refreshToken: string,
   e: unknown,
 ): Promise<PollOutcome> {
   const failure = mailFailure(e);
@@ -339,6 +355,7 @@ async function settlePollError(
     case "mailbox":
       await ctx.runMutation(internal.gmail.markMailbox, {
         mailboxId,
+        refreshToken,
         status: failure.status,
         error: failure.error,
       });
@@ -365,13 +382,14 @@ export const poll = internalAction({
       const found = await gather(tokens, start);
       await ctx.runMutation(internal.gmail.recordNew, {
         mailboxId,
+        refreshToken: start.refreshToken,
         ids: found.ids,
         expectedHistoryId: start.historyId,
         lastHistoryId: found.lastHistoryId,
       });
       return found.recovered ? "recovered" : "polled";
     } catch (e) {
-      return await settlePollError(ctx, mailboxId, e);
+      return await settlePollError(ctx, mailboxId, start.refreshToken, e);
     }
   },
 });

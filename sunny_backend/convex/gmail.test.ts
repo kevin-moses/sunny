@@ -321,6 +321,27 @@ describe("Connecting a mailbox", () => {
   });
 });
 
+async function reconnectAs(
+  t: TestConvex,
+  householdId: Id<"households">,
+  email: string,
+): Promise<void> {
+  googleMocks.exchangeCode.mockResolvedValue({ ...grant([GMAIL_SCOPE]), email });
+  gmailMocks.getProfile.mockResolvedValue({ email, historyId: "900" });
+  await finish(t, await startFlow(t, householdId, "user_a", "mailbox"));
+}
+
+async function watchPushes(t: TestConvex): Promise<void> {
+  await t.run(async (ctx) => ctx.db.insert("pushTokens", { userId: "user_a", token: "tok-a" }));
+}
+
+async function caregiverNotices(t: TestConvex): Promise<{ posts: string[]; pushes: string[] }> {
+  return await t.run(async (ctx) => ({
+    posts: (await ctx.db.query("chatPosts").collect()).map((p) => p.body),
+    pushes: (await ctx.db.query("notificationOutbox").collect()).map((p) => p.title),
+  }));
+}
+
 describe("Polling", () => {
   test("a poll inserts unseen ids once and a repeated poll inserts nothing", async () => {
     const t = makeBackend();
@@ -358,12 +379,14 @@ describe("Polling", () => {
 
     const first = await t.mutation(internal.gmail.recordNew, {
       mailboxId,
+      refreshToken: "box:refresh-1",
       ids: ["a", "b"],
       expectedHistoryId: "100",
       lastHistoryId: "150",
     });
     const second = await t.mutation(internal.gmail.recordNew, {
       mailboxId,
+      refreshToken: "box:refresh-1",
       ids: ["b", "c"],
       expectedHistoryId: "100",
       lastHistoryId: "160",
@@ -381,6 +404,7 @@ describe("Polling", () => {
     const mailboxId = await addMailbox(t, householdId);
     const args = {
       mailboxId,
+      refreshToken: "box:refresh-1",
       ids: ["a"],
       expectedHistoryId: "100",
       lastHistoryId: "150",
@@ -396,7 +420,12 @@ describe("Polling", () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
     const revoked = await addMailbox(t, householdId, { status: "revoked" });
-    const args = { ids: ["a"], expectedHistoryId: "100", lastHistoryId: "150" };
+    const args = {
+      refreshToken: "box:refresh-1",
+      ids: ["a"],
+      expectedHistoryId: "100",
+      lastHistoryId: "150",
+    };
     expect(await t.mutation(internal.gmail.recordNew, { mailboxId: revoked, ...args })).toEqual({
       inserted: 0,
       moved: false,
@@ -577,6 +606,7 @@ describe("Polling", () => {
   test("invalid_grant marks the mailbox revoked and stops polling", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
+    await watchPushes(t);
     const mailboxId = await addMailbox(t, householdId, {
       accessToken: "box:old",
       accessTokenExpiresAt: 1,
@@ -589,6 +619,12 @@ describe("Polling", () => {
     expect(mailbox).toMatchObject({ status: "revoked" });
     expect(mailbox!.error).toContain("reconnect");
     expect(mailbox!.accessToken).toBeUndefined();
+    expect(await caregiverNotices(t)).toEqual({
+      posts: [
+        "Sunny can no longer read margaret@example.com. Reconnect Gmail to keep mail coming in.",
+      ],
+      pushes: ["Reconnect Gmail for Margaret"],
+    });
     expect(await t.mutation(internal.gmail.pollAll, {})).toBe(0);
     expect(await t.action(internal.gmail.poll, { mailboxId })).toBe("skipped");
     expect(googleMocks.refreshAccessToken).toHaveBeenCalledTimes(1);
@@ -649,6 +685,81 @@ describe("Polling", () => {
     const text = logged.map(String).join("\n");
     expect(text).toContain("400");
     for (const secret of ["refresh-1", "access-1"]) expect(text).not.toContain(secret);
+  });
+});
+
+describe("Reconnecting another account while a job of the old one runs", () => {
+  test("a poll of the old account that finds its access revoked leaves the new account connected and quiet", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await watchPushes(t);
+    const mailboxId = await addMailbox(t, householdId);
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (reconnected && refresh === "refresh-1") throw new GoogleAccessRevoked("invalid_grant");
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+    gmailMocks.listHistory.mockImplementationOnce(async () => {
+      await reconnectAs(t, householdId, "mom@example.com");
+      reconnected = true;
+      throw new GoogleApiError(401, "unauthorized");
+    });
+
+    await t.action(internal.gmail.poll, { mailboxId });
+
+    const [mailbox] = await mailboxRows(t);
+    expect(mailbox).toMatchObject({ accountEmail: "mom@example.com", status: "active" });
+    expect(mailbox!.error).toBeUndefined();
+    expect(await caregiverNotices(t)).toEqual({
+      posts: ["Sunny now reads mom@example.com."],
+      pushes: [],
+    });
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
+  });
+
+  test("a token refresh by a job of the old account leaves the next poll reading the new account", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (!reconnected) {
+        reconnected = true;
+        await reconnectAs(t, householdId, "mom@example.com");
+      }
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+
+    await t.action(internal.gmail.poll, { mailboxId });
+    await t.action(internal.gmail.poll, { mailboxId });
+
+    expect(gmailMocks.listHistory.mock.calls.map((c) => c[0])).toEqual([
+      "access-for-refresh-1",
+      "access-for-refresh-new",
+    ]);
+    expect((await mailboxRows(t))[0]!.accessToken).toBe("box:access-for-refresh-new");
+  });
+
+  test("a poll of the old account that finishes after the reconnect files nothing under the new account", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    let reconnected: Doc<"mailboxes"> | undefined;
+    gmailMocks.listHistory.mockImplementationOnce(async () => {
+      await reconnectAs(t, householdId, "mom@example.com");
+      [reconnected] = await mailboxRows(t);
+      vi.setSystemTime(Date.now() + 60_000);
+      return history(["old1", "old2"], "150");
+    });
+
+    await t.action(internal.gmail.poll, { mailboxId });
+
+    expect(await itemRows(t)).toEqual([]);
+    expect((await mailboxRows(t))[0]).toMatchObject({
+      accountEmail: "mom@example.com",
+      historyId: "900",
+      lastPolledAt: reconnected!.lastPolledAt,
+    });
   });
 });
 
@@ -718,6 +829,7 @@ describe("mailboxStatus and disconnect", () => {
     const mailboxId = await addMailbox(t, householdId);
     await t.mutation(internal.gmail.recordNew, {
       mailboxId,
+      refreshToken: "box:refresh-1",
       ids: ["a"],
       expectedHistoryId: "100",
       lastHistoryId: "110",
@@ -727,6 +839,7 @@ describe("mailboxStatus and disconnect", () => {
     const again = await addMailbox(t, householdId);
     await t.mutation(internal.gmail.recordNew, {
       mailboxId: again,
+      refreshToken: "box:refresh-1",
       ids: ["a", "b"],
       expectedHistoryId: "100",
       lastHistoryId: "120",

@@ -361,6 +361,7 @@ async function settleTriageError(
   if (failure.kind === "mailbox") {
     await ctx.runMutation(internal.gmail.markMailbox, {
       mailboxId: claim.mailboxId,
+      refreshToken: claim.grant.refreshToken,
       status: failure.status,
       error: failure.error,
     });

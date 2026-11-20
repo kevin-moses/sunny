@@ -1151,6 +1151,7 @@ describe("the item lifecycle", () => {
     expect(await h.t.action(internal.mailTriage.triage, { itemId: otherId })).toBe("skipped");
     await h.t.mutation(internal.gmail.markMailbox, {
       mailboxId: h.mailboxId,
+      refreshToken: "box:refresh-1",
       status: "error",
       error: "again",
     });

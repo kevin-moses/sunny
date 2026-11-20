@@ -63,6 +63,13 @@ export class AccessTokens {
   }
 }
 
+export function holdsGrant<Row extends { refreshToken: string }>(
+  row: Row | null,
+  refreshToken: string,
+): row is Row {
+  return row !== null && row.refreshToken === refreshToken;
+}
+
 export function googleAccount(email: string): string {
   return email.trim().toLowerCase();
 }
