@@ -305,6 +305,17 @@ describe("errors", () => {
     expect((await connectionRow(t, connectionId))?.status).toBe("active");
   });
 
+  test("a project quota while checking for the calendar after a 404 holds the push", async () => {
+    const t = makeBackend();
+    const { connectionId } = await setupSynced(t);
+    googleMocks.upsertEvent.mockRejectedValue(new GoogleApiError(404, "not found"));
+    googleMocks.calendarExists.mockRejectedValue(
+      new GoogleApiError(403, '{"error":{"errors":[{"reason":"dailyLimitExceeded"}]}}'),
+    );
+    expect(await runPush(t)).toBe("held");
+    expect(await connectionRow(t, connectionId)).toMatchObject({ status: "active" });
+  });
+
   test("a permanent 403 marks the connection in error without retrying", async () => {
     const t = makeBackend();
     const { connectionId } = await setupSynced(t);
@@ -323,17 +334,17 @@ describe("errors", () => {
     await expect(runPush(t)).rejects.toThrow("rateLimitExceeded");
   });
 
-  test("a project quota 403 is not retried and leaves the connection active", async () => {
+  test("a project quota 403 is held and leaves the connection active without a notice", async () => {
     const t = makeBackend();
     const { connectionId } = await setupSynced(t);
     googleMocks.upsertEvent.mockRejectedValue(
       new GoogleApiError(403, '{"error":{"errors":[{"reason":"dailyLimitExceeded"}]}}'),
     );
-    const failure = await runPush(t).catch((e: unknown) => e);
-    expect(JSON.stringify((failure as { data?: unknown }).data ?? "")).toContain(
-      "__convexWorkpoolNonRetryable",
-    );
-    expect(await connectionRow(t, connectionId)).toMatchObject({ status: "active" });
+    expect(await runPush(t)).toBe("held");
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("dailyLimitExceeded"));
+    const connection = await connectionRow(t, connectionId);
+    expect(connection).toMatchObject({ status: "active" });
+    expect(connection?.lastError).toBeUndefined();
   });
 
   test("an unreadable refresh token marks the connection in error without retrying", async () => {
@@ -361,18 +372,17 @@ describe("errors", () => {
     expect(googleMocks.refreshAccessToken).toHaveBeenCalledTimes(1);
   });
 
-  test("a configuration error is not retried (workpool NonRetryableError)", async () => {
+  test("a configuration error is held and leaves the connection active", async () => {
     const t = makeBackend();
-    await setupSynced(t);
+    const { connectionId } = await setupSynced(t);
     googleMocks.refreshAccessToken.mockRejectedValue(
       new ConfigError("Missing env var GOOGLE_CLIENT_ID"),
     );
-    const failure = await runPush(t).catch((e: unknown) => e);
-    expect(failure).toBeInstanceOf(Error);
-    expect(String((failure as Error).message)).toContain("Missing env var GOOGLE_CLIENT_ID");
-    expect(JSON.stringify((failure as { data?: unknown }).data ?? "")).toContain(
-      "__convexWorkpoolNonRetryable",
+    expect(await runPush(t)).toBe("held");
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Missing env var GOOGLE_CLIENT_ID"),
     );
+    expect(await connectionRow(t, connectionId)).toMatchObject({ status: "active" });
   });
 
   test("a successful push clears the connection's sync error", async () => {

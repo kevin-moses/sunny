@@ -1,4 +1,4 @@
-import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
+import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -21,7 +21,14 @@ const SYNC_FAILED_MESSAGE = "Some events could not be synced to Google; Sunny wi
 const FAILED_RETRY_DELAY_MS = 10 * 60 * 1000;
 
 type PushOutcome =
-  "created" | "updated" | "deleted" | "skipped" | "revoked" | "calendar_missing" | "failed";
+  | "created"
+  | "updated"
+  | "deleted"
+  | "skipped"
+  | "revoked"
+  | "calendar_missing"
+  | "held"
+  | "failed";
 
 type BeginResult =
   | { kind: "skip"; reason: string }
@@ -120,31 +127,43 @@ async function pushToGoogle(
   };
 }
 
+function grantRow(work: Work): GrantRow {
+  return { table: "calendarConnections", id: work.connectionId };
+}
+
 async function settleError(
   ctx: ActionCtx,
   work: Work,
   tokens: AccessTokens,
   e: unknown,
 ): Promise<PushOutcome> {
-  const row: GrantRow = { table: "calendarConnections", id: work.connectionId };
-  if (e instanceof GoogleApiError && e.gone) {
-    if (!(await calendarExists(await tokens.get(), work.calendarId))) {
-      await recordLostGrant(ctx, row, work.grant.refreshToken, {
-        status: "error",
-        error: CALENDAR_MISSING_MESSAGE,
-      });
-      return "calendar_missing";
-    }
-    console.error(`Google push: event not found in an existing calendar (${e.message})`);
-    return "failed";
+  if (!(e instanceof GoogleApiError && e.gone)) return await settleFailure(ctx, work, e);
+  let calendarFound: boolean;
+  try {
+    calendarFound = await calendarExists(await tokens.get(), work.calendarId);
+  } catch (checkError) {
+    return await settleFailure(ctx, work, checkError);
   }
+  if (!calendarFound) {
+    await recordLostGrant(ctx, grantRow(work), work.grant.refreshToken, {
+      status: "error",
+      error: CALENDAR_MISSING_MESSAGE,
+    });
+    return "calendar_missing";
+  }
+  console.error(`Google push: event not found in an existing calendar (${e.message})`);
+  return "failed";
+}
+
+async function settleFailure(ctx: ActionCtx, work: Work, e: unknown): Promise<PushOutcome> {
   const failure = googleFailure(e, "calendarConnections") ?? { kind: "retry" };
   switch (failure.kind) {
     case "grant":
-      await recordLostGrant(ctx, row, work.grant.refreshToken, failure);
+      await recordLostGrant(ctx, grantRow(work), work.grant.refreshToken, failure);
       return failure.status === "revoked" ? "revoked" : "failed";
     case "hold":
-      throw new NonRetryableError(errorText(e), { cause: e });
+      console.error(`Google push held until the shared cause clears: ${errorText(e)}`);
+      return "held";
     case "permanent":
       console.error(`Google push ended without retry: ${errorText(e)}`);
       return "failed";
@@ -189,6 +208,10 @@ export const onPushComplete = internalMutation({
     const row = await ctx.db.get(context.syncId);
     if (!row) return null;
     const now = Date.now();
+    if (result.kind === "success" && result.returnValue === "held") {
+      await ctx.db.patch(row._id, { state: "queued", updatedAt: now });
+      return null;
+    }
     if (result.kind === "failed") {
       console.error(`Google push failed: ${result.error}`);
       if (await ctx.db.get(row.connectionId)) {
