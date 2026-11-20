@@ -10,32 +10,25 @@ import {
   query,
 } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
+import { tokensFor } from "./googleGrant";
 import {
   EDITOR_ROLES,
-  findMember,
   loadHousehold,
   requireCaregiverAccount,
   requireCaregiverMember,
   requireCaregiverReader,
+  requireEditor,
   SYSTEM_ACTOR,
 } from "./lib/access";
 import { audit } from "./lib/audit";
 import { postMailbox } from "./lib/chatPosts";
-import { pushToCaregivers } from "./lib/delivery";
 import { appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
-import { GMAIL_SCOPE } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
-import {
-  AccessTokens,
-  googleAccount,
-  holdsGrant,
-  revokeUnusedGrant,
-  scheduleGrantRevoke,
-} from "./lib/googleTokens";
-import type { StoredGrant } from "./lib/googleTokens";
+import { googleAccount, holdsGrant, scheduleGrantRevoke, storedGrant } from "./lib/googleTokens";
+import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { mailFailure } from "./lib/mailFailure";
-import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
+import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
@@ -79,9 +72,7 @@ interface PollStart {
   householdId: Id<"households">;
   historyId: string;
   lastPolledAt: number | null;
-  refreshToken: string;
-  accessToken: string | null;
-  accessTokenExpiresAt: number | null;
+  grant: StoredGrant;
 }
 
 type PollContext = PollStart | { kind: "skip"; reason: string };
@@ -121,12 +112,6 @@ async function insertUnseen(
   return inserted;
 }
 
-export function assertMailboxEditor(member: Doc<"householdMembers">): void {
-  if (!EDITOR_ROLES.includes(member.role)) {
-    throw appError("forbidden", "Only a primary caregiver or member can connect the mailbox");
-  }
-}
-
 export const saveMailbox = internalMutation({
   args: {
     householdId: v.id("households"),
@@ -137,7 +122,7 @@ export const saveMailbox = internalMutation({
     ids: v.array(v.string()),
   },
   handler: async (ctx, args): Promise<Id<"mailboxes">> => {
-    assertMailboxEditor(await requireCaregiverMember(ctx, args.householdId, args.userId));
+    await requireCaregiverMember(ctx, args.householdId, args.userId, EDITOR_ROLES);
     const accountEmail = googleAccount(args.accountEmail);
     const fields = {
       connectedBy: args.userId,
@@ -185,14 +170,6 @@ export async function finishMailbox(
   flow: FlowOwner,
   tokens: GoogleGrant,
 ): Promise<Response> {
-  if (!tokens.scopes.includes(GMAIL_SCOPE)) {
-    await revokeUnusedGrant(ctx, tokens.refreshToken, tokens.email);
-    return oauthPage(
-      "Permission needed",
-      "Sunny needs permission to read the mailbox. Start again and allow it.",
-      400,
-    );
-  }
   const profile = await getProfile(tokens.accessToken);
   const ids = await listRecent(
     tokens.accessToken,
@@ -225,55 +202,8 @@ export const pollContext = internalQuery({
       householdId: mailbox.householdId,
       historyId: mailbox.historyId,
       lastPolledAt: mailbox.lastPolledAt ?? null,
-      refreshToken: mailbox.refreshToken,
-      accessToken: mailbox.accessToken ?? null,
-      accessTokenExpiresAt: mailbox.accessTokenExpiresAt ?? null,
+      grant: storedGrant(mailbox),
     };
-  },
-});
-
-export const saveMailboxToken = internalMutation({
-  args: {
-    mailboxId: v.id("mailboxes"),
-    refreshToken: v.string(),
-    accessToken: v.string(),
-    expiresAt: v.number(),
-  },
-  handler: async (ctx, { mailboxId, refreshToken, accessToken, expiresAt }): Promise<null> => {
-    if (holdsGrant(await ctx.db.get(mailboxId), refreshToken)) {
-      await ctx.db.patch(mailboxId, { accessToken, accessTokenExpiresAt: expiresAt });
-    }
-    return null;
-  },
-});
-
-export const markMailbox = internalMutation({
-  args: {
-    mailboxId: v.id("mailboxes"),
-    refreshToken: v.string(),
-    status: v.union(v.literal("revoked"), v.literal("error")),
-    error: v.string(),
-  },
-  handler: async (ctx, { mailboxId, refreshToken, status, error }): Promise<null> => {
-    const mailbox = await ctx.db.get(mailboxId);
-    if (!holdsGrant(mailbox, refreshToken) || mailbox.status !== "active") return null;
-    await ctx.db.patch(mailboxId, {
-      status,
-      error: error.slice(0, 2000),
-      accessToken: undefined,
-      accessTokenExpiresAt: undefined,
-    });
-    const household = await ctx.db.get(mailbox.householdId);
-    if (!household) return null;
-    const body = `Sunny can no longer read ${mailbox.accountEmail}. Reconnect Gmail to keep mail coming in.`;
-    await postMailbox(ctx, household, body, Date.now());
-    await pushToCaregivers(ctx, household, {
-      kind: "mail_escalation",
-      title: `Reconnect Gmail for ${household.seniorPreferredName}`,
-      body,
-      payload: { mailboxId },
-    });
-    return null;
   },
 });
 
@@ -329,38 +259,17 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
-export async function mailboxTokens(
-  ctx: ActionCtx,
-  mailboxId: Id<"mailboxes">,
-  grant: StoredGrant,
-): Promise<AccessTokens> {
-  return await new AccessTokens(grant, async (accessToken, expiresAt) => {
-    await ctx.runMutation(internal.gmail.saveMailboxToken, {
-      mailboxId,
-      refreshToken: grant.refreshToken,
-      accessToken,
-      expiresAt,
-    });
-  }).load();
-}
-
 async function settlePollError(
   ctx: ActionCtx,
   mailboxId: Id<"mailboxes">,
   refreshToken: string,
   e: unknown,
 ): Promise<PollOutcome> {
-  const failure = mailFailure(e);
+  const failure = await mailFailure(ctx, mailboxId, refreshToken, e);
   switch (failure.kind) {
-    case "mailbox":
-      await ctx.runMutation(internal.gmail.markMailbox, {
-        mailboxId,
-        refreshToken,
-        status: failure.status,
-        error: failure.error,
-      });
+    case "grant":
       return failure.status === "revoked" ? "revoked" : "failed";
-    case "setup":
+    case "hold":
       throw new NonRetryableError(errorText(e), { cause: e });
     case "permanent":
       console.error(`Gmail poll ended without retry: ${errorText(e)}`);
@@ -378,19 +287,19 @@ export const poll = internalAction({
       console.log(`Gmail poll skipped: ${start.reason}`);
       return "skipped";
     }
-    const tokens = await mailboxTokens(ctx, mailboxId, start);
+    const tokens = await tokensFor(ctx, { table: "mailboxes", id: mailboxId }, start.grant);
     try {
       const found = await gather(tokens, start);
       await ctx.runMutation(internal.gmail.recordNew, {
         mailboxId,
-        refreshToken: start.refreshToken,
+        refreshToken: start.grant.refreshToken,
         ids: found.ids,
         expectedHistoryId: start.historyId,
         lastHistoryId: found.lastHistoryId,
       });
       return found.recovered ? "recovered" : "polled";
     } catch (e) {
-      return await settlePollError(ctx, mailboxId, start.refreshToken, e);
+      return await settlePollError(ctx, mailboxId, start.grant.refreshToken, e);
     }
   },
 });
@@ -418,7 +327,8 @@ export const pollAll = internalMutation({
     for (const mailbox of page.page) {
       const household = await ctx.db.get(mailbox.householdId);
       if (!household || household.backgroundPaused) continue;
-      await mailPool.enqueueAction(
+      if (await jobInPool(ctx, mailbox.pollJobId)) continue;
+      const pollJobId = await mailPool.enqueueAction(
         ctx,
         internal.gmail.poll,
         { mailboxId: mailbox._id },
@@ -427,6 +337,7 @@ export const pollAll = internalMutation({
           context: { mailboxId: mailbox._id },
         },
       );
+      await ctx.db.patch(mailbox._id, { pollJobId });
       queued += 1;
     }
     if (!page.isDone) {
@@ -482,13 +393,9 @@ export const recentMail = query({
 export const disconnect = mutation({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<null> => {
-    const userId = await requireCaregiverAccount(ctx);
     const mailbox = await ctx.db.get(mailboxId);
-    const member = mailbox ? await findMember(ctx, mailbox.householdId, userId) : null;
-    if (!mailbox || !member) throw appError("not_found", "Mailbox not found");
-    if (!EDITOR_ROLES.includes(member.role)) {
-      throw appError("forbidden", "Only a primary caregiver or member can disconnect the mailbox");
-    }
+    if (!mailbox) throw appError("not_found", "Mailbox not found");
+    const { userId } = await requireEditor(ctx, mailbox.householdId);
     await audit(ctx, {
       householdId: mailbox.householdId,
       actor: SYSTEM_ACTOR,

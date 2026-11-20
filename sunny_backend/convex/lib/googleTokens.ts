@@ -63,6 +63,18 @@ export class AccessTokens {
   }
 }
 
+export function storedGrant(row: {
+  refreshToken: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: number;
+}): StoredGrant {
+  return {
+    refreshToken: row.refreshToken,
+    accessToken: row.accessToken ?? null,
+    accessTokenExpiresAt: row.accessTokenExpiresAt ?? null,
+  };
+}
+
 export function holdsGrant<Row extends { refreshToken: string }>(
   row: Row | null,
   refreshToken: string,

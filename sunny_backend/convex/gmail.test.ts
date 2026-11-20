@@ -54,6 +54,9 @@ afterEach(() => {
   }
 });
 
+const DAILY_LIMIT =
+  '{"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"dailyLimitExceeded","message":"Daily Limit Exceeded"}]}}';
+
 function grant(scopes: string[]) {
   return { accessToken: "acc", refreshToken: "refresh-new", scopes, email: "someone@example.com" };
 }
@@ -594,6 +597,22 @@ describe("Polling", () => {
     expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
   });
 
+  test("pollAll skips a mailbox whose last poll still waits in the pool and polls it once that job ends", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addMailbox(t, householdId);
+
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
+    const firstJob = (await mailboxRows(t))[0]!.pollJobId;
+    expect(firstJob).toBeDefined();
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(0);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(gmailMocks.listHistory).toHaveBeenCalledTimes(1);
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
+    expect((await mailboxRows(t))[0]!.pollJobId).not.toBe(firstJob);
+  });
+
   test("pollAll queues active mailboxes only", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
@@ -657,6 +676,19 @@ describe("Polling", () => {
       name: "NonRetryableError",
     });
     expect((await mailboxRows(t))[0]).toMatchObject({ status: "active" });
+  });
+
+  test("a project quota error ends the poll without a retry, leaves the mailbox active and tells nobody", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await watchPushes(t);
+    const mailboxId = await addMailbox(t, householdId);
+    gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, DAILY_LIMIT));
+    await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
+      name: "NonRetryableError",
+    });
+    expect((await mailboxRows(t))[0]).toMatchObject({ status: "active", historyId: "100" });
+    expect(await caregiverNotices(t)).toEqual({ posts: [], pushes: [] });
   });
 
   test("a transient Google error is rethrown for the pool to retry and leaves the mailbox active", async () => {
@@ -827,7 +859,7 @@ describe("mailboxStatus and disconnect", () => {
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
     await expect(
       t.withIdentity({ subject: "stranger" }).mutation(api.gmail.disconnect, { mailboxId }),
-    ).rejects.toMatchObject({ data: { code: "not_found" } });
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
     await expect(t.mutation(api.gmail.disconnect, { mailboxId })).rejects.toMatchObject({
       data: { code: "unauthenticated" },
     });

@@ -209,10 +209,14 @@ export async function requireCaregiverMember(
   ctx: QueryCtx,
   householdId: Id<"households">,
   userId: string,
+  roles: readonly Doc<"householdMembers">["role"][] | null = null,
 ): Promise<Doc<"householdMembers">> {
   const member = await findMember(ctx, householdId, userId);
   if (!member || (await findDevice(ctx, userId))) {
     throw appError("forbidden", "Only a caregiver of this household can do this");
+  }
+  if (roles !== null && !roles.includes(member.role)) {
+    throw appError("forbidden", "Your role in this household does not allow this");
   }
   return member;
 }

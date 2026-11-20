@@ -12,9 +12,9 @@ import {
 import { audit } from "./lib/audit";
 import { deleteLinks, dropConnection, queueConnectionBackfill } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
-import { CALENDAR_SCOPE, calendarExists, createSunnyCalendar } from "./lib/google";
+import { calendarExists, createSunnyCalendar } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
-import { googleAccount, revokeUnusedGrant, scheduleGrantRevoke } from "./lib/googleTokens";
+import { googleAccount, scheduleGrantRevoke } from "./lib/googleTokens";
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
@@ -113,14 +113,6 @@ export async function finishCalendar(
   flow: FlowOwner,
   tokens: GoogleGrant,
 ): Promise<Response> {
-  if (!tokens.scopes.includes(CALENDAR_SCOPE)) {
-    await revokeUnusedGrant(ctx, tokens.refreshToken, tokens.email);
-    return oauthPage(
-      "Permission needed",
-      "Sunny needs permission to manage the calendar it creates. Start again and allow it.",
-      400,
-    );
-  }
   const known = await ctx.runQuery(internal.googleCalendar.callbackContext, flow);
   const calendarId =
     known.existingCalendarId && (await calendarExists(tokens.accessToken, known.existingCalendarId))

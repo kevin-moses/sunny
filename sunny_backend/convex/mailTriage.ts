@@ -5,10 +5,11 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { mailboxTokens } from "./gmail";
+import { tokensFor } from "./googleGrant";
 import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
+import { storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { carryOut, senderLink } from "./lib/mailEffects";
 import { mailFailure } from "./lib/mailFailure";
@@ -30,7 +31,7 @@ import type {
   MailVerdict,
   PolicyFacts,
 } from "./lib/mailTypes";
-import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
+import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { canStillOccur, expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
@@ -129,11 +130,7 @@ export const claimItem = internalMutation({
       mailboxId: mailbox._id,
       timezone: household.timezone,
       now,
-      grant: {
-        refreshToken: mailbox.refreshToken,
-        accessToken: mailbox.accessToken ?? null,
-        accessTokenExpiresAt: mailbox.accessTokenExpiresAt ?? null,
-      },
+      grant: storedGrant(mailbox),
     };
   },
 });
@@ -363,23 +360,17 @@ async function settleTriageError(
   claim: Extract<Claim, { kind: "claimed" }>,
   e: unknown,
 ): Promise<TriageOutcome> {
-  const failure = mailFailure(e);
+  const failure = await mailFailure(ctx, claim.mailboxId, claim.grant.refreshToken, e);
   const release = (held: boolean) =>
     ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
   switch (failure.kind) {
     case "permanent":
       throw new NonRetryableError(errorText(e), { cause: e });
-    case "mailbox":
-      await ctx.runMutation(internal.gmail.markMailbox, {
-        mailboxId: claim.mailboxId,
-        refreshToken: claim.grant.refreshToken,
-        status: failure.status,
-        error: failure.error,
-      });
+    case "grant":
       await release(false);
       return "mailbox_lost";
-    case "setup":
-      console.error(`Mail triage held until the deployment is fixed: ${errorText(e)}`);
+    case "hold":
+      console.error(`Mail triage held until the shared cause clears: ${errorText(e)}`);
       await release(true);
       return "held";
     case "retry":
@@ -431,7 +422,7 @@ export const triage = internalAction({
   handler: async (ctx, { itemId }): Promise<TriageOutcome> => {
     const claim: Claim = await ctx.runMutation(internal.mailTriage.claimItem, { itemId });
     if (claim.kind === "skip") return "skipped";
-    const tokens = await mailboxTokens(ctx, claim.mailboxId, claim.grant);
+    const tokens = await tokensFor(ctx, { table: "mailboxes", id: claim.mailboxId }, claim.grant);
     try {
       return await triageClaimed(ctx, itemId, claim, tokens);
     } catch (e) {
@@ -483,6 +474,10 @@ async function requeueOverdue(
     .take(SWEEP_BATCH);
   let queued = 0;
   for (const row of rows) {
+    if (state === "queued" && (await jobInPool(ctx, row.jobId))) {
+      await ctx.db.patch(row._id, { leaseUntil: now + TRIAGE_PICKUP_MS });
+      continue;
+    }
     await ctx.db.patch(row._id, { state: "queued", leaseUntil: now + TRIAGE_PICKUP_MS });
     if (await waitsToBeClaimed(ctx, row)) continue;
     await enqueueTriage(ctx, row._id);
