@@ -107,6 +107,12 @@ async function setup(): Promise<MailHousehold> {
   return await mailHousehold(makeBackend());
 }
 
+async function threadAsPat(h: MailHousehold) {
+  return await h.t
+    .withIdentity({ subject: "pat" })
+    .query(api.agentRequests.transcript, { householdId: h.householdId });
+}
+
 function poolFinishesEveryJob(): void {
   vi.spyOn(mailPool, "status").mockResolvedValue({ state: "finished" });
 }
@@ -1173,11 +1179,20 @@ describe("the item lifecycle", () => {
     await complete();
     await complete();
     expect((await item(h, itemId)).state).toBe("failed");
-    const posts = await rows(h, "chatPosts");
-    expect(posts).toHaveLength(1);
-    expect(posts[0]!.body).toContain("Sunny could not read an email");
-    expect(posts[0]!.body).toContain("Subject: Your appointment is confirmed");
-    expect(posts[0]!.body).toContain("appointments@lakesideeye.example");
+    expect(await threadAsPat(h)).toEqual([
+      expect.objectContaining({
+        kind: "mail",
+        body: "Sunny could not read an email. Please look at it in Gmail.",
+        mailHeader: {
+          senderName: "Lakeside Eye Care",
+          senderAddress: "appointments@lakesideeye.example",
+          senderVerified: true,
+          subject: "Your appointment is confirmed",
+          receivedDate: "2026-11-18",
+          receivedTime: "08:30",
+        },
+      }),
+    ]);
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 
@@ -1198,9 +1213,12 @@ describe("the item lifecycle", () => {
       state: "failed",
       attempt: MAX_TRIAGE_ATTEMPTS,
     });
-    const posts = await rows(h, "chatPosts");
-    expect(posts.map((p) => p.body)).toEqual([
-      "Sunny could not read an email. Please look at the inbox in Gmail.",
+    expect(await threadAsPat(h)).toEqual([
+      expect.objectContaining({
+        kind: "mail",
+        body: "Sunny could not read an email. Please look at the inbox in Gmail.",
+        mailHeader: null,
+      }),
     ]);
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
@@ -2179,7 +2197,7 @@ describe("the caregiver summary", () => {
     expect(summaryCalls).toHaveLength(1);
     expect(JSON.stringify(summaryCalls[0])).toContain("<email>");
     const [post] = await rows(h, "chatPosts");
-    expect(post!.body.split("\n").slice(4)).toEqual([
+    expect(post!.body.split("\n")).toEqual([
       "Sunny thinks this email may be a scam and did not tell the senior about it.",
       "Someone signing as Tom asks for gift cards to pay bail.",
     ]);
@@ -2207,7 +2225,7 @@ describe("the caregiver summary", () => {
     jevSays(PHISHING, { status: 500 });
     const done = await triageEmail(h, clinic());
     expect(done.state).toBe("done");
-    expect((await rows(h, "chatPosts"))[0]!.body.split("\n").slice(4)).toEqual([
+    expect((await rows(h, "chatPosts"))[0]!.body.split("\n")).toEqual([
       "Sunny thinks this email may be a scam and did not tell the senior about it.",
       "The email asks for money by gift card, wire transfer, cash or another hard-to-trace way.",
     ]);

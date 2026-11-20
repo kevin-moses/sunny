@@ -1,5 +1,7 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { loadHousehold } from "./access";
+import { mailHeader, type MailHeader } from "./mailProse";
 import { localDate } from "./time";
 
 export interface ChatPostView {
@@ -9,9 +11,30 @@ export interface ChatPostView {
   body: string;
   localDate: string;
   createdAt: number;
+  mailHeader: MailHeader | null;
 }
 
-function toPostView(row: Doc<"chatPosts">): ChatPostView {
+export function itemHeader(item: Doc<"mailItems">, timezone: string): MailHeader | null {
+  const { sender, subject, receivedAt } = item;
+  if (sender === undefined || subject === undefined || receivedAt === undefined) return null;
+  return mailHeader({ sender, subject, receivedAt, timezone });
+}
+
+async function postHeader(
+  ctx: QueryCtx,
+  row: Doc<"chatPosts">,
+  timezone: string,
+): Promise<MailHeader | null> {
+  if (row.kind !== "mail") return null;
+  const item = await ctx.db.get(row.mailItemId);
+  return item === null ? null : itemHeader(item, timezone);
+}
+
+async function toPostView(
+  ctx: QueryCtx,
+  row: Doc<"chatPosts">,
+  timezone: string,
+): Promise<ChatPostView> {
   return {
     id: row._id,
     householdId: row.householdId,
@@ -19,6 +42,7 @@ function toPostView(row: Doc<"chatPosts">): ChatPostView {
     body: row.body,
     localDate: row.localDate,
     createdAt: row._creationTime,
+    mailHeader: await postHeader(ctx, row, timezone),
   };
 }
 
@@ -71,10 +95,11 @@ export async function recentPosts(
   householdId: Id<"households">,
   limit: number,
 ): Promise<ChatPostView[]> {
+  const { timezone } = await loadHousehold(ctx, householdId);
   const rows = await ctx.db
     .query("chatPosts")
     .withIndex("by_household", (q) => q.eq("householdId", householdId))
     .order("desc")
     .take(limit);
-  return rows.map(toPostView);
+  return await Promise.all(rows.map((row) => toPostView(ctx, row, timezone)));
 }

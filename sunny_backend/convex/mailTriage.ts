@@ -6,7 +6,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { tokensFor } from "./googleGrant";
-import { postMail } from "./lib/chatPosts";
+import { itemHeader, postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
 import { storedGrant } from "./lib/googleTokens";
@@ -18,7 +18,6 @@ import { triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
 import { factsCover, icsKey, linkKey } from "./lib/mailLinks";
 import { MAX_CALENDAR_CHANGES_PER_DAY, MAX_NOTES_PER_DAY, planWithRule } from "./lib/mailPolicy";
-import { caregiverText } from "./lib/mailProse";
 import type {
   CalendarEventFact,
   KnownInvite,
@@ -452,13 +451,9 @@ async function failUnread(ctx: MutationCtx, item: Doc<"mailItems">): Promise<voi
 }
 
 function unreadPost(item: Doc<"mailItems">, household: Doc<"households">): string {
-  const { sender, subject, receivedAt } = item;
-  if (sender === undefined || subject === undefined || receivedAt === undefined) {
-    return "Sunny could not read an email. Please look at the inbox in Gmail.";
-  }
-  return caregiverText({ timezone: household.timezone, sender, subject, receivedAt }, [
-    "Sunny could not read an email. Please look at it in Gmail.",
-  ]);
+  return itemHeader(item, household.timezone) === null
+    ? "Sunny could not read an email. Please look at the inbox in Gmail."
+    : "Sunny could not read an email. Please look at it in Gmail.";
 }
 
 export const onMailJobComplete = internalMutation({

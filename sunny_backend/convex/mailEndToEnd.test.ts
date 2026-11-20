@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { toBase64 } from "./lib/base64";
 import { encryptSecret } from "./lib/secretBox";
 import {
@@ -127,15 +127,24 @@ test("a polled message runs through the workpool to an event and a caregiver cha
     startsOn: "2026-12-10",
     startTime: "14:15",
   });
-  const posts = await t.run(async (ctx) => await ctx.db.query("chatPosts").collect());
-  expect(posts).toHaveLength(1);
-  expect(posts[0]).toMatchObject({ kind: "mail" });
-  expect(posts[0]!.body).toContain(
-    "From: Lakeside Eye Care <appointments@lakesideeye.example> (verified sender)",
-  );
-  expect(posts[0]!.body).toContain(
-    "Sunny added Eye exam, Thursday, December 10 at 2:15 PM, to the calendar.\nLakeside Eye Care confirmed an eye exam on December 10 at 2:15 PM.",
-  );
+  const thread = await t
+    .withIdentity({ subject: "pat" })
+    .query(api.agentRequests.transcript, { householdId });
+  expect(thread).toEqual([
+    expect.objectContaining({
+      type: "post",
+      kind: "mail",
+      body: "Sunny added Eye exam, Thursday, December 10 at 2:15 PM, to the calendar.\nLakeside Eye Care confirmed an eye exam on December 10 at 2:15 PM.",
+      mailHeader: {
+        senderName: "Lakeside Eye Care",
+        senderAddress: "appointments@lakesideeye.example",
+        senderVerified: true,
+        subject: "Your appointment is confirmed",
+        receivedDate: "2026-11-18",
+        receivedTime: "08:30",
+      },
+    }),
+  ]);
   expect(requests).toEqual([
     "oauth2.googleapis.com/token",
     "gmail.googleapis.com/gmail/v1/users/me/messages/e2e-1",

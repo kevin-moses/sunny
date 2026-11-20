@@ -20,25 +20,32 @@ export function when(date: string, time: string): string {
   return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
 }
 
-export function caregiverText(
-  facts: Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">,
-  lines: string[],
-): string {
-  const { sender } = facts;
-  const name = scrub(sender.name);
-  const from = name === "" ? sender.address : `${name} <${sender.address}>`;
-  const received = when(
-    localDate(facts.receivedAt, facts.timezone),
-    localTime(facts.receivedAt, facts.timezone),
-  );
+export type MailHeaderFacts = Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">;
+
+export interface MailHeader {
+  senderName: string | null;
+  senderAddress: string;
+  senderVerified: boolean;
+  subject: string;
+  receivedDate: string;
+  receivedTime: string;
+}
+
+export function mailHeader(facts: MailHeaderFacts): MailHeader {
+  const name = scrub(facts.sender.name);
+  return {
+    senderName: name === "" ? null : name,
+    senderAddress: facts.sender.address,
+    senderVerified: facts.sender.authenticated,
+    subject: ellipsize(scrub(facts.subject), MAX_SHOWN_SUBJECT),
+    receivedDate: localDate(facts.receivedAt, facts.timezone),
+    receivedTime: localTime(facts.receivedAt, facts.timezone),
+  };
+}
+
+export function caregiverText(facts: MailHeaderFacts, lines: string[]): string {
   const body = lines.map(scrub).filter((line) => line !== "");
-  return [
-    `From: ${from} (${sender.authenticated ? "verified sender" : "sender not verified"})`,
-    `Subject: ${ellipsize(scrub(facts.subject), MAX_SHOWN_SUBJECT)}`,
-    `Received: ${received}`,
-    "",
-    ellipsize(body.join("\n"), MAX_CAREGIVER_BODY),
-  ].join("\n");
+  return ellipsize(body.join("\n"), MAX_CAREGIVER_BODY);
 }
 
 export function caregiverMessage(

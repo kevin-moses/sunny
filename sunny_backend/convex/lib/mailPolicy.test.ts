@@ -174,7 +174,7 @@ describe("planWithRule decision table", () => {
       });
       expect(JSON.stringify(effects[0])).not.toContain(location);
       const body = effects[1]?.kind === "tell_caregivers" ? effects[1].body : "";
-      expect(body.split("\n").slice(4)).toEqual([
+      expect(body.split("\n")).toEqual([
         "Sunny added Hearing appointment, Thursday, December 10 at 2:15 PM, to the calendar.",
         `Place in the invitation: ${location}`,
         "Sunny's sentence.",
@@ -697,7 +697,7 @@ describe("planWithRule decision table", () => {
       facts(),
     ).effects;
     const body = effects[0]?.kind === "escalate" ? effects[0].body : "";
-    expect(body.split("\n").slice(4)).toEqual(["This email needs a decision.", "A bill is due."]);
+    expect(body.split("\n")).toEqual(["This email needs a decision.", "A bill is due."]);
   });
 });
 
