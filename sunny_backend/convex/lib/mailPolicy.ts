@@ -234,9 +234,21 @@ type Situation =
       case: "new";
       appointment: Appointment;
       fields: Appointment | null;
-      calendar: CalendarHas;
       conflict: CalendarEventFact | null;
     }
+  | {
+      case: "new_on_calendar";
+      appointment: Appointment;
+      fields: Appointment | null;
+      eventId: string;
+    }
+  | {
+      case: "new_linked_elsewhere";
+      appointment: Appointment;
+      eventId: string;
+      seen: CalendarEventFact | null;
+    }
+  | { case: "new_linked_by_another_address"; appointment: Appointment; fields: Appointment | null }
   | {
       case: "reschedule";
       appointment: Appointment;
@@ -321,83 +333,90 @@ export function described(appointment: Appointment): string {
   return `${appointmentTitle(appointment.kind, appointment.time)}, ${when(appointment.date, appointment.time)}`;
 }
 
+const NEW_UNVERIFIED: Row<{ appointment: Appointment }> = {
+  rule: "new: sender not authenticated",
+  plan: (s, c) =>
+    c.authenticated
+      ? null
+      : [
+          escalate(
+            c,
+            "unverified_sender",
+            `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
+            null,
+            s.appointment,
+          ),
+        ],
+};
+
+const NEW_REJECTED: Row<{ appointment: Appointment; fields: Appointment | null }> = {
+  rule: "new: appointmentFields rejects",
+  plan: (s, c) =>
+    s.fields !== null
+      ? null
+      : [
+          escalate(
+            c,
+            "unclear_appointment",
+            `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
+            null,
+            s.appointment,
+          ),
+        ],
+};
+
 const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = {
-  ignore: [{ rule: "any", plan: () => [] }],
-  new: [
+  ignore: [{ rule: "ignore: any", plan: () => [] }],
+  new_linked_elsewhere: [
+    NEW_UNVERIFIED,
     {
-      rule: "sender not authenticated",
-      plan: (s, c) =>
-        c.authenticated
-          ? null
-          : [
-              escalate(
-                c,
-                "unverified_sender",
-                `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
-                null,
-                s.appointment,
-              ),
-            ],
-    },
-    {
-      rule: "the sender's link has this appointment at another time, and no live event has the email's date, time and title words",
+      rule: "new: the sender's link has this appointment at another time, and no live event has the email's date, time and title words",
       plan: (s, c) => {
-        if (s.calendar.has !== "another_time") return null;
-        const { eventId, seen } = s.calendar.elsewhere;
         const has =
-          seen === null
+          s.seen === null
             ? "no longer has this appointment at that time"
-            : `has this appointment on ${when(seen.date, seen.time)}`;
+            : `has this appointment on ${when(s.seen.date, s.seen.time)}`;
         return [
           escalate(
             c,
             "unclear_appointment",
             `The email gives ${described(s.appointment)}. Sunny's calendar ${has}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
-            eventId,
+            s.eventId,
             s.appointment,
           ),
         ];
       },
     },
+  ],
+  new_on_calendar: [
+    NEW_UNVERIFIED,
+    NEW_REJECTED,
     {
-      rule: "appointmentFields rejects",
-      plan: (s, c) =>
-        s.fields !== null
-          ? null
-          : [
-              escalate(
-                c,
-                "unclear_appointment",
-                `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
-                null,
-                s.appointment,
-              ),
-            ],
+      rule: "new: already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
+      plan: (s, c) => onCalendar(c, s.eventId, appointmentKey(s.appointment, c.facts.ics)),
     },
+  ],
+  new_linked_by_another_address: [
+    NEW_UNVERIFIED,
+    NEW_REJECTED,
     {
-      rule: "already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
-      plan: (s, c) =>
-        s.calendar.has !== "same"
-          ? null
-          : onCalendar(c, s.calendar.eventId, appointmentKey(s.appointment, c.facts.ics)),
+      rule: "new: the link's event is over, and another address at the sender's domain made it",
+      plan: (s, c) => [
+        escalate(
+          c,
+          "unclear_appointment",
+          `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
+          null,
+          s.appointment,
+        ),
+      ],
     },
+  ],
+  new: [
+    NEW_UNVERIFIED,
+    NEW_REJECTED,
     {
-      rule: "the link's event is over, and another address at the sender's domain made it",
-      plan: (s, c) =>
-        s.calendar.has !== "over_from_another_address"
-          ? null
-          : [
-              escalate(
-                c,
-                "unclear_appointment",
-                `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
-                null,
-                s.appointment,
-              ),
-            ],
-    },
-    {
-      rule: "a caregiver confirms this kind first",
+      rule: "new: a caregiver confirms this kind first",
       plan: (s, c) => {
         const confirms = APPOINTMENT_KINDS[s.appointment.kind].caregiverConfirms;
         if (confirms === null) return null;
@@ -413,7 +432,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "overlaps another live event",
+      rule: "new: overlaps another live event",
       plan: (s, c) =>
         s.conflict === null || s.fields === null
           ? null
@@ -428,7 +447,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "daily limit of calendar changes reached",
+      rule: "new: daily limit of calendar changes reached",
       plan: (s, c) =>
         !c.atDailyLimit || s.fields === null
           ? null
@@ -443,7 +462,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "otherwise",
+      rule: "new: otherwise",
       plan: (s, c) =>
         s.fields === null
           ? null
@@ -459,7 +478,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule: [
     {
-      rule: "not authenticated, no single match, the match repeats, or new fields rejected",
+      rule: "reschedule: not authenticated, no single match, the match repeats, or new fields rejected",
       plan: (s, c) => {
         const match = only(s.matches);
         if (c.authenticated && match !== null && !match.repeating && s.fields !== null) return null;
@@ -476,7 +495,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "the match already has the new date and time",
+      rule: "reschedule: the match already has the new date and time",
       plan: (s, c) => {
         const match = only(s.matches);
         return match !== null &&
@@ -488,7 +507,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "a caregiver confirms moving this kind first",
+      rule: "reschedule: a caregiver confirms moving this kind first",
       plan: (s, c) => {
         const match = only(s.matches);
         if (match === null || s.fields === null) return null;
@@ -511,7 +530,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "daily limit of calendar changes reached",
+      rule: "reschedule: daily limit of calendar changes reached",
       plan: (s, c) => {
         const match = only(s.matches);
         if (!c.atDailyLimit || match === null || s.fields === null) return null;
@@ -527,7 +546,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "exactly one match",
+      rule: "reschedule: exactly one match",
       plan: (s, c) => {
         const match = only(s.matches);
         if (match === null || s.fields === null) return null;
@@ -549,7 +568,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   cancel: [
     {
-      rule: "any",
+      rule: "cancel: any",
       plan: (s, c) => {
         const match = only(s.matches);
         const line =
@@ -561,9 +580,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
   ],
   senior_info: [
-    { rule: "stale", plan: (_, c) => (c.stale ? [] : null) },
+    { rule: "senior_info: stale", plan: (_, c) => (c.stale ? [] : null) },
     {
-      rule: "not authenticated",
+      rule: "senior_info: not authenticated",
       plan: (_, c) =>
         c.authenticated
           ? null
@@ -576,7 +595,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "otherwise",
+      rule: "senior_info: otherwise",
       plan: (s, c) => [
         {
           kind: "senior_note",
@@ -588,13 +607,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   needs_decision: [
     {
-      rule: "any",
+      rule: "needs_decision: any",
       plan: (s, c) => [escalate(c, s.reason, "This email needs a decision.", null, null)],
     },
   ],
   suspicious: [
     {
-      rule: "any",
+      rule: "suspicious: any",
       plan: (s, c) => [
         escalate(
           c,
@@ -608,106 +627,62 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
-  const { linked } = facts;
-  if (linked !== null) return facts.events.filter((e) => e.eventId === linked.eventId);
-  return ref === null ? [] : matchEvent(ref, facts.events);
-}
+type LinkPlace =
+  | { at: "slot" }
+  | { at: "elsewhere"; seen: CalendarEventFact | null }
+  | { at: "outside_facts" }
+  | { at: "over"; date: string; time: string; madeBy: LinkMaker };
+
+type AppointmentChange = Extract<MailVerdict, { change: "new" | "reschedule" }>;
 
 function sameSlot(a: { date: string; time: string }, b: { date: string; time: string }): boolean {
   return a.date === b.date && a.time === b.time;
 }
 
-interface Elsewhere {
-  eventId: string;
-  seen: CalendarEventFact | null;
+function linkedFacts(linked: LinkedEvent, facts: PolicyFacts): CalendarEventFact[] {
+  return facts.events.filter((e) => e.eventId === linked.eventId);
 }
 
-type LinkPlace =
-  | { at: "slot" }
-  | { at: "elsewhere"; elsewhere: Elsewhere }
-  | { at: "outside_facts" }
-  | { at: "over"; date: string; time: string; madeBy: LinkMaker };
-
-type CalendarHas =
-  | { has: "nothing" }
-  | { has: "same"; eventId: string }
-  | { has: "another_time"; elsewhere: Elsewhere }
-  | { has: "over_from_another_address" };
-
 function linkPlace(linked: LinkedEvent, slot: Appointment, facts: PolicyFacts): LinkPlace {
-  const { eventId } = linked;
-  const live = facts.events.filter((e) => e.eventId === eventId);
+  const live = linkedFacts(linked, facts);
   if (live.some((e) => sameSlot(e, slot))) return { at: "slot" };
   const seen = live.find((e) => e.date === slot.date) ?? live[0];
-  if (seen !== undefined) return { at: "elsewhere", elsewhere: { eventId, seen } };
+  if (seen !== undefined) return { at: "elsewhere", seen };
   if (!linked.occurs) {
     return { at: "over", date: linked.date, time: linked.time, madeBy: linked.madeBy };
   }
-  return factsCover(slot.date, facts)
-    ? { at: "elsewhere", elsewhere: { eventId, seen: null } }
-    : { at: "outside_facts" };
+  return factsCover(slot.date, facts) ? { at: "elsewhere", seen: null } : { at: "outside_facts" };
 }
 
-interface ScopedLink {
-  linked: LinkedEvent | null;
-  elsewhere: Elsewhere | null;
+function previousMatches(previous: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
+  return previous === null ? [] : matchEvent(previous, facts.events);
 }
 
-function scopedLink(appointment: Appointment | null, facts: PolicyFacts): ScopedLink {
-  const { linked } = facts;
-  if (linked === null || facts.ics !== null) return { linked, elsewhere: null };
-  if (appointment === null) return { linked: null, elsewhere: null };
-  const place = linkPlace(linked, appointment, facts);
-  return place.at === "elsewhere"
-    ? { linked: null, elsewhere: place.elsewhere }
-    : { linked, elsewhere: null };
-}
-
-function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEventFact[] | null {
-  const { linked } = facts;
-  if (facts.ics === null || linked === null) return null;
-  const place = linkPlace(linked, appointment, facts);
-  switch (place.at) {
-    case "slot":
-    case "outside_facts":
-      return null;
-    case "elsewhere":
-      return place.elsewhere.seen === null ? [] : [place.elsewhere.seen];
-    case "over":
-      return sameSlot(place, appointment) ? null : [];
-  }
-}
-
-function calendarHas(
+function moving(
   appointment: Appointment,
-  fields: Appointment | null,
-  elsewhere: Elsewhere | null,
-  facts: PolicyFacts,
-): CalendarHas {
-  const { linked } = facts;
-  const place = linked === null ? null : linkPlace(linked, appointment, facts);
-  const overFromAnother = place?.at === "over" && place.madeBy === "another_address";
-  if (linked !== null && !overFromAnother) return { has: "same", eventId: linked.eventId };
-  const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
-  if (same !== undefined) return { has: "same", eventId: same.eventId };
-  if (elsewhere !== null) return { has: "another_time", elsewhere };
-  return linked === null ? { has: "nothing" } : { has: "over_from_another_address" };
-}
-
-function newSituation(
-  appointment: Appointment,
-  elsewhere: Elsewhere | null,
+  matches: CalendarEventFact[],
   facts: PolicyFacts,
 ): Situation {
+  return {
+    case: "reschedule",
+    appointment,
+    fields: appointmentFields(appointment, facts),
+    matches,
+  };
+}
+
+function sameSlotEvent(fields: Appointment | null, facts: PolicyFacts): string | null {
+  return fields === null ? null : (matchEvent(fields, facts.events)[0]?.eventId ?? null);
+}
+
+function unlinked(appointment: Appointment, facts: PolicyFacts): Situation {
   const fields = appointmentFields(appointment, facts);
-  const moved = linkedInvite(appointment, facts);
-  if (moved !== null) return { case: "reschedule", appointment, fields, matches: moved };
+  const eventId = sameSlotEvent(fields, facts);
+  if (eventId !== null) return { case: "new_on_calendar", appointment, fields, eventId };
   return {
     case: "new",
     appointment,
     fields,
-    calendar: calendarHas(appointment, fields, elsewhere, facts),
     conflict:
       fields === null
         ? null
@@ -715,11 +690,57 @@ function newSituation(
   };
 }
 
-function situationOf(
-  verdict: MailVerdict,
-  facts: PolicyFacts,
-  elsewhere: Elsewhere | null,
-): Situation {
+function resolveLink(verdict: AppointmentChange, facts: PolicyFacts): Situation {
+  const { appointment } = verdict;
+  const { linked } = facts;
+  if (linked === null) {
+    return verdict.change === "new"
+      ? unlinked(appointment, facts)
+      : moving(appointment, previousMatches(verdict.previous, facts), facts);
+  }
+  const invite = facts.ics !== null;
+  const place = linkPlace(linked, appointment, facts);
+  const fields = appointmentFields(appointment, facts);
+  const linkedHere: Situation = {
+    case: "new_on_calendar",
+    appointment,
+    fields,
+    eventId: linked.eventId,
+  };
+  switch (place.at) {
+    case "slot":
+    case "outside_facts":
+      return verdict.change === "new"
+        ? linkedHere
+        : moving(appointment, linkedFacts(linked, facts), facts);
+    case "elsewhere": {
+      if (verdict.change === "reschedule") {
+        const matches = invite
+          ? linkedFacts(linked, facts)
+          : previousMatches(verdict.previous, facts);
+        return moving(appointment, matches, facts);
+      }
+      if (invite) return moving(appointment, place.seen === null ? [] : [place.seen], facts);
+      const eventId = sameSlotEvent(fields, facts);
+      return eventId === null
+        ? { case: "new_linked_elsewhere", appointment, eventId: linked.eventId, seen: place.seen }
+        : { case: "new_on_calendar", appointment, fields, eventId };
+    }
+    case "over": {
+      if (verdict.change === "reschedule") {
+        return moving(appointment, linkedFacts(linked, facts), facts);
+      }
+      if (invite && !sameSlot(place, appointment)) return moving(appointment, [], facts);
+      if (place.madeBy === "this_address") return linkedHere;
+      const eventId = sameSlotEvent(fields, facts);
+      return eventId === null
+        ? { case: "new_linked_by_another_address", appointment, fields }
+        : { case: "new_on_calendar", appointment, fields, eventId };
+    }
+  }
+}
+
+function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
   switch (verdict.kind) {
     case "ignore":
       return { case: "ignore" };
@@ -730,23 +751,14 @@ function situationOf(
     case "suspicious":
       return { case: "suspicious", suspicion: verdict.suspicion };
   }
-  switch (verdict.change) {
-    case "cancel":
-      return {
-        case: "cancel",
-        previous: verdict.previous,
-        matches: matchesFor(verdict.previous, facts),
-      };
-    case "reschedule":
-      return {
-        case: "reschedule",
-        appointment: verdict.appointment,
-        fields: appointmentFields(verdict.appointment, facts),
-        matches: matchesFor(verdict.previous, facts),
-      };
-    case "new":
-      return newSituation(verdict.appointment, elsewhere, facts);
-  }
+  if (verdict.change !== "cancel") return resolveLink(verdict, facts);
+  const { linked } = facts;
+  return {
+    case: "cancel",
+    previous: verdict.previous,
+    matches:
+      linked === null ? matchEvent(verdict.previous, facts.events) : linkedFacts(linked, facts),
+  };
 }
 
 function runTable<K extends Case>(
@@ -756,7 +768,7 @@ function runTable<K extends Case>(
 ): Plan {
   for (const row of rows) {
     const effects = row.plan(situation, context);
-    if (effects !== null) return { rule: `${situation.case}: ${row.rule}`, effects };
+    if (effects !== null) return { rule: row.rule, effects };
   }
   return { rule: `${situation.case}: no row`, effects: [] };
 }
@@ -767,6 +779,12 @@ function planFor(situation: Situation, context: Context): Plan {
       return runTable(DECISION_TABLE.ignore, situation, context);
     case "new":
       return runTable(DECISION_TABLE.new, situation, context);
+    case "new_on_calendar":
+      return runTable(DECISION_TABLE.new_on_calendar, situation, context);
+    case "new_linked_elsewhere":
+      return runTable(DECISION_TABLE.new_linked_elsewhere, situation, context);
+    case "new_linked_by_another_address":
+      return runTable(DECISION_TABLE.new_linked_by_another_address, situation, context);
     case "reschedule":
       return runTable(DECISION_TABLE.reschedule, situation, context);
     case "cancel":
@@ -782,10 +800,8 @@ function planFor(situation: Situation, context: Context): Plan {
 
 export function planWithRule(
   triaged: Pick<Triaged, "verdict" | "summary">,
-  sent: PolicyFacts,
+  facts: PolicyFacts,
 ): Plan {
-  const { linked, elsewhere } = scopedLink(appointmentOf(triaged.verdict), sent);
-  const facts = { ...sent, linked };
   const context: Context = {
     facts,
     authenticated: facts.sender.authenticated,
@@ -794,7 +810,7 @@ export function planWithRule(
     summary: triaged.summary,
     decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
   };
-  const plan = planFor(situationOf(triaged.verdict, facts, elsewhere), context);
+  const plan = planFor(situationOf(triaged.verdict, facts), context);
   if (!context.stale) return plan;
   return {
     rule: plan.rule,
