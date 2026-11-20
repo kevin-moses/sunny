@@ -66,8 +66,8 @@ export async function postMail(
   mailItemId: Id<"mailItems">,
   body: string,
   now: number,
-): Promise<void> {
-  await ctx.db.insert("chatPosts", {
+): Promise<Id<"chatPosts">> {
+  return await ctx.db.insert("chatPosts", {
     householdId: household._id,
     kind: "mail",
     body,

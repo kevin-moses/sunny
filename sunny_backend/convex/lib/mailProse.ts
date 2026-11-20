@@ -49,7 +49,7 @@ export function caregiverText(facts: MailHeaderFacts, lines: string[]): string {
 }
 
 export function caregiverMessage(
-  facts: PolicyFacts,
+  facts: Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone" | "ics">,
   line: string,
   summary: string,
 ): CaregiverMessage {
