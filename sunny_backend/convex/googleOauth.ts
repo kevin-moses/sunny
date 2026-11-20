@@ -9,10 +9,10 @@ import {
   internalQuery,
 } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { isDeviceIdentity, requireCaregiverMember, SYSTEM_ACTOR } from "./lib/access";
+import { EDITOR_ROLES, isDeviceIdentity, requireCaregiverMember, SYSTEM_ACTOR } from "./lib/access";
 import { audit } from "./lib/audit";
 import { appError, errorText, isAppError } from "./lib/errors";
-import { assertMailboxEditor, finishMailbox } from "./gmail";
+import { finishMailbox } from "./gmail";
 import { finishCalendar } from "./googleCalendar";
 import {
   CALENDAR_SCOPE,
@@ -45,12 +45,27 @@ import type { OAuthPurpose } from "./lib/validators";
 interface PurposeConfig {
   scope: string;
   prompt: string;
+  roles: readonly Doc<"householdMembers">["role"][] | null;
+  scopeRefused: string;
   finish(ctx: ActionCtx, flow: FlowOwner, tokens: GoogleGrant): Promise<Response>;
 }
 
 const GOOGLE_PURPOSES: Record<OAuthPurpose, PurposeConfig> = {
-  calendar: { scope: CALENDAR_SCOPE, prompt: "consent", finish: finishCalendar },
-  mailbox: { scope: GMAIL_SCOPE, prompt: "consent select_account", finish: finishMailbox },
+  calendar: {
+    scope: CALENDAR_SCOPE,
+    prompt: "consent",
+    roles: null,
+    scopeRefused:
+      "Sunny needs permission to manage the calendar it creates. Start again and allow it.",
+    finish: finishCalendar,
+  },
+  mailbox: {
+    scope: GMAIL_SCOPE,
+    prompt: "consent select_account",
+    roles: EDITOR_ROLES,
+    scopeRefused: "Sunny needs permission to read the mailbox. Start again and allow it.",
+    finish: finishMailbox,
+  },
 };
 
 const OAUTH_SWEEP_BATCH = 200;
@@ -73,8 +88,7 @@ interface ClaimedFlow extends FlowOwner {
 export const assertMayConnect = internalQuery({
   args: { householdId: v.id("households"), userId: v.string(), purpose: oauthPurpose },
   handler: async (ctx, { householdId, userId, purpose }): Promise<null> => {
-    const member = await requireCaregiverMember(ctx, householdId, userId);
-    if (purpose === "mailbox") assertMailboxEditor(member);
+    await requireCaregiverMember(ctx, householdId, userId, GOOGLE_PURPOSES[purpose].roles);
     return null;
   },
 });
@@ -307,7 +321,12 @@ async function finishConnect(ctx: ActionCtx, request: Request): Promise<Response
       return expiredPage();
     }
     unusedGrant = tokens;
-    const response = await GOOGLE_PURPOSES[purpose].finish(ctx, { householdId, userId }, tokens);
+    const config = GOOGLE_PURPOSES[purpose];
+    if (!tokens.scopes.includes(config.scope)) {
+      await revokeUnusedGrant(ctx, tokens.refreshToken, tokens.email);
+      return oauthPage("Permission needed", config.scopeRefused, 400);
+    }
+    const response = await config.finish(ctx, { householdId, userId }, tokens);
     unusedGrant = null;
     return response;
   } catch (e) {

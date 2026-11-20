@@ -827,7 +827,7 @@ describe("mailboxStatus and disconnect", () => {
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
     await expect(
       t.withIdentity({ subject: "stranger" }).mutation(api.gmail.disconnect, { mailboxId }),
-    ).rejects.toMatchObject({ data: { code: "not_found" } });
+    ).rejects.toMatchObject({ data: { code: "forbidden" } });
     await expect(t.mutation(api.gmail.disconnect, { mailboxId })).rejects.toMatchObject({
       data: { code: "unauthenticated" },
     });

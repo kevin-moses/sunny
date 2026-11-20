@@ -1237,8 +1237,8 @@ describe("the item lifecycle", () => {
     googleMocks.refreshAccessToken.mockRejectedValue(new GoogleAccessRevoked("invalid_grant"));
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("mailbox_lost");
     expect(await h.t.action(internal.mailTriage.triage, { itemId: otherId })).toBe("skipped");
-    await h.t.mutation(internal.gmail.markMailbox, {
-      mailboxId: h.mailboxId,
+    await h.t.mutation(internal.googleGrant.markGrant, {
+      row: { table: "mailboxes", id: h.mailboxId },
       refreshToken: "box:refresh-1",
       status: "error",
       error: "again",

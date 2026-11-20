@@ -5,10 +5,11 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { mailboxTokens } from "./gmail";
+import { tokensFor } from "./googleGrant";
 import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
+import { storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { carryOut, senderLink } from "./lib/mailEffects";
 import { mailFailure } from "./lib/mailFailure";
@@ -128,11 +129,7 @@ export const claimItem = internalMutation({
       mailboxId: mailbox._id,
       timezone: household.timezone,
       now,
-      grant: {
-        refreshToken: mailbox.refreshToken,
-        accessToken: mailbox.accessToken ?? null,
-        accessTokenExpiresAt: mailbox.accessTokenExpiresAt ?? null,
-      },
+      grant: storedGrant(mailbox),
     };
   },
 });
@@ -362,19 +359,13 @@ async function settleTriageError(
   claim: Extract<Claim, { kind: "claimed" }>,
   e: unknown,
 ): Promise<TriageOutcome> {
-  const failure = mailFailure(e);
+  const failure = await mailFailure(ctx, claim.mailboxId, claim.grant.refreshToken, e);
   const release = (held: boolean) =>
     ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
   switch (failure.kind) {
     case "permanent":
       throw new NonRetryableError(errorText(e), { cause: e });
-    case "mailbox":
-      await ctx.runMutation(internal.gmail.markMailbox, {
-        mailboxId: claim.mailboxId,
-        refreshToken: claim.grant.refreshToken,
-        status: failure.status,
-        error: failure.error,
-      });
+    case "grant":
       await release(false);
       return "mailbox_lost";
     case "setup":
@@ -430,7 +421,7 @@ export const triage = internalAction({
   handler: async (ctx, { itemId }): Promise<TriageOutcome> => {
     const claim: Claim = await ctx.runMutation(internal.mailTriage.claimItem, { itemId });
     if (claim.kind === "skip") return "skipped";
-    const tokens = await mailboxTokens(ctx, claim.mailboxId, claim.grant);
+    const tokens = await tokensFor(ctx, { table: "mailboxes", id: claim.mailboxId }, claim.grant);
     try {
       return await triageClaimed(ctx, itemId, claim, tokens);
     } catch (e) {

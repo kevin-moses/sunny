@@ -4,26 +4,18 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
+import { recordLostGrant, tokensFor } from "./googleGrant";
+import type { GrantRow } from "./googleGrant";
 import { findMember } from "./lib/access";
-import { ConfigError } from "./lib/errors";
+import { errorText } from "./lib/errors";
 import { enqueuePush, getLink } from "./lib/calendarSync";
-import {
-  GoogleAccessRevoked,
-  GoogleApiError,
-  calendarExists,
-  deleteEvent,
-  upsertEvent,
-} from "./lib/google";
+import { GoogleApiError, calendarExists, deleteEvent, upsertEvent } from "./lib/google";
 import { buildGoogleEvent, eventSyncPayload, googleEventId } from "./lib/googleEvent";
-import { AccessTokens, holdsGrant } from "./lib/googleTokens";
-import { SecretUnreadable } from "./lib/secretBox";
+import { googleFailure } from "./lib/googleGrant";
+import { holdsGrant, storedGrant } from "./lib/googleTokens";
+import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 
-const REVOKED_MESSAGE = "Google access was revoked; reconnect Google Calendar.";
 const CALENDAR_MISSING_MESSAGE = "The Sunny calendar was deleted in Google; reconnect.";
-const UNREADABLE_MESSAGE =
-  "Reconnect Google Calendar: Sunny could not read the saved Google sign-in.";
-const FORBIDDEN_MESSAGE =
-  "Google denied Sunny access to the Sunny calendar; reconnect Google Calendar.";
 const SYNC_FAILED_MESSAGE = "Some events could not be synced to Google; Sunny will retry.";
 
 const FAILED_RETRY_DELAY_MS = 10 * 60 * 1000;
@@ -37,9 +29,7 @@ type BeginResult =
       kind: "work";
       connectionId: Id<"calendarConnections">;
       calendarId: string;
-      refreshToken: string;
-      accessToken: string | null;
-      accessTokenExpiresAt: number | null;
+      grant: StoredGrant;
       event: Doc<"events">;
       household: Doc<"households">;
       externalEventId: string | null;
@@ -72,9 +62,7 @@ export const begin = internalMutation({
       kind: "work",
       connectionId: connection._id,
       calendarId: connection.externalCalendarId,
-      refreshToken: connection.refreshToken,
-      accessToken: connection.accessToken ?? null,
-      accessTokenExpiresAt: connection.accessTokenExpiresAt ?? null,
+      grant: storedGrant(connection),
       event,
       household,
       externalEventId: link?.externalEventId ?? null,
@@ -104,41 +92,6 @@ export const recordPush = internalMutation({
     if (existing) await ctx.db.patch(existing._id, fields);
     else await ctx.db.insert("calendarEventLinks", { eventId, connectionId, ...fields });
     await ctx.db.patch(connectionId, { lastSyncedAt: now, lastError: undefined });
-    return null;
-  },
-});
-
-export const saveAccessToken = internalMutation({
-  args: {
-    connectionId: v.id("calendarConnections"),
-    refreshToken: v.string(),
-    accessToken: v.string(),
-    expiresAt: v.number(),
-  },
-  handler: async (ctx, { connectionId, refreshToken, accessToken, expiresAt }): Promise<null> => {
-    if (holdsGrant(await ctx.db.get(connectionId), refreshToken)) {
-      await ctx.db.patch(connectionId, { accessToken, accessTokenExpiresAt: expiresAt });
-    }
-    return null;
-  },
-});
-
-export const markConnection = internalMutation({
-  args: {
-    connectionId: v.id("calendarConnections"),
-    refreshToken: v.string(),
-    status: v.union(v.literal("revoked"), v.literal("error")),
-    error: v.string(),
-  },
-  handler: async (ctx, { connectionId, refreshToken, status, error }): Promise<null> => {
-    if (holdsGrant(await ctx.db.get(connectionId), refreshToken)) {
-      await ctx.db.patch(connectionId, {
-        status,
-        error: error.slice(0, 2000),
-        accessToken: undefined,
-        accessTokenExpiresAt: undefined,
-      });
-    }
     return null;
   },
 });
@@ -173,40 +126,31 @@ async function settleError(
   tokens: AccessTokens,
   e: unknown,
 ): Promise<PushOutcome> {
-  const mark = async (status: "revoked" | "error", error: string): Promise<void> => {
-    await ctx.runMutation(internal.calendarPush.markConnection, {
-      connectionId: work.connectionId,
-      refreshToken: work.refreshToken,
-      status,
-      error,
-    });
-  };
-  if (e instanceof ConfigError) throw new NonRetryableError(e.message, { cause: e });
-  if (e instanceof SecretUnreadable) {
-    await mark("error", UNREADABLE_MESSAGE);
-    return "failed";
-  }
-  if (e instanceof GoogleAccessRevoked) {
-    await mark("revoked", REVOKED_MESSAGE);
-    return "revoked";
-  }
+  const row: GrantRow = { table: "calendarConnections", id: work.connectionId };
   if (e instanceof GoogleApiError && e.gone) {
     if (!(await calendarExists(await tokens.get(), work.calendarId))) {
-      await mark("error", CALENDAR_MISSING_MESSAGE);
+      await recordLostGrant(ctx, row, work.grant.refreshToken, {
+        status: "error",
+        error: CALENDAR_MISSING_MESSAGE,
+      });
       return "calendar_missing";
     }
     console.error(`Google push: event not found in an existing calendar (${e.message})`);
     return "failed";
   }
-  if (e instanceof GoogleApiError && e.status === 403 && !e.retryable) {
-    await mark("error", FORBIDDEN_MESSAGE);
-    return "failed";
+  const failure = googleFailure(e, "calendarConnections") ?? { kind: "retry" };
+  switch (failure.kind) {
+    case "grant":
+      await recordLostGrant(ctx, row, work.grant.refreshToken, failure);
+      return failure.status === "revoked" ? "revoked" : "failed";
+    case "setup":
+      throw new NonRetryableError(errorText(e), { cause: e });
+    case "permanent":
+      console.error(`Google push ended without retry: ${errorText(e)}`);
+      return "failed";
+    case "retry":
+      throw e;
   }
-  if (e instanceof GoogleApiError && !e.retryable && e.status !== 401) {
-    console.error(`Google push ended without retry (${e.status}): ${e.message}`);
-    return "failed";
-  }
-  throw e;
 }
 
 export const push = internalAction({
@@ -217,21 +161,18 @@ export const push = internalAction({
       console.log(`Google push skipped: ${start.reason}`);
       return "skipped";
     }
-    const tokens = await new AccessTokens(start, async (accessToken, expiresAt) => {
-      await ctx.runMutation(internal.calendarPush.saveAccessToken, {
-        connectionId: start.connectionId,
-        refreshToken: start.refreshToken,
-        accessToken,
-        expiresAt,
-      });
-    }).load();
+    const tokens = await tokensFor(
+      ctx,
+      { table: "calendarConnections", id: start.connectionId },
+      start.grant,
+    );
     try {
       const { outcome, link } = await tokens.withToken((accessToken) =>
         pushToGoogle(start, accessToken),
       );
       await ctx.runMutation(internal.calendarPush.recordPush, {
         connectionId: start.connectionId,
-        refreshToken: start.refreshToken,
+        refreshToken: start.grant.refreshToken,
         eventId: start.event._id,
         link,
       });
