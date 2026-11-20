@@ -6,7 +6,7 @@ import {
   ESCALATION_REASONS,
   INFO_TOPICS,
   SUSPICIONS,
-} from "./mailTypes";
+} from "./mailConstants";
 
 export const memberRole = v.union(v.literal("primary"), v.literal("member"), v.literal("viewer"));
 export type MemberRole = Infer<typeof memberRole>;
@@ -170,14 +170,16 @@ export type MailItemState = Infer<typeof mailItemState>;
 
 const appointmentKind = literals(...APPOINTMENT_KIND_NAMES);
 
-const appointment = v.object({
+export const proposed = v.object({ kind: appointmentKind, date: v.string(), time: v.string() });
+
+export const appointment = v.object({
   kind: appointmentKind,
   date: v.string(),
   time: v.string(),
   durationMinutes: v.union(v.null(), v.number()),
 });
 
-const appointmentRef = v.object({
+export const appointmentRef = v.object({
   kind: appointmentKind,
   date: v.string(),
   time: v.union(v.null(), v.string()),
@@ -185,7 +187,7 @@ const appointmentRef = v.object({
 
 const decisionReason = v.union(v.null(), literals(...DECISION_REASONS));
 
-const mailVerdict = v.union(
+export const mailVerdict = v.union(
   v.object({ kind: v.literal("ignore") }),
   v.object({
     kind: v.literal("appointment"),
@@ -211,7 +213,7 @@ const mailVerdict = v.union(
   v.object({ kind: v.literal("suspicious"), suspicion: literals(...SUSPICIONS) }),
 );
 
-const usage = v.object({
+export const usage = v.object({
   inputTokens: v.number(),
   outputTokens: v.number(),
   cacheReadTokens: v.number(),
@@ -219,10 +221,12 @@ const usage = v.object({
 
 export const classifierRecord = v.object({ name: v.string(), usage });
 
-export const jevAnswers = v.record(
-  v.string(),
-  v.union(v.number(), v.object({ choice: v.string(), probability: v.number() })),
+export const jevAnswer = v.union(
+  v.number(),
+  v.object({ choice: v.string(), probability: v.number() }),
 );
+
+export const jevAnswers = v.record(v.string(), jevAnswer);
 
 export const triaged = v.object({
   verdict: mailVerdict,
@@ -249,12 +253,12 @@ export const mailSender = v.object({
   authenticated: v.boolean(),
 });
 
-export const verdictKind = literals(
-  "ignore",
-  "appointment",
-  "senior_info",
-  "needs_decision",
-  "suspicious",
+export const verdictKind = v.union(
+  ...mailVerdict.members
+    .map((member) => member.fields.kind)
+    .filter(
+      (kind, index, kinds) => kinds.findIndex((other) => other.value === kind.value) === index,
+    ),
 );
 export type VerdictKind = Infer<typeof verdictKind>;
 
@@ -277,7 +281,7 @@ export const mailEffectRecord = v.union(
     reason: literals(...ESCALATION_REASONS),
     pushed: v.boolean(),
     eventId: v.optional(v.id("events")),
-    proposed: v.optional(v.object({ kind: appointmentKind, date: v.string(), time: v.string() })),
+    proposed: v.optional(proposed),
   }),
 );
 export type MailEffectRecord = Infer<typeof mailEffectRecord>;

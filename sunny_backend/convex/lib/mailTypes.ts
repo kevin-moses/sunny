@@ -1,9 +1,45 @@
 import type { Infer } from "convex/values";
-import type { icsEvent, mailSender } from "./validators";
+import {
+  APPOINTMENT_KIND_NAMES,
+  DECISION_REASONS,
+  ESCALATION_REASONS,
+  INFO_TOPICS,
+  SUSPICIONS,
+} from "./mailConstants";
+import type {
+  appointment,
+  appointmentRef,
+  icsEvent,
+  jevAnswer,
+  jevAnswers,
+  mailSender,
+  mailVerdict,
+  proposed,
+  triaged,
+  usage,
+} from "./validators";
+
+export { APPOINTMENT_KIND_NAMES, DECISION_REASONS, ESCALATION_REASONS, INFO_TOPICS, SUSPICIONS };
 
 export type MailSender = Infer<typeof mailSender>;
 
 export type IcsEvent = Infer<typeof icsEvent>;
+
+export type Appointment = Infer<typeof appointment>;
+
+export type AppointmentRef = Infer<typeof appointmentRef>;
+
+export type MailVerdict = Infer<typeof mailVerdict>;
+
+export type Usage = Infer<typeof usage>;
+
+export type JevAnswer = Infer<typeof jevAnswer>;
+
+export type JevAnswers = Infer<typeof jevAnswers>;
+
+export type Triaged = Infer<typeof triaged>;
+
+export type Proposed = Infer<typeof proposed>;
 
 export interface KnownInvite {
   sequence: number;
@@ -23,25 +59,6 @@ export interface Clock {
   now: number;
   timezone: string;
 }
-
-export const APPOINTMENT_KIND_NAMES = [
-  "doctor_visit",
-  "dentist",
-  "eye_doctor",
-  "hearing",
-  "physical_therapy",
-  "medical_test",
-  "vaccine",
-  "hair",
-  "group_activity",
-  "meal",
-  "family_visit",
-  "video_call",
-  "phone_call",
-  "meeting",
-  "home_service",
-  "other",
-] as const;
 
 export type AppointmentKind = (typeof APPOINTMENT_KIND_NAMES)[number];
 
@@ -157,27 +174,6 @@ export function appointmentTitle(kind: AppointmentKind, time: string | null): st
   return MEAL_TITLES.find(([before]) => time < before)?.[1] ?? APPOINTMENT_KINDS.meal.title;
 }
 
-export interface Appointment {
-  kind: AppointmentKind;
-  date: string;
-  time: string;
-  durationMinutes: number | null;
-}
-
-export interface AppointmentRef {
-  kind: AppointmentKind;
-  date: string;
-  time: string | null;
-}
-
-export const INFO_TOPICS = [
-  "prescription_ready",
-  "prescription_coming",
-  "package_arrived",
-  "package_coming",
-  "personal_note",
-] as const;
-
 export type InfoTopic = (typeof INFO_TOPICS)[number];
 
 export const SENIOR_SENTENCES: Record<InfoTopic, string> = {
@@ -188,65 +184,11 @@ export const SENIOR_SENTENCES: Record<InfoTopic, string> = {
   personal_note: "You have a personal email. Someone can read it with you.",
 };
 
-export const DECISION_REASONS = [
-  "cancellation",
-  "bill_or_payment",
-  "account_or_credentials",
-  "reply_needed",
-  "legal_or_government",
-  "health_result",
-  "home_visit",
-  "other",
-] as const;
 export type DecisionReason = (typeof DECISION_REASONS)[number];
 
-export const SUSPICIONS = ["scam", "money_request", "credentials", "impersonation"] as const;
 export type Suspicion = (typeof SUSPICIONS)[number];
 
-export type MailVerdict =
-  | { kind: "ignore" }
-  | {
-      kind: "appointment";
-      change: "new";
-      appointment: Appointment;
-      decision: DecisionReason | null;
-    }
-  | {
-      kind: "appointment";
-      change: "reschedule";
-      previous: AppointmentRef | null;
-      appointment: Appointment;
-      decision: DecisionReason | null;
-    }
-  | {
-      kind: "appointment";
-      change: "cancel";
-      previous: AppointmentRef;
-      decision: DecisionReason | null;
-    }
-  | { kind: "senior_info"; topic: InfoTopic }
-  | { kind: "needs_decision"; reason: DecisionReason }
-  | { kind: "suspicious"; suspicion: Suspicion };
-
-export interface Usage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-}
-
 export const NO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
-
-export type JevAnswer = number | { choice: string; probability: number };
-
-export type JevAnswers = Record<string, JevAnswer>;
-
-export interface Triaged {
-  verdict: MailVerdict;
-  summary: string;
-  rule: string;
-  classifier: { name: string; usage: Usage };
-  answers: JevAnswers | null;
-}
 
 export interface CalendarEventFact {
   eventId: string;
@@ -276,23 +218,7 @@ export type LinkedEvent =
   | { eventId: string; occurs: true }
   | { eventId: string; occurs: false; date: string; time: string; madeBy: LinkMaker };
 
-export const ESCALATION_REASONS = [
-  ...DECISION_REASONS,
-  ...SUSPICIONS,
-  "phone_call",
-  "unverified_sender",
-  "unclear_appointment",
-  "unclear_reschedule",
-  "conflict",
-  "daily_limit",
-] as const;
 export type EscalationReason = (typeof ESCALATION_REASONS)[number];
-
-export interface Proposed {
-  kind: AppointmentKind;
-  date: string;
-  time: string;
-}
 
 export interface CaregiverMessage {
   body: string;
