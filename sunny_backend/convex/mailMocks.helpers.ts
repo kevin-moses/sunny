@@ -234,13 +234,17 @@ export function summaryReply(says: SummarySays, init: RequestInit | undefined): 
 export function jevSays(
   says: JevSays | { status: number },
   summary: SummarySays = DEFAULT_SUMMARY,
+  whileSummarizing: () => Promise<void> = async () => undefined,
 ): void {
   vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
-      if (String(url) === ANTHROPIC_URL) return await summaryReply(summary, init);
+      if (String(url) === ANTHROPIC_URL) {
+        await whileSummarizing();
+        return await summaryReply(summary, init);
+      }
       if (String(url) !== JEV_URL) throw new Error(`unexpected fetch ${String(url)}`);
       if ("status" in says) return json({ detail: "refused" }, says.status);
       return jevReply(says, init);

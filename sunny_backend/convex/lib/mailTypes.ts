@@ -239,10 +239,11 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string; appointmentKey: string }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | ({ kind: "tell_caregivers" } & CaregiverMessage & CaregiverPush)
+  | ({ kind: "tell_caregivers"; line: string } & CaregiverMessage & CaregiverPush)
   | ({
       kind: "escalate";
       reason: EscalationReason;
+      line: string;
       push: boolean;
       eventId: string | null;
       proposed: Proposed | null;

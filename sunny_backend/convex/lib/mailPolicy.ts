@@ -555,10 +555,8 @@ function withoutPush(draft: Draft): Draft {
 function rendered(draft: Draft, facts: PolicyFacts, summary: string): MailEffect {
   switch (draft.kind) {
     case "escalate":
-    case "tell_caregivers": {
-      const { line, ...effect } = draft;
-      return { ...effect, ...caregiverMessage(facts, line, summary) };
-    }
+    case "tell_caregivers":
+      return { ...draft, ...caregiverMessage(facts, draft.line, summary) };
     default:
       return draft;
   }

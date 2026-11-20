@@ -10,6 +10,7 @@ import { JEV_MODEL } from "./lib/jevClient";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import type { Triaged } from "./lib/mailTypes";
 import {
+  DEFAULT_SUMMARY,
   MAILBOX,
   item,
   jevCalls,
@@ -263,26 +264,25 @@ describe("an appointment email", () => {
       },
       subject: email.subject,
       receivedAt: email.receivedAt,
-      ics: null,
     };
     const apply = (attempt: number) =>
-      h.t.mutation(internal.mailTriage.applyTriage, {
-        itemId,
-        attempt,
-        email: header,
-        triaged,
-        caregiverSummary: null,
-      });
+      h.t.mutation(internal.mailTriage.applyTriage, { itemId, attempt, ics: null, triaged });
 
     await h.t.mutation(internal.mailTriage.claimItem, { itemId });
     vi.setSystemTime(NOW + 11 * MINUTE);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     const again = await h.t.mutation(internal.mailTriage.claimItem, { itemId });
     expect(again).toMatchObject({ kind: "claimed", attempt: 2 });
+    await h.t.mutation(internal.mailTriage.recordParsed, {
+      itemId,
+      attempt: 2,
+      ...header,
+      icsKey: null,
+    });
 
-    expect(await apply(1)).toBe(false);
-    expect(await apply(2)).toBe(true);
-    expect(await apply(2)).toBe(false);
+    expect(await apply(1)).toBe("lost");
+    expect(await apply(2)).toBe("posted");
+    expect(await apply(2)).toBe("lost");
 
     expect(await rows(h, "events")).toHaveLength(1);
     expect(await rows(h, "mailEventLinks")).toHaveLength(1);
@@ -2211,6 +2211,79 @@ describe("the caregiver summary", () => {
       "Sunny thinks this email may be a scam and did not tell the senior about it.",
       "The email asks for money by gift card, wire transfer, cash or another hard-to-trace way.",
     ]);
+  });
+
+  test("the plan is made once, before Haiku writes, so a calendar change meanwhile changes nothing", async () => {
+    const h = await setup();
+    const seen: { state?: string; post?: string[] } = {};
+    jevSays(EYE_EXAM, DEFAULT_SUMMARY, async () => {
+      const [during] = await h.t.run(async (ctx) => await ctx.db.query("mailItems").collect());
+      seen.state = during!.state;
+      seen.post = (await rows(h, "chatPosts"))[0]!.body.split("\n").slice(4);
+      await insertEvent(h.t, h.householdId, {
+        title: "Lunch with Ruth",
+        startsOn: "2026-12-10",
+        startTime: "14:00",
+        durationMinutes: 60,
+      });
+    });
+    const done = await triageEmail(h, clinic());
+    expect(seen.state).toBe("done");
+    expect(seen.post).toEqual([
+      "Sunny added Eye exam, Thursday, December 10 at 2:15 PM, to the calendar.",
+      expect.not.stringContaining(DEFAULT_SUMMARY),
+    ]);
+    expect(kinds(done.effects ?? [])).toEqual(["event_added", "told_caregivers"]);
+    expect(done.rule).toBe("new-add");
+    expect(jevCalls).toHaveLength(1);
+    expect(summaryCalls).toHaveLength(1);
+    const [post] = await rows(h, "chatPosts");
+    expect(post!.body.split("\n").slice(4)).toEqual([seen.post![0], DEFAULT_SUMMARY]);
+    expect(done.caregiverPost).toEqual({ postId: post!._id, line: seen.post![0] });
+  });
+
+  test("a post deleted while Haiku writes stays deleted", async () => {
+    const h = await setup();
+    jevSays(PHISHING, DEFAULT_SUMMARY, async () => {
+      await h.t.run(async (ctx) => {
+        for (const post of await ctx.db.query("chatPosts").collect()) await ctx.db.delete(post._id);
+      });
+    });
+    const itemId = await receive(h, clinic());
+    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("applied");
+    expect(summaryCalls).toHaveLength(1);
+    expect(await rows(h, "chatPosts")).toHaveLength(0);
+    expect((await item(h, itemId)).state).toBe("done");
+  });
+
+  test("a summary for another claim, or for a post of another email, changes nothing", async () => {
+    const h = await setup();
+    jevSays(PHISHING);
+    const first = await triageEmail(h, clinic());
+    const second = await triageEmail(h, clinic({ subject: "Grandma help" }));
+    const replace = (itemId: Id<"mailItems">, attempt: number) =>
+      h.t.mutation(internal.mailTriage.replaceSummary, {
+        itemId,
+        attempt,
+        ics: null,
+        summary: "A later summary.",
+      });
+    const bodies = async () => (await rows(h, "chatPosts")).map((p) => p.body);
+    const before = await bodies();
+
+    expect(await replace(first._id, first.attempt - 1)).toBe(false);
+    expect(await replace(first._id, first.attempt + 1)).toBe(false);
+    await h.t.run(
+      async (ctx) =>
+        await ctx.db.patch(first._id, {
+          caregiverPost: { ...first.caregiverPost!, postId: second.caregiverPost!.postId },
+        }),
+    );
+    expect(await replace(first._id, first.attempt)).toBe(false);
+    expect(await bodies()).toEqual(before);
+
+    expect(await replace(second._id, second.attempt)).toBe(true);
+    expect((await bodies())[1]).toContain("A later summary.");
   });
 
   test("a summary that times out falls back to Sunny's sentence", async () => {

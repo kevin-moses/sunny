@@ -90,6 +90,15 @@ function eventOf(scope: EffectScope, eventId: string): Doc<"events"> {
   return event;
 }
 
+async function postToCaregivers(
+  scope: EffectScope,
+  effect: EffectOf<"tell_caregivers" | "escalate">,
+): Promise<void> {
+  const { ctx, household, item } = scope;
+  const postId = await postMail(ctx, household, item._id, effect.body, scope.facts.now);
+  await ctx.db.patch(item._id, { caregiverPost: { postId, line: effect.line } });
+}
+
 const HANDLERS: Handlers = {
   add_event: async (scope, effect) => {
     const { date, time, durationMinutes } = effect.appointment;
@@ -163,7 +172,7 @@ const HANDLERS: Handlers = {
     return { kind: "senior_note", noteId };
   },
   tell_caregivers: async (scope, effect) => {
-    await postMail(scope.ctx, scope.household, scope.item._id, effect.body, scope.facts.now);
+    await postToCaregivers(scope, effect);
     const pushed =
       effect.push &&
       (await pushToCaregivers(scope.ctx, scope.household, {
@@ -176,7 +185,7 @@ const HANDLERS: Handlers = {
   },
   escalate: async (scope, effect) => {
     const { ctx, household } = scope;
-    await postMail(ctx, household, scope.item._id, effect.body, scope.facts.now);
+    await postToCaregivers(scope, effect);
     const pushed =
       effect.push &&
       (await pushToCaregivers(
