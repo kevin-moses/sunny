@@ -1823,6 +1823,24 @@ describe("links belong to the sender's domain", () => {
       );
     });
 
+    test("a clinic's second reminder for a date a caregiver moved the series off but entered by hand changes nothing and posts nothing", async () => {
+      const h = await setup();
+      const seriesId = await weeklyTherapy(h);
+      await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      await h.t.run(async (ctx) => await ctx.db.patch(seriesId, { repeatDays: [4] }));
+      const visitId = await insertEvent(h.t, h.householdId, {
+        title: "Physical therapy",
+        startsOn: "2026-12-01",
+        startTime: "10:00",
+        durationMinutes: 45,
+      });
+      const second = await triageEmail(h, clinic({ subject: "Reminder" }), THERAPY);
+      expect(second.effects).toEqual([{ kind: "already_on_calendar", eventId: visitId }]);
+      expect(await rows(h, "events")).toHaveLength(2);
+      expect(await rows(h, "chatPosts")).toHaveLength(0);
+      expect(await rows(h, "notificationOutbox")).toHaveLength(0);
+    });
+
     test("a clinic's second reminder after a caregiver moved a Monday and Tuesday series names the email's date", async () => {
       const h = await setup();
       const seriesId = await weeklyTherapy(h, [1, 2]);

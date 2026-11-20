@@ -340,7 +340,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "the sender's link has this appointment at another time",
+      rule: "the sender's link has this appointment at another time, and no live event has the email's date, time and title words",
       plan: (s, c) => {
         if (s.calendar.has !== "another_time") return null;
         const { eventId, seen } = s.calendar.elsewhere;
@@ -685,13 +685,13 @@ function calendarHas(
   elsewhere: Elsewhere | null,
   facts: PolicyFacts,
 ): CalendarHas {
-  if (elsewhere !== null) return { has: "another_time", elsewhere };
   const { linked } = facts;
   const place = linked === null ? null : linkPlace(linked, appointment, facts);
   const overFromAnother = place?.at === "over" && place.madeBy === "another_address";
   if (linked !== null && !overFromAnother) return { has: "same", eventId: linked.eventId };
   const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
   if (same !== undefined) return { has: "same", eventId: same.eventId };
+  if (elsewhere !== null) return { has: "another_time", elsewhere };
   return linked === null ? { has: "nothing" } : { has: "over_from_another_address" };
 }
 
