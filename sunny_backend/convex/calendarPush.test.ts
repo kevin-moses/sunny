@@ -237,6 +237,27 @@ describe("reconnecting another account while a push of the old one runs", () => 
     expect(connection?.error).toBeUndefined();
   });
 
+  test("a push of the old account that finishes after the reconnect records no link or sync time on the new connection", async () => {
+    const t = makeBackend();
+    const { householdId, connectionId } = await setupSynced(t);
+    googleMocks.upsertEvent.mockImplementationOnce(async () => {
+      await reconnectAs(t, householdId, "other@example.com");
+      return { id: "gext-old", etag: "etag-old", created: true };
+    });
+
+    await runPush(t);
+
+    expect(await t.run(async (ctx) => await ctx.db.query("calendarEventLinks").collect())).toEqual(
+      [],
+    );
+    const connection = await connectionRow(t, connectionId);
+    expect(connection).toMatchObject({
+      accountEmail: "other@example.com",
+      externalCalendarId: "cal2",
+    });
+    expect(connection?.lastSyncedAt).toBeUndefined();
+  });
+
   test("a token refresh by a push of the old account leaves the next push on the new account", async () => {
     const t = makeBackend();
     const { householdId, connectionId } = await setupSynced(t);

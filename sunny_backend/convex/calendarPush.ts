@@ -85,14 +85,15 @@ export const begin = internalMutation({
 export const recordPush = internalMutation({
   args: {
     connectionId: v.id("calendarConnections"),
+    refreshToken: v.string(),
     eventId: v.id("events"),
     link: v.union(
       v.null(),
       v.object({ externalEventId: v.string(), etag: v.optional(v.string()) }),
     ),
   },
-  handler: async (ctx, { connectionId, eventId, link }): Promise<null> => {
-    if (!(await ctx.db.get(connectionId))) return null;
+  handler: async (ctx, { connectionId, refreshToken, eventId, link }): Promise<null> => {
+    if (!holdsGrant(await ctx.db.get(connectionId), refreshToken)) return null;
     const existing = await getLink(ctx, eventId, connectionId);
     if (link === null) {
       if (existing) await ctx.db.delete(existing._id);
@@ -230,6 +231,7 @@ export const push = internalAction({
       );
       await ctx.runMutation(internal.calendarPush.recordPush, {
         connectionId: start.connectionId,
+        refreshToken: start.refreshToken,
         eventId: start.event._id,
         link,
       });
