@@ -30,7 +30,7 @@ import type {
   MailVerdict,
   PolicyFacts,
 } from "./lib/mailTypes";
-import { TRIAGE_PICKUP_MS, enqueueTriage } from "./lib/mailPool";
+import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { canStillOccur, expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
@@ -473,6 +473,10 @@ async function requeueOverdue(
     .take(SWEEP_BATCH);
   let queued = 0;
   for (const row of rows) {
+    if (state === "queued" && (await jobInPool(ctx, row.jobId))) {
+      await ctx.db.patch(row._id, { leaseUntil: now + TRIAGE_PICKUP_MS });
+      continue;
+    }
     await ctx.db.patch(row._id, { state: "queued", leaseUntil: now + TRIAGE_PICKUP_MS });
     if (await waitsToBeClaimed(ctx, row)) continue;
     await enqueueTriage(ctx, row._id);

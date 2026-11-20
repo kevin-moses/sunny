@@ -24,6 +24,7 @@ import {
   triageEmail,
 } from "./mailMocks.helpers";
 import type { JevSays, JevWireReply, MailHousehold, RawEmail } from "./mailMocks.helpers";
+import { mailPool } from "./lib/mailPool";
 import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
 import { insertEvent, insertRequest, makeBackend } from "./testing.helpers";
 
@@ -105,6 +106,10 @@ const DELIVERY: JevSays = { yes: ["about_package"] };
 
 async function setup(): Promise<MailHousehold> {
   return await mailHousehold(makeBackend());
+}
+
+function poolFinishesEveryJob(): void {
+  vi.spyOn(mailPool, "status").mockResolvedValue({ state: "finished" });
 }
 
 async function reconnectAs(h: MailHousehold, accountEmail: string): Promise<void> {
@@ -894,6 +899,7 @@ describe("other verdicts", () => {
 describe("the item lifecycle", () => {
   test("a paused household is not claimed and resumes through sweepStuck", async () => {
     const h = await setup();
+    poolFinishesEveryJob();
     jevSays(PHISHING);
     await h.t.run(async (ctx) => ctx.db.patch(h.householdId, { backgroundPaused: true }));
     const itemId = await receive(h, clinic());
@@ -913,6 +919,7 @@ describe("the item lifecycle", () => {
 
   test("a row waits while the mailbox is revoked and is triaged after a reconnect to the same address", async () => {
     const h = await setup();
+    poolFinishesEveryJob();
     jevSays(PHISHING);
     const itemId = await receive(h, clinic());
     for (const status of ["revoked", "error"] as const) {
@@ -932,6 +939,7 @@ describe("the item lifecycle", () => {
 
   test("the sweeper hands a row whose mailbox is gone to a claim that fails it quietly", async () => {
     const h = await setup();
+    poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
     await h.t.run(async (ctx) => ctx.db.delete(h.mailboxId));
     vi.setSystemTime(NOW + 16 * MINUTE);
@@ -997,6 +1005,7 @@ describe("the item lifecycle", () => {
 
   test("a Google project quota holds the row and leaves the mailbox active without a notice", async () => {
     const h = await setup();
+    poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
     gmailMocks.getMessage.mockRejectedValue(
       new GoogleApiError(
@@ -1062,6 +1071,7 @@ describe("the item lifecycle", () => {
 
   test("a row held for a missing TypeSafe key outlasts the attempt cap and is triaged once the key is set", async () => {
     const h = await setup();
+    poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
     vi.stubEnv("TYPESAFE_API_KEY", "");
     const fetchSpy = vi.fn();
@@ -1200,6 +1210,9 @@ describe("the item lifecycle", () => {
     const h = await setup();
     const itemId = await receive(h, clinic());
     const firstJob = (await item(h, itemId)).jobId;
+    expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
+      kind: "claimed",
+    });
     vi.setSystemTime(NOW + 16 * MINUTE);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     const secondJob = (await item(h, itemId)).jobId;
@@ -1342,6 +1355,34 @@ describe("the item lifecycle", () => {
       "Sunny now reads other@example.com.",
     ]);
     expect(await rows(h, "notificationOutbox")).toEqual([]);
+  });
+
+  test("the sweeper moves the pickup deadline of a queued row whose job still waits in the pool", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    const job = (await item(h, itemId)).jobId;
+    expect(await h.t.run(async (ctx) => (await mailPool.status(ctx, job!)).state)).toBe("pending");
+    vi.setSystemTime(NOW + 16 * MINUTE);
+
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
+
+    expect(await item(h, itemId)).toMatchObject({
+      state: "queued",
+      jobId: job,
+      leaseUntil: NOW + 31 * MINUTE,
+    });
+  });
+
+  test("the sweeper enqueues a queued row again once its job has left the pool", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    const job = (await item(h, itemId)).jobId;
+    poolFinishesEveryJob();
+    vi.setSystemTime(NOW + 16 * MINUTE);
+
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
+
+    expect((await item(h, itemId)).jobId).not.toBe(job);
   });
 
   test("new mail is queued with a pickup deadline and a triage job", async () => {

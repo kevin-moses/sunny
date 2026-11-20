@@ -316,6 +316,7 @@ export default defineSchema({
     historyId: v.string(),
     lastPolledAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
+    pollJobId: v.optional(vWorkIdValidator),
   })
     .index("by_household", ["householdId"])
     .index("by_status", ["status"])

@@ -597,6 +597,22 @@ describe("Polling", () => {
     expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
   });
 
+  test("pollAll skips a mailbox whose last poll still waits in the pool and polls it once that job ends", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    await addMailbox(t, householdId);
+
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
+    const firstJob = (await mailboxRows(t))[0]!.pollJobId;
+    expect(firstJob).toBeDefined();
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(0);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(gmailMocks.listHistory).toHaveBeenCalledTimes(1);
+    expect(await t.mutation(internal.gmail.pollAll, {})).toBe(1);
+    expect((await mailboxRows(t))[0]!.pollJobId).not.toBe(firstJob);
+  });
+
   test("pollAll queues active mailboxes only", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);

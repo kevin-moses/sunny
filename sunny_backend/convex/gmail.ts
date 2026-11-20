@@ -28,7 +28,7 @@ import type { GoogleGrant } from "./lib/google";
 import { googleAccount, holdsGrant, scheduleGrantRevoke, storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { mailFailure } from "./lib/mailFailure";
-import { TRIAGE_PICKUP_MS, enqueueTriage, mailPool } from "./lib/mailPool";
+import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
@@ -327,7 +327,8 @@ export const pollAll = internalMutation({
     for (const mailbox of page.page) {
       const household = await ctx.db.get(mailbox.householdId);
       if (!household || household.backgroundPaused) continue;
-      await mailPool.enqueueAction(
+      if (await jobInPool(ctx, mailbox.pollJobId)) continue;
+      const pollJobId = await mailPool.enqueueAction(
         ctx,
         internal.gmail.poll,
         { mailboxId: mailbox._id },
@@ -336,6 +337,7 @@ export const pollAll = internalMutation({
           context: { mailboxId: mailbox._id },
         },
       );
+      await ctx.db.patch(mailbox._id, { pollJobId });
       queued += 1;
     }
     if (!page.isDone) {
