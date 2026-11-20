@@ -16,15 +16,9 @@ import { mailFailure } from "./lib/mailFailure";
 import { askJev } from "./lib/jevClient";
 import { triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
-import {
-  MAX_CALENDAR_CHANGES_PER_DAY,
-  MAX_NOTES_PER_DAY,
-  caregiverText,
-  factsCover,
-  icsKey,
-  linkKey,
-  planWithRule,
-} from "./lib/mailPolicy";
+import { factsCover, icsKey, linkKey } from "./lib/mailLinks";
+import { MAX_CALENDAR_CHANGES_PER_DAY, MAX_NOTES_PER_DAY, planWithRule } from "./lib/mailPolicy";
+import { caregiverText } from "./lib/mailProse";
 import type {
   CalendarEventFact,
   KnownInvite,

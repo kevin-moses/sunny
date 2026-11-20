@@ -6,7 +6,7 @@ import { addEventCore, updateEventCore } from "../calendar";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, pushToCaregivers } from "./delivery";
-import { linkDomain } from "./mailPolicy";
+import { linkDomain } from "./mailLinks";
 import { appointmentTitle } from "./mailTypes";
 import type { MailEffect, MailSender, PolicyFacts } from "./mailTypes";
 import type { MailEffectRecord } from "./validators";

@@ -1,7 +1,8 @@
 import { JEV_MODEL } from "../../convex/lib/jevClient";
 import type { AskJev, JevReply } from "../../convex/lib/jevClient";
 import { triageEmail } from "../../convex/lib/mailJudge";
-import { icsKey, linkDomain, linkKey, planWithRule } from "../../convex/lib/mailPolicy";
+import { icsKey, linkDomain, linkKey } from "../../convex/lib/mailLinks";
+import { planWithRule } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
 import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
 import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
