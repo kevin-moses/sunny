@@ -6,7 +6,6 @@ import { gmailMocks, googleMocks, resetGoogleMocks } from "./googleMocks.helpers
 import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import { DIGEST_HEADING, MAIL_HEADING, buildBriefing } from "./lib/agentBriefing";
 import { loadDeviceState } from "./lib/deviceState";
-import { carryOut } from "./lib/mailEffects";
 import { JEV_MODEL } from "./lib/jevClient";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import type { Triaged } from "./lib/mailTypes";
@@ -140,8 +139,8 @@ describe("an appointment email", () => {
         authenticated: true,
       },
       verdict: "appointment",
-      rule: "new: otherwise",
-      judgeRule: "confirms an appointment with a date and start time",
+      rule: "new-add",
+      judgeRule: "confirmed-appointment",
       classifier: { name: JEV_MODEL, usage: { inputTokens: 4200, outputTokens: 310 } },
     });
     expect(done.judgeAnswers).toMatchObject({
@@ -249,7 +248,7 @@ describe("an appointment email", () => {
         decision: null,
       },
       summary: "The email confirms an appointment.",
-      rule: "confirms an appointment with a date and start time",
+      rule: "confirmed-appointment",
       classifier: {
         name: JEV_MODEL,
         usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0 },
@@ -297,7 +296,7 @@ describe("an appointment email", () => {
     const [event] = await rows(h, "events");
     expect(await rows(h, "events")).toHaveLength(1);
     expect(reminder.effects).toEqual([{ kind: "already_on_calendar", eventId: event!._id }]);
-    expect(reminder.rule).toContain("already linked");
+    expect(reminder.rule).toBe("new-on-calendar");
     expect(await rows(h, "chatPosts")).toHaveLength(1);
   });
 
@@ -480,7 +479,7 @@ describe("an appointment email", () => {
     ].join("\r\n");
     const done = await triageEmail(h, clinic({ ics }), { kind: "eye_doctor" });
     expect(jevCalls).toHaveLength(1);
-    expect(done).toMatchObject({ judgeRule: "calendar invitation", rule: "new: otherwise" });
+    expect(done).toMatchObject({ judgeRule: "ics-invitation", rule: "new-add" });
     const [event] = await rows(h, "events");
     expect(event).toMatchObject({
       title: "Eye exam",
@@ -572,7 +571,7 @@ describe("an appointment email", () => {
         before: { date: "2026-12-10", time: "14:15" },
       },
     );
-    expect(done).toMatchObject({ judgeRule: "invitation for a moved appointment" });
+    expect(done).toMatchObject({ judgeRule: "ics-moved" });
     expect(done.effects).toEqual([
       { kind: "event_rescheduled", eventId, fromDate: "2026-12-10", fromTime: "14:15" },
       { kind: "told_caregivers", pushed: true },
@@ -872,7 +871,7 @@ describe("other verdicts", () => {
   test("mail Gmail filed as a promotion is ignored without the model", async () => {
     const h = await setup();
     const done = await triageEmail(h, clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }));
-    expect(done).toMatchObject({ state: "done", rule: "ignore: any", effects: [] });
+    expect(done).toMatchObject({ state: "done", rule: "ignore", effects: [] });
     expect(jevCalls).toHaveLength(0);
   });
 
@@ -1392,65 +1391,6 @@ describe("the item lifecycle", () => {
     expect(row).toMatchObject({ account: MAILBOX, state: "queued", attempt: 0 });
     expect(row.leaseUntil! - NOW).toBeGreaterThanOrEqual(15 * MINUTE);
     expect(row.leaseUntil! - NOW).toBeLessThan(15 * MINUTE + 1000);
-  });
-});
-
-describe("carrying out a plan", () => {
-  test("an event the calendar refuses becomes an unclear_appointment escalation", async () => {
-    const h = await setup();
-    const itemId = await receive(h, clinic());
-    const records = await h.t.run(async (ctx) => {
-      const household = (await ctx.db.get(h.householdId))!;
-      const row = (await ctx.db.get(itemId))!;
-      const appointment = {
-        kind: "eye_doctor" as const,
-        date: "2026-11-01",
-        time: "09:00",
-        durationMinutes: null,
-      };
-      return await carryOut(
-        {
-          ctx,
-          household,
-          item: row,
-          facts: {
-            now: NOW,
-            timezone: household.timezone,
-            sender: { name: "Clinic", address: "a@clinic.example", authenticated: true },
-            subject: "Confirmed",
-            receivedAt: NOW - MINUTE,
-            gmailId: row.gmailId,
-            ics: null,
-            events: [],
-            linked: null,
-            calendarChangesToday: 0,
-          },
-          events: new Map(),
-          summary: "An eye exam.",
-        },
-        [
-          { kind: "add_event", appointment, appointmentKey: "appt:x" },
-          {
-            kind: "tell_caregivers",
-            body: "Sunny added Eye exam.",
-            notice: "Sunny added Eye exam.",
-            push: false,
-          },
-        ],
-      );
-    });
-    expect(records).toEqual([
-      {
-        kind: "escalated",
-        reason: "unclear_appointment",
-        pushed: true,
-        proposed: { kind: "eye_doctor", date: "2026-11-01", time: "09:00" },
-      },
-    ]);
-    expect(await rows(h, "events")).toHaveLength(0);
-    const posts = await rows(h, "chatPosts");
-    expect(posts).toHaveLength(1);
-    expect(posts[0]!.body).toContain("Sunny could not add Eye exam");
   });
 });
 

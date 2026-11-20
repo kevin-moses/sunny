@@ -47,7 +47,7 @@ describe("askJev through triage", () => {
     jevSays(EYE_EXAM);
     const triaged = await triageEmail(email(), CLOCK, null, askJev);
     expect(triaged).toMatchObject({
-      rule: "confirms an appointment with a date and start time",
+      rule: "confirmed-appointment",
       summary: "The email confirms an appointment.",
       classifier: {
         name: JEV_MODEL,

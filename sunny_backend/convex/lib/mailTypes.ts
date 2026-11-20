@@ -19,8 +19,6 @@ import type {
   usage,
 } from "./validators";
 
-export { APPOINTMENT_KIND_NAMES, DECISION_REASONS, ESCALATION_REASONS, INFO_TOPICS, SUSPICIONS };
-
 export type MailSender = Infer<typeof mailSender>;
 
 export type IcsEvent = Infer<typeof icsEvent>;
@@ -205,11 +203,11 @@ export interface PolicyFacts {
   sender: MailSender;
   subject: string;
   receivedAt: number;
-  gmailId: string;
   ics: IcsEvent | null;
   events: CalendarEventFact[];
   linked: LinkedEvent | null;
   calendarChangesToday: number;
+  seniorNotesToday: number;
 }
 
 export type LinkMaker = "this_address" | "another_address";
@@ -225,6 +223,8 @@ export interface CaregiverMessage {
   notice: string;
 }
 
+export type CaregiverPush = { push: false } | { push: true; title: string };
+
 export type MailEffect =
   | {
       kind: "add_event";
@@ -239,7 +239,7 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string; appointmentKey: string }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | ({ kind: "tell_caregivers"; push: boolean } & CaregiverMessage)
+  | ({ kind: "tell_caregivers" } & CaregiverMessage & CaregiverPush)
   | ({
       kind: "escalate";
       reason: EscalationReason;

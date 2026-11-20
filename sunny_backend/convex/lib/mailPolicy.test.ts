@@ -1,56 +1,26 @@
 import { describe, expect, test } from "vitest";
+import { planWithRule } from "./mailPolicy";
 import {
-  appointmentFields,
-  appointmentKey,
-  caregiverText,
-  linkKey,
-  matchEvent,
-  planWithRule,
-} from "./mailPolicy";
+  EVENTS,
+  NOW,
+  NY,
+  appointment,
+  facts,
+  invite,
+  newAppointment,
+} from "./mailPolicyFixtures.helpers";
 import { SENIOR_SENTENCES } from "./mailTypes";
 import { noteExpiry } from "./seniorNotes";
 import type {
   Appointment,
   AppointmentRef,
   CalendarEventFact,
-  IcsEvent,
   LinkedEvent,
   MailEffect,
   MailVerdict,
   PolicyFacts,
 } from "./mailTypes";
 import { DAY_MS, zonedInstant } from "./time";
-
-const NY = "America/New_York";
-const NOW = zonedInstant("2026-11-18", "09:00", NY);
-const CLOCK = { now: NOW, timezone: NY };
-
-const EVENTS: CalendarEventFact[] = [
-  {
-    eventId: "evt_eye",
-    title: "Eye exam with Dr. Rivera",
-    date: "2026-11-24",
-    time: "10:30",
-    durationMinutes: 60,
-    repeating: false,
-  },
-  {
-    eventId: "evt_pt",
-    title: "Physical therapy",
-    date: "2026-11-20",
-    time: "14:00",
-    durationMinutes: 45,
-    repeating: false,
-  },
-  {
-    eventId: "evt_dentist",
-    title: "Dentist cleaning",
-    date: "2026-12-02",
-    time: "09:00",
-    durationMinutes: null,
-    repeating: false,
-  },
-];
 
 const UNVERIFIED = { sender: { name: "x", address: "x@x.example", authenticated: false } };
 
@@ -59,26 +29,6 @@ const PT_SENDER = {
   address: "frontdesk@riversidept.example",
   authenticated: true,
 };
-
-function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
-  return {
-    now: NOW,
-    timezone: NY,
-    sender: {
-      name: "Lakeside Eye Care",
-      address: "appointments@lakesideeye.example",
-      authenticated: true,
-    },
-    subject: "Your appointment",
-    receivedAt: NOW - 3_600_000,
-    gmailId: "m1",
-    ics: null,
-    events: EVENTS,
-    linked: null,
-    calendarChangesToday: 0,
-    ...overrides,
-  };
-}
 
 const CANCELLED_HEARING: LinkedEvent = {
   eventId: "evt_gone",
@@ -92,33 +42,6 @@ function linkTo(eventId: string): LinkedEvent {
   const event = EVENTS.find((e) => e.eventId === eventId);
   if (event === undefined) throw new Error(eventId);
   return { eventId, occurs: true };
-}
-
-function invite(overrides: Partial<IcsEvent> = {}): IcsEvent {
-  return {
-    method: "REQUEST",
-    uid: "u-1",
-    start: { date: "2026-12-10", time: "14:15" },
-    durationMinutes: 45,
-    summary: "Hearing test",
-    location: null,
-    recurring: false,
-    sequence: 0,
-    ...overrides,
-  };
-}
-
-function appointment(overrides: Partial<Appointment> = {}): Appointment {
-  return { kind: "hearing", date: "2026-12-10", time: "14:15", durationMinutes: 45, ...overrides };
-}
-
-function newAppointment(overrides: Partial<Appointment> = {}): MailVerdict {
-  return {
-    kind: "appointment",
-    change: "new",
-    appointment: appointment(overrides),
-    decision: null,
-  };
 }
 
 function reschedule(previous: AppointmentRef, overrides: Partial<Appointment> = {}): MailVerdict {
@@ -178,6 +101,14 @@ describe("planWithRule decision table", () => {
     test("with a date in the past escalates as unclear", () => {
       const effects = effectsOf(newAppointment({ date: "2026-11-17" }), facts());
       expect(kinds(effects)).toEqual(["escalate:unclear_appointment:true"]);
+      expect(effects[0]).toMatchObject({
+        proposed: { kind: "hearing", date: "2026-11-17", time: "14:15" },
+      });
+    });
+    test("an appointment without a date and a time Sunny can read is not planned", () => {
+      expect(() => effectsOf(newAppointment({ time: "2:15 PM" }), facts(UNVERIFIED))).toThrow(
+        "not a date and a time",
+      );
     });
 
     test("linked to a cancelled event at its slot is already on the calendar and not added again", () => {
@@ -321,7 +252,11 @@ describe("planWithRule decision table", () => {
         eventId: "evt_pt",
         appointment: { date: "2026-11-23", time: "15:00" },
       });
-      expect(effects[1]).toMatchObject({ kind: "tell_caregivers", push: true });
+      expect(effects[1]).toMatchObject({
+        kind: "tell_caregivers",
+        push: true,
+        title: "Sunny moved an appointment",
+      });
       const body = effects[1]?.kind === "tell_caregivers" ? effects[1].body : "";
       expect(body).toContain(
         "from Friday, November 20 at 2:00 PM to Monday, November 23 at 3:00 PM",
@@ -706,6 +641,20 @@ describe("planWithRule decision table", () => {
       ]);
     });
 
+    test("over the daily limit of notes goes to the caregivers without a push", () => {
+      const effects = effectsOf(info, facts({ seniorNotesToday: 3 }));
+      expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
+      expect(effects[0]).toMatchObject({
+        notice: `Sunny held back this note for the senior because the daily limit of 3 notes was reached: ${SENIOR_SENTENCES.prescription_ready}`,
+      });
+    });
+
+    test("a third note today is still written", () => {
+      expect(effectsOf(info, facts({ seniorNotesToday: 2 }))[0]).toMatchObject({
+        kind: "senior_note",
+      });
+    });
+
     test("from a stale email plans nothing", () => {
       expect(effectsOf(info, facts({ receivedAt: NOW - DAY_MS - 1 }))).toEqual([]);
     });
@@ -752,95 +701,8 @@ describe("planWithRule decision table", () => {
   });
 });
 
-describe("appointmentFields", () => {
-  test("accepts a future appointment and the edges of the ranges", () => {
-    expect(appointmentFields(appointment(), CLOCK)).toEqual(appointment());
-    expect(
-      appointmentFields(appointment({ date: "2027-12-23", durationMinutes: 480 }), CLOCK),
-    ).not.toBeNull();
-    expect(
-      appointmentFields(
-        appointment({ date: "2026-11-18", time: "09:00", durationMinutes: 5 }),
-        CLOCK,
-      ),
-    ).not.toBeNull();
-  });
-
-  test.each([
-    ["a malformed date", { date: "12/10/2026" }],
-    ["a malformed time", { time: "2:15 PM" }],
-    ["a time already past", { date: "2026-11-18", time: "08:59" }],
-    ["a date over 400 days out", { date: "2027-12-24" }],
-    ["a duration under 5 minutes", { durationMinutes: 4 }],
-    ["a duration over 480 minutes", { durationMinutes: 481 }],
-  ])("rejects %s", (_, overrides) => {
-    expect(appointmentFields(appointment(overrides), CLOCK)).toBeNull();
-  });
-});
-
-describe("caregiverText", () => {
-  test("starts with a header Sunny builds and removes links and long numbers from email text", () => {
-    const text = caregiverText(
-      facts({
-        sender: {
-          name: "Medicare Help www.medicare-help.example",
-          address: "help@medicare-help.example",
-          authenticated: false,
-        },
-        subject: `Urgent: ${"benefits ".repeat(20)}`,
-        receivedAt: zonedInstant("2026-11-18", "07:05", NY),
-      }),
-      [
-        "Sunny thinks this may be a scam.",
-        "Asks her to call 1-888-555-0199 and visit https://medicare-help.example/verify now.",
-      ],
-    );
-    const [from, subject, received, blank, ...body] = text.split("\n");
-    expect(from).toBe(
-      "From: Medicare Help [link removed] <help@medicare-help.example> (sender not verified)",
-    );
-    expect(subject?.length).toBeLessThanOrEqual("Subject: ".length + 120);
-    expect(subject?.endsWith("...")).toBe(true);
-    expect(received).toBe("Received: Wednesday, November 18 at 7:05 AM");
-    expect(blank).toBe("");
-    expect(body).toEqual([
-      "Sunny thinks this may be a scam.",
-      "Asks her to call [number removed] and visit [link removed] now.",
-    ]);
-  });
-
-  test("marks a verified sender and clips the body", () => {
-    const text = caregiverText(facts(), ["x".repeat(900)]);
-    expect(text.split("\n")[0]).toBe(
-      "From: Lakeside Eye Care <appointments@lakesideeye.example> (verified sender)",
-    );
-    expect(text.split("\n")[4]?.length).toBe(600);
-  });
-});
-
-describe("keys, matching and expiry", () => {
-  test("appointmentKey prefers the invitation UID and otherwise uses Sunny's title", () => {
-    expect(appointmentKey(appointment(), null)).toBe("appt:2026-12-10:14:15:hearing appointment");
-    expect(appointmentKey(appointment(), invite({ uid: "u-9" }))).toBe("ics:u-9");
-  });
-
-  test("linkKey gives the key to look up for each verdict", () => {
-    expect(linkKey(newAppointment(), null)).toBe("appt:2026-12-10:14:15:hearing appointment");
-    expect(linkKey({ kind: "ignore" }, null)).toBeNull();
-    expect(linkKey(null, invite({ method: "CANCEL", uid: "u-2" }))).toBe("ics:u-2");
-  });
-
-  test("matchEvent needs a word shared with Sunny's title for the kind and uses the time when given", () => {
-    const ids = (ref: AppointmentRef) => matchEvent(ref, EVENTS).map((e) => e.eventId);
-    expect(ids({ kind: "eye_doctor", date: "2026-11-24", time: "10:30" })).toEqual(["evt_eye"]);
-    expect(ids({ kind: "eye_doctor", date: "2026-11-24", time: null })).toEqual(["evt_eye"]);
-    expect(ids({ kind: "hair", date: "2026-11-24", time: "10:30" })).toEqual([]);
-    expect(ids({ kind: "other", date: "2026-11-24", time: null })).toEqual([]);
-    expect(ids({ kind: "eye_doctor", date: "2026-11-24", time: "11:00" })).toEqual([]);
-    expect(ids({ kind: "eye_doctor", date: "2026-11-25", time: "10:30" })).toEqual([]);
-  });
-
-  test("noteExpiry is the end of the next local day", () => {
+describe("noteExpiry", () => {
+  test("is the end of the next local day", () => {
     expect(noteExpiry(zonedInstant("2026-11-18", "23:30", NY), NY)).toBe(
       zonedInstant("2026-11-20", "00:00", NY),
     );

@@ -1,100 +1,32 @@
-import {
-  APPOINTMENT_KINDS,
-  APPOINTMENT_KIND_NAMES,
-  APPOINTMENT_TITLES,
-  SENIOR_SENTENCES,
-  appointmentTitle,
-} from "./mailTypes";
+import { APPOINTMENT_KINDS, APPOINTMENT_TITLES, SENIOR_SENTENCES } from "./mailTypes";
+import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
 import type {
   Appointment,
   AppointmentKind,
   AppointmentRef,
   CalendarEventFact,
   CaregiverConfirms,
-  CaregiverMessage,
+  CaregiverPush,
   DecisionReason,
   EscalationReason,
-  IcsEvent,
   InfoTopic,
-  LinkedEvent,
-  LinkMaker,
   MailEffect,
-  MailSender,
   MailVerdict,
   PolicyFacts,
   Proposed,
   Suspicion,
   Triaged,
 } from "./mailTypes";
-import { domainOf } from "./mailParse";
+import type { CheckedAppointment } from "./mailLinks";
+import { appointmentKey, linkedFacts, matchEvent, resolveLink, titleWords } from "./mailLinks";
+import { caregiverMessage, described, when } from "./mailProse";
 import { noteExpiry } from "./seniorNotes";
-import { ellipsize, oneLine, textKey } from "./text";
-import {
-  DAY_MS,
-  MINUTE_MS,
-  dateLabel,
-  daysBetween,
-  formatTime12,
-  isLocalDate,
-  isLocalTime,
-  localDate,
-  localTime,
-  weekdayName,
-  zonedInstant,
-} from "./time";
+import { DAY_MS, dateLabel, formatTime12 } from "./time";
 
-export const STALE_AFTER_MS = DAY_MS;
-const MAX_DAYS_AHEAD = 400;
+const STALE_AFTER_MS = DAY_MS;
 export const MAX_CALENDAR_CHANGES_PER_DAY = 5;
+export const MAX_NOTES_PER_DAY = 3;
 const DAILY_LIMIT = `the daily limit of ${MAX_CALENDAR_CHANGES_PER_DAY} calendar changes from email was reached`;
-const MIN_DURATION_MINUTES = 5;
-const MAX_DURATION_MINUTES = 480;
-const ASSUMED_DURATION_MINUTES = 30;
-const MAX_SHOWN_SUBJECT = 120;
-const MAX_CAREGIVER_BODY = 600;
-const MAX_SCRUBBED = 4 * MAX_CAREGIVER_BODY;
-const LINK_REMOVED = "[link removed]";
-const NUMBER_REMOVED = "[number removed]";
-
-const STOP_WORDS = new Set(["the", "and", "for", "with", "appointment", "appt", "visit", "your"]);
-
-export function icsKey(ics: IcsEvent): string {
-  return `ics:${ics.uid}`;
-}
-
-export function appointmentKey(appointment: Appointment, ics: IcsEvent | null): string {
-  if (ics !== null) return icsKey(ics);
-  return `appt:${appointment.date}:${appointment.time}:${textKey(appointmentTitle(appointment.kind, appointment.time))}`;
-}
-
-export function linkDomain(sender: MailSender): string | null {
-  return sender.authenticated ? domainOf(sender.address) : null;
-}
-
-function appointmentOf(verdict: MailVerdict | null): Appointment | null {
-  return verdict?.kind === "appointment" && verdict.change !== "cancel"
-    ? verdict.appointment
-    : null;
-}
-
-export function linkKey(verdict: MailVerdict | null, ics: IcsEvent | null): string | null {
-  if (ics !== null) return icsKey(ics);
-  const appointment = appointmentOf(verdict);
-  return appointment === null ? null : appointmentKey(appointment, null);
-}
-
-function titleWords(title: string): Set<string> {
-  return new Set(
-    textKey(title)
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w)),
-  );
-}
-
-function sharesWords(a: string, b: string): boolean {
-  const words = titleWords(a);
-  return [...titleWords(b)].some((w) => words.has(w));
-}
 
 const CONFIRMED = APPOINTMENT_KIND_NAMES.flatMap((kind) => {
   const { title, caregiverConfirms } = APPOINTMENT_KINDS[kind];
@@ -121,101 +53,28 @@ function confirmsMove(kind: AppointmentKind, eventTitle: string): CaregiverConfi
   );
 }
 
-export function matchEvent(ref: AppointmentRef, events: CalendarEventFact[]): CalendarEventFact[] {
-  return events.filter(
-    (e) =>
-      e.date === ref.date &&
-      (ref.time === null || e.time === ref.time) &&
-      sharesWords(e.title, appointmentTitle(ref.kind, ref.time)),
-  );
-}
-
-export function factsCover(date: string, clock: { now: number; timezone: string }): boolean {
-  const today = localDate(clock.now, clock.timezone);
-  return date >= today && daysBetween(today, date) <= MAX_DAYS_AHEAD;
-}
-
-export function appointmentFields(
-  appointment: Appointment,
-  clock: { now: number; timezone: string },
-): Appointment | null {
-  const { date, time, durationMinutes } = appointment;
-  if (!isLocalDate(date) || !isLocalTime(time)) return null;
-  if (zonedInstant(date, time, clock.timezone) < clock.now) return null;
-  if (!factsCover(date, clock)) return null;
-  if (
-    durationMinutes !== null &&
-    (!Number.isInteger(durationMinutes) ||
-      durationMinutes < MIN_DURATION_MINUTES ||
-      durationMinutes > MAX_DURATION_MINUTES)
-  ) {
-    return null;
-  }
-  return appointment;
-}
-
-function scrub(text: string): string {
-  return oneLine(text.slice(0, MAX_SCRUBBED))
-    .replace(/(?:https?:\/\/|www\.)\S+/gi, LINK_REMOVED)
-    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/\S*/gi, LINK_REMOVED)
-    .replace(/\d(?:[\s().-]*\d){6,}/g, NUMBER_REMOVED);
-}
-
-export function when(date: string, time: string): string {
-  return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
-}
-
-export function caregiverText(
-  facts: Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">,
-  lines: string[],
-): string {
-  const { sender } = facts;
-  const name = scrub(sender.name);
-  const from = name === "" ? sender.address : `${name} <${sender.address}>`;
-  const received = when(
-    localDate(facts.receivedAt, facts.timezone),
-    localTime(facts.receivedAt, facts.timezone),
-  );
-  const body = lines.map(scrub).filter((line) => line !== "");
-  return [
-    `From: ${from} (${sender.authenticated ? "verified sender" : "sender not verified"})`,
-    `Subject: ${ellipsize(scrub(facts.subject), MAX_SHOWN_SUBJECT)}`,
-    `Received: ${received}`,
-    "",
-    ellipsize(body.join("\n"), MAX_CAREGIVER_BODY),
-  ].join("\n");
-}
-
-export function isStale(facts: { receivedAt: number; now: number }): boolean {
+function isStale(facts: { receivedAt: number; now: number }): boolean {
   return facts.receivedAt < facts.now - STALE_AFTER_MS;
-}
-
-export function caregiverMessage(
-  facts: PolicyFacts,
-  line: string,
-  summary: string,
-): CaregiverMessage {
-  const place = facts.ics?.location ?? null;
-  const placeLine = place === null ? [] : [`Place in the invitation: ${place}`];
-  return { body: caregiverText(facts, [line, ...placeLine, summary]), notice: scrub(line) };
-}
-
-function overlaps(a: Appointment, b: CalendarEventFact, timezone: string): boolean {
-  const aStart = zonedInstant(a.date, a.time, timezone);
-  const bStart = zonedInstant(b.date, b.time, timezone);
-  const aEnd = aStart + (a.durationMinutes ?? ASSUMED_DURATION_MINUTES) * MINUTE_MS;
-  const bEnd = bStart + (b.durationMinutes ?? ASSUMED_DURATION_MINUTES) * MINUTE_MS;
-  return aStart < bEnd && bStart < aEnd;
 }
 
 interface Context {
   facts: PolicyFacts;
-  authenticated: boolean;
   stale: boolean;
   atDailyLimit: boolean;
-  summary: string;
-  decision: DecisionReason | null;
+  atNoteLimit: boolean;
 }
+
+type Draft =
+  | Exclude<MailEffect, { kind: "tell_caregivers" | "escalate" }>
+  | ({ kind: "tell_caregivers"; line: string } & CaregiverPush)
+  | {
+      kind: "escalate";
+      reason: EscalationReason;
+      line: string;
+      push: boolean;
+      eventId: string | null;
+      proposed: Proposed | null;
+    };
 
 const ALSO_NEEDS: Record<DecisionReason, string> = {
   cancellation: "The email also mentions a cancellation.",
@@ -228,21 +87,22 @@ const ALSO_NEEDS: Record<DecisionReason, string> = {
   other: "The email may also need a reply, a payment or a decision.",
 };
 
-type Situation =
+export type Situation =
   | { case: "ignore" }
+  | { case: "new"; appointment: CheckedAppointment; conflict: CalendarEventFact | null }
+  | { case: "new_rejected"; appointment: CheckedAppointment }
+  | { case: "new_on_calendar"; appointment: CheckedAppointment; eventId: string }
   | {
-      case: "new";
-      appointment: Appointment;
-      fields: Appointment | null;
-      calendar: CalendarHas;
-      conflict: CalendarEventFact | null;
+      case: "new_linked_elsewhere";
+      appointment: CheckedAppointment;
+      eventId: string;
+      seen: CalendarEventFact | null;
     }
-  | {
-      case: "reschedule";
-      appointment: Appointment;
-      fields: Appointment | null;
-      matches: CalendarEventFact[];
-    }
+  | { case: "new_linked_by_another_address"; appointment: CheckedAppointment }
+  | { case: "reschedule"; appointment: CheckedAppointment; match: CalendarEventFact }
+  | { case: "reschedule_rejected"; appointment: CheckedAppointment; match: CalendarEventFact }
+  | { case: "reschedule_repeating"; appointment: CheckedAppointment; match: CalendarEventFact }
+  | { case: "reschedule_no_match"; appointment: CheckedAppointment }
   | { case: "cancel"; previous: AppointmentRef; matches: CalendarEventFact[] }
   | { case: "senior_info"; topic: InfoTopic }
   | { case: "needs_decision"; reason: DecisionReason }
@@ -251,8 +111,8 @@ type Situation =
 type Case = Situation["case"];
 
 interface Row<S> {
-  rule: string;
-  plan: (s: S, c: Context) => MailEffect[] | null;
+  id: string;
+  plan: (s: S, c: Context) => Draft[] | null;
 }
 
 interface Plan {
@@ -260,150 +120,140 @@ interface Plan {
   effects: MailEffect[];
 }
 
-export function proposed(appointment: Appointment): Proposed {
-  return { kind: appointment.kind, date: appointment.date, time: appointment.time };
+function proposal(appointment: CheckedAppointment | null): Proposed | null {
+  if (appointment === null) return null;
+  const { kind, date, time } = appointment;
+  return { kind, date, time };
 }
 
 function escalate(
-  c: Context,
   reason: EscalationReason,
   line: string,
   eventId: string | null,
-  appointment: Appointment | null,
-): MailEffect {
-  const also = c.decision === null ? "" : ` ${ALSO_NEEDS[c.decision]}`;
-  return {
-    kind: "escalate",
-    reason,
-    ...caregiverMessage(c.facts, `${line}${also}`, c.summary),
-    push: true,
-    eventId,
-    proposed: appointment === null ? null : proposed(appointment),
-  };
+  appointment: CheckedAppointment | null,
+): Draft {
+  return { kind: "escalate", reason, line, push: true, eventId, proposed: proposal(appointment) };
 }
 
-function tell(c: Context, line: string, push: boolean): MailEffect {
-  if (c.decision !== null) return escalate(c, c.decision, line, null, null);
-  return {
-    kind: "tell_caregivers",
-    ...caregiverMessage(c.facts, line, c.summary),
-    push,
-  };
-}
-
-function onCalendar(c: Context, eventId: string, key: string): MailEffect[] {
-  const already: MailEffect = {
-    kind: "already_on_calendar",
-    eventId,
-    appointmentKey: key,
-  };
-  if (c.decision === null) return [already];
-  return [
-    already,
-    escalate(c, c.decision, "The appointment is already on the calendar.", eventId, null),
-  ];
+function tell(line: string): Draft {
+  return { kind: "tell_caregivers", line, push: false };
 }
 
 function notMoved(
   match: CalendarEventFact,
-  fields: Appointment,
+  appointment: Appointment,
   because: string,
   ask: string,
 ): string {
-  return `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(fields.date, fields.time)}, because ${because}. Tell Sunny in chat to move it${ask}.`;
+  return `Sunny did not move ${match.title}, ${when(match.date, match.time)}, to ${when(appointment.date, appointment.time)}, because ${because}. Tell Sunny in chat to move it${ask}.`;
 }
 
-function only(matches: CalendarEventFact[]): CalendarEventFact | null {
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+function asked(appointment: Appointment): string {
+  return when(appointment.date, appointment.time);
 }
 
-export function described(appointment: Appointment): string {
-  return `${appointmentTitle(appointment.kind, appointment.time)}, ${when(appointment.date, appointment.time)}`;
-}
+const NEW_UNVERIFIED: Row<{ appointment: CheckedAppointment }> = {
+  id: "new-unverified-sender",
+  plan: (s, c) =>
+    c.facts.sender.authenticated
+      ? null
+      : [
+          escalate(
+            "unverified_sender",
+            `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
+            null,
+            s.appointment,
+          ),
+        ],
+};
+
+const RESCHEDULE_UNVERIFIED: Row<{ appointment: CheckedAppointment; match: CalendarEventFact }> = {
+  id: "reschedule-unverified-sender",
+  plan: ({ appointment, match }, c) =>
+    c.facts.sender.authenticated
+      ? null
+      : [
+          escalate(
+            "unclear_reschedule",
+            `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because Gmail could not verify the sender. The email asks to move it to ${asked(appointment)}. Tell Sunny in chat to move it if the email is genuine.`,
+            match.eventId,
+            appointment,
+          ),
+        ],
+};
 
 const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = {
-  ignore: [{ rule: "any", plan: () => [] }],
-  new: [
+  ignore: [{ id: "ignore", plan: () => [] }],
+  new_linked_elsewhere: [
+    NEW_UNVERIFIED,
     {
-      rule: "sender not authenticated",
-      plan: (s, c) =>
-        c.authenticated
-          ? null
-          : [
-              escalate(
-                c,
-                "unverified_sender",
-                `${described(s.appointment)}. Sunny has not added it because Gmail could not verify the sender. Tell Sunny in chat to add it if the email is genuine.`,
-                null,
-                s.appointment,
-              ),
-            ],
-    },
-    {
-      rule: "the sender's link has this appointment at another time, and no live event has the email's date, time and title words",
-      plan: (s, c) => {
-        if (s.calendar.has !== "another_time") return null;
-        const { eventId, seen } = s.calendar.elsewhere;
+      id: "new-linked-elsewhere",
+      plan: (s) => {
         const has =
-          seen === null
+          s.seen === null
             ? "no longer has this appointment at that time"
-            : `has this appointment on ${when(seen.date, seen.time)}`;
+            : `has this appointment on ${when(s.seen.date, s.seen.time)}`;
         return [
           escalate(
-            c,
             "unclear_appointment",
             `The email gives ${described(s.appointment)}. Sunny's calendar ${has}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
-            eventId,
+            s.eventId,
             s.appointment,
           ),
         ];
       },
     },
+  ],
+  new_rejected: [
+    NEW_UNVERIFIED,
     {
-      rule: "appointmentFields rejects",
-      plan: (s, c) =>
-        s.fields !== null
-          ? null
-          : [
-              escalate(
-                c,
-                "unclear_appointment",
-                `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
-                null,
-                s.appointment,
-              ),
-            ],
+      id: "new-fields-rejected",
+      plan: (s) => [
+        escalate(
+          "unclear_appointment",
+          `Sunny did not add this appointment because its date or time did not pass Sunny's checks: ${described(s.appointment)}.`,
+          null,
+          s.appointment,
+        ),
+      ],
     },
+  ],
+  new_on_calendar: [
+    NEW_UNVERIFIED,
     {
-      rule: "already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
-      plan: (s, c) =>
-        s.calendar.has !== "same"
-          ? null
-          : onCalendar(c, s.calendar.eventId, appointmentKey(s.appointment, c.facts.ics)),
+      id: "new-on-calendar",
+      plan: (s, c) => [
+        {
+          kind: "already_on_calendar",
+          eventId: s.eventId,
+          appointmentKey: appointmentKey(s.appointment, c.facts.ics),
+        },
+      ],
     },
+  ],
+  new_linked_by_another_address: [
+    NEW_UNVERIFIED,
     {
-      rule: "the link's event is over, and another address at the sender's domain made it",
-      plan: (s, c) =>
-        s.calendar.has !== "over_from_another_address"
-          ? null
-          : [
-              escalate(
-                c,
-                "unclear_appointment",
-                `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
-                null,
-                s.appointment,
-              ),
-            ],
+      id: "new-linked-by-another-address",
+      plan: (s) => [
+        escalate(
+          "unclear_appointment",
+          `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
+          null,
+          s.appointment,
+        ),
+      ],
     },
+  ],
+  new: [
+    NEW_UNVERIFIED,
     {
-      rule: "a caregiver confirms this kind first",
-      plan: (s, c) => {
+      id: "new-caregiver-confirms",
+      plan: (s) => {
         const confirms = APPOINTMENT_KINDS[s.appointment.kind].caregiverConfirms;
         if (confirms === null) return null;
         return [
           escalate(
-            c,
             confirms.reason,
             `${described(s.appointment)}. Sunny has not added it because ${confirms.because}. Tell Sunny in chat to add it once you have checked ${confirms.checked}.`,
             null,
@@ -413,170 +263,191 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "overlaps another live event",
-      plan: (s, c) =>
-        s.conflict === null || s.fields === null
+      id: "new-conflict",
+      plan: (s) =>
+        s.conflict === null
           ? null
           : [
               escalate(
-                c,
                 "conflict",
-                `Sunny did not add ${described(s.fields)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
+                `Sunny did not add ${described(s.appointment)}, because it overlaps ${s.conflict.title} at ${formatTime12(s.conflict.time)}.`,
                 null,
-                s.fields,
+                s.appointment,
               ),
             ],
     },
     {
-      rule: "daily limit of calendar changes reached",
+      id: "new-daily-limit",
       plan: (s, c) =>
-        !c.atDailyLimit || s.fields === null
-          ? null
-          : [
+        c.atDailyLimit
+          ? [
               escalate(
-                c,
                 "daily_limit",
-                `Sunny did not add ${described(s.fields)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
+                `Sunny did not add ${described(s.appointment)}, because ${DAILY_LIMIT}. Tell Sunny in chat to add it.`,
                 null,
-                s.fields,
+                s.appointment,
               ),
-            ],
+            ]
+          : null,
     },
     {
-      rule: "otherwise",
-      plan: (s, c) =>
-        s.fields === null
-          ? null
-          : [
-              {
-                kind: "add_event",
-                appointment: s.fields,
-                appointmentKey: appointmentKey(s.fields, c.facts.ics),
-              },
-              tell(c, `Sunny added ${described(s.fields)}, to the calendar.`, false),
-            ],
+      id: "new-add",
+      plan: (s, c) => [
+        {
+          kind: "add_event",
+          appointment: s.appointment,
+          appointmentKey: appointmentKey(s.appointment, c.facts.ics),
+        },
+        tell(`Sunny added ${described(s.appointment)}, to the calendar.`),
+      ],
+    },
+  ],
+  reschedule_no_match: [
+    {
+      id: "reschedule-no-match",
+      plan: (s) => [
+        escalate(
+          "unclear_reschedule",
+          `Sunny did not move any appointment. The email asks to move one to ${asked(s.appointment)}.`,
+          null,
+          s.appointment,
+        ),
+      ],
+    },
+  ],
+  reschedule_repeating: [
+    {
+      id: "reschedule-repeating",
+      plan: ({ appointment, match }) => [
+        escalate(
+          "unclear_reschedule",
+          `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked(appointment)}. Tell Sunny in chat what to change.`,
+          match.eventId,
+          appointment,
+        ),
+      ],
+    },
+  ],
+  reschedule_rejected: [
+    RESCHEDULE_UNVERIFIED,
+    {
+      id: "reschedule-fields-rejected",
+      plan: ({ appointment, match }) => [
+        escalate(
+          "unclear_reschedule",
+          `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked(appointment)}. Tell Sunny in chat to move it.`,
+          match.eventId,
+          appointment,
+        ),
+      ],
     },
   ],
   reschedule: [
+    RESCHEDULE_UNVERIFIED,
     {
-      rule: "not authenticated, no single match, the match repeats, or new fields rejected",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (c.authenticated && match !== null && !match.repeating && s.fields !== null) return null;
-        const asked = when(s.appointment.date, s.appointment.time);
-        const line =
-          match === null
-            ? `Sunny did not move any appointment. The email asks to move one to ${asked}.`
-            : match.repeating
-              ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because it is one date of a repeating event. The email asks to move it to ${asked}. Tell Sunny in chat what to change.`
-              : !c.authenticated
-                ? `Sunny did not move ${match.title}, ${when(match.date, match.time)}, because Gmail could not verify the sender. The email asks to move it to ${asked}. Tell Sunny in chat to move it if the email is genuine.`
-                : `Sunny did not move ${match.title}, ${when(match.date, match.time)}. The email asks to move it to ${asked}. Tell Sunny in chat to move it.`;
-        return [escalate(c, "unclear_reschedule", line, match?.eventId ?? null, s.appointment)];
-      },
+      id: "reschedule-already-there",
+      plan: ({ appointment, match }, c) =>
+        match.date === appointment.date && match.time === appointment.time
+          ? [
+              {
+                kind: "already_on_calendar",
+                eventId: match.eventId,
+                appointmentKey: appointmentKey(appointment, c.facts.ics),
+              },
+            ]
+          : null,
     },
     {
-      rule: "the match already has the new date and time",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        return match !== null &&
-          s.fields !== null &&
-          match.date === s.fields.date &&
-          match.time === s.fields.time
-          ? onCalendar(c, match.eventId, appointmentKey(s.fields, c.facts.ics))
-          : null;
-      },
-    },
-    {
-      rule: "a caregiver confirms moving this kind first",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (match === null || s.fields === null) return null;
-        const confirms = confirmsMove(s.appointment.kind, match.title);
+      id: "reschedule-caregiver-confirms",
+      plan: ({ appointment, match }) => {
+        const confirms = confirmsMove(appointment.kind, match.title);
         if (confirms === null) return null;
         return [
           escalate(
-            c,
             confirms.reason,
             notMoved(
               match,
-              s.fields,
+              appointment,
               confirms.because,
               ` once you have checked ${confirms.checked}`,
             ),
             match.eventId,
-            s.fields,
+            appointment,
           ),
         ];
       },
     },
     {
-      rule: "daily limit of calendar changes reached",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (!c.atDailyLimit || match === null || s.fields === null) return null;
-        return [
-          escalate(
-            c,
-            "daily_limit",
-            notMoved(match, s.fields, DAILY_LIMIT, ""),
-            match.eventId,
-            s.fields,
-          ),
-        ];
-      },
+      id: "reschedule-daily-limit",
+      plan: ({ appointment, match }, c) =>
+        c.atDailyLimit
+          ? [
+              escalate(
+                "daily_limit",
+                notMoved(match, appointment, DAILY_LIMIT, ""),
+                match.eventId,
+                appointment,
+              ),
+            ]
+          : null,
     },
     {
-      rule: "exactly one match",
-      plan: (s, c) => {
-        const match = only(s.matches);
-        if (match === null || s.fields === null) return null;
-        return [
-          {
-            kind: "reschedule_event",
-            eventId: match.eventId,
-            appointment: s.fields,
-            appointmentKey: appointmentKey(s.fields, c.facts.ics),
-          },
-          tell(
-            c,
-            `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
-            true,
-          ),
-        ];
-      },
+      id: "reschedule-move",
+      plan: ({ appointment, match }, c) => [
+        {
+          kind: "reschedule_event",
+          eventId: match.eventId,
+          appointment,
+          appointmentKey: appointmentKey(appointment, c.facts.ics),
+        },
+        {
+          kind: "tell_caregivers",
+          line: `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${asked(appointment)}.`,
+          push: true,
+          title: "Sunny moved an appointment",
+        },
+      ],
     },
   ],
   cancel: [
     {
-      rule: "any",
-      plan: (s, c) => {
-        const match = only(s.matches);
+      id: "cancel",
+      plan: (s) => {
+        const match = s.matches.length === 1 ? s.matches[0] : undefined;
         const line =
-          match === null
+          match === undefined
             ? `The sender cancelled an appointment on ${dateLabel(s.previous.date)}. Sunny found no single matching event and changed nothing.`
             : `The sender cancelled ${match.title}, ${when(match.date, match.time)}. Sunny left it on the calendar; tell Sunny in chat to cancel it.`;
-        return [escalate(c, "cancellation", line, match?.eventId ?? null, null)];
+        return [escalate("cancellation", line, match?.eventId ?? null, null)];
       },
     },
   ],
   senior_info: [
-    { rule: "stale", plan: (_, c) => (c.stale ? [] : null) },
+    { id: "senior-info-stale", plan: (_, c) => (c.stale ? [] : null) },
     {
-      rule: "not authenticated",
+      id: "senior-info-unverified-sender",
       plan: (_, c) =>
-        c.authenticated
+        c.facts.sender.authenticated
           ? null
           : [
               tell(
-                c,
                 "Sunny did not tell the senior about this email because Gmail could not verify the sender.",
-                false,
               ),
             ],
     },
     {
-      rule: "otherwise",
+      id: "senior-info-daily-limit",
+      plan: (s, c) =>
+        c.atNoteLimit
+          ? [
+              tell(
+                `Sunny held back this note for the senior because the daily limit of ${MAX_NOTES_PER_DAY} notes was reached: ${SENIOR_SENTENCES[s.topic]}`,
+              ),
+            ]
+          : null,
+    },
+    {
+      id: "senior-info-note",
       plan: (s, c) => [
         {
           kind: "senior_note",
@@ -588,16 +459,15 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   needs_decision: [
     {
-      rule: "any",
-      plan: (s, c) => [escalate(c, s.reason, "This email needs a decision.", null, null)],
+      id: "needs-decision",
+      plan: (s) => [escalate(s.reason, "This email needs a decision.", null, null)],
     },
   ],
   suspicious: [
     {
-      rule: "any",
-      plan: (s, c) => [
+      id: "suspicious",
+      plan: (s) => [
         escalate(
-          c,
           s.suspicion,
           "Sunny thinks this email may be a scam and did not tell the senior about it.",
           null,
@@ -608,118 +478,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function matchesFor(ref: AppointmentRef | null, facts: PolicyFacts): CalendarEventFact[] {
-  const { linked } = facts;
-  if (linked !== null) return facts.events.filter((e) => e.eventId === linked.eventId);
-  return ref === null ? [] : matchEvent(ref, facts.events);
-}
-
-function sameSlot(a: { date: string; time: string }, b: { date: string; time: string }): boolean {
-  return a.date === b.date && a.time === b.time;
-}
-
-interface Elsewhere {
-  eventId: string;
-  seen: CalendarEventFact | null;
-}
-
-type LinkPlace =
-  | { at: "slot" }
-  | { at: "elsewhere"; elsewhere: Elsewhere }
-  | { at: "outside_facts" }
-  | { at: "over"; date: string; time: string; madeBy: LinkMaker };
-
-type CalendarHas =
-  | { has: "nothing" }
-  | { has: "same"; eventId: string }
-  | { has: "another_time"; elsewhere: Elsewhere }
-  | { has: "over_from_another_address" };
-
-function linkPlace(linked: LinkedEvent, slot: Appointment, facts: PolicyFacts): LinkPlace {
-  const { eventId } = linked;
-  const live = facts.events.filter((e) => e.eventId === eventId);
-  if (live.some((e) => sameSlot(e, slot))) return { at: "slot" };
-  const seen = live.find((e) => e.date === slot.date) ?? live[0];
-  if (seen !== undefined) return { at: "elsewhere", elsewhere: { eventId, seen } };
-  if (!linked.occurs) {
-    return { at: "over", date: linked.date, time: linked.time, madeBy: linked.madeBy };
-  }
-  return factsCover(slot.date, facts)
-    ? { at: "elsewhere", elsewhere: { eventId, seen: null } }
-    : { at: "outside_facts" };
-}
-
-interface ScopedLink {
-  linked: LinkedEvent | null;
-  elsewhere: Elsewhere | null;
-}
-
-function scopedLink(appointment: Appointment | null, facts: PolicyFacts): ScopedLink {
-  const { linked } = facts;
-  if (linked === null || facts.ics !== null) return { linked, elsewhere: null };
-  if (appointment === null) return { linked: null, elsewhere: null };
-  const place = linkPlace(linked, appointment, facts);
-  return place.at === "elsewhere"
-    ? { linked: null, elsewhere: place.elsewhere }
-    : { linked, elsewhere: null };
-}
-
-function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEventFact[] | null {
-  const { linked } = facts;
-  if (facts.ics === null || linked === null) return null;
-  const place = linkPlace(linked, appointment, facts);
-  switch (place.at) {
-    case "slot":
-    case "outside_facts":
-      return null;
-    case "elsewhere":
-      return place.elsewhere.seen === null ? [] : [place.elsewhere.seen];
-    case "over":
-      return sameSlot(place, appointment) ? null : [];
-  }
-}
-
-function calendarHas(
-  appointment: Appointment,
-  fields: Appointment | null,
-  elsewhere: Elsewhere | null,
-  facts: PolicyFacts,
-): CalendarHas {
-  const { linked } = facts;
-  const place = linked === null ? null : linkPlace(linked, appointment, facts);
-  const overFromAnother = place?.at === "over" && place.madeBy === "another_address";
-  if (linked !== null && !overFromAnother) return { has: "same", eventId: linked.eventId };
-  const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
-  if (same !== undefined) return { has: "same", eventId: same.eventId };
-  if (elsewhere !== null) return { has: "another_time", elsewhere };
-  return linked === null ? { has: "nothing" } : { has: "over_from_another_address" };
-}
-
-function newSituation(
-  appointment: Appointment,
-  elsewhere: Elsewhere | null,
-  facts: PolicyFacts,
-): Situation {
-  const fields = appointmentFields(appointment, facts);
-  const moved = linkedInvite(appointment, facts);
-  if (moved !== null) return { case: "reschedule", appointment, fields, matches: moved };
-  return {
-    case: "new",
-    appointment,
-    fields,
-    calendar: calendarHas(appointment, fields, elsewhere, facts),
-    conflict:
-      fields === null
-        ? null
-        : (facts.events.find((e) => overlaps(fields, e, facts.timezone)) ?? null),
-  };
-}
-
-function situationOf(
-  verdict: MailVerdict,
-  facts: PolicyFacts,
-  elsewhere: Elsewhere | null,
-): Situation {
+function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
   switch (verdict.kind) {
     case "ignore":
       return { case: "ignore" };
@@ -730,45 +489,103 @@ function situationOf(
     case "suspicious":
       return { case: "suspicious", suspicion: verdict.suspicion };
   }
-  switch (verdict.change) {
-    case "cancel":
-      return {
-        case: "cancel",
-        previous: verdict.previous,
-        matches: matchesFor(verdict.previous, facts),
-      };
-    case "reschedule":
-      return {
-        case: "reschedule",
-        appointment: verdict.appointment,
-        fields: appointmentFields(verdict.appointment, facts),
-        matches: matchesFor(verdict.previous, facts),
-      };
-    case "new":
-      return newSituation(verdict.appointment, elsewhere, facts);
-  }
+  if (verdict.change !== "cancel") return resolveLink(verdict, facts);
+  const { linked } = facts;
+  return {
+    case: "cancel",
+    previous: verdict.previous,
+    matches:
+      linked === null ? matchEvent(verdict.previous, facts.events) : linkedFacts(linked, facts),
+  };
+}
+
+interface Drafted {
+  rule: string;
+  drafts: Draft[];
 }
 
 function runTable<K extends Case>(
   rows: Row<Extract<Situation, { case: K }>>[],
   situation: Extract<Situation, { case: K }>,
   context: Context,
-): Plan {
+): Drafted {
   for (const row of rows) {
-    const effects = row.plan(situation, context);
-    if (effects !== null) return { rule: `${situation.case}: ${row.rule}`, effects };
+    const drafts = row.plan(situation, context);
+    if (drafts !== null) return { rule: row.id, drafts };
   }
-  return { rule: `${situation.case}: no row`, effects: [] };
+  throw new Error(`The mail decision table has no matching row for ${situation.case}`);
 }
 
-function planFor(situation: Situation, context: Context): Plan {
+function withDecision(drafts: Draft[], decision: DecisionReason | null): Draft[] {
+  if (decision === null) return drafts;
+  const also = ALSO_NEEDS[decision];
+  return drafts.flatMap((draft): Draft[] => {
+    switch (draft.kind) {
+      case "escalate":
+        return [{ ...draft, line: `${draft.line} ${also}` }];
+      case "tell_caregivers":
+        return [escalate(decision, `${draft.line} ${also}`, null, null)];
+      case "already_on_calendar":
+        return [
+          draft,
+          escalate(
+            decision,
+            `The appointment is already on the calendar. ${also}`,
+            draft.eventId,
+            null,
+          ),
+        ];
+      default:
+        return [draft];
+    }
+  });
+}
+
+function withoutPush(draft: Draft): Draft {
+  switch (draft.kind) {
+    case "escalate":
+      return { ...draft, push: false };
+    case "tell_caregivers":
+      return tell(draft.line);
+    default:
+      return draft;
+  }
+}
+
+function rendered(draft: Draft, facts: PolicyFacts, summary: string): MailEffect {
+  switch (draft.kind) {
+    case "escalate":
+    case "tell_caregivers": {
+      const { line, ...effect } = draft;
+      return { ...effect, ...caregiverMessage(facts, line, summary) };
+    }
+    default:
+      return draft;
+  }
+}
+
+function planFor(situation: Situation, context: Context): Drafted {
   switch (situation.case) {
     case "ignore":
       return runTable(DECISION_TABLE.ignore, situation, context);
     case "new":
       return runTable(DECISION_TABLE.new, situation, context);
+    case "new_rejected":
+      return runTable(DECISION_TABLE.new_rejected, situation, context);
+    case "new_on_calendar":
+      return runTable(DECISION_TABLE.new_on_calendar, situation, context);
+    case "new_linked_elsewhere":
+      return runTable(DECISION_TABLE.new_linked_elsewhere, situation, context);
+    case "new_linked_by_another_address":
+      return runTable(DECISION_TABLE.new_linked_by_another_address, situation, context);
     case "reschedule":
       return runTable(DECISION_TABLE.reschedule, situation, context);
+    case "reschedule_rejected":
+      return runTable(DECISION_TABLE.reschedule_rejected, situation, context);
+    case "reschedule_repeating":
+      return runTable(DECISION_TABLE.reschedule_repeating, situation, context);
+    case "reschedule_no_match":
+      return runTable(DECISION_TABLE.reschedule_no_match, situation, context);
     case "cancel":
       return runTable(DECISION_TABLE.cancel, situation, context);
     case "senior_info":
@@ -782,24 +599,17 @@ function planFor(situation: Situation, context: Context): Plan {
 
 export function planWithRule(
   triaged: Pick<Triaged, "verdict" | "summary">,
-  sent: PolicyFacts,
+  facts: PolicyFacts,
 ): Plan {
-  const { linked, elsewhere } = scopedLink(appointmentOf(triaged.verdict), sent);
-  const facts = { ...sent, linked };
+  const { verdict, summary } = triaged;
   const context: Context = {
     facts,
-    authenticated: facts.sender.authenticated,
     stale: isStale(facts),
     atDailyLimit: facts.calendarChangesToday >= MAX_CALENDAR_CHANGES_PER_DAY,
-    summary: triaged.summary,
-    decision: triaged.verdict.kind === "appointment" ? triaged.verdict.decision : null,
+    atNoteLimit: facts.seniorNotesToday >= MAX_NOTES_PER_DAY,
   };
-  const plan = planFor(situationOf(triaged.verdict, facts, elsewhere), context);
-  if (!context.stale) return plan;
-  return {
-    rule: plan.rule,
-    effects: plan.effects.map((e) =>
-      (e.kind === "escalate" || e.kind === "tell_caregivers") && e.push ? { ...e, push: false } : e,
-    ),
-  };
+  const { rule, drafts } = planFor(situationOf(verdict, facts), context);
+  const decided = withDecision(drafts, verdict.kind === "appointment" ? verdict.decision : null);
+  const pushed = context.stale ? decided.map(withoutPush) : decided;
+  return { rule, effects: pushed.map((draft) => rendered(draft, facts, summary)) };
 }

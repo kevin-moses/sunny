@@ -1,14 +1,11 @@
 import { JEV_MODEL } from "../../convex/lib/jevClient";
 import type { AskJev, JevReply } from "../../convex/lib/jevClient";
 import { triageEmail } from "../../convex/lib/mailJudge";
-import { icsKey, linkDomain, linkKey, planWithRule } from "../../convex/lib/mailPolicy";
+import { icsKey, linkDomain, linkKey } from "../../convex/lib/mailLinks";
+import { planWithRule } from "../../convex/lib/mailPolicy";
 import { isRecord } from "../../convex/lib/http";
-import {
-  APPOINTMENT_TITLES,
-  ESCALATION_REASONS,
-  SENIOR_SENTENCES,
-  appointmentTitle,
-} from "../../convex/lib/mailTypes";
+import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
+import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -316,11 +313,11 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     sender: email.sender,
     subject: email.subject,
     receivedAt: email.receivedAt,
-    gmailId: email.gmailId,
     ics: email.ics,
     events: household.events,
     linked: linkedEvent(fixture, key),
     calendarChangesToday: household.calendarChangesToday,
+    seniorNotesToday: 0,
   });
   return {
     id: fixture.id,
