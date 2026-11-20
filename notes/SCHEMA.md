@@ -237,7 +237,7 @@ Rules:
 | Table | Purpose and key fields | Indexes | Written by |
 | --- | --- | --- | --- |
 | `digests` | One row per household per local date: `status` (`pending`, `done`, `failed`), `source` (`claude` or `template`), `text`, `error` | `by_household_date` (uniqueness), `by_status` (sweeper) | `digest.queueDigestIfDue` (from the tick), `compose` and `complete` (delivery pool) |
-| `chatPosts` | A post from Sunny in the household's one caregiver chat thread. One of three shapes, each with `body` and `localDate`: `kind` `digest` with `digestId`; `kind` `mail` with `mailItemId` (what Sunny did with an email, or that it could not read one); `kind` `mailbox` (Sunny now reads an address, or lost access to it) | `by_household` (newest first by creation time) | `lib/chatPosts.ts`: `postDigest` from `digest.complete`, `postMail` from the mail effects and `onMailJobComplete`, `postMailbox` from `saveMailbox` and `googleGrant.markGrant` |
+| `chatPosts` | A post from Sunny in the household's one caregiver chat thread. One of three shapes, each with `body` and `localDate`: `kind` `digest` with `digestId`; `kind` `mail` with `mailItemId` (what Sunny did with an email, or that it could not read one; the body holds only Sunny's lines and the caregiver summary, and the email's sender, subject and received time stay on the mail item); `kind` `mailbox` (Sunny now reads an address, or lost access to it) | `by_household` (newest first by creation time) | `lib/chatPosts.ts`: `postDigest` from `digest.complete`, `postMail` from the mail effects and `onMailJobComplete`, `postMailbox` from `saveMailbox` and `googleGrant.markGrant` |
 
 Rules:
 - A paused household gets no digest until it is resumed.
@@ -262,7 +262,9 @@ Rules:
 - A continuation may only continue a succeeded request of the same household.
 - Status transitions go through `lib/agentRequestState.ts`.
 
-The chat thread that the app shows is `agentRequests.transcript`: requests and `chatPosts` merged by creation time, newest first. Each item is tagged `type` `request` (the request view) or `post` (`id`, `kind`, `body`, `localDate`, `createdAt`). The transcript holds at most `limit` items across both (default 20, at most 100).
+The chat thread that the app shows is `agentRequests.transcript`: requests and `chatPosts` merged by creation time, newest first. Each item is tagged `type` `request` (the request view) or `post` (`id`, `kind`, `body`, `localDate`, `createdAt`, `mailHeader`). The transcript holds at most `limit` items across both (default 20, at most 100).
+
+`mailHeader` is set only on a `mail` post whose mail item has a sender, subject and received time, and is null otherwise. It is built by `lib/mailProse.mailHeader` when the query runs: `senderName` (links and long numbers removed, null when blank), `senderAddress`, `senderVerified`, `subject` (links and long numbers removed, cut to 120 characters), and `receivedDate` and `receivedTime` in the household's timezone. The app draws the From, Subject and Received lines from it above the body. Mail posts written before this field existed (dev deployments only) still carry those three lines at the top of their body, and the app shows them as plain body text.
 
 Every caregiver of the household may read it (`requireCaregiverReader`), and a senior device never may. A viewer gets the posts only, since requests and their replies stay editor-only, as in `list` and `get`.
 
