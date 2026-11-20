@@ -85,6 +85,7 @@ const CANCELLED_HEARING: LinkedEvent = {
   occurs: false,
   date: "2026-12-10",
   time: "14:15",
+  madeBy: "this_address",
 };
 
 function linkTo(eventId: string): LinkedEvent {
@@ -284,6 +285,7 @@ describe("planWithRule decision table", () => {
         occurs: false,
         date: "2026-12-03",
         time: "10:00",
+        madeBy: "this_address",
       };
       const effects = effectsOf(newAppointment(), facts({ ics: invite(), linked: gone }));
       expect(kinds(effects)).toEqual(["escalate:unclear_reschedule:true"]);

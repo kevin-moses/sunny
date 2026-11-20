@@ -296,7 +296,7 @@ function linkedEvent(fixture: Fixture, key: string | null): LinkedEvent | null {
   if (event === undefined)
     throw new Error(`Fixture ${fixture.id} links ${eventId}, which it lists nowhere`);
   return offCalendar.includes(event)
-    ? { eventId, occurs: false, date: event.date, time: event.time }
+    ? { eventId, occurs: false, date: event.date, time: event.time, madeBy: "this_address" }
     : { eventId, occurs: true };
 }
 

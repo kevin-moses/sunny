@@ -217,10 +217,22 @@ async function calendarFacts(
   return { events: [...singles, ...series], facts };
 }
 
-function linkedEvent(event: Doc<"events">, today: string): LinkedEvent {
-  return canStillOccur(event, today)
-    ? { eventId: event._id, occurs: true }
-    : { eventId: event._id, occurs: false, date: event.startsOn, time: event.startTime };
+async function linkedEvent(
+  ctx: QueryCtx,
+  link: Doc<"mailEventLinks">,
+  event: Doc<"events">,
+  sender: MailSender,
+  today: string,
+): Promise<LinkedEvent> {
+  if (canStillOccur(event, today)) return { eventId: event._id, occurs: true };
+  const maker = await ctx.db.get(link.mailItemId);
+  return {
+    eventId: event._id,
+    occurs: false,
+    date: event.startsOn,
+    time: event.startTime,
+    madeBy: maker?.sender?.address === sender.address ? "this_address" : "another_address",
+  };
 }
 
 const triageInput = {
@@ -272,6 +284,7 @@ async function planned(
   const link = key === null ? null : await senderLink(ctx, household._id, header.sender, key);
   const linked = link === null ? null : await ctx.db.get(link.eventId);
   if (linked !== null) events.set(linked._id, linked);
+  const today = localDate(now, household.timezone);
   const facts: PolicyFacts = {
     now,
     timezone: household.timezone,
@@ -281,7 +294,10 @@ async function planned(
     gmailId: item.gmailId,
     ics: email.ics,
     events: calendar.facts,
-    linked: linked === null ? null : linkedEvent(linked, localDate(now, household.timezone)),
+    linked:
+      link === null || linked === null
+        ? null
+        : await linkedEvent(ctx, link, linked, header.sender, today),
     calendarChangesToday: await calendarChangesToday(ctx, household, now),
   };
   return { item, household, facts, events };

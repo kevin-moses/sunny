@@ -1665,6 +1665,84 @@ describe("links belong to the sender's domain", () => {
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 
+  describe("on a shared mail domain", () => {
+    const HELPER = "Helper <someone.else@gmail.com>";
+    const GMAIL_CLINIC = "Lakeside Eye <lakesideeye@gmail.com>";
+    const OVER_ELSEWHERE =
+      "The email gives Eye exam, Thursday, December 10 at 2:15 PM. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.";
+
+    async function cancelOnly(h: MailHousehold): Promise<Id<"events">> {
+      const [event] = await rows(h, "events");
+      await h.t.run(async (ctx) => await ctx.db.patch(event!._id, { deletedAt: NOW }));
+      return event!._id;
+    }
+
+    async function liveSlots(h: MailHousehold): Promise<string[]> {
+      return slots((await rows(h, "events")).filter((e) => e.deletedAt === undefined));
+    }
+
+    test("a reminder from another address for an appointment one address added, moved and a caregiver cancelled asks", async () => {
+      const h = await setup();
+      await triageEmail(h, clinic({ from: HELPER }), EYE_EXAM);
+      await triageEmail(h, clinic({ from: HELPER, subject: "Moved" }), MOVED_EYE_EXAM);
+      await cancelOnly(h);
+      const postsBefore = (await rows(h, "chatPosts")).length;
+      const own = await triageEmail(h, clinic({ from: HELPER, subject: "Reminder" }), EYE_EXAM);
+      expect(kinds(own.effects ?? [])).toEqual(["already_on_calendar"]);
+      expect(await rows(h, "chatPosts")).toHaveLength(postsBefore);
+      const real = await triageEmail(h, clinic({ from: GMAIL_CLINIC }), EYE_EXAM);
+      expect(real.effects).toEqual([
+        {
+          kind: "escalated",
+          reason: "unclear_appointment",
+          pushed: true,
+          proposed: { kind: "eye_doctor", date: "2026-12-10", time: "14:15" },
+        },
+      ]);
+      expect(await liveSlots(h)).toEqual([]);
+      const posts = await rows(h, "chatPosts");
+      expect(posts).toHaveLength(postsBefore + 1);
+      expect(posts.at(-1)!.body).toContain(OVER_ELSEWHERE);
+      expect(posts.at(-1)!.body).not.toContain("someone.else");
+    });
+
+    test("an invite from another address at the slot of one a caregiver cancelled asks and adds nothing", async () => {
+      const h = await setup();
+      const uid = "visit-42@gmail.com";
+      await triageEmail(h, invitation(HELPER, uid, [AT_SLOT]), { kind: "eye_doctor" });
+      await cancelOnly(h);
+      const real = await triageEmail(h, invitation(GMAIL_CLINIC, uid, [AT_SLOT]), {
+        kind: "eye_doctor",
+      });
+      expect(real.effects).toEqual([
+        {
+          kind: "escalated",
+          reason: "unclear_appointment",
+          pushed: true,
+          proposed: { kind: "eye_doctor", date: "2026-12-10", time: "14:15" },
+        },
+      ]);
+      expect(await liveSlots(h)).toEqual([]);
+      expect((await rows(h, "chatPosts")).at(-1)!.body).toContain(OVER_ELSEWHERE);
+    });
+
+    test("a reminder whose link's email Sunny no longer has is treated as from another address", async () => {
+      const h = await setup();
+      const first = await triageEmail(h, clinic({ from: GMAIL_CLINIC }), EYE_EXAM);
+      await cancelOnly(h);
+      await h.t.run(async (ctx) => await ctx.db.delete(first._id));
+      const reminder = await triageEmail(
+        h,
+        clinic({ from: GMAIL_CLINIC, subject: "Reminder" }),
+        EYE_EXAM,
+      );
+      expect(reminder.effects).toEqual([
+        expect.objectContaining({ kind: "escalated", reason: "unclear_appointment" }),
+      ]);
+      expect(await liveSlots(h)).toEqual([]);
+    });
+  });
+
   describe("with a hand-entered weekly therapy series", () => {
     const THERAPY: JevSays = {
       yes: ["confirms_appointment"],

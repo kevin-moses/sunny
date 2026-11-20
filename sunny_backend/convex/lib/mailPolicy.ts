@@ -17,6 +17,7 @@ import type {
   IcsEvent,
   InfoTopic,
   LinkedEvent,
+  LinkMaker,
   MailEffect,
   MailSender,
   MailVerdict,
@@ -233,8 +234,7 @@ type Situation =
       case: "new";
       appointment: Appointment;
       fields: Appointment | null;
-      elsewhere: Elsewhere | null;
-      duplicate: string | null;
+      calendar: CalendarHas;
       conflict: CalendarEventFact | null;
     }
   | {
@@ -342,8 +342,8 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     {
       rule: "the sender's link has this appointment at another time",
       plan: (s, c) => {
-        if (s.elsewhere === null) return null;
-        const { seen } = s.elsewhere;
+        if (s.calendar.has !== "another_time") return null;
+        const { eventId, seen } = s.calendar.elsewhere;
         const has =
           seen === null
             ? "no longer has this appointment at that time"
@@ -353,7 +353,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             c,
             "unclear_appointment",
             `The email gives ${described(s.appointment)}. Sunny's calendar ${has}, so Sunny changed nothing. Tell Sunny in chat which time is right.`,
-            s.elsewhere.eventId,
+            eventId,
             s.appointment,
           ),
         ];
@@ -375,11 +375,26 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "already linked, or same date, time and title words as a live event",
+      rule: "already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
       plan: (s, c) =>
-        s.duplicate === null
+        s.calendar.has !== "same"
           ? null
-          : onCalendar(c, s.duplicate, appointmentKey(s.appointment, c.facts.ics)),
+          : onCalendar(c, s.calendar.eventId, appointmentKey(s.appointment, c.facts.ics)),
+    },
+    {
+      rule: "the link's event is over, and another address at the sender's domain made it",
+      plan: (s, c) =>
+        s.calendar.has !== "over_from_another_address"
+          ? null
+          : [
+              escalate(
+                c,
+                "unclear_appointment",
+                `The email gives ${described(s.appointment)}. An earlier email from another address at the same mail domain gave this appointment, and it is no longer coming up on Sunny's calendar, so Sunny changed nothing. Tell Sunny in chat if it should be added.`,
+                null,
+                s.appointment,
+              ),
+            ],
     },
     {
       rule: "a caregiver confirms this kind first",
@@ -612,7 +627,13 @@ type LinkPlace =
   | { at: "slot" }
   | { at: "elsewhere"; elsewhere: Elsewhere }
   | { at: "outside_facts" }
-  | { at: "over"; date: string; time: string };
+  | { at: "over"; date: string; time: string; madeBy: LinkMaker };
+
+type CalendarHas =
+  | { has: "nothing" }
+  | { has: "same"; eventId: string }
+  | { has: "another_time"; elsewhere: Elsewhere }
+  | { has: "over_from_another_address" };
 
 function linkPlace(linked: LinkedEvent, slot: Appointment, facts: PolicyFacts): LinkPlace {
   const { eventId } = linked;
@@ -620,7 +641,9 @@ function linkPlace(linked: LinkedEvent, slot: Appointment, facts: PolicyFacts): 
   if (live.some((e) => sameSlot(e, slot))) return { at: "slot" };
   const seen = live.find((e) => e.date === slot.date) ?? live[0];
   if (seen !== undefined) return { at: "elsewhere", elsewhere: { eventId, seen } };
-  if (!linked.occurs) return { at: "over", date: linked.date, time: linked.time };
+  if (!linked.occurs) {
+    return { at: "over", date: linked.date, time: linked.time, madeBy: linked.madeBy };
+  }
   return factsCover(slot.date, facts)
     ? { at: "elsewhere", elsewhere: { eventId, seen: null } }
     : { at: "outside_facts" };
@@ -656,6 +679,22 @@ function linkedInvite(appointment: Appointment, facts: PolicyFacts): CalendarEve
   }
 }
 
+function calendarHas(
+  appointment: Appointment,
+  fields: Appointment | null,
+  elsewhere: Elsewhere | null,
+  facts: PolicyFacts,
+): CalendarHas {
+  if (elsewhere !== null) return { has: "another_time", elsewhere };
+  const { linked } = facts;
+  const place = linked === null ? null : linkPlace(linked, appointment, facts);
+  const overFromAnother = place?.at === "over" && place.madeBy === "another_address";
+  if (linked !== null && !overFromAnother) return { has: "same", eventId: linked.eventId };
+  const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
+  if (same !== undefined) return { has: "same", eventId: same.eventId };
+  return linked === null ? { has: "nothing" } : { has: "over_from_another_address" };
+}
+
 function newSituation(
   appointment: Appointment,
   elsewhere: Elsewhere | null,
@@ -664,13 +703,11 @@ function newSituation(
   const fields = appointmentFields(appointment, facts);
   const moved = linkedInvite(appointment, facts);
   if (moved !== null) return { case: "reschedule", appointment, fields, matches: moved };
-  const same = fields === null ? undefined : matchEvent(fields, facts.events)[0];
   return {
     case: "new",
     appointment,
     fields,
-    elsewhere,
-    duplicate: facts.linked?.eventId ?? same?.eventId ?? null,
+    calendar: calendarHas(appointment, fields, elsewhere, facts),
     conflict:
       fields === null
         ? null

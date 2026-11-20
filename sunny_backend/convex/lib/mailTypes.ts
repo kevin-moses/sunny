@@ -270,9 +270,11 @@ export interface PolicyFacts {
   calendarChangesToday: number;
 }
 
+export type LinkMaker = "this_address" | "another_address";
+
 export type LinkedEvent =
   | { eventId: string; occurs: true }
-  | { eventId: string; occurs: false; date: string; time: string };
+  | { eventId: string; occurs: false; date: string; time: string; madeBy: LinkMaker };
 
 export const ESCALATION_REASONS = [
   ...DECISION_REASONS,
