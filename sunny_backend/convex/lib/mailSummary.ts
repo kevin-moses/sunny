@@ -1,5 +1,6 @@
 import { errorText } from "./errors";
 import { client } from "./managedAgents";
+import { shownBody } from "./mailBody";
 import type { ParsedEmail } from "./mailTypes";
 import { oneLine } from "./text";
 
@@ -7,7 +8,6 @@ const SUMMARY_MODEL = "claude-haiku-5-5";
 
 const SUMMARY_TIMEOUT_MS = 8_000;
 const MAX_OUTPUT_TOKENS = 300;
-const MAX_BODY_CHARS = 20_000;
 const MAX_SUMMARY_CHARS = 400;
 
 const SUMMARY_SYSTEM_PROMPT = [
@@ -29,13 +29,15 @@ function withoutDelimiters(text: string): string {
 }
 
 export function summaryPrompt(email: ParsedEmail): string {
+  const { text, cutNote } = shownBody(email.text);
   return [
     "<email>",
     `From: ${withoutDelimiters(oneLine(email.sender.name))} <${withoutDelimiters(email.sender.address)}>`,
     `Subject: ${withoutDelimiters(oneLine(email.subject))}`,
     "",
-    withoutDelimiters(email.text.slice(0, MAX_BODY_CHARS)),
+    withoutDelimiters(text),
     "</email>",
+    ...(cutNote === null ? [] : [cutNote]),
   ].join("\n");
 }
 

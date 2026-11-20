@@ -1,12 +1,10 @@
 import type { ChoiceQuestion, NoulQuestion } from "@typesafe-ai/sdk";
 import type { JevState } from "./jevClient";
+import { shownBody } from "./mailBody";
 import { NOT_STATED } from "./mailDates";
 import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
 import type { ParsedEmail } from "./mailTypes";
 import { MONTH_NAMES, WEEKDAY_NAMES } from "./time";
-
-export const MAX_JEV_BODY = 20_000;
-const BREAKS = ["\n\n", "\n", " "];
 
 function noul(
   instructions: string | Record<string, string>,
@@ -286,21 +284,9 @@ export function judgeQuestions(
   };
 }
 
-function cutBody(text: string): string {
-  const head = text.slice(0, MAX_JEV_BODY + 1);
-  for (const separator of BREAKS) {
-    const at = head.lastIndexOf(separator);
-    if (at > MAX_JEV_BODY / 2) return text.slice(0, at).trimEnd();
-  }
-  return text.slice(0, MAX_JEV_BODY);
-}
-
 function bodyOf(text: string): Record<string, string> {
-  if (text.length <= MAX_JEV_BODY) return { body: text };
-  return {
-    body: cutBody(text),
-    body_cut: `The body was cut after ${MAX_JEV_BODY} characters; the rest is not shown.`,
-  };
+  const { text: body, cutNote } = shownBody(text);
+  return cutNote === null ? { body } : { body, body_cut: cutNote };
 }
 
 export function judgeState(email: ParsedEmail): JevState {

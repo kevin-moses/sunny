@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { MAX_JEV_BODY, judgeState } from "./jevQuestions";
+import { judgeState } from "./jevQuestions";
+import { MAX_BODY_CHARS, shownBody } from "./mailBody";
 import { email } from "./mailFixtures.helpers";
 import type { IcsEvent } from "./mailTypes";
 
@@ -24,26 +25,12 @@ describe("the state Jev reads", () => {
     );
   });
 
-  test("a long body is cut at a paragraph boundary and the state says so", () => {
-    const paragraph = `${"The clinic newsletter has more news. ".repeat(40).trim()}\n\n`;
-    const text = paragraph.repeat(40);
-    expect(text.length).toBeGreaterThan(MAX_JEV_BODY);
+  test("a long body goes to Jev cut, with a note that the rest is not shown", () => {
+    const text = "word ".repeat(MAX_BODY_CHARS);
     const state = judgeState(email({ text })).email;
-    expect(state.body!.length).toBeLessThanOrEqual(MAX_JEV_BODY);
-    expect(text.startsWith(state.body!)).toBe(true);
-    expect(text.slice(state.body!.length).startsWith("\n\n")).toBe(true);
-    expect(state.body_cut).toBe(
-      `The body was cut after ${MAX_JEV_BODY} characters; the rest is not shown.`,
-    );
+    expect(state.body).toBe(shownBody(text).text);
+    expect(state.body_cut).toBe(shownBody(text).cutNote);
     expect(judgeState(email()).email.body_cut).toBeUndefined();
-  });
-
-  test("a long body whose only paragraph break is near the start is cut at a space", () => {
-    const text = `Hello\n\n${"word ".repeat(MAX_JEV_BODY)}`;
-    const { body } = judgeState(email({ text })).email;
-    expect(body!.length).toBeGreaterThan(MAX_JEV_BODY - 10);
-    expect(body!.length).toBeLessThanOrEqual(MAX_JEV_BODY);
-    expect(body!.endsWith("word")).toBe(true);
   });
 
   test("the state holds only the email's sender, subject and body", () => {
