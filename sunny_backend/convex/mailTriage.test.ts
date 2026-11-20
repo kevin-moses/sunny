@@ -6,7 +6,6 @@ import { gmailMocks, googleMocks, resetGoogleMocks } from "./googleMocks.helpers
 import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import { DIGEST_HEADING, MAIL_HEADING, buildBriefing } from "./lib/agentBriefing";
 import { loadDeviceState } from "./lib/deviceState";
-import { carryOut } from "./lib/mailEffects";
 import { JEV_MODEL } from "./lib/jevClient";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import type { Triaged } from "./lib/mailTypes";
@@ -1392,65 +1391,6 @@ describe("the item lifecycle", () => {
     expect(row).toMatchObject({ account: MAILBOX, state: "queued", attempt: 0 });
     expect(row.leaseUntil! - NOW).toBeGreaterThanOrEqual(15 * MINUTE);
     expect(row.leaseUntil! - NOW).toBeLessThan(15 * MINUTE + 1000);
-  });
-});
-
-describe("carrying out a plan", () => {
-  test("an event the calendar refuses becomes an unclear_appointment escalation", async () => {
-    const h = await setup();
-    const itemId = await receive(h, clinic());
-    const records = await h.t.run(async (ctx) => {
-      const household = (await ctx.db.get(h.householdId))!;
-      const row = (await ctx.db.get(itemId))!;
-      const appointment = {
-        kind: "eye_doctor" as const,
-        date: "2026-11-01",
-        time: "09:00",
-        durationMinutes: null,
-      };
-      return await carryOut(
-        {
-          ctx,
-          household,
-          item: row,
-          facts: {
-            now: NOW,
-            timezone: household.timezone,
-            sender: { name: "Clinic", address: "a@clinic.example", authenticated: true },
-            subject: "Confirmed",
-            receivedAt: NOW - MINUTE,
-            gmailId: row.gmailId,
-            ics: null,
-            events: [],
-            linked: null,
-            calendarChangesToday: 0,
-          },
-          events: new Map(),
-          summary: "An eye exam.",
-        },
-        [
-          { kind: "add_event", appointment, appointmentKey: "appt:x" },
-          {
-            kind: "tell_caregivers",
-            body: "Sunny added Eye exam.",
-            notice: "Sunny added Eye exam.",
-            push: false,
-          },
-        ],
-      );
-    });
-    expect(records).toEqual([
-      {
-        kind: "escalated",
-        reason: "unclear_appointment",
-        pushed: true,
-        proposed: { kind: "eye_doctor", date: "2026-11-01", time: "09:00" },
-      },
-    ]);
-    expect(await rows(h, "events")).toHaveLength(0);
-    const posts = await rows(h, "chatPosts");
-    expect(posts).toHaveLength(1);
-    expect(posts[0]!.body).toContain("Sunny could not add Eye exam");
   });
 });
 

@@ -12,6 +12,7 @@ import type {
   CalendarEventFact,
   CaregiverConfirms,
   CaregiverMessage,
+  CaregiverPush,
   DecisionReason,
   EscalationReason,
   IcsEvent,
@@ -46,6 +47,7 @@ import {
 export const STALE_AFTER_MS = DAY_MS;
 const MAX_DAYS_AHEAD = 400;
 export const MAX_CALENDAR_CHANGES_PER_DAY = 5;
+export const MAX_NOTES_PER_DAY = 3;
 const DAILY_LIMIT = `the daily limit of ${MAX_CALENDAR_CHANGES_PER_DAY} calendar changes from email was reached`;
 const MIN_DURATION_MINUTES = 5;
 const MAX_DURATION_MINUTES = 480;
@@ -135,10 +137,10 @@ export function factsCover(date: string, clock: { now: number; timezone: string 
   return date >= today && daysBetween(today, date) <= MAX_DAYS_AHEAD;
 }
 
-export function appointmentFields(
-  appointment: Appointment,
+export function appointmentFields<A extends Appointment>(
+  appointment: A,
   clock: { now: number; timezone: string },
-): Appointment | null {
+): A | null {
   const { date, time, durationMinutes } = appointment;
   if (!isLocalDate(date) || !isLocalTime(time)) return null;
   if (zonedInstant(date, time, clock.timezone) < clock.now) return null;
@@ -212,11 +214,12 @@ interface Context {
   facts: PolicyFacts;
   stale: boolean;
   atDailyLimit: boolean;
+  atNoteLimit: boolean;
 }
 
 type Draft =
   | Exclude<MailEffect, { kind: "tell_caregivers" | "escalate" }>
-  | { kind: "tell_caregivers"; line: string; push: boolean }
+  | ({ kind: "tell_caregivers"; line: string } & CaregiverPush)
   | {
       kind: "escalate";
       reason: EscalationReason;
@@ -241,27 +244,31 @@ type Situation =
   | { case: "ignore" }
   | {
       case: "new";
-      appointment: Appointment;
-      fields: Appointment | null;
+      appointment: CheckedAppointment;
+      fields: CheckedAppointment | null;
       conflict: CalendarEventFact | null;
     }
   | {
       case: "new_on_calendar";
-      appointment: Appointment;
-      fields: Appointment | null;
+      appointment: CheckedAppointment;
+      fields: CheckedAppointment | null;
       eventId: string;
     }
   | {
       case: "new_linked_elsewhere";
-      appointment: Appointment;
+      appointment: CheckedAppointment;
       eventId: string;
       seen: CalendarEventFact | null;
     }
-  | { case: "new_linked_by_another_address"; appointment: Appointment; fields: Appointment | null }
+  | {
+      case: "new_linked_by_another_address";
+      appointment: CheckedAppointment;
+      fields: CheckedAppointment | null;
+    }
   | {
       case: "reschedule";
-      appointment: Appointment;
-      fields: Appointment | null;
+      appointment: CheckedAppointment;
+      fields: CheckedAppointment | null;
       matches: CalendarEventFact[];
     }
   | { case: "cancel"; previous: AppointmentRef; matches: CalendarEventFact[] }
@@ -281,28 +288,37 @@ interface Plan {
   effects: MailEffect[];
 }
 
-export function proposed(appointment: Appointment): Proposed {
-  return { kind: appointment.kind, date: appointment.date, time: appointment.time };
+declare const SLOT_CHECKED: unique symbol;
+
+type CheckedAppointment = Appointment & { readonly [SLOT_CHECKED]: true };
+
+function checked(appointment: Appointment): CheckedAppointment {
+  const { date, time } = appointment;
+  if (!isLocalDate(date) || !isLocalTime(time)) {
+    throw new Error(
+      `The verdict gives an appointment at ${date} ${time}, which is not a date and a time`,
+    );
+  }
+  return appointment as CheckedAppointment;
+}
+
+function proposal(appointment: CheckedAppointment | null): Proposed | null {
+  if (appointment === null) return null;
+  const { kind, date, time } = appointment;
+  return { kind, date, time };
 }
 
 function escalate(
   reason: EscalationReason,
   line: string,
   eventId: string | null,
-  appointment: Appointment | null,
+  appointment: CheckedAppointment | null,
 ): Draft {
-  return {
-    kind: "escalate",
-    reason,
-    line,
-    push: true,
-    eventId,
-    proposed: appointment === null ? null : proposed(appointment),
-  };
+  return { kind: "escalate", reason, line, push: true, eventId, proposed: proposal(appointment) };
 }
 
-function tell(line: string, push: boolean): Draft {
-  return { kind: "tell_caregivers", line, push };
+function tell(line: string): Draft {
+  return { kind: "tell_caregivers", line, push: false };
 }
 
 function onCalendar(eventId: string, key: string): Draft[] {
@@ -326,7 +342,7 @@ export function described(appointment: Appointment): string {
   return `${appointmentTitle(appointment.kind, appointment.time)}, ${when(appointment.date, appointment.time)}`;
 }
 
-const NEW_UNVERIFIED: Row<{ appointment: Appointment }> = {
+const NEW_UNVERIFIED: Row<{ appointment: CheckedAppointment }> = {
   rule: "new: sender not authenticated",
   plan: (s, c) =>
     c.facts.sender.authenticated
@@ -341,7 +357,7 @@ const NEW_UNVERIFIED: Row<{ appointment: Appointment }> = {
         ],
 };
 
-const NEW_REJECTED: Row<{ appointment: Appointment; fields: Appointment | null }> = {
+const NEW_REJECTED: Row<{ appointment: CheckedAppointment; fields: CheckedAppointment | null }> = {
   rule: "new: appointmentFields rejects",
   plan: (s, c) =>
     s.fields !== null
@@ -458,7 +474,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
                 appointment: s.fields,
                 appointmentKey: appointmentKey(s.fields, c.facts.ics),
               },
-              tell(`Sunny added ${described(s.fields)}, to the calendar.`, false),
+              tell(`Sunny added ${described(s.fields)}, to the calendar.`),
             ],
     },
   ],
@@ -542,10 +558,12 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             appointment: s.fields,
             appointmentKey: appointmentKey(s.fields, c.facts.ics),
           },
-          tell(
-            `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
-            true,
-          ),
+          {
+            kind: "tell_caregivers",
+            line: `Sunny moved ${match.title} from ${when(match.date, match.time)} to ${when(s.fields.date, s.fields.time)}.`,
+            push: true,
+            title: "Sunny moved an appointment",
+          },
         ];
       },
     },
@@ -573,9 +591,19 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           : [
               tell(
                 "Sunny did not tell the senior about this email because Gmail could not verify the sender.",
-                false,
               ),
             ],
+    },
+    {
+      rule: "senior_info: daily limit of notes reached",
+      plan: (s, c) =>
+        c.atNoteLimit
+          ? [
+              tell(
+                `Sunny held back this note for the senior because the daily limit of ${MAX_NOTES_PER_DAY} notes was reached: ${SENIOR_SENTENCES[s.topic]}`,
+              ),
+            ]
+          : null,
     },
     {
       rule: "senior_info: otherwise",
@@ -641,7 +669,7 @@ function previousMatches(previous: AppointmentRef | null, facts: PolicyFacts): C
 }
 
 function moving(
-  appointment: Appointment,
+  appointment: CheckedAppointment,
   matches: CalendarEventFact[],
   facts: PolicyFacts,
 ): Situation {
@@ -653,11 +681,11 @@ function moving(
   };
 }
 
-function sameSlotEvent(fields: Appointment | null, facts: PolicyFacts): string | null {
+function sameSlotEvent(fields: CheckedAppointment | null, facts: PolicyFacts): string | null {
   return fields === null ? null : (matchEvent(fields, facts.events)[0]?.eventId ?? null);
 }
 
-function unlinked(appointment: Appointment, facts: PolicyFacts): Situation {
+function unlinked(appointment: CheckedAppointment, facts: PolicyFacts): Situation {
   const fields = appointmentFields(appointment, facts);
   const eventId = sameSlotEvent(fields, facts);
   if (eventId !== null) return { case: "new_on_calendar", appointment, fields, eventId };
@@ -673,7 +701,7 @@ function unlinked(appointment: Appointment, facts: PolicyFacts): Situation {
 }
 
 function resolveLink(verdict: AppointmentChange, facts: PolicyFacts): Situation {
-  const { appointment } = verdict;
+  const appointment = checked(verdict.appointment);
   const { linked } = facts;
   if (linked === null) {
     return verdict.change === "new"
@@ -785,12 +813,15 @@ function withDecision(drafts: Draft[], decision: DecisionReason | null): Draft[]
   });
 }
 
-function withoutPushes(drafts: Draft[]): Draft[] {
-  return drafts.map((draft) =>
-    draft.kind === "escalate" || draft.kind === "tell_caregivers"
-      ? { ...draft, push: false }
-      : draft,
-  );
+function withoutPush(draft: Draft): Draft {
+  switch (draft.kind) {
+    case "escalate":
+      return { ...draft, push: false };
+    case "tell_caregivers":
+      return tell(draft.line);
+    default:
+      return draft;
+  }
 }
 
 function rendered(draft: Draft, facts: PolicyFacts, summary: string): MailEffect {
@@ -839,9 +870,10 @@ export function planWithRule(
     facts,
     stale: isStale(facts),
     atDailyLimit: facts.calendarChangesToday >= MAX_CALENDAR_CHANGES_PER_DAY,
+    atNoteLimit: facts.seniorNotesToday >= MAX_NOTES_PER_DAY,
   };
   const { rule, drafts } = planFor(situationOf(verdict, facts), context);
   const decided = withDecision(drafts, verdict.kind === "appointment" ? verdict.decision : null);
-  const pushed = context.stale ? withoutPushes(decided) : decided;
+  const pushed = context.stale ? decided.map(withoutPush) : decided;
   return { rule, effects: pushed.map((draft) => rendered(draft, facts, summary)) };
 }

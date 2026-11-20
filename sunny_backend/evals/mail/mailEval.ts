@@ -321,6 +321,7 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
     events: household.events,
     linked: linkedEvent(fixture, key),
     calendarChangesToday: household.calendarChangesToday,
+    seniorNotesToday: 0,
   });
   return {
     id: fixture.id,

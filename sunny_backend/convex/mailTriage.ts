@@ -18,6 +18,7 @@ import { triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
 import {
   MAX_CALENDAR_CHANGES_PER_DAY,
+  MAX_NOTES_PER_DAY,
   caregiverText,
   factsCover,
   linkKey,
@@ -272,6 +273,21 @@ async function calendarChangesToday(
   return changed.length;
 }
 
+async function seniorNotesToday(
+  ctx: QueryCtx,
+  household: Doc<"households">,
+  now: number,
+): Promise<number> {
+  const startOfToday = localMidnight(now, household.timezone);
+  const written = await ctx.db
+    .query("seniorNotes")
+    .withIndex("by_household", (q) =>
+      q.eq("householdId", household._id).gte("_creationTime", startOfToday),
+    )
+    .take(MAX_NOTES_PER_DAY);
+  return written.length;
+}
+
 async function planned(
   ctx: QueryCtx,
   { itemId, attempt, email, triaged }: TriageInput,
@@ -303,6 +319,7 @@ async function planned(
         ? null
         : await linkedEvent(ctx, link, linked, header.sender, today),
     calendarChangesToday: await calendarChangesToday(ctx, household, now),
+    seniorNotesToday: await seniorNotesToday(ctx, household, now),
   };
   return { item, household, facts, events };
 }
@@ -332,7 +349,7 @@ export const applyTriage = internalMutation({
     const { triaged } = input;
     const summary = caregiverSummary ?? triaged.summary;
     const plan = planWithRule({ verdict: triaged.verdict, summary }, facts);
-    const effects = await carryOut({ ctx, household, item, facts, events, summary }, plan.effects);
+    const effects = await carryOut({ ctx, household, item, facts, events }, plan.effects);
     await ctx.db.patch(item._id, {
       ...storedHeader(input.email),
       state: "done",

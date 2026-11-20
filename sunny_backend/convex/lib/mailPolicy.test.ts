@@ -76,6 +76,7 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     events: EVENTS,
     linked: null,
     calendarChangesToday: 0,
+    seniorNotesToday: 0,
     ...overrides,
   };
 }
@@ -178,6 +179,14 @@ describe("planWithRule decision table", () => {
     test("with a date in the past escalates as unclear", () => {
       const effects = effectsOf(newAppointment({ date: "2026-11-17" }), facts());
       expect(kinds(effects)).toEqual(["escalate:unclear_appointment:true"]);
+      expect(effects[0]).toMatchObject({
+        proposed: { kind: "hearing", date: "2026-11-17", time: "14:15" },
+      });
+    });
+    test("an appointment without a date and a time Sunny can read is not planned", () => {
+      expect(() => effectsOf(newAppointment({ time: "2:15 PM" }), facts(UNVERIFIED))).toThrow(
+        "not a date and a time",
+      );
     });
 
     test("linked to a cancelled event at its slot is already on the calendar and not added again", () => {
@@ -321,7 +330,11 @@ describe("planWithRule decision table", () => {
         eventId: "evt_pt",
         appointment: { date: "2026-11-23", time: "15:00" },
       });
-      expect(effects[1]).toMatchObject({ kind: "tell_caregivers", push: true });
+      expect(effects[1]).toMatchObject({
+        kind: "tell_caregivers",
+        push: true,
+        title: "Sunny moved an appointment",
+      });
       const body = effects[1]?.kind === "tell_caregivers" ? effects[1].body : "";
       expect(body).toContain(
         "from Friday, November 20 at 2:00 PM to Monday, November 23 at 3:00 PM",
@@ -704,6 +717,20 @@ describe("planWithRule decision table", () => {
           expiresAt: zonedInstant("2026-11-20", "00:00", NY),
         },
       ]);
+    });
+
+    test("over the daily limit of notes goes to the caregivers without a push", () => {
+      const effects = effectsOf(info, facts({ seniorNotesToday: 3 }));
+      expect(effects).toEqual([expect.objectContaining({ kind: "tell_caregivers", push: false })]);
+      expect(effects[0]).toMatchObject({
+        notice: `Sunny held back this note for the senior because the daily limit of 3 notes was reached: ${SENIOR_SENTENCES.prescription_ready}`,
+      });
+    });
+
+    test("a third note today is still written", () => {
+      expect(effectsOf(info, facts({ seniorNotesToday: 2 }))[0]).toMatchObject({
+        kind: "senior_note",
+      });
     });
 
     test("from a stale email plans nothing", () => {
