@@ -15,7 +15,7 @@ import {
   upsertEvent,
 } from "./lib/google";
 import { buildGoogleEvent, eventSyncPayload, googleEventId } from "./lib/googleEvent";
-import { AccessTokens } from "./lib/googleTokens";
+import { AccessTokens, holdsGrant } from "./lib/googleTokens";
 import { SecretUnreadable } from "./lib/secretBox";
 
 const REVOKED_MESSAGE = "Google access was revoked; reconnect Google Calendar.";
@@ -110,11 +110,12 @@ export const recordPush = internalMutation({
 export const saveAccessToken = internalMutation({
   args: {
     connectionId: v.id("calendarConnections"),
+    refreshToken: v.string(),
     accessToken: v.string(),
     expiresAt: v.number(),
   },
-  handler: async (ctx, { connectionId, accessToken, expiresAt }): Promise<null> => {
-    if (await ctx.db.get(connectionId)) {
+  handler: async (ctx, { connectionId, refreshToken, accessToken, expiresAt }): Promise<null> => {
+    if (holdsGrant(await ctx.db.get(connectionId), refreshToken)) {
       await ctx.db.patch(connectionId, { accessToken, accessTokenExpiresAt: expiresAt });
     }
     return null;
@@ -124,11 +125,12 @@ export const saveAccessToken = internalMutation({
 export const markConnection = internalMutation({
   args: {
     connectionId: v.id("calendarConnections"),
+    refreshToken: v.string(),
     status: v.union(v.literal("revoked"), v.literal("error")),
     error: v.string(),
   },
-  handler: async (ctx, { connectionId, status, error }): Promise<null> => {
-    if (await ctx.db.get(connectionId)) {
+  handler: async (ctx, { connectionId, refreshToken, status, error }): Promise<null> => {
+    if (holdsGrant(await ctx.db.get(connectionId), refreshToken)) {
       await ctx.db.patch(connectionId, {
         status,
         error: error.slice(0, 2000),
@@ -173,6 +175,7 @@ async function settleError(
   const mark = async (status: "revoked" | "error", error: string): Promise<void> => {
     await ctx.runMutation(internal.calendarPush.markConnection, {
       connectionId: work.connectionId,
+      refreshToken: work.refreshToken,
       status,
       error,
     });
@@ -216,6 +219,7 @@ export const push = internalAction({
     const tokens = await new AccessTokens(start, async (accessToken, expiresAt) => {
       await ctx.runMutation(internal.calendarPush.saveAccessToken, {
         connectionId: start.connectionId,
+        refreshToken: start.refreshToken,
         accessToken,
         expiresAt,
       });

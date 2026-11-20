@@ -205,6 +205,61 @@ describe("access token cache", () => {
   });
 });
 
+async function reconnectAs(t: TestConvex, householdId: Id<"households">, accountEmail: string) {
+  await t.mutation(internal.googleCalendar.saveConnection, {
+    householdId,
+    userId: "user_a",
+    accountEmail,
+    externalCalendarId: "cal2",
+    refreshToken: "box:refresh-2",
+  });
+}
+
+describe("reconnecting another account while a push of the old one runs", () => {
+  test("revoked access of the old account leaves the new connection active", async () => {
+    const t = makeBackend();
+    const { householdId, connectionId } = await setupSynced(t);
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (reconnected && refresh === "refresh-1") throw new GoogleAccessRevoked("invalid_grant");
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+    googleMocks.upsertEvent.mockImplementationOnce(async () => {
+      await reconnectAs(t, householdId, "other@example.com");
+      reconnected = true;
+      throw new GoogleApiError(401, "unauthorized");
+    });
+
+    await runPush(t);
+
+    const connection = await connectionRow(t, connectionId);
+    expect(connection).toMatchObject({ accountEmail: "other@example.com", status: "active" });
+    expect(connection?.error).toBeUndefined();
+  });
+
+  test("a token refresh by a push of the old account leaves the next push on the new account", async () => {
+    const t = makeBackend();
+    const { householdId, connectionId } = await setupSynced(t);
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (!reconnected) {
+        reconnected = true;
+        await reconnectAs(t, householdId, "other@example.com");
+      }
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+
+    await runPush(t);
+    await runPush(t);
+
+    expect(googleMocks.upsertEvent.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ["access-for-refresh-1", "cal1"],
+      ["access-for-refresh-2", "cal2"],
+    ]);
+    expect((await connectionRow(t, connectionId))?.accessToken).toBe("box:access-for-refresh-2");
+  });
+});
+
 describe("errors", () => {
   test("a confirmed missing Sunny calendar marks the connection in error", async () => {
     const t = makeBackend();
