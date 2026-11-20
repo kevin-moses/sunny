@@ -334,18 +334,21 @@ describe("errors", () => {
     await expect(runPush(t)).rejects.toThrow("rateLimitExceeded");
   });
 
-  test("a project quota 403 is held and leaves the connection active without a notice", async () => {
-    const t = makeBackend();
-    const { connectionId } = await setupSynced(t);
-    googleMocks.upsertEvent.mockRejectedValue(
-      new GoogleApiError(403, '{"error":{"errors":[{"reason":"dailyLimitExceeded"}]}}'),
-    );
-    expect(await runPush(t)).toBe("held");
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("dailyLimitExceeded"));
-    const connection = await connectionRow(t, connectionId);
-    expect(connection).toMatchObject({ status: "active" });
-    expect(connection?.lastError).toBeUndefined();
-  });
+  test.each(["dailyLimitExceeded", "accessNotConfigured"])(
+    "a %s 403 is held and leaves the connection active without a notice",
+    async (reason) => {
+      const t = makeBackend();
+      const { connectionId } = await setupSynced(t);
+      googleMocks.upsertEvent.mockRejectedValue(
+        new GoogleApiError(403, `{"error":{"errors":[{"reason":"${reason}"}]}}`),
+      );
+      expect(await runPush(t)).toBe("held");
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(reason));
+      const connection = await connectionRow(t, connectionId);
+      expect(connection).toMatchObject({ status: "active" });
+      expect(connection?.lastError).toBeUndefined();
+    },
+  );
 
   test("an unreadable refresh token marks the connection in error without retrying", async () => {
     const t = makeBackend();

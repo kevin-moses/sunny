@@ -167,17 +167,28 @@ describe("GoogleApiError", () => {
     expect(new GoogleApiError(403, '{"errors":[{"reason":"forbidden"}]}').retryable).toBe(false);
   });
 
-  test("a daily project limit is a project quota and is not retried", () => {
-    for (const status of [403, 429]) {
-      const e = new GoogleApiError(status, '{"errors":[{"reason":"dailyLimitExceeded"}]}');
-      expect([e.projectQuota, e.retryable]).toEqual([true, false]);
-    }
-    for (const reason of ["rateLimitExceeded", "userRateLimitExceeded", "forbidden"]) {
-      expect(new GoogleApiError(403, `{"errors":[{"reason":"${reason}"}]}`).projectQuota).toBe(
+  test.each(["dailyLimitExceeded", "accessNotConfigured"])(
+    "%s is a project-wide error and is not retried",
+    (reason) => {
+      for (const status of [403, 429]) {
+        const e = new GoogleApiError(status, `{"errors":[{"reason":"${reason}"}]}`);
+        expect([e.projectWide, e.retryable]).toEqual([true, false]);
+      }
+      expect(new GoogleApiError(500, reason).projectWide).toBe(false);
+    },
+  );
+
+  test("per-minute limits, a domain policy and a plain forbidden are not project-wide", () => {
+    for (const reason of [
+      "rateLimitExceeded",
+      "userRateLimitExceeded",
+      "domainPolicy",
+      "forbidden",
+    ]) {
+      expect(new GoogleApiError(403, `{"errors":[{"reason":"${reason}"}]}`).projectWide).toBe(
         false,
       );
     }
-    expect(new GoogleApiError(500, "dailyLimitExceeded").projectQuota).toBe(false);
   });
 });
 

@@ -56,6 +56,10 @@ afterEach(() => {
 
 const DAILY_LIMIT =
   '{"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"dailyLimitExceeded","message":"Daily Limit Exceeded"}]}}';
+const API_DISABLED =
+  '{"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"accessNotConfigured","message":"Gmail API has not been used in project 123 before or it is disabled."}],"status":"PERMISSION_DENIED"}}';
+const DOMAIN_POLICY =
+  '{"error":{"code":403,"errors":[{"domain":"global","reason":"domainPolicy","message":"The domain administrators have disabled Gmail apps."}]}}';
 
 function grant(scopes: string[]) {
   return { accessToken: "acc", refreshToken: "refresh-new", scopes, email: "someone@example.com" };
@@ -678,17 +682,35 @@ describe("Polling", () => {
     expect((await mailboxRows(t))[0]).toMatchObject({ status: "active" });
   });
 
-  test("a project quota error ends the poll without a retry, leaves the mailbox active and tells nobody", async () => {
+  test.each([
+    ["a project quota error", DAILY_LIMIT],
+    ["an API disabled for the project", API_DISABLED],
+  ])(
+    "%s ends the poll without a retry, leaves the mailbox active and tells nobody",
+    async (_name, body) => {
+      const t = makeBackend();
+      const householdId = await createHousehold(t);
+      await watchPushes(t);
+      const mailboxId = await addMailbox(t, householdId);
+      gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, body));
+      await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
+        name: "NonRetryableError",
+      });
+      expect((await mailboxRows(t))[0]).toMatchObject({ status: "active", historyId: "100" });
+      expect(await caregiverNotices(t)).toEqual({ posts: [], pushes: [] });
+    },
+  );
+
+  test("a Workspace domain policy marks the mailbox as an error", async () => {
     const t = makeBackend();
     const householdId = await createHousehold(t);
-    await watchPushes(t);
     const mailboxId = await addMailbox(t, householdId);
-    gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, DAILY_LIMIT));
-    await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
-      name: "NonRetryableError",
+    gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, DOMAIN_POLICY));
+    expect(await t.action(internal.gmail.poll, { mailboxId })).toBe("failed");
+    expect((await mailboxRows(t))[0]).toMatchObject({
+      status: "error",
+      error: "Google denied Sunny access to the mailbox; reconnect Gmail.",
     });
-    expect((await mailboxRows(t))[0]).toMatchObject({ status: "active", historyId: "100" });
-    expect(await caregiverNotices(t)).toEqual({ posts: [], pushes: [] });
   });
 
   test("a transient Google error is rethrown for the pool to retry and leaves the mailbox active", async () => {

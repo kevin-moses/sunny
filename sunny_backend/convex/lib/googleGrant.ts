@@ -41,7 +41,7 @@ export function googleFailure(e: unknown, table: GrantTable): GoogleFailure | nu
   }
   if (e instanceof ConfigError) return { kind: "hold" };
   if (!(e instanceof GoogleApiError)) return null;
-  if (e.projectQuota) return { kind: "hold" };
+  if (e.projectWide) return { kind: "hold" };
   if (e.status === 403 && !e.retryable) {
     return { kind: "grant", status: "error", error: messages.forbidden };
   }
