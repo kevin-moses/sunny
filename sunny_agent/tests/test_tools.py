@@ -59,7 +59,7 @@ def empty_context(
         "asNeeded": [],
         "events": [],
         "latestMessage": None,
-        "mailNotes": [],
+        "seniorNotes": [],
         "lifeProfile": [],
         "sensitiveTopics": [],
         "memory": [],

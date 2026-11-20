@@ -104,7 +104,7 @@ class AgentContext(TypedDict):
     asNeeded: list[AsNeededEntry]
     events: list[UpcomingEvent]
     latestMessage: FamilyMessage | None
-    mailNotes: NotRequired[list[MailNote]]
+    seniorNotes: list[MailNote]
     lifeProfile: list[LifeProfileEntry]
     sensitiveTopics: list[SensitiveTopic]
     memory: list[MemoryFact]

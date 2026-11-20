@@ -3,11 +3,7 @@
     "id": "ph01-medicare-suspension",
     "email": {
       "gmailId": "fx-ph01-medicare-suspension",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Medicare Benefits Center",
         "address": "notice@medicare-benefits-center.example",
@@ -99,9 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -109,11 +103,7 @@
     "id": "ph02-pastor-gift-cards",
     "email": {
       "gmailId": "fx-ph02-pastor-gift-cards",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Pastor John Miller",
         "address": "pastor.jmiller@mailbox.example",
@@ -205,9 +195,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -215,11 +203,7 @@
     "id": "ph03-grandson-jail",
     "email": {
       "gmailId": "fx-ph03-grandson-jail",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Tyler",
         "address": "tyler.help2026@mailbox.example",
@@ -311,9 +295,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -321,11 +303,7 @@
     "id": "ph04-fake-order-charge",
     "email": {
       "gmailId": "fx-ph04-fake-order-charge",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Order Support",
         "address": "billing@shop-order-support.example",
@@ -417,9 +395,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -427,11 +403,7 @@
     "id": "ph05-bank-lookalike",
     "email": {
       "gmailId": "fx-ph05-bank-lookalike",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Granite Savings Security",
         "address": "security@granite-savings-alerts.example",
@@ -523,9 +495,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -533,11 +503,7 @@
     "id": "ph06-tax-refund",
     "email": {
       "gmailId": "fx-ph06-tax-refund",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Tax Refund Office",
         "address": "refunds@irs-refund-center.example",
@@ -629,9 +595,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -639,11 +603,7 @@
     "id": "ph07-tech-support",
     "email": {
       "gmailId": "fx-ph07-tech-support",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Microsoft Security",
         "address": "alert@windows-defender-support.example",
@@ -735,9 +695,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -745,11 +703,7 @@
     "id": "ph08-lottery",
     "email": {
       "gmailId": "fx-ph08-lottery",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "National Prize Bureau",
         "address": "winners@prize-bureau.example",
@@ -841,9 +795,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -851,11 +803,7 @@
     "id": "ph09-redelivery-fee",
     "email": {
       "gmailId": "fx-ph09-redelivery-fee",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "ParcelPost",
         "address": "notice@parcelpost-redelivery.example",
@@ -947,9 +895,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -957,11 +903,7 @@
     "id": "ph10-fake-daughter",
     "email": {
       "gmailId": "fx-ph10-fake-daughter",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Anna Ellis",
         "address": "anna.ellis.mom@mailbox.example",
@@ -1053,9 +995,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -1063,11 +1003,7 @@
     "id": "ph11-ssa-spoof",
     "email": {
       "gmailId": "fx-ph11-ssa-spoof",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Social Security Administration",
         "address": "no-reply@ssa.example",
@@ -1159,9 +1095,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -1169,11 +1103,7 @@
     "id": "ph12-charity-wire",
     "email": {
       "gmailId": "fx-ph12-charity-wire",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Hurricane Relief Fund",
         "address": "give@hurricane-relief-now.example",
@@ -1265,9 +1195,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   },
@@ -1275,10 +1203,7 @@
     "id": "ph13-spam-folder",
     "email": {
       "gmailId": "fx-ph13-spam-folder",
-      "labels": [
-        "SPAM",
-        "UNREAD"
-      ],
+      "labels": ["SPAM", "UNREAD"],
       "sender": {
         "name": "Medicare Benefits Center",
         "address": "notice@medicare-benefits-center.example",
@@ -1378,11 +1303,7 @@
     "id": "ph14-promotions-folder",
     "email": {
       "gmailId": "fx-ph14-promotions-folder",
-      "labels": [
-        "CATEGORY_PROMOTIONS",
-        "INBOX",
-        "UNREAD"
-      ],
+      "labels": ["CATEGORY_PROMOTIONS", "INBOX", "UNREAD"],
       "sender": {
         "name": "Senior Savings Club",
         "address": "deals@senior-savings-club.example",
@@ -1482,11 +1403,7 @@
     "id": "ph15-compromised-daughter",
     "email": {
       "gmailId": "fx-ph15-compromised-daughter",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Anna Ellis",
         "address": "anna.ellis@example.net",
@@ -1578,9 +1495,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": true
     }
   }

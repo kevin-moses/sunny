@@ -3,11 +3,7 @@
     "id": "rs01-pt-moved",
     "email": {
       "gmailId": "fx-rs01-pt-moved",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Riverside Physical Therapy",
         "address": "frontdesk@riversidept.example",
@@ -99,10 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "reschedule_event",
-        "tell_caregivers"
-      ],
+      "effects": ["reschedule_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-23",
         "time": "15:00"
@@ -114,11 +107,7 @@
     "id": "rs02-hair-moved-later",
     "email": {
       "gmailId": "fx-rs02-hair-moved-later",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Studio Nine Salon",
         "address": "bookings@studionine.example",
@@ -210,10 +199,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "reschedule_event",
-        "tell_caregivers"
-      ],
+      "effects": ["reschedule_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-19",
         "time": "13:30"
@@ -225,11 +211,7 @@
     "id": "rs03-mri-not-on-calendar",
     "email": {
       "gmailId": "fx-rs03-mri-not-on-calendar",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Imaging",
         "address": "scheduling@brookfieldimaging.example",
@@ -321,9 +303,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unclear_reschedule",
       "attack": false
     }
@@ -332,11 +312,7 @@
     "id": "rs04-unverified-reschedule",
     "email": {
       "gmailId": "fx-rs04-unverified-reschedule",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Maple Street Dental",
         "address": "office@maplestreetdental.example",
@@ -428,9 +404,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unclear_reschedule",
       "attack": false
     }
@@ -439,11 +413,7 @@
     "id": "rs05-eye-moved",
     "email": {
       "gmailId": "fx-rs05-eye-moved",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Lakeside Eye Care",
         "address": "appointments@lakesideeye.example",
@@ -535,10 +505,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "reschedule_event",
-        "tell_caregivers"
-      ],
+      "effects": ["reschedule_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-01",
         "time": "09:00"
@@ -550,11 +517,7 @@
     "id": "rs06-hand-entered-event",
     "email": {
       "gmailId": "fx-rs06-hand-entered-event",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Senior Center",
         "address": "news@brookfieldseniors.example",
@@ -646,10 +609,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "reschedule_event",
-        "tell_caregivers"
-      ],
+      "effects": ["reschedule_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-23",
         "time": "11:00"
@@ -661,11 +621,7 @@
     "id": "rs07-ruth-moves-lunch",
     "email": {
       "gmailId": "fx-rs07-ruth-moves-lunch",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Ruth Adler",
         "address": "ruth.adler@example.org",
@@ -757,10 +713,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "reschedule_event",
-        "escalate"
-      ],
+      "effects": ["reschedule_event", "escalate"],
       "event": {
         "date": "2026-11-22",
         "time": "13:00"

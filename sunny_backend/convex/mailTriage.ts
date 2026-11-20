@@ -12,7 +12,8 @@ import { getMessage } from "./lib/gmailApi";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { carryOut, senderLink } from "./lib/mailEffects";
 import { mailFailure } from "./lib/mailFailure";
-import { askJev, triageEmail } from "./lib/mailJudge";
+import { askJev } from "./lib/jevClient";
+import { triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
 import {
   MAX_CALENDAR_CHANGES_PER_DAY,

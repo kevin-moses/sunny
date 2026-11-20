@@ -7,7 +7,7 @@ import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import { DIGEST_HEADING, MAIL_HEADING, buildBriefing } from "./lib/agentBriefing";
 import { loadDeviceState } from "./lib/deviceState";
 import { carryOut } from "./lib/mailEffects";
-import { JEV_MODEL } from "./lib/mailJudge";
+import { JEV_MODEL } from "./lib/jevClient";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import type { Triaged } from "./lib/mailTypes";
 import {
@@ -1418,13 +1418,13 @@ describe("where Sunny's reading shows up", () => {
     ]);
     expect(after.version).not.toBe(before.version);
     expect(after.displayVersion).toBe(before.displayVersion);
-    expect((await context()).mailNotes).toEqual([
+    expect((await context()).seniorNotes).toEqual([
       { text: SENIOR_SENTENCES.package_coming, receivedAt: NOW - 30 * MINUTE },
     ]);
 
     vi.setSystemTime(note!.expiresAt);
     expect((await state()).notes).toEqual([]);
-    expect((await context()).mailNotes).toEqual([]);
+    expect((await context()).seniorNotes).toEqual([]);
   });
 
   test("the device state keeps the three newest unexpired notes among many rows", async () => {

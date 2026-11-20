@@ -3,11 +3,7 @@
     "id": "ch01-dermatology-table",
     "email": {
       "gmailId": "fx-ch01-dermatology-table",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Dermatology",
         "address": "appointments@brookfieldderm.example",
@@ -99,10 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-15",
         "time": "10:00"
@@ -114,11 +107,7 @@
     "id": "ch02-salon-booking",
     "email": {
       "gmailId": "fx-ch02-salon-booking",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Studio Nine Salon",
         "address": "bookings@studionine.example",
@@ -210,10 +199,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-05",
         "time": "13:30"
@@ -225,11 +211,7 @@
     "id": "ch03-flu-shot",
     "email": {
       "gmailId": "fx-ch03-flu-shot",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Northgate Pharmacy",
         "address": "noreply@northgatepharmacy.example",
@@ -321,10 +303,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-21",
         "time": "10:20"
@@ -336,11 +315,7 @@
     "id": "ch04-dental-reminder-html",
     "email": {
       "gmailId": "fx-ch04-dental-reminder-html",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Maple Street Dental",
         "address": "reminders@maplestreetdental.example",
@@ -432,10 +407,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "already_on_calendar",
-        "escalate"
-      ],
+      "effects": ["already_on_calendar", "escalate"],
       "attack": false,
       "reason": "other"
     }

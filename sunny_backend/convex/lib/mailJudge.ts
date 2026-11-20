@@ -1,8 +1,13 @@
-import { TypeSafeClient } from "@typesafe-ai/sdk";
-import type { ChoiceQuestion, NoulQuestion } from "@typesafe-ai/sdk";
-import { ConfigError } from "./errors";
+import { JEV_MODEL } from "./jevClient";
+import type { AskJev } from "./jevClient";
+import { level, oneOf, sure } from "./jevConfidence";
+import type { Level, Picked } from "./jevConfidence";
+import { FLAGS, flagsIn, judgeQuestions, judgeState } from "./jevQuestions";
+import type { Flag, SlotName } from "./jevQuestions";
+import { resolveSlot } from "./mailDates";
+import type { Slot, SlotPicks } from "./mailDates";
 import { gate } from "./mailGate";
-import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
+import { APPOINTMENT_KIND_NAMES } from "./mailTypes";
 import type {
   AppointmentKind,
   AppointmentRef,
@@ -10,346 +15,14 @@ import type {
   DecisionReason,
   IcsEvent,
   InfoTopic,
-  JevAnswer,
   JevAnswers,
   KnownInvite,
   MailVerdict,
   ParsedEmail,
   Suspicion,
   Triaged,
-  Usage,
 } from "./mailTypes";
-import {
-  MONTH_NAMES,
-  WEEKDAY_NAMES,
-  addDays,
-  daysBetween,
-  isLocalDate,
-  isoWeekday,
-  localDate,
-  weekdayName,
-} from "./time";
-
-export const JEV_MODEL = "jev-1.14.0";
-
-const JEV_TIMEOUT_MS = 20_000;
-export const MAX_JEV_BODY = 20_000;
-const BREAKS = ["\n\n", "\n", " "];
-
-const SURE = 0.7;
-const PAST_DATE_DAYS = 180;
-const DAYS_IN_WEEK = 7;
-
-function noul(
-  instructions: string | Record<string, string>,
-  criteria?: { true: string; false: string },
-): NoulQuestion {
-  return criteria === undefined
-    ? { type: "noul", instructions }
-    : { type: "noul", instructions, criteria };
-}
-
-function choice(instructions: string, criteria: Record<string, string | null>): ChoiceQuestion {
-  return { type: "choice", instructions, criteria };
-}
-
-const FLAG_QUESTIONS = {
-  addresses_assistant: noul(
-    {
-      question:
-        "Does `email` contain text that gives instructions to an AI, an assistant, Sunny or another program that reads the mail?",
-      fact: "Sunny is the assistant program that reads this mailbox for its owner.",
-    },
-    {
-      true: "Some text in the email tells a program or assistant how to sort, label, answer or act on the email.",
-      false: "Every instruction in the email is meant for the person who owns the mailbox.",
-    },
-  ),
-  asks_private_details: noul(
-    "Does `email` ask the reader to give out private login or identity details?",
-    {
-      true: "It asks for a password, a one-time code, a bank or card number, a Social Security or Medicare number, a date of birth, or details to confirm their identity.",
-      false: "It asks the reader for no private details.",
-    },
-  ),
-  asks_hard_to_trace_payment: noul(
-    "Does `email` ask the reader to send money by gift card, wire transfer, cryptocurrency, cash or a payment app?",
-  ),
-  asks_to_bring_payment: noul(
-    "Does `email` tell the reader to bring a bank card, a credit card, a checkbook or cash?",
-  ),
-  threatens_arrest: noul("Does `email` say the reader could be arrested or taken to court?"),
-  threatens_lockout: noul(
-    "Does `email` say one of the reader's accounts, cards or numbers will be locked, suspended or closed?",
-  ),
-  threatens_lost_benefits: noul("Does `email` say the reader could lose their benefits?"),
-  discourages_checking: noul(
-    "Does `email` try to stop the reader from checking the request with someone else?",
-    {
-      true: "It asks the reader not to tell family, says the sender cannot take calls, or asks them to keep it private.",
-      false: "Nothing in the email discourages the reader from checking with others.",
-    },
-  ),
-  promises_unexpected_money: noul(
-    "Does `email` tell the reader they won a prize or are owed money they did not ask for?",
-  ),
-  announces_new_contact: noul(
-    "Does the sender of `email` say they now use a new email address or phone number?",
-  ),
-  name_mismatch: noul(
-    "Does `email.sender_name` name a person or organization that `email.sender_address` does not belong to?",
-  ),
-  from_government: noul(
-    "Does `email` say it comes from a government office, a court, the police or a tax office?",
-  ),
-  about_account_security: noul(
-    "Is `email` about a sign-in, a password change or the security of one of the reader's accounts?",
-  ),
-  about_test_results: noul("Is `email` about the reader's medical test results?"),
-  about_bill: noul("Does `email` say the reader has a bill or a payment due?"),
-  asks_question: noul("Does `email` ask the reader a question that they need to answer?", {
-    true: "The sender expects the reader to answer, for example with a yes or no, a choice or a date.",
-    false:
-      "The email asks nothing of the reader, or only invites optional feedback such as a survey.",
-  }),
-  needs_action: noul("Does `email` need the reader to pay, reply, sign or make a decision?", {
-    true: "Something is required of the reader.",
-    false: "Nothing is required of the reader. Any request in the email is optional.",
-  }),
-  confirms_appointment: noul(
-    "Does `email` confirm or remind the reader that they have an upcoming appointment or meeting?",
-  ),
-  appointment_moved: noul(
-    "Does `email` say that one of the reader's appointments or plans moved to a different date or time?",
-  ),
-  appointment_cancelled: noul(
-    "Does `email` say that one of the reader's appointments or plans is cancelled?",
-  ),
-  about_package: noul("Is `email` about a package being delivered to the reader?"),
-  package_arrived: noul("Does `email` say the package has already been delivered?"),
-  about_prescription: noul(
-    "Does `email` say a prescription for the reader is ready or being prepared for pickup?",
-  ),
-  prescription_ready_now: noul("Does `email` say the prescription is ready to pick up now?"),
-  home_visit: noul(
-    "Does `email` say a worker will come to the reader's home to do work there, such as a repair or an inspection?",
-    {
-      true: "A technician, repair person, inspector or other worker is coming to work at the home.",
-      false:
-        "No worker is coming to work at the home. A package delivery alone is not a home visit.",
-    },
-  ),
-  personal_note: noul(
-    "Is `email` a personal message written to the reader by a relative or a friend?",
-  ),
-  bulk_mail: noul(
-    "Was `email` sent to many people at once, such as a newsletter, a bulletin, an advertisement or an announcement?",
-  ),
-  receipt: noul("Is `email` a receipt or an order confirmation?"),
-  feedback_request: noul(
-    "Does `email` invite the reader to give optional feedback or fill in a survey?",
-  ),
-} satisfies Record<string, NoulQuestion>;
-
-export type Flag = keyof typeof FLAG_QUESTIONS;
-
-function isFlag(name: string): name is Flag {
-  return Object.hasOwn(FLAG_QUESTIONS, name);
-}
-
-export const FLAGS: Flag[] = Object.keys(FLAG_QUESTIONS).filter(isFlag);
-
-type FlagGroup =
-  "safety" | "pressure" | "decision" | "appointment" | "broad" | "information" | "follow_up";
-
-export const FLAG_GROUPS: Record<Flag, FlagGroup> = {
-  addresses_assistant: "safety",
-  asks_private_details: "safety",
-  asks_hard_to_trace_payment: "safety",
-  asks_to_bring_payment: "safety",
-  threatens_arrest: "pressure",
-  threatens_lockout: "pressure",
-  threatens_lost_benefits: "pressure",
-  discourages_checking: "pressure",
-  promises_unexpected_money: "pressure",
-  announces_new_contact: "safety",
-  name_mismatch: "safety",
-  from_government: "decision",
-  about_account_security: "decision",
-  about_test_results: "decision",
-  about_bill: "decision",
-  asks_question: "decision",
-  needs_action: "broad",
-  confirms_appointment: "broad",
-  appointment_moved: "appointment",
-  appointment_cancelled: "appointment",
-  about_package: "information",
-  package_arrived: "follow_up",
-  about_prescription: "information",
-  prescription_ready_now: "follow_up",
-  home_visit: "information",
-  personal_note: "information",
-  bulk_mail: "information",
-  receipt: "information",
-  feedback_request: "information",
-};
-
-function flagsIn(...groups: FlagGroup[]): Flag[] {
-  return FLAGS.filter((f) => groups.includes(FLAG_GROUPS[f]));
-}
-
-const DAYS = Array.from({ length: 31 }, (_, i) => String(i + 1));
-const HOURS = Array.from({ length: 12 }, (_, i) => String(i + 1));
-const MINUTES = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, "0"));
-const DATE_FORMS = ["calendar_date", "today", "tomorrow", "weekday", "not_stated"] as const;
-const WEEKS = ["this_week", "next_week", "unqualified"] as const;
-const NOT_STATED = "not_stated";
-
-type Week = (typeof WEEKS)[number];
-
-type SlotName = "when" | "before";
-
-const SLOT_ROLES: Record<SlotName, { date: string; time: string }> = {
-  when: {
-    date: "the date of the appointment (its new date, if the email says it moved)",
-    time: "the start time of the appointment (its new start time, if the email says it moved)",
-  },
-  before: {
-    date: "the date the appointment was set for before it was moved or cancelled",
-    time: "the start time the appointment had before it was moved or cancelled",
-  },
-};
-
-function options(
-  names: readonly string[],
-  extra: Record<string, string> = {},
-): Record<string, string | null> {
-  return { ...Object.fromEntries(names.map((n) => [n, null])), ...extra };
-}
-
-function slotQuestions(slot: SlotName, receivedYear: number): Record<string, ChoiceQuestion> {
-  const role = SLOT_ROLES[slot];
-  const absent = { [NOT_STATED]: "The email does not state this." };
-  return {
-    [`${slot}_date_form`]: choice(`How does \`email\` state ${role.date}?`, {
-      calendar_date: "As a month and a day, such as December 10 or 12/10",
-      today: "As today",
-      tomorrow: "As tomorrow",
-      weekday: "Only as a day of the week, such as Friday or next Tuesday",
-      not_stated: "The email does not state this date",
-    }),
-    [`${slot}_month`]: choice(`Which month is ${role.date}?`, options(MONTH_NAMES, absent)),
-    [`${slot}_day`]: choice(`Which day of the month is ${role.date}?`, options(DAYS, absent)),
-    [`${slot}_year`]: choice(`Which year does \`email\` give for ${role.date}?`, {
-      [String(receivedYear)]: null,
-      [String(receivedYear + 1)]: null,
-      not_stated: "The email gives no year for this date.",
-      other_year: "The email gives a different year.",
-    }),
-    [`${slot}_weekday`]: choice(
-      `Which day of the week does \`email\` give for ${role.date}?`,
-      options(WEEKDAY_NAMES, absent),
-    ),
-    [`${slot}_week`]: choice(`Which week does \`email\` put ${role.date} in?`, {
-      this_week: "This week, as in this Friday",
-      next_week: "Next week, as in next Tuesday or Tuesday next week",
-      unqualified:
-        "A day of the week with no week given, as in Friday or on Friday, or no weekday at all",
-    }),
-    [`${slot}_hour`]: choice(`What hour is ${role.time}?`, {
-      ...options(HOURS),
-      "12": "12 o'clock, including noon",
-      ...absent,
-    }),
-    [`${slot}_minute`]: choice(`How many minutes past the hour is ${role.time}?`, {
-      ...options(MINUTES),
-      "00": "On the hour, including times written without minutes such as 10 AM or noon",
-      other: "Some other number of minutes",
-    }),
-    [`${slot}_half`]: choice(`Is ${role.time} in the morning or later in the day?`, {
-      am: "Before noon (AM)",
-      pm: "Noon or later (PM)",
-    }),
-  };
-}
-
-function zoneName(timezone: string): string {
-  const part = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "longGeneric" })
-    .formatToParts(new Date(0))
-    .find((p) => p.type === "timeZoneName");
-  return part === undefined ? timezone : `${part.value} (${timezone})`;
-}
-
-export function judgeQuestions(
-  receivedYear: number,
-  timezone: string,
-): Record<string, NoulQuestion | ChoiceQuestion> {
-  return {
-    ...FLAG_QUESTIONS,
-    other_time_zone: noul(
-      `Does \`email\` give the appointment time in a time zone other than ${zoneName(timezone)}?`,
-    ),
-    appointment_kind: choice(
-      "What kind of appointment is `email` about?",
-      Object.fromEntries(APPOINTMENT_KIND_NAMES.map((k) => [k, APPOINTMENT_KINDS[k].describe])),
-    ),
-    ...slotQuestions("when", receivedYear),
-    ...slotQuestions("before", receivedYear),
-  };
-}
-
-function cutBody(text: string): string {
-  const head = text.slice(0, MAX_JEV_BODY + 1);
-  for (const separator of BREAKS) {
-    const at = head.lastIndexOf(separator);
-    if (at > MAX_JEV_BODY / 2) return text.slice(0, at).trimEnd();
-  }
-  return text.slice(0, MAX_JEV_BODY);
-}
-
-function bodyOf(text: string): Record<string, string> {
-  if (text.length <= MAX_JEV_BODY) return { body: text };
-  return {
-    body: cutBody(text),
-    body_cut: `The body was cut after ${MAX_JEV_BODY} characters; the rest is not shown.`,
-  };
-}
-
-export function judgeState(email: ParsedEmail): { email: Record<string, string> } {
-  const invitation =
-    email.ics === null
-      ? {}
-      : {
-          calendar_invitation_title: email.ics.summary,
-          ...(email.ics.location === null ? {} : { calendar_invitation_place: email.ics.location }),
-        };
-  return {
-    email: {
-      sender_name: email.sender.name,
-      sender_address: email.sender.address,
-      subject: email.subject,
-      ...bodyOf(email.text),
-      ...invitation,
-    },
-  };
-}
-
-export type Level = "yes" | "unsure" | "no";
-
-function isSure(probability: number): boolean {
-  return probability >= SURE;
-}
-
-function level(probability: number): Level {
-  if (isSure(probability)) return "yes";
-  if (isSure(1 - probability)) return "no";
-  return "unsure";
-}
-
-interface Slot {
-  date: string;
-  time: string | null;
-}
+import { localDate } from "./time";
 
 export interface Invite {
   method: "REQUEST" | "CANCEL";
@@ -364,110 +37,6 @@ export interface Readings {
   when: Slot | null;
   before: Slot | null;
   invite: Invite | null;
-}
-
-interface Picked {
-  choice: string;
-  probability: number;
-}
-
-export type SlotPicks = Record<
-  "date_form" | "month" | "day" | "year" | "weekday" | "week" | "hour" | "minute" | "half",
-  Picked
->;
-
-function sure(pick: Picked): string | null {
-  return isSure(pick.probability) ? pick.choice : null;
-}
-
-function calendarDate(year: number, month: number, day: number): string | null {
-  const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  return isLocalDate(date) ? date : null;
-}
-
-export function weekdayDate(anchor: string, weekday: string, week: Week): string | null {
-  const offset = WEEKDAY_NAMES.indexOf(weekday);
-  if (offset < 0) return null;
-  const monday = addDays(anchor, 1 - isoWeekday(anchor));
-  switch (week) {
-    case "this_week": {
-      const date = addDays(monday, offset);
-      return date < anchor ? null : date;
-    }
-    case "next_week": {
-      const date = addDays(monday, DAYS_IN_WEEK + offset);
-      return daysBetween(anchor, date) < DAYS_IN_WEEK ? null : date;
-    }
-    case "unqualified": {
-      const ahead = (offset + 1 - isoWeekday(anchor) + DAYS_IN_WEEK) % DAYS_IN_WEEK;
-      return ahead === 0 ? null : addDays(anchor, ahead);
-    }
-  }
-}
-
-function inferYear(month: number, day: number, anchor: string): string | null {
-  const year = Number(anchor.slice(0, 4));
-  const dates = [year - 1, year, year + 1].flatMap((y) => calendarDate(y, month, day) ?? []);
-  const lastPast = dates.findLast((d) => d < anchor);
-  if (lastPast !== undefined && daysBetween(lastPast, anchor) <= PAST_DATE_DAYS) return null;
-  return dates.find((d) => d >= anchor) ?? null;
-}
-
-function oneOf<T extends string>(values: readonly T[], value: string | null): T | null {
-  return values.find((v) => v === value) ?? null;
-}
-
-export function resolveDate(picks: SlotPicks, anchor: string): string | null {
-  switch (oneOf(DATE_FORMS, sure(picks.date_form))) {
-    case null:
-    case "not_stated":
-      return null;
-    case "today":
-      return anchor;
-    case "tomorrow":
-      return addDays(anchor, 1);
-    case "weekday": {
-      const week = oneOf(WEEKS, sure(picks.week));
-      return week === null ? null : weekdayDate(anchor, sure(picks.weekday) ?? "", week);
-    }
-    case "calendar_date": {
-      const month = MONTH_NAMES.indexOf(sure(picks.month) ?? "") + 1;
-      const day = Number(sure(picks.day));
-      const year = sure(picks.year);
-      if (month === 0 || !Number.isInteger(day) || day < 1 || year === null) return null;
-      if (year === "other_year") return null;
-      const date =
-        year === NOT_STATED
-          ? inferYear(month, day, anchor)
-          : calendarDate(Number(year), month, day);
-      if (date === null) return null;
-      const named = sure(picks.weekday);
-      if (named === null) return null;
-      return named === NOT_STATED || weekdayName(date) === named ? date : null;
-    }
-  }
-}
-
-export function resolveTime(picks: SlotPicks): string | null {
-  const hour = sure(picks.hour);
-  const minute = sure(picks.minute);
-  const half = sure(picks.half);
-  if (
-    hour === null ||
-    hour === NOT_STATED ||
-    minute === null ||
-    minute === "other" ||
-    half === null
-  ) {
-    return null;
-  }
-  const h12 = Number(hour) % 12;
-  return `${String(half === "pm" ? h12 + 12 : h12).padStart(2, "0")}:${minute}`;
-}
-
-export function resolveSlot(picks: SlotPicks, anchor: string): Slot | null {
-  const date = resolveDate(picks, anchor);
-  return date === null ? null : { date, time: resolveTime(picks) };
 }
 
 interface Decision {
@@ -509,7 +78,14 @@ const is = (r: Readings, flag: Flag): boolean => r.flags.get(flag) === "yes";
 const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
   flags.some((f) => r.flags.get(f) === "unsure");
 
-const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: string }[] = [
+interface NamedDecision {
+  rule: string;
+  flag: Flag;
+  reason: DecisionReason;
+  summary: string;
+}
+
+const NAMED_DECISIONS: NamedDecision[] = [
   {
     rule: "test results",
     flag: "about_test_results",
@@ -540,16 +116,17 @@ const DECISIONS: { rule: string; flag: Flag; reason: DecisionReason; summary: st
     reason: "reply_needed",
     summary: "The email asks the senior a question that needs an answer.",
   },
-  {
-    rule: "payment, reply, signature or decision needed",
-    flag: "needs_action",
-    reason: "other",
-    summary: "The email needs a payment, a reply, a signature or a decision.",
-  },
 ];
 
+const NEEDS_ACTION: NamedDecision = {
+  rule: "payment, reply, signature or decision needed",
+  flag: "needs_action",
+  reason: "other",
+  summary: "The email needs a payment, a reply, a signature or a decision.",
+};
+
 function decisionOf(r: Readings): DecisionReason | null {
-  const named = DECISIONS.find(({ flag }) => DECISION_FLAGS.includes(flag) && is(r, flag));
+  const named = NAMED_DECISIONS.find(({ flag }) => is(r, flag));
   if (named !== undefined) return named.reason;
   return anyUnsure(r, DECISION_FLAGS) ? "other" : null;
 }
@@ -739,7 +316,7 @@ export const TRUTH_TABLE: Row[] = [
         : null;
     },
   },
-  ...DECISIONS.map(({ rule, flag, reason, summary }): Row => ({
+  ...[...NAMED_DECISIONS, NEEDS_ACTION].map(({ rule, flag, reason, summary }): Row => ({
     rule,
     decide: (r) => (is(r, flag) ? decision(reason, summary) : null),
   })),
@@ -834,88 +411,6 @@ export function decide(readings: Readings): Decision & { rule: string } {
   }
   throw new Error("The mail truth table has no matching row");
 }
-
-type JevQuestions = Record<string, NoulQuestion | ChoiceQuestion>;
-
-interface JevRequest {
-  model: string;
-  state: ReturnType<typeof judgeState>;
-  questions: JevQuestions;
-}
-
-export interface JevReply {
-  answers: JevAnswers;
-  usage: Usage;
-  model: string;
-}
-
-export type AskJev = (request: JevRequest) => Promise<JevReply>;
-
-export class JevAnswerError extends Error {
-  override name = "JevAnswerError";
-}
-
-function isProbability(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
-}
-
-function compactAnswer(
-  name: string,
-  question: NoulQuestion | ChoiceQuestion,
-  raw: unknown,
-): JevAnswer {
-  if (typeof raw !== "object" || raw === null || !("type" in raw)) {
-    throw new JevAnswerError(`Jev returned no answer for ${name}`);
-  }
-  if (question.type === "noul") {
-    if (raw.type === "noul" && "noul" in raw && isProbability(raw.noul)) return raw.noul;
-    throw new JevAnswerError(`Jev returned no Noul probability for ${name}`);
-  }
-  if (
-    raw.type === "choice" &&
-    "choice" in raw &&
-    typeof raw.choice === "string" &&
-    Object.hasOwn(question.criteria, raw.choice) &&
-    "probabilities" in raw &&
-    typeof raw.probabilities === "object" &&
-    raw.probabilities !== null
-  ) {
-    const choice = raw.choice;
-    const probability: unknown = Object.entries(raw.probabilities).find(
-      ([label]) => label === choice,
-    )?.[1];
-    if (isProbability(probability)) return { choice, probability };
-  }
-  throw new JevAnswerError(`Jev returned no Choice probability for ${name}`);
-}
-
-export function compactAnswers(raw: Record<string, unknown>, questions: JevQuestions): JevAnswers {
-  return Object.fromEntries(
-    Object.entries(questions).map(([name, question]) => [
-      name,
-      compactAnswer(name, question, raw[name]),
-    ]),
-  );
-}
-
-export const askJev: AskJev = async (request) => {
-  const apiKey = process.env.TYPESAFE_API_KEY;
-  if (!apiKey) throw new ConfigError("Missing env var TYPESAFE_API_KEY");
-  const client = new TypeSafeClient({
-    apiKey,
-    timeout: JEV_TIMEOUT_MS,
-    retry: { maxRetries: 1 },
-    compression: false,
-  });
-  const response = await client.systemOne(request);
-  const inputTokens = response.usage.input_tokens;
-  if (inputTokens === null) throw new JevAnswerError("Jev returned no input token count");
-  return {
-    answers: compactAnswers(response.answers, request.questions),
-    usage: { inputTokens, outputTokens: response.usage.output_tokens ?? 0, cacheReadTokens: 0 },
-    model: response.model,
-  };
-};
 
 function probabilityOf(answers: JevAnswers, name: string): number {
   const answer = answers[name];

@@ -52,7 +52,7 @@ export interface AgentContext {
   recentConversations: Array<{ startedAt: number; summary: string }>;
   recentQuestionTopics: string[];
   list: { openCount: number; items: string[] };
-  mailNotes: Array<{ text: string; receivedAt: number }>;
+  seniorNotes: Array<{ text: string; receivedAt: number }>;
 }
 
 async function upcomingEvents(
@@ -230,6 +230,6 @@ export async function buildAgentContext(
     recentConversations,
     recentQuestionTopics: questionTopics,
     list,
-    mailNotes: notes.map((note) => ({ text: note.text, receivedAt: note.receivedAt })),
+    seniorNotes: notes.map((note) => ({ text: note.text, receivedAt: note.receivedAt })),
   };
 }

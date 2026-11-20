@@ -88,6 +88,7 @@ CONTEXT: AgentContext = {
             "place": None,
         }
     ],
+    "seniorNotes": [],
     "lifeProfile": [
         {"category": "person", "name": "Sarah", "details": "Daughter, lives in Queens"},
         {"category": "person", "name": "Frank", "details": "Husband"},
