@@ -28,11 +28,9 @@ export type AgentRequest = Extract<ChatItem, { type: 'request' }>;
 
 export type ChatPost = Extract<ChatItem, { type: 'post' }>;
 
+export type MailHeader = NonNullable<ChatPost['mailHeader']>;
+
 export const DIGEST_LABEL = 'Daily summary';
-
-export const MAIL_LABEL = 'Mail';
-
-const MAIL_HEADER_LINES = 3;
 
 export const HIGH_PRIORITY_DETAIL = 'High priority';
 
@@ -420,10 +418,28 @@ export function wordingSpeech(wording: TaskWording): string {
   return others === null ? `${display} ${says}` : `${display} ${says} ${others}.`;
 }
 
-export function postLabel(localDate: string): string {
+function longDate(localDate: string): string | null {
   const time = parseLocalDate(localDate);
-  if (time === null) return DIGEST_LABEL;
-  return `${DIGEST_LABEL}, ${weekdayName(time)}, ${monthName(time)} ${dayOfMonth(time)}`;
+  return time === null ? null : `${weekdayName(time)}, ${monthName(time)} ${dayOfMonth(time)}`;
+}
+
+export function postLabel(localDate: string): string {
+  const date = longDate(localDate);
+  return date === null ? DIGEST_LABEL : `${DIGEST_LABEL}, ${date}`;
+}
+
+function mailHeaderLabel(header: MailHeader): string {
+  const from =
+    header.senderName === null
+      ? header.senderAddress
+      : `${header.senderName} <${header.senderAddress}>`;
+  const verified = header.senderVerified ? 'verified sender' : 'sender not verified';
+  const date = longDate(header.receivedDate) ?? header.receivedDate;
+  return [
+    `From: ${from} (${verified})`,
+    `Subject: ${header.subject}`,
+    `Received: ${date} at ${displayTime(header.receivedTime)}`,
+  ].join('\n');
 }
 
 export const ANOTHER_CAREGIVER = 'Another caregiver';
@@ -474,17 +490,6 @@ function requestEntries(request: AgentRequest, userId: string | null): Transcrip
   return entries;
 }
 
-function mailParts(body: string): { header: string | null; text: string } {
-  const lines = body.split('\n');
-  if (lines.length <= MAIL_HEADER_LINES || lines[MAIL_HEADER_LINES] !== '') {
-    return { header: null, text: body };
-  }
-  return {
-    header: lines.slice(0, MAIL_HEADER_LINES).join('\n'),
-    text: lines.slice(MAIL_HEADER_LINES + 1).join('\n'),
-  };
-}
-
 function postEntry(post: ChatPost): TranscriptEntry {
   const entry = {
     id: `${post.id}-post`,
@@ -497,10 +502,11 @@ function postEntry(post: ChatPost): TranscriptEntry {
   switch (post.kind) {
     case 'digest':
       return { ...entry, label: postLabel(post.localDate) };
-    case 'mail': {
-      const { header, text } = mailParts(post.body);
-      return { ...entry, text, label: header ?? MAIL_LABEL };
-    }
+    case 'mail':
+      return {
+        ...entry,
+        label: post.mailHeader === null ? null : mailHeaderLabel(post.mailHeader),
+      };
     case 'mailbox':
       return { ...entry, kind: 'notice' };
   }

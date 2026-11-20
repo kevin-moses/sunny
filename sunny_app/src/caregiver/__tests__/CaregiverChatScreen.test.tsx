@@ -75,6 +75,7 @@ const THREAD = [
     body: 'Morning pills: confirmed late at 9:10.',
     localDate: '2026-11-13',
     createdAt: 2,
+    mailHeader: null,
   },
   {
     type: 'request',
@@ -206,16 +207,17 @@ describe('CaregiverChatScreen', () => {
       id: 'p2',
       householdId: HOUSEHOLD,
       kind: 'mail',
-      body: [
-        'From: Dr Lee <office@clinic.example> (verified sender)',
-        'Subject: Checkup',
-        'Received: Friday, November 13 at 9:00 AM',
-        '',
-        'Added to the calendar:',
-        'Checkup, Tuesday at 2:00 PM.',
-      ].join('\n'),
+      body: 'Added to the calendar:\nCheckup, Tuesday at 2:00 PM.',
       localDate: '2026-11-13',
       createdAt: 5,
+      mailHeader: {
+        senderName: 'Dr Lee',
+        senderAddress: 'office@clinic.example',
+        senderVerified: true,
+        subject: 'Checkup',
+        receivedDate: '2026-11-13',
+        receivedTime: '09:00',
+      },
     };
     const renderer = await renderChat(true, [mail]);
     const message = renderer.root.findByType(AgentMessage);
@@ -230,6 +232,26 @@ describe('CaregiverChatScreen', () => {
     expect(texts(renderer)).toContain('Added to the calendar:\nCheckup, Tuesday at 2:00 PM.');
   });
 
+  it('shows only the body of a mail post that has no header', async () => {
+    const mail = {
+      type: 'post',
+      id: 'p4',
+      householdId: HOUSEHOLD,
+      kind: 'mail',
+      body: 'Sunny could not read an email. Please look at the inbox in Gmail.',
+      localDate: '2026-11-13',
+      createdAt: 7,
+      mailHeader: null,
+    };
+    const renderer = await renderChat(true, [mail]);
+    const message = renderer.root.findByType(AgentMessage);
+    expect(message.props.label).toBeNull();
+    expect(texts(renderer)).toContain(
+      'Sunny could not read an email. Please look at the inbox in Gmail.',
+    );
+    expect(texts(renderer).some((t) => t.startsWith('From:'))).toBe(false);
+  });
+
   it('shows a mailbox post as a short notice from Sunny', async () => {
     const mailbox = {
       type: 'post',
@@ -239,6 +261,7 @@ describe('CaregiverChatScreen', () => {
       body: 'Sunny now reads mom@example.com.',
       localDate: '2026-11-13',
       createdAt: 6,
+      mailHeader: null,
     };
     const renderer = await renderChat(true, [mailbox]);
     expect(texts(renderer)).toContain('Sunny now reads mom@example.com.');
