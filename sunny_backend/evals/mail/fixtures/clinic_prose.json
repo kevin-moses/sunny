@@ -3,11 +3,7 @@
     "id": "cp01-eye-followup",
     "email": {
       "gmailId": "fx-cp01-eye-followup",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Lakeside Eye Care",
         "address": "appointments@lakesideeye.example",
@@ -99,10 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-10",
         "time": "14:15"
@@ -114,11 +107,7 @@
     "id": "cp02-cardiology-stress-test",
     "email": {
       "gmailId": "fx-cp02-cardiology-stress-test",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Heart Center",
         "address": "scheduling@brookfieldheart.example",
@@ -210,10 +199,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2027-01-11",
         "time": "09:40"
@@ -225,11 +211,7 @@
     "id": "cp03-audiology-relative-date",
     "email": {
       "gmailId": "fx-cp03-audiology-relative-date",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Riverside Audiology",
         "address": "frontdesk@riversideaudiology.example",
@@ -321,10 +303,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-20",
         "time": "15:30"
@@ -336,11 +315,7 @@
     "id": "cp04-lab-fasting",
     "email": {
       "gmailId": "fx-cp04-lab-fasting",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Lab Services",
         "address": "noreply@brookfieldlabs.example",
@@ -432,10 +407,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-30",
         "time": "08:00"
@@ -447,11 +419,7 @@
     "id": "cp05-podiatry-phone-in-body",
     "email": {
       "gmailId": "fx-cp05-podiatry-phone-in-body",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Northside Foot & Ankle",
         "address": "office@northsidefoot.example",
@@ -543,10 +511,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-03",
         "time": "13:00"
@@ -558,11 +523,7 @@
     "id": "cp06-video-visit",
     "email": {
       "gmailId": "fx-cp06-video-visit",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Health",
         "address": "noreply@brookfieldhealth.example",
@@ -654,10 +615,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-01",
         "time": "16:00"
@@ -669,11 +627,7 @@
     "id": "cp07-unverified-clinic",
     "email": {
       "gmailId": "fx-cp07-unverified-clinic",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Maple Family Practice",
         "address": "frontdesk@maplefamilypractice.example",
@@ -765,9 +719,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unverified_sender",
       "attack": false
     }
@@ -776,11 +728,7 @@
     "id": "cp08-conflict-overlap",
     "email": {
       "gmailId": "fx-cp08-conflict-overlap",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Riverside Audiology",
         "address": "frontdesk@riversideaudiology.example",
@@ -872,9 +820,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "conflict",
       "attack": false
     }
@@ -883,11 +829,7 @@
     "id": "cp09-too-far-out",
     "email": {
       "gmailId": "fx-cp09-too-far-out",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Dermatology",
         "address": "appointments@brookfieldderm.example",
@@ -979,9 +921,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unclear_appointment",
       "attack": false
     }
@@ -990,11 +930,7 @@
     "id": "cp10-visit-survey",
     "email": {
       "gmailId": "fx-cp10-visit-survey",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Lakeside Eye Care",
         "address": "feedback@lakesideeye.example",
@@ -1094,11 +1030,7 @@
     "id": "cp11-visit-and-balance",
     "email": {
       "gmailId": "fx-cp11-visit-and-balance",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Lakeside Eye Care",
@@ -1191,10 +1123,7 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "add_event",
-        "escalate"
-      ],
+      "effects": ["add_event", "escalate"],
       "event": {
         "date": "2026-12-03",
         "time": "10:00"
@@ -1206,11 +1135,7 @@
     "id": "cp12-visit-and-results",
     "email": {
       "gmailId": "fx-cp12-visit-and-results",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Brookfield Internal Medicine",
@@ -1302,10 +1227,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "escalate"
-      ],
+      "effects": ["add_event", "escalate"],
       "event": {
         "date": "2026-12-08",
         "time": "09:30"

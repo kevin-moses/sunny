@@ -1,7 +1,7 @@
 import { APIConnectionError, APIError, TypeSafeError } from "@typesafe-ai/sdk";
 import { ConfigError } from "./errors";
 import { GoogleAccessRevoked, GoogleApiError } from "./google";
-import { JevAnswerError } from "./mailJudge";
+import { JevAnswerError } from "./jevClient";
 import { SecretUnreadable } from "./secretBox";
 
 const REVOKED_MESSAGE = "Google access was revoked; reconnect the senior's Gmail.";

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { JEV_MODEL } from "../../convex/lib/mailJudge";
+import { JEV_MODEL } from "../../convex/lib/jevClient";
 import { isRecord } from "../../convex/lib/http";
 import { SENIOR_SENTENCES } from "../../convex/lib/mailTypes";
 import { exactViolations, parseFixtures, replayAsk, runFixture, scoreRuns } from "./mailEval";

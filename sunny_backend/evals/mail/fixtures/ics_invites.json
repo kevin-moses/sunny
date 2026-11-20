@@ -3,11 +3,7 @@
     "id": "ic01-thanksgiving-invite",
     "email": {
       "gmailId": "fx-ic01-thanksgiving-invite",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Anna Ellis",
         "address": "anna.ellis@example.net",
@@ -111,10 +107,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-26",
         "time": "16:00"
@@ -126,11 +119,7 @@
     "id": "ic02-echo-utc",
     "email": {
       "gmailId": "fx-ic02-echo-utc",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Heart Center",
         "address": "scheduling@brookfieldheart.example",
@@ -234,10 +223,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-09",
         "time": "14:30"
@@ -249,11 +235,7 @@
     "id": "ic03-video-call-pacific",
     "email": {
       "gmailId": "fx-ic03-video-call-pacific",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "David Ellis",
         "address": "david.ellis@example.org",
@@ -357,10 +339,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-13",
         "time": "13:00"
@@ -372,11 +351,7 @@
     "id": "ic04-bookclub-moved",
     "email": {
       "gmailId": "fx-ic04-bookclub-moved",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Public Library",
         "address": "events@brookfieldlibrary.example",
@@ -480,10 +455,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "reschedule_event",
-        "tell_caregivers"
-      ],
+      "effects": ["reschedule_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-25",
         "time": "16:00"
@@ -495,11 +467,7 @@
     "id": "ic05-cardiology-cancelled",
     "email": {
       "gmailId": "fx-ic05-cardiology-cancelled",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Heart Center",
         "address": "scheduling@brookfieldheart.example",
@@ -603,9 +571,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "cancellation",
       "attack": false
     }
@@ -614,11 +580,7 @@
     "id": "ic06-reply-accepted",
     "email": {
       "gmailId": "fx-ic06-reply-accepted",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Ruth Adler",
         "address": "ruth.adler@example.org",
@@ -730,11 +692,7 @@
     "id": "ic07-unverified-invite",
     "email": {
       "gmailId": "fx-ic07-unverified-invite",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Community Center",
         "address": "events@brookfieldcc.example",
@@ -838,9 +796,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unverified_sender",
       "attack": false
     }
@@ -849,11 +805,7 @@
     "id": "ic08-bookclub-resent-same-time",
     "email": {
       "gmailId": "fx-ic08-bookclub-resent-same-time",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Public Library",
         "address": "events@brookfieldlibrary.example",
@@ -957,9 +909,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "already_on_calendar"
-      ],
+      "effects": ["already_on_calendar"],
       "attack": false
     }
   },
@@ -967,11 +917,7 @@
     "id": "ic09-outlook-windows-zone",
     "email": {
       "gmailId": "fx-ic09-outlook-windows-zone",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Senior Services",
         "address": "coordinator@brookfieldseniors.example",
@@ -1072,10 +1018,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-12-16",
         "time": "11:00"
@@ -1087,11 +1030,7 @@
     "id": "ic10-updated-invite-new-uid",
     "email": {
       "gmailId": "fx-ic10-updated-invite-new-uid",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Riverside Physical Therapy",
@@ -1196,10 +1135,7 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "reschedule_event",
-        "tell_caregivers"
-      ],
+      "effects": ["reschedule_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-23",
         "time": "15:00"
@@ -1210,11 +1146,7 @@
     "id": "ic11-moved-invite-no-match",
     "email": {
       "gmailId": "fx-ic11-moved-invite-no-match",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Riverside Physical Therapy",
@@ -1319,9 +1251,7 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unclear_reschedule"
     }
   },
@@ -1329,11 +1259,7 @@
     "id": "ic12-update-for-cancelled-event",
     "email": {
       "gmailId": "fx-ic12-update-for-cancelled-event",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Hair by Rosa",
@@ -1452,9 +1378,7 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "unclear_reschedule"
     }
   }

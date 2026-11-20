@@ -3,11 +3,7 @@
     "id": "rp01-store-receipt",
     "email": {
       "gmailId": "fx-rp01-store-receipt",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Books",
         "address": "orders@brookfieldbooks.example",
@@ -107,11 +103,7 @@
     "id": "rp02-senior-center-newsletter",
     "email": {
       "gmailId": "fx-rp02-senior-center-newsletter",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Senior Center",
         "address": "news@brookfieldseniors.example",
@@ -211,10 +203,7 @@
     "id": "rp03-promotions-sale",
     "email": {
       "gmailId": "fx-rp03-promotions-sale",
-      "labels": [
-        "CATEGORY_PROMOTIONS",
-        "INBOX"
-      ],
+      "labels": ["CATEGORY_PROMOTIONS", "INBOX"],
       "sender": {
         "name": "Garden Supply Co.",
         "address": "deals@gardensupply.example",
@@ -314,10 +303,7 @@
     "id": "rp04-social",
     "email": {
       "gmailId": "fx-rp04-social",
-      "labels": [
-        "CATEGORY_SOCIAL",
-        "INBOX"
-      ],
+      "labels": ["CATEGORY_SOCIAL", "INBOX"],
       "sender": {
         "name": "Facebook",
         "address": "notification@facebookmail.example",
@@ -417,9 +403,7 @@
     "id": "rp05-sent-mail",
     "email": {
       "gmailId": "fx-rp05-sent-mail",
-      "labels": [
-        "SENT"
-      ],
+      "labels": ["SENT"],
       "sender": {
         "name": "Margaret Ellis",
         "address": "margaret.ellis@example.com",
@@ -519,11 +503,7 @@
     "id": "rp06-streaming-receipt",
     "email": {
       "gmailId": "fx-rp06-streaming-receipt",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "StreamBox",
         "address": "billing@streambox.example",
@@ -623,11 +603,7 @@
     "id": "rp07-church-bulletin",
     "email": {
       "gmailId": "fx-rp07-church-bulletin",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "St. Anne's Parish",
         "address": "office@stannes.example",

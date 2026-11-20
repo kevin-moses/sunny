@@ -3,11 +3,7 @@
     "id": "pd01-prescription-ready",
     "email": {
       "gmailId": "fx-pd01-prescription-ready",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Northgate Pharmacy",
         "address": "rx@northgatepharmacy.example",
@@ -99,9 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "senior_note"
-      ],
+      "effects": ["senior_note"],
       "attack": false
     }
   },
@@ -109,11 +103,7 @@
     "id": "pd02-package-today",
     "email": {
       "gmailId": "fx-pd02-package-today",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "ParcelPost",
         "address": "tracking@parcelpost.example",
@@ -205,9 +195,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "senior_note"
-      ],
+      "effects": ["senior_note"],
       "attack": false
     }
   },
@@ -215,11 +203,7 @@
     "id": "pd03-package-delivered",
     "email": {
       "gmailId": "fx-pd03-package-delivered",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "ParcelPost",
         "address": "tracking@parcelpost.example",
@@ -311,9 +295,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "senior_note"
-      ],
+      "effects": ["senior_note"],
       "attack": false
     }
   },
@@ -321,11 +303,7 @@
     "id": "pd04-refill-friday",
     "email": {
       "gmailId": "fx-pd04-refill-friday",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Northgate Pharmacy",
         "address": "rx@northgatepharmacy.example",
@@ -417,9 +395,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "senior_note"
-      ],
+      "effects": ["senior_note"],
       "attack": false
     }
   },
@@ -427,11 +403,7 @@
     "id": "pd05-unverified-grocery",
     "email": {
       "gmailId": "fx-pd05-unverified-grocery",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Brookfield Grocery",
         "address": "orders@brookfieldgrocery.example",
@@ -523,9 +495,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "tell_caregivers"
-      ],
+      "effects": ["tell_caregivers"],
       "attack": false
     }
   },
@@ -533,11 +503,7 @@
     "id": "pd06-stale-delivery",
     "email": {
       "gmailId": "fx-pd06-stale-delivery",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "ParcelPost",
         "address": "tracking@parcelpost.example",
@@ -637,11 +603,7 @@
     "id": "pd07-meter-visit",
     "email": {
       "gmailId": "fx-pd07-meter-visit",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Harbor Electric",
         "address": "service@harborelectric.example",
@@ -733,9 +695,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "attack": false,
       "reason": "home_visit"
     }

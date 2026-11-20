@@ -7,7 +7,7 @@ import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import { DIGEST_HEADING, MAIL_HEADING, buildBriefing } from "./lib/agentBriefing";
 import { loadDeviceState } from "./lib/deviceState";
 import { carryOut } from "./lib/mailEffects";
-import { JEV_MODEL } from "./lib/mailJudge";
+import { JEV_MODEL } from "./lib/jevClient";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import type { Triaged } from "./lib/mailTypes";
 import {

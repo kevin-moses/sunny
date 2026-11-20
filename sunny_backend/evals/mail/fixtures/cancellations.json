@@ -3,11 +3,7 @@
     "id": "cn01-dentist-cancels",
     "email": {
       "gmailId": "fx-cn01-dentist-cancels",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Maple Street Dental",
         "address": "reminders@maplestreetdental.example",
@@ -99,9 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "cancellation",
       "attack": false
     }
@@ -110,11 +104,7 @@
     "id": "cn02-ruth-cancels-lunch",
     "email": {
       "gmailId": "fx-cn02-ruth-cancels-lunch",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Ruth Adler",
         "address": "ruth.adler@example.org",
@@ -206,9 +196,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "cancellation",
       "attack": false
     }
@@ -217,11 +205,7 @@
     "id": "cn03-salon-cancels",
     "email": {
       "gmailId": "fx-cn03-salon-cancels",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Studio Nine Salon",
         "address": "bookings@studionine.example",
@@ -313,9 +297,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "escalate"
-      ],
+      "effects": ["escalate"],
       "reason": "cancellation",
       "attack": false
     }

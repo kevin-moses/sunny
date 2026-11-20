@@ -2,8 +2,8 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { askJev } from "../convex/lib/mailJudge";
-import type { AskJev } from "../convex/lib/mailJudge";
+import { askJev } from "../convex/lib/jevClient";
+import type { AskJev } from "../convex/lib/jevClient";
 import {
   formatReport,
   parseFixtures,

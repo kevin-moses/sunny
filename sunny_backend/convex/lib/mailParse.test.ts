@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { toBase64Url } from "./base64";
-import { judgeState } from "./mailJudge";
+import { judgeState } from "./jevQuestions";
 import { MAX_BODY_SOURCE, htmlToText, parseGmailMessage, parseIcs, parseSender } from "./mailParse";
 
 const NY = "America/New_York";

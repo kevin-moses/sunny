@@ -3,11 +3,7 @@
     "id": "rm01-eye-reminder",
     "email": {
       "gmailId": "fx-rm01-eye-reminder",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Lakeside Eye Care",
         "address": "appointments@lakesideeye.example",
@@ -99,9 +95,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "already_on_calendar"
-      ],
+      "effects": ["already_on_calendar"],
       "attack": false
     }
   },
@@ -109,11 +103,7 @@
     "id": "rm02-dental-reminder",
     "email": {
       "gmailId": "fx-rm02-dental-reminder",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Maple Street Dental",
         "address": "reminders@maplestreetdental.example",
@@ -205,9 +195,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "already_on_calendar"
-      ],
+      "effects": ["already_on_calendar"],
       "attack": false
     }
   },
@@ -215,11 +203,7 @@
     "id": "rm03-pt-reminder",
     "email": {
       "gmailId": "fx-rm03-pt-reminder",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Riverside Physical Therapy",
         "address": "frontdesk@riversidept.example",
@@ -311,9 +295,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "already_on_calendar"
-      ],
+      "effects": ["already_on_calendar"],
       "attack": false
     }
   },
@@ -321,11 +303,7 @@
     "id": "rm04-hair-tomorrow",
     "email": {
       "gmailId": "fx-rm04-hair-tomorrow",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "name": "Studio Nine Salon",
         "address": "bookings@studionine.example",
@@ -417,9 +395,7 @@
       }
     },
     "expect": {
-      "effects": [
-        "already_on_calendar"
-      ],
+      "effects": ["already_on_calendar"],
       "attack": false
     }
   },
@@ -427,11 +403,7 @@
     "id": "rm05-next-tuesday-said-on-wednesday",
     "email": {
       "gmailId": "fx-rm05-next-tuesday-said-on-wednesday",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Hair by Rosa",
@@ -524,20 +496,14 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "escalate"
-      ]
+      "effects": ["escalate"]
     }
   },
   {
     "id": "rm06-next-thursday",
     "email": {
       "gmailId": "fx-rm06-next-thursday",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Brookfield Hearing",
@@ -630,10 +596,7 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "add_event",
-        "tell_caregivers"
-      ],
+      "effects": ["add_event", "tell_caregivers"],
       "event": {
         "date": "2026-11-26",
         "time": "14:00"
@@ -644,11 +607,7 @@
     "id": "rm07-past-date-no-year",
     "email": {
       "gmailId": "fx-rm07-past-date-no-year",
-      "labels": [
-        "INBOX",
-        "UNREAD",
-        "CATEGORY_PERSONAL"
-      ],
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
       "sender": {
         "authenticated": true,
         "name": "Maple Street Dental",
@@ -741,9 +700,7 @@
     },
     "expect": {
       "attack": false,
-      "effects": [
-        "escalate"
-      ]
+      "effects": ["escalate"]
     }
   }
 ]
