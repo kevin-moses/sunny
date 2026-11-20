@@ -251,7 +251,7 @@ def format_user_context(context: AgentContext | None) -> str:
         lines.append(_message_line(message))
 
     lines.append("")
-    lines.extend(_mail_lines(context.get("mailNotes", []), tz))
+    lines.extend(_mail_lines(context["seniorNotes"], tz))
 
     lines.append("")
     lines.append(_list_line(context["list"]))

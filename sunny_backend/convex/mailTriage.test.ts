@@ -1418,13 +1418,13 @@ describe("where Sunny's reading shows up", () => {
     ]);
     expect(after.version).not.toBe(before.version);
     expect(after.displayVersion).toBe(before.displayVersion);
-    expect((await context()).mailNotes).toEqual([
+    expect((await context()).seniorNotes).toEqual([
       { text: SENIOR_SENTENCES.package_coming, receivedAt: NOW - 30 * MINUTE },
     ]);
 
     vi.setSystemTime(note!.expiresAt);
     expect((await state()).notes).toEqual([]);
-    expect((await context()).mailNotes).toEqual([]);
+    expect((await context()).seniorNotes).toEqual([]);
   });
 
   test("the device state keeps the three newest unexpired notes among many rows", async () => {
