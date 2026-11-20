@@ -139,8 +139,8 @@ describe("an appointment email", () => {
         authenticated: true,
       },
       verdict: "appointment",
-      rule: "new: otherwise",
-      judgeRule: "confirms an appointment with a date and start time",
+      rule: "new-add",
+      judgeRule: "confirmed-appointment",
       classifier: { name: JEV_MODEL, usage: { inputTokens: 4200, outputTokens: 310 } },
     });
     expect(done.judgeAnswers).toMatchObject({
@@ -248,7 +248,7 @@ describe("an appointment email", () => {
         decision: null,
       },
       summary: "The email confirms an appointment.",
-      rule: "confirms an appointment with a date and start time",
+      rule: "confirmed-appointment",
       classifier: {
         name: JEV_MODEL,
         usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0 },
@@ -296,7 +296,7 @@ describe("an appointment email", () => {
     const [event] = await rows(h, "events");
     expect(await rows(h, "events")).toHaveLength(1);
     expect(reminder.effects).toEqual([{ kind: "already_on_calendar", eventId: event!._id }]);
-    expect(reminder.rule).toContain("already linked");
+    expect(reminder.rule).toBe("new-on-calendar");
     expect(await rows(h, "chatPosts")).toHaveLength(1);
   });
 
@@ -479,7 +479,7 @@ describe("an appointment email", () => {
     ].join("\r\n");
     const done = await triageEmail(h, clinic({ ics }), { kind: "eye_doctor" });
     expect(jevCalls).toHaveLength(1);
-    expect(done).toMatchObject({ judgeRule: "calendar invitation", rule: "new: otherwise" });
+    expect(done).toMatchObject({ judgeRule: "ics-invitation", rule: "new-add" });
     const [event] = await rows(h, "events");
     expect(event).toMatchObject({
       title: "Eye exam",
@@ -571,7 +571,7 @@ describe("an appointment email", () => {
         before: { date: "2026-12-10", time: "14:15" },
       },
     );
-    expect(done).toMatchObject({ judgeRule: "invitation for a moved appointment" });
+    expect(done).toMatchObject({ judgeRule: "ics-moved" });
     expect(done.effects).toEqual([
       { kind: "event_rescheduled", eventId, fromDate: "2026-12-10", fromTime: "14:15" },
       { kind: "told_caregivers", pushed: true },
@@ -871,7 +871,7 @@ describe("other verdicts", () => {
   test("mail Gmail filed as a promotion is ignored without the model", async () => {
     const h = await setup();
     const done = await triageEmail(h, clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }));
-    expect(done).toMatchObject({ state: "done", rule: "ignore: any", effects: [] });
+    expect(done).toMatchObject({ state: "done", rule: "ignore", effects: [] });
     expect(jevCalls).toHaveLength(0);
   });
 

@@ -70,7 +70,7 @@ const BROAD_FLAGS = flagsIn("broad");
 const INFO_FLAGS = flagsIn("information");
 
 interface Row {
-  rule: string;
+  id: string;
   decide: (r: Readings) => Decision | null;
 }
 
@@ -79,7 +79,7 @@ const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
   flags.some((f) => r.flags.get(f) === "unsure");
 
 interface NamedDecision {
-  rule: string;
+  id: string;
   flag: Flag;
   reason: DecisionReason;
   summary: string;
@@ -87,31 +87,31 @@ interface NamedDecision {
 
 const NAMED_DECISIONS: NamedDecision[] = [
   {
-    rule: "test results",
+    id: "test-results",
     flag: "about_test_results",
     reason: "health_result",
     summary: "The email is about medical test results.",
   },
   {
-    rule: "bill",
+    id: "bill",
     flag: "about_bill",
     reason: "bill_or_payment",
     summary: "The email is about a bill or a payment.",
   },
   {
-    rule: "account security",
+    id: "account-security",
     flag: "about_account_security",
     reason: "account_or_credentials",
     summary: "The email is about the security of one of the senior's accounts.",
   },
   {
-    rule: "government",
+    id: "government",
     flag: "from_government",
     reason: "legal_or_government",
     summary: "The email is from a government, court or tax office.",
   },
   {
-    rule: "question for the senior",
+    id: "question-for-senior",
     flag: "asks_question",
     reason: "reply_needed",
     summary: "The email asks the senior a question that needs an answer.",
@@ -119,7 +119,7 @@ const NAMED_DECISIONS: NamedDecision[] = [
 ];
 
 const NEEDS_ACTION: NamedDecision = {
-  rule: "payment, reply, signature or decision needed",
+  id: "action-needed",
   flag: "needs_action",
   reason: "other",
   summary: "The email needs a payment, a reply, a signature or a decision.",
@@ -140,7 +140,7 @@ function cancelled(r: Readings, previous: AppointmentRef, summary: string): Deci
 
 export const TRUTH_TABLE: Row[] = [
   {
-    rule: "instructions to an assistant",
+    id: "assistant-instructions",
     decide: (r) =>
       is(r, "addresses_assistant")
         ? suspicious(
@@ -150,14 +150,14 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "asks for private details",
+    id: "private-details",
     decide: (r) =>
       is(r, "asks_private_details")
         ? suspicious("credentials", "The email asks for private login or identity details.")
         : null,
   },
   {
-    rule: "asks for hard-to-trace payment",
+    id: "hard-to-trace-payment",
     decide: (r) =>
       is(r, "asks_hard_to_trace_payment")
         ? suspicious(
@@ -167,7 +167,7 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "asks to bring payment",
+    id: "bring-payment",
     decide: (r) =>
       is(r, "asks_to_bring_payment")
         ? suspicious(
@@ -177,14 +177,14 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "new contact details or a mismatched sender name",
+    id: "new-contact-details",
     decide: (r) =>
       is(r, "announces_new_contact") || is(r, "name_mismatch")
         ? suspicious("impersonation", "The sender may not be who they claim to be.")
         : null,
   },
   {
-    rule: "threat, secrecy or unexpected money",
+    id: "threat-or-secrecy",
     decide: (r) => {
       if (!PRESSURE_FLAGS.some((f) => is(r, f))) return null;
       const posing = is(r, "from_government") || is(r, "about_account_security");
@@ -195,7 +195,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "a safety question is unsettled",
+    id: "safety-unsettled",
     decide: (r) =>
       anyUnsure(r, SAFETY_FLAGS)
         ? decision(
@@ -205,7 +205,7 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "calendar cancellation",
+    id: "ics-cancellation",
     decide: (r) => {
       const invite = r.invite;
       if (invite?.method !== "CANCEL") return null;
@@ -217,7 +217,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "invitation for a cancelled appointment",
+    id: "ics-cancelled",
     decide: (r) => {
       const invite = r.invite;
       if (invite === null || !is(r, "appointment_cancelled")) return null;
@@ -229,7 +229,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "invitation for a moved appointment",
+    id: "ics-moved",
     decide: (r) => {
       const invite = r.invite;
       if (invite === null || !is(r, "appointment_moved")) return null;
@@ -246,7 +246,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "calendar invitation",
+    id: "ics-invitation",
     decide: (r) => {
       const invite = r.invite;
       if (invite === null) return null;
@@ -262,7 +262,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "cancelled",
+    id: "cancelled",
     decide: (r) => {
       if (!is(r, "appointment_cancelled")) return null;
       return r.before === null
@@ -278,7 +278,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "moved",
+    id: "moved",
     decide: (r) => {
       if (!is(r, "appointment_moved")) return null;
       const slot = timed(r);
@@ -300,7 +300,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "confirms an appointment with a date and start time",
+    id: "confirmed-appointment",
     decide: (r) => {
       const slot = timed(r);
       return is(r, "confirms_appointment") && slot !== null
@@ -316,12 +316,12 @@ export const TRUTH_TABLE: Row[] = [
         : null;
     },
   },
-  ...[...NAMED_DECISIONS, NEEDS_ACTION].map(({ rule, flag, reason, summary }): Row => ({
-    rule,
+  ...[...NAMED_DECISIONS, NEEDS_ACTION].map(({ id, flag, reason, summary }): Row => ({
+    id,
     decide: (r) => (is(r, flag) ? decision(reason, summary) : null),
   })),
   {
-    rule: "a specific decision question is unsettled",
+    id: "decision-unsettled",
     decide: (r) =>
       anyUnsure(r, SPECIFIC_DECISION_FLAGS)
         ? decision(
@@ -331,7 +331,7 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "prescription",
+    id: "prescription",
     decide: (r) => {
       if (!is(r, "about_prescription")) return null;
       return is(r, "prescription_ready_now")
@@ -340,7 +340,7 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "package",
+    id: "package",
     decide: (r) => {
       if (!is(r, "about_package")) return null;
       return is(r, "package_arrived")
@@ -349,14 +349,14 @@ export const TRUTH_TABLE: Row[] = [
     },
   },
   {
-    rule: "home visit",
+    id: "home-visit",
     decide: (r) =>
       is(r, "home_visit")
         ? decision("home_visit", "The email says a worker will visit the home.")
         : null,
   },
   {
-    rule: "appointment without a readable date and start time",
+    id: "appointment-without-time",
     decide: (r) =>
       is(r, "confirms_appointment")
         ? decision(
@@ -366,12 +366,12 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "personal note",
+    id: "personal-note",
     decide: (r) =>
       is(r, "personal_note") ? info("personal_note", "The email reads as a personal note.") : null,
   },
   {
-    rule: "bulk mail, receipt or feedback request",
+    id: "bulk-mail",
     decide: (r) =>
       is(r, "bulk_mail") || is(r, "receipt") || is(r, "feedback_request")
         ? {
@@ -381,7 +381,7 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "a broad question is unsettled",
+    id: "broad-unsettled",
     decide: (r) =>
       anyUnsure(r, BROAD_FLAGS)
         ? decision(
@@ -391,14 +391,14 @@ export const TRUTH_TABLE: Row[] = [
         : null,
   },
   {
-    rule: "an information question is unsettled",
+    id: "information-unsettled",
     decide: (r) =>
       anyUnsure(r, INFO_FLAGS)
         ? decision("other", "Sunny could not tell what this email is about. Please look at it.")
         : null,
   },
   {
-    rule: "otherwise",
+    id: "otherwise",
     decide: () =>
       decision("other", "Sunny did not recognize what this email is about. Please look at it."),
   },
@@ -407,7 +407,7 @@ export const TRUTH_TABLE: Row[] = [
 export function decide(readings: Readings): Decision & { rule: string } {
   for (const row of TRUTH_TABLE) {
     const decided = row.decide(readings);
-    if (decided !== null) return { ...decided, rule: row.rule };
+    if (decided !== null) return { ...decided, rule: row.id };
   }
   throw new Error("The mail truth table has no matching row");
 }

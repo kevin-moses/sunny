@@ -100,6 +100,37 @@ Terms in this section. A verdict is what the classifier concludes about one emai
   - Thresholds: a Noul of 0.7 or more is yes, 0.3 or less is no, and in between is unsettled. A Choice part counts at 0.7 or more, the same comparison. Each flag names its group next to its question in `lib/jevQuestions.ts` (safety, pressure, decision, appointment, broad, information, or follow-up for a question read only after its parent says yes), and the unsettled rows use those groups.
   - Dates: code resolves the date parts against the day the email arrived and refuses a date whose weekday does not match. A month and day without a year is this year's date when it is today or later. When it fell in the last 180 days it is read as past and the date is left unread; only a date more than 180 days back means next year. `weekdayDate` holds the weekday rule, which the chat agent's prompt states too: a weekday alone or "this <weekday>" is the coming one, and "this <weekday>" includes today; "next <weekday>" is that day in the following Monday-to-Sunday week. These are ambiguous and leave the date unread, so the email escalates: "next <weekday>" less than 7 days away, a weekday alone that names the day the email arrived, and "this <weekday>" that has passed.
   - Truth table, first matching row wins, in this order: safety (instructions aimed at an assistant, a request for private details, hard-to-trace payment or bringing payment, a new address or a name that does not match the address, threats, secrecy or unexpected money) becomes `suspicious`, and any unsettled safety question becomes `needs_decision`. Then the calendar part: an ICS cancellation, an invite Jev reads as cancelled, an invite Jev reads as moved (the new slot is the ICS start; the old one is Jev's `before_*` reading, or none), and any other invite with a usable start. Then cancelled, moved and confirmed appointments read from the text. Then decisions (test results, bills, account security, government, a question, a required action, or an unsettled decision question); then prescription and package news for the senior; a worker coming to the home becomes `needs_decision` with reason `home_visit`; then a personal note for the senior; then bulk mail, receipts and surveys, which are ignored; anything left unsettled or unrecognized becomes `needs_decision` with reason `other`.
+  - Truth-table row ids, in table order. The id of the row that fired is stored as `judgeRule`; rows written before the ids hold the row's old prose description instead.
+    - `assistant-instructions`: instructions to an assistant.
+    - `private-details`: asks for private details.
+    - `hard-to-trace-payment`: asks for hard-to-trace payment.
+    - `bring-payment`: asks to bring payment.
+    - `new-contact-details`: new contact details or a sender name that does not match the address.
+    - `threat-or-secrecy`: a threat, secrecy or unexpected money.
+    - `safety-unsettled`: a safety question is unsettled.
+    - `ics-cancellation`: an ICS cancellation.
+    - `ics-cancelled`: an invitation Jev reads as a cancelled appointment.
+    - `ics-moved`: an invitation Jev reads as a moved appointment.
+    - `ics-invitation`: any other invitation with a usable start.
+    - `cancelled`: the text says an appointment was cancelled.
+    - `moved`: the text says an appointment moved.
+    - `confirmed-appointment`: the text confirms an appointment with a date and start time.
+    - `test-results`: about medical test results.
+    - `bill`: about a bill or a payment.
+    - `account-security`: about the security of an account.
+    - `government`: from a government, court or tax office.
+    - `question-for-senior`: asks the senior a question that needs an answer.
+    - `action-needed`: needs a payment, a reply, a signature or a decision.
+    - `decision-unsettled`: a specific decision question is unsettled.
+    - `prescription`: prescription news for the senior.
+    - `package`: package news for the senior.
+    - `home-visit`: a worker coming to the home.
+    - `appointment-without-time`: an appointment without a readable date and start time.
+    - `personal-note`: a personal note for the senior.
+    - `bulk-mail`: bulk mail, a receipt or a feedback request.
+    - `broad-unsettled`: a broad question is unsettled.
+    - `information-unsettled`: an information question is unsettled.
+    - `otherwise`: nothing above matched.
   - An appointment verdict also carries `decision`: the reason of the first decision-group judgment that is yes (test results, bill, account security, government, a question), `other` when one of them is unsettled, else null. The `needs_action` judgment does not set `decision`, because Jev answers yes to it for most confirmations ("arrive ten minutes early").
   - A verdict carries types only: an appointment has a kind (`APPOINTMENT_KINDS` in `lib/mailTypes.ts`), a date, a time and a length; senior information has a topic. Each truth-table row also gives Sunny's sentence for the caregivers, used when there is no summary.
   - A failed Jev call throws and the pool retries the job. A failed call does not count as a "no" answer. The SDK retries once inside a 20-second timeout. A reply with a missing or malformed answer, a probability that is not a finite number from 0 to 1, or no input token count throws `JevAnswerError`, which `lib/mailFailure.mailFailure` treats as permanent.
@@ -117,35 +148,35 @@ Terms in this section. A verdict is what the classifier concludes about one emai
   A new appointment needs fields that `appointmentFields` accepts in every situation but `new_linked_elsewhere`; when it rejects them the situation is `new_rejected` instead. A reschedule (an invite moved through its link counts as one) is `reschedule_no_match` unless exactly one event matched, `reschedule_repeating` when the match is one date of a series, `reschedule_rejected` when `appointmentFields` rejects the new fields, and `reschedule` otherwise. The verdict's appointment must have a date and a time that parse; planning throws otherwise.
 
   In `new_linked_elsewhere` the link never picks an event to move and never counts as already on the calendar, and Sunny changes nothing. Its post names the event's date and time when a fact shows them and otherwise says that the calendar no longer has the appointment at that time. `new_linked_by_another_address` also changes nothing, because addresses on one domain share links and a stranger's cancelled appointment must not silence a clinic on the same mail domain. Its post does not show the other address. A link stays after its event is cancelled or past, so for the address that made it, another email about that appointment closes as `already_on_calendar` with no post and never adds it again. A reschedule matches an event at the previous slot only on the same date with a word shared with Sunny's title for the kind, and on the same time when the email gives one. A cancellation uses its link when it has one (only an invite's UID gives a cancellation a link) and otherwise matches the previous slot the same way.
-- **Decision table** (`lib/mailPolicy.ts`, `DECISION_TABLE`). Verified means `sender.authenticated` (see Sender check). It shows that the mail came from the domain in its address, not who owns that domain, so mail from a lookalike domain is verified. Each situation from link resolution has its own rows. The first row whose guard holds decides, and the row is stored as `rule`.
+- **Decision table** (`lib/mailPolicy.ts`, `DECISION_TABLE`). Verified means `sender.authenticated` (see Sender check). It shows that the mail came from the domain in its address, not who owns that domain, so mail from a lookalike domain is verified. Each situation from link resolution has its own rows. The first row whose guard holds decides, and its id is stored as `rule`; rows written before the ids hold the old prose `<case>: <row>` instead. Nothing reads `rule` or `judgeRule` to decide anything: they are records for people and for the eval.
 
-  | Case | Row | Effects |
-  | --- | --- | --- |
-  | ignore | any | none |
-  | every new case | sender not authenticated | escalate `unverified_sender`, push, with the proposed appointment |
-  | new_linked_elsewhere | otherwise | escalate `unclear_appointment`, push, with the event and the proposed appointment |
-  | new_rejected | otherwise | escalate `unclear_appointment`, push, with the proposed appointment |
-  | new_on_calendar | otherwise | `already_on_calendar` |
-  | new_linked_by_another_address | otherwise | escalate `unclear_appointment`, push, with the proposed appointment |
-  | new | a caregiver confirms this kind first | escalate `home_visit` or `phone_call`, push, with the proposed appointment |
-  | new | overlaps another live event | escalate `conflict`, push |
-  | new | daily limit of calendar changes reached | escalate `daily_limit`, push, with the proposed appointment |
-  | new | otherwise | `add_event`, `tell_caregivers` without push |
-  | reschedule_no_match | otherwise | escalate `unclear_reschedule`, push, with the proposed appointment |
-  | reschedule_repeating | otherwise | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
-  | reschedule_rejected, reschedule | sender not authenticated | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
-  | reschedule_rejected | otherwise | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
-  | reschedule | the match already has the new date and time | `already_on_calendar` |
-  | reschedule | a caregiver confirms moving this kind first | escalate `home_visit` or `phone_call`, push, with the event and the proposed appointment |
-  | reschedule | daily limit of calendar changes reached | escalate `daily_limit`, push, with the event and the proposed appointment |
-  | reschedule | exactly one match | `reschedule_event`, `tell_caregivers` with push |
-  | cancel | any | escalate `cancellation`, push, with the event when exactly one matched; never applied |
-  | senior_info | stale | none |
-  | senior_info | not authenticated | `tell_caregivers` without push |
-  | senior_info | daily limit of notes reached | `tell_caregivers` without push, saying the daily limit of 3 notes was reached, with Sunny's sentence for the topic |
-  | senior_info | otherwise | `senior_note` with Sunny's sentence for the topic |
-  | needs_decision | any | escalate with its reason, push |
-  | suspicious | any | escalate with its suspicion, push; the senior is never told |
+  | Id | Situation | Row | Effects |
+  | --- | --- | --- | --- |
+  | `ignore` | ignore | any | none |
+  | `new-unverified-sender` | every new situation | the sender is not verified | escalate `unverified_sender`, push, with the proposed appointment |
+  | `new-linked-elsewhere` | new_linked_elsewhere | otherwise: the sender's link has this appointment at another time, and no live event has the email's date, time and title words | escalate `unclear_appointment`, push, with the event and the proposed appointment |
+  | `new-fields-rejected` | new_rejected | otherwise: `appointmentFields` rejects the date, time or length | escalate `unclear_appointment`, push, with the proposed appointment |
+  | `new-on-calendar` | new_on_calendar | otherwise: the link applies, or a live event has the email's date, time and title words | `already_on_calendar` |
+  | `new-linked-by-another-address` | new_linked_by_another_address | otherwise: the link's event is over, and another address at the sender's domain made it | escalate `unclear_appointment`, push, with the proposed appointment |
+  | `new-caregiver-confirms` | new | a caregiver confirms this kind first | escalate `home_visit` or `phone_call`, push, with the proposed appointment |
+  | `new-conflict` | new | overlaps another live event | escalate `conflict`, push, with the proposed appointment |
+  | `new-daily-limit` | new | daily limit of calendar changes reached | escalate `daily_limit`, push, with the proposed appointment |
+  | `new-add` | new | otherwise | `add_event`, `tell_caregivers` without push |
+  | `reschedule-no-match` | reschedule_no_match | otherwise: no single event matched | escalate `unclear_reschedule`, push, with the proposed appointment |
+  | `reschedule-repeating` | reschedule_repeating | otherwise: the match is one date of a repeating event | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
+  | `reschedule-unverified-sender` | reschedule_rejected, reschedule | the sender is not verified | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
+  | `reschedule-fields-rejected` | reschedule_rejected | otherwise: `appointmentFields` rejects the new date, time or length | escalate `unclear_reschedule`, push, with the event and the proposed appointment |
+  | `reschedule-already-there` | reschedule | the match already has the new date and time | `already_on_calendar` |
+  | `reschedule-caregiver-confirms` | reschedule | a caregiver confirms moving this kind first | escalate `home_visit` or `phone_call`, push, with the event and the proposed appointment |
+  | `reschedule-daily-limit` | reschedule | daily limit of calendar changes reached | escalate `daily_limit`, push, with the event and the proposed appointment |
+  | `reschedule-move` | reschedule | otherwise: exactly one match | `reschedule_event`, `tell_caregivers` with push |
+  | `cancel` | cancel | any | escalate `cancellation`, push, with the event when exactly one matched; never applied |
+  | `senior-info-stale` | senior_info | the email is stale | none |
+  | `senior-info-unverified-sender` | senior_info | the sender is not verified | `tell_caregivers` without push |
+  | `senior-info-daily-limit` | senior_info | daily limit of notes reached | `tell_caregivers` without push, saying the daily limit of 3 notes was reached, with Sunny's sentence for the topic |
+  | `senior-info-note` | senior_info | otherwise | `senior_note` with Sunny's sentence for the topic |
+  | `needs-decision` | needs_decision | any | escalate with its reason, push |
+  | `suspicious` | suspicious | any | escalate with its suspicion, push; the senior is never told |
 
   Two passes run over the row's effects after the table, in this order. Decision: an appointment verdict with a `decision` keeps its row; every escalation gets a sentence on what else the email needs (`ALSO_NEEDS`), a `tell_caregivers` becomes an escalation with the decision as its reason and a push, and an `already_on_calendar` gets that escalation next to it, with its event. So a verified confirmation that also asks for a payment is added and escalated in one chat post, and an unverified one is one escalation that says both. Staleness: every push of a stale email becomes `push: false` (see Staleness). The rows build Sunny's sentence for each post, and the caregiver message is rendered from it after both passes.
 

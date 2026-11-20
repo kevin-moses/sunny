@@ -50,75 +50,75 @@ const INVITE: Invite = {
 };
 
 const ROWS: [string, string, Readings, string][] = [
-  ["instructions to an assistant", "", readings({ addresses_assistant: "yes" }), "suspicious:scam"],
+  ["assistant-instructions", "", readings({ addresses_assistant: "yes" }), "suspicious:scam"],
   [
-    "asks for private details",
+    "private-details",
     "",
     readings({ asks_private_details: "yes", confirms_appointment: "yes" }, { when: DEC_10 }),
     "suspicious:credentials",
   ],
   [
-    "asks for hard-to-trace payment",
+    "hard-to-trace-payment",
     "",
     readings({ asks_hard_to_trace_payment: "yes", personal_note: "yes" }),
     "suspicious:money_request",
   ],
   [
-    "asks to bring payment",
+    "bring-payment",
     "even on a calendar invitation",
     readings({ asks_to_bring_payment: "yes" }, { invite: INVITE }),
     "suspicious:money_request",
   ],
   [
-    "new contact details or a mismatched sender name",
+    "new-contact-details",
     "new address",
     readings({ announces_new_contact: "yes" }),
     "suspicious:impersonation",
   ],
   [
-    "new contact details or a mismatched sender name",
+    "new-contact-details",
     "name does not match address",
     readings({ name_mismatch: "yes" }),
     "suspicious:impersonation",
   ],
   [
-    "threat, secrecy or unexpected money",
+    "threat-or-secrecy",
     "threat of arrest",
     readings({ threatens_arrest: "yes" }),
     "suspicious:scam",
   ],
   [
-    "threat, secrecy or unexpected money",
+    "threat-or-secrecy",
     "lockout posing as a bank",
     readings({ threatens_lockout: "yes", about_account_security: "yes" }),
     "suspicious:impersonation",
   ],
   [
-    "a safety question is unsettled",
+    "safety-unsettled",
     "blocks a calendar invitation",
     readings({ discourages_checking: "unsure" }, { invite: INVITE }),
     "needs_decision:other",
   ],
   [
-    "calendar invitation",
+    "ics-invitation",
     "a request",
     readings({ asks_question: "yes" }, { kind: "medical_test", invite: INVITE }),
     "appointment:new",
   ],
   [
-    "calendar cancellation",
+    "ics-cancellation",
     "",
     readings({}, { invite: { ...INVITE, method: "CANCEL" } }),
     "appointment:cancel",
   ],
   [
-    "invitation for a cancelled appointment",
+    "ics-cancelled",
     "",
     readings({ appointment_cancelled: "yes", appointment_moved: "yes" }, { invite: INVITE }),
     "appointment:cancel",
   ],
   [
-    "invitation for a moved appointment",
+    "ics-moved",
     "",
     readings({ appointment_moved: "yes" }, { invite: INVITE, before: NOV_20 }),
     "appointment:reschedule",
@@ -157,13 +157,13 @@ const ROWS: [string, string, Readings, string][] = [
     "needs_decision:other",
   ],
   [
-    "confirms an appointment with a date and start time",
+    "confirmed-appointment",
     "",
     readings({ confirms_appointment: "yes" }, { kind: "eye_doctor", when: DEC_10 }),
     "appointment:new",
   ],
   [
-    "test results",
+    "test-results",
     "",
     readings({ about_test_results: "yes", about_bill: "yes" }),
     "needs_decision:health_result",
@@ -175,26 +175,26 @@ const ROWS: [string, string, Readings, string][] = [
     "needs_decision:bill_or_payment",
   ],
   [
-    "account security",
+    "account-security",
     "",
     readings({ about_account_security: "yes" }),
     "needs_decision:account_or_credentials",
   ],
   ["government", "", readings({ from_government: "yes" }), "needs_decision:legal_or_government"],
   [
-    "question for the senior",
+    "question-for-senior",
     "",
     readings({ asks_question: "yes", personal_note: "yes" }),
     "needs_decision:reply_needed",
   ],
   [
-    "payment, reply, signature or decision needed",
+    "action-needed",
     "",
     readings({ needs_action: "yes", bulk_mail: "yes" }),
     "needs_decision:other",
   ],
   [
-    "a specific decision question is unsettled",
+    "decision-unsettled",
     "",
     readings({ about_bill: "unsure", about_package: "yes" }),
     "needs_decision:other",
@@ -219,7 +219,7 @@ const ROWS: [string, string, Readings, string][] = [
   ],
   ["package", "on its way", readings({ about_package: "yes" }), "senior_info:package_coming"],
   [
-    "home visit",
+    "home-visit",
     "",
     readings(
       { home_visit: "yes", confirms_appointment: "yes" },
@@ -228,49 +228,40 @@ const ROWS: [string, string, Readings, string][] = [
     "needs_decision:home_visit",
   ],
   [
-    "appointment without a readable date and start time",
+    "appointment-without-time",
     "no start time",
     readings({ confirms_appointment: "yes" }, { when: { date: "2026-11-19", time: null } }),
     "needs_decision:other",
   ],
   [
-    "appointment without a readable date and start time",
+    "appointment-without-time",
     "time zone not settled",
     readings({ confirms_appointment: "yes" }, { when: DEC_10, otherTimeZone: "unsure" }),
     "needs_decision:other",
   ],
-  ["personal note", "", readings({ personal_note: "yes" }), "senior_info:personal_note"],
+  ["personal-note", "", readings({ personal_note: "yes" }), "senior_info:personal_note"],
   [
-    "bulk mail, receipt or feedback request",
+    "bulk-mail",
     "bulk mail with an unsettled broad question",
     readings({ bulk_mail: "yes", confirms_appointment: "unsure" }),
     "ignore",
   ],
-  ["bulk mail, receipt or feedback request", "receipt", readings({ receipt: "yes" }), "ignore"],
-  [
-    "bulk mail, receipt or feedback request",
-    "survey",
-    readings({ feedback_request: "yes", needs_action: "unsure" }),
-    "ignore",
-  ],
-  [
-    "a broad question is unsettled",
-    "",
-    readings({ needs_action: "unsure" }),
-    "needs_decision:other",
-  ],
-  [
-    "an information question is unsettled",
-    "",
-    readings({ personal_note: "unsure" }),
-    "needs_decision:other",
-  ],
+  ["bulk-mail", "receipt", readings({ receipt: "yes" }), "ignore"],
+  ["bulk-mail", "survey", readings({ feedback_request: "yes", needs_action: "unsure" }), "ignore"],
+  ["broad-unsettled", "", readings({ needs_action: "unsure" }), "needs_decision:other"],
+  ["information-unsettled", "", readings({ personal_note: "unsure" }), "needs_decision:other"],
   ["otherwise", "", readings({}), "needs_decision:other"],
 ];
 
 describe("truth table", () => {
   test("every row has a case", () => {
-    expect(new Set(ROWS.map(([rule]) => rule))).toEqual(new Set(TRUTH_TABLE.map((r) => r.rule)));
+    expect(new Set(ROWS.map(([rule]) => rule))).toEqual(new Set(TRUTH_TABLE.map((r) => r.id)));
+  });
+
+  test("every row has its own kebab-case id", () => {
+    const ids = TRUTH_TABLE.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) expect(id).toMatch(/^[a-z]+(-[a-z]+)*$/);
   });
 
   test.each(ROWS)("%s %s", (rule, _, input, expected) => {

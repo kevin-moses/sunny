@@ -268,7 +268,7 @@ type Situation =
 type Case = Situation["case"];
 
 interface Row<S> {
-  rule: string;
+  id: string;
   plan: (s: S, c: Context) => Draft[] | null;
 }
 
@@ -324,7 +324,7 @@ export function described(appointment: Appointment): string {
 }
 
 const NEW_UNVERIFIED: Row<{ appointment: CheckedAppointment }> = {
-  rule: "new: sender not authenticated",
+  id: "new-unverified-sender",
   plan: (s, c) =>
     c.facts.sender.authenticated
       ? null
@@ -338,11 +338,8 @@ const NEW_UNVERIFIED: Row<{ appointment: CheckedAppointment }> = {
         ],
 };
 
-const UNCLEAR_RESCHEDULE =
-  "reschedule: not authenticated, no single match, the match repeats, or new fields rejected";
-
 const RESCHEDULE_UNVERIFIED: Row<{ appointment: CheckedAppointment; match: CalendarEventFact }> = {
-  rule: UNCLEAR_RESCHEDULE,
+  id: "reschedule-unverified-sender",
   plan: ({ appointment, match }, c) =>
     c.facts.sender.authenticated
       ? null
@@ -357,11 +354,11 @@ const RESCHEDULE_UNVERIFIED: Row<{ appointment: CheckedAppointment; match: Calen
 };
 
 const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = {
-  ignore: [{ rule: "ignore: any", plan: () => [] }],
+  ignore: [{ id: "ignore", plan: () => [] }],
   new_linked_elsewhere: [
     NEW_UNVERIFIED,
     {
-      rule: "new: the sender's link has this appointment at another time, and no live event has the email's date, time and title words",
+      id: "new-linked-elsewhere",
       plan: (s) => {
         const has =
           s.seen === null
@@ -381,7 +378,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   new_rejected: [
     NEW_UNVERIFIED,
     {
-      rule: "new: appointmentFields rejects",
+      id: "new-fields-rejected",
       plan: (s) => [
         escalate(
           "unclear_appointment",
@@ -395,7 +392,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   new_on_calendar: [
     NEW_UNVERIFIED,
     {
-      rule: "new: already linked, unless the link is over and another address made it, or same date, time and title words as a live event",
+      id: "new-on-calendar",
       plan: (s, c) => [
         {
           kind: "already_on_calendar",
@@ -408,7 +405,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   new_linked_by_another_address: [
     NEW_UNVERIFIED,
     {
-      rule: "new: the link's event is over, and another address at the sender's domain made it",
+      id: "new-linked-by-another-address",
       plan: (s) => [
         escalate(
           "unclear_appointment",
@@ -422,7 +419,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   new: [
     NEW_UNVERIFIED,
     {
-      rule: "new: a caregiver confirms this kind first",
+      id: "new-caregiver-confirms",
       plan: (s) => {
         const confirms = APPOINTMENT_KINDS[s.appointment.kind].caregiverConfirms;
         if (confirms === null) return null;
@@ -437,7 +434,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "new: overlaps another live event",
+      id: "new-conflict",
       plan: (s) =>
         s.conflict === null
           ? null
@@ -451,7 +448,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "new: daily limit of calendar changes reached",
+      id: "new-daily-limit",
       plan: (s, c) =>
         c.atDailyLimit
           ? [
@@ -465,7 +462,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           : null,
     },
     {
-      rule: "new: otherwise",
+      id: "new-add",
       plan: (s, c) => [
         {
           kind: "add_event",
@@ -478,7 +475,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule_no_match: [
     {
-      rule: UNCLEAR_RESCHEDULE,
+      id: "reschedule-no-match",
       plan: (s) => [
         escalate(
           "unclear_reschedule",
@@ -491,7 +488,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   reschedule_repeating: [
     {
-      rule: UNCLEAR_RESCHEDULE,
+      id: "reschedule-repeating",
       plan: ({ appointment, match }) => [
         escalate(
           "unclear_reschedule",
@@ -505,7 +502,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   reschedule_rejected: [
     RESCHEDULE_UNVERIFIED,
     {
-      rule: UNCLEAR_RESCHEDULE,
+      id: "reschedule-fields-rejected",
       plan: ({ appointment, match }) => [
         escalate(
           "unclear_reschedule",
@@ -519,7 +516,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   reschedule: [
     RESCHEDULE_UNVERIFIED,
     {
-      rule: "reschedule: the match already has the new date and time",
+      id: "reschedule-already-there",
       plan: ({ appointment, match }, c) =>
         match.date === appointment.date && match.time === appointment.time
           ? [
@@ -532,7 +529,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           : null,
     },
     {
-      rule: "reschedule: a caregiver confirms moving this kind first",
+      id: "reschedule-caregiver-confirms",
       plan: ({ appointment, match }) => {
         const confirms = confirmsMove(appointment.kind, match.title);
         if (confirms === null) return null;
@@ -552,7 +549,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
       },
     },
     {
-      rule: "reschedule: daily limit of calendar changes reached",
+      id: "reschedule-daily-limit",
       plan: ({ appointment, match }, c) =>
         c.atDailyLimit
           ? [
@@ -566,7 +563,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           : null,
     },
     {
-      rule: "reschedule: exactly one match",
+      id: "reschedule-move",
       plan: ({ appointment, match }, c) => [
         {
           kind: "reschedule_event",
@@ -585,7 +582,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   cancel: [
     {
-      rule: "cancel: any",
+      id: "cancel",
       plan: (s) => {
         const match = s.matches.length === 1 ? s.matches[0] : undefined;
         const line =
@@ -597,9 +594,9 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
     },
   ],
   senior_info: [
-    { rule: "senior_info: stale", plan: (_, c) => (c.stale ? [] : null) },
+    { id: "senior-info-stale", plan: (_, c) => (c.stale ? [] : null) },
     {
-      rule: "senior_info: not authenticated",
+      id: "senior-info-unverified-sender",
       plan: (_, c) =>
         c.facts.sender.authenticated
           ? null
@@ -610,7 +607,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
             ],
     },
     {
-      rule: "senior_info: daily limit of notes reached",
+      id: "senior-info-daily-limit",
       plan: (s, c) =>
         c.atNoteLimit
           ? [
@@ -621,7 +618,7 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
           : null,
     },
     {
-      rule: "senior_info: otherwise",
+      id: "senior-info-note",
       plan: (s, c) => [
         {
           kind: "senior_note",
@@ -633,13 +630,13 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
   needs_decision: [
     {
-      rule: "needs_decision: any",
+      id: "needs-decision",
       plan: (s) => [escalate(s.reason, "This email needs a decision.", null, null)],
     },
   ],
   suspicious: [
     {
-      rule: "suspicious: any",
+      id: "suspicious",
       plan: (s) => [
         escalate(
           s.suspicion,
@@ -792,9 +789,9 @@ function runTable<K extends Case>(
 ): Drafted {
   for (const row of rows) {
     const drafts = row.plan(situation, context);
-    if (drafts !== null) return { rule: row.rule, drafts };
+    if (drafts !== null) return { rule: row.id, drafts };
   }
-  return { rule: `${situation.case}: no row`, drafts: [] };
+  throw new Error(`The mail decision table has no matching row for ${situation.case}`);
 }
 
 function withDecision(drafts: Draft[], decision: DecisionReason | null): Draft[] {
