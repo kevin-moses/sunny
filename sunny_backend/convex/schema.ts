@@ -327,6 +327,7 @@ export default defineSchema({
     gmailId: v.string(),
     state: mailItemState,
     attempt: v.number(),
+    heldClaims: v.optional(v.number()),
     leaseUntil: v.optional(v.number()),
     jobId: v.optional(vWorkIdValidator),
     sender: v.optional(mailSender),

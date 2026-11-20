@@ -4,8 +4,7 @@ import type { IcsEvent, MailSender, ParsedEmail } from "./mailTypes";
 import { oneLine } from "./text";
 import { MINUTE_MS, canonicalTimezone, localDate, localTime, zonedInstant } from "./time";
 
-export const MAX_EMAIL_TEXT = 6000;
-const MAX_BODY_SOURCE = 256 * 1024;
+export const MAX_BODY_SOURCE = 256 * 1024;
 const MAX_ADDRESS = 254;
 const GMAIL_AUTHSERV = "mx.google.com";
 
@@ -309,7 +308,7 @@ function decodeEntities(text: string): string {
 const INVISIBLE_CHARS = /[​-‏⁠﻿­]/g;
 
 function normalizeText(text: string): string {
-  const flat = text
+  return text
     .replace(/\r\n?/g, "\n")
     .replace(INVISIBLE_CHARS, "")
     .replace(/[^\S\n]+/g, " ")
@@ -318,7 +317,6 @@ function normalizeText(text: string): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return flat.length <= MAX_EMAIL_TEXT ? flat : flat.slice(0, MAX_EMAIL_TEXT);
 }
 
 const HTML_TOKEN =
@@ -375,18 +373,28 @@ function partText(part: MimePart): string | null {
   }
 }
 
-function bodyText(parts: MimePart[]): string {
-  const inline = parts.filter((p) => !isAttachment(p));
-  const plain = inline
-    .filter((p) => p.mimeType === "text/plain")
-    .map(partText)
-    .find((t): t is string => t !== null && t.trim() !== "");
-  if (plain !== undefined) return normalizeText(plain.slice(0, MAX_BODY_SOURCE));
-  const html = inline
-    .filter((p) => p.mimeType === "text/html")
-    .map(partText)
-    .find((t): t is string => t !== null && t.trim() !== "");
-  return html === undefined ? "" : htmlToText(html);
+function isShownAlternative(part: MimePart): boolean {
+  return part.mimeType === "text/plain" || part.mimeType === "text/html" || part.parts.length > 0;
+}
+
+function shownText(part: MimePart): string {
+  if (isAttachment(part)) return "";
+  if (part.mimeType === "text/html") {
+    const html = partText(part);
+    return html === null ? "" : htmlToText(html);
+  }
+  if (part.mimeType === "text/plain") {
+    const plain = partText(part);
+    return plain === null ? "" : normalizeText(plain.slice(0, MAX_BODY_SOURCE));
+  }
+  if (part.mimeType === "multipart/alternative") {
+    const shown = part.parts.findLast(isShownAlternative);
+    return shown === undefined ? "" : shownText(shown);
+  }
+  return part.parts
+    .map(shownText)
+    .filter((text) => text !== "")
+    .join("\n\n");
 }
 
 function isCalendarPart(part: MimePart): boolean {
@@ -417,7 +425,7 @@ export function parseGmailMessage(raw: unknown, timezone: string): ParsedEmail |
     sender,
     subject: oneLine(decodeHeaderValue(header(payload.headers, "Subject") ?? "")),
     receivedAt,
-    text: bodyText(parts),
+    text: shownText(payload),
     ics: icsText === undefined ? null : parseIcs(icsText, timezone),
   };
 }

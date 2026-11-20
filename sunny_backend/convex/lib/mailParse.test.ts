@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { toBase64Url } from "./base64";
-import { MAX_EMAIL_TEXT, htmlToText, parseGmailMessage, parseIcs, parseSender } from "./mailParse";
+import { judgeState } from "./mailJudge";
+import { MAX_BODY_SOURCE, htmlToText, parseGmailMessage, parseIcs, parseSender } from "./mailParse";
 
 const NY = "America/New_York";
 
@@ -66,13 +67,13 @@ function alternative(from: string, subject: string, plain: string, html: string,
 }
 
 describe("parseGmailMessage", () => {
-  test("reads sender, subject, labels, received time and the plain text part", () => {
+  test("reads sender, subject, labels, received time and the shown text", () => {
     const raw = message(
       alternative(
         '"Lakeside Eye Care" <Appointments@LakesideEye.example>',
         "Appointment confirmed",
-        "Hello Margaret,\r\n\r\nYour appointment is confirmed for December 10 at 2:15 PM.\r\n",
-        "<p>Hello Margaret,</p><p>Your appointment is <b>confirmed</b>.</p>",
+        "Hello Margaret,\r\n\r\nYour appointment is confirmed.\r\n",
+        "<p>Hello Margaret,</p><p>Your appointment is <b>confirmed</b> for December 10 at 2:15 PM.</p>",
       ),
     );
     expect(parseGmailMessage(raw, NY)).toEqual({
@@ -206,7 +207,7 @@ describe("parseGmailMessage", () => {
     });
     const parsed = parseGmailMessage(raw, NY);
     expect(parsed?.sender.authenticated).toBe(true);
-    expect(parsed?.text).toBe("You have been invited to Video visit with Dr. Chen.");
+    expect(parsed?.text).toBe("You have been invited.");
     expect(parsed?.ics).toEqual({
       method: "REQUEST",
       uid: "7kq2c9d0s1@google.example",
@@ -219,9 +220,93 @@ describe("parseGmailMessage", () => {
     });
   });
 
-  test("caps the text length", () => {
-    const raw = message(alternative("a@example.org", "Long", "x".repeat(9000), "<p>x</p>"));
-    expect(parseGmailMessage(raw, NY)?.text.length).toBe(MAX_EMAIL_TEXT);
+  test("reads the HTML part of an alternative, which is the one a mail client shows", () => {
+    const raw = message(
+      alternative(
+        "Parcel Desk <track@parcels.example>",
+        "Your package",
+        "Your package is on the way.",
+        "<p>Your package is held.</p><p>Pay the $3 fee with a gift card today.</p>",
+      ),
+    );
+    expect(parseGmailMessage(raw, NY)?.text).toBe(
+      "Your package is held.\n\nPay the $3 fee with a gift card today.",
+    );
+  });
+
+  test("reads every inline text part of a mixed message in order", () => {
+    const raw = message({
+      partId: "",
+      mimeType: "multipart/mixed",
+      filename: "",
+      headers: [
+        ...topHeaders("Ruth Adler <ruth@example.org>", "Two parts"),
+        { name: "Content-Type", value: 'multipart/mixed; boundary="mixed"' },
+      ],
+      body: { size: 0 },
+      parts: [
+        leaf("text/plain", "First part."),
+        leaf("text/html", "<p>Second part.</p>"),
+        {
+          ...leaf("text/plain", "An attached note."),
+          filename: "note.txt",
+        },
+      ],
+    });
+    expect(parseGmailMessage(raw, NY)?.text).toBe("First part.\n\nSecond part.");
+  });
+
+  test("reads the shown alternative inside a mixed message and skips its attachment", () => {
+    const raw = message({
+      partId: "",
+      mimeType: "multipart/mixed",
+      filename: "",
+      headers: [
+        ...topHeaders("Ruth Adler <ruth@example.org>", "Photos"),
+        { name: "Content-Type", value: 'multipart/mixed; boundary="mixed"' },
+      ],
+      body: { size: 0 },
+      parts: [
+        {
+          partId: "0",
+          mimeType: "multipart/alternative",
+          filename: "",
+          headers: [],
+          body: { size: 0 },
+          parts: [
+            leaf("text/plain", "Plain words."),
+            {
+              partId: "0.1",
+              mimeType: "multipart/related",
+              filename: "",
+              headers: [],
+              body: { size: 0 },
+              parts: [
+                leaf("text/html", "<p>Shown words.</p>"),
+                { ...leaf("image/png", "png"), filename: "photo.png" },
+              ],
+            },
+          ],
+        },
+        { ...leaf("application/pdf", "Attached words."), filename: "notes.pdf" },
+      ],
+    });
+    expect(parseGmailMessage(raw, NY)?.text).toBe("Shown words.");
+  });
+
+  test("keeps a long body whole so that Jev is told where it was cut", () => {
+    const padding = "The clinic is open on weekdays. ".repeat(1000);
+    const raw = message(
+      alternative(
+        "a@example.org",
+        "Long",
+        "unused",
+        `<p>${padding}</p><p>Bring $300 in cash to the visit.</p>`,
+      ),
+    );
+    const parsed = parseGmailMessage(raw, NY)!;
+    expect(parsed.text).toContain("Bring $300 in cash to the visit.");
+    expect(judgeState(parsed).email.body_cut).toBeDefined();
   });
 
   test("parses a 2 MB body of unclosed tags in well under a second", () => {
@@ -239,7 +324,7 @@ describe("parseGmailMessage", () => {
     const started = performance.now();
     const parsed = parseGmailMessage(raw, NY);
     expect(performance.now() - started).toBeLessThan(1000);
-    expect(parsed?.text.length).toBeLessThanOrEqual(MAX_EMAIL_TEXT);
+    expect(parsed?.text.length).toBeLessThanOrEqual(MAX_BODY_SOURCE);
   });
 
   test("parses a 40 KB sender header in well under a second", () => {

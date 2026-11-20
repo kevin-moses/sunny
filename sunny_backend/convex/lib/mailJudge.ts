@@ -1,5 +1,6 @@
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import type { ChoiceQuestion, NoulQuestion } from "@typesafe-ai/sdk";
+import { ConfigError } from "./errors";
 import { gate } from "./mailGate";
 import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
 import type {
@@ -898,7 +899,10 @@ export function compactAnswers(raw: Record<string, unknown>, questions: JevQuest
 }
 
 export const askJev: AskJev = async (request) => {
+  const apiKey = process.env.TYPESAFE_API_KEY;
+  if (!apiKey) throw new ConfigError("Missing env var TYPESAFE_API_KEY");
   const client = new TypeSafeClient({
+    apiKey,
     timeout: JEV_TIMEOUT_MS,
     retry: { maxRetries: 1 },
     compression: false,

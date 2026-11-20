@@ -22,7 +22,7 @@ import {
 import { audit } from "./lib/audit";
 import { postMailbox } from "./lib/chatPosts";
 import { pushToCaregivers } from "./lib/delivery";
-import { ConfigError, appError, errorText } from "./lib/errors";
+import { appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
 import { GMAIL_SCOPE } from "./lib/google";
 import type { GoogleGrant } from "./lib/google";
@@ -360,8 +360,9 @@ async function settlePollError(
         error: failure.error,
       });
       return failure.status === "revoked" ? "revoked" : "failed";
+    case "setup":
+      throw new NonRetryableError(errorText(e), { cause: e });
     case "permanent":
-      if (e instanceof ConfigError) throw new NonRetryableError(e.message, { cause: e });
       console.error(`Gmail poll ended without retry: ${errorText(e)}`);
       return "failed";
     case "retry":

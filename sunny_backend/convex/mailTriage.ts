@@ -53,7 +53,8 @@ type Claim =
       grant: StoredGrant;
     };
 
-type TriageOutcome = "skipped" | "gone" | "unparseable" | "applied" | "lost" | "mailbox_lost";
+type TriageOutcome =
+  "skipped" | "gone" | "unparseable" | "applied" | "lost" | "mailbox_lost" | "held";
 
 const mailHeader = v.object({
   sender: mailSender,
@@ -113,7 +114,7 @@ export const claimItem = internalMutation({
       return { kind: "skip", reason: "mailbox gone" };
     }
     if (mailbox.status !== "active") return { kind: "skip", reason: "mailbox not active" };
-    if (item.attempt >= MAX_TRIAGE_ATTEMPTS) {
+    if (item.attempt - (item.heldClaims ?? 0) >= MAX_TRIAGE_ATTEMPTS) {
       await failUnread(ctx, item);
       return { kind: "skip", reason: "attempts used up" };
     }
@@ -137,10 +138,15 @@ export const claimItem = internalMutation({
 });
 
 export const releaseClaim = internalMutation({
-  args: { itemId: v.id("mailItems"), attempt: v.number() },
-  handler: async (ctx, { itemId, attempt }): Promise<null> => {
-    if (holdsClaim(await ctx.db.get(itemId), attempt)) {
-      await ctx.db.patch(itemId, { state: "queued", leaseUntil: Date.now() + TRIAGE_PICKUP_MS });
+  args: { itemId: v.id("mailItems"), attempt: v.number(), held: v.boolean() },
+  handler: async (ctx, { itemId, attempt, held }): Promise<null> => {
+    const item = await ctx.db.get(itemId);
+    if (holdsClaim(item, attempt)) {
+      await ctx.db.patch(itemId, {
+        state: "queued",
+        leaseUntil: Date.now() + TRIAGE_PICKUP_MS,
+        ...(held ? { heldClaims: (item.heldClaims ?? 0) + 1 } : {}),
+      });
     }
     return null;
   },
@@ -357,18 +363,28 @@ async function settleTriageError(
   e: unknown,
 ): Promise<TriageOutcome> {
   const failure = mailFailure(e);
-  if (failure.kind === "permanent") throw new NonRetryableError(errorText(e), { cause: e });
-  if (failure.kind === "mailbox") {
-    await ctx.runMutation(internal.gmail.markMailbox, {
-      mailboxId: claim.mailboxId,
-      refreshToken: claim.grant.refreshToken,
-      status: failure.status,
-      error: failure.error,
-    });
+  const release = (held: boolean) =>
+    ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
+  switch (failure.kind) {
+    case "permanent":
+      throw new NonRetryableError(errorText(e), { cause: e });
+    case "mailbox":
+      await ctx.runMutation(internal.gmail.markMailbox, {
+        mailboxId: claim.mailboxId,
+        refreshToken: claim.grant.refreshToken,
+        status: failure.status,
+        error: failure.error,
+      });
+      await release(false);
+      return "mailbox_lost";
+    case "setup":
+      console.error(`Mail triage held until the deployment is fixed: ${errorText(e)}`);
+      await release(true);
+      return "held";
+    case "retry":
+      await release(false);
+      throw e;
   }
-  await ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt });
-  if (failure.kind === "mailbox") return "mailbox_lost";
-  throw e;
 }
 
 async function triageClaimed(

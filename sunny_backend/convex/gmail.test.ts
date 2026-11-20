@@ -3,6 +3,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { finish, startFlow } from "./googleFlow.helpers";
 import { gmailMocks, googleMocks, resetGoogleMocks } from "./googleMocks.helpers";
+import { ConfigError } from "./lib/errors";
 import { GMAIL_SCOPE, GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import { CALENDAR_SCOPE } from "./lib/google";
 import { DAY_MS } from "./lib/time";
@@ -645,6 +646,17 @@ describe("Polling", () => {
     gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, "insufficientPermissions"));
     expect(await t.action(internal.gmail.poll, { mailboxId })).toBe("failed");
     expect((await mailboxRows(t))[0]).toMatchObject({ status: "error" });
+  });
+
+  test("a deployment setup error ends the poll without a retry and leaves the mailbox active", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    gmailMocks.listHistory.mockRejectedValue(new ConfigError("Missing env var GOOGLE_CLIENT_ID"));
+    await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
+      name: "NonRetryableError",
+    });
+    expect((await mailboxRows(t))[0]).toMatchObject({ status: "active" });
   });
 
   test("a transient Google error is rethrown for the pool to retry and leaves the mailbox active", async () => {

@@ -973,13 +973,98 @@ describe("the item lifecycle", () => {
     });
   });
 
-  test.each([401, 403, 422])("a Jev %i is not retried", async (status) => {
+  test("a Jev 422 is not retried", async () => {
     const h = await setup();
-    jevSays({ status });
+    jevSays({ status: 422 });
     const itemId = await receive(h, clinic());
     await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toMatchObject({
       name: "NonRetryableError",
     });
+  });
+
+  test.each([401, 403])(
+    "a Jev %i holds the row without spending an attempt or posting",
+    async (status) => {
+      const h = await setup();
+      jevSays({ status });
+      const itemId = await receive(h, clinic());
+      expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
+      expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+      expect(await rows(h, "chatPosts")).toHaveLength(0);
+      expect(await rows(h, "events")).toHaveLength(0);
+    },
+  );
+
+  test("held claims are left out of the attempt cap and the claims around them count", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    const claimAndRelease = async (held: boolean): Promise<string> => {
+      const claim = await h.t.mutation(internal.mailTriage.claimItem, { itemId });
+      if (claim.kind === "claimed") {
+        await h.t.mutation(internal.mailTriage.releaseClaim, {
+          itemId,
+          attempt: claim.attempt,
+          held,
+        });
+      }
+      return claim.kind;
+    };
+    for (let round = 0; round < MAX_TRIAGE_ATTEMPTS - 1; round += 1) {
+      expect(await claimAndRelease(false)).toBe("claimed");
+    }
+    for (let round = 0; round < 3; round += 1) {
+      expect(await claimAndRelease(true)).toBe("claimed");
+    }
+    expect(await claimAndRelease(false)).toBe("claimed");
+    expect(await claimAndRelease(false)).toBe("skip");
+    expect(await item(h, itemId)).toMatchObject({
+      state: "failed",
+      attempt: MAX_TRIAGE_ATTEMPTS + 3,
+      heldClaims: 3,
+    });
+  });
+
+  test("a held release from a lapsed claim changes nothing", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
+      attempt: 1,
+    });
+    vi.setSystemTime(NOW + 16 * MINUTE);
+    await h.t.mutation(internal.mailTriage.sweepStuck, {});
+    expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
+      attempt: 2,
+    });
+    await h.t.mutation(internal.mailTriage.releaseClaim, { itemId, attempt: 1, held: true });
+    const row = await item(h, itemId);
+    expect(row).toMatchObject({ state: "triaging", attempt: 2 });
+    expect(row.heldClaims).toBeUndefined();
+  });
+
+  test("a row held for a missing TypeSafe key outlasts the attempt cap and is triaged once the key is set", async () => {
+    const h = await setup();
+    const itemId = await receive(h, clinic());
+    vi.stubEnv("TYPESAFE_API_KEY", "");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    let now = NOW;
+    for (let round = 0; round < MAX_TRIAGE_ATTEMPTS + 2; round += 1) {
+      expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
+      now += 16 * MINUTE;
+      vi.setSystemTime(now);
+      expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
+    }
+    expect(await item(h, itemId)).toMatchObject({
+      state: "queued",
+      attempt: MAX_TRIAGE_ATTEMPTS + 2,
+      heldClaims: MAX_TRIAGE_ATTEMPTS + 2,
+    });
+    expect(await rows(h, "chatPosts")).toHaveLength(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    jevSays(PHISHING);
+    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("applied");
+    expect((await item(h, itemId)).state).toBe("done");
   });
 
   test.each([
@@ -1034,15 +1119,6 @@ describe("the item lifecycle", () => {
       name: "NonRetryableError",
     });
     expect(await rows(h, "events")).toHaveLength(0);
-  });
-
-  test("a missing TypeSafe key is not retried", async () => {
-    const h = await setup();
-    const itemId = await receive(h, clinic());
-    vi.stubEnv("TYPESAFE_API_KEY", "");
-    await expect(h.t.action(internal.mailTriage.triage, { itemId })).rejects.toMatchObject({
-      name: "NonRetryableError",
-    });
   });
 
   test("a job that fails for good fails the row and posts once", async () => {
