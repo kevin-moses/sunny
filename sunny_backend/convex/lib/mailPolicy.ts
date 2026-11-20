@@ -9,6 +9,7 @@ import type {
   CaregiverPush,
   DecisionReason,
   EscalationReason,
+  IcsEvent,
   InfoTopic,
   MailEffect,
   MailVerdict,
@@ -552,11 +553,11 @@ function withoutPush(draft: Draft): Draft {
   }
 }
 
-function rendered(draft: Draft, facts: PolicyFacts, summary: string): MailEffect {
+function rendered(draft: Draft, ics: IcsEvent | null, summary: string): MailEffect {
   switch (draft.kind) {
     case "escalate":
     case "tell_caregivers":
-      return { ...draft, ...caregiverMessage(facts, draft.line, summary) };
+      return { ...draft, ...caregiverMessage(ics, draft.line, summary) };
     default:
       return draft;
   }
@@ -609,5 +610,5 @@ export function planWithRule(
   const { rule, drafts } = planFor(situationOf(verdict, facts), context);
   const decided = withDecision(drafts, verdict.kind === "appointment" ? verdict.decision : null);
   const pushed = context.stale ? decided.map(withoutPush) : decided;
-  return { rule, effects: pushed.map((draft) => rendered(draft, facts, summary)) };
+  return { rule, effects: pushed.map((draft) => rendered(draft, facts.ics, summary)) };
 }

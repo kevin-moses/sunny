@@ -1,5 +1,5 @@
 import { appointmentTitle } from "./mailTypes";
-import type { Appointment, CaregiverMessage, PolicyFacts } from "./mailTypes";
+import type { Appointment, CaregiverMessage, IcsEvent, PolicyFacts } from "./mailTypes";
 import { ellipsize, oneLine } from "./text";
 import { dateLabel, formatTime12, localDate, localTime, weekdayName } from "./time";
 
@@ -43,19 +43,19 @@ export function mailHeader(facts: MailHeaderFacts): MailHeader {
   };
 }
 
-export function caregiverText(facts: MailHeaderFacts, lines: string[]): string {
+export function caregiverText(lines: string[]): string {
   const body = lines.map(scrub).filter((line) => line !== "");
   return ellipsize(body.join("\n"), MAX_CAREGIVER_BODY);
 }
 
 export function caregiverMessage(
-  facts: Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone" | "ics">,
+  ics: IcsEvent | null,
   line: string,
   summary: string,
 ): CaregiverMessage {
-  const place = facts.ics?.location ?? null;
+  const place = ics?.location ?? null;
   const placeLine = place === null ? [] : [`Place in the invitation: ${place}`];
-  return { body: caregiverText(facts, [line, ...placeLine, summary]), notice: scrub(line) };
+  return { body: caregiverText([line, ...placeLine, summary]), notice: scrub(line) };
 }
 
 export function described(appointment: Appointment): string {

@@ -15,7 +15,7 @@ const SCAM = facts({
 
 describe("caregiverText", () => {
   test("holds only Sunny's lines and the summary, with links and long numbers removed", () => {
-    const text = caregiverText(SCAM, [
+    const text = caregiverText([
       "Sunny thinks this may be a scam.",
       "Asks her to call 1-888-555-0199 and visit https://medicare-help.example/verify now.",
     ]);
@@ -26,8 +26,8 @@ describe("caregiverText", () => {
   });
 
   test("drops blank lines and clips the body", () => {
-    expect(caregiverText(facts(), ["One.", "  ", "Two."])).toBe("One.\nTwo.");
-    expect(caregiverText(facts(), ["x".repeat(900)])).toHaveLength(600);
+    expect(caregiverText(["One.", "  ", "Two."])).toBe("One.\nTwo.");
+    expect(caregiverText(["x".repeat(900)])).toHaveLength(600);
   });
 });
 

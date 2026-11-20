@@ -359,15 +359,12 @@ export const replaceSummary = internalMutation({
   handler: async (ctx, { itemId, attempt, ics, summary }): Promise<boolean> => {
     const item = await ctx.db.get(itemId);
     if (item === null || item.state !== "done" || item.attempt !== attempt) return false;
-    const header = recordedHeader(item);
     const { caregiverPost } = item;
-    if (header === null || caregiverPost === undefined) return false;
+    if (caregiverPost === undefined) return false;
     const post = await ctx.db.get(caregiverPost.postId);
-    const household = await ctx.db.get(item.householdId);
-    if (post?.kind !== "mail" || post.mailItemId !== itemId || household === null) return false;
-    const facts = { ...header, timezone: household.timezone, ics };
+    if (post?.kind !== "mail" || post.mailItemId !== itemId) return false;
     await ctx.db.patch(post._id, {
-      body: caregiverMessage(facts, caregiverPost.line, summary).body,
+      body: caregiverMessage(ics, caregiverPost.line, summary).body,
     });
     return true;
   },
