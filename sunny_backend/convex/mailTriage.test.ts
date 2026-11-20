@@ -1222,7 +1222,7 @@ describe("the item lifecycle", () => {
     expect((await item(h, itemId)).state).toBe("failed");
   });
 
-  test("revoked access of the old account during triage after a reconnect leaves the new account active and quiet", async () => {
+  test("revoked access of the old account during triage after a reconnect leaves the new account active and quiet, and the retry drops the email", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());
     let reconnected = false;
@@ -1237,6 +1237,7 @@ describe("the item lifecycle", () => {
     });
 
     await h.t.action(internal.mailTriage.triage, { itemId });
+    expect((await item(h, itemId)).state).toBe("queued");
     await h.t.action(internal.mailTriage.triage, { itemId });
 
     const mailbox = await h.t.run(async (ctx) => await ctx.db.get(h.mailboxId));
