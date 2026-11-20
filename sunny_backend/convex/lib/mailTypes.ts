@@ -19,8 +19,6 @@ import type {
   usage,
 } from "./validators";
 
-export { APPOINTMENT_KIND_NAMES, DECISION_REASONS, ESCALATION_REASONS, INFO_TOPICS, SUSPICIONS };
-
 export type MailSender = Infer<typeof mailSender>;
 
 export type IcsEvent = Infer<typeof icsEvent>;
@@ -205,7 +203,6 @@ export interface PolicyFacts {
   sender: MailSender;
   subject: string;
   receivedAt: number;
-  gmailId: string;
   ics: IcsEvent | null;
   events: CalendarEventFact[];
   linked: LinkedEvent | null;

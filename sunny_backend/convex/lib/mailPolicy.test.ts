@@ -71,7 +71,6 @@ function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     },
     subject: "Your appointment",
     receivedAt: NOW - 3_600_000,
-    gmailId: "m1",
     ics: null,
     events: EVENTS,
     linked: null,
@@ -854,7 +853,7 @@ describe("keys, matching and expiry", () => {
   test("linkKey gives the key to look up for each verdict", () => {
     expect(linkKey(newAppointment(), null)).toBe("appt:2026-12-10:14:15:hearing appointment");
     expect(linkKey({ kind: "ignore" }, null)).toBeNull();
-    expect(linkKey(null, invite({ method: "CANCEL", uid: "u-2" }))).toBe("ics:u-2");
+    expect(linkKey({ kind: "ignore" }, invite({ method: "CANCEL", uid: "u-2" }))).toBe("ics:u-2");
   });
 
   test("matchEvent needs a word shared with Sunny's title for the kind and uses the time when given", () => {

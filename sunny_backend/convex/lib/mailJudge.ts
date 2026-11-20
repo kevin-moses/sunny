@@ -7,7 +7,7 @@ import type { Flag, SlotName } from "./jevQuestions";
 import { resolveSlot } from "./mailDates";
 import type { Slot, SlotPicks } from "./mailDates";
 import { gate } from "./mailGate";
-import { APPOINTMENT_KIND_NAMES } from "./mailTypes";
+import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
 import type {
   AppointmentKind,
   AppointmentRef,

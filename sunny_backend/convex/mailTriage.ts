@@ -21,6 +21,7 @@ import {
   MAX_NOTES_PER_DAY,
   caregiverText,
   factsCover,
+  icsKey,
   linkKey,
   planWithRule,
 } from "./lib/mailPolicy";
@@ -311,7 +312,6 @@ async function planned(
     sender: header.sender,
     subject: header.subject,
     receivedAt: header.receivedAt,
-    gmailId: item.gmailId,
     ics: email.ics,
     events: calendar.facts,
     linked:
@@ -419,7 +419,7 @@ async function triageClaimed(
     itemId,
     attempt,
     ...header,
-    icsKey: linkKey(null, email.ics),
+    icsKey: email.ics === null ? null : icsKey(email.ics),
   });
   if (parsed === null) return "lost";
   const triaged = await triageEmail(email, { now: claim.now, timezone }, parsed.known, askJev);

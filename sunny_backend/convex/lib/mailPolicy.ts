@@ -1,10 +1,10 @@
 import {
   APPOINTMENT_KINDS,
-  APPOINTMENT_KIND_NAMES,
   APPOINTMENT_TITLES,
   SENIOR_SENTENCES,
   appointmentTitle,
 } from "./mailTypes";
+import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
 import type {
   Appointment,
   AppointmentKind,
@@ -73,13 +73,11 @@ export function linkDomain(sender: MailSender): string | null {
   return sender.authenticated ? domainOf(sender.address) : null;
 }
 
-function appointmentOf(verdict: MailVerdict | null): Appointment | null {
-  return verdict?.kind === "appointment" && verdict.change !== "cancel"
-    ? verdict.appointment
-    : null;
+function appointmentOf(verdict: MailVerdict): Appointment | null {
+  return verdict.kind === "appointment" && verdict.change !== "cancel" ? verdict.appointment : null;
 }
 
-export function linkKey(verdict: MailVerdict | null, ics: IcsEvent | null): string | null {
+export function linkKey(verdict: MailVerdict, ics: IcsEvent | null): string | null {
   if (ics !== null) return icsKey(ics);
   const appointment = appointmentOf(verdict);
   return appointment === null ? null : appointmentKey(appointment, null);

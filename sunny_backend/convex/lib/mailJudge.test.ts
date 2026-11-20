@@ -9,7 +9,8 @@ import { TRUTH_TABLE, decide, readAnswers } from "./mailJudge";
 import type { Invite, Readings } from "./mailJudge";
 import { ANCHOR, CLOCK, DEC_10, EYE_EXAM, QUESTIONS } from "./mailFixtures.helpers";
 import { appointmentFields } from "./mailPolicy";
-import { APPOINTMENT_KIND_NAMES, SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
+import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
+import { SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
 import type { IcsEvent, MailVerdict } from "./mailTypes";
 
 function readings(

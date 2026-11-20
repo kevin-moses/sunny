@@ -2,7 +2,8 @@ import type { ChoiceQuestion, NoulQuestion } from "@typesafe-ai/sdk";
 import type { JevState } from "./jevClient";
 import { shownBody } from "./mailBody";
 import { NOT_STATED } from "./mailDates";
-import { APPOINTMENT_KIND_NAMES, APPOINTMENT_KINDS } from "./mailTypes";
+import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
+import { APPOINTMENT_KINDS } from "./mailTypes";
 import type { ParsedEmail } from "./mailTypes";
 import { MONTH_NAMES, WEEKDAY_NAMES } from "./time";
 
