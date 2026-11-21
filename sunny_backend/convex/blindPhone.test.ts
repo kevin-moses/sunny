@@ -34,6 +34,19 @@ vi.mock("./lib/twilio", async (original) =>
   (await import("./deliveryMocks.helpers")).twilioModule(await original()),
 );
 
+const faults = vi.hoisted(() => ({ blindNotice: false }));
+
+vi.mock("./lib/delivery", async (original) => {
+  const real = await original<typeof import("./lib/delivery")>();
+  const insertNotification: typeof real.insertNotification = async (ctx, row) => {
+    if (faults.blindNotice && row.kind === "lock_screen_blind") {
+      throw new Error("blind notice failed");
+    }
+    return await real.insertNotification(ctx, row);
+  };
+  return { ...real, insertNotification };
+});
+
 const HOUR = 60 * MIN;
 
 const DAY_TWO = "2026-11-14";
@@ -50,6 +63,7 @@ const BODY =
   "Open Sunny on that phone, and check in Settings that Live Activities are switched on for Sunny.";
 
 beforeEach(() => {
+  faults.blindNotice = false;
   vi.useFakeTimers();
   setNow(local("07:00"));
   resetProviderMocks();
@@ -236,6 +250,23 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     await addTask(f, { title: "Morning pills", time: "08:00" });
     const blindAt = await goBlind(f, "Morning pills", "08:00");
     expect(await listedBlindSince(f)).toBe(blindAt);
+  });
+});
+
+describe("a blind notice that fails", () => {
+  test("leaves the medication tick running, and the due prompt goes out", async () => {
+    const { f, blindAt } = await blindFamily();
+    faults.blindNotice = true;
+    const alertsBefore = alertsSent().length;
+    const at = blindAt + 24 * HOUR;
+    setNow(at);
+    await f.t.mutation(internal.scheduler.tick, { now: at });
+    await settle(f.t);
+    const prompts = alertsSent()
+      .slice(alertsBefore)
+      .filter((alert) => alert.data.kind === "senior_prompt");
+    expect(prompts.map((alert) => alert.title)).toEqual(["Morning pills"]);
+    expect(await noticeRows(f)).toEqual([]);
   });
 });
 
