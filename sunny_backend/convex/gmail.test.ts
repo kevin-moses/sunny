@@ -671,33 +671,29 @@ describe("Polling", () => {
     expect((await mailboxRows(t))[0]).toMatchObject({ status: "error" });
   });
 
-  test("a deployment setup error ends the poll without a retry and leaves the mailbox active", async () => {
-    const t = makeBackend();
-    const householdId = await createHousehold(t);
-    const mailboxId = await addMailbox(t, householdId);
-    gmailMocks.listHistory.mockRejectedValue(new ConfigError("Missing env var GOOGLE_CLIENT_ID"));
-    await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
-      name: "NonRetryableError",
-    });
-    expect((await mailboxRows(t))[0]).toMatchObject({ status: "active" });
-  });
-
   test.each([
-    ["a project quota error", DAILY_LIMIT],
-    ["an API disabled for the project", API_DISABLED],
+    ["a deployment setup error", new ConfigError("Missing env var GOOGLE_CLIENT_ID")],
+    ["a project quota error", new GoogleApiError(403, DAILY_LIMIT)],
+    ["an API disabled for the project", new GoogleApiError(403, API_DISABLED)],
   ])(
-    "%s ends the poll without a retry, leaves the mailbox active and tells nobody",
-    async (_name, body) => {
+    "%s holds Gmail without a retry, leaves the mailbox active and posts the held note once",
+    async (_name, error) => {
       const t = makeBackend();
       const householdId = await createHousehold(t);
       await watchPushes(t);
       const mailboxId = await addMailbox(t, householdId);
-      gmailMocks.listHistory.mockRejectedValue(new GoogleApiError(403, body));
-      await expect(t.action(internal.gmail.poll, { mailboxId })).rejects.toMatchObject({
-        name: "NonRetryableError",
-      });
+      gmailMocks.listHistory.mockRejectedValue(error);
+      expect(await t.action(internal.gmail.poll, { mailboxId })).toBe("held");
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
       expect((await mailboxRows(t))[0]).toMatchObject({ status: "active", historyId: "100" });
-      expect(await caregiverNotices(t)).toEqual({ posts: [], pushes: [] });
+      expect((await mailboxRows(t))[0]!.lastError).toBeUndefined();
+      expect(await t.run(async (ctx) => await ctx.db.query("serviceHolds").collect())).toEqual([
+        expect.objectContaining({ service: "gmail", open: true }),
+      ]);
+      expect(await caregiverNotices(t)).toEqual({
+        posts: ["Sunny can't read mail right now; it will catch up on its own."],
+        pushes: [],
+      });
     },
   );
 

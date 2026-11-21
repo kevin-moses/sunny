@@ -10,17 +10,21 @@ const API_DISABLED =
 const DOMAIN_POLICY =
   '{"error":{"code":403,"errors":[{"domain":"global","reason":"domainPolicy","message":"The domain administrators have disabled Gmail apps."}],"message":"The domain administrators have disabled Gmail apps."}}';
 
-describe.each(["mailboxes", "calendarConnections"] as const)("googleFailure for %s", (table) => {
+describe.each([
+  ["mailboxes", "gmail"],
+  ["calendarConnections", "calendar"],
+] as const)("googleFailure for %s", (table, service) => {
   test.each([
     ["the daily project limit", DAILY_LIMIT],
     ["an API disabled for the project", API_DISABLED],
   ])("%s holds", (_name, body) => {
-    expect(googleFailure(new GoogleApiError(403, body), table)).toEqual({ kind: "hold" });
+    expect(googleFailure(new GoogleApiError(403, body), table)).toEqual({ kind: "hold", service });
   });
 
   test("a missing env var holds", () => {
     expect(googleFailure(new ConfigError("Missing env var GOOGLE_CLIENT_ID"), table)).toEqual({
       kind: "hold",
+      service,
     });
   });
 

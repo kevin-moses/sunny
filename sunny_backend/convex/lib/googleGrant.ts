@@ -1,6 +1,7 @@
 import { ConfigError } from "./errors";
 import { GoogleAccessRevoked, GoogleApiError } from "./google";
 import { SecretUnreadable } from "./secretBox";
+import type { HoldService } from "./serviceHolds";
 
 export type GrantTable = "mailboxes" | "calendarConnections";
 
@@ -11,6 +12,11 @@ interface GrantMessages {
   unreadable: string;
   forbidden: string;
 }
+
+const GRANT_SERVICES: Record<GrantTable, HoldService> = {
+  mailboxes: "gmail",
+  calendarConnections: "calendar",
+};
 
 const GRANT_MESSAGES: Record<GrantTable, GrantMessages> = {
   mailboxes: {
@@ -27,7 +33,7 @@ const GRANT_MESSAGES: Record<GrantTable, GrantMessages> = {
 
 export type GoogleFailure =
   | { kind: "grant"; status: GrantStatus; error: string }
-  | { kind: "hold" }
+  | { kind: "hold"; service: HoldService }
   | { kind: "permanent" }
   | { kind: "retry" };
 
@@ -39,9 +45,10 @@ export function googleFailure(e: unknown, table: GrantTable): GoogleFailure | nu
   if (e instanceof GoogleAccessRevoked) {
     return { kind: "grant", status: "revoked", error: messages.revoked };
   }
-  if (e instanceof ConfigError) return { kind: "hold" };
+  const hold = { kind: "hold", service: GRANT_SERVICES[table] } as const;
+  if (e instanceof ConfigError) return hold;
   if (!(e instanceof GoogleApiError)) return null;
-  if (e.projectWide) return { kind: "hold" };
+  if (e.projectWide) return hold;
   if (e.status === 403 && !e.retryable) {
     return { kind: "grant", status: "error", error: messages.forbidden };
   }

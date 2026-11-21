@@ -14,7 +14,7 @@ import {
   receive,
   rows,
 } from "./mailMocks.helpers";
-import type { JevWireReply } from "./mailMocks.helpers";
+import type { JevWireReply, MailHousehold } from "./mailMocks.helpers";
 import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
 import {
   EYE_EXAM,
@@ -40,6 +40,11 @@ vi.mock("./lib/secretBox", async (original) =>
 );
 
 useTriageClock();
+
+async function openHolds(h: MailHousehold): Promise<string[]> {
+  const holds = await h.t.run(async (ctx) => await ctx.db.query("serviceHolds").collect());
+  return holds.filter((hold) => hold.open).map((hold) => hold.service);
+}
 
 describe("the item lifecycle", () => {
   test("a paused household is not claimed and resumes through sweepStuck", async () => {
@@ -137,19 +142,20 @@ describe("the item lifecycle", () => {
   });
 
   test.each([401, 403])(
-    "a Jev %i holds the row without spending an attempt or posting",
+    "a Jev %i holds Jev and the row without spending an attempt or posting about the email",
     async (status) => {
       const h = await setup();
       jevSays({ status });
       const itemId = await receive(h, clinic());
       expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
       expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+      expect(await openHolds(h)).toEqual(["jev"]);
       expect(await rows(h, "chatPosts")).toHaveLength(0);
       expect(await rows(h, "events")).toHaveLength(0);
     },
   );
 
-  test("a Google project quota holds the row and leaves the mailbox active without a notice", async () => {
+  test("a Google project quota holds Gmail and the row and leaves the mailbox active without a grant notice", async () => {
     const h = await setup();
     poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
@@ -161,6 +167,7 @@ describe("the item lifecycle", () => {
     );
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
     expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+    expect(await openHolds(h)).toEqual(["gmail"]);
     const mailbox = await h.t.run(async (ctx) => await ctx.db.get(h.mailboxId));
     expect(mailbox).toMatchObject({ status: "active" });
     expect(await rows(h, "chatPosts")).toHaveLength(0);
@@ -215,7 +222,7 @@ describe("the item lifecycle", () => {
     expect(row.heldClaims).toBeUndefined();
   });
 
-  test("a row held for a missing TypeSafe key outlasts the attempt cap and is triaged once the key is set", async () => {
+  test("a row probed for a missing TypeSafe key outlasts the attempt cap and is triaged once the key is set", async () => {
     const h = await setup();
     poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
@@ -225,6 +232,7 @@ describe("the item lifecycle", () => {
     let now = NOW;
     for (let round = 0; round < MAX_TRIAGE_ATTEMPTS + 2; round += 1) {
       expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
+      expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
       now += 16 * MINUTE;
       vi.setSystemTime(now);
       expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
@@ -240,6 +248,7 @@ describe("the item lifecycle", () => {
     jevSays(PHISHING);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("applied");
     expect((await item(h, itemId)).state).toBe("done");
+    expect(await openHolds(h)).toEqual([]);
   });
 
   test.each([

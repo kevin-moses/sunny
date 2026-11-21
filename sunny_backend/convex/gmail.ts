@@ -1,16 +1,11 @@
-import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
+import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-  internalAction,
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-} from "./_generated/server";
+import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { recordLostGrant, tokensFor } from "./googleGrant";
+import { closeHolds, openHold } from "./serviceHolds";
 import {
   EDITOR_ROLES,
   loadHousehold,
@@ -32,6 +27,7 @@ import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool, mailPool } from "./lib/mail
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
+import { enterGate, holdGate } from "./lib/serviceHolds";
 import type { MailSender } from "./lib/mailTypes";
 import { DAY_MS } from "./lib/time";
 import type { MailboxStatus, MailEffectRecord, MailItemState, VerdictKind } from "./lib/validators";
@@ -46,7 +42,7 @@ const MAX_RECENT_MAIL = 100;
 
 const POLL_FAILED_MESSAGE = "Sunny could not check the mailbox; it will try again.";
 
-type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "failed";
+type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "held" | "failed";
 
 interface MailboxView {
   id: Id<"mailboxes">;
@@ -73,6 +69,8 @@ interface PollStart {
   historyId: string;
   lastPolledAt: number | null;
   grant: StoredGrant;
+  startedAt: number;
+  probe: boolean;
 }
 
 type PollContext = PollStart | { kind: "skip"; reason: string };
@@ -189,7 +187,7 @@ export async function finishMailbox(
   );
 }
 
-export const pollContext = internalQuery({
+export const beginPoll = internalMutation({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<PollContext> => {
     const mailbox = await ctx.db.get(mailboxId);
@@ -197,12 +195,17 @@ export const pollContext = internalQuery({
     const household = await ctx.db.get(mailbox.householdId);
     if (!household) return { kind: "skip", reason: "household not found" };
     if (household.backgroundPaused) return { kind: "skip", reason: "household paused" };
+    const now = Date.now();
+    const gate = await enterGate(ctx, ["gmail"], now);
+    if (gate === "held") return { kind: "skip", reason: "Gmail held" };
     return {
       kind: "poll",
       householdId: mailbox.householdId,
       historyId: mailbox.historyId,
       lastPolledAt: mailbox.lastPolledAt ?? null,
       grant: storedGrant(mailbox),
+      startedAt: now,
+      probe: gate === "probe",
     };
   },
 });
@@ -262,16 +265,22 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
 async function settlePollError(
   ctx: ActionCtx,
   mailboxId: Id<"mailboxes">,
-  refreshToken: string,
+  start: PollStart,
   e: unknown,
 ): Promise<PollOutcome> {
   const failure = mailFailure(e);
   switch (failure.kind) {
     case "grant":
-      await recordLostGrant(ctx, { table: "mailboxes", id: mailboxId }, refreshToken, failure);
+      await recordLostGrant(
+        ctx,
+        { table: "mailboxes", id: mailboxId },
+        start.grant.refreshToken,
+        failure,
+      );
       return failure.status === "revoked" ? "revoked" : "failed";
     case "hold":
-      throw new NonRetryableError(errorText(e), { cause: e });
+      await openHold(ctx, failure.service, errorText(e), start.startedAt);
+      return "held";
     case "permanent":
       console.error(`Gmail poll ended without retry: ${errorText(e)}`);
       return "failed";
@@ -283,7 +292,7 @@ async function settlePollError(
 export const poll = internalAction({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<PollOutcome> => {
-    const start: PollContext = await ctx.runQuery(internal.gmail.pollContext, { mailboxId });
+    const start: PollContext = await ctx.runMutation(internal.gmail.beginPoll, { mailboxId });
     if (start.kind === "skip") {
       console.log(`Gmail poll skipped: ${start.reason}`);
       return "skipped";
@@ -298,9 +307,10 @@ export const poll = internalAction({
         expectedHistoryId: start.historyId,
         lastHistoryId: found.lastHistoryId,
       });
+      if (start.probe) await closeHolds(ctx, ["gmail"], start.startedAt);
       return found.recovered ? "recovered" : "polled";
     } catch (e) {
-      return await settlePollError(ctx, mailboxId, start.grant.refreshToken, e);
+      return await settlePollError(ctx, mailboxId, start, e);
     }
   },
 });
@@ -320,6 +330,8 @@ export const onPollComplete = internalMutation({
 export const pollAll = internalMutation({
   args: { cursor: v.optional(v.union(v.null(), v.string())) },
   handler: async (ctx, { cursor }): Promise<number> => {
+    const gate = await holdGate(ctx, ["gmail"], Date.now());
+    if (gate === "held") return 0;
     const page = await ctx.db
       .query("mailboxes")
       .withIndex("by_status", (q) => q.eq("status", "active"))
@@ -340,6 +352,7 @@ export const pollAll = internalMutation({
       );
       await ctx.db.patch(mailbox._id, { pollJobId });
       queued += 1;
+      if (gate === "probe") return queued;
     }
     if (!page.isDone) {
       await ctx.scheduler.runAfter(0, internal.gmail.pollAll, { cursor: page.continueCursor });

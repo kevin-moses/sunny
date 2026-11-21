@@ -223,7 +223,7 @@ describe("held pushes", () => {
     expect(connection?.lastError).toBeUndefined();
   });
 
-  test("a held push outlives the failed-push retry and syncs on a sweep once the hold clears", async () => {
+  test("a held push outlives the failed-push retry and syncs on a probe once the hold clears", async () => {
     const t = makeBackend();
     const { connectionId, eventId } = await setupSynced(t);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -237,7 +237,14 @@ describe("held pushes", () => {
       expect(connection?.lastError).toBeUndefined();
     };
 
+    const calendarHeld = async () =>
+      (await t.run(async (ctx) => await ctx.db.query("serviceHolds").collect())).map((h) => [
+        h.service,
+        h.open,
+      ]);
+
     await runPoolUntil(t, heldAfter(1));
+    expect(await calendarHeld()).toEqual([["calendar", true]]);
     await vi.advanceTimersByTimeAsync(16 * 60_000);
     await runPoolUntil(t, async () => false);
     expect(googleMocks.upsertEvent).toHaveBeenCalledTimes(1);
@@ -266,6 +273,7 @@ describe("held pushes", () => {
         .unique(),
     );
     expect(link).toMatchObject({ externalEventId: "gext1" });
+    expect(await calendarHeld()).toEqual([["calendar", false]]);
     await connectionUntouched();
     expect(await t.run(async (ctx) => await ctx.db.query("chatPosts").collect())).toHaveLength(0);
     errorSpy.mockRestore();
