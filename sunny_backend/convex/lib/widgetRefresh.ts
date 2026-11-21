@@ -37,16 +37,6 @@ export async function wakePhoneToReport(ctx: MutationCtx, deviceId: Id<"devices"
   await ctx.scheduler.runAfter(0, internal.phonePush.wakeToReport, { deviceId });
 }
 
-const sentByMutation = new WeakMap<MutationCtx["db"], Set<Id<"devices">>>();
-
-function sentInThisMutation(ctx: MutationCtx): Set<Id<"devices">> {
-  const known = sentByMutation.get(ctx.db);
-  if (known !== undefined) return known;
-  const sent = new Set<Id<"devices">>();
-  sentByMutation.set(ctx.db, sent);
-  return sent;
-}
-
 async function refreshPhone(
   ctx: MutationCtx,
   deviceId: Id<"devices">,
@@ -54,17 +44,13 @@ async function refreshPhone(
 ): Promise<boolean> {
   const push = await findPhonePush(ctx, deviceId);
   if (push === null) return false;
-  const wakesApp = push.widgetPush === undefined;
-  const sent = sentInThisMutation(ctx);
-  if (sent.has(deviceId)) return wakesApp;
   const decision = refreshDecision(push.widgetRefresh, now);
   switch (decision.kind) {
     case "fold":
       return false;
     case "send":
       await sendWidgetRefresh(ctx, push, now);
-      sent.add(deviceId);
-      return wakesApp;
+      return push.widgetPush === undefined;
     case "trail":
       await ctx.db.patch(push._id, { widgetRefresh: decision.state });
       await ctx.scheduler.runAt(decision.state.trailingAt, internal.phonePush.trailingRefresh, {
