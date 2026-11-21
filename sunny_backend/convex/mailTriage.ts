@@ -141,17 +141,33 @@ export const claimItem = internalMutation({
   },
 });
 
+async function claimWasHeld(
+  ctx: QueryCtx,
+  release: { held: boolean; probe: boolean },
+  now: number,
+): Promise<boolean> {
+  if (release.held) return true;
+  return release.probe && (await holdGate(ctx, MAIL_SERVICES, now)) !== "free";
+}
+
 export const releaseClaim = internalMutation({
-  args: { itemId: v.id("mailItems"), attempt: v.number(), held: v.boolean() },
-  handler: async (ctx, { itemId, attempt, held }): Promise<null> => {
+  args: {
+    itemId: v.id("mailItems"),
+    attempt: v.number(),
+    held: v.boolean(),
+    probe: v.boolean(),
+  },
+  handler: async (ctx, { itemId, attempt, ...release }): Promise<null> => {
     const item = await ctx.db.get(itemId);
-    if (holdsClaim(item, attempt)) {
-      await ctx.db.patch(itemId, {
-        state: "queued",
-        leaseUntil: Date.now() + TRIAGE_PICKUP_MS,
-        ...(held ? { heldClaims: (item.heldClaims ?? 0) + 1 } : {}),
-      });
-    }
+    if (!holdsClaim(item, attempt)) return null;
+    const now = Date.now();
+    await ctx.db.patch(itemId, {
+      state: "queued",
+      leaseUntil: now + TRIAGE_PICKUP_MS,
+      ...((await claimWasHeld(ctx, release, now))
+        ? { heldClaims: (item.heldClaims ?? 0) + 1 }
+        : {}),
+    });
     return null;
   },
 });
@@ -299,7 +315,12 @@ async function settleTriageError(
 ): Promise<TriageOutcome> {
   const cause = await job.settle(e);
   const release = (held: boolean) =>
-    ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
+    ctx.runMutation(internal.mailTriage.releaseClaim, {
+      itemId,
+      attempt: claim.attempt,
+      held,
+      probe: claim.probe,
+    });
   switch (cause) {
     case "permanent":
       throw new NonRetryableError(errorText(e), { cause: e });

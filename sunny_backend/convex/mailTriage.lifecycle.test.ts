@@ -128,6 +128,7 @@ describe("the item lifecycle", () => {
       attempt: 1,
       subject: "Your appointment is confirmed",
     });
+    expect((await item(h, itemId)).heldClaims).toBeUndefined();
   });
 
   test("a Jev 422 is not retried", async () => {
@@ -184,6 +185,7 @@ describe("the item lifecycle", () => {
           itemId,
           attempt: claim.attempt,
           held,
+          probe: claim.probe,
         });
       }
       return claim.kind;
@@ -214,7 +216,12 @@ describe("the item lifecycle", () => {
     expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
       attempt: 2,
     });
-    await h.t.mutation(internal.mailTriage.releaseClaim, { itemId, attempt: 1, held: true });
+    await h.t.mutation(internal.mailTriage.releaseClaim, {
+      itemId,
+      attempt: 1,
+      held: true,
+      probe: true,
+    });
     const row = await item(h, itemId);
     expect(row).toMatchObject({ state: "triaging", attempt: 2 });
     expect(row.heldClaims).toBeUndefined();

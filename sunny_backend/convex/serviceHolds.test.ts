@@ -359,6 +359,32 @@ describe("mail while a hold is open", () => {
     expect(await rows(h, "chatPosts")).toEqual([]);
   });
 
+  test("a probe that Jev answers with a server error spends no attempt while the hold stays open", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date"], now: NOW });
+    const h = await mailHousehold(makeBackend());
+    jevSays({ status: 503 });
+    const itemId = await receive(h, clinic());
+    await openHold(h.t, "jev");
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    await expect(triage(h, itemId)).rejects.toThrow();
+    expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+    expect(await holdOpen(h.t, "jev")).toBe(true);
+  });
+
+  test("a probe that loses the mailbox spends no attempt while the hold stays open", async () => {
+    const h = await mailHousehold(makeBackend());
+    const itemId = await receive(h, clinic());
+    gmailMocks.getMessage.mockRejectedValue(
+      new GoogleApiError(403, '{"error":{"code":403,"errors":[{"reason":"forbidden"}]}}'),
+    );
+    await openHold(h.t, "gmail");
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    expect(await triage(h, itemId)).toBe("mailbox_lost");
+    expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+    expect(await holdOpen(h.t, "gmail")).toBe(true);
+  });
+
   test("a probe that never reaches Jev closes the Gmail hold and leaves the Jev hold open", async () => {
     const h = await mailHousehold(makeBackend());
     poolFinishesEveryJob();
