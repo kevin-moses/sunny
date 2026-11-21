@@ -25,6 +25,7 @@ import {
   reconnectAs,
   useTriageClock,
 } from "./mailTriage.helpers";
+import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
 import { MAIL_HELD_NOTE } from "./serviceHolds";
 import {
   createHousehold,
@@ -418,7 +419,18 @@ describe("mail while a hold is open", () => {
     expect(await holdOpen(h.t, "jev")).toBe(true);
   });
 
-  test("a probe that loses the mailbox spends no attempt while the hold stays open", async () => {
+  test("a probe that Gmail answers with a server error spends no attempt while the Gmail hold stays open", async () => {
+    const h = await mailHousehold(makeBackend());
+    const itemId = await receive(h, clinic());
+    gmailMocks.getMessage.mockRejectedValue(new GoogleApiError(503, "Service Unavailable"));
+    await openHold(h.t, "gmail");
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    await expect(triage(h, itemId)).rejects.toThrow();
+    expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+    expect(await holdOpen(h.t, "gmail")).toBe(true);
+  });
+
+  test("a probe that loses the mailbox spends an attempt while the hold stays open", async () => {
     const h = await mailHousehold(makeBackend());
     const itemId = await receive(h, clinic());
     gmailMocks.getMessage.mockRejectedValue(
@@ -427,8 +439,50 @@ describe("mail while a hold is open", () => {
     await openHold(h.t, "gmail");
     vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await triage(h, itemId)).toBe("mailbox_lost");
-    expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 1, heldClaims: 1 });
+    const row = await item(h, itemId);
+    expect(row).toMatchObject({ state: "queued", attempt: 1 });
+    expect(row.heldClaims).toBeUndefined();
     expect(await holdOpen(h.t, "gmail")).toBe(true);
+  });
+
+  test("a probe row that fails for its own reason reaches the attempt cap while the hold stays open and the other row keeps probing", async () => {
+    const h = await mailHousehold(makeBackend());
+    poolFinishesEveryJob();
+    jevSays({ status: 401 });
+    const poisonEmail = clinic();
+    const otherEmail = clinic();
+    const poison = await receive(h, poisonEmail);
+    vi.setSystemTime(NOW + 1000);
+    const other = await receive(h, otherEmail);
+    gmailMocks.getMessage.mockImplementation(async (_token: string, id: string) => {
+      if (id === poisonEmail.id) throw new GoogleApiError(500, "Backend Error");
+      return rawEmail(otherEmail);
+    });
+    await openHold(h.t, "jev");
+
+    for (let window = 1; window <= 30; window += 1) {
+      if ((await item(h, poison)).state === "failed") break;
+      vi.setSystemTime(NOW + window * 16 * MINUTE_MS);
+      const jobs = [(await item(h, poison)).jobId, (await item(h, other)).jobId];
+      expect(await sweepMail(h)).toBe(1);
+      vi.setSystemTime(NOW + window * 16 * MINUTE_MS + 1000);
+      for (const [i, itemId] of [poison, other].entries()) {
+        if ((await item(h, itemId)).jobId === jobs[i]) continue;
+        await triage(h, itemId).catch(() => "retried");
+      }
+    }
+
+    const failed = await item(h, poison);
+    expect(failed).toMatchObject({ state: "failed", attempt: MAX_TRIAGE_ATTEMPTS });
+    expect(failed.heldClaims).toBeUndefined();
+    const probed = await item(h, other);
+    expect(probed.state).toBe("queued");
+    expect(probed.attempt).toBeGreaterThanOrEqual(MAX_TRIAGE_ATTEMPTS - 1);
+    expect(probed.heldClaims).toBe(probed.attempt);
+    expect(await holdOpen(h.t, "jev")).toBe(true);
+    expect((await rows(h, "chatPosts")).map((p) => p.body)).toContain(
+      "Sunny could not read an email. Please look at the inbox in Gmail.",
+    );
   });
 
   test("a probe that never reaches Jev closes the Gmail hold and leaves the Jev hold open", async () => {

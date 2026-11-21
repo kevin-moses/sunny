@@ -185,7 +185,7 @@ describe("the item lifecycle", () => {
           itemId,
           attempt: claim.attempt,
           held,
-          probe: claim.probe,
+          unavailable: null,
         });
       }
       return claim.kind;
@@ -220,7 +220,7 @@ describe("the item lifecycle", () => {
       itemId,
       attempt: 1,
       held: true,
-      probe: true,
+      unavailable: null,
     });
     const row = await item(h, itemId);
     expect(row).toMatchObject({ state: "triaging", attempt: 2 });

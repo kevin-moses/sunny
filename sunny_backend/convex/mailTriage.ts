@@ -25,7 +25,15 @@ import { caregiverMessage } from "./lib/mailProse";
 import type { KnownInvite, MailHeader, ParsedEmail } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
-import { MAIL_SERVICES, enterGate, holdGate, holdService, rearmProbes } from "./lib/serviceHolds";
+import { unavailableService } from "./lib/mailFailure";
+import {
+  MAIL_SERVICES,
+  enterGate,
+  holdGate,
+  holdOf,
+  holdService,
+  rearmProbes,
+} from "./lib/serviceHolds";
 import type { HoldGate, HoldService } from "./lib/serviceHolds";
 import { MINUTE_MS } from "./lib/time";
 import { icsEvent, mailHeader, triaged as triagedValidator } from "./lib/validators";
@@ -143,11 +151,11 @@ export const claimItem = internalMutation({
 
 async function claimWasHeld(
   ctx: QueryCtx,
-  release: { held: boolean; probe: boolean },
-  now: number,
+  release: { held: boolean; unavailable: HoldService | null },
 ): Promise<boolean> {
   if (release.held) return true;
-  return release.probe && (await holdGate(ctx, MAIL_SERVICES, now)) !== "free";
+  if (release.unavailable === null) return false;
+  return (await holdOf(ctx, release.unavailable))?.open === true;
 }
 
 export const releaseClaim = internalMutation({
@@ -155,7 +163,7 @@ export const releaseClaim = internalMutation({
     itemId: v.id("mailItems"),
     attempt: v.number(),
     held: v.boolean(),
-    probe: v.boolean(),
+    unavailable: v.union(v.null(), holdService),
   },
   handler: async (ctx, { itemId, attempt, ...release }): Promise<null> => {
     const item = await ctx.db.get(itemId);
@@ -164,9 +172,7 @@ export const releaseClaim = internalMutation({
     await ctx.db.patch(itemId, {
       state: "queued",
       leaseUntil: now + TRIAGE_PICKUP_MS,
-      ...((await claimWasHeld(ctx, release, now))
-        ? { heldClaims: (item.heldClaims ?? 0) + 1 }
-        : {}),
+      ...((await claimWasHeld(ctx, release)) ? { heldClaims: (item.heldClaims ?? 0) + 1 } : {}),
     });
     return null;
   },
@@ -319,7 +325,7 @@ async function settleTriageError(
       itemId,
       attempt: claim.attempt,
       held,
-      probe: claim.probe,
+      unavailable: claim.probe ? unavailableService(e) : null,
     });
   switch (cause) {
     case "permanent":

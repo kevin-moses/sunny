@@ -1,7 +1,9 @@
 import { APIConnectionError, APIError, TypeSafeError } from "@typesafe-ai/sdk";
+import { GoogleApiError } from "./google";
 import { googleFailure } from "./googleGrant";
 import type { GoogleCause } from "./googleGrant";
 import { JevAnswerError, JevNotConfigured } from "./jevClient";
+import type { HoldService } from "./serviceHolds";
 
 const RETRYABLE_JEV_STATUSES = new Set([408, 429]);
 const REJECTED_KEY_STATUSES = new Set([401, 403]);
@@ -21,4 +23,15 @@ function jevFailure(e: unknown): MailCause | null {
 
 export function mailFailure(e: unknown): MailCause {
   return jevFailure(e) ?? googleFailure(e) ?? "retry";
+}
+
+function saysUnavailable(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+export function unavailableService(e: unknown): HoldService | null {
+  if (e instanceof APIConnectionError) return "jev";
+  if (e instanceof APIError) return saysUnavailable(e.status) ? "jev" : null;
+  if (e instanceof GoogleApiError) return saysUnavailable(e.status) ? "gmail" : null;
+  return null;
 }
