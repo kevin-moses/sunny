@@ -1,5 +1,19 @@
 import { vi } from "vitest";
 
+export const CALENDAR_USAGE_LIMIT = JSON.stringify({
+  error: {
+    code: 403,
+    message: "Calendar usage limits exceeded.",
+    errors: [
+      {
+        domain: "usageLimits",
+        reason: "quotaExceeded",
+        message: "Calendar usage limits exceeded.",
+      },
+    ],
+  },
+});
+
 export const googleMocks = {
   exchangeCode: vi.fn(),
   refreshAccessToken: vi.fn(),

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { CALENDAR_USAGE_LIMIT } from "../googleMocks.helpers";
 import {
   CALENDAR_SCOPE,
   GoogleAccessRevoked,
@@ -165,6 +166,11 @@ describe("GoogleApiError", () => {
       new GoogleApiError(403, '{"errors":[{"reason":"userRateLimitExceeded"}]}').retryable,
     ).toBe(true);
     expect(new GoogleApiError(403, '{"errors":[{"reason":"forbidden"}]}').retryable).toBe(false);
+  });
+
+  test("Calendar's usage limit is a retryable rate limit and not project-wide", () => {
+    const e = new GoogleApiError(403, CALENDAR_USAGE_LIMIT);
+    expect([e.retryable, e.projectWide]).toEqual([true, false]);
   });
 
   test.each(["dailyLimitExceeded", "accessNotConfigured"])(

@@ -2,7 +2,7 @@ import type { WorkId } from "@convex-dev/workpool";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { gmailMocks, googleMocks } from "./googleMocks.helpers";
+import { CALENDAR_USAGE_LIMIT, gmailMocks, googleMocks } from "./googleMocks.helpers";
 import { ConfigError } from "./lib/errors";
 import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import type { HoldService } from "./lib/serviceHolds";
@@ -694,6 +694,18 @@ describe("calendar pushes while a hold is open", () => {
       expect(await holdOpen(t, "calendar")).toBe(false);
     },
   );
+
+  test("a probe that hits Calendar's usage limit is retried, keeps the grant and does not close the hold", async () => {
+    const t = makeBackend();
+    const { connectionId } = await setupSynced(t);
+    await openHold(t, "calendar");
+    googleMocks.upsertEvent.mockRejectedValue(new GoogleApiError(403, CALENDAR_USAGE_LIMIT));
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    await expect(push(t)).rejects.toThrow("Calendar usage limits exceeded");
+    expect(await holdOpen(t, "calendar")).toBe(true);
+    const connection = await t.run(async (ctx) => await ctx.db.get(connectionId));
+    expect(connection).toMatchObject({ status: "active" });
+  });
 
   test("a probe whose sign-in Google revoked does not close the hold", async () => {
     const t = makeBackend();
