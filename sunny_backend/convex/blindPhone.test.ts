@@ -8,6 +8,7 @@ import {
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
 import type { SentAlert } from "./deliveryMocks.helpers";
+import { markBlind } from "./lib/blindPhone";
 import { PROOF_WAIT_MS } from "./lib/liveActivity";
 import {
   MIN,
@@ -24,7 +25,7 @@ import {
   starts,
   tick,
 } from "./phoneHarness.helpers";
-import type { PhoneFixture } from "./phoneHarness.helpers";
+import type { PhoneBackend, PhoneFixture } from "./phoneHarness.helpers";
 import { setPhone } from "./testing.helpers";
 
 vi.mock("./apns", async (original) =>
@@ -85,8 +86,8 @@ async function joinAs(
   await f.t.withIdentity({ subject: userId }).mutation(api.households.redeemJoinCode, { code });
 }
 
-async function family(): Promise<PhoneFixture> {
-  const f = await phoneHousehold(makePhoneBackend());
+async function family(t: PhoneBackend = makePhoneBackend()): Promise<PhoneFixture> {
+  const f = await phoneHousehold(t);
   await joinAs(f, "sam", "caregiver_member");
   await joinAs(f, "val", "caregiver_viewer");
   await f.t.run(async (ctx) => {
@@ -118,8 +119,10 @@ async function goBlind(
   return blindSince!;
 }
 
-async function blindFamily(): Promise<{ f: PhoneFixture; blindAt: number }> {
-  const f = await family();
+async function blindFamily(
+  t: PhoneBackend = makePhoneBackend(),
+): Promise<{ f: PhoneFixture; blindAt: number }> {
+  const f = await family(t);
   await addTask(f, { title: "Morning pills", time: "08:00" });
   return { f, blindAt: await goBlind(f, "Morning pills", "08:00") };
 }
@@ -140,6 +143,26 @@ async function noticeRows(f: PhoneFixture) {
       (row) => row.kind === "lock_screen_blind",
     ),
   );
+}
+
+async function pausedHouseholdWithBlindPhones(
+  t: PhoneBackend,
+  count: number,
+  blindAt: number,
+): Promise<void> {
+  const paused = await phoneHousehold(t, "paused-");
+  await setPaused(paused, true);
+  await t.run(async (ctx) => {
+    for (let i = 0; i < count; i++) {
+      const deviceId = await ctx.db.insert("devices", {
+        householdId: paused.householdId,
+        userId: `paused-phone-${i}`,
+        kind: "senior_phone",
+      });
+      const pushId = await ctx.db.insert("phonePush", { deviceId });
+      await markBlind(ctx, (await ctx.db.get(pushId))!, blindAt);
+    }
+  });
 }
 
 async function setPaused(f: PhoneFixture, backgroundPaused: boolean): Promise<void> {
@@ -337,6 +360,38 @@ describe("a notice that cannot go out yet", () => {
     await setPaused(f, false);
     await sweep(f, blindAt + 25 * HOUR);
     expect(await noticeRows(f)).toEqual([]);
+  });
+});
+
+describe("stretches that cannot be told", () => {
+  test("fifty older ones do not hold back a newer one that can be told", async () => {
+    const t = makePhoneBackend();
+    await pausedHouseholdWithBlindPhones(t, 50, local("06:00"));
+    const { f, blindAt } = await blindFamily(t);
+    await sweep(f, blindAt + 24 * HOUR);
+    expect(
+      notices()
+        .map((alert) => alert.tokens)
+        .sort(),
+    ).toEqual([[PAT_TOKEN], [VAL_TOKEN]]);
+  });
+
+  test("one is looked at again only an hour later", async () => {
+    const { f, blindAt } = await blindFamily();
+    await f.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("pushTokens").collect()) {
+        if (row.userId !== f.phoneUser) await ctx.db.delete(row._id);
+      }
+    });
+    await sweep(f, blindAt + 24 * HOUR);
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "sam", token: SAM_TOKEN });
+    });
+    await sweep(f, blindAt + 24 * HOUR + 10 * MIN);
+    await sweep(f, blindAt + 25 * HOUR - MIN);
+    expect(notices()).toEqual([]);
+    await sweep(f, blindAt + 25 * HOUR);
+    expect(notices().map((alert) => alert.tokens)).toEqual([[SAM_TOKEN]]);
   });
 });
 
