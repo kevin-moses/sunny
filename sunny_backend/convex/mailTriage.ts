@@ -107,13 +107,6 @@ async function failOrphan(ctx: MutationCtx, itemId: Id<"mailItems">): Promise<vo
   await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
 }
 
-async function waitsToBeClaimed(ctx: QueryCtx, item: Doc<"mailItems">): Promise<boolean> {
-  const household = await ctx.db.get(item.householdId);
-  if (household?.backgroundPaused) return true;
-  const mailbox = await mailboxOf(ctx, item);
-  return mailbox !== null && mailbox.status !== "active";
-}
-
 export const claimItem = internalMutation({
   args: { itemId: v.id("mailItems") },
   handler: async (ctx, { itemId }): Promise<Claim> => {
@@ -231,7 +224,7 @@ export const applyTriage = internalMutation({
     const ready = await planned(ctx, input, now);
     if (ready === "lost") return "lost";
     if (ready === "mailbox_gone") {
-      await ctx.db.patch(input.itemId, { state: "failed", leaseUntil: undefined });
+      await failOrphan(ctx, input.itemId);
       return "lost";
     }
     const { item, household, facts, events } = ready;
@@ -463,8 +456,13 @@ async function requeueOverdue(
       await ctx.db.patch(row._id, { leaseUntil: now + TRIAGE_PICKUP_MS });
       continue;
     }
+    const ready = await readiness(ctx, row);
+    if (ready.kind === "orphan") {
+      await failOrphan(ctx, row._id);
+      continue;
+    }
     await ctx.db.patch(row._id, { state: "queued", leaseUntil: now + TRIAGE_PICKUP_MS });
-    if (queued >= enqueues || (await waitsToBeClaimed(ctx, row))) continue;
+    if (queued >= enqueues || ready.kind === "waits") continue;
     await enqueueTriage(ctx, row._id);
     queued += 1;
   }

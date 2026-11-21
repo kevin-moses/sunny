@@ -333,6 +333,32 @@ describe("mail while a hold is open", () => {
     expect(await holdOpen(h.t, "jev")).toBe(false);
   });
 
+  test("the probe sweep fails orphan rows quietly and spends its one enqueue on a real row", async () => {
+    const h = await mailHousehold(makeBackend());
+    poolFinishesEveryJob();
+    const orphan = await h.t.run(
+      async (ctx) =>
+        await ctx.db.insert("mailItems", {
+          householdId: h.householdId,
+          account: "old@example.com",
+          gmailId: "old-1",
+          state: "queued",
+          attempt: 0,
+          leaseUntil: NOW,
+        }),
+    );
+    vi.setSystemTime(NOW + 1000);
+    const real = await receive(h, clinic());
+    const realJob = (await item(h, real)).jobId;
+    await openHold(h.t, "jev");
+
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    expect(await sweepMail(h)).toBe(1);
+    expect(await item(h, orphan)).toMatchObject({ state: "failed" });
+    expect((await item(h, real)).jobId).not.toBe(realJob);
+    expect(await rows(h, "chatPosts")).toEqual([]);
+  });
+
   test("a probe that never reaches Jev closes the Gmail hold and leaves the Jev hold open", async () => {
     const h = await mailHousehold(makeBackend());
     poolFinishesEveryJob();

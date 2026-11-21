@@ -87,14 +87,13 @@ describe("the item lifecycle", () => {
     expect((await item(h, itemId)).state).toBe("done");
   });
 
-  test("the sweeper hands a row whose mailbox is gone to a claim that fails it quietly", async () => {
+  test("the sweeper fails a row whose mailbox is gone quietly, without enqueuing it", async () => {
     const h = await setup();
     poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
     await h.t.run(async (ctx) => ctx.db.delete(h.mailboxId));
     vi.setSystemTime(NOW + 16 * MINUTE_MS);
-    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
-    expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
+    expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
     expect((await item(h, itemId)).state).toBe("failed");
     expect(await rows(h, "chatPosts")).toHaveLength(0);
   });
