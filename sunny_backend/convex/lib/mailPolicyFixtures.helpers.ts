@@ -1,5 +1,3 @@
-import { policyFacts } from "./mailFacts";
-import type { FactInputs } from "./mailFacts";
 import { planWithRule } from "./mailPolicy";
 import type { Plan } from "./mailPolicy";
 import type {
@@ -64,19 +62,6 @@ export function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     seniorNotesToday: 0,
     ...overrides,
   };
-}
-
-export function factsFrom(overrides: Partial<FactInputs> = {}): PolicyFacts {
-  return policyFacts({
-    header: { sender: CLINIC, subject: "Your appointment", receivedAt: NOW - 3_600_000 },
-    clock: CLOCK,
-    ics: null,
-    events: EVENTS,
-    link: null,
-    calendarChangesToday: 0,
-    seniorNotesToday: 0,
-    ...overrides,
-  });
 }
 
 export function invite(overrides: Partial<IcsEvent> = {}): IcsEvent {

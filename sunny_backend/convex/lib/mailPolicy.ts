@@ -3,23 +3,23 @@ import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
 import type {
   Appointment,
   AppointmentKind,
-  AppointmentRef,
   CalendarEventFact,
   CaregiverConfirms,
   DecisionReason,
   EscalationReason,
   IcsEvent,
-  InfoTopic,
   MailDraft,
   MailEffect,
-  MailVerdict,
   PolicyFacts,
   Proposed,
-  Suspicion,
   Triaged,
 } from "./mailTypes";
-import type { CheckedAppointment } from "./mailLinks";
-import { appointmentKey, linkedFacts, matchEvent, resolveLink, titleWords } from "./mailLinks";
+import { firstMatch } from "./firstMatch";
+import { titleWords } from "./mailAppointments";
+import type { CheckedAppointment } from "./mailAppointments";
+import { appointmentKey } from "./mailLinks";
+import { situationOf } from "./mailSituation";
+import type { Case, SituationOf } from "./mailSituation";
 import { caregiverMessage, described, when } from "./mailProse";
 import { noteExpiry } from "./seniorNotes";
 import { DAY_MS, dateLabel, formatTime12 } from "./time";
@@ -75,29 +75,6 @@ const ALSO_NEEDS: Record<DecisionReason, string> = {
   home_visit: "The email also says someone will come to the home.",
   other: "The email may also need a reply, a payment or a decision.",
 };
-
-export type Situation =
-  | { case: "ignore" }
-  | { case: "new"; appointment: CheckedAppointment; conflict: CalendarEventFact | null }
-  | { case: "new_rejected"; appointment: CheckedAppointment }
-  | { case: "new_on_calendar"; appointment: CheckedAppointment; eventId: string }
-  | {
-      case: "new_linked_elsewhere";
-      appointment: CheckedAppointment;
-      eventId: string;
-      seen: CalendarEventFact | null;
-    }
-  | { case: "new_linked_by_another_address"; appointment: CheckedAppointment }
-  | { case: "reschedule"; appointment: CheckedAppointment; match: CalendarEventFact }
-  | { case: "reschedule_rejected"; appointment: CheckedAppointment; match: CalendarEventFact }
-  | { case: "reschedule_repeating"; appointment: CheckedAppointment; match: CalendarEventFact }
-  | { case: "reschedule_no_match"; appointment: CheckedAppointment }
-  | { case: "cancel"; previous: AppointmentRef; matches: CalendarEventFact[] }
-  | { case: "senior_info"; topic: InfoTopic }
-  | { case: "needs_decision"; reason: DecisionReason }
-  | { case: "suspicious"; suspicion: Suspicion };
-
-type Case = Situation["case"];
 
 interface Row<S> {
   id: string;
@@ -171,7 +148,7 @@ const RESCHEDULE_UNVERIFIED: Row<{ appointment: CheckedAppointment; match: Calen
         ],
 };
 
-const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = {
+const DECISION_TABLE: { [K in Case]: Row<SituationOf<K>>[] } = {
   ignore: [{ id: "ignore", plan: () => [] }],
   new_linked_elsewhere: [
     NEW_UNVERIFIED,
@@ -467,42 +444,18 @@ const DECISION_TABLE: { [K in Case]: Row<Extract<Situation, { case: K }>>[] } = 
   ],
 };
 
-function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
-  switch (verdict.kind) {
-    case "ignore":
-      return { case: "ignore" };
-    case "senior_info":
-      return { case: "senior_info", topic: verdict.topic };
-    case "needs_decision":
-      return { case: "needs_decision", reason: verdict.reason };
-    case "suspicious":
-      return { case: "suspicious", suspicion: verdict.suspicion };
-  }
-  if (verdict.change !== "cancel") return resolveLink(verdict, facts);
-  const { linked } = facts;
-  return {
-    case: "cancel",
-    previous: verdict.previous,
-    matches:
-      linked === null ? matchEvent(verdict.previous, facts.events) : linkedFacts(linked, facts),
-  };
-}
-
 interface Drafted {
   rule: string;
   drafts: MailDraft[];
 }
 
-function runTable<K extends Case>(
-  rows: Row<Extract<Situation, { case: K }>>[],
-  situation: Extract<Situation, { case: K }>,
-  context: Context,
-): Drafted {
-  for (const row of rows) {
-    const drafts = row.plan(situation, context);
-    if (drafts !== null) return { rule: row.id, drafts };
+function planFor<K extends Case>(situation: SituationOf<K>, context: Context): Drafted {
+  const rows: Row<SituationOf<K>>[] = DECISION_TABLE[situation.case];
+  const matched = firstMatch(rows, (row) => row.plan(situation, context));
+  if (matched === null) {
+    throw new Error(`The mail decision table has no matching row for ${situation.case}`);
   }
-  throw new Error(`The mail decision table has no matching row for ${situation.case}`);
+  return { rule: matched.rule, drafts: matched.result };
 }
 
 function withDecision(drafts: MailDraft[], decision: DecisionReason | null): MailDraft[] {
@@ -548,39 +501,6 @@ function rendered(draft: MailDraft, ics: IcsEvent | null, summary: string): Mail
       return { ...draft, ...caregiverMessage(ics, draft.line, summary) };
     default:
       return draft;
-  }
-}
-
-function planFor(situation: Situation, context: Context): Drafted {
-  switch (situation.case) {
-    case "ignore":
-      return runTable(DECISION_TABLE.ignore, situation, context);
-    case "new":
-      return runTable(DECISION_TABLE.new, situation, context);
-    case "new_rejected":
-      return runTable(DECISION_TABLE.new_rejected, situation, context);
-    case "new_on_calendar":
-      return runTable(DECISION_TABLE.new_on_calendar, situation, context);
-    case "new_linked_elsewhere":
-      return runTable(DECISION_TABLE.new_linked_elsewhere, situation, context);
-    case "new_linked_by_another_address":
-      return runTable(DECISION_TABLE.new_linked_by_another_address, situation, context);
-    case "reschedule":
-      return runTable(DECISION_TABLE.reschedule, situation, context);
-    case "reschedule_rejected":
-      return runTable(DECISION_TABLE.reschedule_rejected, situation, context);
-    case "reschedule_repeating":
-      return runTable(DECISION_TABLE.reschedule_repeating, situation, context);
-    case "reschedule_no_match":
-      return runTable(DECISION_TABLE.reschedule_no_match, situation, context);
-    case "cancel":
-      return runTable(DECISION_TABLE.cancel, situation, context);
-    case "senior_info":
-      return runTable(DECISION_TABLE.senior_info, situation, context);
-    case "needs_decision":
-      return runTable(DECISION_TABLE.needs_decision, situation, context);
-    case "suspicious":
-      return runTable(DECISION_TABLE.suspicious, situation, context);
   }
 }
 

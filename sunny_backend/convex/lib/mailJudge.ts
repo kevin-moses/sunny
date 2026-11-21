@@ -1,3 +1,4 @@
+import { firstMatch } from "./firstMatch";
 import { JEV_MODEL } from "./jevClient";
 import type { AskJev } from "./jevClient";
 import { level, oneOf, sure } from "./jevConfidence";
@@ -405,11 +406,9 @@ export const TRUTH_TABLE: Row[] = [
 ];
 
 export function decide(readings: Readings): Decision & { rule: string } {
-  for (const row of TRUTH_TABLE) {
-    const decided = row.decide(readings);
-    if (decided !== null) return { ...decided, rule: row.id };
-  }
-  throw new Error("The mail truth table has no matching row");
+  const matched = firstMatch(TRUTH_TABLE, (row) => row.decide(readings));
+  if (matched === null) throw new Error("The mail truth table has no matching row");
+  return { ...matched.result, rule: matched.rule };
 }
 
 function probabilityOf(answers: JevAnswers, name: string): number {

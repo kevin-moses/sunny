@@ -5,8 +5,7 @@ import { JEV_MODEL } from "../../convex/lib/jevClient";
 import type { AskJev, JevReply } from "../../convex/lib/jevClient";
 import { triageEmail } from "../../convex/lib/mailJudge";
 import { icsKey, linkDomain, linkKey } from "../../convex/lib/mailLinks";
-import { knownInvite, policyFacts } from "../../convex/lib/mailFacts";
-import type { LinkFact } from "../../convex/lib/mailFacts";
+import { knownInvite, linkedEvent } from "../../convex/lib/mailFacts";
 import { planWithRule } from "../../convex/lib/mailPolicy";
 import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
 import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
@@ -14,6 +13,7 @@ import { calendarEventFact, icsEvent, mailHeader } from "../../convex/lib/valida
 import type {
   CalendarEventFact,
   EscalationReason,
+  LinkedEvent,
   MailEffect,
   MailVerdict,
   ParsedEmail,
@@ -201,21 +201,15 @@ function senderLink(fixture: Fixture, key: string | null): FixtureLink | null {
   return link !== undefined && link.senderDomain === senderDomain ? link : null;
 }
 
-function linkFact(fixture: Fixture, key: string | null): LinkFact | null {
+function linkedFact(fixture: Fixture, key: string | null): LinkedEvent | null {
   const link = senderLink(fixture, key);
   if (link === null) return null;
-  const { eventId, senderAddress } = link;
   const { events, offCalendar } = fixture.household;
-  const event = [...events, ...offCalendar].find((e) => e.eventId === eventId);
+  const event = [...events, ...offCalendar].find((e) => e.eventId === link.eventId);
   if (event === undefined)
-    throw new Error(`Fixture ${fixture.id} links ${eventId}, which it lists nowhere`);
-  return {
-    eventId,
-    senderAddress,
-    event: offCalendar.includes(event)
-      ? { occurs: false, date: event.date, time: event.time }
-      : { occurs: true },
-  };
+    throw new Error(`Fixture ${fixture.id} links ${link.eventId}, which it lists nowhere`);
+  const ended = offCalendar.includes(event) ? { date: event.date, time: event.time } : null;
+  return linkedEvent(link, ended, fixture.email.sender);
 }
 
 export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
@@ -226,18 +220,17 @@ export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number):
   const triaged = await triageEmail(email, clock, known, ask);
   const latencyMs = performance.now() - started;
   const key = linkKey(triaged.verdict, email.ics);
-  const plan = planWithRule(
-    triaged,
-    policyFacts({
-      header: email,
-      clock,
-      ics: email.ics,
-      events: household.events,
-      link: linkFact(fixture, key),
-      calendarChangesToday: household.calendarChangesToday,
-      seniorNotesToday: 0,
-    }),
-  );
+  const plan = planWithRule(triaged, {
+    ...clock,
+    sender: email.sender,
+    subject: email.subject,
+    receivedAt: email.receivedAt,
+    ics: email.ics,
+    events: household.events,
+    linked: linkedFact(fixture, key),
+    calendarChangesToday: household.calendarChangesToday,
+    seniorNotesToday: 0,
+  });
   return {
     id: fixture.id,
     bucket: fixture.bucket,

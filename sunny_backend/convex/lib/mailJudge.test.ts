@@ -8,7 +8,7 @@ import type { Level } from "./jevConfidence";
 import { TRUTH_TABLE, decide, readAnswers } from "./mailJudge";
 import type { Invite, Readings } from "./mailJudge";
 import { ANCHOR, CLOCK, DEC_10, EYE_EXAM, QUESTIONS } from "./mailFixtures.helpers";
-import { appointmentFields } from "./mailLinks";
+import { appointmentFields, checked } from "./mailAppointments";
 import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
 import { SENIOR_SENTENCES, appointmentTitle } from "./mailTypes";
 import type { IcsEvent, MailVerdict } from "./mailTypes";
@@ -428,7 +428,7 @@ describe("Sunny's own words", () => {
     for (const kind of APPOINTMENT_KIND_NAMES) {
       const { verdict } = decide(readings({ confirms_appointment: "yes" }, { kind, when: DEC_10 }));
       if (verdict.kind !== "appointment" || verdict.change !== "new") throw new Error(kind);
-      expect(appointmentFields(verdict.appointment, CLOCK)).toEqual(verdict.appointment);
+      expect(appointmentFields(checked(verdict.appointment), CLOCK)).toEqual(verdict.appointment);
     }
   });
 });

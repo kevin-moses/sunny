@@ -1,14 +1,15 @@
 import { HOUR, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "../_generated/server";
+import type { MutationCtx } from "../_generated/server";
 import { addEventCore, updateEventCore } from "../calendar";
 import type { Actor } from "./access";
 import { postMail } from "./chatPosts";
 import { insertNotification, pushToCaregivers } from "./delivery";
+import { linkOf } from "./mailFacts";
 import { linkDomain } from "./mailLinks";
 import { appointmentTitle } from "./mailTypes";
-import type { MailEffect, MailSender, PolicyFacts } from "./mailTypes";
+import type { MailEffect, PolicyFacts } from "./mailTypes";
 import type { MailEffectRecord } from "./validators";
 
 const MAIL_AGENT: Actor = { kind: "agent" };
@@ -31,35 +32,6 @@ type EffectOf<K extends EffectKind> = Extract<MailEffect, { kind: K }>;
 type Handlers = {
   [K in EffectKind]: (scope: EffectScope, effect: EffectOf<K>) => Promise<MailEffectRecord>;
 };
-
-async function linkOf(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-  senderDomain: string,
-  appointmentKey: string,
-): Promise<Doc<"mailEventLinks"> | null> {
-  return await ctx.db
-    .query("mailEventLinks")
-    .withIndex("by_household_domain_key", (q) =>
-      q
-        .eq("householdId", householdId)
-        .eq("senderDomain", senderDomain)
-        .eq("appointmentKey", appointmentKey),
-    )
-    .unique();
-}
-
-export async function senderLink(
-  ctx: QueryCtx,
-  householdId: Id<"households">,
-  sender: MailSender,
-  appointmentKey: string,
-): Promise<Doc<"mailEventLinks"> | null> {
-  const senderDomain = linkDomain(sender);
-  return senderDomain === null
-    ? null
-    : await linkOf(ctx, householdId, senderDomain, appointmentKey);
-}
 
 async function linkEvent(scope: EffectScope, eventId: Id<"events">, key: string): Promise<void> {
   const { ics, sender } = scope.facts;
