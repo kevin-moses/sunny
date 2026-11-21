@@ -6,7 +6,7 @@ const SURE = 0.7;
 
 export type Picked = Exclude<JevAnswer, number>;
 
-export function isSure(probability: number): boolean {
+function isSure(probability: number): boolean {
   return probability >= SURE;
 }
 

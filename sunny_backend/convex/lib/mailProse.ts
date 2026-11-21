@@ -26,7 +26,7 @@ export function when(date: string, time: string): string {
   return `${weekdayName(date)}, ${dateLabel(date)} at ${formatTime12(time)}`;
 }
 
-export type MailHeaderFacts = Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">;
+type MailHeaderFacts = Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">;
 
 export function displayHeader(facts: MailHeaderFacts): DisplayHeader {
   const name = scrub(facts.sender.name);

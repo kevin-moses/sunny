@@ -2,7 +2,7 @@ export const MAX_BODY_CHARS = 20_000;
 
 const BREAKS = ["\n\n", "\n", " "];
 
-export interface ShownBody {
+interface ShownBody {
   text: string;
   cutNote: string | null;
 }

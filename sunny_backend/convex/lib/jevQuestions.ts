@@ -183,10 +183,6 @@ const FLAG_QUESTIONS: Record<string, NoulQuestion> = Object.fromEntries(
   FLAGS.map((f) => [f, FLAG_DEFINITIONS[f].question]),
 );
 
-export function flagGroup(name: Flag): FlagGroup {
-  return FLAG_DEFINITIONS[name].group;
-}
-
 export function flagsIn(...groups: FlagGroup[]): Flag[] {
   return FLAGS.filter((f) => groups.includes(FLAG_DEFINITIONS[f].group));
 }
