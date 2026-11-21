@@ -45,6 +45,12 @@ export async function holdGate(
   return gateOf(await openHolds(ctx, services), now);
 }
 
+export async function mailHeldSince(ctx: QueryCtx): Promise<number | null> {
+  const open = await openHolds(ctx, MAIL_SERVICES);
+  if (open.length === 0) return null;
+  return Math.min(...open.map((hold) => hold.mailHeldSince ?? hold.openedAt));
+}
+
 export async function enterGate(
   ctx: MutationCtx,
   services: readonly HoldService[],

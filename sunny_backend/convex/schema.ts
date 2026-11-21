@@ -320,6 +320,7 @@ export default defineSchema({
     lastPolledAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
     pollJobId: v.optional(vWorkIdValidator),
+    heldNoteFor: v.optional(v.number()),
   })
     .index("by_household", ["householdId"])
     .index("by_status", ["status"])
@@ -333,6 +334,7 @@ export default defineSchema({
     openedAt: v.number(),
     probeAt: v.number(),
     closedAt: v.optional(v.number()),
+    mailHeldSince: v.optional(v.number()),
   }).index("by_service", ["service"]),
 
   mailItems: defineTable({

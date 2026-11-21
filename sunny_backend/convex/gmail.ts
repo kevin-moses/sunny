@@ -152,7 +152,7 @@ export const saveMailbox = internalMutation({
     const household = await loadHousehold(ctx, args.householdId);
     const now = Date.now();
     await postMailbox(ctx, household, `Sunny now reads ${accountEmail}.`, now);
-    await noteIfMailHeld(ctx, household, now);
+    await noteIfMailHeld(ctx, mailboxId, now);
     await audit(ctx, {
       householdId: args.householdId,
       actor: SYSTEM_ACTOR,

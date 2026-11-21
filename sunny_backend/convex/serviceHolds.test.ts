@@ -195,16 +195,43 @@ describe("opening a hold", () => {
 
 describe("connecting a mailbox while mail is held", () => {
   test.each(["gmail", "jev"] as const)(
-    "posts the held note once when a %s hold is open",
+    "a mailbox connected while a %s hold's fan-out is still running gets one held note",
     async (service) => {
       const h = await mailHousehold(makeBackend());
+      await h.t.run(async (ctx) => await ctx.db.delete(h.mailboxId));
       await openHold(h.t, service);
+      await reconnectAs(h, "new@example.com");
+      expect(await heldNotes(h.t)).toEqual([h.householdId]);
       await h.t.finishAllScheduledFunctions(vi.runAllTimers);
       expect(await heldNotes(h.t)).toEqual([h.householdId]);
-      await reconnectAs(h, "new@example.com");
-      expect(await heldNotes(h.t)).toEqual([h.householdId, h.householdId]);
     },
   );
+
+  test("a reconnect in the same outage posts no second note, and the next outage notes again", async () => {
+    const h = await mailHousehold(makeBackend());
+    await openHold(h.t, "gmail");
+    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await heldNotes(h.t)).toEqual([h.householdId]);
+    await reconnectAs(h, "new@example.com");
+    expect(await heldNotes(h.t)).toEqual([h.householdId]);
+
+    vi.setSystemTime(NOW + MINUTE_MS);
+    await openHold(h.t, "jev", NOW + MINUTE_MS);
+    vi.setSystemTime(NOW + 20 * MINUTE_MS);
+    await h.t.mutation(internal.serviceHolds.close, { services: ["gmail"], since: NOW + 1 });
+    await reconnectAs(h, "newer@example.com");
+    expect(await heldNotes(h.t)).toEqual([h.householdId]);
+
+    await h.t.mutation(internal.serviceHolds.close, {
+      services: ["jev"],
+      since: NOW + 2 * MINUTE_MS,
+    });
+    vi.setSystemTime(NOW + 30 * MINUTE_MS);
+    await openHold(h.t, "gmail", NOW + 25 * MINUTE_MS);
+    await reconnectAs(h, "newest@example.com");
+    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await heldNotes(h.t)).toEqual([h.householdId, h.householdId]);
+  });
 
   test("posts no held note while mail is read, under a calendar hold, or for a paused household", async () => {
     const h = await mailHousehold(makeBackend());
