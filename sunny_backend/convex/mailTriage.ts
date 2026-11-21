@@ -25,7 +25,7 @@ import { caregiverMessage } from "./lib/mailProse";
 import type { KnownInvite, MailHeader, ParsedEmail } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
-import { MAIL_SERVICES, enterGate, holdGate } from "./lib/serviceHolds";
+import { MAIL_SERVICES, enterGate, holdGate, holdService, rearmProbes } from "./lib/serviceHolds";
 import type { HoldGate, HoldService } from "./lib/serviceHolds";
 import { MINUTE_MS } from "./lib/time";
 import { icsEvent, mailHeader, triaged as triagedValidator } from "./lib/validators";
@@ -61,6 +61,11 @@ interface Finished {
   used: HoldService[];
 }
 
+type Readiness =
+  | { kind: "waits"; reason: string }
+  | { kind: "orphan" }
+  | { kind: "ready"; household: Doc<"households">; mailbox: Doc<"mailboxes"> };
+
 const SWEEP_ENQUEUES: Record<HoldGate, number> = { free: Infinity, probe: 1, held: 0 };
 
 const unreadRule = v.union(v.literal("gone"), v.literal("unparseable"));
@@ -89,6 +94,19 @@ async function mailboxOf(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Doc<"ma
   return mailbox?.accountEmail === item.account ? mailbox : null;
 }
 
+async function readiness(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Readiness> {
+  const household = await ctx.db.get(item.householdId);
+  if (household?.backgroundPaused) return { kind: "waits", reason: "household paused" };
+  const mailbox = await mailboxOf(ctx, item);
+  if (!household || !mailbox) return { kind: "orphan" };
+  if (mailbox.status !== "active") return { kind: "waits", reason: "mailbox not active" };
+  return { kind: "ready", household, mailbox };
+}
+
+async function failOrphan(ctx: MutationCtx, itemId: Id<"mailItems">): Promise<void> {
+  await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
+}
+
 async function waitsToBeClaimed(ctx: QueryCtx, item: Doc<"mailItems">): Promise<boolean> {
   const household = await ctx.db.get(item.householdId);
   if (household?.backgroundPaused) return true;
@@ -101,14 +119,13 @@ export const claimItem = internalMutation({
   handler: async (ctx, { itemId }): Promise<Claim> => {
     const item = await ctx.db.get(itemId);
     if (!item || item.state !== "queued") return { kind: "skip", reason: "not queued" };
-    const household = await ctx.db.get(item.householdId);
-    if (household?.backgroundPaused) return { kind: "skip", reason: "household paused" };
-    const mailbox = await mailboxOf(ctx, item);
-    if (!household || !mailbox) {
-      await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
+    const ready = await readiness(ctx, item);
+    if (ready.kind === "orphan") {
+      await failOrphan(ctx, itemId);
       return { kind: "skip", reason: "mailbox gone" };
     }
-    if (mailbox.status !== "active") return { kind: "skip", reason: "mailbox not active" };
+    if (ready.kind === "waits") return { kind: "skip", reason: ready.reason };
+    const { household, mailbox } = ready;
     if (item.attempt - (item.heldClaims ?? 0) >= MAX_TRIAGE_ATTEMPTS) {
       await failUnread(ctx, item);
       return { kind: "skip", reason: "attempts used up" };
@@ -366,8 +383,39 @@ export const triage = internalAction({
     } catch (e) {
       return await settleTriageError(ctx, itemId, claim, job, e);
     }
-    if (claim.probe) await closeHolds(ctx, finished.used, claim.now);
+    if (claim.probe) await settleProbe(ctx, finished.used, claim.now);
     return finished.outcome;
+  },
+});
+
+async function settleProbe(ctx: ActionCtx, used: HoldService[], since: number): Promise<void> {
+  await closeHolds(ctx, used, since);
+  const untested = MAIL_SERVICES.filter((service) => !used.includes(service));
+  if (untested.length > 0) {
+    await ctx.runMutation(internal.mailTriage.probeAgain, { services: untested, since });
+  }
+}
+
+async function enqueueNextClaim(ctx: MutationCtx): Promise<void> {
+  const rows = await ctx.db
+    .query("mailItems")
+    .withIndex("by_state_lease", (q) => q.eq("state", "queued"))
+    .take(SWEEP_BATCH);
+  for (const row of rows) {
+    const ready = await readiness(ctx, row);
+    if (ready.kind === "orphan") await failOrphan(ctx, row._id);
+    if (ready.kind !== "ready") continue;
+    if (!(await jobInPool(ctx, row.jobId))) await enqueueTriage(ctx, row._id);
+    return;
+  }
+}
+
+export const probeAgain = internalMutation({
+  args: { services: v.array(holdService), since: v.number() },
+  handler: async (ctx, { services, since }): Promise<HoldService[]> => {
+    const rearmed = await rearmProbes(ctx, services, since, Date.now());
+    if (rearmed.length > 0) await enqueueNextClaim(ctx);
+    return rearmed;
   },
 });
 

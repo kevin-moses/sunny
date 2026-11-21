@@ -6,7 +6,15 @@ import { gmailMocks, googleMocks } from "./googleMocks.helpers";
 import { ConfigError } from "./lib/errors";
 import { GoogleApiError } from "./lib/google";
 import type { HoldService } from "./lib/serviceHolds";
-import { item, jevSays, mailHousehold, receive, rows } from "./mailMocks.helpers";
+import {
+  item,
+  jevCalls,
+  jevSays,
+  mailHousehold,
+  rawEmail,
+  receive,
+  rows,
+} from "./mailMocks.helpers";
 import type { MailHousehold } from "./mailMocks.helpers";
 import { NOW } from "./lib/mailFixtures.helpers";
 import { MINUTE_MS } from "./lib/time";
@@ -183,6 +191,19 @@ describe("fencing", () => {
     expect(await holdOpen(t, "gmail")).toBe(true);
   });
 
+  test("a probe re-arms only a hold that was open when it started", async () => {
+    const t = makeBackend();
+    vi.setSystemTime(NOW + 20 * MINUTE_MS);
+    await openHold(t, "jev", NOW + 19 * MINUTE_MS);
+    const probeAgain = (since: number) =>
+      t.mutation(internal.mailTriage.probeAgain, { services: ["jev"], since });
+    expect(await probeAgain(NOW + 10 * MINUTE_MS)).toEqual([]);
+    expect((await holds(t))[0]).toMatchObject({ probeAt: NOW + 35 * MINUTE_MS });
+    vi.setSystemTime(NOW + 21 * MINUTE_MS);
+    expect(await probeAgain(NOW + 20 * MINUTE_MS)).toEqual(["jev"]);
+    expect((await holds(t))[0]).toMatchObject({ probeAt: NOW + 21 * MINUTE_MS });
+  });
+
   test("a success from a job that started before the hold's failing call does not close it", async () => {
     const t = makeBackend();
     await openHold(t, "calendar", NOW);
@@ -268,6 +289,47 @@ describe("mail while a hold is open", () => {
     vi.setSystemTime(NOW + 31 * MINUTE_MS);
     jevSays(PHISHING);
     expect(await triage(h, second)).toBe("applied");
+    expect(await holdOpen(h.t, "jev")).toBe(false);
+  });
+
+  test("gate-settled probes re-arm the Jev probe and start the next item, so Jev is probed in the same window", async () => {
+    const h = await mailHousehold(makeBackend());
+    poolFinishesEveryJob();
+    jevSays(PHISHING);
+    const emails = [
+      clinic({ labels: ["SPAM"] }),
+      clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }),
+      clinic(),
+    ];
+    const items: Id<"mailItems">[] = [];
+    for (const [i, email] of emails.entries()) {
+      vi.setSystemTime(NOW + i * 1000);
+      items.push(await receive(h, email));
+    }
+    gmailMocks.getMessage.mockImplementation(async (_token: string, id: string) =>
+      rawEmail(emails.find((email) => email.id === id)!),
+    );
+    await openHold(h.t, "jev");
+
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    expect(await sweepMail(h)).toBe(1);
+    const [spam, promotion, appointment] = items as [
+      Id<"mailItems">,
+      Id<"mailItems">,
+      Id<"mailItems">,
+    ];
+    for (const [probe, next] of [
+      [spam, promotion],
+      [promotion, appointment],
+    ] as const) {
+      const queuedJob = (await item(h, next)).jobId;
+      expect(await triage(h, probe)).toBe("applied");
+      expect(await holdOpen(h.t, "jev")).toBe(true);
+      expect((await item(h, next)).jobId).not.toBe(queuedJob);
+    }
+    expect(jevCalls).toHaveLength(0);
+    expect(await triage(h, appointment)).toBe("applied");
+    expect(jevCalls).toHaveLength(1);
     expect(await holdOpen(h.t, "jev")).toBe(false);
   });
 

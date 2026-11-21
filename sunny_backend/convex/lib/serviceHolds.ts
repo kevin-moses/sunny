@@ -57,3 +57,18 @@ export async function enterGate(
   }
   return gate;
 }
+
+export async function rearmProbes(
+  ctx: MutationCtx,
+  services: readonly HoldService[],
+  since: number,
+  now: number,
+): Promise<HoldService[]> {
+  const rearmed: HoldService[] = [];
+  for (const hold of await openHolds(ctx, services)) {
+    if (hold.openedAt > since) continue;
+    await ctx.db.patch(hold._id, { probeAt: now });
+    rearmed.push(hold.service);
+  }
+  return rearmed;
+}
