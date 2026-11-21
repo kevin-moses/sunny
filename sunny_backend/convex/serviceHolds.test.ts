@@ -407,6 +407,30 @@ describe("mail while a hold is open", () => {
     expect(await holdOpen(h.t, "jev")).toBe(false);
   });
 
+  test("re-arming the probe fails a row whose attempts are used up and enqueues the next claimable row", async () => {
+    const h = await mailHousehold(makeBackend());
+    poolFinishesEveryJob();
+    const exhausted = await receive(h, clinic());
+    await h.t.run(
+      async (ctx) =>
+        await ctx.db.patch(exhausted, { attempt: MAX_TRIAGE_ATTEMPTS + 2, heldClaims: 2 }),
+    );
+    vi.setSystemTime(NOW + 1000);
+    const next = await receive(h, clinic());
+    const nextJob = (await item(h, next)).jobId;
+    await openHold(h.t, "jev");
+
+    vi.setSystemTime(NOW + 2000);
+    expect(
+      await h.t.mutation(internal.mailTriage.probeAgain, { services: ["jev"], since: NOW + 1500 }),
+    ).toEqual(["jev"]);
+    expect(await item(h, exhausted)).toMatchObject({ state: "failed" });
+    expect((await rows(h, "chatPosts")).map((p) => p.body)).toEqual([
+      "Sunny could not read an email. Please look at the inbox in Gmail.",
+    ]);
+    expect((await item(h, next)).jobId).not.toBe(nextJob);
+  });
+
   test("the probe sweep fails orphan rows quietly and spends its one enqueue on a real row", async () => {
     const h = await mailHousehold(makeBackend());
     poolFinishesEveryJob();

@@ -111,6 +111,10 @@ async function readiness(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Readine
   return { kind: "ready", household, mailbox };
 }
 
+function attemptsUsedUp(item: Doc<"mailItems">): boolean {
+  return item.attempt - (item.heldClaims ?? 0) >= MAX_TRIAGE_ATTEMPTS;
+}
+
 async function failOrphan(ctx: MutationCtx, itemId: Id<"mailItems">): Promise<void> {
   await ctx.db.patch(itemId, { state: "failed", leaseUntil: undefined });
 }
@@ -127,7 +131,7 @@ export const claimItem = internalMutation({
     }
     if (ready.kind === "waits") return { kind: "skip", reason: ready.reason };
     const { household, mailbox } = ready;
-    if (item.attempt - (item.heldClaims ?? 0) >= MAX_TRIAGE_ATTEMPTS) {
+    if (attemptsUsedUp(item)) {
       await failUnread(ctx, item);
       return { kind: "skip", reason: "attempts used up" };
     }
@@ -425,6 +429,10 @@ async function enqueueNextClaim(ctx: MutationCtx): Promise<void> {
     const ready = await readiness(ctx, row);
     if (ready.kind === "orphan") await failOrphan(ctx, row._id);
     if (ready.kind !== "ready") continue;
+    if (attemptsUsedUp(row)) {
+      await failUnread(ctx, row);
+      continue;
+    }
     if (!(await jobInPool(ctx, row.jobId))) await enqueueTriage(ctx, row._id);
     return;
   }
