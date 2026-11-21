@@ -20,7 +20,6 @@ import {
   stepHeld,
 } from "./lib/escalation";
 import type { EscalationStep } from "./lib/escalation";
-import { tellCaregiversOfBlindPhones } from "./lib/blindPhone";
 import { sweepLiveActivities } from "./lib/liveActivitySync";
 import { changeInstance, expandTasks } from "./lib/schedule";
 import { formatTime12 } from "./lib/time";
@@ -241,7 +240,6 @@ export const tick = internalMutation({
   handler: async (ctx, args): Promise<number> => {
     const now = args.now ?? Date.now();
     const pageSize = args.pageSize ?? TICK_PAGE_SIZE;
-    if (args.cursor === undefined) await tellCaregiversOfBlindPhones(ctx, now);
     const page = await ctx.db
       .query("households")
       .paginate({ numItems: pageSize, cursor: args.cursor ?? null });

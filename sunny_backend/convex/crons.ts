@@ -5,6 +5,12 @@ const crons = cronJobs();
 
 crons.interval("scheduler tick", { minutes: 1 }, internal.scheduler.tick, {});
 crons.interval(
+  "tell caregivers of blind phones",
+  { minutes: 10 },
+  internal.phonePush.sweepBlindPhones,
+  {},
+);
+crons.interval(
   "sweep stuck calendar syncs",
   { minutes: 10 },
   internal.calendarFanOut.sweepStuckSyncs,

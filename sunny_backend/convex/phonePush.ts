@@ -19,6 +19,7 @@ import {
   widgetReloadMessage,
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
+import { tellCaregiversOfBlindPhones } from "./lib/blindPhone";
 import { userPushTokens } from "./lib/delivery";
 import { isJsonObject } from "./lib/http";
 import { errorResponse, jsonResponse } from "./lib/httpResponse";
@@ -184,6 +185,12 @@ export const reportByToken = internalMutation({
     for (const { row, view } of behind) await syncActivity(ctx, row, now, rule, view);
     return { kind: "ok", activities: directives };
   },
+});
+
+export const sweepBlindPhones = internalMutation({
+  args: { now: v.optional(v.number()) },
+  handler: async (ctx, args): Promise<number> =>
+    await tellCaregiversOfBlindPhones(ctx, args.now ?? Date.now()),
 });
 
 export const dropToken = internalMutation({

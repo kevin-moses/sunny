@@ -126,7 +126,7 @@ async function blindFamily(): Promise<{ f: PhoneFixture; blindAt: number }> {
 
 async function sweep(f: PhoneFixture, at: number): Promise<void> {
   setNow(at);
-  await f.t.mutation(internal.scheduler.tick, { now: at });
+  await f.t.mutation(internal.phonePush.sweepBlindPhones, { now: at });
   await settle(f.t);
 }
 
@@ -260,6 +260,9 @@ describe("a blind notice that fails", () => {
     const alertsBefore = alertsSent().length;
     const at = blindAt + 24 * HOUR;
     setNow(at);
+    await expect(f.t.mutation(internal.phonePush.sweepBlindPhones, { now: at })).rejects.toThrow(
+      "blind notice failed",
+    );
     await f.t.mutation(internal.scheduler.tick, { now: at });
     await settle(f.t);
     const prompts = alertsSent()
@@ -274,7 +277,7 @@ describe("a notice that cannot go out yet", () => {
   test("a notice still waiting when the phone reports is skipped", async () => {
     const { f, blindAt } = await blindFamily();
     setNow(blindAt + 24 * HOUR);
-    await f.t.mutation(internal.scheduler.tick, { now: blindAt + 24 * HOUR });
+    await f.t.mutation(internal.phonePush.sweepBlindPhones, { now: blindAt + 24 * HOUR });
     expect((await noticeRows(f)).map((row) => row.state)).toEqual(["pending", "pending"]);
     expect((await putPushState(f, {})).status).toBe(200);
     await settle(f.t);
