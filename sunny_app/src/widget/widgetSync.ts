@@ -35,33 +35,40 @@ export function surfaceSyncKey(day: DayViewData | null): string | null {
   return JSON.stringify({ localDate, tasks, eventsToday, nextUp });
 }
 
+function stopIssuing(issuedFor: number): void {
+  if (issuedFor === generation) issuingStopped = true;
+}
+
 async function issueToken(issuedFor: number): Promise<string | null> {
   try {
     return (await callAction(api.deviceApi.issueToken, {})).deviceToken;
   } catch (e) {
     if (!(e instanceof BackendError) || e.status !== REFUSED_FOR_THIS_PAIRING) throw e;
-    issuingStopped = issuedFor === generation;
+    stopIssuing(issuedFor);
     logger.info('Widget', 'No widget token for this pairing; asking again after the next pairing');
     return null;
   }
 }
 
 export async function ensureWidgetToken(): Promise<boolean> {
-  if ((await SunnyWidget.storedSiteUrl()) === CONVEX_SITE_URL) return true;
-  if (issuingStopped) return false;
   const issuedFor = generation;
+  const stillCurrent = (): boolean => issuedFor === generation;
+  const storedSite = await SunnyWidget.storedSiteUrl();
+  if (!stillCurrent()) return false;
+  if (storedSite === CONVEX_SITE_URL) return true;
+  if (issuingStopped) return false;
   const deviceToken = await issueToken(issuedFor);
-  if (deviceToken === null || issuedFor !== generation) return false;
+  if (deviceToken === null || !stillCurrent()) return false;
   const store = SunnyWidget.setCredentials(deviceToken, CONVEX_SITE_URL);
   storing = store.catch(() => undefined);
   try {
     await store;
   } catch (e) {
-    issuingStopped = issuedFor === generation;
+    stopIssuing(issuedFor);
     logger.error('Widget', `Could not store the widget credentials: ${errorMessage(e)}`);
     return false;
   }
-  return issuedFor === generation;
+  return stillCurrent();
 }
 
 async function syncOnce(): Promise<void> {

@@ -263,6 +263,18 @@ describe('clearWidget', () => {
     expect(native.token()).toBeNull();
   });
 
+  it('leaves no token behind when it runs while the stored site is being read', async () => {
+    const { syncWidget, clearWidget } = loadModule();
+    const native = nativeStore();
+    const site = deferred();
+    mockNative.storedSiteUrl.mockReturnValueOnce(site.promise as Promise<string | null>);
+    const sync = syncWidget();
+    await clearWidget();
+    site.resolve(null);
+    await sync;
+    expect(native.token()).toBeNull();
+  });
+
   it('leaves no token behind when it runs while a token is being stored', async () => {
     const { syncWidget, clearWidget } = loadModule();
     const write = deferred();
