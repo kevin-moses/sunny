@@ -8,11 +8,11 @@ import { tokensFor } from "./googleGrant";
 import { closeHolds } from "./serviceHolds";
 import {
   EDITOR_ROLES,
+  findMember,
   loadHousehold,
   requireCaregiverAccount,
   requireCaregiverMember,
   requireCaregiverReader,
-  requireEditor,
   SYSTEM_ACTOR,
 } from "./lib/access";
 import { audit } from "./lib/audit";
@@ -403,9 +403,13 @@ export const recentMail = query({
 export const disconnect = mutation({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<null> => {
+    const userId = await requireCaregiverAccount(ctx);
     const mailbox = await ctx.db.get(mailboxId);
-    if (!mailbox) throw appError("not_found", "Mailbox not found");
-    const { userId } = await requireEditor(ctx, mailbox.householdId);
+    const member = mailbox && (await findMember(ctx, mailbox.householdId, userId));
+    if (!mailbox || !member) throw appError("not_found", "Mailbox not found");
+    if (!EDITOR_ROLES.includes(member.role)) {
+      throw appError("forbidden", "Only a primary caregiver or member can disconnect the mailbox");
+    }
     await audit(ctx, {
       householdId: mailbox.householdId,
       actor: SYSTEM_ACTOR,

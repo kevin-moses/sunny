@@ -877,12 +877,30 @@ describe("mailboxStatus and disconnect", () => {
     ).rejects.toMatchObject({ data: { code: "forbidden" } });
     await expect(
       t.withIdentity({ subject: "stranger" }).mutation(api.gmail.disconnect, { mailboxId }),
-    ).rejects.toMatchObject({ data: { code: "forbidden" } });
+    ).rejects.toMatchObject({ data: { code: "not_found" } });
     await expect(t.mutation(api.gmail.disconnect, { mailboxId })).rejects.toMatchObject({
       data: { code: "unauthenticated" },
     });
     expect(await mailboxRows(t)).toHaveLength(1);
     expect(googleMocks.revokeRefreshToken).not.toHaveBeenCalled();
+  });
+
+  test("a stranger gets the same answer for another household's mailbox as for a missing one", async () => {
+    const t = makeBackend();
+    const householdId = await createHousehold(t);
+    const mailboxId = await addMailbox(t, householdId);
+    await t.run(async (ctx) => ctx.db.delete(mailboxId));
+    const otherMailbox = await addMailbox(t, householdId);
+    const stranger = t.withIdentity({ subject: "stranger" });
+    for (const id of [mailboxId, otherMailbox]) {
+      await expect(
+        stranger.mutation(api.gmail.disconnect, { mailboxId: id }),
+      ).rejects.toMatchObject({ data: { code: "not_found", message: "Mailbox not found" } });
+    }
+    await expect(t.mutation(api.gmail.disconnect, { mailboxId })).rejects.toMatchObject({
+      data: { code: "unauthenticated" },
+    });
+    expect(await mailboxRows(t)).toHaveLength(1);
   });
 
   test("disconnect keeps the mail items so a reconnect does not triage them again", async () => {
