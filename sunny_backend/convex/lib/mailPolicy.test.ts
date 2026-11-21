@@ -1,9 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { planWithRule } from "./mailPolicy";
+import { NOW, NY } from "./mailFixtures.helpers";
 import {
   EVENTS,
-  NOW,
-  NY,
   appointment,
   facts,
   invite,

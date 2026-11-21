@@ -3,16 +3,9 @@ import { internal } from "./_generated/api";
 import { gmailMocks } from "./googleMocks.helpers";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import { item, jevCalls, receive, rows, triageEmail } from "./mailMocks.helpers";
-import {
-  DELIVERY,
-  EYE_EXAM,
-  MINUTE,
-  NOW,
-  PHISHING,
-  clinic,
-  setup,
-  useTriageClock,
-} from "./mailTriage.helpers";
+import { EYE_EXAM, NOW } from "./lib/mailFixtures.helpers";
+import { MINUTE_MS } from "./lib/time";
+import { DELIVERY, PHISHING, clinic, setup, useTriageClock } from "./mailTriage.helpers";
 
 vi.mock("./lib/google", async (original) =>
   (await import("./googleMocks.helpers")).googleMock(await original()),
@@ -39,7 +32,7 @@ describe("other verdicts", () => {
       householdId: h.householdId,
       mailItemId: done._id,
       text: SENIOR_SENTENCES.package_coming,
-      receivedAt: NOW - 30 * MINUTE,
+      receivedAt: NOW - 30 * MINUTE_MS,
     });
     expect(note!.expiresAt).toBe(Date.parse("2026-11-20T05:00:00Z"));
     expect(done.effects).toEqual([{ kind: "senior_note", noteId: note!._id }]);
@@ -59,9 +52,9 @@ describe("other verdicts", () => {
     const h = await setup();
     const done = [];
     for (let i = 0; i < 4; i += 1) {
-      vi.setSystemTime(NOW + i * 60 * MINUTE);
+      vi.setSystemTime(NOW + i * 60 * MINUTE_MS);
       done.push(
-        await triageEmail(h, clinic({ receivedAt: NOW + (i - 1) * 60 * MINUTE }), DELIVERY),
+        await triageEmail(h, clinic({ receivedAt: NOW + (i - 1) * 60 * MINUTE_MS }), DELIVERY),
       );
     }
     expect(done.map((d) => d.effects?.[0]?.kind)).toEqual([

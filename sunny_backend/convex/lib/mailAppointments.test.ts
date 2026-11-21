@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { appointmentFields, checked, matchEvent } from "./mailAppointments";
-import { CLOCK, EVENTS, appointment } from "./mailPolicyFixtures.helpers";
+import { CLOCK } from "./mailFixtures.helpers";
+import { EVENTS, appointment } from "./mailPolicyFixtures.helpers";
 import type { AppointmentRef } from "./mailTypes";
 
 describe("checked", () => {

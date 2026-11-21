@@ -16,10 +16,9 @@ import {
 } from "./mailMocks.helpers";
 import type { JevWireReply } from "./mailMocks.helpers";
 import { MAX_TRIAGE_ATTEMPTS } from "./mailTriage";
+import { EYE_EXAM, NOW } from "./lib/mailFixtures.helpers";
+import { MINUTE_MS } from "./lib/time";
 import {
-  EYE_EXAM,
-  MINUTE,
-  NOW,
   PHISHING,
   clinic,
   poolFinishesEveryJob,
@@ -52,12 +51,12 @@ describe("the item lifecycle", () => {
     expect(console.log).toHaveBeenCalledWith("Mail triage skipped: household paused");
     expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 0 });
 
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
 
     await h.t.run(async (ctx) => ctx.db.patch(h.householdId, { backgroundPaused: false }));
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
-    vi.setSystemTime(NOW + 32 * MINUTE);
+    vi.setSystemTime(NOW + 32 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("applied");
     expect((await item(h, itemId)).state).toBe("done");
@@ -73,11 +72,11 @@ describe("the item lifecycle", () => {
       expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
       expect(await item(h, itemId)).toMatchObject({ state: "queued", attempt: 0 });
     }
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
 
     await h.t.run(async (ctx) => ctx.db.patch(h.mailboxId, { status: "active" }));
-    vi.setSystemTime(NOW + 32 * MINUTE);
+    vi.setSystemTime(NOW + 32 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("applied");
     expect((await item(h, itemId)).state).toBe("done");
@@ -88,7 +87,7 @@ describe("the item lifecycle", () => {
     poolFinishesEveryJob();
     const itemId = await receive(h, clinic());
     await h.t.run(async (ctx) => ctx.db.delete(h.mailboxId));
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
     expect((await item(h, itemId)).state).toBe("failed");
@@ -165,7 +164,7 @@ describe("the item lifecycle", () => {
     expect(mailbox).toMatchObject({ status: "active" });
     expect(await rows(h, "chatPosts")).toHaveLength(0);
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
   });
 
@@ -204,7 +203,7 @@ describe("the item lifecycle", () => {
     expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
       attempt: 1,
     });
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     await h.t.mutation(internal.mailTriage.sweepStuck, {});
     expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
       attempt: 2,
@@ -225,7 +224,7 @@ describe("the item lifecycle", () => {
     let now = NOW;
     for (let round = 0; round < MAX_TRIAGE_ATTEMPTS + 2; round += 1) {
       expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("held");
-      now += 16 * MINUTE;
+      now += 16 * MINUTE_MS;
       vi.setSystemTime(now);
       expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     }
@@ -307,7 +306,7 @@ describe("the item lifecycle", () => {
           authenticated: true,
         },
         subject: "Your appointment is confirmed",
-        receivedAt: NOW - 30 * MINUTE,
+        receivedAt: NOW - 30 * MINUTE_MS,
       }),
     );
     const workId = (await item(h, itemId)).jobId!;
@@ -362,7 +361,7 @@ describe("the item lifecycle", () => {
     for (let round = 0; round < MAX_TRIAGE_ATTEMPTS + 3; round += 1) {
       const claim = await h.t.mutation(internal.mailTriage.claimItem, { itemId });
       claims.push(claim.kind);
-      now += 16 * MINUTE;
+      now += 16 * MINUTE_MS;
       vi.setSystemTime(now);
       await h.t.mutation(internal.mailTriage.sweepStuck, {});
     }
@@ -388,7 +387,7 @@ describe("the item lifecycle", () => {
     expect(await h.t.mutation(internal.mailTriage.claimItem, { itemId })).toMatchObject({
       kind: "claimed",
     });
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     const secondJob = (await item(h, itemId)).jobId;
     expect(secondJob).toBeDefined();
@@ -462,7 +461,7 @@ describe("the item lifecycle", () => {
     );
     expect((await item(h, otherId)).state).toBe("queued");
     expect((await item(h, itemId)).state).toBe("queued");
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
     expect(await h.t.action(internal.mailTriage.triage, { itemId })).toBe("skipped");
     expect((await item(h, itemId)).state).toBe("queued");
@@ -537,14 +536,14 @@ describe("the item lifecycle", () => {
     const itemId = await receive(h, clinic());
     const job = (await item(h, itemId)).jobId;
     expect(await h.t.run(async (ctx) => (await mailPool.status(ctx, job!)).state)).toBe("pending");
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
 
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(0);
 
     expect(await item(h, itemId)).toMatchObject({
       state: "queued",
       jobId: job,
-      leaseUntil: NOW + 31 * MINUTE,
+      leaseUntil: NOW + 31 * MINUTE_MS,
     });
   });
 
@@ -553,7 +552,7 @@ describe("the item lifecycle", () => {
     const itemId = await receive(h, clinic());
     const job = (await item(h, itemId)).jobId;
     poolFinishesEveryJob();
-    vi.setSystemTime(NOW + 16 * MINUTE);
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
 
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
 
@@ -565,7 +564,7 @@ describe("the item lifecycle", () => {
     const itemId: Id<"mailItems"> = await receive(h, clinic());
     const row = await item(h, itemId);
     expect(row).toMatchObject({ account: MAILBOX, state: "queued", attempt: 0 });
-    expect(row.leaseUntil! - NOW).toBeGreaterThanOrEqual(15 * MINUTE);
-    expect(row.leaseUntil! - NOW).toBeLessThan(15 * MINUTE + 1000);
+    expect(row.leaseUntil! - NOW).toBeGreaterThanOrEqual(15 * MINUTE_MS);
+    expect(row.leaseUntil! - NOW).toBeLessThan(15 * MINUTE_MS + 1000);
   });
 });

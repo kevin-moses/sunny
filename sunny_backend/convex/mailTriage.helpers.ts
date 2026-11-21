@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import { resetGoogleMocks } from "./googleMocks.helpers";
+import { CLINIC, NOW } from "./lib/mailFixtures.helpers";
 import { mailPool } from "./lib/mailPool";
+import { MINUTE_MS } from "./lib/time";
 import { jevCalls, mailHousehold, summaryCalls } from "./mailMocks.helpers";
 import type { JevSays, MailHousehold, RawEmail } from "./mailMocks.helpers";
 import { makeBackend } from "./testing.helpers";
-
-export const NOW = Date.parse("2026-11-18T14:00:00Z");
-export const MINUTE = 60_000;
-export const DAY = 24 * 60 * MINUTE;
 
 export function useTriageClock(): void {
   beforeEach(() => {
@@ -35,19 +33,13 @@ export function clinic(overrides: Partial<RawEmail> = {}): RawEmail {
   sequence += 1;
   return {
     id: `m${sequence}`,
-    from: "Lakeside Eye Care <appointments@lakesideeye.example>",
+    from: `${CLINIC.name} <${CLINIC.address}>`,
     subject: "Your appointment is confirmed",
     text: "Your eye exam with Dr. Rivera is confirmed for December 10 at 2:15 PM.",
-    receivedAt: NOW - 30 * MINUTE,
+    receivedAt: NOW - 30 * MINUTE_MS,
     ...overrides,
   };
 }
-
-export const EYE_EXAM: JevSays = {
-  yes: ["confirms_appointment"],
-  kind: "eye_doctor",
-  when: { date: "2026-12-10", time: "14:15" },
-};
 
 export const MOVED_EYE_EXAM: JevSays = {
   yes: ["appointment_moved"],

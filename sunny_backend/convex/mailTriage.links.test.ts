@@ -2,18 +2,9 @@ import { describe, expect, test, vi } from "vitest";
 import type { Id } from "./_generated/dataModel";
 import { rows, triageEmail } from "./mailMocks.helpers";
 import type { JevSays, MailHousehold, RawEmail } from "./mailMocks.helpers";
-import {
-  DAY,
-  EYE_EXAM,
-  MINUTE,
-  MOVED_EYE_EXAM,
-  NOW,
-  clinic,
-  invite,
-  kinds,
-  setup,
-  useTriageClock,
-} from "./mailTriage.helpers";
+import { EYE_EXAM, NOW } from "./lib/mailFixtures.helpers";
+import { DAY_MS, MINUTE_MS } from "./lib/time";
+import { MOVED_EYE_EXAM, clinic, invite, kinds, setup, useTriageClock } from "./mailTriage.helpers";
 import { insertEvent } from "./testing.helpers";
 
 vi.mock("./lib/google", async (original) =>
@@ -320,10 +311,10 @@ describe("links belong to the sender's domain", () => {
       const lastTuesday: JevSays = { ...THERAPY, when: { date: "2026-11-24", time: "10:00" } };
       const first = await triageEmail(h, clinic({ subject: "Reminder" }), lastTuesday);
       expect(first.effects).toEqual([{ kind: "already_on_calendar", eventId: seriesId }]);
-      vi.setSystemTime(NOW + 7 * DAY);
+      vi.setSystemTime(NOW + 7 * DAY_MS);
       const late = await triageEmail(
         h,
-        clinic({ subject: "Reminder", receivedAt: NOW + 7 * DAY - 30 * MINUTE }),
+        clinic({ subject: "Reminder", receivedAt: NOW + 7 * DAY_MS - 30 * MINUTE_MS }),
         lastTuesday,
       );
       expect(late.effects).toEqual([
@@ -348,10 +339,10 @@ describe("links belong to the sender's domain", () => {
     const added = await triageEmail(h, clinic({ subject: "Confirmed" }), tomorrow);
     const [event] = await rows(h, "events");
     expect(added.effects?.[0]).toEqual({ kind: "event_added", eventId: event!._id });
-    vi.setSystemTime(NOW + 2 * DAY);
+    vi.setSystemTime(NOW + 2 * DAY_MS);
     const late = await triageEmail(
       h,
-      clinic({ subject: "Reminder", receivedAt: NOW + 2 * DAY - 30 * MINUTE }),
+      clinic({ subject: "Reminder", receivedAt: NOW + 2 * DAY_MS - 30 * MINUTE_MS }),
       tomorrow,
     );
     expect(late.effects).toEqual([

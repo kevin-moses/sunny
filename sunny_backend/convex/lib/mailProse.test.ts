@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { caregiverText, displayHeader } from "./mailProse";
-import { NY, facts } from "./mailPolicyFixtures.helpers";
+import { NY } from "./mailFixtures.helpers";
+import { facts } from "./mailPolicyFixtures.helpers";
 import { zonedInstant } from "./time";
 
 const SCAM = facts({

@@ -5,18 +5,9 @@ import { JEV_MODEL } from "./lib/jevClient";
 import type { Triaged } from "./lib/mailTypes";
 import { jevCalls, receive, rows, triageEmail } from "./mailMocks.helpers";
 import type { MailHousehold } from "./mailMocks.helpers";
-import {
-  DAY,
-  EYE_EXAM,
-  MINUTE,
-  MOVED_EYE_EXAM,
-  NOW,
-  clinic,
-  invite,
-  kinds,
-  setup,
-  useTriageClock,
-} from "./mailTriage.helpers";
+import { EYE_EXAM, NOW } from "./lib/mailFixtures.helpers";
+import { DAY_MS, MINUTE_MS } from "./lib/time";
+import { MOVED_EYE_EXAM, clinic, invite, kinds, setup, useTriageClock } from "./mailTriage.helpers";
 import { insertEvent } from "./testing.helpers";
 
 vi.mock("./lib/google", async (original) =>
@@ -128,8 +119,8 @@ describe("an appointment email", () => {
       "because the daily limit of 5 calendar changes from email was reached",
     );
 
-    vi.setSystemTime(NOW + DAY);
-    const nextDay = await triageEmail(h, clinic({ receivedAt: NOW + DAY - MINUTE }), {
+    vi.setSystemTime(NOW + DAY_MS);
+    const nextDay = await triageEmail(h, clinic({ receivedAt: NOW + DAY_MS - MINUTE_MS }), {
       ...EYE_EXAM,
       when: { date: "2026-12-16", time: "14:15" },
     });
@@ -173,7 +164,7 @@ describe("an appointment email", () => {
       h.t.mutation(internal.mailTriage.applyTriage, { itemId, attempt, ics: null, triaged });
 
     await h.t.mutation(internal.mailTriage.claimItem, { itemId });
-    vi.setSystemTime(NOW + 11 * MINUTE);
+    vi.setSystemTime(NOW + 11 * MINUTE_MS);
     expect(await h.t.mutation(internal.mailTriage.sweepStuck, {})).toBe(1);
     const again = await h.t.mutation(internal.mailTriage.claimItem, { itemId });
     expect(again).toMatchObject({ kind: "claimed", attempt: 2 });

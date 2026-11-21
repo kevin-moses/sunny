@@ -12,16 +12,8 @@ import {
   summaryCalls,
   triageEmail,
 } from "./mailMocks.helpers";
-import {
-  DELIVERY,
-  EYE_EXAM,
-  NOW,
-  PHISHING,
-  clinic,
-  kinds,
-  setup,
-  useTriageClock,
-} from "./mailTriage.helpers";
+import { EYE_EXAM, NOW } from "./lib/mailFixtures.helpers";
+import { DELIVERY, PHISHING, clinic, kinds, setup, useTriageClock } from "./mailTriage.helpers";
 import { insertEvent } from "./testing.helpers";
 
 vi.mock("./lib/google", async (original) =>

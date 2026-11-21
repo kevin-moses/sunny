@@ -4,13 +4,11 @@ import { DIGEST_HEADING, MAIL_HEADING, buildBriefing } from "./lib/agentBriefing
 import { loadDeviceState } from "./lib/deviceState";
 import { SENIOR_SENTENCES } from "./lib/mailTypes";
 import { MAILBOX, rows, triageEmail } from "./mailMocks.helpers";
+import { EYE_EXAM, NOW } from "./lib/mailFixtures.helpers";
+import { DAY_MS, MINUTE_MS } from "./lib/time";
 import {
-  DAY,
   DELIVERY,
-  EYE_EXAM,
-  MINUTE,
   MOVED_EYE_EXAM,
-  NOW,
   PHISHING,
   clinic,
   setup,
@@ -47,14 +45,14 @@ describe("where Sunny's reading shows up", () => {
       {
         id: note!._id,
         text: SENIOR_SENTENCES.package_coming,
-        receivedAt: NOW - 30 * MINUTE,
+        receivedAt: NOW - 30 * MINUTE_MS,
         expiresAt: note!.expiresAt,
       },
     ]);
     expect(after.version).not.toBe(before.version);
     expect(after.displayVersion).toBe(before.displayVersion);
     expect((await context()).seniorNotes).toEqual([
-      { text: SENIOR_SENTENCES.package_coming, receivedAt: NOW - 30 * MINUTE },
+      { text: SENIOR_SENTENCES.package_coming, receivedAt: NOW - 30 * MINUTE_MS },
     ]);
 
     vi.setSystemTime(note!.expiresAt);
@@ -80,20 +78,20 @@ describe("where Sunny's reading shows up", () => {
           receivedAt,
           expiresAt,
         });
-      await note(NOW - 3 * DAY, NOW - DAY);
+      await note(NOW - 3 * DAY_MS, NOW - DAY_MS);
       for (let i = 0; i < 60; i += 1) {
-        await note(NOW - DAY - i * MINUTE, Date.parse("2026-11-19T05:00:00Z"));
+        await note(NOW - DAY_MS - i * MINUTE_MS, Date.parse("2026-11-19T05:00:00Z"));
       }
       for (let i = 0; i < 3; i += 1) {
-        await note(NOW - (40 - i) * MINUTE, Date.parse("2026-11-20T05:00:00Z"));
+        await note(NOW - (40 - i) * MINUTE_MS, Date.parse("2026-11-20T05:00:00Z"));
       }
     });
     const notes = (await h.t.run(async (ctx) => await loadDeviceState(ctx, h.householdId, NOW)))
       .notes;
     expect(notes.map((n) => n.receivedAt)).toEqual([
-      NOW - 38 * MINUTE,
-      NOW - 39 * MINUTE,
-      NOW - 40 * MINUTE,
+      NOW - 38 * MINUTE_MS,
+      NOW - 39 * MINUTE_MS,
+      NOW - 40 * MINUTE_MS,
     ]);
   });
 
@@ -111,7 +109,7 @@ describe("where Sunny's reading shows up", () => {
       state: "done",
       subject: "Your appointment is confirmed",
       verdict: "appointment",
-      receivedAt: NOW - 30 * MINUTE,
+      receivedAt: NOW - 30 * MINUTE_MS,
     });
     expect(JSON.stringify(recent)).not.toContain("The email confirms an appointment.");
     await expect(
@@ -174,7 +172,7 @@ describe("where Sunny's reading shows up", () => {
 
   test("a busy inbox does not hide an escalation from the briefing", async () => {
     const h = await setup();
-    await triageEmail(h, clinic({ receivedAt: NOW - 2 * DAY }), PHISHING);
+    await triageEmail(h, clinic({ receivedAt: NOW - 2 * DAY_MS }), PHISHING);
     for (let i = 0; i < 60; i += 1) {
       await triageEmail(h, clinic({ labels: ["INBOX", "CATEGORY_PROMOTIONS"] }));
     }

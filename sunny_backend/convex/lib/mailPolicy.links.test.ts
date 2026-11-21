@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { linkedEvent } from "./mailFacts";
-import { CLINIC, NOW, facts, invite, newAppointment, planOf } from "./mailPolicyFixtures.helpers";
+import { CLINIC, NOW } from "./mailFixtures.helpers";
+import { facts, invite, newAppointment, planOf } from "./mailPolicyFixtures.helpers";
 import type { CalendarEventFact, LinkedEvent, MailSender, MailVerdict } from "./mailTypes";
 import { DAY_MS, MINUTE_MS } from "./time";
 

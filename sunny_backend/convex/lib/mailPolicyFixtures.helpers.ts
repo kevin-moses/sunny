@@ -5,21 +5,11 @@ import type {
   CalendarEventFact,
   IcsEvent,
   MailEffect,
-  MailSender,
   MailVerdict,
   PolicyFacts,
 } from "./mailTypes";
-import { zonedInstant } from "./time";
-
-export const NY = "America/New_York";
-export const NOW = zonedInstant("2026-11-18", "09:00", NY);
-export const CLOCK = { now: NOW, timezone: NY };
-
-export const CLINIC: MailSender = {
-  name: "Lakeside Eye Care",
-  address: "appointments@lakesideeye.example",
-  authenticated: true,
-};
+import { CLINIC, NOW, NY } from "./mailFixtures.helpers";
+import { HOUR_MS } from "./time";
 
 export const EVENTS: CalendarEventFact[] = [
   {
@@ -54,7 +44,7 @@ export function facts(overrides: Partial<PolicyFacts> = {}): PolicyFacts {
     timezone: NY,
     sender: CLINIC,
     subject: "Your appointment",
-    receivedAt: NOW - 3_600_000,
+    receivedAt: NOW - HOUR_MS,
     ics: null,
     events: EVENTS,
     linked: null,
