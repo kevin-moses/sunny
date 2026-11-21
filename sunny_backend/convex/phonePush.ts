@@ -240,13 +240,13 @@ async function sendRefresh(
   const { results }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     sends: target.tokens.map((token) => ({ token, message })),
   });
-  const dead = refusedTokens(results);
-  if (dead.length === 0) return null;
   if (target.kind === "background") {
+    const dead = refusedTokens(results, "alert");
+    if (dead.length === 0) return null;
     await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
     return null;
   }
-  for (const token of dead) {
+  for (const token of refusedTokens(results, "widgetPush")) {
     await ctx.runMutation(internal.phonePush.dropToken, { deviceId, field: "widgetPush", token });
   }
   return null;

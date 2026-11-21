@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import { internalAction, internalMutation } from "./_generated/server";
 import {
   apnsAnswer,
+  dropsToken,
   liveActivityEndMessage,
   liveActivityUpdateMessage,
   providerFault,
@@ -111,15 +112,15 @@ export const push = internalAction({
     const result = results[0];
     if (result === undefined) throw new Error("Live Activity push got no result from APNs");
     const detail = resultDetail(result);
-    switch (apnsAnswer(result)) {
-      case "retry":
-        throw new Error(`Live Activity push failed, will retry: ${detail}`);
-      case "refused":
+    if (apnsAnswer(result) === "retry") {
+      throw new Error(`Live Activity push failed, will retry: ${detail}`);
+    }
+    if (result.outcome !== "sent") {
+      if (!dropsToken(result, "activityUpdate")) {
         console.error(`Live Activity push refused for a fault not in its token, kept: ${detail}`);
         return null;
-      case "token_refused":
-      case "payload_refused":
-        console.error(`Live Activity push refused, so its update token is dropped: ${detail}`);
+      }
+      console.error(`Live Activity push refused, so its update token is dropped: ${detail}`);
     }
     await ctx.runMutation(internal.liveActivity.settle, {
       activityId: args.activityId,

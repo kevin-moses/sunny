@@ -206,22 +206,36 @@ describe("APNs routing", () => {
     expect(row.channel).toBeUndefined();
   });
 
-  test("a token APNs refuses as bad is deleted like an unregistered one", async () => {
+  test.each(["BadDeviceToken", "DeviceTokenNotForTopic", "MissingDeviceToken"])(
+    "an alert token refused with %s is kept, since a server pointed at the wrong APNs environment or topic gets that answer for every token",
+    async (reason) => {
+      const f = await setup();
+      providerMocks.apnsSend.mockResolvedValue([
+        { token: "tok-1", outcome: "failed", status: 400, reason, retryable: false },
+        { token: "tok-2", outcome: "failed", status: 400, reason, retryable: false },
+      ]);
+      const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+      expect(await deliver(f, id)).toBe("failed");
+      const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+      expect(left.map((t) => t.token).sort()).toEqual(["tok-1", "tok-2"]);
+    },
+  );
+
+  test("an alert token is deleted on a 410 and on our own InvalidToken check", async () => {
     const f = await setup();
     providerMocks.apnsSend.mockResolvedValue([
       {
         token: "tok-1",
-        outcome: "failed",
-        status: 400,
-        reason: "BadDeviceToken",
+        outcome: "unregistered",
+        status: 410,
+        reason: "Unregistered",
         retryable: false,
       },
-      { token: "tok-2", outcome: "sent", status: 200, reason: null, retryable: false },
+      { token: "tok-2", outcome: "failed", status: 0, reason: "InvalidToken", retryable: false },
     ]);
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
-    expect(await deliver(f, id)).toBe("sent");
-    const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
-    expect(left.map((t) => t.token)).toEqual(["tok-2"]);
+    expect(await deliver(f, id)).toBe("skipped");
+    expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toEqual([]);
   });
 
   test("an alert refused for the provider token is held for a retry, not failed", async () => {

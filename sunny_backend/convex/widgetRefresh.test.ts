@@ -399,6 +399,35 @@ describe("dead refresh tokens", () => {
     expect(left).toEqual([]);
   });
 
+  test("a BadDeviceToken on a background push keeps the alert token, which the app does not send again", async () => {
+    const f = await reporting({});
+    const instanceId = await atGapStart(f);
+    answerEachToken(() => ({
+      outcome: "failed",
+      status: 400,
+      reason: "BadDeviceToken",
+      retryable: false,
+    }));
+    await pressOnDisplay(f, instanceId, 0);
+    await settle(f.t);
+    const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+    expect(left.map((row) => row.token)).toEqual([ALERT_TOKEN]);
+  });
+
+  test("a BadDeviceToken on a WidgetKit push deletes the widget token, which the next report brings back", async () => {
+    const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
+    const instanceId = await atGapStart(f);
+    answerEachToken(() => ({
+      outcome: "failed",
+      status: 400,
+      reason: "BadDeviceToken",
+      retryable: false,
+    }));
+    await pressOnDisplay(f, instanceId, 0);
+    await settle(f.t);
+    expect((await phonePushRow(f))!.widgetPush).toBeUndefined();
+  });
+
   test("a caregiver's reopen is one of the changes that refresh", async () => {
     const f = await reporting({ widgetPush: { token: WIDGET_TOKEN } });
     const instanceId = await atGapStart(f);

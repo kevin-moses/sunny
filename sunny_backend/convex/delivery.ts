@@ -8,6 +8,7 @@ import { requeueStuckDigests } from "./digest";
 import {
   alertMessage,
   apnsAnswer,
+  dropsToken,
   providerFault,
   refusedTokens,
   resultDetail,
@@ -114,7 +115,7 @@ async function sendApns(
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
     sends: route.tokens.map((token) => ({ token, message })),
   });
-  const dead = refusedTokens(results);
+  const dead = refusedTokens(results, "alert");
   if (dead.length > 0) await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
   if (results.some((r) => r.outcome === "sent")) {
     await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "sent", channel: "apns" });
@@ -177,7 +178,7 @@ async function sendStart(
   if (result === undefined || apnsAnswer(result) === "retry") {
     throw new Error(`Live Activity start failed, will retry: ${detail}`);
   }
-  const unregistered = apnsAnswer(result) === "token_refused";
+  const unregistered = dropsToken(result, "liveActivityStart");
   if (unregistered) {
     await ctx.runMutation(internal.phonePush.dropToken, {
       deviceId: route.deviceId,

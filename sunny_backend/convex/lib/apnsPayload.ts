@@ -358,8 +358,7 @@ export function mapOutcome(token: string, status: number, reason: string | null)
 
 export const INVALID_TOKEN_REASON = "InvalidToken";
 
-const REASONS_ABOUT_THE_TOKEN: ReadonlySet<string> = new Set([
-  INVALID_TOKEN_REASON,
+const REASONS_ABOUT_THE_TOKEN_OR_SERVER: ReadonlySet<string> = new Set([
   "BadDeviceToken",
   "DeviceTokenNotForTopic",
   "MissingDeviceToken",
@@ -370,26 +369,48 @@ const REASONS_ABOUT_THE_PAYLOAD: ReadonlySet<string> = new Set(["PayloadEmpty", 
 const PROVIDER_STATUS = 403;
 
 type ApnsAnswer =
-  "sent" | "retry" | "token_refused" | "provider_refused" | "payload_refused" | "refused";
+  | "sent"
+  | "retry"
+  | "token_gone"
+  | "token_or_server_refused"
+  | "provider_refused"
+  | "payload_refused"
+  | "refused";
+
+export type PushTokenKind = "alert" | "liveActivityStart" | "activityUpdate" | "widgetPush";
+
+const DROPS_TOKEN: Record<PushTokenKind, ReadonlySet<ApnsAnswer>> = {
+  alert: new Set(["token_gone"]),
+  liveActivityStart: new Set(["token_gone", "token_or_server_refused"]),
+  widgetPush: new Set(["token_gone", "token_or_server_refused"]),
+  activityUpdate: new Set(["token_gone", "token_or_server_refused", "payload_refused"]),
+};
 
 export function apnsAnswer(result: ApnsResult): ApnsAnswer {
   if (result.outcome === "sent") return "sent";
-  if (result.outcome === "unregistered") return "token_refused";
+  if (result.outcome === "unregistered") return "token_gone";
+  if (result.reason === INVALID_TOKEN_REASON) return "token_gone";
   if (result.retryable) return "retry";
   if (result.status === PROVIDER_STATUS) return "provider_refused";
-  if (result.reason !== null && REASONS_ABOUT_THE_TOKEN.has(result.reason)) return "token_refused";
+  if (result.reason !== null && REASONS_ABOUT_THE_TOKEN_OR_SERVER.has(result.reason)) {
+    return "token_or_server_refused";
+  }
   if (result.reason !== null && REASONS_ABOUT_THE_PAYLOAD.has(result.reason)) {
     return "payload_refused";
   }
   return "refused";
 }
 
+export function dropsToken(result: ApnsResult, kind: PushTokenKind): boolean {
+  return DROPS_TOKEN[kind].has(apnsAnswer(result));
+}
+
 export function resultDetail(result: ApnsResult): string {
   return `${result.status} ${result.reason ?? "unknown"}`;
 }
 
-export function refusedTokens(results: ApnsResult[]): string[] {
-  return results.filter((r) => apnsAnswer(r) === "token_refused").map((r) => r.token);
+export function refusedTokens(results: ApnsResult[], kind: PushTokenKind): string[] {
+  return results.filter((r) => dropsToken(r, kind)).map((r) => r.token);
 }
 
 export function providerFault(results: ApnsResult[]): string | undefined {
