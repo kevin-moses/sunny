@@ -209,7 +209,10 @@ export const push = internalAction({
       });
       pushed = outcome;
     } catch (e) {
-      return await settleError(job, start, e);
+      const outcome = await settleError(job, start, e);
+      const googleAnswered = e instanceof GoogleApiError && outcome !== "held";
+      if (start.probe && googleAnswered) await closeHolds(ctx, ["calendar"], start.startedAt);
+      return outcome;
     }
     if (start.probe) await closeHolds(ctx, ["calendar"], start.startedAt);
     return pushed;

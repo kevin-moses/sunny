@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { gmailMocks, googleMocks } from "./googleMocks.helpers";
 import { ConfigError } from "./lib/errors";
-import { GoogleApiError } from "./lib/google";
+import { GoogleAccessRevoked, GoogleApiError } from "./lib/google";
 import type { HoldService } from "./lib/serviceHolds";
 import {
   item,
@@ -528,6 +528,59 @@ describe("calendar pushes while a hold is open", () => {
     expect(await push(t)).toBe("created");
     expect(await holdOpen(t, "calendar")).toBe(false);
     expect(await t.mutation(internal.calendarFanOut.sweepStuckSyncs, {})).toBe(1);
+  });
+
+  test.each([
+    {
+      answer: "an event Google no longer has, in a calendar it still has",
+      calendarFound: true,
+      outcome: "failed",
+    },
+    {
+      answer: "an event Google no longer has, in a calendar it deleted",
+      calendarFound: false,
+      outcome: "calendar_missing",
+    },
+    { answer: "a permanent error", calendarFound: null, outcome: "failed" },
+    {
+      answer: "a forbidden calendar",
+      calendarFound: null,
+      outcome: "failed",
+      status: 403,
+    },
+  ])(
+    "a probe that Google answers with $answer closes the hold and keeps its outcome",
+    async ({ calendarFound, outcome, status }) => {
+      const t = makeBackend();
+      await setupSynced(t);
+      await openHold(t, "calendar");
+      if (calendarFound === null) {
+        googleMocks.upsertEvent.mockRejectedValue(
+          new GoogleApiError(status ?? 400, '{"error":{"message":"refused"}}'),
+        );
+      } else {
+        googleMocks.upsertEvent.mockRejectedValue(new GoogleApiError(404, "Not Found"));
+        googleMocks.calendarExists.mockResolvedValue(calendarFound);
+      }
+      vi.setSystemTime(NOW + 16 * MINUTE_MS);
+      expect(await push(t)).toBe(outcome);
+      expect(await holdOpen(t, "calendar")).toBe(false);
+    },
+  );
+
+  test("a probe whose sign-in Google revoked does not close the hold", async () => {
+    const t = makeBackend();
+    await setupSynced(t);
+    await openHold(t, "calendar");
+    googleMocks.refreshAccessToken.mockRejectedValue(new GoogleAccessRevoked("invalid_grant"));
+    await t.run(async (ctx) => {
+      for (const connection of await ctx.db.query("calendarConnections").collect()) {
+        await ctx.db.patch(connection._id, { accessToken: undefined });
+      }
+    });
+    vi.setSystemTime(NOW + 16 * MINUTE_MS);
+    expect(await push(t)).toBe("revoked");
+    expect(await holdOpen(t, "calendar")).toBe(true);
   });
 
   test("Gmail and Jev holds do not hold pushes", async () => {
