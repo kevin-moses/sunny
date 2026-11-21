@@ -8,6 +8,7 @@ import {
   resetProviderMocks,
 } from "./deliveryMocks.helpers";
 import type { SentAlert } from "./deliveryMocks.helpers";
+import { markBlind } from "./lib/blindPhone";
 import { PROOF_WAIT_MS } from "./lib/liveActivity";
 import {
   MIN,
@@ -24,7 +25,7 @@ import {
   starts,
   tick,
 } from "./phoneHarness.helpers";
-import type { PhoneFixture } from "./phoneHarness.helpers";
+import type { PhoneBackend, PhoneFixture } from "./phoneHarness.helpers";
 import { setPhone } from "./testing.helpers";
 
 vi.mock("./apns", async (original) =>
@@ -33,6 +34,19 @@ vi.mock("./apns", async (original) =>
 vi.mock("./lib/twilio", async (original) =>
   (await import("./deliveryMocks.helpers")).twilioModule(await original()),
 );
+
+const faults = vi.hoisted(() => ({ blindNotice: false }));
+
+vi.mock("./lib/delivery", async (original) => {
+  const real = await original<typeof import("./lib/delivery")>();
+  const insertNotification: typeof real.insertNotification = async (ctx, row) => {
+    if (faults.blindNotice && row.kind === "lock_screen_blind") {
+      throw new Error("blind notice failed");
+    }
+    return await real.insertNotification(ctx, row);
+  };
+  return { ...real, insertNotification };
+});
 
 const HOUR = 60 * MIN;
 
@@ -50,6 +64,7 @@ const BODY =
   "Open Sunny on that phone, and check in Settings that Live Activities are switched on for Sunny.";
 
 beforeEach(() => {
+  faults.blindNotice = false;
   vi.useFakeTimers();
   setNow(local("07:00"));
   resetProviderMocks();
@@ -71,8 +86,8 @@ async function joinAs(
   await f.t.withIdentity({ subject: userId }).mutation(api.households.redeemJoinCode, { code });
 }
 
-async function family(): Promise<PhoneFixture> {
-  const f = await phoneHousehold(makePhoneBackend());
+async function family(t: PhoneBackend = makePhoneBackend()): Promise<PhoneFixture> {
+  const f = await phoneHousehold(t);
   await joinAs(f, "sam", "caregiver_member");
   await joinAs(f, "val", "caregiver_viewer");
   await f.t.run(async (ctx) => {
@@ -104,15 +119,17 @@ async function goBlind(
   return blindSince!;
 }
 
-async function blindFamily(): Promise<{ f: PhoneFixture; blindAt: number }> {
-  const f = await family();
+async function blindFamily(
+  t: PhoneBackend = makePhoneBackend(),
+): Promise<{ f: PhoneFixture; blindAt: number }> {
+  const f = await family(t);
   await addTask(f, { title: "Morning pills", time: "08:00" });
   return { f, blindAt: await goBlind(f, "Morning pills", "08:00") };
 }
 
 async function sweep(f: PhoneFixture, at: number): Promise<void> {
   setNow(at);
-  await f.t.mutation(internal.scheduler.tick, { now: at });
+  await f.t.mutation(internal.phonePush.sweepBlindPhones, { now: at });
   await settle(f.t);
 }
 
@@ -128,17 +145,30 @@ async function noticeRows(f: PhoneFixture) {
   );
 }
 
+async function pausedHouseholdWithBlindPhones(
+  t: PhoneBackend,
+  count: number,
+  blindAt: number,
+): Promise<void> {
+  const paused = await phoneHousehold(t, "paused-");
+  await setPaused(paused, true);
+  await t.run(async (ctx) => {
+    for (let i = 0; i < count; i++) {
+      const deviceId = await ctx.db.insert("devices", {
+        householdId: paused.householdId,
+        userId: `paused-phone-${i}`,
+        kind: "senior_phone",
+      });
+      const pushId = await ctx.db.insert("phonePush", { deviceId });
+      await markBlind(ctx, (await ctx.db.get(pushId))!, blindAt);
+    }
+  });
+}
+
 async function setPaused(f: PhoneFixture, backgroundPaused: boolean): Promise<void> {
   await f.t
     .withIdentity({ subject: f.caregiver })
     .mutation(api.households.update, { householdId: f.householdId, backgroundPaused });
-}
-
-async function listedBlindSince(f: PhoneFixture): Promise<number | null> {
-  const devices = await f.t
-    .withIdentity({ subject: f.caregiver })
-    .query(api.households.listDevices, { householdId: f.householdId });
-  return devices.find((device) => device._id === f.phoneId)!.lockScreenBlindSince;
 }
 
 describe("a phone whose Lock Screen stopped showing tasks", () => {
@@ -187,11 +217,9 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     expect((await putPushState(f, {})).status).toBe(200);
     const cleared = (await phonePushRow(f))!;
     expect(cleared.blindSince).toBeUndefined();
-    expect(cleared.blindToldAt).toBeUndefined();
-    expect(await listedBlindSince(f)).toBeNull();
+    expect(cleared.blindLookAt).toBeUndefined();
 
     const blindAgainAt = await goBlind(f, "Eye drops", "09:00", DAY_TWO);
-    expect(await listedBlindSince(f)).toBe(blindAgainAt);
     await sweep(f, blindAgainAt + 24 * HOUR - MIN);
     expect(notices()).toHaveLength(2);
     await sweep(f, blindAgainAt + 24 * HOUR);
@@ -229,13 +257,25 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     expect(starts().map((aps) => aps.alert.title)).toEqual(["Morning pills", "Eye drops"]);
     expect((await phonePushRow(f))!.blindSince).toEqual(about(local("08:00") + PROOF_WAIT_MS));
   });
+});
 
-  test("caregivers see since when the Lock Screen is blind", async () => {
-    const f = await family();
-    expect(await listedBlindSince(f)).toBeNull();
-    await addTask(f, { title: "Morning pills", time: "08:00" });
-    const blindAt = await goBlind(f, "Morning pills", "08:00");
-    expect(await listedBlindSince(f)).toBe(blindAt);
+describe("a blind notice that fails", () => {
+  test("leaves the medication tick running, and the due prompt goes out", async () => {
+    const { f, blindAt } = await blindFamily();
+    faults.blindNotice = true;
+    const alertsBefore = alertsSent().length;
+    const at = blindAt + 24 * HOUR;
+    setNow(at);
+    await expect(f.t.mutation(internal.phonePush.sweepBlindPhones, { now: at })).rejects.toThrow(
+      "blind notice failed",
+    );
+    await f.t.mutation(internal.scheduler.tick, { now: at });
+    await settle(f.t);
+    const prompts = alertsSent()
+      .slice(alertsBefore)
+      .filter((alert) => alert.data.kind === "senior_prompt");
+    expect(prompts.map((alert) => alert.title)).toEqual(["Morning pills"]);
+    expect(await noticeRows(f)).toEqual([]);
   });
 });
 
@@ -243,7 +283,7 @@ describe("a notice that cannot go out yet", () => {
   test("a notice still waiting when the phone reports is skipped", async () => {
     const { f, blindAt } = await blindFamily();
     setNow(blindAt + 24 * HOUR);
-    await f.t.mutation(internal.scheduler.tick, { now: blindAt + 24 * HOUR });
+    await f.t.mutation(internal.phonePush.sweepBlindPhones, { now: blindAt + 24 * HOUR });
     expect((await noticeRows(f)).map((row) => row.state)).toEqual(["pending", "pending"]);
     expect((await putPushState(f, {})).status).toBe(200);
     await settle(f.t);
@@ -264,14 +304,14 @@ describe("a notice that cannot go out yet", () => {
     await sweep(f, blindAt + 24 * HOUR);
     await sweep(f, blindAt + 30 * HOUR);
     expect(await noticeRows(f)).toEqual([]);
-    expect((await phonePushRow(f))!.blindToldAt).toBeUndefined();
+    expect((await phonePushRow(f))!.blindLookAt).toBe(blindAt + 31 * HOUR);
 
     await f.t.run(async (ctx) => {
       await ctx.db.insert("pushTokens", { userId: "sam", token: SAM_TOKEN });
     });
     await sweep(f, blindAt + 31 * HOUR);
     expect(notices().map((alert) => alert.tokens)).toEqual([[SAM_TOKEN]]);
-    expect((await phonePushRow(f))!.blindToldAt).toBe(blindAt + 31 * HOUR);
+    expect((await phonePushRow(f))!.blindLookAt).toBeUndefined();
     await sweep(f, blindAt + 32 * HOUR);
     expect(notices()).toHaveLength(1);
   });
@@ -282,7 +322,7 @@ describe("a notice that cannot go out yet", () => {
     await sweep(f, blindAt + 24 * HOUR);
     await sweep(f, blindAt + 40 * HOUR);
     expect(await noticeRows(f)).toEqual([]);
-    expect((await phonePushRow(f))!.blindToldAt).toBeUndefined();
+    expect((await phonePushRow(f))!.blindLookAt).toBe(blindAt + 41 * HOUR);
 
     await setPaused(f, false);
     await sweep(f, blindAt + 41 * HOUR);
@@ -303,6 +343,38 @@ describe("a notice that cannot go out yet", () => {
     await setPaused(f, false);
     await sweep(f, blindAt + 25 * HOUR);
     expect(await noticeRows(f)).toEqual([]);
+  });
+});
+
+describe("stretches that cannot be told", () => {
+  test("fifty older ones do not hold back a newer one that can be told", async () => {
+    const t = makePhoneBackend();
+    await pausedHouseholdWithBlindPhones(t, 50, local("06:00"));
+    const { f, blindAt } = await blindFamily(t);
+    await sweep(f, blindAt + 24 * HOUR);
+    expect(
+      notices()
+        .map((alert) => alert.tokens)
+        .sort(),
+    ).toEqual([[PAT_TOKEN], [VAL_TOKEN]]);
+  });
+
+  test("one is looked at again only an hour later", async () => {
+    const { f, blindAt } = await blindFamily();
+    await f.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("pushTokens").collect()) {
+        if (row.userId !== f.phoneUser) await ctx.db.delete(row._id);
+      }
+    });
+    await sweep(f, blindAt + 24 * HOUR);
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "sam", token: SAM_TOKEN });
+    });
+    await sweep(f, blindAt + 24 * HOUR + 10 * MIN);
+    await sweep(f, blindAt + 25 * HOUR - MIN);
+    expect(notices()).toEqual([]);
+    await sweep(f, blindAt + 25 * HOUR);
+    expect(notices().map((alert) => alert.tokens)).toEqual([[SAM_TOKEN]]);
   });
 });
 

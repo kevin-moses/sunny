@@ -1,3 +1,4 @@
+import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { householdCaregivers } from "./access";
@@ -5,6 +6,8 @@ import { insertNotification } from "./delivery";
 import { HOUR_MS } from "./time";
 
 export const TELL_CAREGIVERS_AFTER_BLIND_MS = 24 * HOUR_MS;
+
+const LOOK_AGAIN_AFTER_MS = HOUR_MS;
 
 const BLIND_SWEEP_BATCH = 50;
 
@@ -20,7 +23,11 @@ export async function markBlind(
   push: Doc<"phonePush">,
   now: number,
 ): Promise<void> {
-  if (push.blindSince === undefined) await ctx.db.patch(push._id, { blindSince: now });
+  if (push.blindSince !== undefined) return;
+  await ctx.db.patch(push._id, {
+    blindSince: now,
+    blindLookAt: now + TELL_CAREGIVERS_AFTER_BLIND_MS,
+  });
 }
 
 async function hasPushToken(ctx: MutationCtx, userId: string): Promise<boolean> {
@@ -39,16 +46,20 @@ async function tellCaregivers(
   const device = await ctx.db.get(push.deviceId);
   const household = device === null ? null : await ctx.db.get(device.householdId);
   if (device === null || household === null) {
-    await ctx.db.patch(push._id, { blindToldAt: now });
+    await ctx.db.patch(push._id, { blindLookAt: undefined });
     return;
   }
-  if (household.backgroundPaused) return;
   const recipients = [];
-  for (const member of await householdCaregivers(ctx, household._id)) {
-    if (await hasPushToken(ctx, member.userId)) recipients.push(member);
+  if (!household.backgroundPaused) {
+    for (const member of await householdCaregivers(ctx, household._id)) {
+      if (await hasPushToken(ctx, member.userId)) recipients.push(member);
+    }
   }
-  if (recipients.length === 0) return;
-  await ctx.db.patch(push._id, { blindToldAt: now });
+  if (recipients.length === 0) {
+    await ctx.db.patch(push._id, { blindLookAt: now + LOOK_AGAIN_AFTER_MS });
+    return;
+  }
+  await ctx.db.patch(push._id, { blindLookAt: undefined });
   const words = blindNoticeWords(household.seniorPreferredName);
   for (const member of recipients) {
     await insertNotification(ctx, {
@@ -61,16 +72,13 @@ async function tellCaregivers(
   }
 }
 
-export async function tellCaregiversOfBlindPhones(ctx: MutationCtx, now: number): Promise<number> {
+export async function tellCaregiversOfBlindPhones(ctx: MutationCtx, now: number): Promise<void> {
   const due = await ctx.db
     .query("phonePush")
-    .withIndex("by_blind_untold", (q) =>
-      q
-        .eq("blindToldAt", undefined)
-        .gte("blindSince", 0)
-        .lte("blindSince", now - TELL_CAREGIVERS_AFTER_BLIND_MS),
-    )
+    .withIndex("by_blind_look_at", (q) => q.gte("blindLookAt", 0).lte("blindLookAt", now))
     .take(BLIND_SWEEP_BATCH);
   for (const push of due) await tellCaregivers(ctx, push, now);
-  return due.length;
+  if (due.length === BLIND_SWEEP_BATCH) {
+    await ctx.scheduler.runAfter(0, internal.phonePush.sweepBlindPhones, { now });
+  }
 }

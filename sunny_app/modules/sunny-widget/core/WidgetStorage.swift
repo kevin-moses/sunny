@@ -10,7 +10,6 @@ public struct WidgetStorage: Sendable {
     }
 
     private var cacheURL: URL { directory.appendingPathComponent("timeline.json") }
-    private var leftoverTagURL: URL { directory.appendingPathComponent("timeline.etag") }
     private var lockURL: URL { directory.appendingPathComponent("credentials.lock") }
     private var widgetPushURL: URL { directory.appendingPathComponent("widgetPush.json") }
 
@@ -21,7 +20,6 @@ public struct WidgetStorage: Sendable {
 
     public func saveCache(body: Data) throws {
         try write(body, to: cacheURL)
-        try removeIfPresent(leftoverTagURL)
     }
 
     public func loadWidgetPush() -> WidgetPushReport? {

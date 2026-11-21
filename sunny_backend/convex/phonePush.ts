@@ -19,6 +19,7 @@ import {
   widgetReloadMessage,
 } from "./lib/apnsPayload";
 import type { ApnsSendResult } from "./lib/apnsPayload";
+import { tellCaregiversOfBlindPhones } from "./lib/blindPhone";
 import { userPushTokens } from "./lib/delivery";
 import { isJsonObject } from "./lib/http";
 import { errorResponse, jsonResponse } from "./lib/httpResponse";
@@ -155,10 +156,10 @@ async function storeReportedTokens(
   report: PushStateReport,
 ): Promise<void> {
   const existing = await findPhonePush(ctx, device._id);
-  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | "blindToldAt" | TokenField>> = {};
+  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | "blindLookAt" | TokenField>> = {};
   if (existing?.blindSince !== undefined) {
     patch.blindSince = undefined;
-    patch.blindToldAt = undefined;
+    patch.blindLookAt = undefined;
   }
   for (const [field, token] of reportedTokens(report)) {
     if ((existing?.[field]?.token ?? null) === token) continue;
@@ -183,6 +184,14 @@ export const reportByToken = internalMutation({
     const rule = { kind: "by_view", noWake: new Set([device._id]), startingEndsAs: null } as const;
     for (const { row, view } of behind) await syncActivity(ctx, row, now, rule, view);
     return { kind: "ok", activities: directives };
+  },
+});
+
+export const sweepBlindPhones = internalMutation({
+  args: { now: v.optional(v.number()) },
+  handler: async (ctx, args): Promise<null> => {
+    await tellCaregiversOfBlindPhones(ctx, args.now ?? Date.now());
+    return null;
   },
 });
 

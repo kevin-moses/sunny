@@ -242,7 +242,7 @@ export default defineSchema({
     liveActivityStart: v.optional(reportedPushToken),
     widgetPush: v.optional(reportedPushToken),
     blindSince: v.optional(v.number()),
-    blindToldAt: v.optional(v.number()),
+    blindLookAt: v.optional(v.number()),
     widgetRefresh: v.optional(
       v.object({ sentAt: v.number(), trailingAt: v.union(v.number(), v.null()) }),
     ),
@@ -250,7 +250,7 @@ export default defineSchema({
     .index("by_device", ["deviceId"])
     .index("by_start_token", ["liveActivityStart.token"])
     .index("by_widget_token", ["widgetPush.token"])
-    .index("by_blind_untold", ["blindToldAt", "blindSince"]),
+    .index("by_blind_look_at", ["blindLookAt"]),
 
   digests: defineTable({
     householdId: v.id("households"),

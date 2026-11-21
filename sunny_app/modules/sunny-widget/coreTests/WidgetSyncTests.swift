@@ -390,17 +390,9 @@ final class WidgetSyncTests: XCTestCase {
 
     func testAskingIfChangedNamesTheVersionOfTheBodyItWouldKeep() async throws {
         try Fixture.data("due-task").write(to: directory.appendingPathComponent("timeline.json"))
-        try Data("\"v-newer\"".utf8).write(to: directory.appendingPathComponent("timeline.etag"))
         transport.queueTimeline(304)
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         XCTAssertEqual(transport.timelineRequests.last?.headers["If-None-Match"], "\"v-due-task\"")
-    }
-
-    func testSavingATimelineRemovesATagFileAnOlderBuildLeft() async throws {
-        try Data("\"v-old\"".utf8).write(to: directory.appendingPathComponent("timeline.etag"))
-        transport.queueTimeline(200, body: try Fixture.data("due-task"))
-        _ = await makeSync().refresh(locale: Fixture.unitedStates)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("timeline.etag").path))
     }
 
     func testStoreCredentialsWritesTokenAndSite() throws {
