@@ -146,6 +146,7 @@ const PILLS_WORDING: TaskWording = {
   time: '8:00',
   times: ['08:00'],
   sentence: "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.",
+  screenSentence: null,
 };
 
 describe('labels', () => {
@@ -728,6 +729,13 @@ describe('buildTranscript', () => {
     expect(otherTimesCaption(PILLS_WORDING)).toBeNull();
     expect(wordingSpeech(twice)).toBe(
       `On the display: 8:00 Morning pills. Sunny says: ${PILLS_WORDING.sentence} Also at 8:00 PM.`,
+    );
+  });
+
+  it('reads the phone sentence between the display and Sunny', () => {
+    const withPhone = { ...PILLS_WORDING, screenSentence: 'Take your morning pills.' };
+    expect(wordingSpeech(withPhone)).toBe(
+      `On the display: 8:00 Morning pills. On the phone: Take your morning pills. Sunny says: ${PILLS_WORDING.sentence}`,
     );
   });
 

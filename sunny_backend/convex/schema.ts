@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
+  activityContent,
   actorKind,
   calendarConnectionStatus,
   calendarSyncState,
@@ -16,12 +17,14 @@ import {
   joinGrant,
   lifeCategory,
   listActorKind,
+  liveActivityPhase,
   memberRole,
   memorySource,
   messageSender,
   notificationKind,
   outboxState,
   questionOutcome,
+  reportedPushToken,
   taskCreator,
   taskType,
   toolCall,
@@ -84,6 +87,7 @@ export default defineSchema({
     pairingNonce: v.optional(v.string()),
     tokenHash: v.optional(v.string()),
     tokenIssuedAt: v.optional(v.number()),
+    tokenRevokedAt: v.optional(v.number()),
     screen: v.optional(deviceScreen),
     firmware: v.optional(v.string()),
   })
@@ -116,6 +120,7 @@ export default defineSchema({
     title: v.string(),
     displayLabel: v.string(),
     spokenPrompt: v.string(),
+    screenSentence: v.optional(v.string()),
     pillDescription: v.optional(v.string()),
     checklistItems: v.array(v.string()),
     times: v.array(v.string()),
@@ -218,6 +223,34 @@ export default defineSchema({
     .index("by_task_instance", ["taskInstanceId"])
     .index("by_household", ["householdId"])
     .index("by_state", ["state"]),
+
+  liveActivities: defineTable({
+    householdId: v.id("households"),
+    deviceId: v.id("devices"),
+    taskInstanceId: v.id("taskInstances"),
+    phase: liveActivityPhase,
+    shown: activityContent,
+    pushTimestamp: v.number(),
+    quiet: v.boolean(),
+  })
+    .index("by_instance", ["taskInstanceId"])
+    .index("by_household_phase", ["householdId", "phase.kind", "phase.at"])
+    .index("by_device_phase", ["deviceId", "phase.kind"]),
+
+  phonePush: defineTable({
+    deviceId: v.id("devices"),
+    liveActivityStart: v.optional(reportedPushToken),
+    widgetPush: v.optional(reportedPushToken),
+    blindSince: v.optional(v.number()),
+    blindLookAt: v.optional(v.number()),
+    widgetRefresh: v.optional(
+      v.object({ sentAt: v.number(), trailingAt: v.union(v.number(), v.null()) }),
+    ),
+  })
+    .index("by_device", ["deviceId"])
+    .index("by_start_token", ["liveActivityStart.token"])
+    .index("by_widget_token", ["widgetPush.token"])
+    .index("by_blind_look_at", ["blindLookAt"]),
 
   digests: defineTable({
     householdId: v.id("households"),

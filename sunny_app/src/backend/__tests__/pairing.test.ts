@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { getFunctionName, type FunctionReference } from 'convex/server';
 
 import { BackendError } from '../api';
 import { confirmQueue } from '../../day/pendingConfirms';
@@ -11,6 +12,7 @@ import {
   removalRetryDelay,
   UNREACHABLE_NOTICE,
   unpair,
+  UNPAIR_SEND_MS,
   type HomeDecision,
   type AccountKind,
   type MineEntry,
@@ -25,11 +27,13 @@ type AnyMock = (...args: unknown[]) => Promise<unknown>;
 const mockStore = new Map<string, string>();
 const mockCalls: string[] = [];
 const mockUnregister = jest.fn<AnyMock>();
+const mockClearWidget = jest.fn<AnyMock>();
 const mockSignOut = jest.fn<AnyMock>();
 const mockSignInCreate = jest.fn<AnyMock>();
 const mockSetActive = jest.fn<AnyMock>();
 const mockRandomUUID = jest.fn<() => string>();
 const mockFetch = jest.fn<AnyMock>();
+const mockMutation = jest.fn<AnyMock>();
 const mockClerk: { session: unknown; client: unknown; throws: boolean } = {
   session: null,
   client: undefined,
@@ -73,6 +77,10 @@ jest.mock('../../notifications/push', () => ({
   unregisterStoredPushToken: () => mockUnregister(),
 }));
 
+jest.mock('../../widget/widgetSync', () => ({
+  clearWidget: () => mockClearWidget(),
+}));
+
 jest.mock('../../logging/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() },
 }));
@@ -81,6 +89,7 @@ jest.mock('../../config', () => ({ CONVEX_SITE_URL: 'https://site.example' }));
 
 jest.mock('../convex', () => ({
   convex: {
+    mutation: (...args: unknown[]) => mockMutation(...args),
     connectionState: () => ({ isWebSocketConnected: false, hasEverConnected: false }),
     subscribeToConnectionState: () => () => undefined,
   },
@@ -119,6 +128,11 @@ beforeEach(() => {
   mockSetActive.mockResolvedValue(undefined);
   mockUnregister.mockImplementation(async () => void mockCalls.push('push'));
   mockSignOut.mockImplementation(async () => void mockCalls.push('signOut'));
+  mockMutation.mockImplementation(async (reference) => {
+    mockCalls.push(getFunctionName(reference as FunctionReference<'mutation'>));
+    return null;
+  });
+  mockClearWidget.mockImplementation(async () => void mockCalls.push('clearWidget'));
   global.fetch = mockFetch as unknown as typeof fetch;
 });
 
@@ -297,10 +311,46 @@ describe('pairErrorFromBody', () => {
 });
 
 describe('unpair', () => {
-  it('unregisters the push token, then signs out', async () => {
+  it('unregisters the push token, clears the widget, revokes the device token, then signs out', async () => {
     mockClerk.session = { id: 's' };
     await unpair();
-    expect(mockCalls).toEqual(['push', 'signOut']);
+    expect(mockCalls).toEqual(['push', 'clearWidget', 'deviceApi:revokeOwnToken', 'signOut']);
+  });
+
+  it('revokes no device token without a session', async () => {
+    await unpair();
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it('sends the queued Done presses and Undos before it drops them', async () => {
+    const steps: string[] = [];
+    const replay = jest.spyOn(confirmQueue, 'replay').mockImplementation(async () => {
+      steps.push('send');
+    });
+    const clear = jest.spyOn(confirmQueue, 'clear').mockImplementation(async () => {
+      steps.push('drop');
+    });
+    await unpair();
+    expect(steps).toEqual(['send', 'drop']);
+    replay.mockRestore();
+    clear.mockRestore();
+  });
+
+  it('drops the queued presses after a short wait when sending them hangs', async () => {
+    jest.useFakeTimers();
+    const replay = jest
+      .spyOn(confirmQueue, 'replay')
+      .mockImplementation(() => new Promise<void>(() => undefined));
+    const clear = jest.spyOn(confirmQueue, 'clear').mockResolvedValue();
+    mockClerk.session = { id: 's' };
+    const run = unpair();
+    await jest.advanceTimersByTimeAsync(UNPAIR_SEND_MS);
+    await run;
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    replay.mockRestore();
+    clear.mockRestore();
+    jest.useRealTimers();
   });
 
   it('drops the queued Done presses, with or without a session', async () => {
@@ -308,6 +358,13 @@ describe('unpair', () => {
     await unpair();
     expect(clear).toHaveBeenCalledTimes(1);
     clear.mockRestore();
+  });
+
+  it('clears the widget credentials and presses, with or without a session', async () => {
+    await unpair();
+    mockClerk.session = { id: 's' };
+    await unpair();
+    expect(mockClearWidget).toHaveBeenCalledTimes(2);
   });
 
   it('shares one run between concurrent calls', async () => {
@@ -347,6 +404,20 @@ describe('unpair resilience', () => {
   it('still signs out when unregistering the push token throws', async () => {
     mockClerk.session = { id: 's' };
     mockUnregister.mockRejectedValue(new Error('boom'));
+    await expect(unpair()).resolves.toBeUndefined();
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('still signs out when revoking the device token fails', async () => {
+    mockClerk.session = { id: 's' };
+    mockMutation.mockRejectedValue(new Error('offline'));
+    await expect(unpair()).resolves.toBeUndefined();
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('still signs out when clearing the widget fails', async () => {
+    mockClerk.session = { id: 's' };
+    mockClearWidget.mockRejectedValue(new Error('keychain'));
     await expect(unpair()).resolves.toBeUndefined();
     expect(mockSignOut).toHaveBeenCalledTimes(1);
   });

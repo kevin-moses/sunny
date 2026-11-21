@@ -19,7 +19,7 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Sunny listens when you press Talk so you can ask questions and confirm your day.",
-        "UIBackgroundModes": ["audio"],
+        "UIBackgroundModes": ["audio", "remote-notification"],
         "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait"],
         "UISupportedInterfaceOrientations~ipad": [
           "UIInterfaceOrientationPortrait",
@@ -29,10 +29,18 @@
         ],
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
-        }
+        },
+        "UISupportsFullScreenInAssistiveAccess": true,
+        "SunnyAppGroup": "group.com.kmsunny.sunny",
+        "SunnyKeychainGroup": "$(AppIdentifierPrefix)com.kmsunny.sunny.shared",
+        "NSSupportsLiveActivities": true
       },
       "entitlements": {
         "com.apple.security.application-groups": ["group.com.kmsunny.sunny"],
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)com.kmsunny.sunny",
+          "$(AppIdentifierPrefix)com.kmsunny.sunny.shared"
+        ],
         "com.apple.developer.usernotifications.time-sensitive": true
       }
     },
@@ -49,7 +57,16 @@
       "expo-secure-store",
       "expo-font",
       "expo-audio",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "17.2"
+          }
+        }
+      ],
+      "@bacons/apple-targets"
     ]
   }
 }

@@ -391,6 +391,8 @@ export type TaskWording = AgentRequest['wording'][number];
 
 export const ON_DISPLAY = 'On the display';
 
+export const ON_PHONE = 'On the phone';
+
 export const SUNNY_SAYS = 'Sunny says';
 
 export const NOT_SPOKEN = 'Nothing. Tasks without a time are not announced.';
@@ -411,9 +413,10 @@ export function otherTimesCaption(wording: TaskWording): string | null {
 
 export function wordingSpeech(wording: TaskWording): string {
   const display = `${ON_DISPLAY}: ${wording.time} ${wording.label}.`;
+  const phone = wording.screenSentence === null ? '' : `${ON_PHONE}: ${wording.screenSentence} `;
   const says = `${SUNNY_SAYS}: ${wording.sentence ?? NOT_SPOKEN}`;
   const others = otherTimesCaption(wording);
-  return others === null ? `${display} ${says}` : `${display} ${says} ${others}.`;
+  return others === null ? `${display} ${phone}${says}` : `${display} ${phone}${says} ${others}.`;
 }
 
 export function postLabel(localDate: string): string {

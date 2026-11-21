@@ -57,6 +57,32 @@ export function offsetAt(instant: number, timezone: string): number {
   return asUtc - Math.floor(instant / 1000) * 1000;
 }
 
+function firstInstantWithNewOffset(from: number, to: number, timezone: string): number {
+  const old = offsetAt(from, timezone);
+  let before = from;
+  let after = to;
+  while (after - before > 1) {
+    const mid = Math.floor((before + after) / 2);
+    if (offsetAt(mid, timezone) === old) before = mid;
+    else after = mid;
+  }
+  return after;
+}
+
+export function offsetChanges(from: number, until: number, timezone: string): number[] {
+  const changes: number[] = [];
+  let start = from;
+  let offset = offsetAt(start, timezone);
+  while (start < until) {
+    const end = Math.min(start + HOUR_MS, until);
+    const next = offsetAt(end, timezone);
+    if (next !== offset) changes.push(firstInstantWithNewOffset(start, end, timezone));
+    start = end;
+    offset = next;
+  }
+  return changes;
+}
+
 export function isValidTimezone(timezone: string): boolean {
   return canonicalTimezone(timezone) !== null;
 }
@@ -100,10 +126,14 @@ export function isLocalTime(time: string): boolean {
   return TIME_RE.test(time);
 }
 
-export function zonedInstant(date: string, time: string, timezone: string): number {
+export function wallClockMs(date: string, time: string): number {
   const [y, mo, d] = parseDate(date);
   const [h, mi] = parseTime(time);
-  const wall = Date.UTC(y, mo - 1, d, h, mi);
+  return Date.UTC(y, mo - 1, d, h, mi);
+}
+
+export function zonedInstant(date: string, time: string, timezone: string): number {
+  const wall = wallClockMs(date, time);
   const before = offsetAt(wall - PROBE_MS, timezone);
   const after = offsetAt(wall + PROBE_MS, timezone);
   const roundTrips = (t: number): boolean => offsetAt(t, timezone) === wall - t;

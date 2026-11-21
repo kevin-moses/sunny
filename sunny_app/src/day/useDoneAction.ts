@@ -6,6 +6,7 @@ import { isAnytime, isDue, isOpen } from './format';
 import { currentLocalDate } from './localDate';
 import type { ConfirmQueue } from './pendingConfirms';
 import {
+  hasStepAfter,
   newPressId,
   pressLabel,
   toPending,
@@ -33,6 +34,7 @@ export const UNDO_MS = 30_000;
 export interface UndoLineData {
   label: string;
   text: string;
+  pressedAt: number;
 }
 
 export interface DoneAction {
@@ -54,11 +56,17 @@ interface Offer {
   spoken: string;
 }
 
-type Block = 'none' | 'settle' | 'early';
+type Block = 'none' | 'settle' | 'held' | 'early';
 
 interface Line {
   text: string;
   instanceId: string;
+}
+
+function blocks(block: Block, target: DayTask | null): boolean {
+  return (
+    block === 'settle' || block === 'held' || (block === 'early' && target?.state === 'upcoming')
+  );
 }
 
 function announceQueued(text: string): void {
@@ -154,13 +162,23 @@ export function useDoneAction(
     setLine(null);
   };
 
-  const enter = (next: Block): void => {
+  const enter = (next: Block, heldMs = 0): void => {
     clearTimeout(blockTimer.current);
     blockRef.current = next;
     setBlock(next);
     if (next === 'settle') blockTimer.current = setTimeout(() => enter('early'), SETTLE_MS);
     if (next === 'early')
       blockTimer.current = setTimeout(() => enter('none'), MESSAGE_MS - SETTLE_MS);
+    if (next === 'held') blockTimer.current = setTimeout(() => enter('none'), heldMs);
+  };
+
+  const holdAfter = (pressed: Pressed, now: number): void => {
+    if (hasStepAfter(pressed.task)) {
+      enter('settle');
+      return;
+    }
+    const left = pressed.pressedAt + UNDO_MS - now;
+    enter(left > 0 ? 'held' : 'none', left);
   };
 
   const stored = (task: DayTask, pressedAt: number, entry: PendingEntry): void => {
@@ -168,7 +186,7 @@ export function useDoneAction(
     const pressed: Pressed = { task, pressedAt, entry };
     latestStored.current = pressed;
     clearLine();
-    enter('settle');
+    holdAfter(pressed, Date.now());
     offerUndo(pressed, Date.now());
   };
 
@@ -214,7 +232,7 @@ export function useDoneAction(
       });
       if (!mounted.current || latestStored.current !== pressed) return;
       offerUndo(pressed, Date.now());
-      enter('settle');
+      holdAfter(pressed, Date.now());
     }
   };
 
@@ -227,15 +245,13 @@ export function useDoneAction(
 
   const pressDone = (): void => {
     const now = Date.now();
-    if (target === null || storing.current || blockRef.current === 'settle') return;
-    if (blockRef.current === 'early' && target.state === 'upcoming') return;
+    if (target === null || storing.current || blocks(blockRef.current, target)) return;
     if (now - lastPress.current < PRESS_GAP_MS) return;
     lastPress.current = now;
     void store(target, now);
   };
 
-  const hidden = block === 'settle' || (block === 'early' && target?.state === 'upcoming');
-  const task = hidden ? null : target;
+  const task = blocks(block, target) ? null : target;
   const message =
     line !== null && (task === null || line.instanceId === task.instanceId) ? line.text : null;
   const unsent = offer !== null && isOffline && entries.includes(offer.pressed.entry);
@@ -245,6 +261,7 @@ export function useDoneAction(
       : {
           label: pressLabel(offer.pressed.task),
           text: `${pressLabel(offer.pressed.task)} done.${unsent ? OFFLINE_NOTE : ''}`,
+          pressedAt: offer.pressed.pressedAt,
         };
 
   return { task, message, pressDone, undo, pressUndo };

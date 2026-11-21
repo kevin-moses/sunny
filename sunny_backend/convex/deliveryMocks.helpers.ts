@@ -2,25 +2,86 @@ import { internalActionGeneric } from "convex/server";
 import { v } from "convex/values";
 import { vi } from "vitest";
 import type { Doc, Id } from "./_generated/dataModel";
+import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
+import { apnsMessage } from "./lib/validators";
+import type { ApnsMessage } from "./lib/validators";
 import { createFamilyHousehold, setPhone } from "./testing.helpers";
 import type { TestConvex } from "./testing.helpers";
 
+export interface ApnsSendArgs {
+  sends: { token: string; message: ApnsMessage }[];
+}
+
 export const providerMocks = {
-  apnsSend: vi.fn(),
+  apnsSend: vi.fn<(args: ApnsSendArgs) => Promise<ApnsResult[] | ApnsSendResult>>(),
   smsSend: vi.fn(),
 };
 
+export interface SentPush {
+  tokens: string[];
+  message: ApnsMessage;
+  payload: Record<string, unknown>;
+}
+
+export interface SentAlert {
+  tokens: string[];
+  title: string;
+  body: string;
+  data: Record<string, unknown>;
+  interruptionLevel?: string;
+  category?: string;
+}
+
+interface AlertAps {
+  alert: { title: string; body: string };
+  "interruption-level"?: string;
+  category?: string;
+}
+
+export const APNS_SENT: Omit<ApnsResult, "token"> = {
+  outcome: "sent",
+  status: 200,
+  reason: null,
+  retryable: false,
+};
+
+export function answerEachToken(answer: (token: string) => Omit<ApnsResult, "token">): void {
+  providerMocks.apnsSend.mockImplementation(async (args: ApnsSendArgs) =>
+    args.sends.map(({ token }) => ({ token, ...answer(token) })),
+  );
+}
+
+export function pushesSent(): SentPush[] {
+  return providerMocks.apnsSend.mock.calls.flatMap(([args]) => {
+    const first = args.sends[0];
+    if (first === undefined) return [];
+    return [
+      {
+        tokens: args.sends.map((send) => send.token),
+        message: first.message,
+        payload: JSON.parse(first.message.body) as Record<string, unknown>,
+      },
+    ];
+  });
+}
+
+export function alertsSent(): SentAlert[] {
+  return pushesSent()
+    .filter((push) => push.message.pushType === "alert")
+    .map(({ tokens, payload }) => {
+      const { aps, ...data } = payload as { aps: AlertAps } & Record<string, unknown>;
+      const alert: SentAlert = { tokens, title: aps.alert.title, body: aps.alert.body, data };
+      if (aps["interruption-level"] !== undefined) {
+        alert.interruptionLevel = aps["interruption-level"];
+      }
+      if (aps.category !== undefined) alert.category = aps.category;
+      return alert;
+    });
+}
+
 export function resetProviderMocks(): void {
   providerMocks.apnsSend.mockReset();
-  providerMocks.apnsSend.mockImplementation(async (args: { tokens: string[] }) =>
-    args.tokens.map((token) => ({
-      token,
-      outcome: "sent",
-      status: 200,
-      reason: null,
-      retryable: false,
-    })),
-  );
+  answerEachToken(() => APNS_SENT);
   providerMocks.smsSend.mockReset();
   providerMocks.smsSend.mockResolvedValue({ ok: true, sid: "SM1" });
 }
@@ -29,14 +90,7 @@ export function apnsModule(original: object = {}) {
   return {
     ...original,
     send: internalActionGeneric({
-      args: {
-        tokens: v.array(v.string()),
-        title: v.string(),
-        body: v.string(),
-        data: v.optional(v.record(v.string(), v.string())),
-        interruptionLevel: v.optional(v.literal("time-sensitive")),
-        category: v.optional(v.string()),
-      },
+      args: { sends: v.array(v.object({ token: v.string(), message: apnsMessage })) },
       handler: async (_ctx, args) => {
         const reply = await providerMocks.apnsSend(args);
         return Array.isArray(reply) ? { results: reply } : reply;

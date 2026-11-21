@@ -126,6 +126,8 @@ beforeEach(() => {
 
 const SENTENCE = "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.";
 
+const SCREEN_SENTENCE = 'Take your morning pills.';
+
 const WORDING_THREAD = [
   {
     ...THREAD[2],
@@ -137,8 +139,16 @@ const WORDING_THREAD = [
         time: '8:00',
         times: ['08:00', '20:00'],
         sentence: SENTENCE,
+        screenSentence: SCREEN_SENTENCE,
       },
-      { taskId: 't2', label: 'Water the plants', time: 'Anytime', times: [], sentence: null },
+      {
+        taskId: 't2',
+        label: 'Water the plants',
+        time: 'Anytime',
+        times: [],
+        sentence: null,
+        screenSentence: null,
+      },
     ],
   },
 ];
@@ -219,6 +229,8 @@ describe('wording cards', () => {
       'On the display',
       '8:00',
       'Morning pills',
+      'On the phone',
+      SCREEN_SENTENCE,
       'Sunny says',
       SENTENCE,
     ];
@@ -231,8 +243,13 @@ describe('wording cards', () => {
       .findAll((node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessible)
       .map((node) => node.props.accessibilityLabel as string);
     expect(labels).toContain(
-      `On the display: 8:00 Morning pills. Sunny says: ${SENTENCE} Also at 8:00 PM.`,
+      `On the display: 8:00 Morning pills. On the phone: ${SCREEN_SENTENCE} Sunny says: ${SENTENCE} Also at 8:00 PM.`,
     );
+  });
+
+  it('a task without a screen sentence shows no phone row', async () => {
+    const renderer = await renderChat(true, WORDING_THREAD);
+    expect(texts(renderer).filter((text) => text === 'On the phone')).toHaveLength(1);
   });
 
   it('a task without a time says it is not spoken and has no button', async () => {

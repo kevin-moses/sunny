@@ -238,6 +238,7 @@ export interface TaskWording {
   time: string;
   times: string[];
   sentence: string | null;
+  screenSentence: string | null;
 }
 
 export type TranscriptItem =
@@ -251,6 +252,7 @@ function taskWording(task: Doc<"tasks">): TaskWording {
     label: task.displayLabel,
     time: clockTime(first ?? ANYTIME),
     times: task.times,
+    screenSentence: task.screenSentence ?? null,
     sentence:
       first === undefined
         ? null

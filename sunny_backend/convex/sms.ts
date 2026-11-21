@@ -83,9 +83,10 @@ async function newestSentAlert(
   return instance ? { member, instance, alertAt: row._creationTime } : null;
 }
 
-const NOT_ALERT_KINDS = (Object.keys(SMS_KIND_POLICY) as NotificationKind[]).filter(
-  (kind) => SMS_KIND_POLICY[kind].hidesOlderAlert,
-);
+const NOT_ALERT_KINDS = (Object.keys(SMS_KIND_POLICY) as NotificationKind[]).filter((kind) => {
+  const policy = SMS_KIND_POLICY[kind];
+  return policy.texted && policy.hidesOlderAlert;
+});
 
 async function newestMessageTextAt(
   ctx: MutationCtx,

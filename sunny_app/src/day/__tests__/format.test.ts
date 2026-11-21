@@ -14,7 +14,6 @@ import {
   isMissed,
   isOpen,
   relativeDayName,
-  whenText,
 } from '../format';
 import type { DayTask, DayViewData, EventOccurrence } from '../types';
 
@@ -75,10 +74,6 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
     upcoming: [],
     ...overrides,
   };
-}
-
-function dayWithUpcoming(localDate: string, startTime: string): DayViewData {
-  return makeDay({ upcoming: [makeEvent({ localDate, startTime })] });
 }
 
 describe('buildAgenda', () => {
@@ -173,38 +168,6 @@ describe('eventDetails', () => {
   });
 });
 
-describe('whenText', () => {
-  it('says Today for an event on the day view date', () => {
-    const day = makeDay({ eventsToday: [makeEvent()] });
-    expect(whenText(day.eventsToday[0], day.localDate)).toBe('Today at 2:00 PM');
-  });
-
-  it('says Tomorrow for the next day', () => {
-    const day = dayWithUpcoming('2026-10-27', '09:00');
-    expect(whenText(day.upcoming[0], day.localDate)).toBe('Tomorrow at 9:00 AM');
-  });
-
-  it('names the weekday for later in the week', () => {
-    const day = dayWithUpcoming('2026-10-29', '15:00');
-    expect(whenText(day.upcoming[0], day.localDate)).toBe('Thursday at 3:00 PM');
-  });
-
-  it('counts Tomorrow across a month boundary', () => {
-    const day = dayWithUpcoming('2026-11-01', '09:00');
-    expect(whenText(day.upcoming[0], '2026-10-31')).toBe('Tomorrow at 9:00 AM');
-  });
-
-  it('returns only the time before the day view has loaded', () => {
-    const day = dayWithUpcoming('2026-10-29', '15:00');
-    expect(whenText(day.upcoming[0], null)).toBe('3:00 PM');
-  });
-
-  it('returns only the time when a date is invalid', () => {
-    const day = dayWithUpcoming('2026-13-45', '15:00');
-    expect(whenText(day.upcoming[0], day.localDate)).toBe('3:00 PM');
-  });
-});
-
 describe('displayTime', () => {
   it('formats morning, midnight and afternoon times', () => {
     expect(displayTime('08:00')).toBe('8:00 AM');
@@ -245,6 +208,10 @@ describe('relativeDayName', () => {
     expect(relativeDayName('2026-10-26', '2026-10-26')).toBe('Today');
     expect(relativeDayName('2026-10-27', '2026-10-26')).toBe('Tomorrow');
     expect(relativeDayName('2026-10-29', '2026-10-26')).toBe('Thursday');
+  });
+
+  it('counts tomorrow across a month boundary', () => {
+    expect(relativeDayName('2026-11-01', '2026-10-31')).toBe('Tomorrow');
   });
 
   it('is null when the dates cannot be compared', () => {

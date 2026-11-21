@@ -5,7 +5,9 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { findMember, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
-import type { NotificationKind } from "./validators";
+import { isDueEntry } from "./dueTask";
+import { findPhonePush, isSeniorCue, openActivity, planStart } from "./liveActivity";
+import type { ApnsMessage, NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
 
@@ -25,16 +27,18 @@ export const SWEEP_BATCH = 100;
 
 export const MAX_ATTEMPTS = 12;
 
-export const SMS_KIND_POLICY: Record<
-  NotificationKind,
-  { retryOnTimeout: boolean; hidesOlderAlert: boolean }
-> = {
-  senior_prompt: { retryOnTimeout: false, hidesOlderAlert: false },
-  caregiver_alert: { retryOnTimeout: true, hidesOlderAlert: false },
-  event_notice: { retryOnTimeout: false, hidesOlderAlert: false },
-  digest: { retryOnTimeout: false, hidesOlderAlert: false },
-  agent_flag: { retryOnTimeout: true, hidesOlderAlert: true },
-  family_message: { retryOnTimeout: false, hidesOlderAlert: true },
+type SmsPolicy =
+  { texted: false } | { texted: true; retryOnTimeout: boolean; hidesOlderAlert: boolean };
+
+export const SMS_KIND_POLICY: Record<NotificationKind, SmsPolicy> = {
+  senior_prompt: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  caregiver_alert: { texted: true, retryOnTimeout: true, hidesOlderAlert: false },
+  event_notice: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  digest: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  agent_flag: { texted: true, retryOnTimeout: true, hidesOlderAlert: true },
+  family_message: { texted: true, retryOnTimeout: false, hidesOlderAlert: true },
+  senior_reshow: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  lock_screen_blind: { texted: false },
 };
 
 const SMS_MAX_CHARS = 1_500;
@@ -58,9 +62,19 @@ export type ApnsRoute = {
   smsFallback: SmsRoute | null;
 };
 
-export type Route = ApnsRoute | SmsRoute | { kind: "skip"; reason: string };
+export type LiveActivityRoute = {
+  kind: "live_activity";
+  deviceId: Id<"devices">;
+  token: string;
+  message: ApnsMessage;
+  alertFallback: ApnsRoute | null;
+};
 
-export type SendRoute = Exclude<Route, { kind: "skip" }>;
+type SkipRoute = { kind: "skip"; reason: string };
+
+export type SendRoute = ApnsRoute | SmsRoute | LiveActivityRoute;
+
+export type Route = SendRoute | SkipRoute;
 
 export async function insertNotification(
   ctx: MutationCtx,
@@ -89,21 +103,30 @@ function smsText(row: Doc<"notificationOutbox">, canClaim: boolean): string {
     .slice(0, SMS_MAX_CHARS);
 }
 
+async function blindStretchOver(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<boolean> {
+  const deviceId: unknown = row.payload["deviceId"];
+  const blindSince: unknown = row.payload["blindSince"];
+  const device = typeof deviceId === "string" ? ctx.db.normalizeId("devices", deviceId) : null;
+  const push = device === null ? null : await findPhonePush(ctx, device);
+  return push === null || push.blindSince !== blindSince;
+}
+
 async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<string | null> {
+  if (row.kind === "lock_screen_blind") {
+    return (await blindStretchOver(ctx, row)) ? "phone_not_blind" : null;
+  }
   if (row.taskInstanceId === undefined) return null;
   const instance = await ctx.db.get(row.taskInstanceId);
   if (!instance) return "instance_gone";
   const done = instance.state === "confirmed" || instance.state === "resolved";
   if (row.kind === "caregiver_alert" && done) return "instance_closed";
-  if (row.kind === "senior_prompt" && instance.state !== "due" && instance.state !== "escalated") {
-    return "instance_closed";
-  }
+  if (isSeniorCue(row) && !isDueEntry(instance)) return "instance_closed";
   return null;
 }
 
 const MAX_TOKENS_PER_USER = 20;
 
-async function userPushTokens(ctx: QueryCtx, userId: string): Promise<string[]> {
+export async function userPushTokens(ctx: QueryCtx, userId: string): Promise<string[]> {
   const rows = await ctx.db
     .query("pushTokens")
     .withIndex("by_user", (q) => q.eq("userId", userId))
@@ -144,30 +167,44 @@ function apnsRoute(
 }
 
 async function deviceRoute(
-  ctx: QueryCtx,
+  ctx: MutationCtx,
   row: Doc<"notificationOutbox">,
   deviceId: Id<"devices">,
-): Promise<Route> {
+  now: number,
+): Promise<ApnsRoute | LiveActivityRoute | SkipRoute> {
   const device = await ctx.db.get(deviceId);
   if (!device || device.householdId !== row.householdId) {
     return { kind: "skip", reason: "device_removed" };
   }
   const tokens = await userPushTokens(ctx, device.userId);
-  if (tokens.length === 0) return { kind: "skip", reason: "no_push_tokens" };
-  return apnsRoute(row, tokens, { kind: "device" }, null);
+  const alert = tokens.length > 0 ? apnsRoute(row, tokens, { kind: "device" }, null) : null;
+  const reshow = row.kind === "senior_reshow";
+  const start = row.pushState === "gave_up" ? null : await planStart(ctx, row, device, now);
+  if (start !== null) {
+    return {
+      kind: "live_activity",
+      deviceId: device._id,
+      token: start.token,
+      message: await openActivity(ctx, row, device, start, now),
+      alertFallback: reshow ? null : alert,
+    };
+  }
+  if (reshow) return { kind: "skip", reason: "no_live_activity" };
+  return alert ?? { kind: "skip", reason: "no_push_tokens" };
 }
 
 function smsRoute(
   row: Doc<"notificationOutbox">,
   member: Doc<"householdMembers">,
 ): SmsRoute | null {
+  const policy = SMS_KIND_POLICY[row.kind];
   const to = verifiedPhone(member);
-  if (to === undefined) return null;
+  if (!policy.texted || to === undefined) return null;
   return {
     kind: "sms",
     to,
     body: smsText(row, member.role !== "viewer"),
-    retryOnTimeout: SMS_KIND_POLICY[row.kind].retryOnTimeout,
+    retryOnTimeout: policy.retryOnTimeout,
   };
 }
 
@@ -175,7 +212,7 @@ async function memberRoute(
   ctx: QueryCtx,
   row: Doc<"notificationOutbox">,
   userId: string,
-): Promise<Route> {
+): Promise<ApnsRoute | SmsRoute | SkipRoute> {
   const member = await findMember(ctx, row.householdId, userId);
   if (!member) return { kind: "skip", reason: "recipient_left" };
   const sms = smsRoute(row, member);
@@ -184,7 +221,11 @@ async function memberRoute(
     const recipient = { kind: "caregiver" as const, canClaim: member.role !== "viewer" };
     return apnsRoute(row, tokens, recipient, sms);
   }
-  return sms ?? { kind: "skip", reason: "no_verified_phone" };
+  if (sms !== null) return sms;
+  return {
+    kind: "skip",
+    reason: SMS_KIND_POLICY[row.kind].texted ? "no_verified_phone" : "no_push_tokens",
+  };
 }
 
 export async function isReachableMember(
@@ -210,23 +251,35 @@ export async function reachableMembers(
   return reachable;
 }
 
-export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<Route> {
+export async function resolveRoute(
+  ctx: MutationCtx,
+  row: Doc<"notificationOutbox">,
+  now: number,
+): Promise<Route> {
   const stale = await staleReason(ctx, row);
   if (stale !== null) return { kind: "skip", reason: stale };
-  if (row.recipientDeviceId !== undefined)
-    return await deviceRoute(ctx, row, row.recipientDeviceId);
+  if (row.recipientDeviceId !== undefined) {
+    return await deviceRoute(ctx, row, row.recipientDeviceId, now);
+  }
   if (row.recipientUserId !== undefined) return await memberRoute(ctx, row, row.recipientUserId);
   return { kind: "skip", reason: "no_recipient" };
 }
 
-export async function textAfterPushGaveUp(
+async function hasFallbackAfterPush(
+  ctx: QueryCtx,
+  row: Doc<"notificationOutbox">,
+): Promise<boolean> {
+  if (row.recipientUserId === undefined) return row.kind === "senior_prompt";
+  const member = await findMember(ctx, row.householdId, row.recipientUserId);
+  return member !== null && smsRoute(row, member) !== null;
+}
+
+export async function fallbackAfterPushGaveUp(
   ctx: MutationCtx,
   row: Doc<"notificationOutbox">,
   error: string,
 ): Promise<boolean> {
-  if (row.pushState !== "retrying" || row.recipientUserId === undefined) return false;
-  const member = await findMember(ctx, row.householdId, row.recipientUserId);
-  if (!member || verifiedPhone(member) === undefined) return false;
+  if (row.pushState !== "retrying" || !(await hasFallbackAfterPush(ctx, row))) return false;
   await ctx.db.patch(row._id, { pushState: "gave_up", detail: `push gave up: ${error}` });
   await queueDelivery(ctx, row._id);
   return true;

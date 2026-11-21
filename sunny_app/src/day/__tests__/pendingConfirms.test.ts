@@ -21,6 +21,7 @@ import {
   type ConfirmQueue,
   type ConnectionSource,
   type ConnectionState,
+  type PressWatcher,
 } from '../pendingConfirms';
 import {
   applyPending,
@@ -954,6 +955,81 @@ describe('applyPending', () => {
     expect(out[0]).toMatchObject({ state: 'due', confirmable: true });
     const stale = applyPending(tasks, queued(undo('c', NOW + 1, 'due', 'Task c', 'pid-gone')));
     expect(stale[2]).toBe(tasks[2]);
+  });
+});
+
+describe('watching presses', () => {
+  function recorder(): { calls: string[]; watcher: PressWatcher } {
+    const calls: string[] = [];
+    return {
+      calls,
+      watcher: {
+        pressed: (e) => void calls.push(`pressed ${e.pressId} step ${e.step ?? 0}`),
+        answered: (e) => void calls.push(`answered ${e.pressId}`),
+        withdrawn: (pressId) => void calls.push(`withdrawn ${pressId}`),
+      },
+    };
+  }
+
+  it("reports each stored press, its undo and the server's answer", async () => {
+    const queue = makeQueue();
+    const { calls, watcher } = recorder();
+    queue.watchPresses(watcher);
+    mockConnected = false;
+    await queue.enqueue(entry('a'));
+    await queue.enqueue(undo('a', NOW + 1));
+    await queue.enqueue({ ...entry('a', NOW + 2), step: 1 });
+    mockConnected = true;
+    await queue.replay();
+    expect(calls).toEqual([
+      `pressed ${pressIdOf('a', NOW)} step 0`,
+      `withdrawn ${pressIdOf('a', NOW)}`,
+      `pressed ${pressIdOf('a', NOW + 2)} step 1`,
+      `answered ${pressIdOf('a', NOW + 2)}`,
+    ]);
+  });
+
+  it('counts a refusal as an answer and an expired press as withdrawn', async () => {
+    const queue = makeQueue();
+    const { calls, watcher } = recorder();
+    queue.watchPresses(watcher);
+    mockMutation.mockResolvedValueOnce({ status: 'rejected', reason: 'The task no longer exists' });
+    await queue.enqueue(entry('a'));
+    await queue.replay();
+    mockConnected = false;
+    await queue.enqueue(entry('b'));
+    jest.setSystemTime(NOW + MAX_AGE_MS + 1);
+    mockConnected = true;
+    await queue.replay();
+    expect(calls).toEqual([
+      `pressed ${pressIdOf('a', NOW)} step 0`,
+      `answered ${pressIdOf('a', NOW)}`,
+      `pressed ${pressIdOf('b', NOW)} step 0`,
+      `withdrawn ${pressIdOf('b', NOW)}`,
+    ]);
+  });
+
+  it('reports the presses a new watcher finds queued, leaving out undone ones', async () => {
+    mockStore.set(
+      STORAGE_KEY,
+      JSON.stringify([entry('a'), undo('a', NOW + 1), entry('b', NOW + 2)]),
+    );
+    mockConnected = false;
+    const queue = makeQueue();
+    await queue.load();
+    const { calls, watcher } = recorder();
+    queue.watchPresses(watcher);
+    expect(calls).toEqual([`pressed ${pressIdOf('b', NOW + 2)} step 0`]);
+  });
+
+  it('stops reporting once the watcher is removed', async () => {
+    const queue = makeQueue();
+    const { calls, watcher } = recorder();
+    const stop = queue.watchPresses(watcher);
+    stop();
+    mockConnected = false;
+    await queue.enqueue(entry('a'));
+    expect(calls).toEqual([]);
   });
 });
 

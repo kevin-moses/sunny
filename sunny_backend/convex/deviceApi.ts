@@ -2,20 +2,31 @@ import { HOUR, MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { action, httpAction, internalMutation, internalQuery, query } from "./_generated/server";
+import {
+  action,
+  httpAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import type { PublicHttpAction } from "convex/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { NO_SUCH_TASK, confirmPressedInstance } from "./instances";
 import type { ConfirmTransport, PressResult } from "./instances";
-import { findDevice, requireUserId } from "./lib/access";
-import type { DeviceActor } from "./lib/access";
+import { DEVICES_ONLY, deviceActor, findDevice, requireDeviceActor } from "./lib/access";
+import type { Actor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import { NOT_DUE_YET } from "./lib/confirmRule";
 import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
 import { isOpenState } from "./lib/escalation";
+import { phoneRevoked } from "./lib/liveActivitySync";
+import { loadPhoneTimeline } from "./lib/phoneTimeline";
+import type { PhoneTimeline } from "./lib/phoneTimeline";
 import { appError, isAppError } from "./lib/errors";
+import { isJsonObject } from "./lib/http";
 import {
   NO_STORE,
   convexErrorResponse,
@@ -71,8 +82,12 @@ async function pressedBeforeDue(
 
 const BAD_ID_MESSAGE = "instanceId must be a task instance id";
 
+export const TOKEN_REVOKED =
+  "A family member turned off this device's token. Pair the device again to get a new one.";
+
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   tokenIssues: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
+  tokenRevokes: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
   refusedPresses: { kind: "token bucket", rate: 20, period: HOUR, capacity: 20 },
   deviceRequests: { kind: "token bucket", rate: 120, period: MINUTE, capacity: 120 },
   deviceAuthFailedGlobal: { kind: "token bucket", rate: 60, period: MINUTE, capacity: 60 },
@@ -117,19 +132,44 @@ export async function findDeviceByTokenHash(
     .unique();
 }
 
-function deviceActor(device: Doc<"devices">): DeviceActor {
-  return { kind: "senior_device", userId: device.userId, householdId: device.householdId, device };
-}
-
 function seenLongAgo(lastSeenAt: number | null | undefined, now: number): boolean {
   return lastSeenAt == null || now - lastSeenAt > LAST_SEEN_INTERVAL_MS;
 }
+
+export async function revokeTokenOf(
+  ctx: MutationCtx,
+  actor: Actor,
+  device: Doc<"devices">,
+): Promise<void> {
+  await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
+  await phoneRevoked(ctx, device._id);
+  await audit(ctx, {
+    householdId: device.householdId,
+    actor,
+    action: "revoke_device_token",
+    entity: "device",
+    entityId: device._id,
+    detail: { hadToken: device.tokenHash !== undefined },
+  });
+}
+
+export const revokeOwnToken = mutation({
+  args: {},
+  handler: async (ctx): Promise<null> => {
+    const actor = await requireDeviceActor(ctx);
+    const limit = await rateLimiter.limit(ctx, "tokenRevokes", { key: actor.device._id });
+    if (!limit.ok) throw appError("limit", "Too many device token revokes. Try again later.");
+    await revokeTokenOf(ctx, actor, actor.device);
+    return null;
+  },
+});
 
 export const storeTokenHash = internalMutation({
   args: { userId: v.string(), tokenHash: v.string() },
   handler: async (ctx, args): Promise<null> => {
     const device = await findDevice(ctx, args.userId);
-    if (!device) throw appError("forbidden", "Only the senior's devices can do this");
+    if (!device) throw appError("forbidden", DEVICES_ONLY);
+    if (device.tokenRevokedAt !== undefined) throw appError("forbidden", TOKEN_REVOKED);
     await ctx.db.patch(device._id, { tokenHash: args.tokenHash, tokenIssuedAt: Date.now() });
     await audit(ctx, {
       householdId: device.householdId,
@@ -163,10 +203,8 @@ export const issueToken = action({
 export const state = query({
   args: { minute: v.optional(v.number()) },
   handler: async (ctx): Promise<DeviceState> => {
-    const userId = await requireUserId(ctx);
-    const device = await findDevice(ctx, userId);
-    if (!device) throw appError("forbidden", "Only the senior's devices can do this");
-    return await loadDeviceState(ctx, device.householdId, Date.now());
+    const actor = await requireDeviceActor(ctx);
+    return await loadDeviceState(ctx, actor.householdId, Date.now());
   },
 });
 
@@ -189,6 +227,15 @@ export const stateByToken = internalQuery({
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
     if (device === null) return null;
     return await loadDeviceState(ctx, device.householdId, Date.now());
+  },
+});
+
+export const timelineByToken = internalQuery({
+  args: { tokenHash: v.string() },
+  handler: async (ctx, args): Promise<PhoneTimeline | null> => {
+    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
+    if (device === null) return null;
+    return await loadPhoneTimeline(ctx, device.householdId, Date.now());
   },
 });
 
@@ -327,7 +374,7 @@ export async function gate(ctx: ActionCtx, request: Request): Promise<string | R
   return tokenHash;
 }
 
-async function readJsonObject(request: Request): Promise<Record<string, unknown> | string> {
+export async function readJsonObject(request: Request): Promise<Record<string, unknown> | string> {
   const tooLarge = "The request body is too large";
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_CHARS) return tooLarge;
   const text = await request.text();
@@ -338,13 +385,13 @@ async function readJsonObject(request: Request): Promise<Record<string, unknown>
   } catch {
     return "The request body must be JSON";
   }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return "The request body must be a JSON object";
-  }
-  return body as Record<string, unknown>;
+  return isJsonObject(body) ? body : "The request body must be a JSON object";
 }
 
-function unknownKey(body: Record<string, unknown>, allowed: readonly string[]): string | null {
+export function unknownKey(
+  body: Record<string, unknown>,
+  allowed: readonly string[],
+): string | null {
   const extra = Object.keys(body).find((k) => !allowed.includes(k));
   return extra === undefined ? null : `Unknown field ${extra}`;
 }
@@ -404,11 +451,9 @@ function parseInfoRequest(body: Record<string, unknown>): InfoRequest | string {
   if (extra !== null) return extra;
   const info: InfoRequest = {};
   if (body.screen !== undefined) {
-    const screen = body.screen as Record<string, unknown> | null;
+    const screen = body.screen;
     const sideMessage = `screen width and height must be whole numbers from ${SCREEN_SIDE.min} to ${SCREEN_SIDE.max}`;
-    if (typeof screen !== "object" || screen === null || Array.isArray(screen)) {
-      return "screen must be an object";
-    }
+    if (!isJsonObject(screen)) return "screen must be an object";
     const screenExtra = unknownKey(screen, ["width", "height", "greys"]);
     if (screenExtra !== null) return `screen: ${screenExtra}`;
     if (!isIntIn(screen.width, SCREEN_SIDE) || !isIntIn(screen.height, SCREEN_SIDE)) {
@@ -451,8 +496,8 @@ export function notModified(
   return new Response(null, { status: 304, headers: { ...NO_STORE, ...headers, ETag: etag } });
 }
 
-function etagOf(state: DeviceState): string {
-  return `"${state.version}"`;
+function etagOf(versioned: { version: string }): string {
+  return `"${versioned.version}"`;
 }
 
 export function doneHeaders(state: DeviceState): Record<string, string> {
@@ -493,6 +538,15 @@ export const getState = deviceRoute("Could not load the device state", async (ct
   const cached = notModified(request, etag, done);
   if (cached !== null) return cached;
   return jsonResponse(state, 200, { ...done, ETag: etag });
+});
+
+export const getTimeline = deviceRoute("Could not load the timeline", async (ctx, request) => {
+  const tokenHash = await gate(ctx, request);
+  if (tokenHash instanceof Response) return tokenHash;
+  const timeline = await ctx.runQuery(internal.deviceApi.timelineByToken, { tokenHash });
+  if (timeline === null) return unauthorizedResponse();
+  const etag = etagOf(timeline);
+  return notModified(request, etag) ?? jsonResponse(timeline, 200, { ETag: etag });
 });
 
 export const confirm = deviceRoute("Could not confirm the task", async (ctx, request) => {

@@ -1,0 +1,18 @@
+{
+  "version": "v-all-done",
+  "generatedAt": 1795098600000,
+  "timezone": "America/New_York",
+  "until": 1795185000000,
+  "entries": [
+    {
+      "at": 1795098600000,
+      "cards": [
+        {
+          "kind": "clear",
+          "allDone": true,
+          "next": { "label": "Morning pills", "startsAt": 1795179600000 }
+        }
+      ]
+    }
+  ]
+}
