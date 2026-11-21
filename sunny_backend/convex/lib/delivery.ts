@@ -108,7 +108,7 @@ async function blindStretchOver(ctx: QueryCtx, row: Doc<"notificationOutbox">): 
   const blindSince: unknown = row.payload["blindSince"];
   const device = typeof deviceId === "string" ? ctx.db.normalizeId("devices", deviceId) : null;
   const push = device === null ? null : await findPhonePush(ctx, device);
-  return push?.blindSince === undefined || push.blindSince !== blindSince;
+  return push === null || push.blindSince !== blindSince;
 }
 
 async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<string | null> {
