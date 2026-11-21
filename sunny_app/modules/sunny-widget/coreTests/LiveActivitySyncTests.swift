@@ -137,6 +137,43 @@ final class PushStateSyncTests: XCTestCase {
         XCTAssertTrue(transport.requests.isEmpty)
     }
 
+    private func reloadsAfterReport(reloadingWidget: Bool) async -> Int {
+        let reloads = ReloadCounter()
+        let store = FakeActivityStore([shownActivity(key: "a", state: Sample.tea)])
+        await makeSync().sendReport(
+            startToken: nil,
+            enabled: true,
+            in: store,
+            reloadingWidget: reloadingWidget,
+            reloadWidget: { reloads.add() }
+        )
+        return reloads.count
+    }
+
+    func testAReportAnswered401ReloadsTheWidgetWhateverTheTrigger() async {
+        transport.queuePushState(401)
+        let reloads = await reloadsAfterReport(reloadingWidget: false)
+        XCTAssertEqual(reloads, 1)
+        let plan = makeSync().cachedPlan(locale: Fixture.unitedStates)
+        XCTAssertEqual(plan.entries.first?.content, .notice(.openSunny))
+    }
+
+    func testAReportThatFindsNoCredentialsReloadsTheWidgetWhateverTheTrigger() async {
+        tokens = MemoryTokenStore(nil)
+        let reloads = await reloadsAfterReport(reloadingWidget: false)
+        XCTAssertEqual(reloads, 1)
+    }
+
+    func testAnAnsweredOrFailedReportReloadsOnlyWhenItsTriggerAsks() async {
+        transport.queuePushState(200, body: Data(#"{"activities":[]}"#.utf8))
+        let answered = await reloadsAfterReport(reloadingWidget: false)
+        transport.queuePushState(503)
+        let failed = await reloadsAfterReport(reloadingWidget: false)
+        transport.queuePushState(200, body: Data(#"{"activities":[]}"#.utf8))
+        let asked = await reloadsAfterReport(reloadingWidget: true)
+        XCTAssertEqual([answered, failed, asked], [0, 0, 1])
+    }
+
     func testTheWidgetPushTokenIsStoredThenSentAloneAndSurvivesAClear() async throws {
         transport.queuePushState(503)
         let sync = makeSync()
@@ -145,6 +182,23 @@ final class PushStateSyncTests: XCTestCase {
         XCTAssertEqual(sync.storedWidgetPush(), WidgetPushReport(token: "0b0c"))
         try await sync.clear()
         XCTAssertEqual(makeSync().storedWidgetPush(), WidgetPushReport(token: "0b0c"))
+    }
+}
+
+final class ReloadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func add() {
+        lock.lock()
+        current += 1
+        lock.unlock()
     }
 }
 

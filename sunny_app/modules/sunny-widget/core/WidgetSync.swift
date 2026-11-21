@@ -16,6 +16,13 @@ public enum ReportOutcome: Equatable, Sendable {
     case sent(PushStateOutcome)
     case notPaired
     case credentialsUnreadable
+
+    public var lostAccess: Bool {
+        switch self {
+        case .sent(.unauthorized), .notPaired: return true
+        case .sent(.answered), .sent(.failed), .credentialsUnreadable: return false
+        }
+    }
 }
 
 private enum Credentials {

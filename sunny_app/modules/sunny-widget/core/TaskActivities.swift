@@ -82,14 +82,8 @@ public enum TaskActivities {
     }
 
     public static func settle(_ outcome: ReportOutcome, in store: TaskActivityStore) async {
-        switch outcome {
-        case .sent(.answered(let reply)):
-            await apply(reply.directives, to: store)
-        case .sent(.unauthorized), .notPaired:
-            await endAll(in: store)
-        case .sent(.failed), .credentialsUnreadable:
-            return
-        }
+        if case .sent(.answered(let reply)) = outcome { await apply(reply.directives, to: store) }
+        if outcome.lostAccess { await endAll(in: store) }
     }
 
     public static func endDuplicates(in store: TaskActivityStore) async {
@@ -130,6 +124,25 @@ public enum TaskActivities {
 }
 
 extension WidgetSync {
+    public func sendReport(
+        startToken: String?,
+        enabled: Bool,
+        in store: TaskActivityStore,
+        reloadingWidget: Bool,
+        reloadWidget: @Sendable () -> Void
+    ) async {
+        await TaskActivities.endDuplicates(in: store)
+        let report = TaskActivities.report(
+            startToken: startToken,
+            enabled: enabled,
+            store: store,
+            widgetPush: storedWidgetPush()
+        )
+        let outcome = await reportPushState(report)
+        await TaskActivities.settle(outcome, in: store)
+        if reloadingWidget || outcome.lostAccess { reloadWidget() }
+    }
+
     public func pressDoneOnActivity(instanceId: String, step: Int, in store: TaskActivityStore) async -> FlushResult {
         let result = await pressDone(instanceId: instanceId, step: step, via: .liveActivity) { pressedAt in
             await TaskActivities.showPress(instanceId: instanceId, step: step, at: pressedAt, withReceipt: true, in: store)

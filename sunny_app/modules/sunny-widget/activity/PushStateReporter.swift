@@ -102,18 +102,13 @@ public actor PushStateReporter {
     }
 
     private static func sendSnapshot(reloadingWidget: Bool) async {
-        defer {
-            if reloadingWidget { WidgetCenter.shared.reloadAllTimelines() }
-        }
         guard let widgetSync = WidgetSync.live() else { return }
-        let store = ActivityKitStore()
-        await TaskActivities.endDuplicates(in: store)
-        let report = TaskActivities.report(
+        await widgetSync.sendReport(
             startToken: Activity<SunnyTaskAttributes>.pushToStartToken?.hexString,
             enabled: ActivityAuthorizationInfo().areActivitiesEnabled,
-            store: store,
-            widgetPush: widgetSync.storedWidgetPush()
+            in: ActivityKitStore(),
+            reloadingWidget: reloadingWidget,
+            reloadWidget: { WidgetCenter.shared.reloadAllTimelines() }
         )
-        await TaskActivities.settle(await widgetSync.reportPushState(report), in: store)
     }
 }
