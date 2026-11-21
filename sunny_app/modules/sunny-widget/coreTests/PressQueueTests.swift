@@ -192,19 +192,19 @@ final class DeviceClientTests: XCTestCase {
         XCTAssertEqual(press.pressedAgoMs(at: Fixture.generatedAt.addingTimeInterval(-60)), 0)
     }
 
-    func testTimelineRequestSendsTheEtag() {
+    func testTimelineRequestSendsTheCachedVersionAsTheServersQuotedETag() {
         let client = DeviceClient(siteURL: site, token: "tok", transport: FakeTransport())
-        let request = client.timelineRequest(etag: "\"abc\"", timeout: 10)
+        let request = client.timelineRequest(cachedVersion: "abc", timeout: 10)
         XCTAssertEqual(request.url?.absoluteString, "https://example.convex.site/device/timeline")
         XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), "\"abc\"")
-        XCTAssertNil(client.timelineRequest(etag: nil, timeout: 10).value(forHTTPHeaderField: "If-None-Match"))
+        XCTAssertNil(client.timelineRequest(cachedVersion: nil, timeout: 10).value(forHTTPHeaderField: "If-None-Match"))
     }
 
     func testClassifiesTimelineResponses() {
         let body = Data("{}".utf8)
         XCTAssertEqual(
             DeviceClient.fetchOutcome(status: 200, body: body, headers: response(200, headers: ["ETag": "\"v\""])),
-            .fresh(body: body, etag: "\"v\"")
+            .fresh(body: body)
         )
         XCTAssertEqual(DeviceClient.fetchOutcome(status: 304, body: Data(), headers: response(304)), .notModified)
         XCTAssertEqual(DeviceClient.fetchOutcome(status: 401, body: Data(), headers: response(401)), .unauthorized)

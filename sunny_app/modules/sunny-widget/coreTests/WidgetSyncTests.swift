@@ -47,17 +47,17 @@ final class WidgetSyncTests: XCTestCase {
         let plan = await makeSync().refresh(locale: Fixture.unitedStates)
         guard case .due(let due) = firstContent(plan) else { return XCTFail("expected the due task") }
         XCTAssertEqual(due.instanceId, "inst-morning-pills")
-        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.etag, "\"v1\"")
+        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.version, "v-due-task")
         XCTAssertEqual(transport.timelineRequests.first?.headers["Authorization"], "Bearer token-1")
         XCTAssertNil(transport.timelineRequests.first?.headers["If-None-Match"])
     }
 
-    func testSendsTheEtagAndUsesTheCacheOnNotModified() async throws {
+    func testSendsTheCachedVersionQuotedAndUsesTheCacheOnNotModified() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"), headers: ["ETag": "\"v1\""])
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         transport.queueTimeline(304)
         let plan = await makeSync().refresh(locale: Fixture.unitedStates)
-        XCTAssertEqual(transport.timelineRequests.last?.headers["If-None-Match"], "\"v1\"")
+        XCTAssertEqual(transport.timelineRequests.last?.headers["If-None-Match"], "\"v-due-task\"")
         guard case .due = firstContent(plan) else { return XCTFail("expected the cached due task") }
     }
 
@@ -84,7 +84,7 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueTimeline(200, body: Data("{\"version\":\"x\"}".utf8), headers: ["ETag": "\"bad\""])
         let plan = await makeSync().refresh(locale: Fixture.unitedStates)
         guard case .due = firstContent(plan) else { return XCTFail("expected the cached due task") }
-        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.etag, "\"v1\"")
+        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.version, "v-due-task")
     }
 
     func testPastUntilWithoutAFreshPayloadShowsNotConnected() async throws {
@@ -375,7 +375,7 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(sync.reporterLaunch(), .observe)
     }
 
-    func testATimelineCachedInTheOldEnvelopeIsFetchedAgainWithoutAnETag() async throws {
+    func testATimelineCachedInTheOldEnvelopeIsFetchedAgainWithoutAVersion() async throws {
         let body = try Fixture.data("due-task")
         let envelope = try JSONSerialization.data(withJSONObject: ["etag": "\"v0\"", "body": body.base64EncodedString()])
         try envelope.write(to: directory.appendingPathComponent("timeline.json"))
@@ -384,17 +384,23 @@ final class WidgetSyncTests: XCTestCase {
         let plan = await makeSync().refresh(locale: Fixture.unitedStates)
         guard case .due = firstContent(plan) else { return XCTFail("expected the due task") }
         XCTAssertNil(transport.timelineRequests.first?.headers["If-None-Match"])
-        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.etag, "\"v1\"")
+        XCTAssertEqual(WidgetStorage(directory: directory).loadCache()?.version, "v-due-task")
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("timeline.json")), body)
     }
 
-    func testATimelineWithoutAnETagForgetsTheOldOne() throws {
-        let storage = WidgetStorage(directory: directory)
-        let body = try Fixture.data("due-task")
-        try storage.saveCache(body: body, etag: "\"v1\"")
-        try storage.saveCache(body: body, etag: nil)
-        XCTAssertNotNil(storage.loadCache())
-        XCTAssertNil(storage.loadCache()?.etag)
+    func testAskingIfChangedNamesTheVersionOfTheBodyItWouldKeep() async throws {
+        try Fixture.data("due-task").write(to: directory.appendingPathComponent("timeline.json"))
+        try Data("\"v-newer\"".utf8).write(to: directory.appendingPathComponent("timeline.etag"))
+        transport.queueTimeline(304)
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        XCTAssertEqual(transport.timelineRequests.last?.headers["If-None-Match"], "\"v-due-task\"")
+    }
+
+    func testSavingATimelineRemovesATagFileAnOlderBuildLeft() async throws {
+        try Data("\"v-old\"".utf8).write(to: directory.appendingPathComponent("timeline.etag"))
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("timeline.etag").path))
     }
 
     func testStoreCredentialsWritesTokenAndSite() throws {

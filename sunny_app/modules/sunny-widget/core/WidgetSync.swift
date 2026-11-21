@@ -185,7 +185,7 @@ public struct WidgetSync: Sendable {
         guard credentials().client != nil else { return TimelinePlanner.notice(.openSunny, at: now) }
         return TimelinePlanner.plan(
             at: now,
-            timeline: storage.loadCache()?.timeline,
+            timeline: storage.loadCache(),
             pressed: storage.presses.pressed(),
             locale: locale
         )
@@ -199,29 +199,29 @@ public struct WidgetSync: Sendable {
         }
         let cache = storage.loadCache()
         let fetchStartedAt = clock()
-        let etag = cache.flatMap { ReloadPolicy.needsRenewal($0.timeline, at: fetchStartedAt) ? nil : $0.etag }
-        let outcome = await client.fetchTimeline(etag: etag, timeout: Self.fetchTimeout)
+        let cachedVersion = cache.flatMap { ReloadPolicy.needsRenewal($0, at: fetchStartedAt) ? nil : $0.version }
+        let outcome = await client.fetchTimeline(cachedVersion: cachedVersion, timeout: Self.fetchTimeout)
         let now = clock()
         let plan = { (timeline: DeviceTimeline?, pressed: Set<PressKey>, notBefore: Date?) in
             TimelinePlanner.plan(at: now, timeline: timeline, pressed: pressed, locale: locale, notBefore: notBefore)
         }
         switch outcome {
-        case .fresh(let body, let newEtag):
+        case .fresh(let body):
             guard let timeline = try? DeviceTimeline.decode(body) else {
-                return plan(cache?.timeline, storage.presses.pressed(), nil)
+                return plan(cache, storage.presses.pressed(), nil)
             }
-            let saved = (try? storage.saveCache(body: body, etag: newEtag)) != nil
+            let saved = (try? storage.saveCache(body: body)) != nil
             return plan(timeline, saved ? reconciledPressed(since: fetchStartedAt) : storage.presses.pressed(), nil)
         case .notModified:
             guard let cache else { return plan(nil, [], nil) }
-            return plan(cache.timeline, reconciledPressed(since: fetchStartedAt), nil)
+            return plan(cache, reconciledPressed(since: fetchStartedAt), nil)
         case .unauthorized:
             dropToken(client.token)
             return TimelinePlanner.notice(.openSunny, at: now)
         case .rateLimited(let retryAfter):
-            return plan(cache?.timeline, storage.presses.pressed(), retryAfter.map { now.addingTimeInterval($0) })
+            return plan(cache, storage.presses.pressed(), retryAfter.map { now.addingTimeInterval($0) })
         case .failed:
-            return plan(cache?.timeline, storage.presses.pressed(), nil)
+            return plan(cache, storage.presses.pressed(), nil)
         }
     }
 

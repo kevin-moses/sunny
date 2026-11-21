@@ -23,7 +23,7 @@ public struct URLSessionTransport: HTTPTransport {
 }
 
 public enum FetchOutcome: Equatable, Sendable {
-    case fresh(body: Data, etag: String?)
+    case fresh(body: Data)
     case notModified
     case unauthorized
     case rateLimited(retryAfter: TimeInterval?)
@@ -47,10 +47,10 @@ public struct DeviceClient: Sendable {
         self.transport = transport
     }
 
-    public func timelineRequest(etag: String?, timeout: TimeInterval) -> URLRequest {
+    public func timelineRequest(cachedVersion: String?, timeout: TimeInterval) -> URLRequest {
         var request = authorized(path: "device/timeline", timeout: timeout)
         request.httpMethod = "GET"
-        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        if let cachedVersion { request.setValue("\"\(cachedVersion)\"", forHTTPHeaderField: "If-None-Match") }
         return request
     }
 
@@ -85,8 +85,9 @@ public struct DeviceClient: Sendable {
         return Self.pushStateOutcome(status: response.statusCode, body: data)
     }
 
-    public func fetchTimeline(etag: String?, timeout: TimeInterval) async -> FetchOutcome {
-        guard let (data, response) = try? await transport.send(timelineRequest(etag: etag, timeout: timeout)) else {
+    public func fetchTimeline(cachedVersion: String?, timeout: TimeInterval) async -> FetchOutcome {
+        let request = timelineRequest(cachedVersion: cachedVersion, timeout: timeout)
+        guard let (data, response) = try? await transport.send(request) else {
             return .failed
         }
         return Self.fetchOutcome(status: response.statusCode, body: data, headers: response)
@@ -101,7 +102,7 @@ public struct DeviceClient: Sendable {
 
     static func fetchOutcome(status: Int, body: Data, headers: HTTPURLResponse) -> FetchOutcome {
         switch status {
-        case 200: return .fresh(body: body, etag: headers.value(forHTTPHeaderField: "ETag"))
+        case 200: return .fresh(body: body)
         case 304: return .notModified
         case 401: return .unauthorized
         case 429: return .rateLimited(retryAfter: retryAfter(headers))

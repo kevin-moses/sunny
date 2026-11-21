@@ -134,7 +134,7 @@ The client shows the first task card that it has not pressed since the fetch, an
 - A second press of the same card changes nothing. It answers `advanced` when the task has already left that step and `confirmed` when the task is already done.
 - A widget press up to 60 minutes before the window opens is confirmed (`EARLY_CONFIRM_MS`). A press made earlier than that is refused with "This task is not due yet". The 5-minute limit for `button` presses does not apply to the widget.
 
-`version` is FNV-1a 64 over canonical JSON of the timezone, the first entry's cards and all the later entries. It leaves out `generatedAt`, `until` and the first entry's `at`, which only move with the clock. Two fetches get the same version when the same cards show now and every later change is the same, so polling an unchanged day gets 304. After a 304 the client keeps the `until` it already has.
+`version` is FNV-1a 64 over canonical JSON of the timezone, the first entry's cards and all the later entries. The `ETag` header is `version` in double quotes, and the phone's widget relies on that: it stores only the body and sends the body's own `version`, quoted, as `If-None-Match` ("Senior phone widget" below). It leaves out `generatedAt`, `until` and the first entry's `at`, which only move with the clock. Two fetches get the same version when the same cards show now and every later change is the same, so polling an unchanged day gets 304. After a 304 the client keeps the `until` it already has.
 
 #### How the cards are computed
 
@@ -463,7 +463,7 @@ Credentials. Only a session that is `paired` with device kind `senior_phone` get
 
 Files in the app group container, under `SunnyWidget/`:
 
-- `timeline.json` and `timeline.etag`: the last good `GET /device/timeline` body, as it arrived, and its ETag when the server sent one. A save removes the old ETag first and writes the new one after the body, so a crash in between leaves a body without an ETag, which the next request fetches in full. A body is stored only after it decodes and passes the checks (ascending entries, the first at `generatedAt`, every card list ending in exactly one clear card, steps in range, a known time zone).
+- `timeline.json`: the last good `GET /device/timeline` body, as it arrived, written in one atomic step. It is the only cache file. The widget sends the body's own `version`, in quotes, as `If-None-Match`, so the tag it sends always belongs to the body it would keep on a 304, even when two timeline requests in the extension save at the same moment. A body is stored only after it decodes and passes the checks (ascending entries, the first at `generatedAt`, every card list ending in exactly one clear card, steps in range, a known time zone). A cache that an older build left in its JSON envelope does not decode, so it counts as no cache and the timeline is fetched in full. A save removes the `timeline.etag` file that an older build kept beside the body.
 - `presses/<press id>.json`: one file per Done press. It holds the instance, step, `via` and press time. A press is written to `staging/` and renamed into place, and it is removed by deleting its own file once the server has answered it. No process rewrites a shared list, so the widget extension and the app, where the Live Activity's Done runs, can append at the same time.
 - `marks/<press id>.json`: one "pressed" mark per press. A mark is written before its press, so no process can answer a press that has no mark. No process rewrites a mark, so an Undo that removes it while the server's answer is being recorded is never undone.
 - `answers/<press id>.json`: the time the server answered the press, written beside its mark and removed with it. An answer whose mark was removed first is dropped 48 hours after the answer. The app writes marks for its own presses here too (see "Presses shared with the app" below). The widget hides a card whose instance and step have a mark.
@@ -482,7 +482,7 @@ Build: `cd sunny_app && npx expo prebuild --platform ios --clean`, then build th
 
 Not verified, since nothing was run on a simulator or device: the widget on a home or lock screen, the keychain sharing between the app and the extension (it needs a signed build), Done through the intent, the fonts as rendered by WidgetKit, VoiceOver, and the widget under Assistive Access. The layouts were checked by rendering the same SwiftUI views on macOS at several widget sizes and text sizes.
 
-Contract assumptions about `GET /device/timeline` that the backend must match: a 304 means the cached payload's entries are still right, and an unknown card `kind` makes the whole payload malformed, so the widget keeps its last good cache.
+Contract assumptions about `GET /device/timeline` that the backend must match: the `ETag` is the body's `version` in double quotes (`etagOf` in `deviceApi.ts`, checked in `deviceApi.test.ts`), and the widget builds its `If-None-Match` from the cached body's `version` instead of storing the header, so changing the ETag's form makes every widget fetch in full; a 304 means the cached payload's entries are still right; and an unknown card `kind` makes the whole payload malformed, so the widget keeps its last good cache.
 
 #### Live Activity
 

@@ -1,10 +1,5 @@
 import Foundation
 
-public struct CachedTimeline: Sendable {
-    public let timeline: DeviceTimeline
-    public let etag: String?
-}
-
 public struct WidgetStorage: Sendable {
     private let directory: URL
     public let presses: PressQueue
@@ -15,22 +10,18 @@ public struct WidgetStorage: Sendable {
     }
 
     private var cacheURL: URL { directory.appendingPathComponent("timeline.json") }
-    private var etagURL: URL { directory.appendingPathComponent("timeline.etag") }
+    private var leftoverTagURL: URL { directory.appendingPathComponent("timeline.etag") }
     private var lockURL: URL { directory.appendingPathComponent("credentials.lock") }
     private var widgetPushURL: URL { directory.appendingPathComponent("widgetPush.json") }
 
-    public func loadCache() -> CachedTimeline? {
-        guard let body = try? Data(contentsOf: cacheURL), let timeline = try? DeviceTimeline.decode(body) else {
-            return nil
-        }
-        let etag = (try? Data(contentsOf: etagURL)).flatMap { String(data: $0, encoding: .utf8) }
-        return CachedTimeline(timeline: timeline, etag: etag)
+    public func loadCache() -> DeviceTimeline? {
+        guard let body = try? Data(contentsOf: cacheURL) else { return nil }
+        return try? DeviceTimeline.decode(body)
     }
 
-    public func saveCache(body: Data, etag: String?) throws {
-        try removeIfPresent(etagURL)
+    public func saveCache(body: Data) throws {
         try write(body, to: cacheURL)
-        if let etag { try write(Data(etag.utf8), to: etagURL) }
+        try removeIfPresent(leftoverTagURL)
     }
 
     public func loadWidgetPush() -> WidgetPushReport? {
@@ -44,7 +35,6 @@ public struct WidgetStorage: Sendable {
 
     public func removeAll() throws {
         try presses.removeAll()
-        try removeIfPresent(etagURL)
         try removeIfPresent(cacheURL)
     }
 
