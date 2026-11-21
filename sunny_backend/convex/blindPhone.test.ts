@@ -224,7 +224,7 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     expect((await putPushState(f, {})).status).toBe(200);
     const cleared = (await phonePushRow(f))!;
     expect(cleared.blindSince).toBeUndefined();
-    expect(cleared.blindToldAt).toBeUndefined();
+    expect(cleared.blindLookAt).toBeUndefined();
     expect(await listedBlindSince(f)).toBeNull();
 
     const blindAgainAt = await goBlind(f, "Eye drops", "09:00", DAY_TWO);
@@ -321,14 +321,14 @@ describe("a notice that cannot go out yet", () => {
     await sweep(f, blindAt + 24 * HOUR);
     await sweep(f, blindAt + 30 * HOUR);
     expect(await noticeRows(f)).toEqual([]);
-    expect((await phonePushRow(f))!.blindToldAt).toBeUndefined();
+    expect((await phonePushRow(f))!.blindLookAt).toBe(blindAt + 31 * HOUR);
 
     await f.t.run(async (ctx) => {
       await ctx.db.insert("pushTokens", { userId: "sam", token: SAM_TOKEN });
     });
     await sweep(f, blindAt + 31 * HOUR);
     expect(notices().map((alert) => alert.tokens)).toEqual([[SAM_TOKEN]]);
-    expect((await phonePushRow(f))!.blindToldAt).toBe(blindAt + 31 * HOUR);
+    expect((await phonePushRow(f))!.blindLookAt).toBeUndefined();
     await sweep(f, blindAt + 32 * HOUR);
     expect(notices()).toHaveLength(1);
   });
@@ -339,7 +339,7 @@ describe("a notice that cannot go out yet", () => {
     await sweep(f, blindAt + 24 * HOUR);
     await sweep(f, blindAt + 40 * HOUR);
     expect(await noticeRows(f)).toEqual([]);
-    expect((await phonePushRow(f))!.blindToldAt).toBeUndefined();
+    expect((await phonePushRow(f))!.blindLookAt).toBe(blindAt + 41 * HOUR);
 
     await setPaused(f, false);
     await sweep(f, blindAt + 41 * HOUR);

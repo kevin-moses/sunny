@@ -156,10 +156,10 @@ async function storeReportedTokens(
   report: PushStateReport,
 ): Promise<void> {
   const existing = await findPhonePush(ctx, device._id);
-  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | "blindToldAt" | TokenField>> = {};
+  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | "blindLookAt" | TokenField>> = {};
   if (existing?.blindSince !== undefined) {
     patch.blindSince = undefined;
-    patch.blindToldAt = undefined;
+    patch.blindLookAt = undefined;
   }
   for (const [field, token] of reportedTokens(report)) {
     if ((existing?.[field]?.token ?? null) === token) continue;
@@ -189,8 +189,10 @@ export const reportByToken = internalMutation({
 
 export const sweepBlindPhones = internalMutation({
   args: { now: v.optional(v.number()) },
-  handler: async (ctx, args): Promise<number> =>
-    await tellCaregiversOfBlindPhones(ctx, args.now ?? Date.now()),
+  handler: async (ctx, args): Promise<null> => {
+    await tellCaregiversOfBlindPhones(ctx, args.now ?? Date.now());
+    return null;
+  },
 });
 
 export const dropToken = internalMutation({
