@@ -27,17 +27,18 @@ export const SWEEP_BATCH = 100;
 
 export const MAX_ATTEMPTS = 12;
 
-export const SMS_KIND_POLICY: Record<
-  NotificationKind,
-  { retryOnTimeout: boolean; hidesOlderAlert: boolean }
-> = {
-  senior_prompt: { retryOnTimeout: false, hidesOlderAlert: false },
-  caregiver_alert: { retryOnTimeout: true, hidesOlderAlert: false },
-  event_notice: { retryOnTimeout: false, hidesOlderAlert: false },
-  digest: { retryOnTimeout: false, hidesOlderAlert: false },
-  agent_flag: { retryOnTimeout: true, hidesOlderAlert: true },
-  family_message: { retryOnTimeout: false, hidesOlderAlert: true },
-  senior_reshow: { retryOnTimeout: false, hidesOlderAlert: false },
+type SmsPolicy =
+  { texted: false } | { texted: true; retryOnTimeout: boolean; hidesOlderAlert: boolean };
+
+export const SMS_KIND_POLICY: Record<NotificationKind, SmsPolicy> = {
+  senior_prompt: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  caregiver_alert: { texted: true, retryOnTimeout: true, hidesOlderAlert: false },
+  event_notice: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  digest: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  agent_flag: { texted: true, retryOnTimeout: true, hidesOlderAlert: true },
+  family_message: { texted: true, retryOnTimeout: false, hidesOlderAlert: true },
+  senior_reshow: { texted: true, retryOnTimeout: false, hidesOlderAlert: false },
+  lock_screen_blind: { texted: false },
 };
 
 const SMS_MAX_CHARS = 1_500;
@@ -185,13 +186,14 @@ function smsRoute(
   row: Doc<"notificationOutbox">,
   member: Doc<"householdMembers">,
 ): SmsRoute | null {
+  const policy = SMS_KIND_POLICY[row.kind];
   const to = verifiedPhone(member);
-  if (to === undefined) return null;
+  if (!policy.texted || to === undefined) return null;
   return {
     kind: "sms",
     to,
     body: smsText(row, member.role !== "viewer"),
-    retryOnTimeout: SMS_KIND_POLICY[row.kind].retryOnTimeout,
+    retryOnTimeout: policy.retryOnTimeout,
   };
 }
 
@@ -208,7 +210,11 @@ async function memberRoute(
     const recipient = { kind: "caregiver" as const, canClaim: member.role !== "viewer" };
     return apnsRoute(row, tokens, recipient, sms);
   }
-  return sms ?? { kind: "skip", reason: "no_verified_phone" };
+  if (sms !== null) return sms;
+  return {
+    kind: "skip",
+    reason: SMS_KIND_POLICY[row.kind].texted ? "no_verified_phone" : "no_push_tokens",
+  };
 }
 
 export async function isReachableMember(
@@ -254,7 +260,7 @@ async function hasFallbackAfterPush(
 ): Promise<boolean> {
   if (row.recipientUserId === undefined) return row.kind === "senior_prompt";
   const member = await findMember(ctx, row.householdId, row.recipientUserId);
-  return member !== null && verifiedPhone(member) !== undefined;
+  return member !== null && smsRoute(row, member) !== null;
 }
 
 export async function fallbackAfterPushGaveUp(

@@ -27,6 +27,7 @@ import {
   updateHouseholdCore,
 } from "./lib/householdSettings";
 import { isValidDeviceToken } from "./lib/apnsPayload";
+import { findPhonePush } from "./lib/liveActivity";
 import { phoneRevoked } from "./lib/liveActivitySync";
 import { requireNonBlank } from "./lib/text";
 import { joinGrant, memberRole } from "./lib/validators";
@@ -368,7 +369,9 @@ export const findRecentPairing = internalQuery({
   },
 });
 
-export type DeviceView = Omit<Doc<"devices">, "pairingNonce" | "tokenHash">;
+export type DeviceView = Omit<Doc<"devices">, "pairingNonce" | "tokenHash"> & {
+  lockScreenBlindSince: number | null;
+};
 
 export const listDevices = query({
   args: { householdId: v.id("households") },
@@ -378,7 +381,12 @@ export const listDevices = query({
       .query("devices")
       .withIndex("by_household", (q) => q.eq("householdId", args.householdId))
       .collect();
-    return rows.map(({ pairingNonce: _nonce, tokenHash: _hash, ...device }) => device);
+    const views: DeviceView[] = [];
+    for (const { pairingNonce: _nonce, tokenHash: _hash, ...device } of rows) {
+      const push = await findPhonePush(ctx, device._id);
+      views.push({ ...device, lockScreenBlindSince: push?.blindSince ?? null });
+    }
+    return views;
   },
 });
 

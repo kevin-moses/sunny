@@ -75,6 +75,7 @@ export const notificationKind = v.union(
   v.literal("agent_flag"),
   v.literal("family_message"),
   v.literal("senior_reshow"),
+  v.literal("lock_screen_blind"),
 );
 export type NotificationKind = Infer<typeof notificationKind>;
 

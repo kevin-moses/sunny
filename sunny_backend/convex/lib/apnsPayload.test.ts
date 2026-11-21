@@ -186,8 +186,8 @@ describe("pushStyle", () => {
     expect(pushStyle("agent_flag", viewer)).toEqual({ interruptionLevel: "time-sensitive" });
   });
 
-  test("a digest, an event notice and a family message are plain for caregivers", () => {
-    for (const kind of ["digest", "event_notice", "family_message"] as const) {
+  test("a digest, an event notice, a family message and a blind Lock Screen are plain", () => {
+    for (const kind of ["digest", "event_notice", "family_message", "lock_screen_blind"] as const) {
       expect(pushStyle(kind, editor)).toEqual({});
     }
   });

@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { seniorPhones } from "./access";
 import type { Actor } from "./access";
 import { ACTIVITY_LIFETIME_MS } from "./apnsPayload";
+import { markBlind } from "./blindPhone";
 import { isDoneState } from "./confirmRule";
 import { deliveryPool, insertNotification } from "./delivery";
 import { seniorPromptWords } from "./deviceWording";
@@ -223,7 +224,7 @@ export async function proofMissed(
   const missed = { ...row, phase: { ...row.phase, proof: "missed" as const } };
   await ctx.db.patch(row._id, { phase: missed.phase });
   const push = await findPhonePush(ctx, row.deviceId);
-  if (push !== null) await ctx.db.patch(push._id, { blindSince: now });
+  if (push !== null) await markBlind(ctx, push, now);
   await syncActivity(ctx, missed, now);
   if (row.quiet) return;
   const subject = await loadSubject(ctx, row.taskInstanceId);

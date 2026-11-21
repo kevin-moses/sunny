@@ -155,8 +155,11 @@ async function storeReportedTokens(
   report: PushStateReport,
 ): Promise<void> {
   const existing = await findPhonePush(ctx, device._id);
-  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | TokenField>> = {};
-  if (existing?.blindSince !== undefined) patch.blindSince = undefined;
+  const patch: Partial<Pick<Doc<"phonePush">, "blindSince" | "blindToldAt" | TokenField>> = {};
+  if (existing?.blindSince !== undefined) {
+    patch.blindSince = undefined;
+    patch.blindToldAt = undefined;
+  }
   for (const [field, token] of reportedTokens(report)) {
     if ((existing?.[field]?.token ?? null) === token) continue;
     if (token !== null) await takeTokenFromOtherPhones(ctx, device._id, field, token);
