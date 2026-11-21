@@ -6,11 +6,11 @@ import type {
   AppointmentRef,
   CalendarEventFact,
   CaregiverConfirms,
-  CaregiverPush,
   DecisionReason,
   EscalationReason,
   IcsEvent,
   InfoTopic,
+  MailDraft,
   MailEffect,
   MailVerdict,
   PolicyFacts,
@@ -65,18 +65,6 @@ interface Context {
   atNoteLimit: boolean;
 }
 
-type Draft =
-  | Exclude<MailEffect, { kind: "tell_caregivers" | "escalate" }>
-  | ({ kind: "tell_caregivers"; line: string } & CaregiverPush)
-  | {
-      kind: "escalate";
-      reason: EscalationReason;
-      line: string;
-      push: boolean;
-      eventId: string | null;
-      proposed: Proposed | null;
-    };
-
 const ALSO_NEEDS: Record<DecisionReason, string> = {
   cancellation: "The email also mentions a cancellation.",
   bill_or_payment: "The email is also about a bill or a payment.",
@@ -113,7 +101,7 @@ type Case = Situation["case"];
 
 interface Row<S> {
   id: string;
-  plan: (s: S, c: Context) => Draft[] | null;
+  plan: (s: S, c: Context) => MailDraft[] | null;
 }
 
 export interface Plan {
@@ -132,11 +120,11 @@ function escalate(
   line: string,
   eventId: string | null,
   appointment: CheckedAppointment | null,
-): Draft {
+): MailDraft {
   return { kind: "escalate", reason, line, push: true, eventId, proposed: proposal(appointment) };
 }
 
-function tell(line: string): Draft {
+function tell(line: string): MailDraft {
   return { kind: "tell_caregivers", line, push: false };
 }
 
@@ -502,7 +490,7 @@ function situationOf(verdict: MailVerdict, facts: PolicyFacts): Situation {
 
 interface Drafted {
   rule: string;
-  drafts: Draft[];
+  drafts: MailDraft[];
 }
 
 function runTable<K extends Case>(
@@ -517,10 +505,10 @@ function runTable<K extends Case>(
   throw new Error(`The mail decision table has no matching row for ${situation.case}`);
 }
 
-function withDecision(drafts: Draft[], decision: DecisionReason | null): Draft[] {
+function withDecision(drafts: MailDraft[], decision: DecisionReason | null): MailDraft[] {
   if (decision === null) return drafts;
   const also = ALSO_NEEDS[decision];
-  return drafts.flatMap((draft): Draft[] => {
+  return drafts.flatMap((draft): MailDraft[] => {
     switch (draft.kind) {
       case "escalate":
         return [{ ...draft, line: `${draft.line} ${also}` }];
@@ -542,7 +530,7 @@ function withDecision(drafts: Draft[], decision: DecisionReason | null): Draft[]
   });
 }
 
-function withoutPush(draft: Draft): Draft {
+function withoutPush(draft: MailDraft): MailDraft {
   switch (draft.kind) {
     case "escalate":
       return { ...draft, push: false };
@@ -553,7 +541,7 @@ function withoutPush(draft: Draft): Draft {
   }
 }
 
-function rendered(draft: Draft, ics: IcsEvent | null, summary: string): MailEffect {
+function rendered(draft: MailDraft, ics: IcsEvent | null, summary: string): MailEffect {
   switch (draft.kind) {
     case "escalate":
     case "tell_caregivers":

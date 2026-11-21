@@ -253,6 +253,15 @@ export const mailSender = v.object({
   authenticated: v.boolean(),
 });
 
+export const calendarEventFact = v.object({
+  eventId: v.string(),
+  title: v.string(),
+  date: v.string(),
+  time: v.string(),
+  durationMinutes: v.union(v.null(), v.number()),
+  repeating: v.boolean(),
+});
+
 export const mailHeader = v.object({
   sender: mailSender,
   subject: v.string(),

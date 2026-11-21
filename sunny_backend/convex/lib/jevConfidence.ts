@@ -1,11 +1,10 @@
+import type { JevAnswer } from "./mailTypes";
+
 export type Level = "yes" | "unsure" | "no";
 
 const SURE = 0.7;
 
-export interface Picked {
-  choice: string;
-  probability: number;
-}
+export type Picked = Exclude<JevAnswer, number>;
 
 export function isSure(probability: number): boolean {
   return probability >= SURE;

@@ -10,7 +10,7 @@ import type { LinkFact } from "../../convex/lib/mailFacts";
 import { planWithRule } from "../../convex/lib/mailPolicy";
 import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
 import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
-import { icsEvent, mailHeader } from "../../convex/lib/validators";
+import { calendarEventFact, icsEvent, mailHeader } from "../../convex/lib/validators";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -86,15 +86,6 @@ const EFFECT_KINDS = [
   "tell_caregivers",
   "escalate",
 ] as const satisfies readonly EffectKind[];
-
-const calendarEventFact = v.object({
-  eventId: v.string(),
-  title: v.string(),
-  date: v.string(),
-  time: v.string(),
-  durationMinutes: v.union(v.null(), v.number()),
-  repeating: v.boolean(),
-});
 
 const rawFixture = v.object({
   id: v.string(),

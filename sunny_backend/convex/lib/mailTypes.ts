@@ -9,6 +9,7 @@ import {
 import type {
   appointment,
   appointmentRef,
+  calendarEventFact,
   displayHeader,
   icsEvent,
   jevAnswer,
@@ -194,14 +195,7 @@ export type Suspicion = (typeof SUSPICIONS)[number];
 
 export const NO_USAGE: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 
-export interface CalendarEventFact {
-  eventId: string;
-  title: string;
-  date: string;
-  time: string;
-  durationMinutes: number | null;
-  repeating: boolean;
-}
+export type CalendarEventFact = Infer<typeof calendarEventFact>;
 
 export interface PolicyFacts {
   now: number;
@@ -231,7 +225,9 @@ export interface CaregiverMessage {
 
 export type CaregiverPush = { push: false } | { push: true; title: string };
 
-export type MailEffect =
+type CaregiverPost = { kind: "tell_caregivers" | "escalate" };
+
+export type MailDraft =
   | {
       kind: "add_event";
       appointment: Appointment;
@@ -245,12 +241,15 @@ export type MailEffect =
     }
   | { kind: "already_on_calendar"; eventId: string; appointmentKey: string }
   | { kind: "senior_note"; text: string; expiresAt: number }
-  | ({ kind: "tell_caregivers"; line: string } & CaregiverMessage & CaregiverPush)
-  | ({
+  | ({ kind: "tell_caregivers"; line: string } & CaregiverPush)
+  | {
       kind: "escalate";
       reason: EscalationReason;
       line: string;
       push: boolean;
       eventId: string | null;
       proposed: Proposed | null;
-    } & CaregiverMessage);
+    };
+
+export type MailEffect =
+  Exclude<MailDraft, CaregiverPost> | (Extract<MailDraft, CaregiverPost> & CaregiverMessage);
