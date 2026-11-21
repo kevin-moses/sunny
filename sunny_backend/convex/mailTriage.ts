@@ -6,13 +6,13 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { recordLostGrant, tokensFor } from "./googleGrant";
-import { itemHeader, postMail } from "./lib/chatPosts";
+import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
 import { storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
 import { carryOut, senderLink } from "./lib/mailEffects";
-import { knownInvite, policyFacts } from "./lib/mailFacts";
+import { knownInvite, policyFacts, recordedHeader } from "./lib/mailFacts";
 import type { LinkedEventState } from "./lib/mailFacts";
 import { mailFailure } from "./lib/mailFailure";
 import { askJev } from "./lib/jevClient";
@@ -33,7 +33,7 @@ import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
 import { canStillOccur, expandOccurrences, liveEvents } from "./lib/occurrences";
 import { MINUTE_MS, addDays, localDate, localMidnight } from "./lib/time";
-import { icsEvent, mailSender, triaged as triagedValidator } from "./lib/validators";
+import { icsEvent, mailHeader, triaged as triagedValidator } from "./lib/validators";
 
 export const MAX_TRIAGE_ATTEMPTS = 10;
 const LEASE_MS = 10 * MINUTE_MS;
@@ -58,12 +58,6 @@ type TriageOutcome =
 
 type Applied = "lost" | "applied" | "posted";
 
-const mailHeader = v.object({
-  sender: mailSender,
-  subject: v.string(),
-  receivedAt: v.number(),
-});
-
 const unreadRule = v.union(v.literal("gone"), v.literal("unparseable"));
 
 function holdsClaim(item: Doc<"mailItems"> | null, attempt: number): item is Doc<"mailItems"> {
@@ -80,13 +74,6 @@ function storedHeader(header: MailHeader): MailHeader {
     subject: header.subject.slice(0, MAX_STORED_SUBJECT),
     receivedAt: header.receivedAt,
   };
-}
-
-function recordedHeader(item: Doc<"mailItems">): MailHeader | null {
-  const { sender, subject, receivedAt } = item;
-  return sender === undefined || subject === undefined || receivedAt === undefined
-    ? null
-    : { sender, subject, receivedAt };
 }
 
 async function mailboxOf(ctx: QueryCtx, item: Doc<"mailItems">): Promise<Doc<"mailboxes"> | null> {
@@ -477,12 +464,12 @@ async function failUnread(ctx: MutationCtx, item: Doc<"mailItems">): Promise<voi
   const household = await ctx.db.get(item.householdId);
   if (household) {
     const now = Date.now();
-    await postMail(ctx, household, item._id, unreadPost(item, household), now);
+    await postMail(ctx, household, item, unreadPost(item), now);
   }
 }
 
-function unreadPost(item: Doc<"mailItems">, household: Doc<"households">): string {
-  return itemHeader(item, household.timezone) === null
+function unreadPost(item: Doc<"mailItems">): string {
+  return recordedHeader(item) === null
     ? "Sunny could not read an email. Please look at the inbox in Gmail."
     : "Sunny could not read an email. Please look at it in Gmail.";
 }

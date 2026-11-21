@@ -96,7 +96,7 @@ async function postToCaregivers(
   effect: EffectOf<"tell_caregivers" | "escalate">,
 ): Promise<void> {
   const { ctx, household, item } = scope;
-  const postId = await postMail(ctx, household, item._id, effect.body, scope.facts.now);
+  const postId = await postMail(ctx, household, item, effect.body, scope.facts.now);
   await ctx.db.patch(item._id, { caregiverPost: { postId, line: effect.line } });
 }
 

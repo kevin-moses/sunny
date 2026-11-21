@@ -5,6 +5,7 @@ import {
   actorKind,
   calendarConnectionStatus,
   classifierRecord,
+  displayHeader,
   mailboxStatus,
   mailEffectRecord,
   mailItemState,
@@ -255,6 +256,7 @@ export default defineSchema({
         body: v.string(),
         localDate: v.string(),
         mailItemId: v.id("mailItems"),
+        mailHeader: v.optional(displayHeader),
       }),
       v.object({
         householdId: v.id("households"),

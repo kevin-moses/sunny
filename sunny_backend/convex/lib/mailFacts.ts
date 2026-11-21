@@ -1,3 +1,4 @@
+import type { Doc } from "../_generated/dataModel";
 import type {
   CalendarEventFact,
   Clock,
@@ -56,4 +57,11 @@ export function policyFacts(inputs: FactInputs): PolicyFacts {
 
 export function knownInvite(link: { sequence?: number } | null): KnownInvite | null {
   return link === null ? null : { sequence: link.sequence ?? 0 };
+}
+
+export function recordedHeader(item: Doc<"mailItems">): MailHeader | null {
+  const { sender, subject, receivedAt } = item;
+  return sender === undefined || subject === undefined || receivedAt === undefined
+    ? null
+    : { sender, subject, receivedAt };
 }

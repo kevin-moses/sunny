@@ -8,7 +8,7 @@ export const MAX_BODY_SOURCE = 256 * 1024;
 const MAX_ADDRESS = 254;
 const GMAIL_AUTHSERV = "mx.google.com";
 
-export interface MailHeader {
+export interface GmailHeader {
   name: string;
   value: string;
 }
@@ -16,12 +16,12 @@ export interface MailHeader {
 interface MimePart {
   mimeType: string;
   filename: string;
-  headers: MailHeader[];
+  headers: GmailHeader[];
   data: string | null;
   parts: MimePart[];
 }
 
-function readHeaders(raw: unknown): MailHeader[] {
+function readHeaders(raw: unknown): GmailHeader[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((h) =>
     isRecord(h) && typeof h.name === "string" && typeof h.value === "string"
@@ -44,7 +44,7 @@ function readPart(raw: unknown): MimePart | null {
   };
 }
 
-function header(headers: MailHeader[], name: string): string | null {
+function header(headers: GmailHeader[], name: string): string | null {
   const wanted = name.toLowerCase();
   return headers.find((h) => h.name.toLowerCase() === wanted)?.value ?? null;
 }
@@ -174,7 +174,7 @@ function passes(result: AuthResult, fromDomain: string): boolean {
   return signers.some((signer) => signer !== "" && aligned(signer, fromDomain));
 }
 
-function verifiedFor(headers: MailHeader[], address: string): boolean {
+function verifiedFor(headers: GmailHeader[], address: string): boolean {
   const parsed = headers
     .filter((h) => h.name.toLowerCase() === "authentication-results")
     .map((h) => authResults(h.value));
@@ -185,7 +185,7 @@ function verifiedFor(headers: MailHeader[], address: string): boolean {
   return gmail[0]!.results.some((result) => passes(result, fromDomain));
 }
 
-export function parseSender(headers: MailHeader[]): MailSender | null {
+export function parseSender(headers: GmailHeader[]): MailSender | null {
   const from = parseAddress(header(headers, "From") ?? "");
   if (from === null || from.address.length > MAX_ADDRESS) return null;
   return { ...from, authenticated: verifiedFor(headers, from.address) };

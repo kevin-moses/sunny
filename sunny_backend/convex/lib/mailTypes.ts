@@ -9,9 +9,11 @@ import {
 import type {
   appointment,
   appointmentRef,
+  displayHeader,
   icsEvent,
   jevAnswer,
   jevAnswers,
+  mailHeader,
   mailSender,
   mailVerdict,
   proposed,
@@ -43,11 +45,9 @@ export interface KnownInvite {
   sequence: number;
 }
 
-export interface MailHeader {
-  sender: MailSender;
-  subject: string;
-  receivedAt: number;
-}
+export type MailHeader = Infer<typeof mailHeader>;
+
+export type DisplayHeader = Infer<typeof displayHeader>;
 
 export interface ParsedEmail {
   gmailId: string;

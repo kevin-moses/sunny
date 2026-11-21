@@ -337,6 +337,23 @@ describe("the item lifecycle", () => {
     expect(await rows(h, "notificationOutbox")).toHaveLength(0);
   });
 
+  test("a mail post keeps the header it was posted with", async () => {
+    const h = await setup();
+    poolFinishesEveryJob();
+    jevSays(PHISHING);
+    const itemId = await receive(h, clinic());
+    await h.t.action(internal.mailTriage.triage, { itemId });
+    const [posted] = await threadAsPat(h);
+    await h.t.run(async (ctx) => {
+      await ctx.db.patch(itemId, { subject: "A later subject" });
+      await ctx.db.patch(h.householdId, { timezone: "Asia/Tokyo" });
+    });
+    expect(posted).toMatchObject({
+      mailHeader: { subject: "Your appointment is confirmed", receivedTime: "08:30" },
+    });
+    expect(await threadAsPat(h)).toEqual([posted]);
+  });
+
   test("a row whose triage never finishes is failed with one post once it passes the attempt cap", async () => {
     const h = await setup();
     const itemId = await receive(h, clinic());

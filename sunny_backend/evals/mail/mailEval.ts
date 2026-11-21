@@ -10,7 +10,7 @@ import type { LinkFact } from "../../convex/lib/mailFacts";
 import { planWithRule } from "../../convex/lib/mailPolicy";
 import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
 import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
-import { icsEvent, mailSender } from "../../convex/lib/validators";
+import { icsEvent, mailHeader } from "../../convex/lib/validators";
 import type {
   CalendarEventFact,
   EscalationReason,
@@ -101,9 +101,7 @@ const rawFixture = v.object({
   email: v.object({
     gmailId: v.string(),
     labels: v.array(v.string()),
-    sender: mailSender,
-    subject: v.string(),
-    receivedAt: v.number(),
+    ...mailHeader.fields,
     text: v.string(),
     ics: v.union(v.null(), icsEvent),
   }),

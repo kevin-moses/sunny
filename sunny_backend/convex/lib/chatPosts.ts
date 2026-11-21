@@ -1,7 +1,8 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { loadHousehold } from "./access";
-import { mailHeader, type MailHeader } from "./mailProse";
+import { recordedHeader } from "./mailFacts";
+import { displayHeader } from "./mailProse";
+import type { DisplayHeader } from "./mailTypes";
 import { localDate } from "./time";
 
 export interface ChatPostView {
@@ -11,30 +12,10 @@ export interface ChatPostView {
   body: string;
   localDate: string;
   createdAt: number;
-  mailHeader: MailHeader | null;
+  mailHeader: DisplayHeader | null;
 }
 
-export function itemHeader(item: Doc<"mailItems">, timezone: string): MailHeader | null {
-  const { sender, subject, receivedAt } = item;
-  if (sender === undefined || subject === undefined || receivedAt === undefined) return null;
-  return mailHeader({ sender, subject, receivedAt, timezone });
-}
-
-async function postHeader(
-  ctx: QueryCtx,
-  row: Doc<"chatPosts">,
-  timezone: string,
-): Promise<MailHeader | null> {
-  if (row.kind !== "mail") return null;
-  const item = await ctx.db.get(row.mailItemId);
-  return item === null ? null : itemHeader(item, timezone);
-}
-
-async function toPostView(
-  ctx: QueryCtx,
-  row: Doc<"chatPosts">,
-  timezone: string,
-): Promise<ChatPostView> {
+function toPostView(row: Doc<"chatPosts">): ChatPostView {
   return {
     id: row._id,
     householdId: row.householdId,
@@ -42,7 +23,7 @@ async function toPostView(
     body: row.body,
     localDate: row.localDate,
     createdAt: row._creationTime,
-    mailHeader: await postHeader(ctx, row, timezone),
+    mailHeader: row.kind === "mail" ? (row.mailHeader ?? null) : null,
   };
 }
 
@@ -63,16 +44,20 @@ export async function postDigest(
 export async function postMail(
   ctx: MutationCtx,
   household: Doc<"households">,
-  mailItemId: Id<"mailItems">,
+  item: Doc<"mailItems">,
   body: string,
   now: number,
 ): Promise<Id<"chatPosts">> {
+  const header = recordedHeader(item);
   return await ctx.db.insert("chatPosts", {
     householdId: household._id,
     kind: "mail",
     body,
     localDate: localDate(now, household.timezone),
-    mailItemId,
+    mailItemId: item._id,
+    ...(header === null
+      ? {}
+      : { mailHeader: displayHeader({ ...header, timezone: household.timezone }) }),
   });
 }
 
@@ -95,11 +80,10 @@ export async function recentPosts(
   householdId: Id<"households">,
   limit: number,
 ): Promise<ChatPostView[]> {
-  const { timezone } = await loadHousehold(ctx, householdId);
   const rows = await ctx.db
     .query("chatPosts")
     .withIndex("by_household", (q) => q.eq("householdId", householdId))
     .order("desc")
     .take(limit);
-  return await Promise.all(rows.map((row) => toPostView(ctx, row, timezone)));
+  return rows.map(toPostView);
 }

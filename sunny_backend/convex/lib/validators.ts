@@ -253,6 +253,21 @@ export const mailSender = v.object({
   authenticated: v.boolean(),
 });
 
+export const mailHeader = v.object({
+  sender: mailSender,
+  subject: v.string(),
+  receivedAt: v.number(),
+});
+
+export const displayHeader = v.object({
+  senderName: v.union(v.null(), v.string()),
+  senderAddress: v.string(),
+  senderVerified: v.boolean(),
+  subject: v.string(),
+  receivedDate: v.string(),
+  receivedTime: v.string(),
+});
+
 export const verdictKind = v.union(
   ...mailVerdict.members
     .map((member) => member.fields.kind)

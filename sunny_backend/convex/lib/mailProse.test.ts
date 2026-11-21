@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { caregiverText, mailHeader } from "./mailProse";
+import { caregiverText, displayHeader } from "./mailProse";
 import { NY, facts } from "./mailPolicyFixtures.helpers";
 import { zonedInstant } from "./time";
 
@@ -31,9 +31,9 @@ describe("caregiverText", () => {
   });
 });
 
-describe("mailHeader", () => {
+describe("displayHeader", () => {
   test("scrubs the sender name and subject and gives the received time in the household's zone", () => {
-    const header = mailHeader(SCAM);
+    const header = displayHeader(SCAM);
     expect(header).toMatchObject({
       senderName: "Medicare Help [link removed]",
       senderAddress: "help@medicare-help.example",
@@ -46,12 +46,12 @@ describe("mailHeader", () => {
   });
 
   test("marks a verified sender and has no name when the name is blank", () => {
-    expect(mailHeader(facts())).toMatchObject({
+    expect(displayHeader(facts())).toMatchObject({
       senderName: "Lakeside Eye Care",
       senderVerified: true,
       subject: "Your appointment",
     });
-    const unnamed = mailHeader(
+    const unnamed = displayHeader(
       facts({ sender: { name: " ", address: "a@b.example", authenticated: true } }),
     );
     expect(unnamed).toMatchObject({ senderName: null, senderAddress: "a@b.example" });

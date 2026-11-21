@@ -1,5 +1,11 @@
 import { appointmentTitle } from "./mailTypes";
-import type { Appointment, CaregiverMessage, IcsEvent, PolicyFacts } from "./mailTypes";
+import type {
+  Appointment,
+  CaregiverMessage,
+  DisplayHeader,
+  IcsEvent,
+  PolicyFacts,
+} from "./mailTypes";
 import { ellipsize, oneLine } from "./text";
 import { dateLabel, formatTime12, localDate, localTime, weekdayName } from "./time";
 
@@ -22,16 +28,7 @@ export function when(date: string, time: string): string {
 
 export type MailHeaderFacts = Pick<PolicyFacts, "sender" | "subject" | "receivedAt" | "timezone">;
 
-export interface MailHeader {
-  senderName: string | null;
-  senderAddress: string;
-  senderVerified: boolean;
-  subject: string;
-  receivedDate: string;
-  receivedTime: string;
-}
-
-export function mailHeader(facts: MailHeaderFacts): MailHeader {
+export function displayHeader(facts: MailHeaderFacts): DisplayHeader {
   const name = scrub(facts.sender.name);
   return {
     senderName: name === "" ? null : name,
