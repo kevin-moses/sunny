@@ -5,16 +5,17 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { recordLostGrant, tokensFor } from "./googleGrant";
+import { tokensFor } from "./googleGrant";
+import type { GrantJob } from "./googleGrant";
+import { closeHolds } from "./serviceHolds";
 import { postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
 import { storedGrant } from "./lib/googleTokens";
-import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
+import type { StoredGrant } from "./lib/googleTokens";
 import { carryOut } from "./lib/mailEffects";
 import { knownInvite, loadFacts, recordedHeader, senderLink } from "./lib/mailFacts";
 import type { LoadedFacts } from "./lib/mailFacts";
-import { mailFailure } from "./lib/mailFailure";
 import { askJev } from "./lib/jevClient";
 import { triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
@@ -24,6 +25,8 @@ import { caregiverMessage } from "./lib/mailProse";
 import type { KnownInvite, MailHeader, ParsedEmail } from "./lib/mailTypes";
 import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool } from "./lib/mailPool";
 import { summarizeForCaregivers } from "./lib/mailSummary";
+import { MAIL_SERVICES, enterGate, holdGate } from "./lib/serviceHolds";
+import type { HoldGate, HoldService } from "./lib/serviceHolds";
 import { MINUTE_MS } from "./lib/time";
 import { icsEvent, mailHeader, triaged as triagedValidator } from "./lib/validators";
 
@@ -43,12 +46,22 @@ type Claim =
       timezone: string;
       now: number;
       grant: StoredGrant;
+      probe: boolean;
     };
+
+type Claimed = Extract<Claim, { kind: "claimed" }>;
 
 type TriageOutcome =
   "skipped" | "gone" | "unparseable" | "applied" | "lost" | "mailbox_lost" | "held";
 
 type Applied = "lost" | "applied" | "posted";
+
+interface Finished {
+  outcome: TriageOutcome;
+  used: HoldService[];
+}
+
+const SWEEP_ENQUEUES: Record<HoldGate, number> = { free: Infinity, probe: 1, held: 0 };
 
 const unreadRule = v.union(v.literal("gone"), v.literal("unparseable"));
 
@@ -101,6 +114,8 @@ export const claimItem = internalMutation({
       return { kind: "skip", reason: "attempts used up" };
     }
     const now = Date.now();
+    const gate = await enterGate(ctx, MAIL_SERVICES, now);
+    if (gate === "held") return { kind: "skip", reason: "mail held" };
     const attempt = item.attempt + 1;
     await ctx.db.patch(itemId, { state: "triaging", attempt, leaseUntil: now + LEASE_MS });
     return {
@@ -111,6 +126,7 @@ export const claimItem = internalMutation({
       timezone: household.timezone,
       now,
       grant: storedGrant(mailbox),
+      probe: gate === "probe",
     };
   },
 });
@@ -267,26 +283,22 @@ async function summarizePost(
 async function settleTriageError(
   ctx: ActionCtx,
   itemId: Id<"mailItems">,
-  claim: Extract<Claim, { kind: "claimed" }>,
+  claim: Claimed,
+  job: GrantJob,
   e: unknown,
 ): Promise<TriageOutcome> {
-  const failure = mailFailure(e);
+  const cause = await job.settle(e);
   const release = (held: boolean) =>
     ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
-  switch (failure.kind) {
+  switch (cause) {
     case "permanent":
       throw new NonRetryableError(errorText(e), { cause: e });
-    case "grant":
-      await recordLostGrant(
-        ctx,
-        { table: "mailboxes", id: claim.mailboxId },
-        claim.grant.refreshToken,
-        failure,
-      );
+    case "revoked":
+    case "unreadable":
+    case "forbidden":
       await release(false);
       return "mailbox_lost";
     case "hold":
-      console.error(`Mail triage held until the shared cause clears: ${errorText(e)}`);
       await release(true);
       return "held";
     case "retry":
@@ -298,16 +310,16 @@ async function settleTriageError(
 async function triageClaimed(
   ctx: ActionCtx,
   itemId: Id<"mailItems">,
-  claim: Extract<Claim, { kind: "claimed" }>,
-  tokens: AccessTokens,
-): Promise<TriageOutcome> {
+  claim: Claimed,
+  job: GrantJob,
+): Promise<Finished> {
   const { attempt, timezone } = claim;
-  const raw = await tokens.withToken((token) => getMessage(token, claim.gmailId));
+  const raw = await job.tokens.withToken((token) => getMessage(token, claim.gmailId));
   const email = raw === null ? null : parseGmailMessage(raw, timezone);
   if (email === null) {
     const rule = raw === null ? "gone" : "unparseable";
     await ctx.runMutation(internal.mailTriage.closeUnread, { itemId, attempt, rule });
-    return rule;
+    return { outcome: rule, used: ["gmail"] };
   }
   const header = {
     sender: email.sender,
@@ -320,17 +332,18 @@ async function triageClaimed(
     ...header,
     icsKey: email.ics === null ? null : icsKey(email.ics),
   });
-  if (parsed === null) return "lost";
+  if (parsed === null) return { outcome: "lost", used: ["gmail"] };
   const triaged = await triageEmail(email, { now: claim.now, timezone }, parsed.known, askJev);
+  const used: HoldService[] = triaged.answers === null ? ["gmail"] : ["gmail", "jev"];
   const applied: Applied = await ctx.runMutation(internal.mailTriage.applyTriage, {
     itemId,
     attempt,
     ics: email.ics,
     triaged,
   });
-  if (applied === "lost") return "lost";
+  if (applied === "lost") return { outcome: "lost", used };
   if (applied === "posted") await summarizePost(ctx, itemId, attempt, email);
-  return "applied";
+  return { outcome: "applied", used };
 }
 
 export const triage = internalAction({
@@ -341,12 +354,20 @@ export const triage = internalAction({
       console.log(`Mail triage skipped: ${claim.reason}`);
       return "skipped";
     }
-    const tokens = await tokensFor(ctx, { table: "mailboxes", id: claim.mailboxId }, claim.grant);
+    const job = await tokensFor(
+      ctx,
+      { table: "mailboxes", id: claim.mailboxId },
+      claim.grant,
+      claim.now,
+    );
+    let finished: Finished;
     try {
-      return await triageClaimed(ctx, itemId, claim, tokens);
+      finished = await triageClaimed(ctx, itemId, claim, job);
     } catch (e) {
-      return await settleTriageError(ctx, itemId, claim, e);
+      return await settleTriageError(ctx, itemId, claim, job, e);
     }
+    if (claim.probe) await closeHolds(ctx, finished.used, claim.now);
+    return finished.outcome;
   },
 });
 
@@ -382,6 +403,7 @@ async function requeueOverdue(
   ctx: MutationCtx,
   state: "queued" | "triaging",
   now: number,
+  enqueues: number,
 ): Promise<number> {
   const rows = await ctx.db
     .query("mailItems")
@@ -394,7 +416,7 @@ async function requeueOverdue(
       continue;
     }
     await ctx.db.patch(row._id, { state: "queued", leaseUntil: now + TRIAGE_PICKUP_MS });
-    if (await waitsToBeClaimed(ctx, row)) continue;
+    if (queued >= enqueues || (await waitsToBeClaimed(ctx, row))) continue;
     await enqueueTriage(ctx, row._id);
     queued += 1;
   }
@@ -405,8 +427,8 @@ export const sweepStuck = internalMutation({
   args: {},
   handler: async (ctx): Promise<number> => {
     const now = Date.now();
-    return (
-      (await requeueOverdue(ctx, "triaging", now)) + (await requeueOverdue(ctx, "queued", now))
-    );
+    const enqueues = SWEEP_ENQUEUES[await holdGate(ctx, MAIL_SERVICES, now)];
+    const lapsed = await requeueOverdue(ctx, "triaging", now, enqueues);
+    return lapsed + (await requeueOverdue(ctx, "queued", now, enqueues - lapsed));
   },
 });

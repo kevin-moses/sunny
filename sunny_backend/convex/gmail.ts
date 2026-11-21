@@ -1,23 +1,18 @@
-import { NonRetryableError, vOnCompleteArgs } from "@convex-dev/workpool";
+import { vOnCompleteArgs } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-  internalAction,
-  internalMutation,
-  internalQuery,
-  mutation,
-  query,
-} from "./_generated/server";
+import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { recordLostGrant, tokensFor } from "./googleGrant";
+import { tokensFor } from "./googleGrant";
+import { closeHolds } from "./serviceHolds";
 import {
   EDITOR_ROLES,
+  findMember,
   loadHousehold,
   requireCaregiverAccount,
   requireCaregiverMember,
   requireCaregiverReader,
-  requireEditor,
   SYSTEM_ACTOR,
 } from "./lib/access";
 import { audit } from "./lib/audit";
@@ -25,13 +20,14 @@ import { postMailbox } from "./lib/chatPosts";
 import { appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
 import type { GoogleGrant } from "./lib/google";
+import type { GoogleCause } from "./lib/googleGrant";
 import { googleAccount, holdsGrant, scheduleGrantRevoke, storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
-import { mailFailure } from "./lib/mailFailure";
 import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
 import { encryptSecret } from "./lib/secretBox";
+import { enterGate, holdGate } from "./lib/serviceHolds";
 import type { MailSender } from "./lib/mailTypes";
 import { DAY_MS } from "./lib/time";
 import type { MailboxStatus, MailEffectRecord, MailItemState, VerdictKind } from "./lib/validators";
@@ -46,7 +42,7 @@ const MAX_RECENT_MAIL = 100;
 
 const POLL_FAILED_MESSAGE = "Sunny could not check the mailbox; it will try again.";
 
-type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "failed";
+type PollOutcome = "skipped" | "polled" | "recovered" | "revoked" | "held" | "failed";
 
 interface MailboxView {
   id: Id<"mailboxes">;
@@ -73,6 +69,8 @@ interface PollStart {
   historyId: string;
   lastPolledAt: number | null;
   grant: StoredGrant;
+  startedAt: number;
+  probe: boolean;
 }
 
 type PollContext = PollStart | { kind: "skip"; reason: string };
@@ -189,7 +187,7 @@ export async function finishMailbox(
   );
 }
 
-export const pollContext = internalQuery({
+export const beginPoll = internalMutation({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<PollContext> => {
     const mailbox = await ctx.db.get(mailboxId);
@@ -197,12 +195,17 @@ export const pollContext = internalQuery({
     const household = await ctx.db.get(mailbox.householdId);
     if (!household) return { kind: "skip", reason: "household not found" };
     if (household.backgroundPaused) return { kind: "skip", reason: "household paused" };
+    const now = Date.now();
+    const gate = await enterGate(ctx, ["gmail"], now);
+    if (gate === "held") return { kind: "skip", reason: "Gmail held" };
     return {
       kind: "poll",
       householdId: mailbox.householdId,
       historyId: mailbox.historyId,
       lastPolledAt: mailbox.lastPolledAt ?? null,
       grant: storedGrant(mailbox),
+      startedAt: now,
+      probe: gate === "probe",
     };
   },
 });
@@ -259,19 +262,15 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
-async function settlePollError(
-  ctx: ActionCtx,
-  mailboxId: Id<"mailboxes">,
-  refreshToken: string,
-  e: unknown,
-): Promise<PollOutcome> {
-  const failure = mailFailure(e);
-  switch (failure.kind) {
-    case "grant":
-      await recordLostGrant(ctx, { table: "mailboxes", id: mailboxId }, refreshToken, failure);
-      return failure.status === "revoked" ? "revoked" : "failed";
+function pollOutcome(cause: GoogleCause, e: unknown): PollOutcome {
+  switch (cause) {
+    case "revoked":
+      return "revoked";
+    case "unreadable":
+    case "forbidden":
+      return "failed";
     case "hold":
-      throw new NonRetryableError(errorText(e), { cause: e });
+      return "held";
     case "permanent":
       console.error(`Gmail poll ended without retry: ${errorText(e)}`);
       return "failed";
@@ -283,14 +282,20 @@ async function settlePollError(
 export const poll = internalAction({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<PollOutcome> => {
-    const start: PollContext = await ctx.runQuery(internal.gmail.pollContext, { mailboxId });
+    const start: PollContext = await ctx.runMutation(internal.gmail.beginPoll, { mailboxId });
     if (start.kind === "skip") {
       console.log(`Gmail poll skipped: ${start.reason}`);
       return "skipped";
     }
-    const tokens = await tokensFor(ctx, { table: "mailboxes", id: mailboxId }, start.grant);
+    const job = await tokensFor(
+      ctx,
+      { table: "mailboxes", id: mailboxId },
+      start.grant,
+      start.startedAt,
+    );
+    let found: Gathered;
     try {
-      const found = await gather(tokens, start);
+      found = await gather(job.tokens, start);
       await ctx.runMutation(internal.gmail.recordNew, {
         mailboxId,
         refreshToken: start.grant.refreshToken,
@@ -298,10 +303,11 @@ export const poll = internalAction({
         expectedHistoryId: start.historyId,
         lastHistoryId: found.lastHistoryId,
       });
-      return found.recovered ? "recovered" : "polled";
     } catch (e) {
-      return await settlePollError(ctx, mailboxId, start.grant.refreshToken, e);
+      return pollOutcome(await job.settle(e), e);
     }
+    if (start.probe) await closeHolds(ctx, ["gmail"], start.startedAt);
+    return found.recovered ? "recovered" : "polled";
   },
 });
 
@@ -320,6 +326,8 @@ export const onPollComplete = internalMutation({
 export const pollAll = internalMutation({
   args: { cursor: v.optional(v.union(v.null(), v.string())) },
   handler: async (ctx, { cursor }): Promise<number> => {
+    const gate = await holdGate(ctx, ["gmail"], Date.now());
+    if (gate === "held") return 0;
     const page = await ctx.db
       .query("mailboxes")
       .withIndex("by_status", (q) => q.eq("status", "active"))
@@ -340,6 +348,7 @@ export const pollAll = internalMutation({
       );
       await ctx.db.patch(mailbox._id, { pollJobId });
       queued += 1;
+      if (gate === "probe") return queued;
     }
     if (!page.isDone) {
       await ctx.scheduler.runAfter(0, internal.gmail.pollAll, { cursor: page.continueCursor });
@@ -394,9 +403,13 @@ export const recentMail = query({
 export const disconnect = mutation({
   args: { mailboxId: v.id("mailboxes") },
   handler: async (ctx, { mailboxId }): Promise<null> => {
+    const userId = await requireCaregiverAccount(ctx);
     const mailbox = await ctx.db.get(mailboxId);
-    if (!mailbox) throw appError("not_found", "Mailbox not found");
-    const { userId } = await requireEditor(ctx, mailbox.householdId);
+    const member = mailbox && (await findMember(ctx, mailbox.householdId, userId));
+    if (!mailbox || !member) throw appError("not_found", "Mailbox not found");
+    if (!EDITOR_ROLES.includes(member.role)) {
+      throw appError("forbidden", "Only a primary caregiver or member can disconnect the mailbox");
+    }
     await audit(ctx, {
       householdId: mailbox.householdId,
       actor: SYSTEM_ACTOR,

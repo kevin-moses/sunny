@@ -27,6 +27,13 @@ export interface JevReply {
 
 export type AskJev = (request: JevRequest) => Promise<JevReply>;
 
+export class JevNotConfigured extends ConfigError {
+  constructor(message: string) {
+    super(message);
+    this.name = "JevNotConfigured";
+  }
+}
+
 export class JevAnswerError extends Error {
   override name = "JevAnswerError";
 }
@@ -76,7 +83,7 @@ export function compactAnswers(raw: Record<string, unknown>, questions: JevQuest
 
 export const askJev: AskJev = async (request) => {
   const apiKey = process.env.TYPESAFE_API_KEY;
-  if (!apiKey) throw new ConfigError("Missing env var TYPESAFE_API_KEY");
+  if (!apiKey) throw new JevNotConfigured("Missing env var TYPESAFE_API_KEY");
   const client = new TypeSafeClient({
     apiKey,
     timeout: JEV_TIMEOUT_MS,
