@@ -18,7 +18,13 @@ import {
 import type { MailHousehold } from "./mailMocks.helpers";
 import { NOW } from "./lib/mailFixtures.helpers";
 import { MINUTE_MS } from "./lib/time";
-import { PHISHING, clinic, poolFinishesEveryJob, useTriageClock } from "./mailTriage.helpers";
+import {
+  PHISHING,
+  clinic,
+  poolFinishesEveryJob,
+  reconnectAs,
+  useTriageClock,
+} from "./mailTriage.helpers";
 import { MAIL_HELD_NOTE } from "./serviceHolds";
 import {
   createHousehold,
@@ -171,6 +177,46 @@ describe("opening a hold", () => {
     await t.mutation(internal.serviceHolds.close, { services: ["gmail"], since: NOW + 1 });
     await runNoteFanOut(t);
     expect(await heldNotes(t)).toEqual([]);
+  });
+
+  test("a paused household gets no held note", async () => {
+    const t = makeBackend();
+    const reading = await createHousehold(t, { subject: "a" });
+    const paused = await createHousehold(t, { subject: "b" });
+    await addMailbox(t, reading, "active");
+    await addMailbox(t, paused, "active");
+    await t.run(async (ctx) => await ctx.db.patch(paused, { backgroundPaused: true }));
+    await openHold(t, "jev");
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await heldNotes(t)).toEqual([reading]);
+  });
+});
+
+describe("connecting a mailbox while mail is held", () => {
+  test.each(["gmail", "jev"] as const)(
+    "posts the held note once when a %s hold is open",
+    async (service) => {
+      const h = await mailHousehold(makeBackend());
+      await openHold(h.t, service);
+      await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(await heldNotes(h.t)).toEqual([h.householdId]);
+      await reconnectAs(h, "new@example.com");
+      expect(await heldNotes(h.t)).toEqual([h.householdId, h.householdId]);
+    },
+  );
+
+  test("posts no held note while mail is read, under a calendar hold, or for a paused household", async () => {
+    const h = await mailHousehold(makeBackend());
+    await reconnectAs(h, "new@example.com");
+    await openHold(h.t, "calendar");
+    await reconnectAs(h, "newer@example.com");
+    expect(await heldNotes(h.t)).toEqual([]);
+
+    await h.t.run(async (ctx) => await ctx.db.patch(h.householdId, { backgroundPaused: true }));
+    await openHold(h.t, "gmail");
+    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+    await reconnectAs(h, "newest@example.com");
+    expect(await heldNotes(h.t)).toEqual([]);
   });
 });
 

@@ -5,7 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { tokensFor } from "./googleGrant";
-import { closeHolds } from "./serviceHolds";
+import { closeHolds, noteIfMailHeld } from "./serviceHolds";
 import {
   EDITOR_ROLES,
   findMember,
@@ -150,7 +150,9 @@ export const saveMailbox = internalMutation({
     }
     await insertUnseen(ctx, args.householdId, accountEmail, args.ids);
     const household = await loadHousehold(ctx, args.householdId);
-    await postMailbox(ctx, household, `Sunny now reads ${accountEmail}.`, Date.now());
+    const now = Date.now();
+    await postMailbox(ctx, household, `Sunny now reads ${accountEmail}.`, now);
+    await noteIfMailHeld(ctx, household, now);
     await audit(ctx, {
       householdId: args.householdId,
       actor: SYSTEM_ACTOR,

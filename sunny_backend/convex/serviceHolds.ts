@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation } from "./_generated/server";
-import type { ActionCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { postMailbox } from "./lib/chatPosts";
 import { MAIL_SERVICES, PROBE_EVERY_MS, holdGate, holdOf, holdService } from "./lib/serviceHolds";
 import type { HoldService } from "./lib/serviceHolds";
@@ -52,6 +53,25 @@ export const close = internalMutation({
   },
 });
 
+async function noteHousehold(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  now: number,
+): Promise<boolean> {
+  if (household.backgroundPaused) return false;
+  await postMailbox(ctx, household, MAIL_HELD_NOTE, now);
+  return true;
+}
+
+export async function noteIfMailHeld(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  now: number,
+): Promise<boolean> {
+  if ((await holdGate(ctx, MAIL_SERVICES, now)) === "free") return false;
+  return await noteHousehold(ctx, household, now);
+}
+
 export const noteMailHeld = internalMutation({
   args: { cursor: v.union(v.null(), v.string()) },
   handler: async (ctx, { cursor }): Promise<number> => {
@@ -64,9 +84,7 @@ export const noteMailHeld = internalMutation({
     let noted = 0;
     for (const mailbox of page.page) {
       const household = await ctx.db.get(mailbox.householdId);
-      if (!household) continue;
-      await postMailbox(ctx, household, MAIL_HELD_NOTE, now);
-      noted += 1;
+      if (household && (await noteHousehold(ctx, household, now))) noted += 1;
     }
     if (!page.isDone) {
       await ctx.scheduler.runAfter(0, internal.serviceHolds.noteMailHeld, {
