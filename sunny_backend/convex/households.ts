@@ -410,6 +410,7 @@ export const revokeDeviceToken = mutation({
     if (!device || device.householdId !== args.householdId) {
       throw appError("not_found", "Device not found");
     }
+    await ctx.db.patch(device._id, { tokenRevokedAt: Date.now() });
     await revokeTokenOf(ctx, actor, device);
     return null;
   },

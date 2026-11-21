@@ -1,5 +1,5 @@
 import SunnyWidget from '../../modules/sunny-widget';
-import { callAction } from '../backend/api';
+import { BackendError, callAction } from '../backend/api';
 import { api } from '../backend/convexApi';
 import type { SessionDecision } from '../backend/pairing';
 import { CONVEX_SITE_URL } from '../config';
@@ -10,7 +10,9 @@ import { readUnsentPresses } from './sharedPresses';
 
 type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
 
-let storeFailed = false;
+const REFUSED_FOR_THIS_PAIRING = 403;
+
+let issuingStopped = false;
 let syncRun: Promise<void> | null = null;
 let generation = 0;
 let storing: Promise<void> = Promise.resolve();
@@ -33,18 +35,29 @@ export function surfaceSyncKey(day: DayViewData | null): string | null {
   return JSON.stringify({ localDate, tasks, eventsToday, nextUp });
 }
 
+async function issueToken(issuedFor: number): Promise<string | null> {
+  try {
+    return (await callAction(api.deviceApi.issueToken, {})).deviceToken;
+  } catch (e) {
+    if (!(e instanceof BackendError) || e.status !== REFUSED_FOR_THIS_PAIRING) throw e;
+    issuingStopped = issuedFor === generation;
+    logger.info('Widget', 'No widget token for this pairing; asking again after the next pairing');
+    return null;
+  }
+}
+
 export async function ensureWidgetToken(): Promise<boolean> {
   if ((await SunnyWidget.storedSiteUrl()) === CONVEX_SITE_URL) return true;
-  if (storeFailed) return false;
+  if (issuingStopped) return false;
   const issuedFor = generation;
-  const { deviceToken } = await callAction(api.deviceApi.issueToken, {});
-  if (issuedFor !== generation) return false;
+  const deviceToken = await issueToken(issuedFor);
+  if (deviceToken === null || issuedFor !== generation) return false;
   const store = SunnyWidget.setCredentials(deviceToken, CONVEX_SITE_URL);
   storing = store.catch(() => undefined);
   try {
     await store;
   } catch (e) {
-    storeFailed = issuedFor === generation;
+    issuingStopped = issuedFor === generation;
     logger.error('Widget', `Could not store the widget credentials: ${errorMessage(e)}`);
     return false;
   }
@@ -70,7 +83,7 @@ export function syncWidget(): Promise<void> {
 
 export async function clearWidget(): Promise<void> {
   generation += 1;
-  storeFailed = false;
+  issuingStopped = false;
   await storing;
   await SunnyWidget.clearCredentials();
 }

@@ -1267,7 +1267,7 @@ describe("a confirm through the device API is a device confirm", () => {
 });
 
 describe("revokeDeviceToken", () => {
-  test("an editor revokes the token; the device stays paired and can issue a new one", async () => {
+  test("an editor revokes the token; the device stays paired and is issued no new one", async () => {
     const t = makeBackend();
     const f = await household(t);
     const token = await issue(t);
@@ -1280,13 +1280,55 @@ describe("revokeDeviceToken", () => {
     expect(row).not.toBeNull();
     expect(row!.tokenHash).toBeUndefined();
     expect(row!.tokenIssuedAt).toBeUndefined();
+    expect(near(row!.tokenRevokedAt, Date.parse(START))).toBe(true);
     expect((await audits(t)).find((a) => a.action === "revoke_device_token")).toMatchObject({
       actorKind: "caregiver",
       actorUserId: "pat",
       entityId: f.phoneId,
       detail: { hadToken: true },
     });
-    expect((await getState(t, await issue(t))).status).toBe(200);
+    await expect(issue(t)).rejects.toThrow(/Pair the device again/);
+    setNow(Date.parse(START) + 2 * 60 * MIN);
+    await expect(issue(t)).rejects.toThrow(/Pair the device again/);
+    expect((await deviceRow(t, f.phoneId))!.tokenHash).toBeUndefined();
+    expect((await audits(t)).filter((a) => a.action === "issue_device_token")).toHaveLength(1);
+  });
+
+  test("caregivers see since when a device's token is revoked", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const asPat = t.withIdentity({ subject: "pat" });
+    const listed = async () =>
+      (await asPat.query(api.households.listDevices, { householdId: f.householdId })).find(
+        (d) => d._id === f.phoneId,
+      )!;
+    expect((await listed()).tokenRevokedAt).toBeUndefined();
+    await asPat.mutation(api.households.revokeDeviceToken, {
+      householdId: f.householdId,
+      deviceId: f.phoneId,
+    });
+    expect(near((await listed()).tokenRevokedAt, Date.parse(START))).toBe(true);
+  });
+
+  test("the phone paired again is issued a token while the revoked pairing stays refused", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await issue(t);
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.revokeDeviceToken, {
+      householdId: f.householdId,
+      deviceId: f.phoneId,
+    });
+    const { code } = await pat.mutation(api.households.createJoinCode, {
+      householdId: f.householdId,
+      grants: "senior_phone",
+    });
+    const paired = await t.mutation(internal.households.pairDevice, { code, userId: "phone-2" });
+    expect(paired.deviceId).not.toBe(f.phoneId);
+    const token = await issue(t, "phone-2");
+    expect((await getState(t, token)).status).toBe(200);
+    expect((await deviceRow(t, paired.deviceId))!.tokenRevokedAt).toBeUndefined();
+    await expect(issue(t)).rejects.toThrow(/Pair the device again/);
   });
 
   test("a viewer, a device and another household's editor are refused", async () => {
@@ -1318,6 +1360,23 @@ describe("revokeDeviceToken", () => {
 });
 
 describe("revokeOwnToken", () => {
+  test("an unpaired phone that pairs again is issued a token", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    await t.withIdentity({ subject: "phone" }).mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await getState(t, token)).status).toBe(401);
+    expect((await deviceRow(t, f.phoneId))!.tokenRevokedAt).toBeUndefined();
+    const { code } = await t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.households.createJoinCode, {
+        householdId: f.householdId,
+        grants: "senior_phone",
+      });
+    await t.mutation(internal.households.pairDevice, { code, userId: "phone-2" });
+    expect((await getState(t, await issue(t, "phone-2"))).status).toBe(200);
+  });
+
   test("a paired phone revokes its own token and stays paired", async () => {
     const t = makeBackend();
     const f = await household(t);

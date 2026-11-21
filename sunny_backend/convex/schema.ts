@@ -87,6 +87,7 @@ export default defineSchema({
     pairingNonce: v.optional(v.string()),
     tokenHash: v.optional(v.string()),
     tokenIssuedAt: v.optional(v.number()),
+    tokenRevokedAt: v.optional(v.number()),
     screen: v.optional(deviceScreen),
     firmware: v.optional(v.string()),
   })

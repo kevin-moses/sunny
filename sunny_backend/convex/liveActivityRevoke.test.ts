@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
-import { alertsSent, resetProviderMocks } from "./deliveryMocks.helpers";
+import { alertsSent, pushesSent, resetProviderMocks } from "./deliveryMocks.helpers";
+import type { SentPush } from "./deliveryMocks.helpers";
 import {
   ALERT_TOKEN,
   MIN,
@@ -9,6 +10,7 @@ import {
   activities,
   activityPushes,
   addTask,
+  confirmOnDisplay,
   ends,
   local,
   makePhoneBackend,
@@ -18,8 +20,10 @@ import {
   putPushState,
   reportStartToken,
   reportUpdateToken,
+  secondPhone,
   setNow,
   settle,
+  START_TOKEN,
   starts,
   tick,
 } from "./phoneHarness.helpers";
@@ -30,6 +34,14 @@ vi.mock("./apns", async (original) =>
 );
 
 const EIGHT = local("08:00");
+
+const SECOND_ALERT_TOKEN = "a7".repeat(32);
+
+function widgetAndWakePushes(): SentPush[] {
+  return pushesSent().filter(
+    (push) => push.message.pushType === "widgets" || push.message.pushType === "background",
+  );
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -97,29 +109,45 @@ describe.each(["removeDevice", "revokeDeviceToken", "revokeOwnToken"] as const)(
   },
 );
 
-describe("after a token revoke", () => {
-  test("the next cue is a notification until the phone reports with a new token", async () => {
+describe("after a caregiver revokes the token", () => {
+  test("the phone gets due-time notifications only until it is paired again", async () => {
     const f = await twoShown();
     await revoke(f, "revokeDeviceToken");
     await settle(f.t);
     resetProviderMocks();
 
-    await addTask(f, { title: "Inhaler", time: "08:20" });
+    const inhaler = await addTask(f, { title: "Inhaler", time: "08:20" });
     await tick(f, EIGHT + 20 * MIN);
     await settle(f.t);
     expect(activityPushes()).toEqual([]);
     expect(alertsSent()).toContainEqual(
       expect.objectContaining({ tokens: [ALERT_TOKEN], title: "Inhaler" }),
     );
+    await expect(
+      f.t.withIdentity({ subject: f.phoneUser }).action(api.deviceApi.issueToken, {}),
+    ).rejects.toThrow(/Pair the device again/);
+    await confirmOnDisplay(f, inhaler);
+    await settle(f.t);
+    expect(await phonePushRow(f)).toBeNull();
+    expect(widgetAndWakePushes()).toEqual([]);
 
-    const { deviceToken } = await f.t
-      .withIdentity({ subject: f.phoneUser })
-      .action(api.deviceApi.issueToken, {});
-    await reportStartToken({ ...f, deviceToken });
-    await addTask(f, { title: "Vitamin D", time: "08:30" });
+    const pairedAgain = await secondPhone(f, SECOND_ALERT_TOKEN);
+    await reportStartToken(pairedAgain);
+    await putPushState(pairedAgain, { widgetPush: { token: WIDGET_TOKEN } });
+    resetProviderMocks();
+    const vitamin = await addTask(f, { title: "Vitamin D", time: "08:30" });
     await tick(f, EIGHT + 30 * MIN);
     await settle(f.t);
-    expect(starts().map((aps) => aps.alert.title)).toEqual(["Vitamin D"]);
+    expect(starts().map((aps) => aps.alert.title)).toContain("Vitamin D");
+    expect(new Set(activityPushes().flatMap((push) => push.tokens))).toEqual(
+      new Set([START_TOKEN]),
+    );
+    expect(alertsSent()).toContainEqual(
+      expect.objectContaining({ tokens: [ALERT_TOKEN], title: "Vitamin D" }),
+    );
+    await confirmOnDisplay(f, vitamin);
+    await settle(f.t);
+    expect(widgetAndWakePushes().map((push) => push.tokens)).toEqual([[WIDGET_TOKEN]]);
   });
 });
 

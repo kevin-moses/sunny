@@ -20,7 +20,17 @@ const mockLogger = { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), erro
 
 jest.mock('../../../modules/sunny-widget', () => ({ __esModule: true, default: mockNative }));
 
+class MockBackendError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 jest.mock('../../backend/api', () => ({
+  BackendError: MockBackendError,
   callAction: (...args: unknown[]) => mockCallAction(...args),
 }));
 
@@ -117,6 +127,27 @@ describe('ensureWidgetToken', () => {
     expect(mockCallAction).toHaveBeenCalledTimes(2);
   });
 
+  it('stops asking once the server refuses this pairing a token, until the widget is cleared', async () => {
+    const { ensureWidgetToken, clearWidget } = loadModule();
+    mockCallAction.mockRejectedValueOnce(new MockBackendError('revoked', 403));
+    await expect(ensureWidgetToken()).resolves.toBe(false);
+    await expect(ensureWidgetToken()).resolves.toBe(false);
+    expect(mockCallAction).toHaveBeenCalledTimes(1);
+    expect(mockNative.setCredentials).not.toHaveBeenCalled();
+    await clearWidget();
+    await expect(ensureWidgetToken()).resolves.toBe(true);
+    expect(mockCallAction).toHaveBeenCalledTimes(2);
+    expect(mockNative.setCredentials).toHaveBeenCalledWith('tok-1', SITE);
+  });
+
+  it('asks again on the next foreground after a refusal that can change', async () => {
+    const { ensureWidgetToken } = loadModule();
+    mockCallAction.mockRejectedValueOnce(new MockBackendError('too many', 429));
+    await expect(ensureWidgetToken()).rejects.toThrow('too many');
+    await expect(ensureWidgetToken()).resolves.toBe(true);
+    expect(mockCallAction).toHaveBeenCalledTimes(2);
+  });
+
   it('stops issuing tokens once storing one has failed, until the widget is cleared', async () => {
     const { ensureWidgetToken, clearWidget } = loadModule();
     mockNative.setCredentials.mockRejectedValueOnce(new Error('keychain'));
@@ -147,6 +178,16 @@ describe('syncWidget', () => {
     expect(mockCallAction).toHaveBeenCalledTimes(1);
     expect(mockNative.flushPresses).toHaveBeenCalledTimes(2);
     expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
+  });
+
+  it('neither flushes nor asks again after this pairing was refused a token', async () => {
+    const { syncWidget } = loadModule();
+    mockCallAction.mockRejectedValueOnce(new MockBackendError('revoked', 403));
+    await syncWidget();
+    await syncWidget();
+    expect(mockCallAction).toHaveBeenCalledTimes(1);
+    expect(mockNative.flushPresses).not.toHaveBeenCalled();
+    expect(mockLogger.warning).not.toHaveBeenCalled();
   });
 
   it('does not flush without a stored token', async () => {

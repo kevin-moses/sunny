@@ -82,6 +82,9 @@ async function pressedBeforeDue(
 
 const BAD_ID_MESSAGE = "instanceId must be a task instance id";
 
+export const TOKEN_REVOKED =
+  "A family member turned off this device's token. Pair the device again to get a new one.";
+
 const rateLimiter = new RateLimiter(components.rateLimiter, {
   tokenIssues: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
   tokenRevokes: { kind: "token bucket", rate: 10, period: HOUR, capacity: 10 },
@@ -166,6 +169,7 @@ export const storeTokenHash = internalMutation({
   handler: async (ctx, args): Promise<null> => {
     const device = await findDevice(ctx, args.userId);
     if (!device) throw appError("forbidden", DEVICES_ONLY);
+    if (device.tokenRevokedAt !== undefined) throw appError("forbidden", TOKEN_REVOKED);
     await ctx.db.patch(device._id, { tokenHash: args.tokenHash, tokenIssuedAt: Date.now() });
     await audit(ctx, {
       householdId: device.householdId,
