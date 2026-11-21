@@ -1,21 +1,26 @@
 import { describe, expect, test } from "vitest";
 import { resolveDate, resolveSlot, resolveTime, weekdayDate } from "./mailDates";
-import type { SlotPicks } from "./mailDates";
+import type { SlotPart, SlotPicks } from "./mailDates";
 import { ANCHOR } from "./mailFixtures.helpers";
 
-function picks(parts: Partial<Record<keyof SlotPicks, string>>, probability = 0.95): SlotPicks {
-  const pick = (choice: string) => ({ choice, probability });
-  return {
-    date_form: pick(parts.date_form ?? "not_stated"),
-    month: pick(parts.month ?? "not_stated"),
-    day: pick(parts.day ?? "not_stated"),
-    year: pick(parts.year ?? "not_stated"),
-    weekday: pick(parts.weekday ?? "not_stated"),
-    week: pick(parts.week ?? "unqualified"),
-    hour: pick(parts.hour ?? "not_stated"),
-    minute: pick(parts.minute ?? "00"),
-    half: pick(parts.half ?? "am"),
-  };
+const UNSAID: Record<SlotPart, string> = {
+  date_form: "not_stated",
+  month: "not_stated",
+  day: "not_stated",
+  year: "not_stated",
+  weekday: "not_stated",
+  week: "unqualified",
+  hour: "not_stated",
+  minute: "00",
+  half: "am",
+};
+
+function picks(parts: Partial<Record<SlotPart, string>>, probability = 0.95): SlotPicks {
+  return (part) => ({ choice: parts[part] ?? UNSAID[part], probability });
+}
+
+function withProbability(picks: SlotPicks, changed: SlotPart, probability: number): SlotPicks {
+  return (part) => (part === changed ? { ...picks(part), probability } : picks(part));
 }
 
 describe("date resolution against the day the email arrived", () => {
@@ -113,9 +118,7 @@ describe("date resolution against the day the email arrived", () => {
       year: "2026",
       weekday: "Thursday",
     });
-    expect(
-      resolveDate({ ...parts, month: { choice: "December", probability: 0.6 } }, ANCHOR),
-    ).toBeNull();
+    expect(resolveDate(withProbability(parts, "month", 0.6), ANCHOR)).toBeNull();
   });
 });
 
@@ -159,7 +162,7 @@ describe("time resolution", () => {
 
   test("an unsettled half of the day leaves the time unread", () => {
     const parts = picks({ hour: "1", minute: "00", half: "pm" });
-    expect(resolveTime({ ...parts, half: { choice: "pm", probability: 0.55 } })).toBeNull();
+    expect(resolveTime(withProbability(parts, "half", 0.55))).toBeNull();
   });
 
   test("a slot keeps its date when the time is not stated", () => {

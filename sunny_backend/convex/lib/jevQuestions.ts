@@ -1,7 +1,8 @@
 import type { ChoiceQuestion, NoulQuestion } from "@typesafe-ai/sdk";
 import type { JevState } from "./jevClient";
 import { shownBody } from "./mailBody";
-import { NOT_STATED } from "./mailDates";
+import { NOT_STATED, SLOT_PARTS } from "./mailDates";
+import type { SlotPart } from "./mailDates";
 import { APPOINTMENT_KIND_NAMES } from "./mailConstants";
 import { APPOINTMENT_KINDS } from "./mailTypes";
 import type { ParsedEmail } from "./mailTypes";
@@ -214,50 +215,57 @@ function options(
   return { ...Object.fromEntries(names.map((n) => [n, null])), ...extra };
 }
 
-function slotQuestions(slot: SlotName, receivedYear: number): Record<string, ChoiceQuestion> {
-  const role = SLOT_ROLES[slot];
+function slotPartQuestions(
+  role: { date: string; time: string },
+  receivedYear: number,
+): Record<SlotPart, ChoiceQuestion> {
   const absent = { [NOT_STATED]: "The email does not state this." };
   return {
-    [`${slot}_date_form`]: choice(`How does \`email\` state ${role.date}?`, {
+    date_form: choice(`How does \`email\` state ${role.date}?`, {
       calendar_date: "As a month and a day, such as December 10 or 12/10",
       today: "As today",
       tomorrow: "As tomorrow",
       weekday: "Only as a day of the week, such as Friday or next Tuesday",
       not_stated: "The email does not state this date",
     }),
-    [`${slot}_month`]: choice(`Which month is ${role.date}?`, options(MONTH_NAMES, absent)),
-    [`${slot}_day`]: choice(`Which day of the month is ${role.date}?`, options(DAYS, absent)),
-    [`${slot}_year`]: choice(`Which year does \`email\` give for ${role.date}?`, {
+    month: choice(`Which month is ${role.date}?`, options(MONTH_NAMES, absent)),
+    day: choice(`Which day of the month is ${role.date}?`, options(DAYS, absent)),
+    year: choice(`Which year does \`email\` give for ${role.date}?`, {
       [String(receivedYear)]: null,
       [String(receivedYear + 1)]: null,
       not_stated: "The email gives no year for this date.",
       other_year: "The email gives a different year.",
     }),
-    [`${slot}_weekday`]: choice(
+    weekday: choice(
       `Which day of the week does \`email\` give for ${role.date}?`,
       options(WEEKDAY_NAMES, absent),
     ),
-    [`${slot}_week`]: choice(`Which week does \`email\` put ${role.date} in?`, {
+    week: choice(`Which week does \`email\` put ${role.date} in?`, {
       this_week: "This week, as in this Friday",
       next_week: "Next week, as in next Tuesday or Tuesday next week",
       unqualified:
         "A day of the week with no week given, as in Friday or on Friday, or no weekday at all",
     }),
-    [`${slot}_hour`]: choice(`What hour is ${role.time}?`, {
+    hour: choice(`What hour is ${role.time}?`, {
       ...options(HOURS),
       "12": "12 o'clock, including noon",
       ...absent,
     }),
-    [`${slot}_minute`]: choice(`How many minutes past the hour is ${role.time}?`, {
+    minute: choice(`How many minutes past the hour is ${role.time}?`, {
       ...options(MINUTES),
       "00": "On the hour, including times written without minutes such as 10 AM or noon",
       other: "Some other number of minutes",
     }),
-    [`${slot}_half`]: choice(`Is ${role.time} in the morning or later in the day?`, {
+    half: choice(`Is ${role.time} in the morning or later in the day?`, {
       am: "Before noon (AM)",
       pm: "Noon or later (PM)",
     }),
   };
+}
+
+function slotQuestions(slot: SlotName, receivedYear: number): Record<string, ChoiceQuestion> {
+  const questions = slotPartQuestions(SLOT_ROLES[slot], receivedYear);
+  return Object.fromEntries(SLOT_PARTS.map((part) => [`${slot}_${part}`, questions[part]]));
 }
 
 function zoneName(timezone: string): string {

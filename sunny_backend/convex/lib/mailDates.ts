@@ -23,10 +23,21 @@ export interface Slot {
   time: string | null;
 }
 
-export type SlotPicks = Record<
-  "date_form" | "month" | "day" | "year" | "weekday" | "week" | "hour" | "minute" | "half",
-  Picked
->;
+export const SLOT_PARTS = [
+  "date_form",
+  "month",
+  "day",
+  "year",
+  "weekday",
+  "week",
+  "hour",
+  "minute",
+  "half",
+] as const;
+
+export type SlotPart = (typeof SLOT_PARTS)[number];
+
+export type SlotPicks = (part: SlotPart) => Picked;
 
 function calendarDate(year: number, month: number, day: number): string | null {
   const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -62,7 +73,7 @@ function inferYear(month: number, day: number, anchor: string): string | null {
 }
 
 export function resolveDate(picks: SlotPicks, anchor: string): string | null {
-  switch (oneOf(DATE_FORMS, sure(picks.date_form))) {
+  switch (oneOf(DATE_FORMS, sure(picks("date_form")))) {
     case null:
     case "not_stated":
       return null;
@@ -71,13 +82,13 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
     case "tomorrow":
       return addDays(anchor, 1);
     case "weekday": {
-      const week = oneOf(WEEKS, sure(picks.week));
-      return week === null ? null : weekdayDate(anchor, sure(picks.weekday) ?? "", week);
+      const week = oneOf(WEEKS, sure(picks("week")));
+      return week === null ? null : weekdayDate(anchor, sure(picks("weekday")) ?? "", week);
     }
     case "calendar_date": {
-      const month = MONTH_NAMES.indexOf(sure(picks.month) ?? "") + 1;
-      const day = Number(sure(picks.day));
-      const year = sure(picks.year);
+      const month = MONTH_NAMES.indexOf(sure(picks("month")) ?? "") + 1;
+      const day = Number(sure(picks("day")));
+      const year = sure(picks("year"));
       if (month === 0 || !Number.isInteger(day) || day < 1 || year === null) return null;
       if (year === "other_year") return null;
       const date =
@@ -85,7 +96,7 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
           ? inferYear(month, day, anchor)
           : calendarDate(Number(year), month, day);
       if (date === null) return null;
-      const named = sure(picks.weekday);
+      const named = sure(picks("weekday"));
       if (named === null) return null;
       return named === NOT_STATED || weekdayName(date) === named ? date : null;
     }
@@ -93,9 +104,9 @@ export function resolveDate(picks: SlotPicks, anchor: string): string | null {
 }
 
 export function resolveTime(picks: SlotPicks): string | null {
-  const hour = sure(picks.hour);
-  const minute = sure(picks.minute);
-  const half = sure(picks.half);
+  const hour = sure(picks("hour"));
+  const minute = sure(picks("minute"));
+  const half = sure(picks("half"));
   if (
     hour === null ||
     hour === NOT_STATED ||

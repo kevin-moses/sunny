@@ -79,6 +79,14 @@ const is = (r: Readings, flag: Flag): boolean => r.flags.get(flag) === "yes";
 const anyUnsure = (r: Readings, flags: Flag[]): boolean =>
   flags.some((f) => r.flags.get(f) === "unsure");
 
+function suspiciousIf(id: string, flag: Flag, suspicion: Suspicion, summary: string): Row {
+  return { id, decide: (r) => (is(r, flag) ? suspicious(suspicion, summary) : null) };
+}
+
+function unsettled(id: string, flags: Flag[], summary: string): Row {
+  return { id, decide: (r) => (anyUnsure(r, flags) ? decision("other", summary) : null) };
+}
+
 interface NamedDecision {
   id: string;
   flag: Flag;
@@ -140,43 +148,30 @@ function cancelled(r: Readings, previous: AppointmentRef, summary: string): Deci
 }
 
 export const TRUTH_TABLE: Row[] = [
-  {
-    id: "assistant-instructions",
-    decide: (r) =>
-      is(r, "addresses_assistant")
-        ? suspicious(
-            "scam",
-            "The email contains instructions aimed at an assistant or a program that reads mail, which is a sign of an attack.",
-          )
-        : null,
-  },
-  {
-    id: "private-details",
-    decide: (r) =>
-      is(r, "asks_private_details")
-        ? suspicious("credentials", "The email asks for private login or identity details.")
-        : null,
-  },
-  {
-    id: "hard-to-trace-payment",
-    decide: (r) =>
-      is(r, "asks_hard_to_trace_payment")
-        ? suspicious(
-            "money_request",
-            "The email asks for money by gift card, wire transfer, cash or another hard-to-trace way.",
-          )
-        : null,
-  },
-  {
-    id: "bring-payment",
-    decide: (r) =>
-      is(r, "asks_to_bring_payment")
-        ? suspicious(
-            "money_request",
-            "The email tells the senior to bring a bank card, checkbook or cash.",
-          )
-        : null,
-  },
+  suspiciousIf(
+    "assistant-instructions",
+    "addresses_assistant",
+    "scam",
+    "The email contains instructions aimed at an assistant or a program that reads mail, which is a sign of an attack.",
+  ),
+  suspiciousIf(
+    "private-details",
+    "asks_private_details",
+    "credentials",
+    "The email asks for private login or identity details.",
+  ),
+  suspiciousIf(
+    "hard-to-trace-payment",
+    "asks_hard_to_trace_payment",
+    "money_request",
+    "The email asks for money by gift card, wire transfer, cash or another hard-to-trace way.",
+  ),
+  suspiciousIf(
+    "bring-payment",
+    "asks_to_bring_payment",
+    "money_request",
+    "The email tells the senior to bring a bank card, checkbook or cash.",
+  ),
   {
     id: "new-contact-details",
     decide: (r) =>
@@ -195,16 +190,11 @@ export const TRUTH_TABLE: Row[] = [
       );
     },
   },
-  {
-    id: "safety-unsettled",
-    decide: (r) =>
-      anyUnsure(r, SAFETY_FLAGS)
-        ? decision(
-            "other",
-            "Sunny could not rule out that this email is a scam. Please look at it.",
-          )
-        : null,
-  },
+  unsettled(
+    "safety-unsettled",
+    SAFETY_FLAGS,
+    "Sunny could not rule out that this email is a scam. Please look at it.",
+  ),
   {
     id: "ics-cancellation",
     decide: (r) => {
@@ -321,16 +311,11 @@ export const TRUTH_TABLE: Row[] = [
     id,
     decide: (r) => (is(r, flag) ? decision(reason, summary) : null),
   })),
-  {
-    id: "decision-unsettled",
-    decide: (r) =>
-      anyUnsure(r, SPECIFIC_DECISION_FLAGS)
-        ? decision(
-            "other",
-            "Sunny could not tell whether this email needs a decision. Please look at it.",
-          )
-        : null,
-  },
+  unsettled(
+    "decision-unsettled",
+    SPECIFIC_DECISION_FLAGS,
+    "Sunny could not tell whether this email needs a decision. Please look at it.",
+  ),
   {
     id: "prescription",
     decide: (r) => {
@@ -381,23 +366,16 @@ export const TRUTH_TABLE: Row[] = [
           }
         : null,
   },
-  {
-    id: "broad-unsettled",
-    decide: (r) =>
-      anyUnsure(r, BROAD_FLAGS)
-        ? decision(
-            "other",
-            "Sunny could not tell whether this email needs a decision. Please look at it.",
-          )
-        : null,
-  },
-  {
-    id: "information-unsettled",
-    decide: (r) =>
-      anyUnsure(r, INFO_FLAGS)
-        ? decision("other", "Sunny could not tell what this email is about. Please look at it.")
-        : null,
-  },
+  unsettled(
+    "broad-unsettled",
+    BROAD_FLAGS,
+    "Sunny could not tell whether this email needs a decision. Please look at it.",
+  ),
+  unsettled(
+    "information-unsettled",
+    INFO_FLAGS,
+    "Sunny could not tell what this email is about. Please look at it.",
+  ),
   {
     id: "otherwise",
     decide: () =>
@@ -424,18 +402,7 @@ function pickOf(answers: JevAnswers, name: string): Picked {
 }
 
 function slotPicks(answers: JevAnswers, slot: SlotName): SlotPicks {
-  const read = (part: keyof SlotPicks): Picked => pickOf(answers, `${slot}_${part}`);
-  return {
-    date_form: read("date_form"),
-    month: read("month"),
-    day: read("day"),
-    year: read("year"),
-    weekday: read("weekday"),
-    week: read("week"),
-    hour: read("hour"),
-    minute: read("minute"),
-    half: read("half"),
-  };
+  return (part) => pickOf(answers, `${slot}_${part}`);
 }
 
 function inviteOf(ics: IcsEvent | null): Invite | null {
