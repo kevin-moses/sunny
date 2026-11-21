@@ -6,7 +6,7 @@ import { findMember, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
 import { isDueEntry } from "./dueTask";
-import { isSeniorCue, openActivity, planStart } from "./liveActivity";
+import { findPhonePush, isSeniorCue, openActivity, planStart } from "./liveActivity";
 import type { ApnsMessage, NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
@@ -103,7 +103,18 @@ function smsText(row: Doc<"notificationOutbox">, canClaim: boolean): string {
     .slice(0, SMS_MAX_CHARS);
 }
 
+async function blindStretchOver(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<boolean> {
+  const deviceId: unknown = row.payload["deviceId"];
+  const blindSince: unknown = row.payload["blindSince"];
+  const device = typeof deviceId === "string" ? ctx.db.normalizeId("devices", deviceId) : null;
+  const push = device === null ? null : await findPhonePush(ctx, device);
+  return push?.blindSince === undefined || push.blindSince !== blindSince;
+}
+
 async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<string | null> {
+  if (row.kind === "lock_screen_blind") {
+    return (await blindStretchOver(ctx, row)) ? "phone_not_blind" : null;
+  }
   if (row.taskInstanceId === undefined) return null;
   const instance = await ctx.db.get(row.taskInstanceId);
   if (!instance) return "instance_gone";

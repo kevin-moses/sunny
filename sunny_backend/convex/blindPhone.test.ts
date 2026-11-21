@@ -42,6 +42,8 @@ const PAT_TOKEN = "b1".repeat(32);
 
 const VAL_TOKEN = "b2".repeat(32);
 
+const SAM_TOKEN = "b3".repeat(32);
+
 const TITLE = "Mom's phone is not showing tasks on its Lock Screen";
 
 const BODY =
@@ -124,6 +126,12 @@ async function noticeRows(f: PhoneFixture) {
       (row) => row.kind === "lock_screen_blind",
     ),
   );
+}
+
+async function setPaused(f: PhoneFixture, backgroundPaused: boolean): Promise<void> {
+  await f.t
+    .withIdentity({ subject: f.caregiver })
+    .mutation(api.households.update, { householdId: f.householdId, backgroundPaused });
 }
 
 async function listedBlindSince(f: PhoneFixture): Promise<number | null> {
@@ -228,6 +236,73 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     await addTask(f, { title: "Morning pills", time: "08:00" });
     const blindAt = await goBlind(f, "Morning pills", "08:00");
     expect(await listedBlindSince(f)).toBe(blindAt);
+  });
+});
+
+describe("a notice that cannot go out yet", () => {
+  test("a notice still waiting when the phone reports is skipped", async () => {
+    const { f, blindAt } = await blindFamily();
+    setNow(blindAt + 24 * HOUR);
+    await f.t.mutation(internal.scheduler.tick, { now: blindAt + 24 * HOUR });
+    expect((await noticeRows(f)).map((row) => row.state)).toEqual(["pending", "pending"]);
+    expect((await putPushState(f, {})).status).toBe(200);
+    await settle(f.t);
+    expect(notices()).toEqual([]);
+    expect(await noticeRows(f)).toEqual([
+      expect.objectContaining({ state: "skipped", detail: "phone_not_blind" }),
+      expect.objectContaining({ state: "skipped", detail: "phone_not_blind" }),
+    ]);
+  });
+
+  test("with no caregiver who has a push token the stretch stays untold, and a caregiver who installs the app later is told", async () => {
+    const { f, blindAt } = await blindFamily();
+    await f.t.run(async (ctx) => {
+      for (const row of await ctx.db.query("pushTokens").collect()) {
+        if (row.userId !== f.phoneUser) await ctx.db.delete(row._id);
+      }
+    });
+    await sweep(f, blindAt + 24 * HOUR);
+    await sweep(f, blindAt + 30 * HOUR);
+    expect(await noticeRows(f)).toEqual([]);
+    expect((await phonePushRow(f))!.blindToldAt).toBeUndefined();
+
+    await f.t.run(async (ctx) => {
+      await ctx.db.insert("pushTokens", { userId: "sam", token: SAM_TOKEN });
+    });
+    await sweep(f, blindAt + 31 * HOUR);
+    expect(notices().map((alert) => alert.tokens)).toEqual([[SAM_TOKEN]]);
+    expect((await phonePushRow(f))!.blindToldAt).toBe(blindAt + 31 * HOUR);
+    await sweep(f, blindAt + 32 * HOUR);
+    expect(notices()).toHaveLength(1);
+  });
+
+  test("a paused household is told nothing until the pause ends, then once if the phone is still blind", async () => {
+    const { f, blindAt } = await blindFamily();
+    await setPaused(f, true);
+    await sweep(f, blindAt + 24 * HOUR);
+    await sweep(f, blindAt + 40 * HOUR);
+    expect(await noticeRows(f)).toEqual([]);
+    expect((await phonePushRow(f))!.blindToldAt).toBeUndefined();
+
+    await setPaused(f, false);
+    await sweep(f, blindAt + 41 * HOUR);
+    expect(
+      notices()
+        .map((alert) => alert.tokens)
+        .sort(),
+    ).toEqual([[PAT_TOKEN], [VAL_TOKEN]]);
+    await sweep(f, blindAt + 42 * HOUR);
+    expect(notices()).toHaveLength(2);
+  });
+
+  test("a phone that reported during the pause is not reported after it", async () => {
+    const { f, blindAt } = await blindFamily();
+    await setPaused(f, true);
+    await sweep(f, blindAt + 24 * HOUR);
+    expect((await putPushState(f, {})).status).toBe(200);
+    await setPaused(f, false);
+    await sweep(f, blindAt + 25 * HOUR);
+    expect(await noticeRows(f)).toEqual([]);
   });
 });
 
