@@ -15,6 +15,7 @@ import {
   setupSynced,
   syncRows,
 } from "./testing.helpers";
+import type { TestConvex } from "./testing.helpers";
 
 vi.mock("./lib/google", async (original) =>
   (await import("./googleMocks.helpers")).googleMock(await original()),
@@ -24,7 +25,20 @@ vi.mock("./lib/secretBox", async (original) =>
   (await import("./googleMocks.helpers")).secretBoxMock(await original()),
 );
 
+const { GoogleApiError } = await import("./lib/google");
+
 const WORK_ID = "work_1" as WorkId;
+
+async function runPoolUntil(t: TestConvex, done: () => Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 100 && !(await done()); i++) {
+    let finished = false;
+    void t.finishInProgressScheduledFunctions().then(() => {
+      finished = true;
+    });
+    while (!finished) await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1_100);
+  }
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -178,16 +192,91 @@ describe("queueing and dedupe", () => {
   test("a push runs end to end through the workpool", async () => {
     const t = makeBackend();
     await setupSynced(t);
-    for (let i = 0; i < 100 && (await syncRows(t)).length > 0; i++) {
-      let finished = false;
-      void t.finishInProgressScheduledFunctions().then(() => {
-        finished = true;
-      });
-      while (!finished) await vi.advanceTimersByTimeAsync(250);
-      await vi.advanceTimersByTimeAsync(1_100);
-    }
+    await runPoolUntil(t, async () => (await syncRows(t)).length === 0);
     expect(await syncRows(t)).toHaveLength(0);
     expect(googleMocks.upsertEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("held pushes", () => {
+  const QUOTA = '{"error":{"errors":[{"reason":"dailyLimitExceeded"}]}}';
+  const held = { kind: "success" as const, returnValue: "held" };
+
+  test("a held run puts the row back to queued without a retry, a failure or a notice", async () => {
+    const t = makeBackend();
+    const { connectionId } = await setupSynced(t);
+    const [row] = await syncRows(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(row!._id, { state: "dirty", failures: 1, updatedAt: 0 }),
+    );
+    const heldAt = Date.now();
+    await t.mutation(internal.calendarPush.onPushComplete, {
+      workId: WORK_ID,
+      context: { syncId: row!._id },
+      result: held,
+    });
+    const [after] = await syncRows(t);
+    expect(after).toMatchObject({ state: "queued", failures: 1 });
+    expect(after!.updatedAt).toBeGreaterThanOrEqual(heldAt);
+    const connection = await t.run(async (ctx) => await ctx.db.get(connectionId));
+    expect(connection).toMatchObject({ status: "active" });
+    expect(connection?.lastError).toBeUndefined();
+  });
+
+  test("a held push outlives the failed-push retry and syncs on a probe once the hold clears", async () => {
+    const t = makeBackend();
+    const { connectionId, eventId } = await setupSynced(t);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    googleMocks.upsertEvent.mockRejectedValue(new GoogleApiError(403, QUOTA));
+    const heldAfter = (pushes: number) => async () =>
+      googleMocks.upsertEvent.mock.calls.length === pushes &&
+      (await syncRows(t))[0]?.state === "queued";
+    const connectionUntouched = async () => {
+      const connection = await t.run(async (ctx) => await ctx.db.get(connectionId));
+      expect(connection).toMatchObject({ status: "active" });
+      expect(connection?.lastError).toBeUndefined();
+    };
+
+    const calendarHeld = async () =>
+      (await t.run(async (ctx) => await ctx.db.query("serviceHolds").collect())).map((h) => [
+        h.service,
+        h.open,
+      ]);
+
+    await runPoolUntil(t, heldAfter(1));
+    expect(await calendarHeld()).toEqual([["calendar", true]]);
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    await runPoolUntil(t, async () => false);
+    expect(googleMocks.upsertEvent).toHaveBeenCalledTimes(1);
+    expect(await syncRows(t)).toEqual([expect.objectContaining({ state: "queued" })]);
+    expect((await syncRows(t))[0]?.failures).toBeUndefined();
+    await connectionUntouched();
+
+    expect(await t.mutation(internal.calendarFanOut.sweepStuckSyncs, {})).toBe(1);
+    await runPoolUntil(t, heldAfter(2));
+    expect(await syncRows(t)).toEqual([expect.objectContaining({ state: "queued" })]);
+    await connectionUntouched();
+
+    googleMocks.upsertEvent.mockResolvedValue({ id: "gext1", etag: "etag-1", created: true });
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    expect(await t.mutation(internal.calendarFanOut.sweepStuckSyncs, {})).toBe(1);
+    await runPoolUntil(t, async () => (await syncRows(t)).length === 0);
+
+    expect(await syncRows(t)).toHaveLength(0);
+    expect(googleMocks.upsertEvent).toHaveBeenCalledTimes(3);
+    const link = await t.run(async (ctx) =>
+      ctx.db
+        .query("calendarEventLinks")
+        .withIndex("by_event_connection", (q) =>
+          q.eq("eventId", eventId).eq("connectionId", connectionId),
+        )
+        .unique(),
+    );
+    expect(link).toMatchObject({ externalEventId: "gext1" });
+    expect(await calendarHeld()).toEqual([["calendar", false]]);
+    await connectionUntouched();
+    expect(await t.run(async (ctx) => await ctx.db.query("chatPosts").collect())).toHaveLength(0);
+    errorSpy.mockRestore();
   });
 });
 
@@ -265,7 +354,7 @@ describe("household hooks", () => {
     expect(left.links).toHaveLength(0);
     expect(left.syncs.map((s) => s.connectionId)).not.toContain(bConnection);
     expect(left.syncs).toHaveLength(1);
-    expect(await pendingScheduled(t)).toContain("googleCalendar:revokeGrant");
+    expect(await pendingScheduled(t)).toContain("googleOauth:revokeGrant");
   });
 });
 

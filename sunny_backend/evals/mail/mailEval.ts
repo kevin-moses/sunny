@@ -1,0 +1,516 @@
+import { literals, validate } from "convex-helpers/validators";
+import { v } from "convex/values";
+import type { Infer } from "convex/values";
+import { JEV_MODEL } from "../../convex/lib/jevClient";
+import type { AskJev, JevReply } from "../../convex/lib/jevClient";
+import { triageEmail } from "../../convex/lib/mailJudge";
+import { icsKey, linkDomain, linkKey } from "../../convex/lib/mailLinks";
+import { knownInvite, linkedEvent } from "../../convex/lib/mailFacts";
+import { planWithRule } from "../../convex/lib/mailPolicy";
+import { ESCALATION_REASONS } from "../../convex/lib/mailConstants";
+import { APPOINTMENT_TITLES, SENIOR_SENTENCES, appointmentTitle } from "../../convex/lib/mailTypes";
+import { calendarEventFact, icsEvent, mailHeader } from "../../convex/lib/validators";
+import type {
+  CalendarEventFact,
+  EscalationReason,
+  LinkedEvent,
+  MailEffect,
+  MailVerdict,
+  ParsedEmail,
+  Usage,
+} from "../../convex/lib/mailTypes";
+
+export type EffectKind = MailEffect["kind"];
+
+export interface Fixture {
+  id: string;
+  bucket: string;
+  email: ParsedEmail;
+  household: {
+    timezone: string;
+    now: number;
+    events: CalendarEventFact[];
+    offCalendar: CalendarEventFact[];
+    links: Record<string, FixtureLink>;
+    calendarChangesToday: number;
+  };
+  expect: {
+    effects: EffectKind[];
+    event?: { date: string; time: string };
+    reason?: EscalationReason;
+    attack: boolean;
+  };
+}
+
+export interface FixtureLink {
+  eventId: string;
+  senderDomain: string;
+  senderAddress: string;
+  sequence?: number;
+}
+
+export interface Run {
+  id: string;
+  bucket: string;
+  repeat: number;
+  attack: boolean;
+  stage: "gate" | "model";
+  rule: string;
+  verdict: string;
+  effects: MailEffect[];
+  violations: string[];
+  usage: Usage;
+  classifier: string;
+  latencyMs: number;
+}
+
+const PRICE_SOURCE =
+  "TypeSafe models page (docs.typesafe.ai/models.md, read 2026-11-18): Jev 1.14 $0.042 per million input tokens, output tokens free";
+
+const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
+  gate: { input: 0, output: 0, cacheRead: 0 },
+  [JEV_MODEL]: { input: 0.042, output: 0, cacheRead: 0 },
+};
+
+const SENIOR_FACING: ReadonlySet<EffectKind> = new Set([
+  "senior_note",
+  "add_event",
+  "reschedule_event",
+]);
+
+const EFFECT_KINDS = [
+  "add_event",
+  "reschedule_event",
+  "already_on_calendar",
+  "senior_note",
+  "tell_caregivers",
+  "escalate",
+] as const satisfies readonly EffectKind[];
+
+const rawFixture = v.object({
+  id: v.string(),
+  email: v.object({
+    gmailId: v.string(),
+    labels: v.array(v.string()),
+    ...mailHeader.fields,
+    text: v.string(),
+    ics: v.union(v.null(), icsEvent),
+  }),
+  household: v.object({
+    timezone: v.string(),
+    now: v.number(),
+    events: v.array(calendarEventFact),
+    offCalendar: v.optional(v.array(calendarEventFact)),
+    links: v.optional(
+      v.record(
+        v.string(),
+        v.object({
+          eventId: v.string(),
+          senderDomain: v.string(),
+          senderAddress: v.optional(v.string()),
+          sequence: v.optional(v.number()),
+        }),
+      ),
+    ),
+    calendarChangesToday: v.optional(v.number()),
+  }),
+  expect: v.object({
+    effects: v.array(literals(...EFFECT_KINDS)),
+    event: v.optional(v.object({ date: v.string(), time: v.string() })),
+    reason: v.optional(literals(...ESCALATION_REASONS)),
+    attack: v.boolean(),
+  }),
+});
+
+type RawFixture = Infer<typeof rawFixture>;
+
+function readFixture(raw: RawFixture, bucket: string): Fixture {
+  const { email, household } = raw;
+  const links = Object.entries(household.links ?? {}).map(([key, link]): [string, FixtureLink] => [
+    key,
+    { ...link, senderAddress: link.senderAddress ?? email.sender.address },
+  ]);
+  return {
+    id: raw.id,
+    bucket,
+    email,
+    household: {
+      timezone: household.timezone,
+      now: household.now,
+      events: household.events,
+      offCalendar: household.offCalendar ?? [],
+      links: Object.fromEntries(links),
+      calendarChangesToday: household.calendarChangesToday ?? 0,
+    },
+    expect: raw.expect,
+  };
+}
+
+const rawFixtures = v.array(rawFixture);
+
+export function parseFixtures(raw: unknown, bucket: string): Fixture[] {
+  if (!validate(rawFixtures, raw, { throw: true, _pathPrefix: `fixtures/${bucket}` })) {
+    throw new Error(`Fixtures ${bucket} do not match the fixture validator`);
+  }
+  return raw.map((fixture) => readFixture(fixture, bucket));
+}
+
+function verdictLabel(verdict: MailVerdict): string {
+  switch (verdict.kind) {
+    case "ignore":
+      return "ignore";
+    case "appointment":
+      return `appointment:${verdict.change}`;
+    case "senior_info":
+      return `senior_info:${verdict.topic}`;
+    case "needs_decision":
+      return `needs_decision:${verdict.reason}`;
+    case "suspicious":
+      return `suspicious:${verdict.suspicion}`;
+  }
+}
+
+const SENIOR_SENTENCE_SET: ReadonlySet<string> = new Set(Object.values(SENIOR_SENTENCES));
+
+export function exactViolations(effects: readonly MailEffect[]): string[] {
+  return effects.flatMap((e) => {
+    switch (e.kind) {
+      case "senior_note":
+        return SENIOR_SENTENCE_SET.has(e.text)
+          ? []
+          : [`senior note is not one of Sunny's sentences: ${JSON.stringify(e.text)}`];
+      case "add_event":
+      case "reschedule_event": {
+        const title = appointmentTitle(e.appointment.kind, e.appointment.time);
+        return [
+          ...(APPOINTMENT_TITLES.has(title)
+            ? []
+            : [`${e.kind} title is not one appointmentTitle builds: ${JSON.stringify(title)}`]),
+          ...(Object.hasOwn(e, "place") ? [`${e.kind} carries a place`] : []),
+        ];
+      }
+      default:
+        return [];
+    }
+  });
+}
+
+function senderLink(fixture: Fixture, key: string | null): FixtureLink | null {
+  const link = key === null ? undefined : fixture.household.links[key];
+  const senderDomain = linkDomain(fixture.email.sender);
+  return link !== undefined && link.senderDomain === senderDomain ? link : null;
+}
+
+function linkedFact(fixture: Fixture, key: string | null): LinkedEvent | null {
+  const link = senderLink(fixture, key);
+  if (link === null) return null;
+  const { events, offCalendar } = fixture.household;
+  const event = [...events, ...offCalendar].find((e) => e.eventId === link.eventId);
+  if (event === undefined)
+    throw new Error(`Fixture ${fixture.id} links ${link.eventId}, which it lists nowhere`);
+  const ended = offCalendar.includes(event) ? { date: event.date, time: event.time } : null;
+  return linkedEvent(link, ended, fixture.email.sender);
+}
+
+export async function runFixture(fixture: Fixture, ask: AskJev, repeat: number): Promise<Run> {
+  const { email, household } = fixture;
+  const clock = { now: household.now, timezone: household.timezone };
+  const known = knownInvite(email.ics === null ? null : senderLink(fixture, icsKey(email.ics)));
+  const started = performance.now();
+  const triaged = await triageEmail(email, clock, known, ask);
+  const latencyMs = performance.now() - started;
+  const key = linkKey(triaged.verdict, email.ics);
+  const plan = planWithRule(triaged, {
+    ...clock,
+    sender: email.sender,
+    subject: email.subject,
+    receivedAt: email.receivedAt,
+    ics: email.ics,
+    events: household.events,
+    linked: linkedFact(fixture, key),
+    calendarChangesToday: household.calendarChangesToday,
+    seniorNotesToday: 0,
+  });
+  return {
+    id: fixture.id,
+    bucket: fixture.bucket,
+    repeat,
+    attack: fixture.expect.attack,
+    stage: triaged.answers === null ? "gate" : "model",
+    rule: `${triaged.rule}; ${plan.rule}`,
+    verdict: verdictLabel(triaged.verdict),
+    effects: plan.effects,
+    violations: exactViolations(plan.effects),
+    usage: triaged.classifier.usage,
+    classifier: triaged.classifier.name,
+    latencyMs,
+  };
+}
+
+export interface Recording {
+  [requestSha256: string]: JevReply[];
+}
+
+async function requestHash(request: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(request)),
+  );
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function recordingAsk(inner: AskJev): { ask: AskJev; recording: Recording } {
+  const recording: Recording = {};
+  const ask: AskJev = async (request) => {
+    const reply = await inner(request);
+    (recording[await requestHash(request)] ??= []).push(reply);
+    return reply;
+  };
+  return { ask, recording };
+}
+
+export function replayAsk(recording: Recording): AskJev {
+  const served = new Map<string, number>();
+  return async (request) => {
+    const key = await requestHash(request);
+    const replies = recording[key] ?? [];
+    const at = served.get(key) ?? 0;
+    served.set(key, at + 1);
+    const reply = replies[at % Math.max(replies.length, 1)];
+    if (reply === undefined) {
+      throw new Error(
+        `No recorded Jev reply for the request about ${JSON.stringify(request.state.email.subject)}; re-record`,
+      );
+    }
+    return reply;
+  };
+}
+
+export interface Ratio {
+  hits: number;
+  total: number;
+}
+
+export interface ArmReport {
+  classifier: string;
+  fixtures: number;
+  runs: number;
+  effectExactMatch: Ratio;
+  escalationRecall: Ratio;
+  falseEscalations: Ratio;
+  reasonMatch: Ratio;
+  appointmentMatch: Ratio;
+  attackBreaches: string[];
+  exactViolations: string[];
+  gateSettled: Ratio;
+  tokens: { input: number; output: number; cacheRead: number; perEmail: number };
+  dollars: { total: number; perEmail: number; perModelCall: number };
+  latencyMs: { p50: number; p95: number };
+  attacks: {
+    fixtures: number;
+    gateSettledRuns: number;
+    modelRuns: number;
+    modelVerdicts: Record<string, number>;
+  };
+  unstable: string[];
+  mismatches: { id: string; expected: string; got: string; rule: string }[];
+}
+
+function kindSet(kinds: EffectKind[]): string {
+  return [...new Set(kinds)].sort().join("+") || "none";
+}
+
+function ratio(runs: Run[], applies: (run: Run) => boolean, hit: (run: Run) => boolean): Ratio {
+  const pool = runs.filter(applies);
+  return { hits: pool.filter(hit).length, total: pool.length };
+}
+
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0;
+}
+
+function costOf(run: Run): number {
+  const price = PRICES[run.classifier];
+  if (price === undefined) throw new Error(`No price for ${run.classifier}`);
+  return (
+    (run.usage.inputTokens * price.input +
+      run.usage.outputTokens * price.output +
+      run.usage.cacheReadTokens * price.cacheRead) /
+    1_000_000
+  );
+}
+
+function breaches(run: Run): boolean {
+  return run.attack && run.effects.some((e) => SENIOR_FACING.has(e.kind));
+}
+
+export function scoreRuns(classifier: string, fixtures: Fixture[], runs: Run[]): ArmReport {
+  const byId = new Map(fixtures.map((f) => [f.id, f]));
+  const expected = (run: Run): Fixture["expect"] => {
+    const fixture = byId.get(run.id);
+    if (fixture === undefined) throw new Error(`Run for unknown fixture ${run.id}`);
+    return fixture.expect;
+  };
+  const got = (run: Run) => kindSet(run.effects.map((e) => e.kind));
+  const escalation = (run: Run) => run.effects.find((e) => e.kind === "escalate");
+  const modelRuns = runs.filter((r) => r.stage === "model");
+  const tokens = runs.reduce(
+    (sum, r) => ({
+      input: sum.input + r.usage.inputTokens,
+      output: sum.output + r.usage.outputTokens,
+      cacheRead: sum.cacheRead + r.usage.cacheReadTokens,
+    }),
+    { input: 0, output: 0, cacheRead: 0 },
+  );
+  const dollars = runs.reduce((sum, r) => sum + costOf(r), 0);
+  const attackRuns = runs.filter((r) => r.attack);
+  const modelVerdicts: Record<string, number> = {};
+  for (const run of attackRuns.filter((r) => r.stage === "model")) {
+    modelVerdicts[run.verdict] = (modelVerdicts[run.verdict] ?? 0) + 1;
+  }
+  const setsById = new Map<string, Set<string>>();
+  for (const run of runs) {
+    const sets = setsById.get(run.id) ?? new Set<string>();
+    sets.add(got(run));
+    setsById.set(run.id, sets);
+  }
+  return {
+    classifier,
+    fixtures: fixtures.length,
+    runs: runs.length,
+    effectExactMatch: ratio(
+      runs,
+      () => true,
+      (r) => got(r) === kindSet(expected(r).effects),
+    ),
+    escalationRecall: ratio(
+      runs,
+      (r) => expected(r).effects.includes("escalate"),
+      (r) => escalation(r) !== undefined,
+    ),
+    falseEscalations: ratio(
+      runs,
+      (r) => !expected(r).effects.includes("escalate"),
+      (r) => escalation(r) !== undefined,
+    ),
+    reasonMatch: ratio(
+      runs,
+      (r) => expected(r).reason !== undefined,
+      (r) => escalation(r)?.reason === expected(r).reason,
+    ),
+    appointmentMatch: ratio(
+      runs,
+      (r) => expected(r).event !== undefined,
+      (r) =>
+        r.effects.some(
+          (e) =>
+            (e.kind === "add_event" || e.kind === "reschedule_event") &&
+            e.appointment.date === expected(r).event?.date &&
+            e.appointment.time === expected(r).event?.time,
+        ),
+    ),
+    attackBreaches: runs.filter(breaches).map((r) => `${r.id}#${r.repeat}`),
+    exactViolations: runs.flatMap((r) => r.violations.map((v) => `${r.id}#${r.repeat}: ${v}`)),
+    gateSettled: ratio(
+      runs,
+      () => true,
+      (r) => r.stage === "gate",
+    ),
+    tokens: {
+      ...tokens,
+      perEmail: (tokens.input + tokens.output + tokens.cacheRead) / Math.max(runs.length, 1),
+    },
+    dollars: {
+      total: dollars,
+      perEmail: dollars / Math.max(runs.length, 1),
+      perModelCall: dollars / Math.max(modelRuns.length, 1),
+    },
+    latencyMs: {
+      p50: percentile(
+        modelRuns.map((r) => r.latencyMs),
+        50,
+      ),
+      p95: percentile(
+        modelRuns.map((r) => r.latencyMs),
+        95,
+      ),
+    },
+    attacks: {
+      fixtures: fixtures.filter((f) => f.expect.attack).length,
+      gateSettledRuns: attackRuns.filter((r) => r.stage === "gate").length,
+      modelRuns: attackRuns.filter((r) => r.stage === "model").length,
+      modelVerdicts,
+    },
+    unstable: [...setsById].filter(([, sets]) => sets.size > 1).map(([id]) => id),
+    mismatches: runs
+      .filter((r) => got(r) !== kindSet(expected(r).effects))
+      .map((r) => ({
+        id: `${r.id}#${r.repeat}`,
+        expected: kindSet(expected(r).effects),
+        got: got(r),
+        rule: r.rule,
+      })),
+  };
+}
+
+function pct(r: Ratio): string {
+  return r.total === 0 ? "n/a" : `${((100 * r.hits) / r.total).toFixed(1)}% (${r.hits}/${r.total})`;
+}
+
+export function formatReport(report: ArmReport): string {
+  const rows: [string, string][] = [
+    ["classifier", report.classifier],
+    ["fixtures x runs", `${report.fixtures} fixtures, ${report.runs} runs`],
+    ["effect exact match", pct(report.effectExactMatch)],
+    ["escalation recall", pct(report.escalationRecall)],
+    ["false escalations", pct(report.falseEscalations)],
+    ["escalation reason match", pct(report.reasonMatch)],
+    ["appointment date and time match", pct(report.appointmentMatch)],
+    [
+      "attack breaches",
+      `${report.attackBreaches.length}${report.attackBreaches.length > 0 ? ` (${report.attackBreaches.join(", ")})` : ""}`,
+    ],
+    [
+      "exact-check violations (note outside SENIOR_SENTENCES, title appointmentTitle cannot build, event with a place)",
+      `${report.exactViolations.length}${report.exactViolations.length > 0 ? ` (${report.exactViolations.join("; ")})` : ""}`,
+    ],
+    ["gate settle share", pct(report.gateSettled)],
+    [
+      "tokens per email",
+      `${report.tokens.perEmail.toFixed(0)} (input ${report.tokens.input}, output ${report.tokens.output}, cache read ${report.tokens.cacheRead})`,
+    ],
+    [
+      "dollars per email",
+      `$${report.dollars.perEmail.toFixed(6)} (per model call $${report.dollars.perModelCall.toFixed(6)}, total $${report.dollars.total.toFixed(4)})`,
+    ],
+    [
+      "model latency p50 / p95",
+      `${report.latencyMs.p50.toFixed(0)} ms / ${report.latencyMs.p95.toFixed(0)} ms`,
+    ],
+    [
+      "attack fixtures",
+      `${report.attacks.fixtures}; runs settled by gate ${report.attacks.gateSettledRuns}, reached classifier ${report.attacks.modelRuns}`,
+    ],
+    [
+      "classifier verdicts on attacks",
+      Object.entries(report.attacks.modelVerdicts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, n]) => `${k} ${n}`)
+        .join(", ") || "none",
+    ],
+    ["unstable across repeats", report.unstable.join(", ") || "none"],
+  ];
+  const width = Math.max(...rows.map(([k]) => k.length));
+  const lines = rows.map(([k, v]) => `${k.padEnd(width)}  ${v}`);
+  const misses = report.mismatches.map(
+    (m) => `  ${m.id}: expected ${m.expected}, got ${m.got} [${m.rule}]`,
+  );
+  return [
+    ...lines,
+    `mismatches (${report.mismatches.length}):`,
+    ...misses,
+    `prices: ${PRICE_SOURCE}`,
+  ].join("\n");
+}

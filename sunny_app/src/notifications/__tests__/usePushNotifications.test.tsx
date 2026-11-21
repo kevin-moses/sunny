@@ -137,4 +137,35 @@ describe('senior device push', () => {
     expect(onTap).not.toHaveBeenCalled();
     expect(mockCall).not.toHaveBeenCalled();
   });
+
+  it('a tap on a note from the mail opens a plain conversation and claims nothing', async () => {
+    const onTap = jest.fn();
+    await mount(onTap);
+    await act(async () => {
+      listener?.(
+        response('expo.modules.notifications.actions.DEFAULT', {
+          kind: 'senior_note',
+          household_id: 'h1',
+          notification_id: 'n1',
+        }),
+      );
+    });
+    expect(onTap).toHaveBeenCalledTimes(1);
+    expect(onTap).toHaveBeenCalledWith({});
+    expect(mockCall).not.toHaveBeenCalled();
+  });
+
+  it('the launch tap on a note from the mail opens a plain conversation once', async () => {
+    const onTap = jest.fn();
+    mockNotifications.getLastNotificationResponse.mockReturnValue(
+      response('expo.modules.notifications.actions.DEFAULT', {
+        kind: 'senior_note',
+        household_id: 'h1',
+        notification_id: 'n1',
+      }),
+    );
+    await mount(onTap);
+    expect(onTap).toHaveBeenCalledTimes(1);
+    expect(onTap).toHaveBeenCalledWith({});
+  });
 });

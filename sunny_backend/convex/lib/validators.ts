@@ -1,4 +1,12 @@
+import { literals } from "convex-helpers/validators";
 import { v, type Infer } from "convex/values";
+import {
+  APPOINTMENT_KIND_NAMES,
+  DECISION_REASONS,
+  ESCALATION_REASONS,
+  INFO_TOPICS,
+  SUSPICIONS,
+} from "./mailConstants";
 
 export const memberRole = v.union(v.literal("primary"), v.literal("member"), v.literal("viewer"));
 export type MemberRole = Infer<typeof memberRole>;
@@ -74,6 +82,9 @@ export const notificationKind = v.union(
   v.literal("digest"),
   v.literal("agent_flag"),
   v.literal("family_message"),
+  v.literal("senior_note"),
+  v.literal("mail_escalation"),
+  v.literal("mail_update"),
 );
 export type NotificationKind = Infer<typeof notificationKind>;
 
@@ -142,6 +153,162 @@ export const calendarConnectionStatus = v.union(
   v.literal("error"),
 );
 export type CalendarConnectionStatus = Infer<typeof calendarConnectionStatus>;
+
+export const oauthPurpose = v.union(v.literal("calendar"), v.literal("mailbox"));
+export type OAuthPurpose = Infer<typeof oauthPurpose>;
+
+export const mailboxStatus = v.union(v.literal("active"), v.literal("revoked"), v.literal("error"));
+export type MailboxStatus = Infer<typeof mailboxStatus>;
+
+export const mailItemState = v.union(
+  v.literal("queued"),
+  v.literal("triaging"),
+  v.literal("done"),
+  v.literal("failed"),
+);
+export type MailItemState = Infer<typeof mailItemState>;
+
+const appointmentKind = literals(...APPOINTMENT_KIND_NAMES);
+
+export const proposed = v.object({ kind: appointmentKind, date: v.string(), time: v.string() });
+
+export const appointment = v.object({
+  kind: appointmentKind,
+  date: v.string(),
+  time: v.string(),
+  durationMinutes: v.union(v.null(), v.number()),
+});
+
+export const appointmentRef = v.object({
+  kind: appointmentKind,
+  date: v.string(),
+  time: v.union(v.null(), v.string()),
+});
+
+const decisionReason = v.union(v.null(), literals(...DECISION_REASONS));
+
+export const mailVerdict = v.union(
+  v.object({ kind: v.literal("ignore") }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("new"),
+    appointment,
+    decision: decisionReason,
+  }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("reschedule"),
+    previous: v.union(v.null(), appointmentRef),
+    appointment,
+    decision: decisionReason,
+  }),
+  v.object({
+    kind: v.literal("appointment"),
+    change: v.literal("cancel"),
+    previous: appointmentRef,
+    decision: decisionReason,
+  }),
+  v.object({ kind: v.literal("senior_info"), topic: literals(...INFO_TOPICS) }),
+  v.object({ kind: v.literal("needs_decision"), reason: literals(...DECISION_REASONS) }),
+  v.object({ kind: v.literal("suspicious"), suspicion: literals(...SUSPICIONS) }),
+);
+
+export const usage = v.object({
+  inputTokens: v.number(),
+  outputTokens: v.number(),
+  cacheReadTokens: v.number(),
+});
+
+export const classifierRecord = v.object({ name: v.string(), usage });
+
+export const jevAnswer = v.union(
+  v.number(),
+  v.object({ choice: v.string(), probability: v.number() }),
+);
+
+export const jevAnswers = v.record(v.string(), jevAnswer);
+
+export const triaged = v.object({
+  verdict: mailVerdict,
+  summary: v.string(),
+  rule: v.string(),
+  classifier: classifierRecord,
+  answers: v.union(v.null(), jevAnswers),
+});
+
+export const icsEvent = v.object({
+  method: literals("REQUEST", "CANCEL", "REPLY", "OTHER"),
+  uid: v.string(),
+  start: v.union(v.null(), v.object({ date: v.string(), time: v.string() })),
+  durationMinutes: v.union(v.null(), v.number()),
+  summary: v.string(),
+  location: v.union(v.null(), v.string()),
+  recurring: v.boolean(),
+  sequence: v.number(),
+});
+
+export const mailSender = v.object({
+  name: v.string(),
+  address: v.string(),
+  authenticated: v.boolean(),
+});
+
+export const calendarEventFact = v.object({
+  eventId: v.string(),
+  title: v.string(),
+  date: v.string(),
+  time: v.string(),
+  durationMinutes: v.union(v.null(), v.number()),
+  repeating: v.boolean(),
+});
+
+export const mailHeader = v.object({
+  sender: mailSender,
+  subject: v.string(),
+  receivedAt: v.number(),
+});
+
+export const displayHeader = v.object({
+  senderName: v.union(v.null(), v.string()),
+  senderAddress: v.string(),
+  senderVerified: v.boolean(),
+  subject: v.string(),
+  receivedDate: v.string(),
+  receivedTime: v.string(),
+});
+
+export const verdictKind = v.union(
+  ...mailVerdict.members
+    .map((member) => member.fields.kind)
+    .filter(
+      (kind, index, kinds) => kinds.findIndex((other) => other.value === kind.value) === index,
+    ),
+);
+export type VerdictKind = Infer<typeof verdictKind>;
+
+export const mailEffectRecord = v.union(
+  v.object({ kind: v.literal("event_added"), eventId: v.id("events") }),
+  v.object({
+    kind: v.literal("event_rescheduled"),
+    eventId: v.id("events"),
+    fromDate: v.string(),
+    fromTime: v.string(),
+  }),
+  v.object({ kind: v.literal("already_on_calendar"), eventId: v.id("events") }),
+  v.object({ kind: v.literal("senior_note"), noteId: v.id("seniorNotes") }),
+  v.object({
+    kind: v.literal("told_caregivers"),
+    pushed: v.boolean(),
+  }),
+  v.object({
+    kind: v.literal("escalated"),
+    reason: literals(...ESCALATION_REASONS),
+    pushed: v.boolean(),
+    eventId: v.optional(v.id("events")),
+    proposed: v.optional(proposed),
+  }),
+);
+export type MailEffectRecord = Infer<typeof mailEffectRecord>;
 
 export const calendarSyncState = v.union(
   v.literal("queued"),

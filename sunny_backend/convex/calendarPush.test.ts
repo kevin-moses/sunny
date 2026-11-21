@@ -205,6 +205,82 @@ describe("access token cache", () => {
   });
 });
 
+async function reconnectAs(t: TestConvex, householdId: Id<"households">, accountEmail: string) {
+  await t.mutation(internal.googleCalendar.saveConnection, {
+    householdId,
+    userId: "user_a",
+    accountEmail,
+    externalCalendarId: "cal2",
+    refreshToken: "box:refresh-2",
+  });
+}
+
+describe("reconnecting another account while a push of the old one runs", () => {
+  test("revoked access of the old account leaves the new connection active", async () => {
+    const t = makeBackend();
+    const { householdId, connectionId } = await setupSynced(t);
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (reconnected && refresh === "refresh-1") throw new GoogleAccessRevoked("invalid_grant");
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+    googleMocks.upsertEvent.mockImplementationOnce(async () => {
+      await reconnectAs(t, householdId, "other@example.com");
+      reconnected = true;
+      throw new GoogleApiError(401, "unauthorized");
+    });
+
+    await runPush(t);
+
+    const connection = await connectionRow(t, connectionId);
+    expect(connection).toMatchObject({ accountEmail: "other@example.com", status: "active" });
+    expect(connection?.error).toBeUndefined();
+  });
+
+  test("a push of the old account that finishes after the reconnect records no link or sync time on the new connection", async () => {
+    const t = makeBackend();
+    const { householdId, connectionId } = await setupSynced(t);
+    googleMocks.upsertEvent.mockImplementationOnce(async () => {
+      await reconnectAs(t, householdId, "other@example.com");
+      return { id: "gext-old", etag: "etag-old", created: true };
+    });
+
+    await runPush(t);
+
+    expect(await t.run(async (ctx) => await ctx.db.query("calendarEventLinks").collect())).toEqual(
+      [],
+    );
+    const connection = await connectionRow(t, connectionId);
+    expect(connection).toMatchObject({
+      accountEmail: "other@example.com",
+      externalCalendarId: "cal2",
+    });
+    expect(connection?.lastSyncedAt).toBeUndefined();
+  });
+
+  test("a token refresh by a push of the old account leaves the next push on the new account", async () => {
+    const t = makeBackend();
+    const { householdId, connectionId } = await setupSynced(t);
+    let reconnected = false;
+    googleMocks.refreshAccessToken.mockImplementation(async (refresh: string) => {
+      if (!reconnected) {
+        reconnected = true;
+        await reconnectAs(t, householdId, "other@example.com");
+      }
+      return { accessToken: `access-for-${refresh}`, expiresAt: Date.now() + 3_600_000 };
+    });
+
+    await runPush(t);
+    await runPush(t);
+
+    expect(googleMocks.upsertEvent.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ["access-for-refresh-1", "cal1"],
+      ["access-for-refresh-2", "cal2"],
+    ]);
+    expect((await connectionRow(t, connectionId))?.accessToken).toBe("box:access-for-refresh-2");
+  });
+});
+
 describe("errors", () => {
   test("a confirmed missing Sunny calendar marks the connection in error", async () => {
     const t = makeBackend();
@@ -229,6 +305,17 @@ describe("errors", () => {
     expect((await connectionRow(t, connectionId))?.status).toBe("active");
   });
 
+  test("a project quota while checking for the calendar after a 404 holds the push", async () => {
+    const t = makeBackend();
+    const { connectionId } = await setupSynced(t);
+    googleMocks.upsertEvent.mockRejectedValue(new GoogleApiError(404, "not found"));
+    googleMocks.calendarExists.mockRejectedValue(
+      new GoogleApiError(403, '{"error":{"errors":[{"reason":"dailyLimitExceeded"}]}}'),
+    );
+    expect(await runPush(t)).toBe("held");
+    expect(await connectionRow(t, connectionId)).toMatchObject({ status: "active" });
+  });
+
   test("a permanent 403 marks the connection in error without retrying", async () => {
     const t = makeBackend();
     const { connectionId } = await setupSynced(t);
@@ -246,6 +333,22 @@ describe("errors", () => {
     googleMocks.upsertEvent.mockRejectedValue(new GoogleApiError(403, "rateLimitExceeded"));
     await expect(runPush(t)).rejects.toThrow("rateLimitExceeded");
   });
+
+  test.each(["dailyLimitExceeded", "accessNotConfigured"])(
+    "a %s 403 is held and leaves the connection active without a notice",
+    async (reason) => {
+      const t = makeBackend();
+      const { connectionId } = await setupSynced(t);
+      googleMocks.upsertEvent.mockRejectedValue(
+        new GoogleApiError(403, `{"error":{"errors":[{"reason":"${reason}"}]}}`),
+      );
+      expect(await runPush(t)).toBe("held");
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(reason));
+      const connection = await connectionRow(t, connectionId);
+      expect(connection).toMatchObject({ status: "active" });
+      expect(connection?.lastError).toBeUndefined();
+    },
+  );
 
   test("an unreadable refresh token marks the connection in error without retrying", async () => {
     const t = makeBackend();
@@ -272,18 +375,17 @@ describe("errors", () => {
     expect(googleMocks.refreshAccessToken).toHaveBeenCalledTimes(1);
   });
 
-  test("a configuration error is not retried (workpool NonRetryableError)", async () => {
+  test("a configuration error is held and leaves the connection active", async () => {
     const t = makeBackend();
-    await setupSynced(t);
+    const { connectionId } = await setupSynced(t);
     googleMocks.refreshAccessToken.mockRejectedValue(
       new ConfigError("Missing env var GOOGLE_CLIENT_ID"),
     );
-    const failure = await runPush(t).catch((e: unknown) => e);
-    expect(failure).toBeInstanceOf(Error);
-    expect(String((failure as Error).message)).toContain("Missing env var GOOGLE_CLIENT_ID");
-    expect(JSON.stringify((failure as { data?: unknown }).data ?? "")).toContain(
-      "__convexWorkpoolNonRetryable",
+    expect(await runPush(t)).toBe("held");
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Missing env var GOOGLE_CLIENT_ID"),
     );
+    expect(await connectionRow(t, connectionId)).toMatchObject({ status: "active" });
   });
 
   test("a successful push clears the connection's sync error", async () => {

@@ -75,6 +75,7 @@ const THREAD = [
     body: 'Morning pills: confirmed late at 9:10.',
     localDate: '2026-11-13',
     createdAt: 2,
+    mailHeader: null,
   },
   {
     type: 'request',
@@ -198,6 +199,73 @@ describe('CaregiverChatScreen', () => {
       message: 'Why was it late?',
       continueLatest: true,
     });
+  });
+
+  it('shows a mail post as a quiet header above its body, keeping the line breaks', async () => {
+    const mail = {
+      type: 'post',
+      id: 'p2',
+      householdId: HOUSEHOLD,
+      kind: 'mail',
+      body: 'Added to the calendar:\nCheckup, Tuesday at 2:00 PM.',
+      localDate: '2026-11-13',
+      createdAt: 5,
+      mailHeader: {
+        senderName: 'Dr Lee',
+        senderAddress: 'office@clinic.example',
+        senderVerified: true,
+        subject: 'Checkup',
+        receivedDate: '2026-11-13',
+        receivedTime: '09:00',
+      },
+    };
+    const renderer = await renderChat(true, [mail]);
+    const message = renderer.root.findByType(AgentMessage);
+    expect(message.props.label).toBe(
+      [
+        'From: Dr Lee <office@clinic.example> (verified sender)',
+        'Subject: Checkup',
+        'Received: Friday, November 13 at 9:00 AM',
+      ].join('\n'),
+    );
+    expect(message.props.text).toBe('Added to the calendar:\nCheckup, Tuesday at 2:00 PM.');
+    expect(texts(renderer)).toContain('Added to the calendar:\nCheckup, Tuesday at 2:00 PM.');
+  });
+
+  it('labels a mail post that has no header as Mail above its body', async () => {
+    const mail = {
+      type: 'post',
+      id: 'p4',
+      householdId: HOUSEHOLD,
+      kind: 'mail',
+      body: 'Sunny could not read an email. Please look at the inbox in Gmail.',
+      localDate: '2026-11-13',
+      createdAt: 7,
+      mailHeader: null,
+    };
+    const renderer = await renderChat(true, [mail]);
+    const message = renderer.root.findByType(AgentMessage);
+    expect(message.props.label).toBe('Mail');
+    expect(texts(renderer)).toContain(
+      'Sunny could not read an email. Please look at the inbox in Gmail.',
+    );
+    expect(texts(renderer).some((t) => t.startsWith('From:'))).toBe(false);
+  });
+
+  it('shows a mailbox post as a short notice from Sunny', async () => {
+    const mailbox = {
+      type: 'post',
+      id: 'p3',
+      householdId: HOUSEHOLD,
+      kind: 'mailbox',
+      body: 'Sunny now reads mom@example.com.',
+      localDate: '2026-11-13',
+      createdAt: 6,
+      mailHeader: null,
+    };
+    const renderer = await renderChat(true, [mailbox]);
+    expect(texts(renderer)).toContain('Sunny now reads mom@example.com.');
+    expect(renderer.root.findAllByType(AgentMessage)).toHaveLength(0);
   });
 
   it('a viewer sees the digest posts read-only', async () => {

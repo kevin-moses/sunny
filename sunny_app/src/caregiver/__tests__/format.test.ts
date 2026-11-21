@@ -36,6 +36,7 @@ import {
   wordingSpeech,
   type AgentRequest,
   type ChatPost,
+  type MailHeader,
   type TaskWording,
   type EventRowData,
   type TaskRowData,
@@ -113,6 +114,15 @@ function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
   };
 }
 
+const MAIL_HEADER: MailHeader = {
+  senderName: 'Dr Lee',
+  senderAddress: 'office@clinic.example',
+  senderVerified: true,
+  subject: 'Checkup',
+  receivedDate: '2026-11-13',
+  receivedTime: '09:05',
+};
+
 function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): ChatPost {
   return {
     type: 'post',
@@ -121,6 +131,7 @@ function makePost(overrides: Partial<Record<keyof ChatPost, unknown>> = {}): Cha
     body: 'All done today.',
     localDate: '2026-10-28',
     createdAt: 1,
+    mailHeader: null,
     ...overrides,
   } as ChatPost;
 }
@@ -675,6 +686,44 @@ describe('buildTranscript', () => {
       ['sunny', 'She slept in.', null],
     ]);
     expect(new Set(entries.map((e) => e.id)).size).toBe(entries.length);
+  });
+
+  it('labels a mail post with a three line header built from its fields', () => {
+    const [entry] = buildTranscript(
+      [makePost({ kind: 'mail', body: 'One.\nTwo.', mailHeader: MAIL_HEADER })],
+      'user_a',
+    );
+    expect(entry).toMatchObject({
+      kind: 'sunny',
+      label: [
+        'From: Dr Lee <office@clinic.example> (verified sender)',
+        'Subject: Checkup',
+        'Received: Friday, November 13 at 9:05 AM',
+      ].join('\n'),
+      text: 'One.\nTwo.',
+    });
+  });
+
+  it('labels a mail post without a header as Mail and keeps its text', () => {
+    const [entry] = buildTranscript([makePost({ kind: 'mail', body: 'Just this.' })], 'user_a');
+    expect(entry).toMatchObject({ kind: 'sunny', label: 'Mail', text: 'Just this.' });
+  });
+
+  it('keeps header-like lines in a mail body as body text', () => {
+    const body = ['From: A', 'Subject: B', 'Received: C', '', 'One.'].join('\n');
+    const [entry] = buildTranscript(
+      [makePost({ kind: 'mail', body, mailHeader: MAIL_HEADER })],
+      'user_a',
+    );
+    expect(entry).toMatchObject({ text: body });
+  });
+
+  it('shows a mailbox post as a notice', () => {
+    const [entry] = buildTranscript(
+      [makePost({ kind: 'mailbox', body: 'Sunny now reads a@b.c.' })],
+      'user_a',
+    );
+    expect(entry).toMatchObject({ kind: 'notice', text: 'Sunny now reads a@b.c.', label: null });
   });
 
   it('follows a finished request with a wording card per task, after the reply or error', () => {

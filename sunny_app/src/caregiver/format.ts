@@ -28,7 +28,11 @@ export type AgentRequest = Extract<ChatItem, { type: 'request' }>;
 
 export type ChatPost = Extract<ChatItem, { type: 'post' }>;
 
+export type MailHeader = NonNullable<ChatPost['mailHeader']>;
+
 export const DIGEST_LABEL = 'Daily summary';
+
+export const MAIL_LABEL = 'Mail';
 
 export const HIGH_PRIORITY_DETAIL = 'High priority';
 
@@ -397,7 +401,7 @@ export const NOT_SPOKEN = 'Nothing. Tasks without a time are not announced.';
 
 export interface TranscriptEntry {
   id: string;
-  kind: 'caregiver' | 'sunny' | 'working' | 'error' | 'wording';
+  kind: 'caregiver' | 'sunny' | 'notice' | 'working' | 'error' | 'wording';
   text: string;
   speaker: string | null;
   label: string | null;
@@ -416,10 +420,28 @@ export function wordingSpeech(wording: TaskWording): string {
   return others === null ? `${display} ${says}` : `${display} ${says} ${others}.`;
 }
 
-export function postLabel(localDate: string): string {
+function longDate(localDate: string): string | null {
   const time = parseLocalDate(localDate);
-  if (time === null) return DIGEST_LABEL;
-  return `${DIGEST_LABEL}, ${weekdayName(time)}, ${monthName(time)} ${dayOfMonth(time)}`;
+  return time === null ? null : `${weekdayName(time)}, ${monthName(time)} ${dayOfMonth(time)}`;
+}
+
+export function postLabel(localDate: string): string {
+  const date = longDate(localDate);
+  return date === null ? DIGEST_LABEL : `${DIGEST_LABEL}, ${date}`;
+}
+
+function mailHeaderLabel(header: MailHeader): string {
+  const from =
+    header.senderName === null
+      ? header.senderAddress
+      : `${header.senderName} <${header.senderAddress}>`;
+  const verified = header.senderVerified ? 'verified sender' : 'sender not verified';
+  const date = longDate(header.receivedDate) ?? header.receivedDate;
+  return [
+    `From: ${from} (${verified})`,
+    `Subject: ${header.subject}`,
+    `Received: ${date} at ${displayTime(header.receivedTime)}`,
+  ].join('\n');
 }
 
 export const ANOTHER_CAREGIVER = 'Another caregiver';
@@ -470,21 +492,34 @@ function requestEntries(request: AgentRequest, userId: string | null): Transcrip
   return entries;
 }
 
+function postEntry(post: ChatPost): TranscriptEntry {
+  const entry = {
+    id: `${post.id}-post`,
+    kind: 'sunny',
+    text: post.body,
+    speaker: null,
+    label: null,
+    wording: null,
+  } as const;
+  switch (post.kind) {
+    case 'digest':
+      return { ...entry, label: postLabel(post.localDate) };
+    case 'mail':
+      return {
+        ...entry,
+        label: post.mailHeader === null ? MAIL_LABEL : mailHeaderLabel(post.mailHeader),
+      };
+    case 'mailbox':
+      return { ...entry, kind: 'notice' };
+  }
+}
+
 export function buildTranscript(items: ChatItem[], userId: string | null): TranscriptEntry[] {
-  return [...items].reverse().flatMap((item): TranscriptEntry[] =>
-    item.type === 'request'
-      ? requestEntries(item, userId)
-      : [
-          {
-            id: `${item.id}-post`,
-            kind: 'sunny',
-            text: item.body,
-            speaker: null,
-            label: postLabel(item.localDate),
-            wording: null,
-          },
-        ],
-  );
+  return [...items]
+    .reverse()
+    .flatMap((item): TranscriptEntry[] =>
+      item.type === 'request' ? requestEntries(item, userId) : [postEntry(item)],
+    );
 }
 
 export function hasInProgress(items: ChatItem[]): boolean {

@@ -2,6 +2,10 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { scheduleGrantRevoke } from "./googleTokens";
+import { canStillOccur } from "./occurrences";
+import { holdGate } from "./serviceHolds";
+import type { HoldGate } from "./serviceHolds";
 import { localDate } from "./time";
 
 const MAX_PARALLEL_PUSHES = 5;
@@ -13,6 +17,8 @@ export const FAN_OUT_CHUNK = 200;
 export const STUCK_AFTER_MS = 15 * 60 * 1000;
 
 const SWEEP_BATCH = 200;
+
+const SWEEP_PUSHES: Record<HoldGate, number> = { free: SWEEP_BATCH, probe: 1, held: 0 };
 
 const calendarPool = new Workpool(components.calendarSyncPool, {
   maxParallelism: MAX_PARALLEL_PUSHES,
@@ -91,11 +97,6 @@ export async function queueEventSync(ctx: MutationCtx, eventId: Id<"events">): P
   }
 }
 
-function canStillOccur(event: Doc<"events">, today: string): boolean {
-  if (event.repeatDays === undefined) return event.startsOn >= today;
-  return event.repeatUntil === undefined || event.repeatUntil >= today;
-}
-
 export interface FanOutArgs {
   householdId: Id<"households">;
   connectionId?: Id<"calendarConnections">;
@@ -158,10 +159,12 @@ export async function queueConnectionBackfill(
 }
 
 export async function requeueStuckSyncs(ctx: MutationCtx, now: number): Promise<number> {
+  const pushes = SWEEP_PUSHES[await holdGate(ctx, ["calendar"], now)];
+  if (pushes === 0) return 0;
   const stuck = await ctx.db
     .query("calendarSyncs")
     .withIndex("by_updated", (q) => q.lt("updatedAt", now - STUCK_AFTER_MS))
-    .take(SWEEP_BATCH);
+    .take(pushes);
   for (const row of stuck) {
     await ctx.db.patch(row._id, { state: "queued", updatedAt: now });
     await enqueuePush(ctx, row._id);
@@ -180,15 +183,6 @@ export async function deleteLinks(
   for (const link of links) await ctx.db.delete(link._id);
 }
 
-export async function scheduleGrantRevoke(
-  ctx: MutationCtx,
-  encryptedRefreshToken: string,
-): Promise<void> {
-  await ctx.scheduler.runAfter(0, internal.googleCalendar.revokeGrant, {
-    refreshToken: encryptedRefreshToken,
-  });
-}
-
 export async function dropConnection(
   ctx: MutationCtx,
   connectionId: Id<"calendarConnections">,
@@ -202,7 +196,7 @@ export async function dropConnection(
     .collect();
   for (const sync of syncs) await ctx.db.delete(sync._id);
   await ctx.db.delete(connectionId);
-  await scheduleGrantRevoke(ctx, connection.refreshToken);
+  await scheduleGrantRevoke(ctx, connection.refreshToken, connection.accountEmail ?? null);
 }
 
 export async function dropMemberConnections(

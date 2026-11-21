@@ -175,11 +175,15 @@ function day(): void {
   );
 }
 
-function google(): void {
+function connectLink(purpose: "calendar" | "mailbox"): void {
   const state = loadState();
-  const url = convexRun("googleCalendar:connectUrl", { householdId: state.householdId });
-  console.log(`Within 5 minutes, open this link once, in the browser you will sign in to Google with
-(as a Google test user); the sign-in must finish in that same browser. The link works once:
+  const url = convexRun("googleOauth:connectUrl", { householdId: state.householdId, purpose });
+  const account =
+    purpose === "mailbox"
+      ? "the senior's Google account (as a Google test user)"
+      : "Google (as a Google test user)";
+  console.log(`Within 5 minutes, open this link once, in the browser you will sign in to ${account} with;
+the sign-in must finish in that same browser. The link works once:
 do not paste it anywhere else, since a link preview would use it up.
 ${url}`);
 }
@@ -352,7 +356,10 @@ async function main(argv: string[]): Promise<void> {
       invite(rest[0] ?? "member");
       break;
     case "google":
-      google();
+      connectLink("calendar");
+      break;
+    case "gmail":
+      connectLink("mailbox");
       break;
     case "phone":
       if (!rest[0]) throw new Error("Usage: phone <number>");
@@ -377,7 +384,7 @@ async function main(argv: string[]): Promise<void> {
       break;
     default:
       console.log(
-        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | phone <number> | confirm-phone <code> | profile-load <file.json> [--update] (slow: one convex process per item; keep real data in scripts/profile.local.json) | profile | message "<text>"',
+        'Commands: setup | chat "<message>" [--continue] | day | codes | invite [primary|member|viewer] | google | gmail | phone <number> | confirm-phone <code> | profile-load <file.json> [--update] (slow: one convex process per item; keep real data in scripts/profile.local.json) | profile | message "<text>"',
       );
   }
 }

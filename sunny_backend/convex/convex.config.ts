@@ -8,5 +8,6 @@ app.use(rateLimiter);
 app.use(workflow);
 app.use(workpool, { name: "calendarSyncPool" });
 app.use(workpool, { name: "deliveryPool" });
+app.use(workpool, { name: "mailPool" });
 
 export default app;

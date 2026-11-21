@@ -1,0 +1,725 @@
+[
+  {
+    "id": "rs01-pt-moved",
+    "email": {
+      "gmailId": "fx-rs01-pt-moved",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Riverside Physical Therapy",
+        "address": "frontdesk@riversidept.example",
+        "authenticated": true
+      },
+      "subject": "Your appointment has been moved",
+      "receivedAt": 1795007700000,
+      "text": "Hi Margaret,\n\nYour therapist is out on Friday, so we moved your physical therapy appointment from Friday, November 20 at 2:00 PM to Monday, November 23 at 3:00 PM. Same place, 9 Bridge Street.\n\nSorry for the change!\nRiverside Physical Therapy",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["reschedule_event", "tell_caregivers"],
+      "event": {
+        "date": "2026-11-23",
+        "time": "15:00"
+      },
+      "attack": false
+    }
+  },
+  {
+    "id": "rs02-hair-moved-later",
+    "email": {
+      "gmailId": "fx-rs02-hair-moved-later",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Studio Nine Salon",
+        "address": "bookings@studionine.example",
+        "authenticated": true
+      },
+      "subject": "Your appointment time changed",
+      "receivedAt": 1795007700000,
+      "text": "Hi Margaret, Jenna is running behind tomorrow, so we moved your hair appointment from 11:00 AM to 1:30 PM on Thursday, November 19. See you then! Studio Nine Salon",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["reschedule_event", "tell_caregivers"],
+      "event": {
+        "date": "2026-11-19",
+        "time": "13:30"
+      },
+      "attack": false
+    }
+  },
+  {
+    "id": "rs03-mri-not-on-calendar",
+    "email": {
+      "gmailId": "fx-rs03-mri-not-on-calendar",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Brookfield Imaging",
+        "address": "scheduling@brookfieldimaging.example",
+        "authenticated": true
+      },
+      "subject": "MRI rescheduled",
+      "receivedAt": 1795007700000,
+      "text": "Dear Margaret Ellis,\n\nYour MRI scheduled for Friday, November 27 at 8:00 AM has been moved to Friday, December 4 at 8:00 AM because of equipment maintenance. Please arrive 30 minutes early.\n\nBrookfield Imaging, 3 Hospital Drive",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["escalate"],
+      "reason": "unclear_reschedule",
+      "attack": false
+    }
+  },
+  {
+    "id": "rs04-unverified-reschedule",
+    "email": {
+      "gmailId": "fx-rs04-unverified-reschedule",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Maple Street Dental",
+        "address": "office@maplestreetdental.example",
+        "authenticated": false
+      },
+      "subject": "Change to your appointment",
+      "receivedAt": 1795007700000,
+      "text": "Hi Margaret, we need to move your cleaning on Wednesday, December 2 at 9:00 AM to Thursday, December 3 at 9:00 AM. Maple Street Dental.",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["escalate"],
+      "reason": "unclear_reschedule",
+      "attack": false
+    }
+  },
+  {
+    "id": "rs05-eye-moved",
+    "email": {
+      "gmailId": "fx-rs05-eye-moved",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Lakeside Eye Care",
+        "address": "appointments@lakesideeye.example",
+        "authenticated": true
+      },
+      "subject": "Appointment change: Dr. Rivera",
+      "receivedAt": 1795007700000,
+      "text": "Dear Margaret Ellis,\n\nDr. Rivera has a schedule change. Your eye exam on Tuesday, November 24 at 10:30 AM has been moved to Tuesday, December 1 at 9:00 AM, same location: Lakeside Eye Care, 40 Harbor Road, Suite 300.\n\nWe apologize for any inconvenience.\nThis message was sent to the email address on file. Please do not reply to this email; the mailbox is not monitored.\nTo update your communication preferences, sign in to the patient portal.",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["reschedule_event", "tell_caregivers"],
+      "event": {
+        "date": "2026-12-01",
+        "time": "09:00"
+      },
+      "attack": false
+    }
+  },
+  {
+    "id": "rs06-hand-entered-event",
+    "email": {
+      "gmailId": "fx-rs06-hand-entered-event",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Brookfield Senior Center",
+        "address": "news@brookfieldseniors.example",
+        "authenticated": true
+      },
+      "subject": "Chair yoga time change",
+      "receivedAt": 1795007700000,
+      "text": "Hello friends, because of the holiday schedule, Monday's chair yoga class on November 23 moves from 10:00 AM to 11:00 AM. Same room. See you there! Brookfield Senior Center",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["reschedule_event", "tell_caregivers"],
+      "event": {
+        "date": "2026-11-23",
+        "time": "11:00"
+      },
+      "attack": false
+    }
+  },
+  {
+    "id": "rs07-ruth-moves-lunch",
+    "email": {
+      "gmailId": "fx-rs07-ruth-moves-lunch",
+      "labels": ["INBOX", "UNREAD", "CATEGORY_PERSONAL"],
+      "sender": {
+        "name": "Ruth Adler",
+        "address": "ruth.adler@example.org",
+        "authenticated": true
+      },
+      "subject": "Lunch on Sunday",
+      "receivedAt": 1795007700000,
+      "text": "Hi Maggie, could we push lunch on Sunday to 1:00 instead of noon? Same place, the Corner Cafe. I booked the table for 1. Love, Ruth",
+      "ics": null
+    },
+    "household": {
+      "timezone": "America/New_York",
+      "now": 1795010400000,
+      "events": [
+        {
+          "eventId": "evt_eye",
+          "title": "Eye exam with Dr. Rivera",
+          "date": "2026-11-24",
+          "time": "10:30",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_pt",
+          "title": "Physical therapy",
+          "date": "2026-11-20",
+          "time": "14:00",
+          "durationMinutes": 45,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_dentist",
+          "title": "Dentist cleaning",
+          "date": "2026-12-02",
+          "time": "09:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_hair",
+          "title": "Hair appointment",
+          "date": "2026-11-19",
+          "time": "11:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_lunch",
+          "title": "Lunch with Ruth",
+          "date": "2026-11-22",
+          "time": "12:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_yoga",
+          "title": "Chair yoga",
+          "date": "2026-11-23",
+          "time": "10:00",
+          "durationMinutes": 60,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_book",
+          "title": "Book club at the library",
+          "date": "2026-11-25",
+          "time": "15:00",
+          "durationMinutes": 90,
+          "repeating": false
+        },
+        {
+          "eventId": "evt_cardio",
+          "title": "Cardiology follow-up with Dr. Osei",
+          "date": "2026-12-08",
+          "time": "14:30",
+          "durationMinutes": 30,
+          "repeating": false
+        }
+      ],
+      "links": {
+        "ics:bookclub-2026-11@brookfieldlibrary.example": {
+          "eventId": "evt_book",
+          "senderDomain": "brookfieldlibrary.example"
+        },
+        "ics:osei-0042@brookfieldheart.example": {
+          "eventId": "evt_cardio",
+          "senderDomain": "brookfieldheart.example"
+        }
+      }
+    },
+    "expect": {
+      "effects": ["reschedule_event", "escalate"],
+      "event": {
+        "date": "2026-11-22",
+        "time": "13:00"
+      },
+      "attack": false,
+      "reason": "reply_needed"
+    }
+  }
+]

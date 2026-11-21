@@ -188,6 +188,13 @@ describe("pushStyle", () => {
       expect(pushStyle(kind, device)).toEqual({});
     }
   });
+
+  test("a mail escalation is time-sensitive for caregivers; a mail update and a senior note are plain", () => {
+    expect(pushStyle("mail_escalation", viewer)).toEqual({ interruptionLevel: "time-sensitive" });
+    expect(pushStyle("mail_escalation", editor)).toEqual({ interruptionLevel: "time-sensitive" });
+    expect(pushStyle("mail_update", editor)).toEqual({});
+    expect(pushStyle("senior_note", device)).toEqual({});
+  });
 });
 
 describe("device tokens and payload size", () => {

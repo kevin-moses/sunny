@@ -186,7 +186,7 @@ export const WEEKDAY_CODES = WEEKDAY_NAMES.map((name) => name.slice(0, 3).toLowe
 export function weekdayCodes(days: readonly number[] | null | undefined): string[] | null {
   return days ? days.map((d) => WEEKDAY_CODES[d - 1]!) : null;
 }
-const MONTH_NAMES = [
+export const MONTH_NAMES = [
   "January",
   "February",
   "March",

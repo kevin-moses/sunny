@@ -1,7 +1,7 @@
 # .pre-commit-config.yaml
 # Pre-commit hooks for the sunny repo.
 # Covers Python (ruff lint+format, mypy), the Expo app (prettier, eslint, tsc) and the
-# Convex backend in sunny_backend (tsc and prettier for convex/ and scripts/).
+# Convex backend in sunny_backend (tsc and prettier for convex/, scripts/ and evals/).
 #
 # Install: pre-commit install
 # Run manually: pre-commit run --all-files
@@ -52,12 +52,19 @@ repos:
         pass_filenames: false
         files: ^sunny_backend/(scripts/|convex/)
         exclude: ^sunny_backend/convex/_generated/
+      - id: evals-tsc
+        name: backend evals tsc
+        entry: bash -c 'cd sunny_backend && npx tsc --noEmit -p evals'
+        language: system
+        pass_filenames: false
+        files: ^sunny_backend/(evals/|convex/)
+        exclude: ^sunny_backend/convex/_generated/
       - id: convex-prettier
         name: convex prettier
         entry: bash -c 'cd sunny_backend && npx prettier --write "${@#sunny_backend/}"' --
         language: system
         pass_filenames: true
-        files: ^sunny_backend/(convex|scripts)/
+        files: ^sunny_backend/((convex|scripts)/|evals/.*\.ts$)
         exclude: ^sunny_backend/convex/_generated/
 
   # --- sunny_app (Expo / TypeScript): prettier (auto-formats), eslint, tsc ---

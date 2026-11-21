@@ -295,6 +295,16 @@ describe('taps', () => {
     expect(mockNotifications.clearLastNotificationResponse).toHaveBeenCalled();
   });
 
+  it('a mail escalation or mail update tap opens Chat', async () => {
+    const renderer = await renderApp();
+    for (const kind of ['mail_escalation', 'mail_update']) {
+      await tap(response(DEFAULT_ACTION, { kind: 'agent_flag', household_id: HOUSEHOLD }));
+      expect(activeTab(renderer)).toBe('home');
+      await tap(response(DEFAULT_ACTION, { kind, household_id: HOUSEHOLD }));
+      expect(activeTab(renderer)).toBe('chat');
+    }
+  });
+
   it("an alert's body opens Home and claims nothing", async () => {
     const renderer = await renderApp();
     await tap(response(DEFAULT_ACTION, { kind: 'digest', household_id: HOUSEHOLD }));

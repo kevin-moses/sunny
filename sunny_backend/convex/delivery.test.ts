@@ -131,6 +131,43 @@ describe("APNs routing", () => {
     expect((await outboxRow(f, id)).settledAt).toBeDefined();
   });
 
+  test("a senior note reaches the device as a plain push until it expires", async () => {
+    const f = await setup();
+    const noteId = await f.t.run(async (ctx) => {
+      const mailItemId = await ctx.db.insert("mailItems", {
+        householdId: f.householdId,
+        account: "margaret@example.com",
+        gmailId: "m1",
+        state: "done",
+        attempt: 1,
+      });
+      return await ctx.db.insert("seniorNotes", {
+        householdId: f.householdId,
+        mailItemId,
+        text: "Your package arrives today.",
+        receivedAt: NOW,
+        expiresAt: NOW + 60_000,
+      });
+    });
+    const note = {
+      kind: "senior_note" as const,
+      recipientDeviceId: f.deviceId,
+      seniorNoteId: noteId,
+    };
+    const fresh = await insertOutbox(f, note);
+    expect(await deliver(f, fresh)).toBe("sent");
+    const sent = providerMocks.apnsSend.mock.calls[0]![0];
+    expect(sent.style ?? {}).toEqual({});
+    expect(sent.data).toMatchObject({ kind: "senior_note" });
+    expect(providerMocks.smsSend).not.toHaveBeenCalled();
+
+    vi.setSystemTime(NOW + 60_000);
+    const late = await insertOutbox(f, note);
+    expect(await deliver(f, late)).toBe("skipped");
+    expect((await outboxRow(f, late)).detail).toBe("note_expired");
+    expect(providerMocks.apnsSend).toHaveBeenCalledTimes(1);
+  });
+
   test("a device that was removed is skipped", async () => {
     const f = await setup();
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });

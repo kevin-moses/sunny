@@ -34,6 +34,8 @@ import {
   partOfDay,
   weekdayName,
 } from "./time";
+import { activeSeniorNotes } from "./seniorNotes";
+import type { SeniorNoteView } from "./seniorNotes";
 import { stepIndex, taskStep } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
 import { todayInstances } from "./today";
@@ -111,6 +113,7 @@ export interface DeviceStateInput {
   eventsToday: DayEvent[];
   upcoming: DayEvent[];
   cueInputs: CueInput[];
+  notes: SeniorNoteView[];
 }
 
 export interface NowTask {
@@ -184,6 +187,7 @@ export interface DeviceState {
   rows: TodayRow[];
   rowsHidden: number;
   cues: Cue[];
+  notes: SeniorNoteView[];
   tuning: DeviceTuning;
 }
 
@@ -434,6 +438,7 @@ export function buildDeviceState(input: DeviceStateInput, now: number): DeviceSt
     rows,
     rowsHidden: hidden,
     cues: cueList(input.cueInputs, now),
+    notes: input.notes,
     tuning: deviceTuning(),
   };
   const drawn = {
@@ -493,9 +498,10 @@ export async function loadDeviceState(
   householdId: Id<"households">,
   now: number,
 ): Promise<DeviceState> {
-  const [{ household, today, week }, tasks] = await Promise.all([
+  const [{ household, today, week }, tasks, notes] = await Promise.all([
     householdWeek(ctx, householdId, now),
     todayInstances(ctx, householdId, now, null),
+    activeSeniorNotes(ctx, householdId, now),
   ]);
   const tomorrow = (
     await ctx.db
@@ -520,6 +526,7 @@ export async function loadDeviceState(
       eventsToday: week.filter((o) => o.localDate === today).map(occurrenceJson),
       upcoming: week.filter((o) => o.localDate > today).map(occurrenceJson),
       cueInputs,
+      notes,
     },
     now,
   );

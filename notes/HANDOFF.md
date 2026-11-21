@@ -43,7 +43,8 @@ The entry points are all in `convex/`. The code has no comments, so the contract
 | Multi-step tasks: current step per instance, Done advances, undo of an advance, step text in prompts | `lib/taskSteps.ts`, `instances.ts` |
 | Calendar events, occurrences, day view (`calendar.dayView`) | `calendar.ts`, `lib/occurrences.ts`, `lib/today.ts`, `lib/eventNotices.ts` |
 | Time zones | `lib/time.ts` |
-| Google Calendar connect (browser-bound flow: `GET /google/start`, cookie, PKCE), push, sweepers | `lib/oauthFlow.ts`, `googleCalendar.ts`, `calendarPush.ts`, `calendarFanOut.ts`, `lib/calendarSync.ts`, `lib/google.ts`, `lib/googleEvent.ts`, `lib/secretBox.ts` |
+| Google Calendar connect (browser-bound flow: `GET /google/start`, cookie, PKCE), push, sweepers | `googleOauth.ts` (the flow, shared with Gmail), `lib/oauthFlow.ts`, `googleCalendar.ts`, `calendarPush.ts`, `calendarFanOut.ts`, `lib/calendarSync.ts`, `lib/google.ts`, `lib/googleEvent.ts`, `lib/secretBox.ts` |
+| Gmail: mailbox connect (the same browser-bound flow, purpose `mailbox`), polling, triage of each email, effects. Contracts in `notes/AGENT_RUNTIME.md`, section Gmail | `googleOauth.ts`, `gmail.ts`, `mailTriage.ts`, `lib/gmailApi.ts`, `lib/googleTokens.ts`, `lib/mailParse.ts`, `lib/mailGate.ts`, `lib/jevQuestions.ts` (Jev questions and state), `lib/jevClient.ts` (the Jev call), `lib/jevConfidence.ts`, `lib/mailDates.ts` (dates and times from Jev's picks), `lib/mailJudge.ts` (truth table), `lib/mailPolicy.ts` (decision table), `lib/mailFacts.ts` (reads the policy facts; `linkedEvent` is shared with the eval), `lib/mailSituation.ts` (situations and link resolution), `lib/mailAppointments.ts` (appointment checks and matching), `lib/mailLinks.ts` (link keys), `lib/firstMatch.ts` (first matching row, for the truth and decision tables), `lib/mailProse.ts` (caregiver text and scrubbing), `lib/mailEffects.ts`, `lib/mailFailure.ts` (which errors retry), `lib/mailSummary.ts`, `lib/seniorNotes.ts`; eval in `evals/mail` and `scripts/mailEval.ts` |
 | Notification delivery (APNs, SMS): push first for a caregiver with a push token, SMS otherwise, and SMS as the fallback when every token is dead; interruption level and the "I'm on it" category per kind (`pushStyle`); who is reachable (`isReachableMember`: verified phone or push token) | `delivery.ts`, `apns.ts`, `apnsTokens.ts`, `lib/delivery.ts`, `lib/apnsPayload.ts`, `lib/twilio.ts` |
 | Caregiver phone verification and inbound SMS | `phone.ts` (includes `households.myPhoneStatus`), `sms.ts` |
 | Daily digest (also posted as a message from Sunny in the caregiver chat, `chatPosts`) | `digest.ts`, `lib/digestFacts.ts`, `lib/digestText.ts`, `lib/chatPosts.ts` |
@@ -167,6 +168,7 @@ Environment (set on the Convex deployment with `npx convex env set`, never in a 
 | Voice | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_SERVER_URL`, `SUNNY_AGENT_KEY` (shared with the Python agent) |
 | Agent runtime | `ANTHROPIC_API_KEY`, `SUNNY_AGENT_ID`, `SUNNY_ENVIRONMENT_ID`, optional `SUNNY_AGENT_SESSION_BUDGET_CENTS` |
 | Google Calendar | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `GOOGLE_OAUTH_STATE_SECRET`, `CALENDAR_TOKEN_KEY` (also keys phone codes) |
+| Gmail triage | `TYPESAFE_API_KEY` (Jev). It also needs the Google Calendar and Agent runtime variables above |
 | APNs | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8`, `APNS_ENVIRONMENT`, optional `APNS_BUNDLE_ID` |
 | SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_WEBHOOK_URL`, optional `SMS_ALLOWED_COUNTRY_CODES` |
 
@@ -294,6 +296,7 @@ Style is enforced by pre-commit: run `uv tool run pre-commit run --all-files` fr
 | Tasks, escalation ladder, claim | `tasks.ts`, `instances.ts`, `scheduler.ts` |
 | Day clock and Next up | `calendar.dayView`, `sunny_app/src/day` |
 | Calendar events, Google sync | `calendar.ts`, `googleCalendar.ts`, `calendarPush.ts` |
+| Mail from the senior's Gmail | `gmail.ts`, `mailTriage.ts`, `lib/mailJudge.ts`, `lib/jevQuestions.ts`, `lib/mailPolicy.ts` |
 | Done button, widget, voice confirm | `instances.confirmDueTask` (button via the app, voice via `agent.confirmDueTask`); clients without Clerk confirm through `POST /device/confirm` (`deviceApi.ts`) |
 | What every senior surface shows (one rule set on the server) | `lib/deviceState.ts`, served by `GET /device/state` and `deviceApi.state`; the app still uses its own rules (`sunny_app/src/display/model.ts`, `day/useDoneAction.ts`, `display/cue.ts`) until it switches |
 | E-ink frames drawn by the server, sized per device | `lib/frame.ts` and the `lib/frame*.ts` modules, served by `GET /device/frame` (`deviceFrame.ts`) |

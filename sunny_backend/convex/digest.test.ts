@@ -647,7 +647,9 @@ describe("chat thread", () => {
     ]);
     expect(await posts(f)).toHaveLength(1);
     const items = await transcriptAs(f, "max");
-    expect(items).toEqual([expect.objectContaining({ type: "post", body: GOOD_REPLY })]);
+    expect(items).toEqual([
+      expect.objectContaining({ type: "post", body: GOOD_REPLY, mailHeader: null }),
+    ]);
   });
 
   test("the digest is posted even when no caregiver can be reached", async () => {

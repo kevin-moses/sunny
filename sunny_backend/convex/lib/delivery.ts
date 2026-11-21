@@ -2,12 +2,14 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
-import { findMember, verifiedPhone } from "./access";
+import { findMember, householdCaregivers, verifiedPhone } from "./access";
 import { pushStyle } from "./apnsPayload";
 import type { PushRecipient, PushStyle } from "./apnsPayload";
+import { ellipsize } from "./text";
 import type { NotificationKind } from "./validators";
 
 const MAX_PARALLEL_DELIVERIES = 10;
+const MAX_PUSH_BODY = 178;
 
 const DELIVERY_RETRY = { maxAttempts: 5, initialBackoffMs: 2_000, base: 2 };
 
@@ -35,6 +37,9 @@ export const SMS_KIND_POLICY: Record<
   digest: { retryOnTimeout: false, hidesOlderAlert: false },
   agent_flag: { retryOnTimeout: true, hidesOlderAlert: true },
   family_message: { retryOnTimeout: false, hidesOlderAlert: true },
+  senior_note: { retryOnTimeout: false, hidesOlderAlert: false },
+  mail_escalation: { retryOnTimeout: true, hidesOlderAlert: true },
+  mail_update: { retryOnTimeout: false, hidesOlderAlert: false },
 };
 
 const SMS_MAX_CHARS = 1_500;
@@ -90,6 +95,10 @@ function smsText(row: Doc<"notificationOutbox">, canClaim: boolean): string {
 }
 
 async function staleReason(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<string | null> {
+  if (row.seniorNoteId !== undefined) {
+    const note = await ctx.db.get(row.seniorNoteId);
+    return note === null || note.expiresAt <= Date.now() ? "note_expired" : null;
+  }
   if (row.taskInstanceId === undefined) return null;
   const instance = await ctx.db.get(row.taskInstanceId);
   if (!instance) return "instance_gone";
@@ -208,6 +217,27 @@ export async function reachableMembers(
     if (await isReachableMember(ctx, member)) reachable.push(member);
   }
   return reachable;
+}
+
+export async function pushToCaregivers(
+  ctx: MutationCtx,
+  household: Doc<"households">,
+  notice: { kind: NotificationKind; title: string; body: string; payload: Record<string, string> },
+  admit: () => Promise<boolean> = async () => true,
+): Promise<boolean> {
+  const recipients = await reachableMembers(ctx, await householdCaregivers(ctx, household._id));
+  if (recipients.length === 0 || !(await admit())) return false;
+  for (const member of recipients) {
+    await insertNotification(ctx, {
+      householdId: household._id,
+      kind: notice.kind,
+      title: notice.title,
+      body: ellipsize(notice.body, MAX_PUSH_BODY),
+      payload: notice.payload,
+      recipientUserId: member.userId,
+    });
+  }
+  return true;
 }
 
 export async function resolveRoute(ctx: QueryCtx, row: Doc<"notificationOutbox">): Promise<Route> {

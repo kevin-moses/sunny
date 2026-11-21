@@ -5,7 +5,7 @@ import {
   putInfo as deviceInfo,
 } from "./deviceApi";
 import { getFrame as deviceFrame } from "./deviceFrame";
-import { callback as googleCallback, start as googleStart } from "./googleCalendar";
+import { callback as googleCallback, start as googleStart } from "./googleOauth";
 import { pair } from "./pairing";
 import { inbound as twilioInbound } from "./sms";
 

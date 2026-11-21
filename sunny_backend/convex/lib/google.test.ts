@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { CALENDAR_USAGE_LIMIT } from "../googleMocks.helpers";
 import {
   CALENDAR_SCOPE,
   GoogleAccessRevoked,
@@ -69,7 +70,9 @@ afterEach(() => {
 
 describe("consentUrl", () => {
   test("asks for offline access, consent, the calendar scope and an S256 challenge", () => {
-    const url = new URL(consentUrl("the-state", "the-challenge"));
+    const url = new URL(
+      consentUrl("the-state", "the-challenge", { scope: CALENDAR_SCOPE, prompt: "consent" }),
+    );
     expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     expect(url.searchParams.get("client_id")).toBe("client-id");
     expect(url.searchParams.get("redirect_uri")).toBe("https://example.test/google/callback");
@@ -84,7 +87,9 @@ describe("consentUrl", () => {
 
   test("names the missing variable", () => {
     delete process.env.GOOGLE_CLIENT_ID;
-    expect(() => consentUrl("s", "c")).toThrow("Missing env var GOOGLE_CLIENT_ID");
+    expect(() => consentUrl("s", "c", { scope: CALENDAR_SCOPE, prompt: "consent" })).toThrow(
+      "Missing env var GOOGLE_CLIENT_ID",
+    );
   });
 });
 
@@ -161,6 +166,35 @@ describe("GoogleApiError", () => {
       new GoogleApiError(403, '{"errors":[{"reason":"userRateLimitExceeded"}]}').retryable,
     ).toBe(true);
     expect(new GoogleApiError(403, '{"errors":[{"reason":"forbidden"}]}').retryable).toBe(false);
+  });
+
+  test("Calendar's usage limit is a retryable rate limit and not project-wide", () => {
+    const e = new GoogleApiError(403, CALENDAR_USAGE_LIMIT);
+    expect([e.retryable, e.projectWide]).toEqual([true, false]);
+  });
+
+  test.each(["dailyLimitExceeded", "accessNotConfigured"])(
+    "%s is a project-wide error and is not retried",
+    (reason) => {
+      for (const status of [403, 429]) {
+        const e = new GoogleApiError(status, `{"errors":[{"reason":"${reason}"}]}`);
+        expect([e.projectWide, e.retryable]).toEqual([true, false]);
+      }
+      expect(new GoogleApiError(500, reason).projectWide).toBe(false);
+    },
+  );
+
+  test("per-minute limits, a domain policy and a plain forbidden are not project-wide", () => {
+    for (const reason of [
+      "rateLimitExceeded",
+      "userRateLimitExceeded",
+      "domainPolicy",
+      "forbidden",
+    ]) {
+      expect(new GoogleApiError(403, `{"errors":[{"reason":"${reason}"}]}`).projectWide).toBe(
+        false,
+      );
+    }
   });
 });
 

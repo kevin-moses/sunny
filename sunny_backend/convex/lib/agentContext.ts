@@ -4,6 +4,7 @@ import { LIST_CONTEXT_MAX, openListItems } from "./householdList";
 import { householdOccurrences } from "./occurrences";
 import { findMember } from "./access";
 import { agentMemoryWindow, entriesInOrder } from "./profileReads";
+import { activeSeniorNotes } from "./seniorNotes";
 import { DAY_MS, addDays, localDate, localDateTime } from "./time";
 import { todayInstances } from "./today";
 import type { TodayEntry } from "./today";
@@ -51,6 +52,7 @@ export interface AgentContext {
   recentConversations: Array<{ startedAt: number; summary: string }>;
   recentQuestionTopics: string[];
   list: { openCount: number; items: string[] };
+  seniorNotes: Array<{ text: string; receivedAt: number }>;
 }
 
 async function upcomingEvents(
@@ -191,6 +193,7 @@ export async function buildAgentContext(
     recentConversations,
     questionTopics,
     list,
+    notes,
   ] = await Promise.all([
     householdCaregivers(ctx, id),
     ctx.db
@@ -206,6 +209,7 @@ export async function buildAgentContext(
     recentSummaries(ctx, id),
     recentQuestionTopics(ctx, id, now),
     listSummary(ctx, id),
+    activeSeniorNotes(ctx, id, now),
   ]);
   return {
     household: {
@@ -226,5 +230,6 @@ export async function buildAgentContext(
     recentConversations,
     recentQuestionTopics: questionTopics,
     list,
+    seniorNotes: notes.map((note) => ({ text: note.text, receivedAt: note.receivedAt })),
   };
 }

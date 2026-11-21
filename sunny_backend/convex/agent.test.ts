@@ -289,6 +289,7 @@ describe("getContext", () => {
       recentConversations: [],
       recentQuestionTopics: [],
       list: { openCount: 0, items: [] },
+      seniorNotes: [],
     });
   });
 

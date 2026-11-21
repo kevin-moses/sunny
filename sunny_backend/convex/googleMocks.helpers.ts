@@ -1,5 +1,19 @@
 import { vi } from "vitest";
 
+export const CALENDAR_USAGE_LIMIT = JSON.stringify({
+  error: {
+    code: 403,
+    message: "Calendar usage limits exceeded.",
+    errors: [
+      {
+        domain: "usageLimits",
+        reason: "quotaExceeded",
+        message: "Calendar usage limits exceeded.",
+      },
+    ],
+  },
+});
+
 export const googleMocks = {
   exchangeCode: vi.fn(),
   refreshAccessToken: vi.fn(),
@@ -9,6 +23,17 @@ export const googleMocks = {
   deleteEvent: vi.fn(),
   revokeRefreshToken: vi.fn(),
 };
+
+export const gmailMocks = {
+  getProfile: vi.fn(),
+  listHistory: vi.fn(),
+  listRecent: vi.fn(),
+  getMessage: vi.fn(),
+};
+
+export function gmailMock<T extends object>(original: T): T {
+  return { ...original, ...gmailMocks };
+}
 
 export function googleMock<T extends object>(original: T): T {
   return { ...original, ...googleMocks };
@@ -37,7 +62,13 @@ export function secretBoxMock<T extends object>(original: T): T {
 }
 
 export function resetGoogleMocks(): void {
-  for (const mock of Object.values(googleMocks)) mock.mockReset();
+  for (const mock of [...Object.values(googleMocks), ...Object.values(gmailMocks)]) {
+    mock.mockReset();
+  }
+  gmailMocks.getProfile.mockResolvedValue({ email: "margaret@example.com", historyId: "100" });
+  gmailMocks.listRecent.mockResolvedValue([]);
+  gmailMocks.listHistory.mockResolvedValue({ ids: [], lastHistoryId: "100", next: null });
+  gmailMocks.getMessage.mockResolvedValue(null);
   googleMocks.refreshAccessToken.mockResolvedValue({
     accessToken: "access-1",
     expiresAt: Date.now() + 3_600_000,

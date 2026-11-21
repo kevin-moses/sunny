@@ -10,21 +10,26 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
+export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const REQUEST_TIMEOUT_MS = 15_000;
 const RATE_LIMIT_REASONS = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i;
+const PROJECT_WIDE_REASONS = /\b(?:dailyLimitExceeded|accessNotConfigured)/;
 
 export class GoogleApiError extends Error {
   status: number;
   retryable: boolean;
+  projectWide: boolean;
   gone: boolean;
 
   constructor(status: number, message: string) {
     super(`Google API ${status}: ${message}`);
     this.name = "GoogleApiError";
     this.status = status;
+    this.projectWide = (status === 403 || status === 429) && PROJECT_WIDE_REASONS.test(message);
     this.retryable =
-      status === 429 || status >= 500 || (status === 403 && RATE_LIMIT_REASONS.test(message));
+      !this.projectWide &&
+      (status === 429 || status >= 500 || (status === 403 && RATE_LIMIT_REASONS.test(message)));
     this.gone = status === 404 || status === 410;
   }
 }
@@ -42,7 +47,7 @@ function env(name: string): string {
   return value;
 }
 
-function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse> {
+export function googleFetch(url: string, init: RequestInit = {}): Promise<TimedResponse> {
   return timedFetch(url, init, REQUEST_TIMEOUT_MS);
 }
 
@@ -52,14 +57,18 @@ export function startUrl(ticket: string): string {
   return url.toString();
 }
 
-export function consentUrl(state: string, codeChallenge: string): string {
+export function consentUrl(
+  state: string,
+  codeChallenge: string,
+  purpose: { scope: string; prompt: string },
+): string {
   const params = new URLSearchParams({
     client_id: env("GOOGLE_CLIENT_ID"),
     redirect_uri: env("GOOGLE_REDIRECT_URI"),
     response_type: "code",
-    scope: `openid email ${CALENDAR_SCOPE}`,
+    scope: `openid email ${purpose.scope}`,
     access_type: "offline",
-    prompt: "consent",
+    prompt: purpose.prompt,
     include_granted_scopes: "false",
     state,
     code_challenge: codeChallenge,
@@ -113,15 +122,17 @@ async function emailFromUserinfo(accessToken: string): Promise<string | null> {
   }
 }
 
-export async function exchangeCode(
-  code: string,
-  codeVerifier: string,
-): Promise<{
+export interface GoogleGrant {
   accessToken: string;
   refreshToken: string;
   scopes: string[];
   email: string | null;
-} | null> {
+}
+
+export async function exchangeCode(
+  code: string,
+  codeVerifier: string,
+): Promise<GoogleGrant | null> {
   let body: Record<string, unknown>;
   try {
     body = await tokenRequest({
