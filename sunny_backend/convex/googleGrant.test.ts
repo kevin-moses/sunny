@@ -86,6 +86,19 @@ describe.each(["mailboxes", "calendarConnections"] as const)("a %s row", (table)
     }
     expect(await stored(t, row)).toMatchObject({ status: "revoked", error: "first" });
   });
+
+  test("a row already in error is not moved to revoked and tells nobody", async () => {
+    const { t, row } = await setup();
+    await t.run(async (ctx) => ctx.db.patch(row.id, { status: "error", error: "earlier" }));
+    await t.mutation(internal.googleGrant.markGrant, {
+      row,
+      refreshToken: "box:refresh-1",
+      status: "revoked",
+      error: "gone",
+    });
+    expect(await stored(t, row)).toMatchObject({ status: "error", error: "earlier" });
+    expect(await t.run(async (ctx) => await ctx.db.query("chatPosts").collect())).toEqual([]);
+  });
 });
 
 test("marking a mailbox tells the caregivers once and marking a calendar tells nobody", async () => {

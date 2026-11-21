@@ -5,17 +5,17 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { recordLostGrant, tokensFor } from "./googleGrant";
-import { closeHolds, openHold } from "./serviceHolds";
+import { tokensFor } from "./googleGrant";
+import type { GrantJob } from "./googleGrant";
+import { closeHolds } from "./serviceHolds";
 import { itemHeader, postMail } from "./lib/chatPosts";
 import { errorText } from "./lib/errors";
 import { getMessage } from "./lib/gmailApi";
 import { storedGrant } from "./lib/googleTokens";
-import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
+import type { StoredGrant } from "./lib/googleTokens";
 import { carryOut, senderLink } from "./lib/mailEffects";
 import { knownInvite, policyFacts } from "./lib/mailFacts";
 import type { LinkedEventState } from "./lib/mailFacts";
-import { mailFailure } from "./lib/mailFailure";
 import { askJev } from "./lib/jevClient";
 import { triageEmail } from "./lib/mailJudge";
 import { parseGmailMessage } from "./lib/mailParse";
@@ -406,26 +406,22 @@ async function settleTriageError(
   ctx: ActionCtx,
   itemId: Id<"mailItems">,
   claim: Claimed,
+  job: GrantJob,
   e: unknown,
 ): Promise<TriageOutcome> {
-  const failure = mailFailure(e);
+  const cause = await job.settle(e);
   const release = (held: boolean) =>
     ctx.runMutation(internal.mailTriage.releaseClaim, { itemId, attempt: claim.attempt, held });
-  switch (failure.kind) {
+  switch (cause) {
     case "permanent":
       throw new NonRetryableError(errorText(e), { cause: e });
-    case "grant":
-      await recordLostGrant(
-        ctx,
-        { table: "mailboxes", id: claim.mailboxId },
-        claim.grant.refreshToken,
-        failure,
-      );
+    case "revoked":
+    case "unreadable":
+    case "forbidden":
       await release(false);
       return "mailbox_lost";
     case "hold":
       await release(true);
-      await openHold(ctx, failure.service, errorText(e), claim.now);
       return "held";
     case "retry":
       await release(false);
@@ -437,10 +433,10 @@ async function triageClaimed(
   ctx: ActionCtx,
   itemId: Id<"mailItems">,
   claim: Claimed,
-  tokens: AccessTokens,
+  job: GrantJob,
 ): Promise<Finished> {
   const { attempt, timezone } = claim;
-  const raw = await tokens.withToken((token) => getMessage(token, claim.gmailId));
+  const raw = await job.tokens.withToken((token) => getMessage(token, claim.gmailId));
   const email = raw === null ? null : parseGmailMessage(raw, timezone);
   if (email === null) {
     const rule = raw === null ? "gone" : "unparseable";
@@ -480,12 +476,17 @@ export const triage = internalAction({
       console.log(`Mail triage skipped: ${claim.reason}`);
       return "skipped";
     }
-    const tokens = await tokensFor(ctx, { table: "mailboxes", id: claim.mailboxId }, claim.grant);
+    const job = await tokensFor(
+      ctx,
+      { table: "mailboxes", id: claim.mailboxId },
+      claim.grant,
+      claim.now,
+    );
     let finished: Finished;
     try {
-      finished = await triageClaimed(ctx, itemId, claim, tokens);
+      finished = await triageClaimed(ctx, itemId, claim, job);
     } catch (e) {
-      return await settleTriageError(ctx, itemId, claim, e);
+      return await settleTriageError(ctx, itemId, claim, job, e);
     }
     if (claim.probe) await closeHolds(ctx, finished.used, claim.now);
     return finished.outcome;

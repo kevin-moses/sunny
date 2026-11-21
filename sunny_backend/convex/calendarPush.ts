@@ -3,19 +3,19 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
-import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { recordLostGrant, tokensFor } from "./googleGrant";
-import type { GrantRow } from "./googleGrant";
-import { closeHolds, openHold } from "./serviceHolds";
+import type { MutationCtx } from "./_generated/server";
+import { tokensFor } from "./googleGrant";
+import type { GrantJob, GrantRow } from "./googleGrant";
+import { closeHolds } from "./serviceHolds";
 import { findMember } from "./lib/access";
 import { errorText } from "./lib/errors";
 import { enqueuePush, getLink } from "./lib/calendarSync";
 import { GoogleApiError, calendarExists, deleteEvent, upsertEvent } from "./lib/google";
 import { buildGoogleEvent, eventSyncPayload, googleEventId } from "./lib/googleEvent";
-import { googleFailure } from "./lib/googleGrant";
+import type { GoogleCause } from "./lib/googleGrant";
 import { holdsGrant, storedGrant } from "./lib/googleTokens";
 import { enterGate } from "./lib/serviceHolds";
-import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
+import type { StoredGrant } from "./lib/googleTokens";
 
 const CALENDAR_MISSING_MESSAGE = "The Sunny calendar was deleted in Google; reconnect.";
 const SYNC_FAILED_MESSAGE = "Some events could not be synced to Google; Sunny will retry.";
@@ -153,38 +153,14 @@ function grantRow(work: Work): GrantRow {
   return { table: "calendarConnections", id: work.connectionId };
 }
 
-async function settleError(
-  ctx: ActionCtx,
-  work: Work,
-  tokens: AccessTokens,
-  e: unknown,
-): Promise<PushOutcome> {
-  if (!(e instanceof GoogleApiError && e.gone)) return await settleFailure(ctx, work, e);
-  let calendarFound: boolean;
-  try {
-    calendarFound = await calendarExists(await tokens.get(), work.calendarId);
-  } catch (checkError) {
-    return await settleFailure(ctx, work, checkError);
-  }
-  if (!calendarFound) {
-    await recordLostGrant(ctx, grantRow(work), work.grant.refreshToken, {
-      status: "error",
-      error: CALENDAR_MISSING_MESSAGE,
-    });
-    return "calendar_missing";
-  }
-  console.error(`Google push: event not found in an existing calendar (${e.message})`);
-  return "failed";
-}
-
-async function settleFailure(ctx: ActionCtx, work: Work, e: unknown): Promise<PushOutcome> {
-  const failure = googleFailure(e, "calendarConnections") ?? { kind: "retry" };
-  switch (failure.kind) {
-    case "grant":
-      await recordLostGrant(ctx, grantRow(work), work.grant.refreshToken, failure);
-      return failure.status === "revoked" ? "revoked" : "failed";
+function pushOutcome(cause: GoogleCause, e: unknown): PushOutcome {
+  switch (cause) {
+    case "revoked":
+      return "revoked";
+    case "unreadable":
+    case "forbidden":
+      return "failed";
     case "hold":
-      await openHold(ctx, failure.service, errorText(e), work.startedAt);
       return "held";
     case "permanent":
       console.error(`Google push ended without retry: ${errorText(e)}`);
@@ -192,6 +168,22 @@ async function settleFailure(ctx: ActionCtx, work: Work, e: unknown): Promise<Pu
     case "retry":
       throw e;
   }
+}
+
+async function settleError(job: GrantJob, work: Work, e: unknown): Promise<PushOutcome> {
+  if (!(e instanceof GoogleApiError && e.gone)) return pushOutcome(await job.settle(e), e);
+  let calendarFound: boolean;
+  try {
+    calendarFound = await calendarExists(await job.tokens.get(), work.calendarId);
+  } catch (checkError) {
+    return pushOutcome(await job.settle(checkError), checkError);
+  }
+  if (!calendarFound) {
+    await job.lose("error", CALENDAR_MISSING_MESSAGE);
+    return "calendar_missing";
+  }
+  console.error(`Google push: event not found in an existing calendar (${e.message})`);
+  return "failed";
 }
 
 export const push = internalAction({
@@ -203,14 +195,10 @@ export const push = internalAction({
       return "skipped";
     }
     if (start.kind === "waiting") return "waiting";
-    const tokens = await tokensFor(
-      ctx,
-      { table: "calendarConnections", id: start.connectionId },
-      start.grant,
-    );
+    const job = await tokensFor(ctx, grantRow(start), start.grant, start.startedAt);
     let pushed: PushOutcome;
     try {
-      const { outcome, link } = await tokens.withToken((accessToken) =>
+      const { outcome, link } = await job.tokens.withToken((accessToken) =>
         pushToGoogle(start, accessToken),
       );
       await ctx.runMutation(internal.calendarPush.recordPush, {
@@ -221,7 +209,7 @@ export const push = internalAction({
       });
       pushed = outcome;
     } catch (e) {
-      return await settleError(ctx, start, tokens, e);
+      return await settleError(job, start, e);
     }
     if (start.probe) await closeHolds(ctx, ["calendar"], start.startedAt);
     return pushed;

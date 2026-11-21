@@ -4,8 +4,8 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
-import { recordLostGrant, tokensFor } from "./googleGrant";
-import { closeHolds, openHold } from "./serviceHolds";
+import { tokensFor } from "./googleGrant";
+import { closeHolds } from "./serviceHolds";
 import {
   EDITOR_ROLES,
   loadHousehold,
@@ -20,9 +20,9 @@ import { postMailbox } from "./lib/chatPosts";
 import { appError, errorText } from "./lib/errors";
 import { getProfile, listHistory, listRecent } from "./lib/gmailApi";
 import type { GoogleGrant } from "./lib/google";
+import type { GoogleCause } from "./lib/googleGrant";
 import { googleAccount, holdsGrant, scheduleGrantRevoke, storedGrant } from "./lib/googleTokens";
 import type { AccessTokens, StoredGrant } from "./lib/googleTokens";
-import { mailFailure } from "./lib/mailFailure";
 import { TRIAGE_PICKUP_MS, enqueueTriage, jobInPool, mailPool } from "./lib/mailPool";
 import { oauthPage } from "./lib/oauthFlow";
 import type { FlowOwner } from "./lib/oauthFlow";
@@ -262,24 +262,14 @@ async function gather(tokens: AccessTokens, start: PollStart): Promise<Gathered>
   return { ids: [...ids], lastHistoryId, recovered: false };
 }
 
-async function settlePollError(
-  ctx: ActionCtx,
-  mailboxId: Id<"mailboxes">,
-  start: PollStart,
-  e: unknown,
-): Promise<PollOutcome> {
-  const failure = mailFailure(e);
-  switch (failure.kind) {
-    case "grant":
-      await recordLostGrant(
-        ctx,
-        { table: "mailboxes", id: mailboxId },
-        start.grant.refreshToken,
-        failure,
-      );
-      return failure.status === "revoked" ? "revoked" : "failed";
+function pollOutcome(cause: GoogleCause, e: unknown): PollOutcome {
+  switch (cause) {
+    case "revoked":
+      return "revoked";
+    case "unreadable":
+    case "forbidden":
+      return "failed";
     case "hold":
-      await openHold(ctx, failure.service, errorText(e), start.startedAt);
       return "held";
     case "permanent":
       console.error(`Gmail poll ended without retry: ${errorText(e)}`);
@@ -297,9 +287,15 @@ export const poll = internalAction({
       console.log(`Gmail poll skipped: ${start.reason}`);
       return "skipped";
     }
-    const tokens = await tokensFor(ctx, { table: "mailboxes", id: mailboxId }, start.grant);
+    const job = await tokensFor(
+      ctx,
+      { table: "mailboxes", id: mailboxId },
+      start.grant,
+      start.startedAt,
+    );
+    let found: Gathered;
     try {
-      const found = await gather(tokens, start);
+      found = await gather(job.tokens, start);
       await ctx.runMutation(internal.gmail.recordNew, {
         mailboxId,
         refreshToken: start.grant.refreshToken,
@@ -307,11 +303,11 @@ export const poll = internalAction({
         expectedHistoryId: start.historyId,
         lastHistoryId: found.lastHistoryId,
       });
-      if (start.probe) await closeHolds(ctx, ["gmail"], start.startedAt);
-      return found.recovered ? "recovered" : "polled";
     } catch (e) {
-      return await settlePollError(ctx, mailboxId, start, e);
+      return pollOutcome(await job.settle(e), e);
     }
+    if (start.probe) await closeHolds(ctx, ["gmail"], start.startedAt);
+    return found.recovered ? "recovered" : "polled";
   },
 });
 
