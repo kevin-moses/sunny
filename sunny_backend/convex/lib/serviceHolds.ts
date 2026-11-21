@@ -8,6 +8,35 @@ export const holdService = v.union(v.literal("gmail"), v.literal("calendar"), v.
 
 export type HoldService = Infer<typeof holdService>;
 
+const holdState = {
+  open: v.boolean(),
+  since: v.number(),
+  error: v.string(),
+  openedAt: v.number(),
+  probeAt: v.number(),
+  closedAt: v.optional(v.number()),
+};
+
+export const serviceHoldRow = v.union(
+  v.object({ service: v.literal("calendar"), ...holdState }),
+  v.object({
+    service: v.union(v.literal("gmail"), v.literal("jev")),
+    ...holdState,
+    mailHeldSince: v.number(),
+  }),
+);
+
+export type OpenedHold = Omit<Infer<typeof serviceHoldRow>, "service" | "mailHeldSince">;
+
+export function holdRow(
+  service: HoldService,
+  opened: OpenedHold,
+  mailHeldSince: number,
+): Infer<typeof serviceHoldRow> {
+  if (service === "calendar") return { service, ...opened };
+  return { service, ...opened, mailHeldSince };
+}
+
 export type HoldGate = "free" | "held" | "probe";
 
 export const MAIL_SERVICES: readonly HoldService[] = ["gmail", "jev"];
@@ -46,9 +75,10 @@ export async function holdGate(
 }
 
 export async function mailHeldSince(ctx: QueryCtx): Promise<number | null> {
-  const open = await openHolds(ctx, MAIL_SERVICES);
-  if (open.length === 0) return null;
-  return Math.min(...open.map((hold) => hold.mailHeldSince ?? hold.openedAt));
+  const since = (await openHolds(ctx, MAIL_SERVICES)).flatMap((hold) =>
+    hold.service === "calendar" ? [] : [hold.mailHeldSince],
+  );
+  return since.length === 0 ? null : Math.min(...since);
 }
 
 export async function enterGate(

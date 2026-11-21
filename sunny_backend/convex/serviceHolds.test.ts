@@ -146,11 +146,23 @@ describe("opening a hold", () => {
     await addMailbox(t, householdId, "active");
     await openHold(t, "calendar");
     expect(await noteFanOuts(t)).toBe(0);
+    vi.setSystemTime(NOW + MINUTE_MS);
     await openHold(t, "jev");
+    vi.setSystemTime(NOW + 2 * MINUTE_MS);
     await openHold(t, "gmail");
     expect(await noteFanOuts(t)).toBe(1);
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(await heldNotes(t)).toEqual([householdId]);
+    expect(
+      (await holds(t)).map((hold) => [
+        hold.service,
+        hold.service === "calendar" ? null : hold.mailHeldSince,
+      ]),
+    ).toEqual([
+      ["calendar", null],
+      ["jev", NOW + MINUTE_MS],
+      ["gmail", NOW + MINUTE_MS],
+    ]);
   });
 
   test("the note goes out again only after the hold closes and a new one opens", async () => {

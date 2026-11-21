@@ -8,6 +8,7 @@ import {
   MAIL_SERVICES,
   PROBE_EVERY_MS,
   holdOf,
+  holdRow,
   holdService,
   mailHeldSince,
 } from "./lib/serviceHolds";
@@ -25,19 +26,19 @@ export const open = internalMutation({
     if (hold?.open) return false;
     if (hold?.closedAt !== undefined && since <= hold.closedAt) return false;
     const now = Date.now();
-    const isMail = MAIL_SERVICES.includes(service);
-    const heldSince = isMail ? await mailHeldSince(ctx) : null;
-    const mailWasRead = isMail && heldSince === null;
-    const fields = {
+    const heldSince = await mailHeldSince(ctx);
+    const mailWasRead = MAIL_SERVICES.includes(service) && heldSince === null;
+    const opened = {
       open: true,
       since,
       error: error.slice(0, MAX_STORED_ERROR),
       openedAt: now,
       probeAt: now + PROBE_EVERY_MS,
-      mailHeldSince: isMail ? (heldSince ?? now) : undefined,
+      closedAt: hold?.closedAt,
     };
-    if (hold) await ctx.db.patch(hold._id, fields);
-    else await ctx.db.insert("serviceHolds", { service, ...fields });
+    const row = holdRow(service, opened, heldSince ?? now);
+    if (hold) await ctx.db.replace(hold._id, row);
+    else await ctx.db.insert("serviceHolds", row);
     console.error(`Holding ${service} until a probe succeeds: ${error}`);
     if (mailWasRead) {
       await ctx.scheduler.runAfter(0, internal.serviceHolds.noteMailHeld, { cursor: null });

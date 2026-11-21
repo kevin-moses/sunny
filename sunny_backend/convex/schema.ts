@@ -36,7 +36,7 @@ import {
   taskType,
   toolCall,
 } from "./lib/validators";
-import { holdService } from "./lib/serviceHolds";
+import { serviceHoldRow } from "./lib/serviceHolds";
 
 export default defineSchema({
   households: defineTable({
@@ -326,16 +326,7 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_account", ["accountEmail"]),
 
-  serviceHolds: defineTable({
-    service: holdService,
-    open: v.boolean(),
-    since: v.number(),
-    error: v.string(),
-    openedAt: v.number(),
-    probeAt: v.number(),
-    closedAt: v.optional(v.number()),
-    mailHeldSince: v.optional(v.number()),
-  }).index("by_service", ["service"]),
+  serviceHolds: defineTable(serviceHoldRow).index("by_service", ["service"]),
 
   mailItems: defineTable({
     householdId: v.id("households"),
