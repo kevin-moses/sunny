@@ -46,7 +46,7 @@ Rules:
   - APNs still delivers only to the physical phone that owns it;
   - the previous owner's rows then reach them by SMS, or not at all without a verified phone, as for anyone without the app;
   - nothing can be read through a token.
-- `pairingNonce` and `pairedAt` let a device retry a lost `/pair` response for 10 minutes. `listDevices` strips the nonce and `tokenHash`, and adds `lockScreenBlindSince`: since when a phone's Lock Screen has been blind, or null.
+- `pairingNonce` and `pairedAt` let a device retry a lost `/pair` response for 10 minutes. `listDevices` strips the nonce and `tokenHash`.
 - A device token is `sunny_dev_` plus 32 random bytes, base64url. It is made only in an action and stored only as its hash. Issuing a new token replaces the hash, at most 10 times an hour. `households.revokeDeviceToken` (editors only, audited `revoke_device_token`) clears the hash, sets `tokenRevokedAt` and keeps the device paired. `issueToken` refuses a device with `tokenRevokedAt` (`forbidden`), so the revoke holds until the device is paired again, which always makes a new `devices` row for a new Clerk user; `deviceApi.revokeOwnToken` does the same for the calling device's own row, at most 10 times an hour, audited with the device as the actor; removing the device deletes the row. Each of the three revokes the token at once.
 - Removing a member drops their Google connections, links and pending syncs, and revokes the grants.
 - Every workflow step and workpool job, the scheduler and the digest read `backgroundPaused`. Resuming (`households.update`) pushes the calendars again.

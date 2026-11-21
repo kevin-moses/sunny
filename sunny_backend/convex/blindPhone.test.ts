@@ -171,13 +171,6 @@ async function setPaused(f: PhoneFixture, backgroundPaused: boolean): Promise<vo
     .mutation(api.households.update, { householdId: f.householdId, backgroundPaused });
 }
 
-async function listedBlindSince(f: PhoneFixture): Promise<number | null> {
-  const devices = await f.t
-    .withIdentity({ subject: f.caregiver })
-    .query(api.households.listDevices, { householdId: f.householdId });
-  return devices.find((device) => device._id === f.phoneId)!.lockScreenBlindSince;
-}
-
 describe("a phone whose Lock Screen stopped showing tasks", () => {
   test("blind for 23 hours 59 minutes tells nobody", async () => {
     const { f, blindAt } = await blindFamily();
@@ -225,10 +218,8 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     const cleared = (await phonePushRow(f))!;
     expect(cleared.blindSince).toBeUndefined();
     expect(cleared.blindLookAt).toBeUndefined();
-    expect(await listedBlindSince(f)).toBeNull();
 
     const blindAgainAt = await goBlind(f, "Eye drops", "09:00", DAY_TWO);
-    expect(await listedBlindSince(f)).toBe(blindAgainAt);
     await sweep(f, blindAgainAt + 24 * HOUR - MIN);
     expect(notices()).toHaveLength(2);
     await sweep(f, blindAgainAt + 24 * HOUR);
@@ -265,14 +256,6 @@ describe("a phone whose Lock Screen stopped showing tasks", () => {
     await settle(f.t, PROOF_WAIT_MS + 30_000);
     expect(starts().map((aps) => aps.alert.title)).toEqual(["Morning pills", "Eye drops"]);
     expect((await phonePushRow(f))!.blindSince).toEqual(about(local("08:00") + PROOF_WAIT_MS));
-  });
-
-  test("caregivers see since when the Lock Screen is blind", async () => {
-    const f = await family();
-    expect(await listedBlindSince(f)).toBeNull();
-    await addTask(f, { title: "Morning pills", time: "08:00" });
-    const blindAt = await goBlind(f, "Morning pills", "08:00");
-    expect(await listedBlindSince(f)).toBe(blindAt);
   });
 });
 
