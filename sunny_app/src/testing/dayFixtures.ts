@@ -40,6 +40,7 @@ export function makeTask(overrides: Partial<DayTask> = {}): DayTask {
     confirmable: true,
     reopenable: false,
     confirmPressIds: [],
+    undoRestoresState: null,
     stepPressIds: [],
     seniorPrompts: 0,
     snoozed: false,

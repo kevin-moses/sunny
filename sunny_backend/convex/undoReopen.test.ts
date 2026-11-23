@@ -1535,6 +1535,38 @@ describe("press ids", () => {
     expect(await pressIdsSeenBy(f, "phone")).toEqual([[], []]);
   });
 
+  async function restoreSeenBy(f: Fixture, subject: string): Promise<(string | null)[]> {
+    const asReader = f.t.withIdentity({ subject });
+    const day = await asReader.query(api.calendar.dayView, { householdId: f.householdId });
+    const today = await asReader.query(api.instances.today, { householdId: f.householdId });
+    return [day.tasks, today].map(
+      (list) => list.find((e) => e.instanceId === f.instanceId)!.undoRestoresState,
+    );
+  }
+
+  test("the day entry says what an Undo restores, only to the confirming device", async () => {
+    const f = await dueFixture();
+    await pair(f.t, f.householdId, "pat", "phone2", "senior_phone");
+    expect(await restoreSeenBy(f, "phone")).toEqual([null, null]);
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await restoreSeenBy(f, "phone")).toEqual(["due", "due"]);
+    for (const other of ["phone2", "display", "pat", "val"]) {
+      expect(await restoreSeenBy(f, other)).toEqual([null, null]);
+    }
+    await undo(f, "2027-03-14T12:05:10Z", 0, A);
+    expect(await restoreSeenBy(f, "phone")).toEqual([null, null]);
+  });
+
+  test("the day entry's undoRestoresState is the state the confirm replaced", async () => {
+    const f = await dueFixture();
+    await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, { state: "escalated" }));
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await restoreSeenBy(f, "phone")).toEqual(["escalated", "escalated"]);
+    expect(await undo(f, "2027-03-14T12:05:10Z", 0, A)).toMatchObject({
+      instance: { state: "escalated" },
+    });
+  });
+
   test("confirmInstance refuses a press id from a caregiver actor", async () => {
     const f = await dueFixture();
     at("2027-03-14T12:05:00Z");

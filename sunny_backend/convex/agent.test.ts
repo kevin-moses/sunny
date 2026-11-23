@@ -339,6 +339,7 @@ describe("getContext", () => {
         confirmable: true,
         reopenable: false,
         confirmPressIds: [],
+        undoRestoresState: null,
         stepPressIds: [],
         seniorPrompts: 0,
         snoozed: false,

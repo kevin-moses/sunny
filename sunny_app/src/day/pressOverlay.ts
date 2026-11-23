@@ -1,5 +1,4 @@
-import { isAnytime, isOpen, stepIndex } from './format';
-import { localClockTime } from './localDate';
+import { isOpen, stepIndex } from './format';
 import type { LoggedAnswer, LoggedPress } from './pressLog';
 import type { DayTask } from './types';
 
@@ -43,15 +42,8 @@ function advanced(task: Stepped<DayTask>): DayTask {
   return { ...withStepIndex(task, task.step.index + 1), snoozed: false, snoozedUntil: null };
 }
 
-function pressedBeforeItsTime(task: DayTask, pressedAt: number, timezone: string): boolean {
-  if (isAnytime(task) || task.carriedOver) return false;
-  const clock = localClockTime(timezone, pressedAt);
-  return clock !== null && clock < task.scheduledTime;
-}
-
-function reopened(task: DayTask, pressedAt: number, timezone: string): DayTask {
-  const state = pressedBeforeItsTime(task, pressedAt, timezone) ? 'upcoming' : 'due';
-  return { ...task, state, confirmable: true };
+function reopened(task: DayTask): DayTask {
+  return { ...task, state: task.undoRestoresState ?? 'due', confirmable: true };
 }
 
 function aheadOfDay(answer: LoggedAnswer | undefined, answeredPresses: number): boolean {
@@ -86,7 +78,7 @@ export function overlayEntries(
     .map(({ entry }) => entry);
 }
 
-function replayPressed(task: DayTask, pressed: readonly OverlayEntry[], timezone: string): DayTask {
+function replayPressed(task: DayTask, pressed: readonly OverlayEntry[]): DayTask {
   let shown = task;
   let confirmPressIds: readonly string[] =
     task.state === 'confirmed' ? (task.confirmPressIds ?? []) : [];
@@ -96,7 +88,7 @@ function replayPressed(task: DayTask, pressed: readonly OverlayEntry[], timezone
   for (const entry of pressed) {
     if (entry.kind === 'undo') {
       if (confirmPressIds.includes(entry.pressId)) {
-        shown = beforeLocalPress ?? reopened(shown, entry.pressedAt, timezone);
+        shown = beforeLocalPress ?? reopened(shown);
         confirmPressIds = [];
       } else if (entry.pressId === lastStepPress && isOpen(shown) && shown.step !== null) {
         shown = withStepIndex(shown, shown.step.index - 1);
@@ -125,11 +117,7 @@ function replayPressed(task: DayTask, pressed: readonly OverlayEntry[], timezone
   return shown;
 }
 
-export function applyPresses(
-  tasks: DayTask[],
-  entries: readonly OverlayEntry[],
-  timezone: string,
-): DayTask[] {
+export function applyPresses(tasks: DayTask[], entries: readonly OverlayEntry[]): DayTask[] {
   if (entries.length === 0) return tasks;
   const byTask = new Map<string, OverlayEntry[]>();
   for (const entry of entries) {
@@ -137,6 +125,6 @@ export function applyPresses(
   }
   return tasks.map((task) => {
     const pressed = byTask.get(task.instanceId);
-    return pressed === undefined ? task : replayPressed(task, pressed, timezone);
+    return pressed === undefined ? task : replayPressed(task, pressed);
   });
 }

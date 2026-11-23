@@ -25,8 +25,8 @@ function logged(overrides: Partial<LoggedPress> = {}): LoggedPress {
   return { pressId: 'P1', instanceId: 'inst1', step: 0, pressedAt: NOON, ...overrides };
 }
 
-function shown(day: DayTask[], log: LoggedPress[], answeredPresses = 0, timezone = 'UTC'): DayTask {
-  return applyPresses(day, overlayEntries(log, answeredPresses), timezone)[0]!;
+function shown(day: DayTask[], log: LoggedPress[], answeredPresses = 0): DayTask {
+  return applyPresses(day, overlayEntries(log, answeredPresses))[0]!;
 }
 
 describe('overlayEntries', () => {
@@ -116,28 +116,19 @@ describe('applyPresses', () => {
     expect(shown([confirmed], [press], 1)).toMatchObject({ state: 'due', confirmable: true });
   });
 
-  it('shows it coming up again when it was pressed before its time in the household zone', () => {
-    const confirmed = task({
-      scheduledTime: '08:00',
-      state: 'confirmed',
-      confirmable: false,
-      confirmPressIds: ['P1'],
+  it('shows the state the server says an undo restores, and due when it says nothing', () => {
+    const press = logged({
+      answer: { applied: true, answeredPresses: 1 },
+      undo: { undoneAt: NOON + 5_000 },
     });
-    const at = (pressedAt: number): LoggedPress =>
-      logged({
-        pressedAt,
-        answer: { applied: true, answeredPresses: 1 },
-        undo: { undoneAt: pressedAt + 5_000 },
-      });
-    const early = Date.parse('2026-11-09T12:50:00Z');
-    const onTime = Date.parse('2026-11-09T13:05:00Z');
-    expect(shown([confirmed], [at(early)], 1, 'America/New_York').state).toBe('upcoming');
-    expect(shown([confirmed], [at(onTime)], 1, 'America/New_York').state).toBe('due');
-    expect(shown([confirmed], [at(early)], 1, 'UTC').state).toBe('due');
-    const carried = { ...confirmed, carriedOver: true };
-    expect(shown([carried], [at(early)], 1, 'America/New_York').state).toBe('due');
-    const anytime = { ...confirmed, scheduledTime: 'anytime' };
-    expect(shown([anytime], [at(early)], 1, 'America/New_York').state).toBe('due');
+    const restoring = (undoRestoresState: DayTask['undoRestoresState']): DayTask =>
+      task({ state: 'confirmed', confirmable: false, confirmPressIds: ['P1'], undoRestoresState });
+    expect(shown([restoring('upcoming')], [press], 1)).toMatchObject({
+      state: 'upcoming',
+      confirmable: true,
+    });
+    expect(shown([restoring('escalated')], [press], 1).state).toBe('escalated');
+    expect(shown([restoring(null)], [press], 1).state).toBe('due');
   });
 
   it('an undo of a step press the server already has shows the step again', () => {
@@ -180,8 +171,8 @@ describe('applyPresses', () => {
   it('touches only the tasks that were pressed', () => {
     const other = task({ instanceId: instanceIdOf('inst2') });
     const day = [task(), other];
-    expect(applyPresses(day, overlayEntries([logged()], 0), 'UTC')[1]).toBe(other);
-    expect(applyPresses(day, [], 'UTC')).toBe(day);
+    expect(applyPresses(day, overlayEntries([logged()], 0))[1]).toBe(other);
+    expect(applyPresses(day, [])).toBe(day);
   });
 });
 

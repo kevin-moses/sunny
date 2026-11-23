@@ -63,7 +63,7 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const tasks = useMemo(() => {
     if (day === null) return [];
     const pressed = overlayEntries(seen.presses, day.answeredPresses ?? 0);
-    return applyPresses(day.tasks, pressed, day.timezone);
+    return applyPresses(day.tasks, pressed);
   }, [day, seen]);
   const agenda = useMemo(() => buildAgenda(day === null ? null : { ...day, tasks }), [day, tasks]);
   const stale = day !== null && !dayIsCurrent(day, now);

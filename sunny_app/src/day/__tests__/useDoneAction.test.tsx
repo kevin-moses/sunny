@@ -69,7 +69,7 @@ function renderDone(store: FakePressStore, day: DayTask[], isOffline = false): H
   };
   const Probe = ({ tasks, off }: { tasks: DayTask[]; off: boolean }): null => {
     const seen = useSyncExternalStore(store.subscribe, store.getSeen);
-    const shown = applyPresses(tasks, overlayEntries(seen.presses, 0), 'UTC');
+    const shown = applyPresses(tasks, overlayEntries(seen.presses, 0));
     record(useDoneAction(doneTarget(shown, !off), off, store, shown), shown);
     return null;
   };
