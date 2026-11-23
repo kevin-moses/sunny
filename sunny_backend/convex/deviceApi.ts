@@ -12,12 +12,12 @@ import {
 } from "./_generated/server";
 import type { PublicHttpAction } from "convex/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { NO_SUCH_TASK, confirmPressedInstance } from "./instances";
-import type { ConfirmTransport, PressResult } from "./instances";
+import { NO_SUCH_TASK, confirmPressedInstance, undoPressedInstance } from "./instances";
+import type { ConfirmTransport, PressResult, UndoPressResult } from "./instances";
 import { DEVICES_ONLY, deviceActor, findDevice, requireDeviceActor } from "./lib/access";
 import type { Actor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
-import { NOT_DUE_YET } from "./lib/confirmRule";
+import { NOT_DUE_YET, PRESS_ID_NOT_VALID, isPressId } from "./lib/confirmRule";
 import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
@@ -59,6 +59,7 @@ const SCREEN_GREYS = { min: 2, max: 256 };
 
 const REFUSED = {
   unreadable: "The press could not be read",
+  undoUnreadable: "The undo could not be read",
   badId: "The task id is not valid",
   tooOld: "The press is too old",
   notHere: "The task is not in this household",
@@ -99,6 +100,13 @@ interface ConfirmRequest {
   pressedAgoMs: number;
   via: DeviceVia;
   step?: number;
+  pressId?: string;
+}
+
+interface UndoRequest {
+  instanceId: string;
+  pressId: string;
+  undoneAgoMs: number;
 }
 
 interface InfoRequest {
@@ -115,12 +123,26 @@ interface RefusedRequest {
   via: DeviceVia | null;
 }
 
+interface RefusedUndo {
+  message: string;
+  reason: string;
+  undoneAgoMs: number | null;
+  pressId: string | null;
+}
+
 type PressStatus = PressResult["status"];
+
+type UndoStatus = UndoPressResult["status"];
 
 type ConfirmOutcome =
   | { kind: "unauthorized" }
   | { kind: "bad_instance" }
-  | { kind: "done"; status: PressStatus; reason: string | null };
+  | { kind: "done"; status: PressStatus; reason: string | null; answeredPresses: number };
+
+type UndoOutcome =
+  | { kind: "unauthorized" }
+  | { kind: "bad_instance" }
+  | { kind: "done"; status: UndoStatus; answeredPresses: number };
 
 export async function findDeviceByTokenHash(
   ctx: QueryCtx,
@@ -239,11 +261,22 @@ export const timelineByToken = internalQuery({
   },
 });
 
+type Sent = Record<string, number | string | null>;
+
+function sentPress(press: { pressedAgoMs: number | null; via: DeviceVia | null }): Sent {
+  return { pressedAgoMs: press.pressedAgoMs, via: press.via };
+}
+
+function sentUndo(tap: { undoneAgoMs: number | null; pressId: string | null }): Sent {
+  return { undoneAgoMs: tap.undoneAgoMs, pressId: tap.pressId };
+}
+
 async function auditRefusal(
   ctx: MutationCtx,
   device: Doc<"devices">,
+  action: "press_not_applied" | "undo_not_applied",
   reason: string,
-  press: { pressedAgoMs: number | null; via: DeviceVia | null },
+  sent: Sent,
 ): Promise<void> {
   const limit = await rateLimiter.limit(ctx, "refusedPresses", { key: device._id });
   if (!limit.ok) return;
@@ -252,25 +285,38 @@ async function auditRefusal(
     receivedAt: Date.now(),
     transport: "device_api" satisfies ConfirmTransport,
   };
-  if (press.pressedAgoMs !== null) detail.pressedAgoMs = press.pressedAgoMs;
-  if (press.via !== null) detail.via = press.via;
+  for (const [key, value] of Object.entries(sent)) {
+    if (value !== null) detail[key] = value;
+  }
   await audit(ctx, {
     householdId: device.householdId,
     actor: deviceActor(device),
-    action: "press_not_applied",
+    action,
     entity: "task_instance",
     detail,
   });
 }
 
+async function countAnswer(ctx: MutationCtx, device: Doc<"devices">): Promise<number> {
+  const answeredPresses = (device.answeredPresses ?? 0) + 1;
+  await ctx.db.patch(device._id, { answeredPresses });
+  return answeredPresses;
+}
+
 async function confirmForDevice(
   ctx: MutationCtx,
   actor: DeviceActor,
-  args: { instanceId: Id<"taskInstances">; via: DeviceVia; pressedAgoMs: number; step?: number },
+  args: {
+    instanceId: Id<"taskInstances">;
+    via: DeviceVia;
+    pressedAgoMs: number;
+    step?: number;
+    pressId?: string;
+  },
   now: number,
 ): Promise<{ status: PressStatus; reason: string | null }> {
   if (args.via === "button" && (await pressedBeforeDue(ctx, actor.device, args, now))) {
-    await auditRefusal(ctx, actor.device, REFUSED.notDue, args);
+    await auditRefusal(ctx, actor.device, "press_not_applied", REFUSED.notDue, sentPress(args));
     return { status: "rejected", reason: REFUSED.notDue };
   }
   const budget = { key: actor.device._id };
@@ -282,12 +328,34 @@ async function confirmForDevice(
     });
   } catch (e) {
     if (!isAppError(e, "forbidden")) throw e;
-    await auditRefusal(ctx, actor.device, REFUSED.notHere, args);
+    await auditRefusal(ctx, actor.device, "press_not_applied", REFUSED.notHere, sentPress(args));
     return { status: "rejected", reason: NO_SUCH_TASK };
   }
   if (result.status !== "rejected") return { status: result.status, reason: null };
   if (room) await rateLimiter.limit(ctx, "refusedPresses", budget);
   return { status: "rejected", reason: result.reason };
+}
+
+async function undoForDevice(
+  ctx: MutationCtx,
+  actor: DeviceActor,
+  args: { instanceId: Id<"taskInstances">; pressId: string; undoneAgoMs: number },
+  now: number,
+): Promise<UndoStatus> {
+  const budget = { key: actor.device._id };
+  const room = (await rateLimiter.check(ctx, "refusedPresses", budget)).ok;
+  let result: UndoPressResult;
+  try {
+    result = await undoPressedInstance(ctx, actor, { ...args, transport: "device_api" }, now, {
+      recordRefusal: room,
+    });
+  } catch (e) {
+    if (!isAppError(e, "forbidden")) throw e;
+    await auditRefusal(ctx, actor.device, "undo_not_applied", REFUSED.notHere, sentUndo(args));
+    return "too_late";
+  }
+  if (result.status === "too_late" && room) await rateLimiter.limit(ctx, "refusedPresses", budget);
+  return result.status;
 }
 
 export const confirmByToken = internalMutation({
@@ -297,22 +365,49 @@ export const confirmByToken = internalMutation({
     via: deviceVia,
     pressedAgoMs: v.number(),
     step: v.optional(v.number()),
+    pressId: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<ConfirmOutcome> => {
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
     if (device === null) return { kind: "unauthorized" };
     const instanceId = ctx.db.normalizeId("taskInstances", args.instanceId);
     if (instanceId === null) {
-      await auditRefusal(ctx, device, REFUSED.badId, args);
+      await auditRefusal(ctx, device, "press_not_applied", REFUSED.badId, sentPress(args));
       return { kind: "bad_instance" };
     }
+    const { via, pressedAgoMs, step, pressId } = args;
     const result = await confirmForDevice(
       ctx,
       deviceActor(device),
-      { instanceId, via: args.via, pressedAgoMs: args.pressedAgoMs, step: args.step },
+      { instanceId, via, pressedAgoMs, step, pressId },
       Date.now(),
     );
-    return { kind: "done", ...result };
+    return { kind: "done", ...result, answeredPresses: await countAnswer(ctx, device) };
+  },
+});
+
+export const undoByToken = internalMutation({
+  args: {
+    tokenHash: v.string(),
+    instanceId: v.string(),
+    pressId: v.string(),
+    undoneAgoMs: v.number(),
+  },
+  handler: async (ctx, args): Promise<UndoOutcome> => {
+    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
+    if (device === null) return { kind: "unauthorized" };
+    const instanceId = ctx.db.normalizeId("taskInstances", args.instanceId);
+    if (instanceId === null) {
+      await auditRefusal(ctx, device, "undo_not_applied", REFUSED.badId, sentUndo(args));
+      return { kind: "bad_instance" };
+    }
+    const status = await undoForDevice(
+      ctx,
+      deviceActor(device),
+      { instanceId, pressId: args.pressId, undoneAgoMs: args.undoneAgoMs },
+      Date.now(),
+    );
+    return { kind: "done", status, answeredPresses: await countAnswer(ctx, device) };
   },
 });
 
@@ -325,7 +420,25 @@ export const refusePressByToken = internalMutation({
   },
   handler: async (ctx, args): Promise<null> => {
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
-    if (device !== null) await auditRefusal(ctx, device, args.reason, args);
+    if (device !== null) {
+      await auditRefusal(ctx, device, "press_not_applied", args.reason, sentPress(args));
+    }
+    return null;
+  },
+});
+
+export const refuseUndoByToken = internalMutation({
+  args: {
+    tokenHash: v.string(),
+    reason: v.string(),
+    undoneAgoMs: v.union(v.number(), v.null()),
+    pressId: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, args): Promise<null> => {
+    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
+    if (device !== null) {
+      await auditRefusal(ctx, device, "undo_not_applied", args.reason, sentUndo(args));
+    }
     return null;
   },
 });
@@ -414,30 +527,73 @@ function refusedRequest(
   };
 }
 
+function isInstanceIdText(value: unknown): value is string {
+  return typeof value === "string" && value !== "" && value.length <= MAX_INSTANCE_ID_LENGTH;
+}
+
+function isAge(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isPressIdText(value: unknown): value is string {
+  return typeof value === "string" && isPressId(value);
+}
+
 function parseConfirmRequest(body: Record<string, unknown>): ConfirmRequest | RefusedRequest {
-  const extra = unknownKey(body, ["instanceId", "pressedAgoMs", "via", "step"]);
+  const extra = unknownKey(body, ["instanceId", "pressedAgoMs", "via", "step", "pressId"]);
   if (extra !== null) return refusedRequest(extra, REFUSED.unreadable, body);
-  const { instanceId, pressedAgoMs, via, step } = body;
-  if (
-    typeof instanceId !== "string" ||
-    instanceId === "" ||
-    instanceId.length > MAX_INSTANCE_ID_LENGTH
-  ) {
-    return refusedRequest(BAD_ID_MESSAGE, REFUSED.badId, body);
-  }
+  const { instanceId, pressedAgoMs, via, step, pressId } = body;
+  if (!isInstanceIdText(instanceId)) return refusedRequest(BAD_ID_MESSAGE, REFUSED.badId, body);
   const ageMessage = `pressedAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`;
-  if (typeof pressedAgoMs !== "number" || !Number.isFinite(pressedAgoMs) || pressedAgoMs < 0) {
-    return refusedRequest(ageMessage, REFUSED.unreadable, body);
-  }
+  if (!isAge(pressedAgoMs)) return refusedRequest(ageMessage, REFUSED.unreadable, body);
   if (pressedAgoMs > MAX_PRESS_AGE_MS) return refusedRequest(ageMessage, REFUSED.tooOld, body);
   if (typeof via !== "string" || !(DEVICE_VIAS as readonly string[]).includes(via)) {
     return refusedRequest(`via must be one of ${DEVICE_VIAS.join(", ")}`, REFUSED.unreadable, body);
   }
-  if (step === undefined) return { instanceId, pressedAgoMs, via: via as DeviceVia };
-  if (typeof step !== "number" || !isStepIndex(step)) {
+  if (step !== undefined && (typeof step !== "number" || !isStepIndex(step))) {
     return refusedRequest(STEP_NOT_VALID, REFUSED.unreadable, body);
   }
-  return { instanceId, pressedAgoMs, via: via as DeviceVia, step };
+  if (pressId !== undefined && !isPressIdText(pressId)) {
+    return refusedRequest(PRESS_ID_NOT_VALID, REFUSED.unreadable, body);
+  }
+  return {
+    instanceId,
+    pressedAgoMs,
+    via: via as DeviceVia,
+    ...(step === undefined ? {} : { step }),
+    ...(pressId === undefined ? {} : { pressId }),
+  };
+}
+
+function refusedUndo(
+  message: string,
+  reason: string,
+  body: Record<string, unknown> | null,
+): RefusedUndo {
+  return {
+    message,
+    reason,
+    undoneAgoMs: isAge(body?.undoneAgoMs) ? body.undoneAgoMs : null,
+    pressId: isPressIdText(body?.pressId) ? body.pressId : null,
+  };
+}
+
+function parseUndoRequest(body: Record<string, unknown>): UndoRequest | RefusedUndo {
+  const extra = unknownKey(body, ["instanceId", "pressId", "undoneAgoMs"]);
+  if (extra !== null) return refusedUndo(extra, REFUSED.undoUnreadable, body);
+  const { instanceId, pressId, undoneAgoMs } = body;
+  if (!isInstanceIdText(instanceId)) return refusedUndo(BAD_ID_MESSAGE, REFUSED.badId, body);
+  if (!isPressIdText(pressId)) {
+    return refusedUndo(PRESS_ID_NOT_VALID, REFUSED.undoUnreadable, body);
+  }
+  if (!isAge(undoneAgoMs) || undoneAgoMs > MAX_PRESS_AGE_MS) {
+    return refusedUndo(
+      `undoneAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`,
+      REFUSED.undoUnreadable,
+      body,
+    );
+  }
+  return { instanceId, pressId, undoneAgoMs };
 }
 
 function isIntIn(value: unknown, bounds: { min: number; max: number }): value is number {
@@ -528,6 +684,16 @@ async function stateAfterPress(ctx: ActionCtx, tokenHash: string): Promise<Devic
   }
 }
 
+async function answerWithState(
+  ctx: ActionCtx,
+  tokenHash: string,
+  answer: { status: PressStatus | UndoStatus; reason?: string | null; answeredPresses: number },
+): Promise<Response> {
+  const state = await stateAfterPress(ctx, tokenHash);
+  const headers = state ? { ...doneHeaders(state), ETag: etagOf(state) } : {};
+  return jsonResponse({ ...answer, state }, 200, headers);
+}
+
 export const getState = deviceRoute("Could not load the device state", async (ctx, request) => {
   const tokenHash = await gate(ctx, request);
   if (tokenHash instanceof Response) return tokenHash;
@@ -568,10 +734,28 @@ export const confirm = deviceRoute("Could not confirm the task", async (ctx, req
   });
   if (outcome.kind === "unauthorized") return unauthorizedResponse();
   if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
-  const state = await stateAfterPress(ctx, tokenHash);
-  const { status, reason } = outcome;
-  const headers = state ? { ...doneHeaders(state), ETag: etagOf(state) } : {};
-  return jsonResponse({ status, reason, state }, 200, headers);
+  const { status, reason, answeredPresses } = outcome;
+  return await answerWithState(ctx, tokenHash, { status, reason, answeredPresses });
+});
+
+export const undo = deviceRoute("Could not undo the press", async (ctx, request) => {
+  const tokenHash = await gate(ctx, request);
+  if (tokenHash instanceof Response) return tokenHash;
+  const body = await readJsonObject(request);
+  const tap =
+    typeof body === "string"
+      ? refusedUndo(body, REFUSED.undoUnreadable, null)
+      : parseUndoRequest(body);
+  if ("message" in tap) {
+    const { message, ...refusal } = tap;
+    await ctx.runMutation(internal.deviceApi.refuseUndoByToken, { tokenHash, ...refusal });
+    return errorResponse(400, "invalid", message);
+  }
+  const outcome = await ctx.runMutation(internal.deviceApi.undoByToken, { tokenHash, ...tap });
+  if (outcome.kind === "unauthorized") return unauthorizedResponse();
+  if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
+  const { status, answeredPresses } = outcome;
+  return await answerWithState(ctx, tokenHash, { status, answeredPresses });
 });
 
 export const putInfo = deviceRoute("Could not store the device info", async (ctx, request) => {

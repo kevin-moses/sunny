@@ -455,8 +455,14 @@ async function undoRefusal(
 export async function undoPressedInstance(
   ctx: MutationCtx,
   actor: Actor,
-  args: { instanceId: Id<"taskInstances">; undoneAgoMs?: number; pressId: string },
+  args: {
+    instanceId: Id<"taskInstances">;
+    undoneAgoMs?: number;
+    pressId: string;
+    transport: ConfirmTransport;
+  },
   now: number,
+  options: { recordRefusal?: boolean } = {},
 ): Promise<UndoPressResult> {
   if (actor.kind !== "senior_device") {
     throw appError("forbidden", "Only the senior's devices can do this");
@@ -473,6 +479,7 @@ export async function undoPressedInstance(
       ? NO_SUCH_TASK
       : await undoRefusal(ctx, instance, actor.userId, args.pressId, tappedAt);
   if (refusal !== null || instance === null) {
+    if (options.recordRefusal === false) return { status: "too_late" };
     await audit(ctx, {
       householdId: actor.householdId,
       actor,
@@ -486,10 +493,12 @@ export async function undoPressedInstance(
         tappedAt,
         receivedAt: now,
         pressId: args.pressId,
+        transport: args.transport,
       },
     });
     return { status: "too_late" };
   }
+  const undoDetail = { undo: true, pressId: args.pressId, transport: args.transport };
   if (!isDoneState(instance.state) && latestStepPress(instance) !== null) {
     const steppedBackRow = await changeInstance(
       ctx,
@@ -499,11 +508,7 @@ export async function undoPressedInstance(
         ...steppedBack(instance),
         takenBackPressIds: withTakenBackPressIds(instance.takenBackPressIds, [args.pressId]),
       },
-      {
-        undo: true,
-        pressId: args.pressId,
-        takenBackPressIds: [args.pressId],
-      },
+      { ...undoDetail, takenBackPressIds: [args.pressId] },
     );
     return { status: "undone", instance: steppedBackRow };
   }
@@ -522,11 +527,7 @@ export async function undoPressedInstance(
         instance.confirmPressIds,
       ),
     },
-    {
-      undo: true,
-      pressId: args.pressId,
-      takenBackPressIds: instance.confirmPressIds ?? [],
-    },
+    { ...undoDetail, takenBackPressIds: instance.confirmPressIds ?? [] },
   );
   return { status: "undone", instance: restored };
 }
@@ -837,7 +838,7 @@ export const undoPressedTask = mutation({
   },
   handler: async (ctx, args): Promise<UndoPressResult> => {
     const actor = await requireDeviceActor(ctx);
-    return await undoPressedInstance(ctx, actor, args, Date.now());
+    return await undoPressedInstance(ctx, actor, { ...args, transport: "app" }, Date.now());
   },
 });
 

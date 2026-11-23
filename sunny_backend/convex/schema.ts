@@ -88,6 +88,7 @@ export default defineSchema({
     tokenHash: v.optional(v.string()),
     tokenIssuedAt: v.optional(v.number()),
     tokenRevokedAt: v.optional(v.number()),
+    answeredPresses: v.optional(v.number()),
     screen: v.optional(deviceScreen),
     firmware: v.optional(v.string()),
   })

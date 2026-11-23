@@ -1449,6 +1449,7 @@ describe("press ids", () => {
       tappedAt: Date.parse("2027-03-14T12:05:20Z"),
       receivedAt: Date.parse("2027-03-14T12:05:30Z"),
       pressId: B,
+      transport: "app",
     });
   });
 
