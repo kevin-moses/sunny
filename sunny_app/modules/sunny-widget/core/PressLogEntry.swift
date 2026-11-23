@@ -26,14 +26,6 @@ public enum PressLogEntry {
         }
     }
 
-    public static func status(_ stored: StoredUndo) -> String {
-        switch stored {
-        case .stored: return "stored"
-        case .notStored: return "notSaved"
-        case .noCredentials: return "noCredentials"
-        }
-    }
-
     private static func json(_ answer: PressAnswer) -> [String: Any] {
         var json: [String: Any] = ["applied": answer.applied]
         if let count = answer.answeredPresses { json["answeredPresses"] = count }

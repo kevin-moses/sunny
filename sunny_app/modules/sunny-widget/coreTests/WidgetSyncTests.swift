@@ -297,7 +297,7 @@ final class WidgetSyncTests: XCTestCase {
     }
 
     func testAnUndoOnAnUnpairedPhoneOrOfAnUnknownPressStoresNothing() async throws {
-        XCTAssertEqual(makeSync().storeUndo(ofPress: UUID()), .notStored)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: UUID()), .notSaved)
         transport.queueConfirmFailure()
         _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
         let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
@@ -317,6 +317,18 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueTimeline(304)
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         XCTAssertEqual(makeSync().pressLog().count, 0)
+    }
+
+    func testAReplayCollectsTheLogOnAPhoneThatNeverFetchesATimeline() async throws {
+        transport.queueConfirm(200, body: try Answer.confirmed())
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .phoneApp)
+        clock.advance(PressQueue.recordLifetime - 60)
+        _ = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(makeSync().pressLog().count, 1)
+        clock.advance(120)
+        _ = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(makeSync().pressLog().count, 0)
+        XCTAssertTrue(transport.timelineRequests.isEmpty)
     }
 
     func testAServerErrorHoldsBackOnlyTheLaterPressesOfItsOwnTask() async throws {

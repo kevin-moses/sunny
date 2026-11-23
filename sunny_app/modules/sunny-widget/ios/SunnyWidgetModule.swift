@@ -59,13 +59,13 @@ public final class SunnyWidgetModule: Module {
 
         AsyncFunction("pressDone") { (instanceId: String, step: Int) async throws -> String in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
-            return PressLogEntry.status(await PushStateReporter.shared.pressInApp(sync, instanceId: instanceId, step: step))
+            return PressLogEntry.status(await sync.storeAppPress(instanceId: instanceId, step: step, in: ActivityKitStore()))
         }
 
         AsyncFunction("pressUndo") { (pressId: String) throws -> String in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             guard let id = UUID(uuidString: pressId) else { throw BridgeError.badPressId() }
-            return PressLogEntry.status(sync.storeUndo(ofPress: id))
+            return sync.storeUndo(ofPress: id).rawValue
         }
     }
 }

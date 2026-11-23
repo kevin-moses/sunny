@@ -25,7 +25,6 @@ public struct WidgetStorage: Sendable {
 
     public func timelineFetched(from fetchStartedAt: Date) {
         try? write(JSONEncoder().encode(fetchStartedAt), to: fetchStartURL)
-        presses.collect(at: fetchStartedAt)
     }
 
     public func hiddenCards() -> Set<PressKey> {

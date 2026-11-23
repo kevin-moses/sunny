@@ -84,6 +84,20 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(queue.record(pressed.id)?.undoAnswer, answer(at: 12))
     }
 
+    func testUnsentReadsOnlyThePressesThatHaveSomethingToSend() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let answered = press("answered")
+        let waiting = press("waiting", at: 1)
+        try queue.append(answered)
+        try queue.append(waiting)
+        queue.answered(.confirm(answered), with: answer(at: 2))
+        let answeredFile = directory.appendingPathComponent("pressLog/\(answered.id.uuidString).press.json")
+        try Data("{".utf8).write(to: answeredFile)
+        XCTAssertEqual(queue.unsent(), [.confirm(waiting)])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: answeredFile.path))
+    }
+
     func testAnUndoNeverGoesBeforeItsPressWhenTheClockWentBack() throws {
         let queue = PressQueue(directory: try temporaryDirectory())
         let pressed = press("a", at: 100)
@@ -101,17 +115,36 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(queue.record(pressed.id)?.undo, undo(pressed, at: 10))
     }
 
-    func testTwoAnswersToOneSendKeepTheFirstTimeTheAppliedVerdictAndTheHighestCount() throws {
-        let queue = PressQueue(directory: try temporaryDirectory())
+    func testTheFirstAnswerToASendIsKeptAndALaterOneIgnored() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
         let pressed = press("a")
         try queue.append(pressed)
         try queue.append(undo(pressed, at: 5))
         queue.answered(.confirm(pressed), with: answer(at: 6, applied: true, count: 3))
-        queue.answered(.confirm(pressed), with: answer(at: 9, applied: false, count: 5))
-        queue.answered(.undo(undo(pressed, at: 5)), with: answer(at: 10, applied: false, count: nil))
+        queue.answered(.confirm(pressed), with: answer(at: 9, applied: true, count: 5))
         queue.answered(.undo(undo(pressed, at: 5)), with: answer(at: 8, applied: true, count: 4))
-        XCTAssertEqual(queue.record(pressed.id)?.answer, answer(at: 6, applied: true, count: 5))
+        queue.answered(.undo(undo(pressed, at: 5)), with: answer(at: 10, applied: true, count: 6))
+        XCTAssertEqual(queue.record(pressed.id)?.answer, answer(at: 6, applied: true, count: 3))
         XCTAssertEqual(queue.record(pressed.id)?.undoAnswer, answer(at: 8, applied: true, count: 4))
+        let staging = directory.appendingPathComponent("pressLog/staging")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), [])
+    }
+
+    func testARecordIsReadFromItsOwnFiles() throws {
+        let queue = PressQueue(directory: try temporaryDirectory())
+        let pressed = press("a")
+        let other = press("b", at: 1)
+        try queue.append(pressed)
+        try queue.append(other)
+        try queue.append(undo(pressed, at: 5))
+        queue.answered(.confirm(pressed), with: answer(at: 6, count: 2))
+        XCTAssertEqual(
+            queue.record(pressed.id),
+            PressRecord(press: pressed, answer: answer(at: 6, count: 2), undo: undo(pressed, at: 5))
+        )
+        XCTAssertEqual(queue.record(other.id), PressRecord(press: other))
+        XCTAssertNil(queue.record(UUID()))
     }
 
     func testCollectsOnlyFinishedRecordsOlderThanTwoDays() throws {
@@ -276,9 +309,9 @@ final class PressLogEntryTests: XCTestCase {
         XCTAssertEqual(PressLogEntry.status(StoredPress.sentUnstored(.pending)), "notSaved")
         XCTAssertEqual(PressLogEntry.status(StoredPress.sentUnstored(.unauthorized)), "notSaved")
         XCTAssertEqual(PressLogEntry.status(StoredPress.noCredentials), "noCredentials")
-        XCTAssertEqual(PressLogEntry.status(StoredUndo.stored), "stored")
-        XCTAssertEqual(PressLogEntry.status(StoredUndo.notStored), "notSaved")
-        XCTAssertEqual(PressLogEntry.status(StoredUndo.noCredentials), "noCredentials")
+        XCTAssertEqual(StoredUndo.stored.rawValue, "stored")
+        XCTAssertEqual(StoredUndo.notSaved.rawValue, "notSaved")
+        XCTAssertEqual(StoredUndo.noCredentials.rawValue, "noCredentials")
     }
 }
 

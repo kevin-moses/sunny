@@ -46,12 +46,6 @@ public struct PressAnswer: Codable, Equatable, Sendable {
         self.applied = applied
         self.answeredPresses = answeredPresses
     }
-
-    func joined(with earlier: PressAnswer?) -> PressAnswer {
-        guard let earlier else { return self }
-        let counts = [earlier.answeredPresses, answeredPresses].compactMap { $0 }
-        return PressAnswer(at: min(earlier.at, at), applied: earlier.applied || applied, answeredPresses: counts.max())
-    }
 }
 
 public struct PressRecord: Equatable, Sendable {
@@ -69,6 +63,10 @@ public struct PressRecord: Equatable, Sendable {
 
     var isFinished: Bool {
         answer != nil && (undo == nil || undoAnswer != nil)
+    }
+
+    func isCollectible(at now: Date) -> Bool {
+        isFinished && now.timeIntervalSince(press.pressedAt) > PressQueue.recordLifetime
     }
 
     func hidesItsCard(onTimelineFetchedFrom fetchStartedAt: Date?) -> Bool {
@@ -106,6 +104,12 @@ public enum QueuedSend: Equatable, Sendable {
     }
 }
 
+struct UnsentPress: Equatable {
+    let press: Press
+    let sendsPress: Bool
+    let undo: PressUndo?
+}
+
 private enum LogFile: String, CaseIterable {
     case press
     case answer
@@ -133,12 +137,12 @@ public struct PressQueue: Sendable {
     }
 
     public func append(_ press: Press) throws {
-        try write(press, to: .press, of: press.id, overwriting: false)
+        try write(press, to: .press, of: press.id)
     }
 
     public func append(_ undo: PressUndo) throws {
         do {
-            try write(undo, to: .undo, of: undo.pressId, overwriting: false)
+            try write(undo, to: .undo, of: undo.pressId)
         } catch {
             guard exists(.undo, of: undo.pressId) else { throw error }
         }
@@ -150,41 +154,38 @@ public struct PressQueue: Sendable {
         case .confirm: file = .answer
         case .undo: file = .undoAnswer
         }
-        try? write(answer.joined(with: read(file, of: send.pressId)), to: file, of: send.pressId, overwriting: true)
+        try? write(answer, to: file, of: send.pressId)
     }
 
     public func records() -> [PressRecord] {
-        let listed = files()
-        return listed.keys
-            .compactMap { id -> PressRecord? in
-                guard let found = listed[id], found.contains(.press), let uuid = UUID(uuidString: id) else { return nil }
-                guard let press: Press = read(.press, of: uuid) else { return nil }
-                return PressRecord(
-                    press: press,
-                    answer: found.contains(.answer) ? read(.answer, of: uuid) : nil,
-                    undo: found.contains(.undo) ? read(.undo, of: uuid) : nil,
-                    undoAnswer: found.contains(.undoAnswer) ? read(.undoAnswer, of: uuid) : nil
-                )
-            }
-            .sorted { ($0.press.pressedAt, $0.press.id.uuidString) < ($1.press.pressedAt, $1.press.id.uuidString) }
+        files()
+            .compactMap { id, found in UUID(uuidString: id).flatMap { record($0, from: found) } }
+            .sorted { Self.inPressOrder($0.press, $1.press) }
     }
 
     public func record(_ id: UUID) -> PressRecord? {
-        records().first { $0.press.id == id }
+        record(id, from: Set(LogFile.allCases.filter { exists($0, of: id) }))
     }
 
     public func unsent() -> [QueuedSend] {
-        Self.unsent(in: records())
+        let pending = files().compactMap { id, found -> UnsentPress? in
+            let sendsPress = !found.contains(.answer)
+            let sendsUndo = found.contains(.undo) && !found.contains(.undoAnswer)
+            guard found.contains(.press), sendsPress || sendsUndo, let uuid = UUID(uuidString: id) else { return nil }
+            guard let press: Press = read(.press, of: uuid) else { return nil }
+            return UnsentPress(press: press, sendsPress: sendsPress, undo: sendsUndo ? read(.undo, of: uuid) : nil)
+        }
+        return Self.unsent(in: pending.sorted { Self.inPressOrder($0.press, $1.press) })
     }
 
-    static func unsent(in records: [PressRecord]) -> [QueuedSend] {
+    static func unsent(in pending: [UnsentPress]) -> [QueuedSend] {
         var sends: [(at: Date, order: Int, send: QueuedSend)] = []
-        for (order, record) in records.enumerated() {
-            if record.answer == nil {
-                sends.append((record.press.pressedAt, 2 * order, .confirm(record.press)))
+        for (order, item) in pending.enumerated() {
+            if item.sendsPress {
+                sends.append((item.press.pressedAt, 2 * order, .confirm(item.press)))
             }
-            if let undo = record.undo, record.undoAnswer == nil {
-                sends.append((max(undo.undoneAt, record.press.pressedAt), 2 * order + 1, .undo(undo)))
+            if let undo = item.undo {
+                sends.append((max(undo.undoneAt, item.press.pressedAt), 2 * order + 1, .undo(undo)))
             }
         }
         return sends.sorted { ($0.at, $0.order) < ($1.at, $1.order) }.map(\.send)
@@ -195,19 +196,30 @@ public struct PressQueue: Sendable {
     }
 
     public func collect(at now: Date) {
-        let finished = records().filter { $0.isFinished && now.timeIntervalSince($0.press.pressedAt) > Self.recordLifetime }
-        for record in finished {
-            for file in LogFile.allCases { remove(file, of: record.press.id) }
-        }
-        for (id, found) in files() where !found.contains(.press) {
+        for (id, found) in files() {
             guard let uuid = UUID(uuidString: id) else { continue }
-            for file in found { remove(file, of: uuid) }
+            if let record = record(uuid, from: found), !record.isCollectible(at: now) { continue }
+            for file in LogFile.allCases { remove(file, of: uuid) }
         }
     }
 
     public func removeAll() throws {
         guard FileManager.default.fileExists(atPath: logDirectory.path) else { return }
         try FileManager.default.removeItem(at: logDirectory)
+    }
+
+    private static func inPressOrder(_ first: Press, _ second: Press) -> Bool {
+        (first.pressedAt, first.id.uuidString) < (second.pressedAt, second.id.uuidString)
+    }
+
+    private func record(_ id: UUID, from found: Set<LogFile>) -> PressRecord? {
+        guard found.contains(.press), let press: Press = read(.press, of: id) else { return nil }
+        return PressRecord(
+            press: press,
+            answer: found.contains(.answer) ? read(.answer, of: id) : nil,
+            undo: found.contains(.undo) ? read(.undo, of: id) : nil,
+            undoAnswer: found.contains(.undoAnswer) ? read(.undoAnswer, of: id) : nil
+        )
     }
 
     private func files() -> [String: Set<LogFile>] {
@@ -242,15 +254,10 @@ public struct PressQueue: Sendable {
         return value
     }
 
-    private func write<Value: Encodable>(_ value: Value, to file: LogFile, of id: UUID, overwriting: Bool) throws {
-        let destination = url(file, of: id)
+    private func write<Value: Encodable>(_ value: Value, to file: LogFile, of id: UUID) throws {
         let staged = try stage(JSONEncoder().encode(value))
         do {
-            if overwriting {
-                guard rename(staged.path, destination.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
-            } else {
-                try FileManager.default.moveItem(at: staged, to: destination)
-            }
+            try FileManager.default.moveItem(at: staged, to: url(file, of: id))
         } catch {
             try? FileManager.default.removeItem(at: staged)
             throw error

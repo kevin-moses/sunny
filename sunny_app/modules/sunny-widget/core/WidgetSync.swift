@@ -13,10 +13,10 @@ public enum StoredPress: Equatable, Sendable {
     case sentUnstored(FlushResult)
 }
 
-public enum StoredUndo: Equatable, Sendable {
-    case noCredentials
+public enum StoredUndo: String, Sendable {
     case stored
-    case notStored
+    case notSaved
+    case noCredentials
 }
 
 public enum ReporterLaunch: Equatable, Sendable {
@@ -137,9 +137,9 @@ public struct WidgetSync: Sendable {
 
     public func storeUndo(ofPress pressId: UUID) -> StoredUndo {
         if case .notPaired = credentials() { return .noCredentials }
-        guard let record = storage.presses.record(pressId) else { return .notStored }
+        guard let record = storage.presses.record(pressId) else { return .notSaved }
         let undo = PressUndo(pressId: pressId, instanceId: record.press.instanceId, undoneAt: clock())
-        return (try? storage.presses.append(undo)) == nil ? .notStored : .stored
+        return (try? storage.presses.append(undo)) == nil ? .notSaved : .stored
     }
 
     public func pressLog() -> [PressRecord] {
@@ -170,6 +170,7 @@ public struct WidgetSync: Sendable {
 
     private func replay(with credentials: Credentials, timeout: TimeInterval) async -> FlushResult {
         guard let client = credentials.client else { return credentials.unsentResult }
+        storage.presses.collect(at: clock())
         let deadline = clock().addingTimeInterval(timeout)
         var held: Set<String> = []
         for send in storage.presses.unsent() where !held.contains(send.instanceId) {
@@ -256,8 +257,7 @@ public struct WidgetSync: Sendable {
             if (try? storage.saveCache(body: body)) != nil { storage.timelineFetched(from: fetchStartedAt) }
             return plan(timeline, nil)
         case .notModified:
-            guard let cache else { return TimelinePlanner.plan(at: now, timeline: nil, pressed: [], locale: locale) }
-            storage.timelineFetched(from: fetchStartedAt)
+            if cache != nil { storage.timelineFetched(from: fetchStartedAt) }
             return plan(cache, nil)
         case .unauthorized:
             dropToken(client.token)
