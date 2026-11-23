@@ -473,6 +473,7 @@ export async function undoPressedInstance(
   if (instance !== null && instance.householdId !== actor.householdId) {
     throw appError("forbidden", "Not allowed to undo this task");
   }
+  if (instance?.takenBackPressIds?.includes(args.pressId)) return { status: "undone", instance };
   const tappedAt = now - (args.undoneAgoMs ?? 0);
   const refusal =
     instance === null

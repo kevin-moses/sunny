@@ -1415,6 +1415,57 @@ describe("POST /device/undo", () => {
     });
   });
 
+  test("a repeat of an applied Undo answers undone again, changes nothing and audits nothing", async () => {
+    const { t, f, token } = await pressed();
+    const undo = { instanceId: f.instanceId, pressId: PRESS_A, undoneAgoMs: 0 };
+    setNow(local("08:05") + 20_000);
+    expect(((await (await postUndo(t, token, undo)).json()) as { status: string }).status).toBe(
+      "undone",
+    );
+    const undone = await instance(f);
+    const auditCount = (await audits(t)).length;
+    setNow(local("08:05") + 2 * MIN);
+    const again = await postUndo(t, token, undo);
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { status: string }).status).toBe("undone");
+    expect(await instance(f)).toEqual(undone);
+    expect((await audits(t)).length).toBe(auditCount);
+    expect((await audits(t)).some((a) => a.action === "undo_not_applied")).toBe(false);
+  });
+
+  test("a repeat of an applied step Undo answers undone again and leaves the step alone", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await addPhoneDay(f);
+    const token = await issue(t);
+    setNow(local("08:05"));
+    await t.mutation(internal.scheduler.tickHousehold, {
+      householdId: f.householdId,
+      now: local("08:05"),
+    });
+    const ready = await instanceIdOf(f, "Get ready");
+    const row = async () => (await t.run(async (ctx) => await ctx.db.get(ready)))!;
+    const press = { instanceId: ready, pressedAgoMs: 0, via: "widget", step: 0, pressId: PRESS_A };
+    expect(((await (await postConfirm(t, token, press)).json()) as { status: string }).status).toBe(
+      "advanced",
+    );
+    const undo = { instanceId: ready, pressId: PRESS_A, undoneAgoMs: 0 };
+    setNow(local("08:05") + 10_000);
+    expect(((await (await postUndo(t, token, undo)).json()) as { status: string }).status).toBe(
+      "undone",
+    );
+    const steppedBack = await row();
+    expect(steppedBack.currentStep).toBe(0);
+    const auditCount = (await audits(t)).length;
+    setNow(local("08:05") + 2 * MIN);
+    expect(((await (await postUndo(t, token, undo)).json()) as { status: string }).status).toBe(
+      "undone",
+    );
+    expect(await row()).toEqual(steppedBack);
+    expect((await audits(t)).length).toBe(auditCount);
+    expect((await audits(t)).some((a) => a.action === "undo_not_applied")).toBe(false);
+  });
+
   test("an Undo tapped more than a minute after the press is too late and audited", async () => {
     const { t, f, token } = await pressed();
     setNow(local("08:05") + 61_000);
