@@ -2,6 +2,7 @@ import { ClerkProvider, useAuth } from '@clerk/expo';
 import { tokenCache } from '@clerk/expo/token-cache';
 import { ConvexProviderWithClerk } from 'convex/react-clerk';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -11,6 +12,7 @@ import { useSession } from './src/backend/useSession';
 import { CaregiverApp } from './src/caregiver/CaregiverApp';
 import { Banner } from './src/components/Banner';
 import { CLERK_PUBLISHABLE_KEY } from './src/config';
+import { dropLegacyPressQueue } from './src/day/legacyQueue';
 import { useDayView } from './src/day/useDayView';
 import { CaregiverOnboardingScreen } from './src/screens/CaregiverOnboardingScreen';
 import { ConfigErrorScreen } from './src/screens/ConfigErrorScreen';
@@ -116,6 +118,10 @@ function BackendProviders() {
 }
 
 export default function App() {
+  useEffect(() => {
+    void dropLegacyPressQueue();
+  }, []);
+
   return (
     <SafeAreaProvider>
       <ThemeProvider>

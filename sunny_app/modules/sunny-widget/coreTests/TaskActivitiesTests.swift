@@ -281,7 +281,7 @@ final class ActivityPressTests: XCTestCase {
         transport.beforeReply(to: "/device/confirm") {
             receiptBeforeSend.set(store.shown().first?.phase == .ended)
         }
-        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        transport.queueConfirm(200, body: try Answer.confirmed())
         let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
         XCTAssertEqual(result, .clean)
         XCTAssertTrue(receiptBeforeSend.value, "the senior waited for the network before seeing the receipt")
@@ -289,7 +289,7 @@ final class ActivityPressTests: XCTestCase {
     }
 
     func testAPressThatCouldNotBeStoredOrSentShowsNoReceipt() async throws {
-        try Data().write(to: directory.appendingPathComponent("marks"))
+        try Data().write(to: directory.appendingPathComponent("pressLog"))
         let store = pills()
         transport.queueConfirmFailure()
         let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
@@ -298,9 +298,9 @@ final class ActivityPressTests: XCTestCase {
     }
 
     func testAPressThatCouldNotBeStoredShowsTheReceiptOnceTheServerConfirmedIt() async throws {
-        try Data().write(to: directory.appendingPathComponent("marks"))
+        try Data().write(to: directory.appendingPathComponent("pressLog"))
         let store = pills()
-        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        transport.queueConfirm(200, body: try Answer.confirmed())
         let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
         XCTAssertEqual(result, .clean)
         XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
@@ -310,7 +310,7 @@ final class ActivityPressTests: XCTestCase {
         let refused = try Fixture.json(["status": "rejected", "reason": "This task is not due yet", "state": NSNull()])
         for (status, body) in [(200, refused), (400, Data())] {
             directory = try temporaryDirectory()
-            try Data().write(to: directory.appendingPathComponent("marks"))
+            try Data().write(to: directory.appendingPathComponent("pressLog"))
             let store = pills()
             transport.queueConfirm(status, body: body)
             let result = await makeSync().pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
@@ -345,7 +345,7 @@ final class ActivityPressTests: XCTestCase {
         XCTAssertEqual(result, .noCredentials)
         XCTAssertTrue(store.shown().allSatisfy { $0.phase == .ended })
         XCTAssertTrue(store.shown().allSatisfy { $0.state.closed == nil }, "a receipt for a press nobody will receive")
-        XCTAssertEqual(sync.unsentPresses(), [])
+        XCTAssertEqual(PressQueue(directory: directory).unsentPresses, [])
         XCTAssertTrue(transport.confirmBodies.isEmpty)
     }
 
@@ -361,7 +361,7 @@ final class ActivityPressTests: XCTestCase {
         let result = await sync.pressDoneOnActivity(instanceId: "inst-pills", step: 0, in: store)
         XCTAssertEqual(result, .pending)
         XCTAssertEqual(store.shown().first?.state.closed, ActivityClosed(kind: .done, at: now))
-        XCTAssertEqual(sync.unsentPresses().map(\.key), [PressKey(instanceId: "inst-pills", step: 0)])
+        XCTAssertEqual(PressQueue(directory: directory).unsentPresses.map(\.key), [PressKey(instanceId: "inst-pills", step: 0)])
     }
 }
 
@@ -385,12 +385,13 @@ final class LockedFlag: @unchecked Sendable {
 final class AppPressTests: XCTestCase {
     private var directory: URL!
     private var transport: FakeTransport!
+    private var tokens: MemoryTokenStore!
     private var clock: TestClock!
-    private let appPressId = UUID()
 
     override func setUpWithError() throws {
         directory = try temporaryDirectory()
         transport = FakeTransport()
+        tokens = MemoryTokenStore("token-1")
         clock = TestClock(Fixture.generatedAt.addingTimeInterval(minutes(1)))
     }
 
@@ -398,7 +399,7 @@ final class AppPressTests: XCTestCase {
         let clock = self.clock!
         return WidgetSync(
             storage: WidgetStorage(directory: directory),
-            tokens: MemoryTokenStore("token-1"),
+            tokens: tokens,
             sites: MemorySiteStore(URL(string: "https://example.convex.site")),
             transport: transport,
             clock: { clock.now }
@@ -411,21 +412,22 @@ final class AppPressTests: XCTestCase {
 
     private func shown(_ plan: TimelinePlan) -> WidgetContent? { plan.entries.first?.content }
 
-    private func pressInApp(_ store: TaskActivityStore) async throws {
-        try await makeSync().markAppPress(
-            id: appPressId,
-            instanceId: "inst-morning-pills",
-            step: 0,
-            pressedAt: clock.now,
-            in: store
-        )
+    private func pressInApp(_ store: TaskActivityStore) async throws -> Press {
+        let stored = await makeSync().storeAppPress(instanceId: "inst-morning-pills", step: 0, in: store)
+        guard case .stored(let press) = stored else {
+            XCTFail("the press was not stored: \(stored)")
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return press
     }
 
-    func testAnAppPressHidesTheCardOnTheWidgetAndEndsTheLockScreenActivity() async throws {
+    func testAnAppPressIsStoredUnsentAndHidesTheCardOnTheWidget() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         let store = pills()
-        try await pressInApp(store)
+        let press = try await pressInApp(store)
+        XCTAssertEqual(press.via, .phoneApp)
+        XCTAssertTrue(transport.confirmBodies.isEmpty, "storing a press in the app waited for the network")
         guard case .clear = shown(makeSync().cachedPlan(locale: Fixture.unitedStates)) else {
             return XCTFail("the widget shows a task the app already marked done")
         }
@@ -434,12 +436,21 @@ final class AppPressTests: XCTestCase {
             return XCTFail("a fetch before the app's press reached the server shows it due again")
         }
         XCTAssertEqual(store.shown().first?.phase, .ended)
-        XCTAssertEqual(makeSync().unsentPresses(), [])
+        XCTAssertEqual(PressQueue(directory: directory).unsentPresses, [press])
+    }
+
+    func testAnAppPressIsSentByWhicheverReplayRunsNext() async throws {
+        let press = try await pressInApp(pills())
+        transport.queueConfirm(200, body: try Answer.confirmed(count: 1))
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .clean)
+        XCTAssertEqual(transport.confirmBodies.first?["via"] as? String, "phone_app")
+        XCTAssertEqual(transport.confirmBodies.first?["pressId"] as? String, press.id.uuidString)
     }
 
     func testAnAppPressOnTheLastStepEndsTheActivityAtOnceWithNoReceipt() async throws {
         let store = pills()
-        try await pressInApp(store)
+        _ = try await pressInApp(store)
         guard case .end(_, _, let dismissal) = store.calls.first, store.calls.count == 1 else {
             return XCTFail("expected one end, got \(store.calls)")
         }
@@ -448,24 +459,44 @@ final class AppPressTests: XCTestCase {
 
     func testAnAppPressOnAnEarlierStepShowsTheNextStep() async throws {
         let store = FakeActivityStore([shownActivity(key: "b", state: Sample.tea)])
-        try await makeSync().markAppPress(id: appPressId, instanceId: "inst-tea", step: 0, pressedAt: clock.now, in: store)
+        _ = await makeSync().storeAppPress(instanceId: "inst-tea", step: 0, in: store)
         XCTAssertEqual(store.shown().first?.state.card.step, 1)
         XCTAssertEqual(store.shown().first?.phase, .active)
+    }
+
+    func testAnAppPressOnAnUnpairedPhoneStoresNothingAndLeavesTheActivity() async throws {
+        tokens = MemoryTokenStore(nil)
+        let store = pills()
+        let stored = await makeSync().storeAppPress(instanceId: "inst-morning-pills", step: 0, in: store)
+        XCTAssertEqual(stored, .noCredentials)
+        XCTAssertEqual(store.calls, [])
+        XCTAssertEqual(makeSync().pressLog(), [])
+    }
+
+    func testAnAppPressThatCannotBeStoredIsSentAtOnce() async throws {
+        try Data().write(to: directory.appendingPathComponent("pressLog"))
+        transport.queueConfirm(200, body: try Answer.confirmed())
+        let sent = await makeSync().storeAppPress(instanceId: "inst-morning-pills", step: 0, in: pills())
+        XCTAssertEqual(sent, .sentUnstored(.clean))
+        transport.queueConfirmFailure()
+        let lost = await makeSync().storeAppPress(instanceId: "inst-morning-pills", step: 0, in: pills())
+        XCTAssertEqual(lost, .sentUnstored(.pending))
     }
 
     func testAnUndoInTheAppShowsTheCardAgain() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
-        try await pressInApp(pills())
-        makeSync().withdrawAppPress(id: appPressId)
+        let press = try await pressInApp(pills())
+        XCTAssertEqual(makeSync().storeUndo(ofPress: press.id), .stored)
         guard case .due = shown(makeSync().cachedPlan(locale: Fixture.unitedStates)) else {
             return XCTFail("the undone task is due again")
         }
     }
 
-    func testTheMarkGoesWithTheFirstFetchAfterTheServerAnsweredTheApp() async throws {
-        try await pressInApp(pills())
-        makeSync().answerAppPress(id: appPressId)
+    func testAPressTheServerRefusedShowsAgainWithTheFirstFetchAfterItsAnswer() async throws {
+        _ = try await pressInApp(pills())
+        transport.queueConfirm(200, body: try Answer.body("rejected", reason: "This task is not due yet"))
+        _ = await makeSync().replayPresses(timeout: 4)
         clock.advance(1)
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         guard case .due = shown(await makeSync().refresh(locale: Fixture.unitedStates)) else {
@@ -473,9 +504,12 @@ final class AppPressTests: XCTestCase {
         }
     }
 
-    func testTheAppSeesPressesTheWidgetAndTheLockScreenHaveNotSent() async throws {
+    func testTheAppSeesAPressTheWidgetHasNotSent() async throws {
         transport.queueConfirmFailure()
         _ = await makeSync().pressDone(instanceId: "inst-morning-pills", step: 0, via: .widget)
-        XCTAssertEqual(makeSync().unsentPresses().map(\.key), [PressKey(instanceId: "inst-morning-pills", step: 0)])
+        let logged = makeSync().pressLog()
+        XCTAssertEqual(logged.map(\.press.key), [PressKey(instanceId: "inst-morning-pills", step: 0)])
+        XCTAssertEqual(logged.map(\.press.via), [.widget])
+        XCTAssertNil(logged.first?.answer)
     }
 }

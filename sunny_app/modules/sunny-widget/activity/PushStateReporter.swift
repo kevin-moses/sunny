@@ -28,9 +28,8 @@ public actor PushStateReporter {
         await sync(.press)
     }
 
-    public func markAppPress(_ widgetSync: WidgetSync, id: UUID, instanceId: String, step: Int, pressedAt: Date) async throws {
-        try await widgetSync.markAppPress(id: id, instanceId: instanceId, step: step, pressedAt: pressedAt, in: ActivityKitStore())
-        await sync(.press)
+    public func pressInApp(_ widgetSync: WidgetSync, instanceId: String, step: Int) async -> StoredPress {
+        await widgetSync.storeAppPress(instanceId: instanceId, step: step, in: ActivityKitStore())
     }
 
     public func refreshFromPush() async {

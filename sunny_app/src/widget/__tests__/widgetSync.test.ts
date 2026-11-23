@@ -13,7 +13,6 @@ const mockNative = {
   clearCredentials: jest.fn<AnyMock>(),
   syncSurfaces: jest.fn<AnyMock>(),
   flushPresses: jest.fn<AnyMock>(),
-  unsentPresses: jest.fn<() => Promise<unknown>>(),
 };
 const mockCallAction = jest.fn<AnyMock>();
 const mockLogger = { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() };
@@ -65,7 +64,6 @@ beforeEach(() => {
   mockNative.clearCredentials.mockResolvedValue(undefined);
   mockNative.flushPresses.mockResolvedValue('clean');
   mockNative.syncSurfaces.mockResolvedValue(undefined);
-  mockNative.unsentPresses.mockResolvedValue([]);
   mockCallAction.mockResolvedValue({ deviceToken: 'tok-1' });
 });
 
@@ -181,10 +179,12 @@ describe('syncWidget', () => {
   });
 
   it('neither flushes nor asks again after this pairing was refused a token', async () => {
-    const { syncWidget } = loadModule();
+    const { syncWidget, widgetTokenRefused } = loadModule();
     mockCallAction.mockRejectedValueOnce(new MockBackendError('revoked', 403));
+    expect(widgetTokenRefused()).toBe(false);
     await syncWidget();
     await syncWidget();
+    expect(widgetTokenRefused()).toBe(true);
     expect(mockCallAction).toHaveBeenCalledTimes(1);
     expect(mockNative.flushPresses).not.toHaveBeenCalled();
     expect(mockLogger.warning).not.toHaveBeenCalled();
@@ -195,16 +195,6 @@ describe('syncWidget', () => {
     mockNative.setCredentials.mockRejectedValueOnce(new Error('keychain'));
     await syncWidget();
     expect(mockNative.flushPresses).not.toHaveBeenCalled();
-  });
-
-  it('reads the presses the widget still has to send once the flush is over', async () => {
-    const { syncWidget } = loadModule();
-    mockNative.storedSiteUrl.mockResolvedValue(SITE);
-    await syncWidget();
-    expect(mockNative.unsentPresses).toHaveBeenCalledTimes(1);
-    expect(mockNative.flushPresses.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNative.unsentPresses.mock.invocationCallOrder[0]!,
-    );
   });
 
   it('shares one run between overlapping calls', async () => {
@@ -300,9 +290,7 @@ describe('syncSurfaces', () => {
   it('asks the native side to sync and logs a failure instead of throwing', async () => {
     const { syncSurfaces } = loadModule();
     mockNative.syncSurfaces.mockRejectedValueOnce(new Error('native'));
-    syncSurfaces();
-    await Promise.resolve();
-    await Promise.resolve();
+    await expect(syncSurfaces()).resolves.toBeUndefined();
     expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
     expect(mockLogger.warning).toHaveBeenCalledTimes(1);
   });

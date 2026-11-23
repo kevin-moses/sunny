@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { getFunctionName, type FunctionReference } from 'convex/server';
 
 import { BackendError } from '../api';
-import { confirmQueue } from '../../day/pendingConfirms';
 import {
   decideSession,
   nonceForCode,
@@ -12,7 +11,6 @@ import {
   removalRetryDelay,
   UNREACHABLE_NOTICE,
   unpair,
-  UNPAIR_SEND_MS,
   type HomeDecision,
   type AccountKind,
   type MineEntry,
@@ -149,18 +147,6 @@ describe('pair', () => {
     await pair('ABCD1234');
     expect(mockSignInCreate).toHaveBeenCalledWith({ strategy: 'ticket', ticket: 'tkt' });
     expect(mockSetActive).toHaveBeenCalledWith({ session: 'sess_1' });
-  });
-
-  it('starts a new pairing with an empty queue of Done presses', async () => {
-    await confirmQueue.enqueue({
-      instanceId: 'inst_old' as never,
-      label: 'Pills',
-      pressedAt: 1,
-      pressId: 'pid-0000000000000001',
-    });
-    expect(confirmQueue.getEntries()).toHaveLength(1);
-    await pair('ABCD1234');
-    expect(confirmQueue.getEntries()).toEqual([]);
   });
 
   it('clears the pending attempt once pairing succeeds', async () => {
@@ -320,44 +306,6 @@ describe('unpair', () => {
   it('revokes no device token without a session', async () => {
     await unpair();
     expect(mockMutation).not.toHaveBeenCalled();
-  });
-
-  it('sends the queued Done presses and Undos before it drops them', async () => {
-    const steps: string[] = [];
-    const replay = jest.spyOn(confirmQueue, 'replay').mockImplementation(async () => {
-      steps.push('send');
-    });
-    const clear = jest.spyOn(confirmQueue, 'clear').mockImplementation(async () => {
-      steps.push('drop');
-    });
-    await unpair();
-    expect(steps).toEqual(['send', 'drop']);
-    replay.mockRestore();
-    clear.mockRestore();
-  });
-
-  it('drops the queued presses after a short wait when sending them hangs', async () => {
-    jest.useFakeTimers();
-    const replay = jest
-      .spyOn(confirmQueue, 'replay')
-      .mockImplementation(() => new Promise<void>(() => undefined));
-    const clear = jest.spyOn(confirmQueue, 'clear').mockResolvedValue();
-    mockClerk.session = { id: 's' };
-    const run = unpair();
-    await jest.advanceTimersByTimeAsync(UNPAIR_SEND_MS);
-    await run;
-    expect(clear).toHaveBeenCalledTimes(1);
-    expect(mockSignOut).toHaveBeenCalledTimes(1);
-    replay.mockRestore();
-    clear.mockRestore();
-    jest.useRealTimers();
-  });
-
-  it('drops the queued Done presses, with or without a session', async () => {
-    const clear = jest.spyOn(confirmQueue, 'clear').mockResolvedValue();
-    await unpair();
-    expect(clear).toHaveBeenCalledTimes(1);
-    clear.mockRestore();
   });
 
   it('clears the widget credentials and presses, with or without a session', async () => {

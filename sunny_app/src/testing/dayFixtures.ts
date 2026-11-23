@@ -80,6 +80,7 @@ export function makeDay(overrides: Partial<DayViewData> = {}): DayViewData {
     dateLabel: 'November 9',
     header: 'Monday morning',
     tasks: [],
+    answeredPresses: 0,
     upcomingTasks: [],
     eventsToday: [],
     nextUp: null,

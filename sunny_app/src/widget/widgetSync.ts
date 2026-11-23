@@ -6,13 +6,13 @@ import { CONVEX_SITE_URL } from '../config';
 import type { DayViewData } from '../day/types';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
-import { readUnsentPresses } from './sharedPresses';
 
 type WidgetHolder = 'seniorPhone' | 'none' | 'undecided';
 
 const REFUSED_FOR_THIS_PAIRING = 403;
 
 let issuingStopped = false;
+let tokenRefused = false;
 let syncRun: Promise<void> | null = null;
 let generation = 0;
 let storing: Promise<void> = Promise.resolve();
@@ -45,9 +45,14 @@ async function issueToken(issuedFor: number): Promise<string | null> {
   } catch (e) {
     if (!(e instanceof BackendError) || e.status !== REFUSED_FOR_THIS_PAIRING) throw e;
     stopIssuing(issuedFor);
+    tokenRefused = issuedFor === generation;
     logger.info('Widget', 'No widget token for this pairing; asking again after the next pairing');
     return null;
   }
+}
+
+export function widgetTokenRefused(): boolean {
+  return tokenRefused;
 }
 
 export async function ensureWidgetToken(): Promise<boolean> {
@@ -83,7 +88,6 @@ export function syncWidget(): Promise<void> {
     .catch((e: unknown) => logger.warning('Widget', `Widget sync failed: ${errorMessage(e)}`))
     .finally(() => {
       syncRun = null;
-      void readUnsentPresses();
     });
   return syncRun;
 }
@@ -91,12 +95,13 @@ export function syncWidget(): Promise<void> {
 export async function clearWidget(): Promise<void> {
   generation += 1;
   issuingStopped = false;
+  tokenRefused = false;
   await storing;
   await SunnyWidget.clearCredentials();
 }
 
-export function syncSurfaces(): void {
-  SunnyWidget.syncSurfaces()
-    .catch((e: unknown) => logger.warning('Widget', `Lock Screen sync failed: ${errorMessage(e)}`))
-    .finally(readUnsentPresses);
+export function syncSurfaces(): Promise<void> {
+  return SunnyWidget.syncSurfaces().catch((e: unknown) =>
+    logger.warning('Widget', `Lock Screen sync failed: ${errorMessage(e)}`),
+  );
 }

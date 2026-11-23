@@ -125,6 +125,7 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var timelineReplies: [Reply?] = []
     private var confirmReplies: [Reply?] = []
+    private var undoReplies: [Reply?] = []
     private var pushStateReplies: [Reply?] = []
     private var hooks: [String: [@Sendable () async -> Void]] = [:]
     private(set) var requests: [RecordedRequest] = []
@@ -168,6 +169,12 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
         lock.unlock()
     }
 
+    func queueUndo(_ status: Int, body: Data = Data()) {
+        lock.lock()
+        undoReplies.append((status, body, [:]))
+        lock.unlock()
+    }
+
     func queuePushState(_ status: Int, body: Data = Data()) {
         lock.lock()
         pushStateReplies.append((status, body, [:]))
@@ -184,6 +191,18 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return requests.filter { $0.path == "/device/confirm" }.compactMap(\.json)
+    }
+
+    var undoBodies: [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests.filter { $0.path == "/device/undo" }.compactMap(\.json)
+    }
+
+    var sentPaths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests.map(\.path)
     }
 
     var timelineRequests: [RecordedRequest] {
@@ -210,6 +229,10 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
                 guard !confirmReplies.isEmpty else { return nil }
                 return confirmReplies.removeFirst()
             }
+            if url.path == "/device/undo" {
+                guard !undoReplies.isEmpty else { return nil }
+                return undoReplies.removeFirst()
+            }
             if url.path == "/device/push-state" {
                 guard !pushStateReplies.isEmpty else { return nil }
                 return pushStateReplies.removeFirst()
@@ -222,6 +245,27 @@ final class FakeTransport: HTTPTransport, @unchecked Sendable {
             HTTPURLResponse(url: url, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: reply.headers)
         )
         return (reply.body, response)
+    }
+}
+
+extension PressQueue {
+    var unsentPresses: [Press] {
+        unsent().compactMap { send in
+            guard case .confirm(let press) = send else { return nil }
+            return press
+        }
+    }
+}
+
+enum Answer {
+    static func confirmed(count: Int? = nil) throws -> Data { try body("confirmed", count: count) }
+
+    static func undone(count: Int? = nil) throws -> Data { try body("undone", count: count) }
+
+    static func body(_ status: String, reason: String? = nil, count: Int? = nil) throws -> Data {
+        var json: [String: Any] = ["status": status, "reason": reason ?? NSNull(), "state": NSNull()]
+        if let count { json["answeredPresses"] = count }
+        return try Fixture.json(json)
     }
 }
 

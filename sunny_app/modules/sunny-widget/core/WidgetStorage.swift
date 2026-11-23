@@ -12,6 +12,7 @@ public struct WidgetStorage: Sendable {
     private var cacheURL: URL { directory.appendingPathComponent("timeline.json") }
     private var lockURL: URL { directory.appendingPathComponent("credentials.lock") }
     private var widgetPushURL: URL { directory.appendingPathComponent("widgetPush.json") }
+    private var fetchStartURL: URL { directory.appendingPathComponent("timelineFetchStart.json") }
 
     public func loadCache() -> DeviceTimeline? {
         guard let body = try? Data(contentsOf: cacheURL) else { return nil }
@@ -20,6 +21,16 @@ public struct WidgetStorage: Sendable {
 
     public func saveCache(body: Data) throws {
         try write(body, to: cacheURL)
+    }
+
+    public func timelineFetched(from fetchStartedAt: Date) {
+        try? write(JSONEncoder().encode(fetchStartedAt), to: fetchStartURL)
+        presses.collect(at: fetchStartedAt)
+    }
+
+    public func hiddenCards() -> Set<PressKey> {
+        let fetchStartedAt = (try? Data(contentsOf: fetchStartURL)).flatMap { try? JSONDecoder().decode(Date.self, from: $0) }
+        return presses.hidden(onTimelineFetchedFrom: fetchStartedAt)
     }
 
     public func loadWidgetPush() -> WidgetPushReport? {
@@ -34,6 +45,7 @@ public struct WidgetStorage: Sendable {
     public func removeAll() throws {
         try presses.removeAll()
         try removeIfPresent(cacheURL)
+        try removeIfPresent(fetchStartURL)
     }
 
     private func removeIfPresent(_ url: URL) throws {

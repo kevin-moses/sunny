@@ -7,6 +7,18 @@ public enum FlushResult: String, Equatable, Sendable {
     case noCredentials
 }
 
+public enum StoredPress: Equatable, Sendable {
+    case noCredentials
+    case stored(Press)
+    case sentUnstored(FlushResult)
+}
+
+public enum StoredUndo: Equatable, Sendable {
+    case noCredentials
+    case stored
+    case notStored
+}
+
 public enum ReporterLaunch: Equatable, Sendable {
     case observe
     case endActivities
@@ -98,16 +110,40 @@ public struct WidgetSync: Sendable {
         via: PressVia,
         showPress: (Date) async -> Void = { _ in }
     ) async -> FlushResult {
+        switch await storePress(instanceId: instanceId, step: step, via: via, showPress: showPress) {
+        case .noCredentials: return .noCredentials
+        case .sentUnstored(let result): return result
+        case .stored: return await replayPresses(timeout: Self.pressTimeout)
+        }
+    }
+
+    public func storePress(
+        instanceId: String,
+        step: Int,
+        via: PressVia,
+        showPress: (Date) async -> Void = { _ in }
+    ) async -> StoredPress {
         let credentials = credentials()
         if case .notPaired = credentials { return .noCredentials }
         let press = Press(instanceId: instanceId, step: step, via: via, pressedAt: clock())
         do {
             try storage.presses.append(press)
         } catch {
-            return await sendUnqueued(press, with: credentials, showPress: showPress)
+            return .sentUnstored(await sendUnqueued(press, with: credentials, showPress: showPress))
         }
         await showPress(press.pressedAt)
-        return await replay(with: credentials, timeout: Self.pressTimeout)
+        return .stored(press)
+    }
+
+    public func storeUndo(ofPress pressId: UUID) -> StoredUndo {
+        if case .notPaired = credentials() { return .noCredentials }
+        guard let record = storage.presses.record(pressId) else { return .notStored }
+        let undo = PressUndo(pressId: pressId, instanceId: record.press.instanceId, undoneAt: clock())
+        return (try? storage.presses.append(undo)) == nil ? .notStored : .stored
+    }
+
+    public func pressLog() -> [PressRecord] {
+        storage.presses.records()
     }
 
     private func sendUnqueued(
@@ -116,12 +152,10 @@ public struct WidgetSync: Sendable {
         showPress: (Date) async -> Void
     ) async -> FlushResult {
         guard let client = credentials.client else { return credentials.unsentResult }
-        let outcome = await client.confirm(press, at: clock(), timeout: Self.pressTimeout)
+        let outcome = await client.send(.confirm(press), at: clock(), timeout: Self.pressTimeout)
         switch PressReplay.decision(for: outcome) {
         case .drop:
-            if outcome == .answered(.confirmed) || outcome == .answered(.advanced) {
-                await showPress(press.pressedAt)
-            }
+            if outcome.answer?.status.applied == true { await showPress(press.pressedAt) }
             return .clean
         case .keepAndHoldTask, .keepAndStop: return .pending
         case .keepAndStopUnauthorized:
@@ -138,15 +172,20 @@ public struct WidgetSync: Sendable {
         guard let client = credentials.client else { return credentials.unsentResult }
         let deadline = clock().addingTimeInterval(timeout)
         var held: Set<String> = []
-        for press in storage.presses.pending() where !held.contains(press.instanceId) {
+        for send in storage.presses.unsent() where !held.contains(send.instanceId) {
             let left = deadline.timeIntervalSince(clock())
             guard left > 0 else { return .pending }
-            let outcome = await client.confirm(press, at: clock(), timeout: left)
+            let outcome = await client.send(send, at: clock(), timeout: left)
             switch PressReplay.decision(for: outcome) {
             case .drop:
-                storage.presses.answered(press.id, at: clock())
+                let answer = PressAnswer(
+                    at: clock(),
+                    applied: outcome.answer?.status.applied ?? false,
+                    answeredPresses: outcome.answer?.answeredPresses
+                )
+                storage.presses.answered(send, with: answer)
             case .keepAndHoldTask:
-                held.insert(press.instanceId)
+                held.insert(send.instanceId)
             case .keepAndStop:
                 return .pending
             case .keepAndStopUnauthorized:
@@ -186,7 +225,7 @@ public struct WidgetSync: Sendable {
         return TimelinePlanner.plan(
             at: now,
             timeline: storage.loadCache(),
-            pressed: storage.presses.pressed(),
+            pressed: storage.hiddenCards(),
             locale: locale
         )
     }
@@ -202,26 +241,31 @@ public struct WidgetSync: Sendable {
         let cachedVersion = cache.flatMap { ReloadPolicy.needsRenewal($0, at: fetchStartedAt) ? nil : $0.version }
         let outcome = await client.fetchTimeline(cachedVersion: cachedVersion, timeout: Self.fetchTimeout)
         let now = clock()
-        let plan = { (timeline: DeviceTimeline?, pressed: Set<PressKey>, notBefore: Date?) in
-            TimelinePlanner.plan(at: now, timeline: timeline, pressed: pressed, locale: locale, notBefore: notBefore)
+        let plan = { (timeline: DeviceTimeline?, notBefore: Date?) in
+            TimelinePlanner.plan(
+                at: now,
+                timeline: timeline,
+                pressed: storage.hiddenCards(),
+                locale: locale,
+                notBefore: notBefore
+            )
         }
         switch outcome {
         case .fresh(let body):
-            guard let timeline = try? DeviceTimeline.decode(body) else {
-                return plan(cache, storage.presses.pressed(), nil)
-            }
-            let saved = (try? storage.saveCache(body: body)) != nil
-            return plan(timeline, saved ? reconciledPressed(since: fetchStartedAt) : storage.presses.pressed(), nil)
+            guard let timeline = try? DeviceTimeline.decode(body) else { return plan(cache, nil) }
+            if (try? storage.saveCache(body: body)) != nil { storage.timelineFetched(from: fetchStartedAt) }
+            return plan(timeline, nil)
         case .notModified:
-            guard let cache else { return plan(nil, [], nil) }
-            return plan(cache, reconciledPressed(since: fetchStartedAt), nil)
+            guard let cache else { return TimelinePlanner.plan(at: now, timeline: nil, pressed: [], locale: locale) }
+            storage.timelineFetched(from: fetchStartedAt)
+            return plan(cache, nil)
         case .unauthorized:
             dropToken(client.token)
             return TimelinePlanner.notice(.openSunny, at: now)
         case .rateLimited(let retryAfter):
-            return plan(cache, storage.presses.pressed(), retryAfter.map { now.addingTimeInterval($0) })
+            return plan(cache, retryAfter.map { now.addingTimeInterval($0) })
         case .failed:
-            return plan(cache, storage.presses.pressed(), nil)
+            return plan(cache, nil)
         }
     }
 
@@ -235,10 +279,6 @@ public struct WidgetSync: Sendable {
             guard let siteURL = sites.read() else { return .unreadable }
             return .paired(DeviceClient(siteURL: siteURL, token: token, transport: transport))
         }
-    }
-
-    private func reconciledPressed(since fetchStartedAt: Date) -> Set<PressKey> {
-        storage.presses.reconcile(withTimelineFetchedFrom: fetchStartedAt)
     }
 
     private func dropToken(_ token: String) {
