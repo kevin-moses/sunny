@@ -1780,17 +1780,17 @@ describe("a device removed between the gate and the effect", () => {
     expect(
       await t.mutation(internal.deviceApi.updateInfoByToken, { tokenHash, firmware: "1.0" }),
     ).toBe(false);
-    await t.mutation(internal.deviceApi.refusePressByToken, {
+    await t.mutation(internal.deviceApi.refuseByToken, {
       tokenHash,
+      action: "press_not_applied",
       reason: "The press could not be read",
-      pressedAgoMs: null,
-      via: null,
+      sent: { pressedAgoMs: null, via: null },
     });
-    await t.mutation(internal.deviceApi.refuseUndoByToken, {
+    await t.mutation(internal.deviceApi.refuseByToken, {
       tokenHash,
+      action: "undo_not_applied",
       reason: "The undo could not be read",
-      undoneAgoMs: null,
-      pressId: null,
+      sent: { undoneAgoMs: null, pressId: null },
     });
     expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("upcoming");
     expect((await audits(t)).some((a) => a.action.endsWith("_not_applied"))).toBe(false);

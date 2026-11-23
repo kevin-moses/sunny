@@ -1,5 +1,6 @@
 import { HOUR, MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 import { v } from "convex/values";
+import type { Infer } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -17,7 +18,7 @@ import type { ConfirmTransport, PressResult, UndoPressResult } from "./instances
 import { DEVICES_ONLY, deviceActor, findDevice, requireDeviceActor } from "./lib/access";
 import type { Actor, DeviceActor } from "./lib/access";
 import { audit } from "./lib/audit";
-import { NOT_DUE_YET, PRESS_ID_NOT_VALID, isPressId } from "./lib/confirmRule";
+import { NOT_DUE_YET, PRESS_ID_NOT_VALID, isPressAge, isPressId } from "./lib/confirmRule";
 import { frameDoneTarget, loadDeviceState } from "./lib/deviceState";
 import type { DeviceState } from "./lib/deviceState";
 import { generateDeviceToken, hashDeviceToken, parseBearerToken } from "./lib/deviceToken";
@@ -116,33 +117,32 @@ interface InfoRequest {
 
 type Admission = { kind: "unknown" } | { kind: "limited"; retryAfter: number } | { kind: "ok" };
 
+type Sent = Record<string, number | string | null>;
+
 interface RefusedRequest {
   message: string;
   reason: string;
-  pressedAgoMs: number | null;
-  via: DeviceVia | null;
+  sent: Sent;
 }
 
-interface RefusedUndo {
-  message: string;
-  reason: string;
-  undoneAgoMs: number | null;
-  pressId: string | null;
-}
+const refusalAction = v.union(v.literal("press_not_applied"), v.literal("undo_not_applied"));
+
+type RefusalAction = Infer<typeof refusalAction>;
 
 type PressStatus = PressResult["status"];
 
 type UndoStatus = UndoPressResult["status"];
 
-type ConfirmOutcome =
-  | { kind: "unauthorized" }
-  | { kind: "bad_instance" }
-  | { kind: "done"; status: PressStatus; reason: string | null; answeredPresses: number };
+type ByTokenOutcome<Answer> =
+  { kind: "unauthorized" } | { kind: "bad_instance" } | { kind: "done"; answer: Answer };
 
-type UndoOutcome =
-  | { kind: "unauthorized" }
-  | { kind: "bad_instance" }
-  | { kind: "done"; status: UndoStatus; answeredPresses: number };
+type ConfirmOutcome = ByTokenOutcome<{
+  status: PressStatus;
+  reason: string | null;
+  answeredPresses: number;
+}>;
+
+type UndoOutcome = ByTokenOutcome<{ status: UndoStatus; answeredPresses: number }>;
 
 export async function findDeviceByTokenHash(
   ctx: QueryCtx,
@@ -261,20 +261,40 @@ export const timelineByToken = internalQuery({
   },
 });
 
-type Sent = Record<string, number | string | null>;
-
-function sentPress(press: { pressedAgoMs: number | null; via: DeviceVia | null }): Sent {
-  return { pressedAgoMs: press.pressedAgoMs, via: press.via };
+function isDeviceVia(value: unknown): value is DeviceVia {
+  return typeof value === "string" && (DEVICE_VIAS as readonly string[]).includes(value);
 }
 
-function sentUndo(tap: { undoneAgoMs: number | null; pressId: string | null }): Sent {
-  return { undoneAgoMs: tap.undoneAgoMs, pressId: tap.pressId };
+function isAge(value: unknown): value is number {
+  return typeof value === "number" && isPressAge(value);
+}
+
+function isPressIdText(value: unknown): value is string {
+  return typeof value === "string" && isPressId(value);
+}
+
+function sentPress(press: { pressedAgoMs?: unknown; via?: unknown } | null): Sent {
+  const age = press?.pressedAgoMs;
+  const via = press?.via;
+  return {
+    pressedAgoMs: typeof age === "number" && Number.isFinite(age) ? age : null,
+    via: isDeviceVia(via) ? via : null,
+  };
+}
+
+function sentUndo(tap: { undoneAgoMs?: unknown; pressId?: unknown } | null): Sent {
+  const age = tap?.undoneAgoMs;
+  const pressId = tap?.pressId;
+  return {
+    undoneAgoMs: isAge(age) ? age : null,
+    pressId: isPressIdText(pressId) ? pressId : null,
+  };
 }
 
 async function auditRefusal(
   ctx: MutationCtx,
   device: Doc<"devices">,
-  action: "press_not_applied" | "undo_not_applied",
+  action: RefusalAction,
   reason: string,
   sent: Sent,
 ): Promise<void> {
@@ -382,7 +402,7 @@ export const confirmByToken = internalMutation({
       { instanceId, via, pressedAgoMs, step, pressId },
       Date.now(),
     );
-    return { kind: "done", ...result, answeredPresses: await countAnswer(ctx, device) };
+    return { kind: "done", answer: { ...result, answeredPresses: await countAnswer(ctx, device) } };
   },
 });
 
@@ -407,38 +427,20 @@ export const undoByToken = internalMutation({
       { instanceId, pressId: args.pressId, undoneAgoMs: args.undoneAgoMs },
       Date.now(),
     );
-    return { kind: "done", status, answeredPresses: await countAnswer(ctx, device) };
+    return { kind: "done", answer: { status, answeredPresses: await countAnswer(ctx, device) } };
   },
 });
 
-export const refusePressByToken = internalMutation({
+export const refuseByToken = internalMutation({
   args: {
     tokenHash: v.string(),
+    action: refusalAction,
     reason: v.string(),
-    pressedAgoMs: v.union(v.number(), v.null()),
-    via: v.union(deviceVia, v.null()),
+    sent: v.record(v.string(), v.union(v.number(), v.string(), v.null())),
   },
   handler: async (ctx, args): Promise<null> => {
     const device = await findDeviceByTokenHash(ctx, args.tokenHash);
-    if (device !== null) {
-      await auditRefusal(ctx, device, "press_not_applied", args.reason, sentPress(args));
-    }
-    return null;
-  },
-});
-
-export const refuseUndoByToken = internalMutation({
-  args: {
-    tokenHash: v.string(),
-    reason: v.string(),
-    undoneAgoMs: v.union(v.number(), v.null()),
-    pressId: v.union(v.string(), v.null()),
-  },
-  handler: async (ctx, args): Promise<null> => {
-    const device = await findDeviceByTokenHash(ctx, args.tokenHash);
-    if (device !== null) {
-      await auditRefusal(ctx, device, "undo_not_applied", args.reason, sentUndo(args));
-    }
+    if (device !== null) await auditRefusal(ctx, device, args.action, args.reason, args.sent);
     return null;
   },
 });
@@ -509,89 +511,51 @@ export function unknownKey(
   return extra === undefined ? null : `Unknown field ${extra}`;
 }
 
-function refusedRequest(
-  message: string,
-  reason: string,
-  body: Record<string, unknown> | null,
-): RefusedRequest {
-  const age = body?.pressedAgoMs;
-  const via = body?.via;
-  return {
-    message,
-    reason,
-    pressedAgoMs: typeof age === "number" && Number.isFinite(age) ? age : null,
-    via:
-      typeof via === "string" && (DEVICE_VIAS as readonly string[]).includes(via)
-        ? (via as DeviceVia)
-        : null,
-  };
+function refused(message: string, reason: string, sent: Sent): RefusedRequest {
+  return { message, reason, sent };
 }
 
 function isInstanceIdText(value: unknown): value is string {
   return typeof value === "string" && value !== "" && value.length <= MAX_INSTANCE_ID_LENGTH;
 }
 
-function isAge(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function isPressIdText(value: unknown): value is string {
-  return typeof value === "string" && isPressId(value);
-}
-
 function parseConfirmRequest(body: Record<string, unknown>): ConfirmRequest | RefusedRequest {
+  const sent = sentPress(body);
   const extra = unknownKey(body, ["instanceId", "pressedAgoMs", "via", "step", "pressId"]);
-  if (extra !== null) return refusedRequest(extra, REFUSED.unreadable, body);
+  if (extra !== null) return refused(extra, REFUSED.unreadable, sent);
   const { instanceId, pressedAgoMs, via, step, pressId } = body;
-  if (!isInstanceIdText(instanceId)) return refusedRequest(BAD_ID_MESSAGE, REFUSED.badId, body);
+  if (!isInstanceIdText(instanceId)) return refused(BAD_ID_MESSAGE, REFUSED.badId, sent);
   const ageMessage = `pressedAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`;
-  if (!isAge(pressedAgoMs)) return refusedRequest(ageMessage, REFUSED.unreadable, body);
-  if (pressedAgoMs > MAX_PRESS_AGE_MS) return refusedRequest(ageMessage, REFUSED.tooOld, body);
-  if (typeof via !== "string" || !(DEVICE_VIAS as readonly string[]).includes(via)) {
-    return refusedRequest(`via must be one of ${DEVICE_VIAS.join(", ")}`, REFUSED.unreadable, body);
+  if (!isAge(pressedAgoMs)) return refused(ageMessage, REFUSED.unreadable, sent);
+  if (pressedAgoMs > MAX_PRESS_AGE_MS) return refused(ageMessage, REFUSED.tooOld, sent);
+  if (!isDeviceVia(via)) {
+    return refused(`via must be one of ${DEVICE_VIAS.join(", ")}`, REFUSED.unreadable, sent);
   }
   if (step !== undefined && (typeof step !== "number" || !isStepIndex(step))) {
-    return refusedRequest(STEP_NOT_VALID, REFUSED.unreadable, body);
+    return refused(STEP_NOT_VALID, REFUSED.unreadable, sent);
   }
   if (pressId !== undefined && !isPressIdText(pressId)) {
-    return refusedRequest(PRESS_ID_NOT_VALID, REFUSED.unreadable, body);
+    return refused(PRESS_ID_NOT_VALID, REFUSED.unreadable, sent);
   }
   return {
     instanceId,
     pressedAgoMs,
-    via: via as DeviceVia,
+    via,
     ...(step === undefined ? {} : { step }),
     ...(pressId === undefined ? {} : { pressId }),
   };
 }
 
-function refusedUndo(
-  message: string,
-  reason: string,
-  body: Record<string, unknown> | null,
-): RefusedUndo {
-  return {
-    message,
-    reason,
-    undoneAgoMs: isAge(body?.undoneAgoMs) ? body.undoneAgoMs : null,
-    pressId: isPressIdText(body?.pressId) ? body.pressId : null,
-  };
-}
-
-function parseUndoRequest(body: Record<string, unknown>): UndoRequest | RefusedUndo {
+function parseUndoRequest(body: Record<string, unknown>): UndoRequest | RefusedRequest {
+  const sent = sentUndo(body);
   const extra = unknownKey(body, ["instanceId", "pressId", "undoneAgoMs"]);
-  if (extra !== null) return refusedUndo(extra, REFUSED.undoUnreadable, body);
+  if (extra !== null) return refused(extra, REFUSED.undoUnreadable, sent);
   const { instanceId, pressId, undoneAgoMs } = body;
-  if (!isInstanceIdText(instanceId)) return refusedUndo(BAD_ID_MESSAGE, REFUSED.badId, body);
-  if (!isPressIdText(pressId)) {
-    return refusedUndo(PRESS_ID_NOT_VALID, REFUSED.undoUnreadable, body);
-  }
+  if (!isInstanceIdText(instanceId)) return refused(BAD_ID_MESSAGE, REFUSED.badId, sent);
+  if (!isPressIdText(pressId)) return refused(PRESS_ID_NOT_VALID, REFUSED.undoUnreadable, sent);
   if (!isAge(undoneAgoMs) || undoneAgoMs > MAX_PRESS_AGE_MS) {
-    return refusedUndo(
-      `undoneAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`,
-      REFUSED.undoUnreadable,
-      body,
-    );
+    const ageMessage = `undoneAgoMs must be a number from 0 to ${MAX_PRESS_AGE_MS}`;
+    return refused(ageMessage, REFUSED.undoUnreadable, sent);
   }
   return { instanceId, pressId, undoneAgoMs };
 }
@@ -684,14 +648,26 @@ async function stateAfterPress(ctx: ActionCtx, tokenHash: string): Promise<Devic
   }
 }
 
-async function answerWithState(
+async function refusedResponse(
   ctx: ActionCtx,
   tokenHash: string,
-  answer: { status: PressStatus | UndoStatus; reason?: string | null; answeredPresses: number },
+  action: RefusalAction,
+  { message, reason, sent }: RefusedRequest,
 ): Promise<Response> {
+  await ctx.runMutation(internal.deviceApi.refuseByToken, { tokenHash, action, reason, sent });
+  return errorResponse(400, "invalid", message);
+}
+
+async function outcomeResponse(
+  ctx: ActionCtx,
+  tokenHash: string,
+  outcome: ConfirmOutcome | UndoOutcome,
+): Promise<Response> {
+  if (outcome.kind === "unauthorized") return unauthorizedResponse();
+  if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
   const state = await stateAfterPress(ctx, tokenHash);
   const headers = state ? { ...doneHeaders(state), ETag: etagOf(state) } : {};
-  return jsonResponse({ ...answer, state }, 200, headers);
+  return jsonResponse({ ...outcome.answer, state }, 200, headers);
 }
 
 export const getState = deviceRoute("Could not load the device state", async (ctx, request) => {
@@ -721,21 +697,14 @@ export const confirm = deviceRoute("Could not confirm the task", async (ctx, req
   const body = await readJsonObject(request);
   const press =
     typeof body === "string"
-      ? refusedRequest(body, REFUSED.unreadable, null)
+      ? refused(body, REFUSED.unreadable, sentPress(null))
       : parseConfirmRequest(body);
-  if ("message" in press) {
-    const { message, ...refusal } = press;
-    await ctx.runMutation(internal.deviceApi.refusePressByToken, { tokenHash, ...refusal });
-    return errorResponse(400, "invalid", message);
-  }
+  if ("message" in press) return await refusedResponse(ctx, tokenHash, "press_not_applied", press);
   const outcome = await ctx.runMutation(internal.deviceApi.confirmByToken, {
     tokenHash,
     ...press,
   });
-  if (outcome.kind === "unauthorized") return unauthorizedResponse();
-  if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
-  const { status, reason, answeredPresses } = outcome;
-  return await answerWithState(ctx, tokenHash, { status, reason, answeredPresses });
+  return await outcomeResponse(ctx, tokenHash, outcome);
 });
 
 export const undo = deviceRoute("Could not undo the press", async (ctx, request) => {
@@ -744,18 +713,11 @@ export const undo = deviceRoute("Could not undo the press", async (ctx, request)
   const body = await readJsonObject(request);
   const tap =
     typeof body === "string"
-      ? refusedUndo(body, REFUSED.undoUnreadable, null)
+      ? refused(body, REFUSED.undoUnreadable, sentUndo(null))
       : parseUndoRequest(body);
-  if ("message" in tap) {
-    const { message, ...refusal } = tap;
-    await ctx.runMutation(internal.deviceApi.refuseUndoByToken, { tokenHash, ...refusal });
-    return errorResponse(400, "invalid", message);
-  }
+  if ("message" in tap) return await refusedResponse(ctx, tokenHash, "undo_not_applied", tap);
   const outcome = await ctx.runMutation(internal.deviceApi.undoByToken, { tokenHash, ...tap });
-  if (outcome.kind === "unauthorized") return unauthorizedResponse();
-  if (outcome.kind === "bad_instance") return errorResponse(400, "invalid", BAD_ID_MESSAGE);
-  const { status, answeredPresses } = outcome;
-  return await answerWithState(ctx, tokenHash, { status, answeredPresses });
+  return await outcomeResponse(ctx, tokenHash, outcome);
 });
 
 export const putInfo = deviceRoute("Could not store the device info", async (ctx, request) => {

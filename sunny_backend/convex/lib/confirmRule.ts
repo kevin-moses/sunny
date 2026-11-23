@@ -44,6 +44,10 @@ export function isPressId(value: string): boolean {
   return PRESS_ID_PATTERN.test(value);
 }
 
+export function isPressAge(ageMs: number): boolean {
+  return Number.isFinite(ageMs) && ageMs >= 0;
+}
+
 export interface QueuedPress {
   pressedAt: number;
   pressId: string | undefined;

@@ -20,6 +20,7 @@ import {
   caregiverCanReopen,
   isDoneState,
   notTooEarly,
+  isPressAge,
   isPressId,
   PRESS_ID_NOT_VALID,
   queuedPressTakenBack,
@@ -117,10 +118,6 @@ function isHouseholdEditor(actor: Actor, householdId: Id<"households">): actor i
 }
 
 const PRESS_AGE_NOT_VALID = "The press age must be zero or more";
-
-function isPressAge(ageMs: number): boolean {
-  return Number.isFinite(ageMs) && ageMs >= 0;
-}
 
 function requirePressAge(ageMs: number): void {
   if (!isPressAge(ageMs)) throw appError("invalid", PRESS_AGE_NOT_VALID);
