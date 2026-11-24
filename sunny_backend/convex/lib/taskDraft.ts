@@ -12,6 +12,7 @@ export const TASK_CAPS = {
   title: 200,
   displayLabel: 60,
   spokenPrompt: 300,
+  screenSentence: 60,
   pillDescription: 200,
   times: 24,
   checklistItems: 50,
@@ -79,6 +80,9 @@ function enforceSizeCaps(draft: TaskDraft): void {
   requireMaxLength(draft.title, TASK_CAPS.title, "Title");
   requireMaxLength(draft.displayLabel, TASK_CAPS.displayLabel, "Display label");
   requireMaxLength(draft.spokenPrompt.trim(), TASK_CAPS.spokenPrompt, "Spoken prompt");
+  if (draft.screenSentence !== undefined) {
+    requireMaxLength(draft.screenSentence.trim(), TASK_CAPS.screenSentence, "Screen sentence");
+  }
   if (draft.pillDescription !== undefined) {
     requireMaxLength(draft.pillDescription, TASK_CAPS.pillDescription, "Pill description");
   }
@@ -109,6 +113,7 @@ export function validateDraft(draft: TaskDraft): TaskDraft {
     );
   }
   const spokenPrompt = draft.spokenPrompt.trim() || `Time for ${displayLabel}.`;
+  const screenSentence = draft.screenSentence?.trim() || undefined;
   const max = draft.asNeededMaxPerDay;
   if (max !== undefined && (!Number.isInteger(max) || max <= 0)) {
     throw appError("invalid", "As-needed maximum per day must be a positive whole number");
@@ -117,5 +122,5 @@ export function validateDraft(draft: TaskDraft): TaskDraft {
   if (minHours !== undefined && !(Number.isFinite(minHours) && minHours > 0)) {
     throw appError("invalid", "As-needed minimum hours must be positive");
   }
-  return normalizeSchedule({ ...draft, title, displayLabel, spokenPrompt });
+  return normalizeSchedule({ ...draft, title, displayLabel, spokenPrompt, screenSentence });
 }

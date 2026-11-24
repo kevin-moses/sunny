@@ -655,6 +655,7 @@ describe("wording cards", () => {
         time: "8:00",
         times: ["08:00", "20:00"],
         sentence: "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.",
+        screenSentence: null,
       },
     ]);
     const request = await t.run(async (ctx) => await ctx.db.get(requestId));
@@ -720,9 +721,25 @@ describe("wording cards", () => {
       time: "8:00",
       times: ["08:00", "20:00"],
       sentence: "Pills now, please.",
+      screenSentence: null,
     };
     expect(await wordingOf(t, home, first)).toEqual([card]);
     expect(await wordingOf(t, home, second)).toEqual([card]);
+  });
+
+  test("the card carries the screen sentence live and loses it when the label changes", async () => {
+    const { t, home } = await makeWorld();
+    const first = await runRequest(t, home, [
+      ["add_task", { ...PILLS, screen_sentence: "Take your morning pills." }],
+    ]);
+    const [task] = await rows(t, "tasks");
+    const screenSentenceOf = async (id: Id<"agentRequests">) =>
+      ((await wordingOf(t, home, id)) as { screenSentence: string | null }[])[0]!.screenSentence;
+    expect(await screenSentenceOf(first)).toBe("Take your morning pills.");
+    await runRequest(t, home, [
+      ["update_task", { task_id: task!._id, changes: { display_label: "Pills" } }],
+    ]);
+    expect(await screenSentenceOf(first)).toBeNull();
   });
 
   test("an anytime task's card has no sentence", async () => {

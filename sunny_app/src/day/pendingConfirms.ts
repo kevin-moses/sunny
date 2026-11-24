@@ -12,6 +12,7 @@ import {
   isEntry,
   latestByInstance,
   repeatsLatest,
+  type PendingConfirm,
   type PendingEntry,
 } from './pendingEntries';
 import { withTimeout } from './withTimeout';
@@ -40,6 +41,12 @@ export type SendConfirm = (entry: PendingEntry) => Promise<void>;
 
 export type FailureKind = 'permanent' | 'no_answer' | 'server_error';
 
+export interface PressWatcher {
+  pressed: (entry: PendingConfirm) => void;
+  answered: (entry: PendingConfirm) => void;
+  withdrawn: (pressId: string) => void;
+}
+
 export interface ConfirmQueue {
   load: () => Promise<void>;
   enqueue: (entry: PendingEntry) => Promise<PendingEntry>;
@@ -48,6 +55,7 @@ export interface ConfirmQueue {
   clear: () => Promise<void>;
   getEntries: () => readonly PendingEntry[];
   subscribe: (listener: () => void) => () => void;
+  watchPresses: (watcher: PressWatcher) => () => void;
 }
 
 export interface ConnectionState {
@@ -127,6 +135,18 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
   const inflight = new Map<string, { send: Promise<void>; startedAt: number }>();
   const failures = new Map<string, Failure>();
   const listeners = new Set<() => void>();
+  const watchers = new Set<PressWatcher>();
+
+  const tell = (event: (watcher: PressWatcher) => void): void => watchers.forEach(event);
+
+  const livePresses = (): PendingConfirm[] => {
+    const undone = new Set(entries.flatMap((e) => (e.kind === 'undo' ? [e.pressId] : [])));
+    return entries.filter((e): e is PendingConfirm => e.kind !== 'undo' && !undone.has(e.pressId));
+  };
+
+  const settled = (entry: PendingEntry): void => {
+    if (entry.kind !== 'undo' && livePresses().includes(entry)) tell((w) => w.answered(entry));
+  };
 
   const setEntries = (next: readonly PendingEntry[]): void => {
     entries = next;
@@ -172,6 +192,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     for (const entry of expired) {
       if (gen !== generation) return;
       await remove(entryKey(entry), gen);
+      if (entry.kind !== 'undo') tell((w) => w.withdrawn(entry.pressId));
       logDropped(entry, 'expired', 'The entry is too old to send.');
     }
   };
@@ -231,6 +252,8 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
       const known = new Set(entries.map(entryKey));
       setEntries([...stored.filter((e) => !known.has(entryKey(e))), ...entries]);
       loadedOk = true;
+      const live = livePresses();
+      tell((w) => live.forEach(w.pressed));
       await dropExpired(gen);
     })();
     watchConnection();
@@ -249,7 +272,14 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     } finally {
       adding = null;
     }
-    if (gen === generation) setEntries([...entries, entry]);
+    if (gen !== generation) return entry;
+    setEntries([...entries, entry]);
+    if (entry.kind === 'undo') {
+      const { pressId } = entry;
+      tell((w) => w.withdrawn(pressId));
+    } else {
+      tell((w) => w.pressed(entry));
+    }
     return entry;
   };
 
@@ -276,6 +306,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     };
     send.then(() => {
       forget();
+      settled(entry);
       void remove(key, gen);
     }, forget);
     return send;
@@ -345,6 +376,7 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
         if (gen !== generation) return;
         const kind = classifyFailure(error);
         if (kind === 'permanent') {
+          settled(entry);
           await remove(key, gen);
           logDropped(entry, 'rejected', toBackendError(error).message);
           continue;
@@ -430,6 +462,11 @@ export function createConfirmQueue(options: QueueOptions): ConfirmQueue {
     subscribe: (listener) => {
       listeners.add(listener);
       return () => void listeners.delete(listener);
+    },
+    watchPresses: (watcher) => {
+      watchers.add(watcher);
+      livePresses().forEach(watcher.pressed);
+      return () => void watchers.delete(watcher);
     },
   };
 }

@@ -2,13 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { ConvexError } from 'convex/values';
 import { getFunctionName } from 'convex/server';
 import React, { useSyncExternalStore } from 'react';
-import { AccessibilityInfo, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { AccessibilityInfo } from 'react-native';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import { convex } from '../../backend/convex';
 import { logger } from '../../logging/logger';
-import { DoneCard, type UndoOffer } from '../../components/DayComponents';
-import { colors } from '../../theme/colors';
 import {
   createConfirmQueue,
   sendConfirm,
@@ -66,10 +64,6 @@ jest.mock('../../backend/convex', () => ({
 jest.mock('../../logging/logger', () => ({
   logger: { warning: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
-
-jest.mock('expo-symbols', () => ({ SymbolView: () => null }));
-
-jest.mock('../../theme/ThemeProvider', () => ({ useTheme: () => ({ accentColor: '#FA8539' }) }));
 
 const mockMutation = convex.mutation as unknown as jest.Mock<(...a: unknown[]) => Promise<unknown>>;
 const mounted: ReactTestRenderer[] = [];
@@ -252,7 +246,11 @@ describe('useDoneAction', () => {
     const h = renderDone(makeQueue(), task());
     await press(h);
     expect(h.get().message).toBeNull();
-    expect(h.get().undo).toEqual({ label: 'Morning pills', text: 'Morning pills done.' });
+    expect(h.get().undo).toEqual({
+      label: 'Morning pills',
+      text: 'Morning pills done.',
+      pressedAt: NOW,
+    });
     expect(announce).not.toHaveBeenCalled();
     expect(announceQueued).toHaveBeenCalledWith('Morning pills done. Undo', { queue: true });
     expect(mockMutation).toHaveBeenCalledTimes(1);
@@ -395,11 +393,23 @@ describe('useDoneAction', () => {
       expect(sentIds()).toEqual(['inst1']);
     });
 
-    it('offers the next task after the settle period; its press replaces the Undo line', async () => {
+    it('after Done on a task with no further step, holds Noted and Undo for the whole Undo window', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(second());
-      await advance(SETTLE_MS + 1);
+      await advance(UNDO_MS - 1);
+      expect(h.get().task).toBeNull();
+      expect(h.get().undo?.text).toBe('Morning pills done.');
+      await advance(1);
+      expect(h.get().task?.instanceId).toBe('inst2');
+      expect(h.get().undo).toBeNull();
+    });
+
+    it('offers the next task once the Undo window is over; its press makes a new Undo offer', async () => {
+      const h = renderDone(makeQueue(), task());
+      await press(h);
+      h.rerender(second());
+      await advance(UNDO_MS);
       expect(h.get().task?.instanceId).toBe('inst2');
       expect(h.get().message).toBeNull();
       await press(h);
@@ -417,14 +427,14 @@ describe('useDoneAction', () => {
         state: 'upcoming',
       });
 
-    it('does not offer the early task until MESSAGE_MS after the press', async () => {
+    it('does not offer the early task until the Undo window is over', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(early());
-      await advance(SETTLE_MS + 1);
+      await advance(MESSAGE_MS + 1);
       expect(h.get().task).toBeNull();
       expect(h.get().undo?.text).toBe('Morning pills done.');
-      await advance(MESSAGE_MS - SETTLE_MS);
+      await advance(UNDO_MS - MESSAGE_MS - 1);
       expect(h.get().task?.instanceId).toBe('early1');
       expect(h.get().message).toBeNull();
     });
@@ -442,11 +452,11 @@ describe('useDoneAction', () => {
       expect(sentIds()).toEqual(['inst1']);
     });
 
-    it('still offers a due task after the normal settle period', async () => {
+    it('offers a due task as soon as the Undo window is over', async () => {
       const h = renderDone(makeQueue(), task());
       await press(h);
       h.rerender(second());
-      await advance(SETTLE_MS + 1);
+      await advance(UNDO_MS);
       expect(h.get().task?.instanceId).toBe('inst2');
     });
 
@@ -457,7 +467,7 @@ describe('useDoneAction', () => {
       await advance(SETTLE_MS + 1);
       await press(h);
       expect(sentIds()).toEqual(['inst1']);
-      await advance(MESSAGE_MS);
+      await advance(UNDO_MS);
       await press(h);
       expect(sentIds()).toEqual(['inst1', 'early1']);
     });
@@ -492,7 +502,7 @@ describe('useDoneAction', () => {
       expect(h.get().message).toBeNull();
       expect(h.get().undo?.text).toBe('Morning pills done.');
       expect(h.get().task).toBeNull();
-      await advance(SETTLE_MS + 1);
+      await advance(UNDO_MS - STORE_TIMEOUT_MS - 1);
       h.rerender(second());
       expect(h.get().task?.instanceId).toBe('inst2');
     });
@@ -592,9 +602,20 @@ describe('Undo on the phone', () => {
   it('offers Undo for the pressed task as the one line and announces it, queued', async () => {
     const h = renderDone(makeQueue(), task());
     await press(h);
-    expect(h.get().undo).toEqual({ label: 'Morning pills', text: 'Morning pills done.' });
+    expect(h.get().undo).toEqual({
+      label: 'Morning pills',
+      text: 'Morning pills done.',
+      pressedAt: NOW,
+    });
     expect(h.get().message).toBeNull();
     expect(announceQueued).toHaveBeenCalledWith('Morning pills done. Undo', { queue: true });
+  });
+
+  it('keeps the time of the press on the offer while time passes', async () => {
+    const h = renderDone(makeQueue(), task());
+    await press(h);
+    await advance(UNDO_MS - 1_000);
+    expect(h.get().undo?.pressedAt).toBe(NOW);
   });
 
   it('withdraws the offer 30 seconds after the press', async () => {
@@ -622,22 +643,32 @@ describe('Undo on the phone', () => {
     expect(h.get().undo).toBeNull();
   });
 
+  function stepOf(index: number): DayTask {
+    const steps = ['Put on your coat', 'Lock the door'];
+    return task({
+      displayLabel: 'Going out',
+      checklistItems: steps,
+      step: { index, count: steps.length, text: steps[index]! },
+    });
+  }
+
   it('a new press replaces the offer; only the latest press has one', async () => {
-    const h = renderDone(makeQueue(), task());
+    const h = renderDone(makeQueue(), stepOf(0));
     await press(h);
-    h.rerender(second());
+    expect(h.get().undo?.label).toBe('Going out, step 1');
+    h.rerender(stepOf(1));
     await advance(SETTLE_MS + 1);
     await press(h);
-    expect(h.get().undo?.label).toBe('Evening pills');
+    expect(h.get().undo?.label).toBe('Going out');
   });
 
-  it('does not hide the Done button of another due task', async () => {
-    const h = renderDone(makeQueue(), task());
+  it('shows the next step on the Done key beside the Undo offer of the step before', async () => {
+    const h = renderDone(makeQueue(), stepOf(0));
     await press(h);
-    h.rerender(second());
+    h.rerender(stepOf(1));
     await advance(SETTLE_MS + 1);
-    expect(h.get().task?.instanceId).toBe('inst2');
-    expect(h.get().undo?.label).toBe('Morning pills');
+    expect(h.get().task?.step?.index).toBe(1);
+    expect(h.get().undo?.label).toBe('Going out, step 1');
   });
 
   it('online: withdraws the offer, sends the undo after the press with the tap age and the id', async () => {
@@ -676,19 +707,22 @@ describe('Undo on the phone', () => {
     expect(h.get().task?.instanceId).toBe('inst2');
   });
 
-  it('re-enters the settle block when the undo cannot be stored, beside the offer again', async () => {
+  it('holds Noted and the offer again when the undo cannot be stored, until the window is over', async () => {
     const queue = makeQueue();
     const h = renderDone(queue, task(), true);
     await press(h);
     h.rerender(second(), true);
     await advance(SETTLE_MS + 1);
-    expect(h.get().task?.instanceId).toBe('inst2');
+    expect(h.get().task).toBeNull();
     mockFailWrites = true;
     await tapUndo(h);
     await advance(0);
     expect(h.get().undo?.label).toBe('Morning pills');
     expect(h.get().task).toBeNull();
     expect(h.get().message).toBeNull();
+    await advance(UNDO_MS - SETTLE_MS - 1);
+    expect(h.get().undo).toBeNull();
+    expect(h.get().task?.instanceId).toBe('inst2');
     expect(queue.getEntries()).toHaveLength(1);
     expect(logger.warning).toHaveBeenCalledWith(
       'DoneAction',
@@ -1056,119 +1090,6 @@ describe('usePendingConfirms', () => {
   });
 });
 
-describe('DoneCard', () => {
-  afterEach(() => {
-    act(() => {
-      mounted.splice(0).forEach((renderer) => renderer.unmount());
-    });
-  });
-
-  function isButton(node: ReactTestInstance): boolean {
-    const own = (n: ReactTestInstance): boolean =>
-      typeof n.type !== 'string' && n.props.accessibilityRole === 'button';
-    return own(node) && !(node.parent !== null && own(node.parent));
-  }
-
-  function render(props: {
-    task: DayTask | null;
-    message: string | null;
-    onPress?: () => void;
-    undo?: UndoOffer | null;
-  }) {
-    let renderer!: ReactTestRenderer;
-    act(() => {
-      renderer = create(
-        <DoneCard
-          task={props.task}
-          message={props.message}
-          onPress={props.onPress ?? (() => {})}
-          undo={props.undo}
-        />,
-      );
-      mounted.push(renderer);
-    });
-    const root = renderer.root;
-    return {
-      texts: root
-        .findAll((n) => (n.type as unknown) === 'Text')
-        .map((n) => String(n.props.children)),
-      buttons: root.findAll(isButton),
-      empty: renderer.toJSON() === null,
-    };
-  }
-
-  it('shows the task label and exactly one Done button with its label', () => {
-    const out = render({ task: task(), message: null });
-    expect(out.texts).toContain('Morning pills');
-    expect(out.texts).toContain('Done');
-    expect(out.texts.some((t) => t.startsWith('Coming up'))).toBe(false);
-    expect(out.buttons).toHaveLength(1);
-    expect(out.buttons[0].props.accessibilityLabel).toBe('Done: Morning pills');
-  });
-
-  it('makes an early task unmistakably different: heading, label and "Done early"', () => {
-    const out = render({
-      task: task({ state: 'upcoming', scheduledTime: '12:30' }),
-      message: null,
-    });
-    expect(out.texts).toEqual(['Coming up at 12:30 PM', 'Morning pills', 'Done early']);
-    expect(out.buttons).toHaveLength(1);
-    expect(out.buttons[0].props.accessibilityLabel).toBe(
-      'Done early: Morning pills, coming up at 12:30 pm',
-    );
-  });
-
-  it('calls onPress when the button is pressed', () => {
-    const onPress = jest.fn();
-    const out = render({ task: task(), message: null, onPress });
-    act(() => out.buttons[0].props.onPress());
-    expect(onPress).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows only the message, with no button, when there is no task', () => {
-    const out = render({ task: null, message: NOT_STORED_MESSAGE });
-    expect(out.texts).toEqual([NOT_STORED_MESSAGE]);
-    expect(out.buttons).toHaveLength(0);
-  });
-
-  it('renders nothing when there is no task and no message', () => {
-    expect(render({ task: null, message: null }).empty).toBe(true);
-  });
-
-  it('shows the Undo line under another task Done button, with its own label', () => {
-    const onUndo = jest.fn();
-    const out = render({
-      task: second(),
-      message: null,
-      undo: { label: 'Morning pills', text: 'Morning pills done.', onPress: onUndo },
-    });
-    expect(out.texts).toEqual(['Evening pills', 'Done', 'Morning pills done.', 'Undo']);
-    expect(out.buttons.map((b) => b.props.accessibilityLabel)).toEqual([
-      'Done: Evening pills',
-      'Undo Morning pills done',
-    ]);
-    act(() => out.buttons[1].props.onPress());
-    expect(onUndo).toHaveBeenCalledTimes(1);
-  });
-
-  it('draws Undo as a large secondary control, not the filled Done style', () => {
-    const out = render({
-      task: null,
-      message: null,
-      undo: { label: 'Pills', text: 'Pills done.', onPress: () => {} },
-    });
-    expect(out.empty).toBe(false);
-    const style = StyleSheet.flatten(
-      (out.buttons[0].props.style as (s: { pressed: boolean }) => StyleProp<ViewStyle>)({
-        pressed: false,
-      }),
-    );
-    expect(style.minHeight).toBeGreaterThanOrEqual(60);
-    expect(style.backgroundColor).not.toBe(colors.success);
-    expect(style.backgroundColor).toBe(colors.surface);
-  });
-});
-
 describe('Done on a multi-step task', () => {
   const STEPS = ['Put on your coat', 'Take your keys', 'Lock the door'];
 
@@ -1213,6 +1134,7 @@ describe('Done on a multi-step task', () => {
     expect(h.get().undo).toEqual({
       label: 'Going out, step 1',
       text: 'Going out, step 1 done. It will be sent when the internet is back.',
+      pressedAt: NOW,
     });
     let shown = applyPending([multi(0)], queue.getEntries());
     expect(shown[0]).toMatchObject({ state: 'due', step: { index: 1, text: 'Take your keys' } });
@@ -1243,34 +1165,5 @@ describe('Done on a multi-step task', () => {
     expect(announceQueued).toHaveBeenCalledWith('Going out, step 1 is not done.', {
       queue: true,
     });
-  });
-});
-
-describe('DoneCard with a step', () => {
-  afterEach(() => {
-    act(() => {
-      mounted.splice(0).forEach((renderer) => renderer.unmount());
-    });
-  });
-
-  it('shows the counter and the step text, and says them on the Done button', () => {
-    let renderer!: ReactTestRenderer;
-    const multi = task({
-      displayLabel: 'Going out',
-      checklistItems: ['Put on your coat', 'Take your keys'],
-      step: { index: 1, count: 2, text: 'Take your keys' },
-    });
-    act(() => {
-      renderer = create(<DoneCard task={multi} message={null} onPress={() => {}} />);
-      mounted.push(renderer);
-    });
-    const texts = renderer.root
-      .findAll((n) => (n.type as unknown) === 'Text')
-      .map((n) => String(n.props.children));
-    expect(texts).toEqual(['Going out', 'Step 2 of 2', 'Take your keys', 'Done']);
-    const button = renderer.root.find(
-      (n) => typeof n.type !== 'string' && n.props.accessibilityRole === 'button',
-    );
-    expect(button.props.accessibilityLabel).toBe('Done: Going out, step 2 of 2, Take your keys');
   });
 });

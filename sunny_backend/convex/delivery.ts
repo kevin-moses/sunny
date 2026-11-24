@@ -5,14 +5,24 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { requeueStuckDigests } from "./digest";
+import {
+  alertMessage,
+  apnsAnswer,
+  dropsToken,
+  providerFault,
+  refusedTokens,
+  resultDetail,
+  seconds,
+} from "./lib/apnsPayload";
 import type { ApnsResult, ApnsSendResult } from "./lib/apnsPayload";
 import {
   MAX_ATTEMPTS,
+  fallbackAfterPushGaveUp,
   requeueStuckDeliveries,
   resolveRoute,
-  textAfterPushGaveUp,
 } from "./lib/delivery";
-import type { ApnsRoute, SendRoute, SmsRoute } from "./lib/delivery";
+import type { ApnsRoute, LiveActivityRoute, SendRoute, SmsRoute } from "./lib/delivery";
+import { closeStart, markStarted } from "./lib/liveActivity";
 import { sendSmsFromEnv } from "./lib/twilio";
 import { deliveryChannel } from "./lib/validators";
 
@@ -27,7 +37,10 @@ async function settle(
   patch: Pick<Doc<"notificationOutbox">, "state"> &
     Partial<Pick<Doc<"notificationOutbox">, "channel" | "detail">>,
 ): Promise<void> {
-  await ctx.db.patch(row._id, { ...patch, settledAt: Date.now() });
+  const now = Date.now();
+  await ctx.db.patch(row._id, { ...patch, settledAt: now });
+  if (patch.channel === "live_activity") await markStarted(ctx, row, now);
+  else await closeStart(ctx, row, now);
 }
 
 export const begin = internalMutation({
@@ -41,7 +54,7 @@ export const begin = internalMutation({
       await settle(ctx, row, { state: "failed", detail: row.detail ?? "gave up" });
       return { kind: "done", outcome: "failed" };
     }
-    const route = await resolveRoute(ctx, row);
+    const route = await resolveRoute(ctx, row, Date.now());
     if (route.kind === "skip") {
       await settle(ctx, row, { state: "skipped", detail: route.reason });
       return { kind: "done", outcome: "skipped" };
@@ -84,7 +97,7 @@ export const record = internalMutation({
 
 function apnsDetail(results: ApnsResult[]): string {
   const bad = results.find((r) => r.outcome === "failed");
-  return bad ? `${bad.status} ${bad.reason ?? "unknown"}` : "no result from APNs";
+  return bad ? resultDetail(bad) : "no result from APNs";
 }
 
 async function sendApns(
@@ -92,32 +105,32 @@ async function sendApns(
   outboxId: Id<"notificationOutbox">,
   route: ApnsRoute,
 ): Promise<DeliveryOutcome | SmsRoute> {
+  const message = alertMessage(
+    route.title,
+    route.body,
+    route.data,
+    route.style,
+    seconds(Date.now()),
+  );
   const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
-    tokens: route.tokens,
-    title: route.title,
-    body: route.body,
-    data: route.data,
-    ...route.style,
+    sends: route.tokens.map((token) => ({ token, message })),
   });
-  if (configError !== undefined) {
-    if (route.smsFallback !== null) {
-      console.warn(`Push not sent (${configError}); sending the text instead`);
-      return route.smsFallback;
-    }
-    await ctx.runMutation(internal.delivery.record, {
-      outboxId,
-      outcome: "retry",
-      detail: configError,
-    });
-    return "config";
-  }
-  const dead = results.filter((r) => r.outcome === "unregistered").map((r) => r.token);
+  const dead = refusedTokens(results, "alert");
   if (dead.length > 0) await ctx.runMutation(internal.apnsTokens.deleteTokens, { tokens: dead });
   if (results.some((r) => r.outcome === "sent")) {
     await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "sent", channel: "apns" });
     return "sent";
   }
-  const retryable = results.some((r) => r.outcome === "failed" && r.retryable);
+  const fault = configError ?? providerFault(results);
+  if (fault !== undefined) {
+    if (route.smsFallback !== null) {
+      console.warn(`Push not sent (${fault}); sending the text instead`);
+      return route.smsFallback;
+    }
+    await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "retry", detail: fault });
+    return "config";
+  }
+  const retryable = results.some((r) => apnsAnswer(r) === "retry");
   if (!retryable && route.smsFallback !== null) {
     const why = dead.length === results.length ? "tokens unregistered" : apnsDetail(results);
     console.warn(`Push not delivered (${why}); sending the text instead`);
@@ -137,6 +150,53 @@ async function sendApns(
   }
   await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "failed", detail });
   return "failed";
+}
+
+async function sendStart(
+  ctx: ActionCtx,
+  outboxId: Id<"notificationOutbox">,
+  route: LiveActivityRoute,
+): Promise<DeliveryOutcome | ApnsRoute> {
+  const { results, configError }: ApnsSendResult = await ctx.runAction(internal.apns.send, {
+    sends: [{ token: route.token, message: route.message }],
+  });
+  const fault = configError ?? providerFault(results);
+  if (fault !== undefined) {
+    await ctx.runMutation(internal.delivery.record, { outboxId, outcome: "retry", detail: fault });
+    return "config";
+  }
+  const result = results[0];
+  if (result?.outcome === "sent") {
+    await ctx.runMutation(internal.delivery.record, {
+      outboxId,
+      outcome: "sent",
+      channel: "live_activity",
+    });
+    return "sent";
+  }
+  const detail = apnsDetail(results);
+  if (result === undefined || apnsAnswer(result) === "retry") {
+    throw new Error(`Live Activity start failed, will retry: ${detail}`);
+  }
+  const unregistered = dropsToken(result, "liveActivityStart");
+  if (unregistered) {
+    await ctx.runMutation(internal.phonePush.dropToken, {
+      deviceId: route.deviceId,
+      field: "liveActivityStart",
+      token: route.token,
+    });
+  }
+  if (route.alertFallback !== null) {
+    const why = unregistered ? "start token refused" : detail;
+    console.warn(`Live Activity not started (${why}); sending the notification instead`);
+    return route.alertFallback;
+  }
+  await ctx.runMutation(internal.delivery.record, {
+    outboxId,
+    outcome: unregistered ? "skipped" : "failed",
+    detail: unregistered ? "start_token_unregistered" : detail,
+  });
+  return unregistered ? "skipped" : "failed";
 }
 
 async function sendSms(
@@ -192,11 +252,18 @@ async function runRoute(
   outboxId: Id<"notificationOutbox">,
   route: SendRoute,
 ): Promise<DeliveryOutcome> {
+  const next =
+    route.kind === "live_activity"
+      ? await attempt(ctx, outboxId, route.alertFallback !== null, () =>
+          sendStart(ctx, outboxId, route),
+        )
+      : route;
+  if (typeof next === "string") return next;
   const text =
-    route.kind === "sms"
-      ? route
-      : await attempt(ctx, outboxId, route.smsFallback !== null, () =>
-          sendApns(ctx, outboxId, route),
+    next.kind === "sms"
+      ? next
+      : await attempt(ctx, outboxId, next.smsFallback !== null, () =>
+          sendApns(ctx, outboxId, next),
         );
   if (typeof text === "string") return text;
   return await attempt(ctx, outboxId, false, () => sendSms(ctx, outboxId, text));
@@ -217,7 +284,7 @@ export const onDeliveryComplete = internalMutation({
     if (result.kind !== "failed") return null;
     const row = await ctx.db.get(context.outboxId);
     if (!row || row.state !== "pending") return null;
-    if (await textAfterPushGaveUp(ctx, row, result.error)) return null;
+    if (await fallbackAfterPushGaveUp(ctx, row, result.error)) return null;
     console.error(`Notification delivery failed: ${result.error}`);
     await settle(ctx, row, { state: "failed", detail: result.error });
     return null;

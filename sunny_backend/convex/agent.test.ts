@@ -318,6 +318,7 @@ describe("getContext", () => {
         type: "medication",
         displayLabel: "Morning pills",
         spokenPrompt: "Time.",
+        screenSentence: null,
         pillDescription: "white pill",
         checklistItems: [],
         step: null,

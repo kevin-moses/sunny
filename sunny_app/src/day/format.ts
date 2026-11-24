@@ -102,12 +102,6 @@ export function relativeDayName(localDate: string, todayLocalDate: string | null
   return weekdayName(date);
 }
 
-export function whenText(event: EventOccurrence, todayLocalDate: string | null): string {
-  const time = displayTime(event.startTime);
-  const day = relativeDayName(event.localDate, todayLocalDate);
-  return day === null ? time : `${day} at ${time}`;
-}
-
 export function eventDetails(event: EventOccurrence, head: string): string {
   const parts = [head];
   if (event.visitorName) parts.push(`with ${event.visitorName}`);

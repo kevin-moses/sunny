@@ -306,7 +306,7 @@ describe('taps', () => {
 
   it('other kinds open Home', async () => {
     const renderer = await renderApp();
-    for (const kind of ['agent_flag', 'event_notice', 'family_message']) {
+    for (const kind of ['agent_flag', 'event_notice', 'family_message', 'lock_screen_blind']) {
       await tap(response(DEFAULT_ACTION, { kind: 'digest', household_id: HOUSEHOLD }));
       await tap(response(DEFAULT_ACTION, { kind, household_id: HOUSEHOLD }));
       expect(activeTab(renderer)).toBe('home');

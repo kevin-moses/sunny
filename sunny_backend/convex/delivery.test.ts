@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import {
+  alertsSent,
+  answerEachToken,
   deliveryFixture,
   insertOutbox,
   outboxRow,
@@ -45,9 +47,9 @@ describe("APNs routing", () => {
     const f = await setup();
     const id = await insertOutbox(f, { kind: "senior_prompt", recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("sent");
-    expect(providerMocks.apnsSend).toHaveBeenCalledWith(
+    expect(alertsSent()).toEqual([
       expect.objectContaining({ tokens: ["tok-1", "tok-2"], title: "Title", body: "Body" }),
-    );
+    ]);
     expect(await outboxRow(f, id)).toMatchObject({ channel: "apns", attempts: 1 });
     expect((await outboxRow(f, id)).state).toBe("sent");
     expect((await outboxRow(f, id)).settledAt).toBeGreaterThanOrEqual(NOW);
@@ -65,7 +67,7 @@ describe("APNs routing", () => {
       taskInstanceId,
     });
     await deliver(f, id);
-    const data = providerMocks.apnsSend.mock.calls[0]![0].data;
+    const data = alertsSent()[0]!.data;
     expect(data).toMatchObject({ task_instance_id: taskInstanceId, kind: "senior_prompt" });
   });
 
@@ -73,7 +75,7 @@ describe("APNs routing", () => {
     const f = await setup();
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     await deliver(f, id);
-    expect(providerMocks.apnsSend.mock.calls[0]![0].data).not.toHaveProperty("task_instance_id");
+    expect(alertsSent()[0]!.data).not.toHaveProperty("task_instance_id");
   });
 
   test("unregistered tokens are deleted and the row is still sent", async () => {
@@ -96,15 +98,12 @@ describe("APNs routing", () => {
 
   test("when every token is unregistered the tokens go and the row is skipped", async () => {
     const f = await setup();
-    providerMocks.apnsSend.mockImplementation(async (args: { tokens: string[] }) =>
-      args.tokens.map((token) => ({
-        token,
-        outcome: "unregistered",
-        status: 410,
-        reason: "Unregistered",
-        retryable: false,
-      })),
-    );
+    answerEachToken(() => ({
+      outcome: "unregistered",
+      status: 410,
+      reason: "Unregistered",
+      retryable: false,
+    }));
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("skipped");
     expect(await outboxRow(f, id)).toMatchObject({
@@ -196,15 +195,81 @@ describe("APNs routing", () => {
         token: "tok-1",
         outcome: "failed",
         status: 400,
-        reason: "BadDeviceToken",
+        reason: "BadTopic",
         retryable: false,
       },
     ]);
     const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
     expect(await deliver(f, id)).toBe("failed");
     const row = await outboxRow(f, id);
-    expect(row).toMatchObject({ state: "failed", detail: "400 BadDeviceToken" });
+    expect(row).toMatchObject({ state: "failed", detail: "400 BadTopic" });
     expect(row.channel).toBeUndefined();
+  });
+
+  test.each(["BadDeviceToken", "DeviceTokenNotForTopic", "MissingDeviceToken"])(
+    "an alert token refused with %s is kept, since a server pointed at the wrong APNs environment or topic gets that answer for every token",
+    async (reason) => {
+      const f = await setup();
+      providerMocks.apnsSend.mockResolvedValue([
+        { token: "tok-1", outcome: "failed", status: 400, reason, retryable: false },
+        { token: "tok-2", outcome: "failed", status: 400, reason, retryable: false },
+      ]);
+      const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+      expect(await deliver(f, id)).toBe("failed");
+      const left = await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect());
+      expect(left.map((t) => t.token).sort()).toEqual(["tok-1", "tok-2"]);
+    },
+  );
+
+  test("an alert token is deleted on a 410 and on our own InvalidToken check", async () => {
+    const f = await setup();
+    providerMocks.apnsSend.mockResolvedValue([
+      {
+        token: "tok-1",
+        outcome: "unregistered",
+        status: 410,
+        reason: "Unregistered",
+        retryable: false,
+      },
+      { token: "tok-2", outcome: "failed", status: 0, reason: "InvalidToken", retryable: false },
+    ]);
+    const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+    expect(await deliver(f, id)).toBe("skipped");
+    expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toEqual([]);
+  });
+
+  test("an alert refused for the provider token is held for a retry, not failed", async () => {
+    const f = await setup();
+    providerMocks.apnsSend.mockResolvedValue([
+      {
+        token: "tok-1",
+        outcome: "failed",
+        status: 403,
+        reason: "ExpiredProviderToken",
+        retryable: false,
+      },
+      {
+        token: "tok-2",
+        outcome: "failed",
+        status: 403,
+        reason: "ExpiredProviderToken",
+        retryable: false,
+      },
+    ]);
+    const id = await insertOutbox(f, { recipientDeviceId: f.deviceId });
+    expect(await deliver(f, id)).toBe("config");
+    expect(await outboxRow(f, id)).toMatchObject({
+      state: "pending",
+      detail: "403 ExpiredProviderToken",
+    });
+    expect(await f.t.run(async (ctx) => await ctx.db.query("pushTokens").collect())).toHaveLength(
+      2,
+    );
+    resetProviderMocks();
+    vi.setSystemTime(NOW + STUCK_AFTER_MS + 1_000);
+    expect(await f.t.mutation(internal.delivery.sweepStuck, {})).toBe(1);
+    await drivePool(f, id);
+    expect(await outboxRow(f, id)).toMatchObject({ state: "sent", attempts: 2 });
   });
 
   test("a configuration result leaves the row pending with the detail, without a retry", async () => {
@@ -244,7 +309,7 @@ describe("APNs routing", () => {
         token: "tok-1",
         outcome: "failed",
         status: 400,
-        reason: "BadDeviceToken",
+        reason: "BadTopic",
         retryable: false,
       },
     ]);
@@ -467,9 +532,7 @@ async function addTokens(f: DeliveryFixture, userId: string, ...tokens: string[]
 }
 
 function apnsAnswers(outcome: "unregistered" | "failed", status: number, retryable = false): void {
-  providerMocks.apnsSend.mockImplementation(async (args: { tokens: string[] }) =>
-    args.tokens.map((token) => ({ token, outcome, status, reason: "Why", retryable })),
-  );
+  answerEachToken(() => ({ outcome, status, reason: "Why", retryable }));
 }
 
 describe("caregiver push", () => {
@@ -478,9 +541,9 @@ describe("caregiver push", () => {
     await addTokens(f, "pat", "pat-1", "pat-2");
     const id = await insertOutbox(f, { kind: "event_notice", recipientUserId: "pat" });
     expect(await deliver(f, id)).toBe("sent");
-    expect(providerMocks.apnsSend).toHaveBeenCalledWith(
+    expect(alertsSent()).toEqual([
       expect.objectContaining({ tokens: ["pat-1", "pat-2"], title: "Title", body: "Body" }),
-    );
+    ]);
     expect(providerMocks.smsSend).not.toHaveBeenCalled();
     expect(await outboxRow(f, id)).toMatchObject({ state: "sent", channel: "apns" });
   });
@@ -516,7 +579,7 @@ describe("caregiver push", () => {
       taskInstanceId,
     });
     await deliver(f, id);
-    expect(providerMocks.apnsSend.mock.calls[0]![0].data).toEqual({
+    expect(alertsSent()[0]!.data).toEqual({
       notification_id: id,
       kind: "caregiver_alert",
       household_id: f.householdId,
@@ -529,7 +592,7 @@ describe("caregiver push", () => {
     await addTokens(f, "max", "max-1");
     const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "max" });
     await deliver(f, id);
-    expect(providerMocks.apnsSend.mock.calls[0]![0]).toMatchObject({
+    expect(alertsSent()[0]!).toMatchObject({
       interruptionLevel: "time-sensitive",
       category: "caregiver_alert",
     });
@@ -540,7 +603,7 @@ describe("caregiver push", () => {
     await addTokens(f, "val", "val-1");
     const id = await insertOutbox(f, { kind: "caregiver_alert", recipientUserId: "val" });
     await deliver(f, id);
-    const sent = providerMocks.apnsSend.mock.calls[0]![0];
+    const sent = alertsSent()[0]!;
     expect(sent.interruptionLevel).toBe("time-sensitive");
     expect(sent).not.toHaveProperty("category");
   });
@@ -552,10 +615,9 @@ describe("caregiver push", () => {
     for (const kind of kinds) {
       await deliver(f, await insertOutbox(f, { kind, recipientUserId: "pat" }));
     }
-    const levels = providerMocks.apnsSend.mock.calls.map((c) => c[0].interruptionLevel);
+    const levels = alertsSent().map((alert) => alert.interruptionLevel);
     expect(levels).toEqual(["time-sensitive", undefined, undefined, undefined]);
-    for (const call of providerMocks.apnsSend.mock.calls)
-      expect(call[0]).not.toHaveProperty("category");
+    for (const alert of alertsSent()) expect(alert).not.toHaveProperty("category");
   });
 
   test("a senior prompt to a device is time-sensitive with no category", async () => {
@@ -568,7 +630,7 @@ describe("caregiver push", () => {
       f,
       await insertOutbox(f, { kind: "event_notice", recipientDeviceId: f.deviceId }),
     );
-    const [prompt, notice] = providerMocks.apnsSend.mock.calls.map((c) => c[0]);
+    const [prompt, notice] = alertsSent();
     expect(prompt).toMatchObject({ interruptionLevel: "time-sensitive" });
     expect(prompt).not.toHaveProperty("category");
     expect(notice).not.toHaveProperty("interruptionLevel");
@@ -585,7 +647,7 @@ describe("caregiver push", () => {
     };
     await deliver(f, await insertOutbox(f, { ...fields, recipientUserId: "pat" }));
     await deliver(f, await insertOutbox(f, { ...fields, recipientUserId: "max" }));
-    expect(providerMocks.apnsSend.mock.calls[0]![0]).toMatchObject({
+    expect(alertsSent()[0]!).toMatchObject({
       title: "Mom's day",
       body: "All done.",
     });
@@ -628,7 +690,7 @@ describe("caregiver push", () => {
         token: "pat-bad",
         outcome: "failed",
         status: 400,
-        reason: "BadDeviceToken",
+        reason: "BadTopic",
         retryable: false,
       },
     ]);

@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { TaskInstanceId } from '../backend/convexApi';
-import { OfflineMark } from '../components/DayComponents';
+import { OfflineMark } from '../components/OfflineMark';
 import type { DayViewState } from '../day/useDayView';
 import { colors } from '../theme/colors';
 import { type } from '../theme/typography';

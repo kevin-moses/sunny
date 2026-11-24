@@ -914,6 +914,7 @@ describe("today", () => {
       .withIdentity({ subject: "pat" })
       .query(api.instances.today, { householdId: f.householdId });
     expect(entry).toMatchObject({
+      screenSentence: null,
       pillDescription: null,
       confirmedAt: null,
       confirmedLocalTime: null,

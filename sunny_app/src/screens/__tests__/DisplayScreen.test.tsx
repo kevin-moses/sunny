@@ -22,7 +22,7 @@ jest.mock('react-native-safe-area-context', () => ({
 }));
 jest.mock('../../display/theme', () => ({
   ...jest.requireActual<object>('../../display/theme'),
-  useDisplayFonts: () => true,
+  usePaperFonts: () => true,
 }));
 jest.mock('../../display/useQuietNotifications', () => ({
   useQuietNotifications: () => undefined,

@@ -3,3 +3,5 @@ node_modules/
 # Display frame goldens (PNG) and the fonts' license texts: not code.
 convex/lib/frameGoldens/
 convex/lib/fonts/*.txt
+# Push payload goldens that the Swift tests decode: fixtures, not code.
+convex/lib/liveActivityGoldens/

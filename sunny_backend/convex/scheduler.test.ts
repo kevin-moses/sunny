@@ -1068,12 +1068,12 @@ describe("a window that closes before the caregivers were alerted", () => {
     await f.t.run(async (ctx) => await ctx.db.insert("pushTokens", { userId: "pat", token: "p1" }));
     await tick(f.t, "2027-03-13T13:20:00Z");
     const row = (await outbox(f.t, i1)).find((o) => o.recipientUserId === "pat")!;
-    const route = await f.t.run(async (ctx) => await resolveRoute(ctx, row));
+    const route = await f.t.run(async (ctx) => await resolveRoute(ctx, row, Date.now()));
     expect(route).toMatchObject({ kind: "apns", tokens: ["p1"] });
     await claim(f, i1, "2027-03-13T13:25:00Z");
     const claimed = await reload(f.t, i1);
     expect(claimed).toMatchObject({ state: "missed", claimedBy: "max" });
-    const after = await f.t.run(async (ctx) => await resolveRoute(ctx, row));
+    const after = await f.t.run(async (ctx) => await resolveRoute(ctx, row, Date.now()));
     expect(after.kind).toBe("apns");
   });
 });

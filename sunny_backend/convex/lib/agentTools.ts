@@ -84,6 +84,11 @@ const TASK_FIELDS = {
     description:
       'The exact sentence the senior hears. Defaults to "Time for <display_label>." when omitted or blank.',
   },
+  screen_sentence: {
+    type: "string",
+    description:
+      'The short sentence the senior reads on their phone above the Done button, 60 characters at most, e.g. "Take your morning pills." Blank shows the display label instead.',
+  },
   times: {
     type: "array",
     items: { type: "string" },
@@ -166,7 +171,7 @@ export const AGENT_TOOLS: NonNullable<Anthropic.Beta.Agents.AgentCreateParams["t
     type: "custom",
     name: "update_task",
     description:
-      "Change an existing task. Send only the fields that change; null clears an optional field (pill_description, once_on, starts_on, ends_on), and null or blank spoken_prompt restores the default sentence. A null or empty repeat_weekdays makes the task run every day. times and checklist_items replace the whole list. active true resumes a stopped task.",
+      "Change an existing task. Send only the fields that change; null clears an optional field (pill_description, once_on, starts_on, ends_on), and null or blank spoken_prompt restores the default sentence. Changing display_label clears the stored screen_sentence unless the same call sends a new one; null or blank screen_sentence clears it. A null or empty repeat_weekdays makes the task run every day. times and checklist_items replace the whole list. active true resumes a stopped task.",
     input_schema: {
       type: "object",
       properties: {
@@ -363,6 +368,9 @@ const TASK_FIELD_READERS: Record<string, (out: TaskChanges, value: unknown, key:
     spoken_prompt: (out, value, key) => {
       out.spokenPrompt = stringField(value, key, true) ?? "";
     },
+    screen_sentence: (out, value, key) => {
+      out.screenSentence = stringField(value, key, true) ?? "";
+    },
     pill_description: (out, value, key) => {
       out.pillDescription = stringField(value, key, true);
     },
@@ -509,6 +517,7 @@ function taskForModel(task: Doc<"tasks">): Record<string, unknown> {
     title: task.title,
     display_label: task.displayLabel,
     spoken_prompt: task.spokenPrompt,
+    screen_sentence: task.screenSentence ?? null,
     times: task.times,
     anytime: isAnytimeTask(task),
     repeat_weekdays: weekdayCodes(task.daysOfWeek),

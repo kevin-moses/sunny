@@ -19,6 +19,9 @@ export type NowCard =
       allDone: boolean;
     };
 
+type UpNext =
+  { kind: 'task'; task: DayTask } | { kind: 'event'; event: EventOccurrence; laterDay: boolean };
+
 export interface NextItem {
   title: string;
   when: string;
@@ -99,32 +102,47 @@ function eventNext(event: EventOccurrence, when: string): NextItem {
   };
 }
 
-export function nextItem(
-  day: DayViewData,
-  agenda: AgendaItem[],
+export function upNext(
+  day: Pick<DayViewData, 'localNow' | 'localDate' | 'upcoming'>,
+  agenda: readonly AgendaItem[],
   nowTaskId: string | null,
-): NextItem | null {
+): UpNext | null {
   const now = nowTime(day);
   for (const item of agenda) {
     if (item.kind === 'event') {
-      if (item.event.startTime > now) {
-        return eventNext(item.event, clockTime(item.event.startTime));
-      }
+      if (item.event.startTime > now) return { kind: 'event', event: item.event, laterDay: false };
       continue;
     }
     const { task } = item;
     const waiting = task.state === 'upcoming' || isDue(task);
     if (waiting && task.scheduledTime !== ANYTIME && task.instanceId !== nowTaskId) {
-      return {
-        title: task.displayLabel,
-        when: clockTime(task.scheduledTime),
-        icon: taskIcon(task.type),
-        initial: null,
-      };
+      return { kind: 'task', task };
     }
   }
   const later = day.upcoming.find((e) => e.localDate > day.localDate);
-  return later === undefined ? null : eventNext(later, laterWhen(later, day.localDate));
+  return later === undefined ? null : { kind: 'event', event: later, laterDay: true };
+}
+
+export function nextItem(
+  day: DayViewData,
+  agenda: AgendaItem[],
+  nowTaskId: string | null,
+): NextItem | null {
+  const next = upNext(day, agenda, nowTaskId);
+  if (next === null) return null;
+  if (next.kind === 'task') {
+    return {
+      title: next.task.displayLabel,
+      when: clockTime(next.task.scheduledTime),
+      icon: taskIcon(next.task.type),
+      initial: null,
+    };
+  }
+  const { event } = next;
+  return eventNext(
+    event,
+    next.laterDay ? laterWhen(event, day.localDate) : clockTime(event.startTime),
+  );
 }
 
 function taskMark(task: DayTask, nowTaskId: string | null): TodayRow['mark'] {

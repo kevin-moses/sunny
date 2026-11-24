@@ -18,6 +18,7 @@ export interface TodayEntry {
   type: TaskType;
   displayLabel: string;
   spokenPrompt: string;
+  screenSentence: string | null;
   pillDescription: string | null;
   checklistItems: string[];
   step: TaskStep | null;
@@ -42,6 +43,49 @@ export interface TodayEntry {
   seniorPrompts: number;
   snoozed: boolean;
   snoozedUntil: number | null;
+}
+
+export type DayTask = Pick<
+  TodayEntry,
+  | "instanceId"
+  | "localDate"
+  | "type"
+  | "displayLabel"
+  | "spokenPrompt"
+  | "screenSentence"
+  | "pillDescription"
+  | "checklistItems"
+  | "step"
+  | "scheduledTime"
+  | "state"
+  | "carriedOver"
+  | "confirmable"
+  | "seniorPrompts"
+  | "snoozedUntil"
+>;
+
+export function instanceDayTask(
+  instance: Doc<"taskInstances">,
+  task: Doc<"tasks">,
+  now: number,
+): DayTask {
+  return {
+    instanceId: instance._id,
+    localDate: instance.localDate,
+    type: task.type,
+    displayLabel: task.displayLabel,
+    spokenPrompt: task.spokenPrompt,
+    screenSentence: task.screenSentence ?? null,
+    pillDescription: task.pillDescription ?? null,
+    checklistItems: task.checklistItems,
+    step: taskStep(task.checklistItems, instance.currentStep),
+    scheduledTime: instance.scheduledTime,
+    state: instance.state,
+    carriedOver: false,
+    confirmable: seniorCanConfirm(instance, now),
+    seniorPrompts: seniorPromptCount(instance.firedSteps),
+    snoozedUntil: instance.snoozedUntil ?? null,
+  };
 }
 
 export function shownOn(
@@ -112,19 +156,10 @@ export async function todayInstances(
     const confirmedBy = instance.confirmedBy ?? null;
     const confirmedAt = instance.confirmedAt ?? null;
     entries.push({
-      instanceId: instance._id,
-      localDate: instance.localDate,
+      ...instanceDayTask(instance, task, now),
       carriedOver: carriedIds.has(instance._id),
       taskId: task._id,
-      type: task.type,
-      displayLabel: task.displayLabel,
-      spokenPrompt: task.spokenPrompt,
-      pillDescription: task.pillDescription ?? null,
-      checklistItems: task.checklistItems,
-      step: taskStep(task.checklistItems, instance.currentStep),
       highPriority: task.highPriority,
-      scheduledTime: instance.scheduledTime,
-      state: instance.state,
       confirmedAt,
       confirmedLocalTime: confirmedAt === null ? null : localTime(confirmedAt, household.timezone),
       confirmedVia: instance.confirmedVia ?? null,
@@ -139,14 +174,11 @@ export async function todayInstances(
       confirmedBy,
       confirmedByName: instance.state === "resolved" ? nameOf(confirmedBy) : null,
       resolutionNote: instance.resolutionNote ?? null,
-      confirmable: seniorCanConfirm(instance, now),
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
       confirmPressIds: visibleConfirmPressIds(instance, reader),
       stepPressIds: visibleStepPressIds(instance, seniorReader(reader)),
-      seniorPrompts: seniorPromptCount(instance.firedSteps),
       snoozed: isSnoozed(instance.snoozedUntil, now),
-      snoozedUntil: instance.snoozedUntil ?? null,
     });
   }
   return entries;

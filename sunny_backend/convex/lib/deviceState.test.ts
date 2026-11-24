@@ -8,7 +8,8 @@ import {
   fnv1a64,
   todayRows,
 } from "./deviceState";
-import type { CueInput, DayEvent, DayTask, DeviceStateInput } from "./deviceState";
+import type { DayTask } from "./today";
+import type { CueInput, DayEvent, DeviceStateInput } from "./deviceState";
 import { taskStep } from "./taskSteps";
 import { ESCALATION_LADDER } from "./escalation";
 import type { EscalationStep } from "./escalation";
@@ -29,6 +30,7 @@ function makeTask(overrides: Partial<Record<keyof DayTask, unknown>> = {}): DayT
     type: "medication",
     displayLabel: "Morning pills",
     spokenPrompt: "Time for Morning pills.",
+    screenSentence: null,
     pillDescription: null,
     checklistItems: [],
     step: taskStep(items, 0),

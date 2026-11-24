@@ -8,6 +8,7 @@ import { type } from '../theme/typography';
 import {
   NOT_SPOKEN,
   ON_DISPLAY,
+  ON_PHONE,
   otherTimesCaption,
   SUNNY_SAYS,
   wordingSpeech,
@@ -51,6 +52,12 @@ export function WordingCard({ wording, playing, failed, onToggle }: WordingCardP
             <Text style={[type.bodyStrong, styles.ink]}>{wording.time}</Text>
             <Text style={[type.body, styles.ink, styles.label]}>{wording.label}</Text>
           </View>
+          {wording.screenSentence !== null && (
+            <>
+              <Text style={[type.caption, styles.heading, styles.secondHeading]}>{ON_PHONE}</Text>
+              <Text style={[type.callout, styles.ink]}>{wording.screenSentence}</Text>
+            </>
+          )}
           <Text style={[type.caption, styles.heading, styles.secondHeading]}>{SUNNY_SAYS}</Text>
           <Text style={[type.callout, wording.sentence === null ? styles.muted : styles.ink]}>
             {wording.sentence ?? NOT_SPOKEN}

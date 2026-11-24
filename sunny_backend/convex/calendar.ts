@@ -34,6 +34,7 @@ import {
 import { cleanOptional, normalizeWeekdays, requireNonBlank } from "./lib/text";
 import { todayInstances } from "./lib/today";
 import { upcomingTasks } from "./lib/upcomingTasks";
+import { requestWidgetRefresh } from "./lib/widgetRefresh";
 
 const MAX_TITLE = 200;
 const MAX_LABEL = 80;
@@ -200,6 +201,7 @@ export async function addEventCore(
   const event = (await ctx.db.get(id))!;
   await auditEvent(ctx, actor, "insert", event);
   await queueEventSync(ctx, id);
+  await requestWidgetRefresh(ctx, actor, householdId);
   return eventWithNext(event, household.timezone, now);
 }
 
@@ -239,6 +241,7 @@ export async function updateEventCore(
   await auditEvent(ctx, actor, "update", event);
   if (EVENT_FIELD_KEYS.some((k) => JSON.stringify(current[k]) !== JSON.stringify(event[k]))) {
     await queueEventSync(ctx, eventId);
+    await requestWidgetRefresh(ctx, actor, householdId);
   }
   return eventWithNext(event, household.timezone, now);
 }
@@ -255,6 +258,7 @@ export async function cancelEventCore(
   const event = (await ctx.db.get(eventId))!;
   await auditEvent(ctx, actor, "cancel", event);
   await queueEventSync(ctx, eventId);
+  await requestWidgetRefresh(ctx, actor, householdId);
   return eventJson(event);
 }
 

@@ -13,13 +13,7 @@ import {
 } from "./deviceWording";
 import type { DeviceIcon } from "./deviceWording";
 import { isDueEntry } from "./dueTask";
-import {
-  escalationSteps,
-  isOpenState,
-  isSnoozed,
-  seniorPromptCount,
-  upcomingPromptTimes,
-} from "./escalation";
+import { escalationSteps, isOpenState, isSnoozed, upcomingPromptTimes } from "./escalation";
 import type { EscalationStep, PromptTiming } from "./escalation";
 import { occurrenceJson } from "./occurrences";
 import type { OccurrenceJson } from "./occurrences";
@@ -34,10 +28,10 @@ import {
   partOfDay,
   weekdayName,
 } from "./time";
-import { stepIndex, taskStep } from "./taskSteps";
+import { stepIndex } from "./taskSteps";
 import type { TaskStep } from "./taskSteps";
-import { todayInstances } from "./today";
-import type { TodayEntry } from "./today";
+import { instanceDayTask, todayInstances } from "./today";
+import type { DayTask, TodayEntry } from "./today";
 
 export const MAX_TODAY_ROWS = 7;
 
@@ -56,24 +50,6 @@ function deviceTuning(): DeviceTuning {
     carousel: { pages: ["now", "today"], intervalMs: 45_000 },
   };
 }
-
-export type DayTask = Pick<
-  TodayEntry,
-  | "instanceId"
-  | "localDate"
-  | "type"
-  | "displayLabel"
-  | "spokenPrompt"
-  | "pillDescription"
-  | "checklistItems"
-  | "step"
-  | "scheduledTime"
-  | "state"
-  | "carriedOver"
-  | "confirmable"
-  | "seniorPrompts"
-  | "snoozedUntil"
->;
 
 export type DayEvent = Pick<
   OccurrenceJson,
@@ -187,8 +163,8 @@ export interface DeviceState {
   tuning: DeviceTuning;
 }
 
-export type AgendaItem =
-  | { kind: "task"; id: string; time: string; task: DayTask }
+export type AgendaItem<T extends DayTask = DayTask> =
+  | { kind: "task"; id: string; time: string; task: T }
   | { kind: "event"; id: string; time: string; event: DayEvent };
 
 function isMissed(task: Pick<DayTask, "state">): boolean {
@@ -217,15 +193,15 @@ export function frameDoneTarget(state: Pick<DeviceState, "done">): DoneTarget | 
   return state.done !== null && !state.done.early ? state.done : null;
 }
 
-export function buildAgenda(tasks: DayTask[], events: DayEvent[]): AgendaItem[] {
-  const items: AgendaItem[] = [
-    ...tasks.map((task): AgendaItem => ({
+export function buildAgenda<T extends DayTask>(tasks: T[], events: DayEvent[]): AgendaItem<T>[] {
+  const items: AgendaItem<T>[] = [
+    ...tasks.map((task): AgendaItem<T> => ({
       kind: "task",
       id: `task-${task.instanceId}`,
       time: task.scheduledTime,
       task,
     })),
-    ...events.map((event): AgendaItem => ({
+    ...events.map((event): AgendaItem<T> => ({
       kind: "event",
       id: `event-${event.eventId}-${event.localDate}`,
       time: event.startTime,
@@ -285,6 +261,32 @@ export function isPastEvent(event: Pick<DayEvent, "startsAt" | "endsAt">, now: n
   return now >= (event.endsAt ?? event.startsAt + EVENT_DEFAULT_MS);
 }
 
+type NextPick<T extends DayTask = DayTask> =
+  | { kind: "task"; task: T }
+  | { kind: "event"; event: DayEvent }
+  | { kind: "laterEvent"; event: DayEvent };
+
+export function pickNext<T extends DayTask>(
+  agenda: AgendaItem<T>[],
+  upcoming: DayEvent[],
+  today: string,
+  time: string,
+  nowTaskId: string | null,
+): NextPick<T> | null {
+  for (const item of agenda) {
+    if (item.kind === "event") {
+      if (item.event.startTime > time) return { kind: "event", event: item.event };
+      continue;
+    }
+    const { task } = item;
+    if (isOpenState(task.state) && !isAnytimeInstance(task) && task.instanceId !== nowTaskId) {
+      return { kind: "task", task };
+    }
+  }
+  const later = upcoming.find((e) => e.localDate > today);
+  return later === undefined ? null : { kind: "laterEvent", event: later };
+}
+
 export function nextItem(
   agenda: AgendaItem[],
   upcoming: DayEvent[],
@@ -292,29 +294,25 @@ export function nextItem(
   time: string,
   nowTaskId: string | null,
 ): NextItem | null {
-  for (const item of agenda) {
-    if (item.kind === "event") {
-      if (item.event.startTime > time) {
-        return eventNext(item.event, clockTime(item.event.startTime));
-      }
-      continue;
-    }
-    const { task } = item;
-    if (isOpenState(task.state) && !isAnytimeInstance(task) && task.instanceId !== nowTaskId) {
+  const pick = pickNext(agenda, upcoming, today, time, nowTaskId);
+  if (pick === null) return null;
+  switch (pick.kind) {
+    case "task":
       return {
-        title: task.displayLabel,
-        when: clockTime(task.scheduledTime),
-        icon: taskIcon(task.type),
+        title: pick.task.displayLabel,
+        when: clockTime(pick.task.scheduledTime),
+        icon: taskIcon(pick.task.type),
         initial: null,
-        type: task.type,
+        type: pick.task.type,
       };
+    case "event":
+      return eventNext(pick.event, clockTime(pick.event.startTime));
+    case "laterEvent": {
+      const day = relativeDayName(pick.event.localDate, today);
+      const clock = clockTime(pick.event.startTime);
+      return eventNext(pick.event, day === null ? clock : `${day}, ${clock}`);
     }
   }
-  const later = upcoming.find((e) => e.localDate > today);
-  if (later === undefined) return null;
-  const day = relativeDayName(later.localDate, today);
-  const clock = clockTime(later.startTime);
-  return eventNext(later, day === null ? clock : `${day}, ${clock}`);
 }
 
 export function todayRows(
@@ -468,32 +466,26 @@ function taskLoader(ctx: QueryCtx): (taskId: Id<"tasks">) => Promise<Doc<"tasks"
   };
 }
 
-function cueInputFor(instance: Doc<"taskInstances">, task: Doc<"tasks"> | null): CueInput | null {
-  if (task === null) return null;
-  return {
-    entry: {
-      instanceId: instance._id,
-      localDate: instance.localDate,
-      type: task.type,
-      displayLabel: task.displayLabel,
-      spokenPrompt: task.spokenPrompt,
-      step: taskStep(task.checklistItems, instance.currentStep),
-      scheduledTime: instance.scheduledTime,
-      state: instance.state,
-      seniorPrompts: seniorPromptCount(instance.firedSteps),
-      snoozedUntil: instance.snoozedUntil ?? null,
-    },
-    timing: instance,
-    steps: escalationSteps(task),
-  };
+interface LoadedInstance {
+  instance: Doc<"taskInstances">;
+  task: Doc<"tasks">;
 }
 
-export async function loadDeviceState(
+export interface DeviceDay {
+  seniorPreferredName: string;
+  timezone: string;
+  today: string;
+  entries: TodayEntry[];
+  events: OccurrenceJson[];
+  instances: LoadedInstance[];
+}
+
+export async function loadDeviceDay(
   ctx: QueryCtx,
   householdId: Id<"households">,
   now: number,
-): Promise<DeviceState> {
-  const [{ household, today, week }, tasks] = await Promise.all([
+): Promise<DeviceDay> {
+  const [{ household, today, week }, entries] = await Promise.all([
     householdWeek(ctx, householdId, now),
     todayInstances(ctx, householdId, now, null),
   ]);
@@ -505,22 +497,52 @@ export async function loadDeviceState(
       )
       .collect()
   ).sort(compareDayOrder);
-  const todays = await Promise.all(tasks.map((e) => ctx.db.get(e.instanceId)));
-  const instances = [...todays, ...tomorrow].filter((i) => i !== null);
+  const todays = await Promise.all(entries.map((e) => ctx.db.get(e.instanceId)));
+  const docs = [...todays, ...tomorrow].filter((i) => i !== null);
   const loadTask = taskLoader(ctx);
-  const loaded = await Promise.all(instances.map((i) => loadTask(i.taskId)));
-  const cueInputs = instances
-    .map((i, n) => cueInputFor(i, loaded[n] ?? null))
-    .filter((c) => c !== null);
-  return buildDeviceState(
-    {
-      seniorPreferredName: household.seniorPreferredName,
-      timezone: household.timezone,
-      tasks,
-      eventsToday: week.filter((o) => o.localDate === today).map(occurrenceJson),
-      upcoming: week.filter((o) => o.localDate > today).map(occurrenceJson),
-      cueInputs,
-    },
-    now,
-  );
+  const tasks = await Promise.all(docs.map((i) => loadTask(i.taskId)));
+  const instances = docs.flatMap((instance, n): LoadedInstance[] => {
+    const task = tasks[n] ?? null;
+    return task === null ? [] : [{ instance, task }];
+  });
+  return {
+    seniorPreferredName: household.seniorPreferredName,
+    timezone: household.timezone,
+    today,
+    entries,
+    events: week.map(occurrenceJson),
+    instances,
+  };
+}
+
+export function splitEvents<T extends Pick<DayEvent, "localDate">>(
+  events: T[],
+  today: string,
+): { eventsToday: T[]; upcoming: T[] } {
+  return {
+    eventsToday: events.filter((e) => e.localDate === today),
+    upcoming: events.filter((e) => e.localDate > today),
+  };
+}
+
+function deviceStateInput(day: DeviceDay, now: number): DeviceStateInput {
+  return {
+    seniorPreferredName: day.seniorPreferredName,
+    timezone: day.timezone,
+    tasks: day.entries,
+    ...splitEvents(day.events, day.today),
+    cueInputs: day.instances.map(({ instance, task }) => ({
+      entry: instanceDayTask(instance, task, now),
+      timing: instance,
+      steps: escalationSteps(task),
+    })),
+  };
+}
+
+export async function loadDeviceState(
+  ctx: QueryCtx,
+  householdId: Id<"households">,
+  now: number,
+): Promise<DeviceState> {
+  return buildDeviceState(deviceStateInput(await loadDeviceDay(ctx, householdId, now), now), now);
 }

@@ -4,7 +4,10 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { frameDoneTarget } from "./lib/deviceState";
+import type { DeviceState } from "./lib/deviceState";
 import { hashDeviceToken } from "./lib/deviceToken";
+import type { PhoneTimeline } from "./lib/phoneTimeline";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -115,6 +118,14 @@ async function getState(
   headers: Record<string, string> = {},
 ): Promise<Response> {
   return await call(t, "GET", "/device/state", { token, headers });
+}
+
+async function getTimeline(
+  t: TestConvex,
+  token: string | null,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return await call(t, "GET", "/device/timeline", { token, headers });
 }
 
 async function postConfirm(t: TestConvex, token: string, body: unknown): Promise<Response> {
@@ -455,6 +466,281 @@ describe("GET /device/state", () => {
     expect(tomorrow[0]!.speech).toBe(
       "Time for Morning pills, at 8 o'clock. Press Done when you have taken them.",
     );
+  });
+});
+
+async function addPhoneDay(f: Fixture): Promise<void> {
+  const pat = f.t.withIdentity({ subject: "pat" });
+  await pat.mutation(api.tasks.create, {
+    householdId: f.householdId,
+    type: "routine",
+    title: "Get ready",
+    displayLabel: "Get ready",
+    times: ["08:00"],
+    windowMinutes: 120,
+    checklistItems: ["Shower", "Dress"],
+  });
+  await pat.mutation(api.tasks.create, {
+    householdId: f.householdId,
+    type: "medication",
+    title: "Lunch pills",
+    displayLabel: "Lunch pills",
+    times: ["12:00"],
+  });
+  await f.t.run(async (ctx) => {
+    const instance = await ctx.db.get(f.instanceId);
+    await ctx.db.patch(instance!.taskId, {
+      screenSentence: "Take your morning pills.",
+      pillDescription: "1 white tablet",
+    });
+  });
+}
+
+async function readTimeline(t: TestConvex, token: string): Promise<PhoneTimeline> {
+  const res = await getTimeline(t, token);
+  expect(res.status).toBe(200);
+  return (await res.json()) as PhoneTimeline;
+}
+
+async function readState(t: TestConvex, token: string): Promise<DeviceState> {
+  return (await (await getState(t, token)).json()) as DeviceState;
+}
+
+async function instanceIdOf(f: Fixture, label: string, date = "2026-11-13") {
+  return await f.t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("taskInstances")
+      .withIndex("by_household_date", (q) =>
+        q.eq("householdId", f.householdId).eq("localDate", date),
+      )
+      .collect();
+    for (const row of rows) {
+      if ((await ctx.db.get(row.taskId))!.displayLabel === label) return row._id;
+    }
+    throw new Error(`no instance of ${label}`);
+  });
+}
+
+function firstCardAgrees(state: DeviceState, cards: PhoneTimeline["entries"][number]["cards"]) {
+  const target = frameDoneTarget(state);
+  const first = cards[0]!;
+  if (target === null) return first.kind === "clear";
+  return (
+    first.kind === "task" && first.instanceId === target.instanceId && first.step === target.step
+  );
+}
+
+describe("GET /device/timeline", () => {
+  test("refuses a missing or unknown token with the device API's 401", async () => {
+    const t = makeBackend();
+    await household(t);
+    for (const res of [await getTimeline(t, null), await getTimeline(t, UNKNOWN_TOKEN)]) {
+      expect(res.status).toBe(401);
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
+      expect(await res.json()).toEqual({
+        error: { code: "unauthenticated", message: "A valid device token is required" },
+      });
+    }
+  });
+
+  test("carries the version as ETag and answers a matching If-None-Match with 304", async () => {
+    const t = makeBackend();
+    await household(t);
+    const token = await issue(t);
+    const res = await getTimeline(t, token);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    const timeline = (await res.json()) as PhoneTimeline;
+    const etag = `"${timeline.version}"`;
+    expect(res.headers.get("ETag")).toBe(etag);
+    expect(near(timeline.generatedAt, Date.parse(START))).toBe(true);
+    expect(timeline.timezone).toBe("America/New_York");
+    expect(timeline.until).toBe(timeline.generatedAt + 24 * 60 * MIN);
+    expect(timeline.entries[0]!.at).toBe(timeline.generatedAt);
+    for (const header of [etag, `W/${etag}`, `"other", ${etag}`, "*"]) {
+      const cached = await getTimeline(t, token, { "If-None-Match": header });
+      expect(cached.status).toBe(304);
+      expect(await cached.text()).toBe("");
+      expect(cached.headers.get("ETag")).toBe(etag);
+      expect(cached.headers.get("Cache-Control")).toBe("no-store");
+    }
+    expect((await getTimeline(t, token, { "If-None-Match": '"stale"' })).status).toBe(200);
+    setNow(Date.parse(START) + 10 * MIN);
+    expect((await getTimeline(t, token, { "If-None-Match": etag })).status).toBe(304);
+  });
+
+  test("a confirm changes the version", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    setNow(local("08:00"));
+    await t.mutation(internal.scheduler.tickHousehold, {
+      householdId: f.householdId,
+      now: local("08:00"),
+    });
+    const before = await readTimeline(t, token);
+    await postConfirm(t, token, { instanceId: f.instanceId, pressedAgoMs: 0, via: "widget" });
+    const after = await getTimeline(t, token, { "If-None-Match": `"${before.version}"` });
+    expect(after.status).toBe(200);
+    expect(((await after.json()) as PhoneTimeline).version).not.toBe(before.version);
+  });
+
+  test("shares the 120 requests a minute with the other device routes", async () => {
+    const t = makeBackend();
+    await household(t);
+    const token = await issue(t);
+    for (let i = 0; i < 60; i++) {
+      expect((await getState(t, token)).status).toBe(200);
+      expect((await getTimeline(t, token)).status).toBe(200);
+    }
+    const limited = await getTimeline(t, token);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1);
+    expect(limited.headers.get("Cache-Control")).toBe("no-store");
+    expect((await getState(t, token)).status).toBe(429);
+  });
+
+  test("lists the day's changes with the task's own words", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await addPhoneDay(f);
+    const token = await issue(t);
+    const timeline = await readTimeline(t, token);
+    const ready = await instanceIdOf(f, "Get ready");
+    expect(timeline.entries.map((e) => e.at)).toEqual([
+      timeline.generatedAt,
+      local("08:00"),
+      local("09:00"),
+      local("10:00"),
+      local("12:00"),
+      local("13:00"),
+      local("00:00", "2026-11-14"),
+    ]);
+    expect(timeline.entries[1]!.cards).toEqual([
+      {
+        kind: "task",
+        instanceId: f.instanceId,
+        step: 0,
+        stepCount: 1,
+        stepText: null,
+        label: "Morning pills",
+        sentence: "Take your morning pills.",
+        detail: "1 white tablet",
+        icon: "pills",
+        startsAt: local("08:00"),
+        endsAt: local("09:00"),
+      },
+      expect.objectContaining({ instanceId: ready, step: 0, stepCount: 2, stepText: "Shower" }),
+      expect.objectContaining({ instanceId: ready, step: 1, stepCount: 2, stepText: "Dress" }),
+      { kind: "clear", allDone: false, next: { label: "Lunch pills", startsAt: local("12:00") } },
+    ]);
+    expect(timeline.entries.at(-1)!.cards).toEqual([
+      {
+        kind: "clear",
+        allDone: false,
+        next: { label: "Morning pills", startsAt: local("08:00", "2026-11-14") },
+      },
+    ]);
+  });
+
+  test("predicts what the scheduler and the device state say at each change", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await addPhoneDay(f);
+    const token = await issue(t);
+    const predicted = await readTimeline(t, token);
+    expect(firstCardAgrees(await readState(t, token), predicted.entries[0]!.cards)).toBe(true);
+    for (let i = 1; i < predicted.entries.length; i++) {
+      const entry = predicted.entries[i]!;
+      for (const [now, cards] of [
+        [entry.at - MIN, predicted.entries[i - 1]!.cards],
+        [entry.at, entry.cards],
+      ] as const) {
+        setNow(now);
+        await t.mutation(internal.scheduler.tickHousehold, { householdId: f.householdId, now });
+        expect(firstCardAgrees(await readState(t, token), cards), new Date(now).toISOString()).toBe(
+          true,
+        );
+        expect((await readTimeline(t, token)).entries[0]!.cards).toEqual(cards);
+      }
+    }
+  });
+});
+
+describe("POST /device/confirm from the widget", () => {
+  async function dueAtEight(): Promise<{ f: Fixture; token: string }> {
+    const t = makeBackend();
+    const f = await household(t);
+    await addPhoneDay(f);
+    const token = await issue(t);
+    setNow(local("08:05"));
+    await t.mutation(internal.scheduler.tickHousehold, {
+      householdId: f.householdId,
+      now: local("08:05"),
+    });
+    return { f, token };
+  }
+
+  async function press(
+    f: Fixture,
+    token: string,
+    instanceId: string,
+    step?: number,
+  ): Promise<{ status: string; reason: string | null }> {
+    const res = await postConfirm(f.t, token, { instanceId, pressedAgoMs: 0, via: "widget", step });
+    expect(res.status).toBe(200);
+    const { status, reason } = (await res.json()) as { status: string; reason: string | null };
+    return { status, reason };
+  }
+
+  test("confirms each card in turn, and the timeline moves to the next card", async () => {
+    const { f, token } = await dueAtEight();
+    const ready = await instanceIdOf(f, "Get ready");
+    const firstCard = async () => (await readTimeline(f.t, token)).entries[0]!.cards[0]!;
+    expect(await firstCard()).toMatchObject({ instanceId: f.instanceId, step: 0 });
+    expect(await press(f, token, f.instanceId, 0)).toEqual({ status: "confirmed", reason: null });
+    expect(await firstCard()).toMatchObject({ instanceId: ready, step: 0 });
+    expect(await press(f, token, ready, 0)).toEqual({ status: "advanced", reason: null });
+    expect(await firstCard()).toMatchObject({ instanceId: ready, step: 1 });
+    expect(await press(f, token, ready, 1)).toEqual({ status: "confirmed", reason: null });
+    expect(await firstCard()).toEqual({
+      kind: "clear",
+      allDone: false,
+      next: { label: "Lunch pills", startsAt: local("12:00") },
+    });
+    const row = await f.t.run(async (ctx) => await ctx.db.get(ready));
+    expect(row).toMatchObject({ state: "confirmed", confirmedVia: "widget", currentStep: 1 });
+  });
+
+  test("a repeated press changes nothing", async () => {
+    const { f, token } = await dueAtEight();
+    const ready = await instanceIdOf(f, "Get ready");
+    expect(await press(f, token, ready, 0)).toEqual({ status: "advanced", reason: null });
+    expect(await press(f, token, ready, 0)).toEqual({ status: "advanced", reason: null });
+    expect((await f.t.run(async (ctx) => await ctx.db.get(ready)))!.currentStep).toBe(1);
+    expect(await press(f, token, f.instanceId, 0)).toEqual({ status: "confirmed", reason: null });
+    const confirmed = await f.t.run(async (ctx) => await ctx.db.get(f.instanceId));
+    expect(await press(f, token, f.instanceId, 0)).toEqual({ status: "confirmed", reason: null });
+    expect(await f.t.run(async (ctx) => await ctx.db.get(f.instanceId))).toEqual(confirmed);
+  });
+
+  test("is accepted inside the early hour and refused before it", async () => {
+    const { f, token } = await dueAtEight();
+    const lunch = await instanceIdOf(f, "Lunch pills");
+    setNow(local("10:55"));
+    expect(await press(f, token, lunch)).toEqual({
+      status: "rejected",
+      reason: "This task is not due yet",
+    });
+    setNow(local("11:30"));
+    expect(
+      await (
+        await postConfirm(f.t, token, { instanceId: lunch, pressedAgoMs: 0, via: "button" })
+      ).json(),
+    ).toMatchObject({ status: "rejected", reason: "This task is not due yet" });
+    expect(await press(f, token, lunch)).toEqual({ status: "confirmed", reason: null });
+    expect((await f.t.run(async (ctx) => await ctx.db.get(lunch)))!.state).toBe("confirmed");
   });
 });
 
@@ -981,7 +1267,7 @@ describe("a confirm through the device API is a device confirm", () => {
 });
 
 describe("revokeDeviceToken", () => {
-  test("an editor revokes the token; the device stays paired and can issue a new one", async () => {
+  test("an editor revokes the token; the device stays paired and is issued no new one", async () => {
     const t = makeBackend();
     const f = await household(t);
     const token = await issue(t);
@@ -994,13 +1280,55 @@ describe("revokeDeviceToken", () => {
     expect(row).not.toBeNull();
     expect(row!.tokenHash).toBeUndefined();
     expect(row!.tokenIssuedAt).toBeUndefined();
+    expect(near(row!.tokenRevokedAt, Date.parse(START))).toBe(true);
     expect((await audits(t)).find((a) => a.action === "revoke_device_token")).toMatchObject({
       actorKind: "caregiver",
       actorUserId: "pat",
       entityId: f.phoneId,
       detail: { hadToken: true },
     });
-    expect((await getState(t, await issue(t))).status).toBe(200);
+    await expect(issue(t)).rejects.toThrow(/Pair the device again/);
+    setNow(Date.parse(START) + 2 * 60 * MIN);
+    await expect(issue(t)).rejects.toThrow(/Pair the device again/);
+    expect((await deviceRow(t, f.phoneId))!.tokenHash).toBeUndefined();
+    expect((await audits(t)).filter((a) => a.action === "issue_device_token")).toHaveLength(1);
+  });
+
+  test("caregivers see since when a device's token is revoked", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const asPat = t.withIdentity({ subject: "pat" });
+    const listed = async () =>
+      (await asPat.query(api.households.listDevices, { householdId: f.householdId })).find(
+        (d) => d._id === f.phoneId,
+      )!;
+    expect((await listed()).tokenRevokedAt).toBeUndefined();
+    await asPat.mutation(api.households.revokeDeviceToken, {
+      householdId: f.householdId,
+      deviceId: f.phoneId,
+    });
+    expect(near((await listed()).tokenRevokedAt, Date.parse(START))).toBe(true);
+  });
+
+  test("the phone paired again is issued a token while the revoked pairing stays refused", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await issue(t);
+    const pat = t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.households.revokeDeviceToken, {
+      householdId: f.householdId,
+      deviceId: f.phoneId,
+    });
+    const { code } = await pat.mutation(api.households.createJoinCode, {
+      householdId: f.householdId,
+      grants: "senior_phone",
+    });
+    const paired = await t.mutation(internal.households.pairDevice, { code, userId: "phone-2" });
+    expect(paired.deviceId).not.toBe(f.phoneId);
+    const token = await issue(t, "phone-2");
+    expect((await getState(t, token)).status).toBe(200);
+    expect((await deviceRow(t, paired.deviceId))!.tokenRevokedAt).toBeUndefined();
+    await expect(issue(t)).rejects.toThrow(/Pair the device again/);
   });
 
   test("a viewer, a device and another household's editor are refused", async () => {
@@ -1031,6 +1359,102 @@ describe("revokeDeviceToken", () => {
   });
 });
 
+describe("revokeOwnToken", () => {
+  test("an unpaired phone that pairs again is issued a token", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    await t.withIdentity({ subject: "phone" }).mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await getState(t, token)).status).toBe(401);
+    expect((await deviceRow(t, f.phoneId))!.tokenRevokedAt).toBeUndefined();
+    const { code } = await t
+      .withIdentity({ subject: "pat" })
+      .mutation(api.households.createJoinCode, {
+        householdId: f.householdId,
+        grants: "senior_phone",
+      });
+    await t.mutation(internal.households.pairDevice, { code, userId: "phone-2" });
+    expect((await getState(t, await issue(t, "phone-2"))).status).toBe(200);
+  });
+
+  test("a paired phone revokes its own token and stays paired", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    const token = await issue(t);
+    await t.withIdentity({ subject: "phone" }).mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await getState(t, token)).status).toBe(401);
+    const row = await deviceRow(t, f.phoneId);
+    expect(row).not.toBeNull();
+    expect(row!.tokenHash).toBeUndefined();
+    expect(row!.tokenIssuedAt).toBeUndefined();
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toEqual([
+      expect.objectContaining({
+        householdId: f.householdId,
+        actorKind: "senior_device",
+        actorUserId: "phone",
+        entity: "device",
+        entityId: f.phoneId,
+        detail: { hadToken: true },
+      }),
+    ]);
+    expect((await getState(t, await issue(t))).status).toBe(200);
+  });
+
+  test("a second call finds no token and is audited as such", async () => {
+    const t = makeBackend();
+    await household(t);
+    await issue(t);
+    const phone = t.withIdentity({ subject: "phone" });
+    await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    expect(
+      (await audits(t))
+        .filter((a) => a.action === "revoke_device_token")
+        .map((a) => (a.detail as { hadToken: boolean }).hadToken),
+    ).toEqual([true, false]);
+  });
+
+  test("one device's call leaves every other device's token working", async () => {
+    const t = makeBackend();
+    await household(t);
+    const theirs = await household(t, "z_");
+    const phoneToken = await issue(t);
+    const displayToken = await issue(t, "display");
+    const otherPhoneToken = await issue(t, "z_phone");
+    await t.withIdentity({ subject: "display" }).mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await getState(t, displayToken)).status).toBe(401);
+    expect((await getState(t, phoneToken)).status).toBe(200);
+    expect((await getState(t, otherPhoneToken)).status).toBe(200);
+    expect((await deviceRow(t, theirs.phoneId))!.tokenHash).toBeDefined();
+  });
+
+  test("a device may revoke 10 times an hour, then is refused until the bucket refills", async () => {
+    const t = makeBackend();
+    await household(t);
+    const phone = t.withIdentity({ subject: "phone" });
+    for (let i = 0; i < 10; i++) await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    await expect(phone.mutation(api.deviceApi.revokeOwnToken, {})).rejects.toThrow(
+      /Too many device token revokes/,
+    );
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toHaveLength(10);
+    setNow(Date.parse(START) + 7 * MIN);
+    await phone.mutation(api.deviceApi.revokeOwnToken, {});
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toHaveLength(11);
+  });
+
+  test("a caregiver and a signed-out caller are refused, and no token is revoked", async () => {
+    const t = makeBackend();
+    await household(t);
+    const token = await issue(t);
+    await expect(
+      t.withIdentity({ subject: "pat" }).mutation(api.deviceApi.revokeOwnToken, {}),
+    ).rejects.toThrow(/Only the senior's devices can do this/);
+    await expect(t.mutation(api.deviceApi.revokeOwnToken, {})).rejects.toThrow(/Sign in first/);
+    expect((await getState(t, token)).status).toBe(200);
+    expect((await audits(t)).filter((a) => a.action === "revoke_device_token")).toEqual([]);
+  });
+});
+
 describe("a device removed between the gate and the effect", () => {
   test("every by-token function finds nothing and writes nothing", async () => {
     const t = makeBackend();
@@ -1038,6 +1462,7 @@ describe("a device removed between the gate and the effect", () => {
     const tokenHash = await hashDeviceToken(UNKNOWN_TOKEN);
     expect(await t.mutation(internal.deviceApi.admit, { tokenHash })).toEqual({ kind: "unknown" });
     expect(await t.query(internal.deviceApi.stateByToken, { tokenHash })).toBeNull();
+    expect(await t.query(internal.deviceApi.timelineByToken, { tokenHash })).toBeNull();
     expect(
       await t.mutation(internal.deviceApi.confirmByToken, {
         tokenHash,
@@ -1070,6 +1495,7 @@ describe("unexpected errors", () => {
     vi.spyOn(crypto.subtle, "digest").mockRejectedValue(new Error("boom"));
     for (const res of [
       await getState(t, token),
+      await getTimeline(t, token),
       await postConfirm(t, token, {}),
       await putInfo(t, token, {}),
     ]) {

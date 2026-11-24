@@ -83,6 +83,23 @@ describe("tasks.create", () => {
     });
   });
 
+  test("stores a trimmed screen sentence and treats a blank one as absent", async () => {
+    const f = await setup();
+    const pat = f.t.withIdentity({ subject: "pat" });
+    await pat.mutation(api.tasks.create, {
+      ...base(f),
+      screenSentence: "  Go for a walk.  ",
+    });
+    await pat.mutation(api.tasks.create, {
+      ...base(f),
+      title: "Read",
+      displayLabel: "Read",
+      screenSentence: "   ",
+    });
+    const tasks = await pat.query(api.tasks.list, { householdId: f.householdId });
+    expect(tasks.map((task) => task.screenSentence)).toEqual(["Go for a walk.", undefined]);
+  });
+
   test("keeps an explicit spoken prompt and sorts times", async () => {
     const f = await setup();
     const pat = f.t.withIdentity({ subject: "pat" });
@@ -261,6 +278,82 @@ describe("tasks.update", () => {
     });
     const [task] = await pat.query(api.tasks.list, { householdId: f.householdId });
     expect(task!.spokenPrompt).toBe("Time for Stroll.");
+  });
+
+  describe("screen sentence", () => {
+    async function withSentence() {
+      const f = await setup();
+      const pat = f.t.withIdentity({ subject: "pat" });
+      const taskId = await pat.mutation(api.tasks.create, {
+        ...base(f),
+        screenSentence: "Go for a walk.",
+      });
+      const sentence = async () =>
+        (await pat.query(api.tasks.list, { householdId: f.householdId }))[0]!.screenSentence;
+      return { f, pat, taskId, sentence };
+    }
+
+    test("a new display label clears it", async () => {
+      const { f, pat, taskId, sentence } = await withSentence();
+      await pat.mutation(api.tasks.update, {
+        householdId: f.householdId,
+        taskId,
+        displayLabel: "Stroll",
+      });
+      expect(await sentence()).toBeUndefined();
+    });
+
+    test("a new display label with a new sentence keeps the new sentence", async () => {
+      const { f, pat, taskId, sentence } = await withSentence();
+      await pat.mutation(api.tasks.update, {
+        householdId: f.householdId,
+        taskId,
+        displayLabel: "Stroll",
+        screenSentence: "Take a stroll.",
+      });
+      expect(await sentence()).toBe("Take a stroll.");
+    });
+
+    test("the same display label, or other changes, keep it", async () => {
+      const { f, pat, taskId, sentence } = await withSentence();
+      await pat.mutation(api.tasks.update, {
+        householdId: f.householdId,
+        taskId,
+        displayLabel: " Walk ",
+      });
+      await pat.mutation(api.tasks.update, { householdId: f.householdId, taskId, title: "Stroll" });
+      expect(await sentence()).toBe("Go for a walk.");
+    });
+
+    test("an empty or blank sentence clears it", async () => {
+      const { f, pat, taskId, sentence } = await withSentence();
+      await pat.mutation(api.tasks.update, {
+        householdId: f.householdId,
+        taskId,
+        screenSentence: "",
+      });
+      expect(await sentence()).toBeUndefined();
+    });
+
+    test("a sentence over the cap is refused on create and update, and the cap itself is accepted", async () => {
+      const { f, pat, taskId } = await withSentence();
+      const longest = "x".repeat(60);
+      await pat.mutation(api.tasks.update, {
+        householdId: f.householdId,
+        taskId,
+        screenSentence: longest,
+      });
+      await expect(
+        pat.mutation(api.tasks.update, {
+          householdId: f.householdId,
+          taskId,
+          screenSentence: `${longest}x`,
+        }),
+      ).rejects.toMatchObject({ data: { code: "invalid" } });
+      await expect(
+        pat.mutation(api.tasks.create, { ...base(f), screenSentence: `${longest}x` }),
+      ).rejects.toMatchObject({ data: { code: "invalid" } });
+    });
   });
 
   test("validates the merged task, not just the changed fields", async () => {

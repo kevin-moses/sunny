@@ -4,14 +4,13 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
   actorUserId,
-  findDevice,
   loadHousehold,
   requireEditor,
+  requireDeviceActor,
   requireReader,
   requireSenior,
-  requireUserId,
 } from "./lib/access";
-import type { Actor, CaregiverActor, DeviceActor } from "./lib/access";
+import type { Actor, CaregiverActor } from "./lib/access";
 import { audit } from "./lib/audit";
 import {
   EARLY_CONFIRM_MS,
@@ -102,13 +101,6 @@ async function loadInstance(
   const instance = await ctx.db.get(instanceId);
   if (!instance) throw appError("not_found", "Task instance not found");
   return instance;
-}
-
-async function requireDeviceActor(ctx: QueryCtx): Promise<DeviceActor> {
-  const userId = await requireUserId(ctx);
-  const device = await findDevice(ctx, userId);
-  if (!device) throw appError("forbidden", "Only the senior's devices can do this");
-  return { kind: "senior_device", userId, householdId: device.householdId, device };
 }
 
 function actsForSenior(actor: Actor, householdId: Id<"households">): boolean {

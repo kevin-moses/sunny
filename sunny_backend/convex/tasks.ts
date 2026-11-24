@@ -29,6 +29,7 @@ const createTaskFields = {
   title: v.string(),
   displayLabel: v.string(),
   spokenPrompt: v.optional(v.string()),
+  screenSentence: v.optional(v.string()),
   pillDescription: v.optional(v.string()),
   checklistItems: v.optional(v.array(v.string())),
   times: v.optional(v.array(v.string())),
@@ -50,6 +51,7 @@ const taskChangeFields = {
   title: v.optional(v.string()),
   displayLabel: v.optional(v.string()),
   spokenPrompt: v.optional(v.string()),
+  screenSentence: v.optional(v.string()),
   pillDescription: v.optional(v.union(v.string(), v.null())),
   checklistItems: v.optional(v.array(v.string())),
   times: v.optional(v.array(v.string())),
@@ -114,6 +116,13 @@ export async function createTaskCore(
   return (await ctx.db.get(taskId))!;
 }
 
+function screenSentenceAfter(task: Doc<"tasks">, changes: TaskChanges): string | undefined {
+  if (changes.screenSentence !== undefined) return changes.screenSentence;
+  const relabelled =
+    changes.displayLabel !== undefined && changes.displayLabel.trim() !== task.displayLabel;
+  return relabelled ? undefined : task.screenSentence;
+}
+
 export async function updateTaskCore(
   ctx: MutationCtx,
   actor: Actor,
@@ -130,6 +139,7 @@ export async function updateTaskCore(
     title: changes.title ?? task.title,
     displayLabel: changes.displayLabel ?? clippedLabel(task.displayLabel),
     spokenPrompt: changes.spokenPrompt ?? task.spokenPrompt,
+    screenSentence: screenSentenceAfter(task, changes),
     pillDescription: orUndefined(changes.pillDescription, task.pillDescription),
     checklistItems: changes.checklistItems ?? task.checklistItems,
     times: changes.times ?? task.times,

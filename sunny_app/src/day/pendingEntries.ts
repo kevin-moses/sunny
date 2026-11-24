@@ -28,6 +28,10 @@ export interface PendingUndo {
 
 export type PendingEntry = PendingConfirm | PendingUndo;
 
+export type PressedEntry = Omit<PendingConfirm, 'label'>;
+
+type OverlayEntry = PressedEntry | PendingUndo;
+
 const KNOWN_STATES: Record<DayTask['state'], true> = {
   upcoming: true,
   due: true,
@@ -49,7 +53,7 @@ export function entryWhat(entry: PendingEntry): 'Done' | 'Undo' {
   return entryKind(entry) === 'undo' ? 'Undo' : 'Done';
 }
 
-export function entryTime(entry: PendingEntry): number {
+export function entryTime(entry: OverlayEntry): number {
   return entry.kind === 'undo' ? entry.undoneAt : entry.pressedAt;
 }
 
@@ -96,7 +100,7 @@ function advanced(task: Stepped<DayTask>): DayTask {
   return { ...withStepIndex(task, task.step.index + 1), snoozed: false, snoozedUntil: null };
 }
 
-function pressedOtherStep(task: DayTask, entry: PendingConfirm): boolean {
+function pressedOtherStep(task: DayTask, entry: PressedEntry): boolean {
   return entry.step !== undefined && entry.step !== stepIndex(task);
 }
 
@@ -110,20 +114,28 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+export function isPressedEntry(value: unknown): value is PressedEntry {
+  if (typeof value !== 'object' || value === null) return false;
+  const entry = value as Partial<Record<keyof PendingConfirm, unknown>>;
+  return (
+    entry.kind === undefined &&
+    typeof entry.instanceId === 'string' &&
+    typeof entry.pressId === 'string' &&
+    isFiniteNumber(entry.pressedAt) &&
+    (entry.step === undefined || Number.isInteger(entry.step))
+  );
+}
+
 export function isEntry(value: unknown): value is PendingEntry {
   if (typeof value !== 'object' || value === null) return false;
-  const entry = value as Partial<PendingConfirm> & Partial<Omit<PendingUndo, 'kind'>>;
-  if (typeof entry.instanceId !== 'string' || typeof entry.label !== 'string') return false;
-  if (typeof entry.pressId !== 'string') return false;
-  const kind = (value as { kind?: unknown }).kind;
-  if (kind === undefined) {
-    return (
-      isFiniteNumber(entry.pressedAt) && (entry.step === undefined || isFiniteNumber(entry.step))
-    );
-  }
+  const entry = value as Partial<Record<keyof PendingUndo, unknown>>;
+  if (typeof entry.label !== 'string') return false;
+  if (isPressedEntry(value)) return true;
   const restore = entry.restore as { state?: unknown; confirmable?: unknown } | undefined;
   return (
-    kind === 'undo' &&
+    entry.kind === 'undo' &&
+    typeof entry.instanceId === 'string' &&
+    typeof entry.pressId === 'string' &&
     isFiniteNumber(entry.undoneAt) &&
     typeof restore?.state === 'string' &&
     Object.prototype.hasOwnProperty.call(KNOWN_STATES, restore.state) &&
@@ -160,7 +172,7 @@ export function toUndo(
   };
 }
 
-function replayQueued(task: DayTask, queued: readonly PendingEntry[]): DayTask {
+function replayQueued(task: DayTask, queued: readonly OverlayEntry[]): DayTask {
   let shown = task;
   let confirmPressIds: readonly string[] =
     task.state === 'confirmed' ? (task.confirmPressIds ?? []) : [];
@@ -199,9 +211,17 @@ function replayQueued(task: DayTask, queued: readonly PendingEntry[]): DayTask {
   return shown;
 }
 
-export function applyPending(tasks: DayTask[], entries: readonly PendingEntry[]): DayTask[] {
+export function overlayEntries(
+  own: readonly PendingEntry[],
+  elsewhere: readonly PressedEntry[],
+): readonly OverlayEntry[] {
+  if (elsewhere.length === 0) return own;
+  return [...own, ...elsewhere].sort((a, b) => entryTime(a) - entryTime(b));
+}
+
+export function applyPending(tasks: DayTask[], entries: readonly OverlayEntry[]): DayTask[] {
   if (entries.length === 0) return tasks;
-  const byTask = new Map<string, PendingEntry[]>();
+  const byTask = new Map<string, OverlayEntry[]>();
   for (const entry of entries) {
     byTask.set(entry.instanceId, [...(byTask.get(entry.instanceId) ?? []), entry]);
   }

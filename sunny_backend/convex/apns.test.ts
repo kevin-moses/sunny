@@ -1,7 +1,15 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import { makeBackend } from "./testing.helpers";
-import { resetProviderTokenCache } from "./lib/apnsPayload";
+import {
+  alertMessage,
+  liveActivityEndMessage,
+  resetProviderTokenCache,
+  widgetReloadMessage,
+} from "./lib/apnsPayload";
+import type { PushStyle } from "./lib/apnsPayload";
+import { INSTANCE_ID, UPDATE_TOKEN, WINDOW_START } from "./lib/liveActivityFixtures.helpers";
+import type { ApnsMessage } from "./lib/validators";
 
 const tok = (suffix: string): string => suffix.padStart(64, "0");
 
@@ -96,9 +104,17 @@ beforeEach(async () => {
   await setEnv();
 });
 
+function alert(data?: Record<string, string>, style: PushStyle = {}, body = "Body"): ApnsMessage {
+  return alertMessage("Title", body, data, style, Math.floor(Date.now() / 1000));
+}
+
+async function sendMessages(sends: { token: string; message: ApnsMessage }[]) {
+  return await makeBackend().action(internal.apns.send, { sends });
+}
+
 async function runFull(tokens: string[], data?: Record<string, string>) {
-  const t = makeBackend();
-  return await t.action(internal.apns.send, { tokens, title: "Title", body: "Body", data });
+  const message = alert(data);
+  return await sendMessages(tokens.map((token) => ({ token, message })));
 }
 
 async function run(tokens: string[], data?: Record<string, string>) {
@@ -129,15 +145,8 @@ describe("apns.send", () => {
   });
 
   test("puts the interruption level and category into aps", async () => {
-    const t = makeBackend();
-    await t.action(internal.apns.send, {
-      tokens: [tok("1")],
-      title: "Title",
-      body: "Body",
-      data: { kind: "caregiver_alert" },
-      interruptionLevel: "time-sensitive",
-      category: "caregiver_alert",
-    });
+    const style = { interruptionLevel: "time-sensitive" as const, category: "caregiver_alert" };
+    await sendMessages([{ token: tok("1"), message: alert({ kind: "caregiver_alert" }, style) }]);
     expect(JSON.parse(state.sessions[0]!.requests[0]!.body)).toEqual({
       kind: "caregiver_alert",
       aps: {
@@ -147,6 +156,55 @@ describe("apns.send", () => {
         category: "caregiver_alert",
       },
     });
+  });
+
+  test("each send goes out with its own message, headers and token", async () => {
+    const content = {
+      card: {
+        instanceId: INSTANCE_ID,
+        step: 0,
+        stepCount: 1,
+        stepText: null,
+        label: "Morning pills",
+        sentence: null,
+        detail: null,
+        icon: "pills" as const,
+        startsAt: WINDOW_START,
+        endsAt: WINDOW_START + 3_600_000,
+      },
+      nextSteps: [],
+      closed: { kind: "done" as const, at: WINDOW_START + 60_000 },
+    };
+    const end = liveActivityEndMessage(
+      { kind: "end", token: UPDATE_TOKEN, content, reason: "confirmed", receiptUntil: null },
+      WINDOW_START,
+      WINDOW_START / 1000 + 61,
+    );
+    const reload = widgetReloadMessage();
+    const { results } = await sendMessages([
+      { token: UPDATE_TOKEN, message: end },
+      { token: tok("2"), message: reload },
+    ]);
+    expect(results.map((r) => [r.token, r.outcome])).toEqual([
+      [UPDATE_TOKEN, "sent"],
+      [tok("2"), "sent"],
+    ]);
+    const [first, second] = state.sessions[0]!.requests;
+    expect(first!.headers).toMatchObject({
+      ":path": `/3/device/${UPDATE_TOKEN}`,
+      "apns-topic": "com.kmsunny.sunny.push-type.liveactivity",
+      "apns-push-type": "liveactivity",
+      "apns-priority": "10",
+      "apns-expiration": String(WINDOW_START / 1000 + 12 * 3600),
+    });
+    expect(first!.body).toBe(end.body);
+    expect(second!.headers).toMatchObject({
+      ":path": `/3/device/${tok("2")}`,
+      "apns-topic": "com.kmsunny.sunny.push-type.widgets",
+      "apns-push-type": "widgets",
+      "apns-expiration": "0",
+    });
+    expect(second!.body).toBe(reload.body);
   });
 
   test("uses the production host when configured", async () => {
@@ -242,8 +300,7 @@ describe("apns.send", () => {
   });
 
   test("a long body is cut to fit the payload limit", async () => {
-    const t = makeBackend();
-    await t.action(internal.apns.send, { tokens: [tok("a")], title: "T", body: "x".repeat(9000) });
+    await sendMessages([{ token: tok("a"), message: alert(undefined, {}, "x".repeat(9000)) }]);
     expect(
       new TextEncoder().encode(state.sessions[0]!.requests[0]!.body).length,
     ).toBeLessThanOrEqual(4096);

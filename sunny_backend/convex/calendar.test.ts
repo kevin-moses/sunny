@@ -809,6 +809,7 @@ describe("dayView", () => {
         title: "Morning pills",
         displayLabel: "Morning pills",
         spokenPrompt: "Time for your morning pills.",
+        screenSentence: "Take your morning pills.",
         checklistItems: [],
         times: ["08:00", "20:00"],
         windowMinutes: 60,
@@ -841,6 +842,10 @@ describe("dayView", () => {
     const view = await viewAt(w, "2027-03-18T13:00:00Z");
     expect(view.tasks.map((t) => t.scheduledTime)).toEqual(["08:00", "20:00"]);
     expect(view.tasks[0]!.displayLabel).toBe("Morning pills");
+    expect(view.tasks.map((t) => t.screenSentence)).toEqual([
+      "Take your morning pills.",
+      "Take your morning pills.",
+    ]);
   });
 
   test("counts the senior prompts sent for each instance", async () => {

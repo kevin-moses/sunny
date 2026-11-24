@@ -3,6 +3,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
+import { revokeTokenOf } from "./deviceApi";
 import {
   ALREADY_IN_HOUSEHOLD,
   findDevice,
@@ -18,7 +19,6 @@ import {
   requireReader,
   requireUserId,
 } from "./lib/access";
-import { audit } from "./lib/audit";
 import { dropMemberConnections } from "./lib/calendarSync";
 import { appError } from "./lib/errors";
 import {
@@ -27,6 +27,7 @@ import {
   updateHouseholdCore,
 } from "./lib/householdSettings";
 import { isValidDeviceToken } from "./lib/apnsPayload";
+import { phoneRevoked } from "./lib/liveActivitySync";
 import { requireNonBlank } from "./lib/text";
 import { joinGrant, memberRole } from "./lib/validators";
 import type { DeviceKind, JoinGrant, MemberRole } from "./lib/validators";
@@ -395,6 +396,7 @@ export const removeDevice = mutation({
       .withIndex("by_user", (q) => q.eq("userId", device.userId))
       .collect();
     for (const token of tokens) await ctx.db.delete(token._id);
+    await phoneRevoked(ctx, device._id);
     await ctx.scheduler.runAfter(0, internal.pairing.deleteClerkUser, { userId: device.userId });
     return null;
   },
@@ -408,15 +410,8 @@ export const revokeDeviceToken = mutation({
     if (!device || device.householdId !== args.householdId) {
       throw appError("not_found", "Device not found");
     }
-    await ctx.db.patch(device._id, { tokenHash: undefined, tokenIssuedAt: undefined });
-    await audit(ctx, {
-      householdId: args.householdId,
-      actor,
-      action: "revoke_device_token",
-      entity: "device",
-      entityId: device._id,
-      detail: { hadToken: device.tokenHash !== undefined },
-    });
+    await ctx.db.patch(device._id, { tokenRevokedAt: Date.now() });
+    await revokeTokenOf(ctx, actor, device);
     return null;
   },
 });
@@ -432,9 +427,10 @@ async function mayTakeOverToken(
   callerId: string,
 ): Promise<boolean> {
   if (await isOrphanedUser(ctx, ownerId)) return true;
-  if (await findDevice(ctx, ownerId)) return false;
+  const callerDevice = await findDevice(ctx, callerId);
+  if (await findDevice(ctx, ownerId)) return callerDevice !== null;
   const identity = await ctx.auth.getUserIdentity();
-  return !isDeviceAccount(identity, await findDevice(ctx, callerId));
+  return !isDeviceAccount(identity, callerDevice);
 }
 
 export const registerPushToken = mutation({

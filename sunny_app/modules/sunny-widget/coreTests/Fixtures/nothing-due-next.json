@@ -1,0 +1,36 @@
+{
+  "version": "v-nothing-due-next",
+  "generatedAt": 1795098600000,
+  "timezone": "America/New_York",
+  "until": 1795185000000,
+  "entries": [
+    {
+      "at": 1795098600000,
+      "cards": [
+        {
+          "kind": "clear",
+          "allDone": false,
+          "next": { "label": "Lunch", "startsAt": 1795109400000 }
+        }
+      ]
+    },
+    {
+      "at": 1795109400000,
+      "cards": [
+        {
+          "kind": "task",
+          "instanceId": "inst-lunch",
+          "step": 0,
+          "stepCount": 1,
+          "stepText": null,
+          "label": "Lunch",
+          "sentence": "Time for lunch.",
+          "detail": null,
+          "startsAt": 1795109400000,
+          "endsAt": 1795114800000
+        },
+        { "kind": "clear", "allDone": true, "next": null }
+      ]
+    }
+  ]
+}
