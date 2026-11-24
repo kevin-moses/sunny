@@ -16,20 +16,23 @@ SDK. The backend is Convex (see `../sunny_backend`) with Clerk for sign-in.
 - **Done (phone):** under the header the phone shows one large Done button for the task to
   confirm: the first due or escalated task, else the first upcoming task the backend marks
   `confirmable` (up to 60 minutes early; the day view computes it with the confirm mutation's
-  own rule), shown as "Coming up at ..." with a "Done early" button. A press is stored in a
-  durable queue (AsyncStorage) first, then the screen says "Checked off" and the task shows
-  checked; the queue sends it with `instances.confirmPressedTask` (`via: "phone_app"`,
-  `pressedAgoMs`, the press's age at send time) now, on reconnect, or at the next launch, so it
-  works offline (never while the socket is down). The server records the press time, and `confirmReceivedAt` when it arrived more
-  than 5 minutes later (caregivers see "sent at ..."). The button is withdrawn for 4 s after a
-  press (an early task for 10 s). A press the server permanently refuses is dropped and logged
-  as an error; the senior sees nothing and the row follows the server. Unpairing clears the queue.
-  While the phone is offline the server does not know, so reprompts and caregiver alerts still
-  fire. Offline across midnight the cached day is yesterday's, so no Done card is offered until
-  today's list loads; an early task is only offered while connected. The server judges a
-  replayed press as of when it was pressed: refused (and audited as `press_not_applied`) if
-  pressed more than 60 minutes before the task's window or more than 3 hours after it. Logic in
-  `src/day/useDoneAction.ts` and `src/day/pendingConfirms.ts`.
+  own rule), shown as "Coming up at ..." with a "Done early" button. A press is stored first in
+  the phone's press log, which the app shares with the widget and the Live Activity. The screen
+  then shows "Noted" with an Undo for 30 seconds and draws the task as done. The log sends the
+  press with `POST /device/confirm` (its press id, `via: "phone_app"` and how long ago it was
+  pressed) right away, every 30 seconds while something is unsent, when the connection comes
+  back and when the app comes to the foreground, so a press made offline is sent later in
+  order. An Undo is stored in the same log and sent after its press with `POST /device/undo`.
+  The server records the press time, and `confirmReceivedAt` when it arrived more than 5
+  minutes later (caregivers see "sent at ..."). A press the server refuses is not drawn after
+  its answer, and the row follows the server. With no device token nothing is stored, and
+  unpairing clears the log. While the phone is offline the server does not know, so reprompts
+  and caregiver alerts still fire. Offline across midnight the cached day is yesterday's, so no
+  Done card is offered until today's list loads; an early task is only offered while connected.
+  The server judges a replayed press as of when it was pressed: refused (and audited as
+  `press_not_applied`) if pressed more than 60 minutes before the task's window or more than 3
+  hours after it. Logic in `src/day/useDoneAction.ts`, `src/day/pressOverlay.ts` and
+  `src/widget/pressStore.ts`; the log itself is `PressQueue.swift` in `modules/sunny-widget`.
 - **Talk:** the phone joins a LiveKit room with a token from the `voice.livekitToken` action.
   The agent can call two RPCs on the phone: `findContact` (contacts search) and `sendMessage`
   (opens the SMS composer). App logs are forwarded to the agent on the `ios.log` data topic

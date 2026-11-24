@@ -20,6 +20,7 @@ import {
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
 const mockSend = jest.fn<AnyMock>();
+const mockResend = jest.fn<AnyMock>();
 const mockRead = jest.fn<AnyMock>();
 const mockClear = jest.fn<AnyMock>();
 const mockShow = jest.fn<AnyMock>();
@@ -41,6 +42,7 @@ jest.mock('../pressStore', () => ({
   },
   readPressLog: () => mockRead(),
   sendPresses: () => mockSend(),
+  resendPresses: () => mockResend(),
   showOnSurfaces: () => mockShow(),
 }));
 
@@ -101,6 +103,7 @@ beforeEach(() => {
   mockPresses = makeFakePressStore();
   mockConnected = true;
   mockSend.mockResolvedValue(undefined);
+  mockResend.mockResolvedValue(undefined);
   mockRead.mockResolvedValue(undefined);
   mockShow.mockResolvedValue(undefined);
   mockClear.mockResolvedValue(undefined);
@@ -144,6 +147,7 @@ describe('useWidgetSync', () => {
     render(<SyncProbe decision={homeDisplay} />);
     expect(mockClear).toHaveBeenCalledTimes(1);
     expect(mockSend).not.toHaveBeenCalled();
+    expect(mockResend).not.toHaveBeenCalled();
     expect(mockRead).not.toHaveBeenCalled();
   });
 
@@ -153,20 +157,23 @@ describe('useWidgetSync', () => {
     expect(mockClear).not.toHaveBeenCalled();
   });
 
-  it('sends again when the connection comes back', () => {
+  it('resends with a flush only when the connection comes back', () => {
     mockConnected = false;
     render(<SyncProbe decision={seniorPhone} />);
+    expect(mockResend).not.toHaveBeenCalled();
     mockSend.mockClear();
     mockConnected = true;
     render(<SyncProbe decision={seniorPhone} />);
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockResend).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('sends every 30 seconds while a press or an undo is unsent, and stops once all are answered', () => {
+  it('resends every 30 seconds while a press or an undo is unsent, and stops once all are answered', () => {
     render(<SyncProbe decision={seniorPhone} />);
     mockSend.mockClear();
+    mockResend.mockClear();
     act(() => void jest.advanceTimersByTime(3 * RETRY_MS));
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockResend).not.toHaveBeenCalled();
     let pressId = '';
     act(() => {
       pressId = mockPresses.pressedElsewhere({
@@ -176,10 +183,11 @@ describe('useWidgetSync', () => {
       }).pressId;
     });
     act(() => void jest.advanceTimersByTime(2 * RETRY_MS));
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockResend).toHaveBeenCalledTimes(2);
     act(() => mockPresses.answer(pressId));
     act(() => void jest.advanceTimersByTime(2 * RETRY_MS));
-    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(mockResend).toHaveBeenCalledTimes(2);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('does not keep sending for a home display', () => {
@@ -189,6 +197,7 @@ describe('useWidgetSync', () => {
     render(<SyncProbe decision={homeDisplay} />);
     act(() => void jest.advanceTimersByTime(2 * RETRY_MS));
     expect(mockSend).not.toHaveBeenCalled();
+    expect(mockResend).not.toHaveBeenCalled();
   });
 
   it('logs a press that has waited ten minutes while online, then once an hour', () => {

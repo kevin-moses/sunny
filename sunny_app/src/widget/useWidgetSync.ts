@@ -7,7 +7,13 @@ import { oldestUnsentAt } from '../day/pressLog';
 import type { DayViewData } from '../day/types';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
-import { phonePresses, readPressLog, sendPresses, showOnSurfaces } from './pressStore';
+import {
+  phonePresses,
+  readPressLog,
+  resendPresses,
+  sendPresses,
+  showOnSurfaces,
+} from './pressStore';
 import { clearWidget, widgetHolderOf, surfaceSyncKey } from './widgetSync';
 
 export const RETRY_MS = 30_000;
@@ -22,12 +28,12 @@ function useResend(sending: boolean): void {
   const unsentSince = useMemo(() => oldestUnsentAt(seen.presses), [seen]);
 
   useEffect(() => {
-    if (sending && isWebSocketConnected) void sendPresses();
+    if (sending && isWebSocketConnected) void resendPresses();
   }, [sending, isWebSocketConnected]);
 
   useEffect(() => {
     if (!sending || unsentSince === null) return;
-    const timer = setInterval(() => void sendPresses(), RETRY_MS);
+    const timer = setInterval(() => void resendPresses(), RETRY_MS);
     return () => clearInterval(timer);
   }, [sending, unsentSince]);
 

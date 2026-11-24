@@ -10,7 +10,6 @@ export interface FakePressStore extends PressStore {
   log: () => readonly LoggedPress[];
   pressedElsewhere: (press: Pick<LoggedPress, 'instanceId' | 'step' | 'pressedAt'>) => LoggedPress;
   answer: (pressId: string, answer?: LoggedAnswer) => void;
-  answerUndo: (pressId: string, answer?: LoggedAnswer) => void;
   failWrites: (fail: boolean) => void;
   unpair: () => void;
   holdWrites: () => () => void;
@@ -65,10 +64,6 @@ export function makeFakePressStore(): FakePressStore {
     pressedElsewhere: append,
     answer: (pressId, answer = { applied: true }) =>
       change(pressId, (press) => ({ ...press, answer })),
-    answerUndo: (pressId, answer = { applied: true }) =>
-      change(pressId, (press) =>
-        press.undo ? { ...press, undo: { ...press.undo, answer } } : press,
-      ),
     failWrites: (fail) => {
       failing = fail;
     },

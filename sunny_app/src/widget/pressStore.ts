@@ -2,11 +2,19 @@ import SunnyWidget from '../../modules/sunny-widget';
 import { isLoggedPress, PressNotSaved, type PressStore, type SeenLog } from '../day/pressLog';
 import { errorMessage } from '../errors';
 import { logger } from '../logging/logger';
-import { ensureWidgetToken, syncSurfaces, syncWidget, widgetTokenRefused } from './widgetSync';
+import {
+  ensureWidgetToken,
+  flushWidgetPresses,
+  syncSurfaces,
+  syncWidget,
+  type WidgetToken,
+} from './widgetSync';
+
+type SendRun = 'flush' | 'sync';
 
 let seen: SeenLog = { presses: [], at: 0 };
 let sending: Promise<void> | null = null;
-let sendAgain = false;
+let folded: SendRun | null = null;
 let reads = 0;
 const listeners = new Set<() => void>();
 
@@ -27,44 +35,54 @@ export async function readPressLog(): Promise<void> {
   listeners.forEach((listener) => listener());
 }
 
-export function sendPresses(): Promise<void> {
+function send(run: SendRun): Promise<void> {
   if (sending !== null) {
-    sendAgain = true;
+    folded = folded === 'sync' || run === 'sync' ? 'sync' : 'flush';
     return sending;
   }
-  sending = syncWidget()
+  sending = (run === 'sync' ? syncWidget() : flushWidgetPresses())
     .finally(readPressLog)
     .finally(() => {
       sending = null;
-      if (!sendAgain) return;
-      sendAgain = false;
-      void sendPresses();
+      const next = folded;
+      folded = null;
+      if (next !== null) void send(next);
     });
   return sending;
+}
+
+export function sendPresses(): Promise<void> {
+  return send('sync');
+}
+
+export function resendPresses(): Promise<void> {
+  return send('flush');
 }
 
 export function showOnSurfaces(): Promise<void> {
   return syncSurfaces().finally(readPressLog);
 }
 
-async function tokenIssued(): Promise<boolean> {
+async function tokenForPress(): Promise<WidgetToken> {
   try {
     return await ensureWidgetToken();
   } catch (e) {
     logger.warning('PressLog', `Could not get a device token for a press: ${errorMessage(e)}`);
-    return false;
+    return 'unavailable';
   }
 }
 
 async function storePress(instanceId: string, step: number): Promise<void> {
   let status = await SunnyWidget.pressDone(instanceId, step);
-  if (status === 'noCredentials' && (await tokenIssued())) {
+  if (status === 'noCredentials') {
+    const token = await tokenForPress();
+    if (token === 'refused') throw new PressNotSaved('press', 'noCredentials');
+    if (token === 'unavailable') throw new PressNotSaved('press', 'notSaved');
     status = await SunnyWidget.pressDone(instanceId, step);
   }
-  if (status === 'noCredentials') {
-    throw new PressNotSaved('press', widgetTokenRefused() ? 'noCredentials' : 'notSaved');
+  if (status === 'noCredentials' || status === 'notSaved') {
+    throw new PressNotSaved('press', 'notSaved');
   }
-  if (status === 'notSaved') throw new PressNotSaved('press', status);
   await readPressLog();
   void sendPresses();
 }

@@ -9,9 +9,9 @@ const mockNative = {
   pressDone: jest.fn<AnyMock>(),
   pressUndo: jest.fn<AnyMock>(),
 };
-const mockEnsureToken = jest.fn<() => Promise<boolean>>();
-let mockTokenRefused = false;
+const mockEnsureToken = jest.fn<() => Promise<'ready' | 'refused' | 'unavailable'>>();
 const mockSyncWidget = jest.fn<() => Promise<void>>();
+const mockFlushWidgetPresses = jest.fn<() => Promise<void>>();
 const mockSyncSurfaces = jest.fn<() => Promise<void>>();
 const mockLogger = { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() };
 
@@ -19,8 +19,8 @@ jest.mock('../../../modules/sunny-widget', () => ({ __esModule: true, default: m
 
 jest.mock('../widgetSync', () => ({
   ensureWidgetToken: () => mockEnsureToken(),
-  widgetTokenRefused: () => mockTokenRefused,
   syncWidget: () => mockSyncWidget(),
+  flushWidgetPresses: () => mockFlushWidgetPresses(),
   syncSurfaces: () => mockSyncSurfaces(),
 }));
 
@@ -49,9 +49,9 @@ beforeEach(() => {
   mockNative.pressLog.mockResolvedValue([]);
   mockNative.pressDone.mockResolvedValue('stored');
   mockNative.pressUndo.mockResolvedValue('stored');
-  mockEnsureToken.mockResolvedValue(true);
-  mockTokenRefused = false;
+  mockEnsureToken.mockResolvedValue('ready');
   mockSyncWidget.mockResolvedValue(undefined);
+  mockFlushWidgetPresses.mockResolvedValue(undefined);
   mockSyncSurfaces.mockResolvedValue(undefined);
 });
 
@@ -133,16 +133,34 @@ describe('storing a press', () => {
   it('refuses the press as unpaired when the server refuses this pairing a token', async () => {
     const { phonePresses } = loadModule();
     mockNative.pressDone.mockResolvedValue('noCredentials');
-    mockEnsureToken.mockImplementation(async () => {
-      mockTokenRefused = true;
-      return false;
-    });
+    mockEnsureToken.mockResolvedValue('refused');
     await expect(phonePresses.storePress('inst1', 0)).rejects.toMatchObject({
       name: 'PressNotSaved',
       noCredentials: true,
     });
     expect(mockNative.pressDone).toHaveBeenCalledTimes(1);
     expect(mockSyncWidget).not.toHaveBeenCalled();
+  });
+
+  it('refuses the press as not saved when no token can be had now', async () => {
+    const { phonePresses } = loadModule();
+    mockNative.pressDone.mockResolvedValue('noCredentials');
+    mockEnsureToken.mockResolvedValue('unavailable');
+    await expect(phonePresses.storePress('inst1', 0)).rejects.toMatchObject({
+      name: 'PressNotSaved',
+      noCredentials: false,
+    });
+    expect(mockNative.pressDone).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses the press as not saved when the second try finds no token either', async () => {
+    const { phonePresses } = loadModule();
+    mockNative.pressDone.mockResolvedValue('noCredentials');
+    await expect(phonePresses.storePress('inst1', 0)).rejects.toMatchObject({
+      name: 'PressNotSaved',
+      noCredentials: false,
+    });
+    expect(mockNative.pressDone).toHaveBeenCalledTimes(2);
   });
 
   it('refuses the press as not saved when a token could not be asked for', async () => {
@@ -185,11 +203,21 @@ describe('storing an undo', () => {
   });
 });
 
-describe('sendPresses', () => {
+describe('sendPresses and resendPresses', () => {
   it('reads the log once the sync is over', async () => {
     const { sendPresses } = loadModule();
     await sendPresses();
     expect(mockSyncWidget.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNative.pressLog.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('resends with a flush only, then reads the log', async () => {
+    const { resendPresses } = loadModule();
+    await resendPresses();
+    expect(mockFlushWidgetPresses).toHaveBeenCalledTimes(1);
+    expect(mockSyncWidget).not.toHaveBeenCalled();
+    expect(mockFlushWidgetPresses.mock.invocationCallOrder[0]).toBeLessThan(
       mockNative.pressLog.mock.invocationCallOrder[0]!,
     );
   });
@@ -208,6 +236,36 @@ describe('sendPresses', () => {
     expect(mockSyncWidget).toHaveBeenCalledTimes(2);
     await settle();
     expect(mockSyncWidget).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one guard: a resend during a sync waits and becomes one flush', async () => {
+    const { resendPresses, sendPresses } = loadModule();
+    let finish!: () => void;
+    mockSyncWidget.mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)));
+    const first = sendPresses();
+    void resendPresses();
+    void resendPresses();
+    expect(mockFlushWidgetPresses).not.toHaveBeenCalled();
+    finish();
+    await first;
+    await settle();
+    expect(mockSyncWidget).toHaveBeenCalledTimes(1);
+    expect(mockFlushWidgetPresses).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes the folded run a full sync when any folded request asked for one', async () => {
+    const { resendPresses, sendPresses } = loadModule();
+    let finish!: () => void;
+    mockFlushWidgetPresses.mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)));
+    const first = resendPresses();
+    void resendPresses();
+    void sendPresses();
+    void resendPresses();
+    finish();
+    await first;
+    await settle();
+    expect(mockFlushWidgetPresses).toHaveBeenCalledTimes(1);
+    expect(mockSyncWidget).toHaveBeenCalledTimes(1);
   });
 
   it('reads the log even when the sync fails', async () => {

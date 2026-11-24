@@ -49,7 +49,6 @@ type Block = 'none' | 'settle' | 'held' | 'early';
 
 interface Phase {
   block: Block;
-  undoOpen: boolean;
   changesAt: number | null;
 }
 
@@ -58,7 +57,7 @@ interface Line {
   instanceId: string;
 }
 
-const AT_REST: Phase = { block: 'none', undoOpen: false, changesAt: null };
+const AT_REST: Phase = { block: 'none', changesAt: null };
 
 function blocks(block: Block, target: DayTask | null): boolean {
   return (
@@ -104,11 +103,10 @@ export function phaseAfter(pressed: Pressed | null, now: number): Phase {
   const age = now - pressedAt;
   if (age >= UNDO_MS) return AT_REST;
   const undoEnds = pressedAt + UNDO_MS;
-  if (!pressed.stepFollows) return { block: 'held', undoOpen: true, changesAt: undoEnds };
-  if (age < SETTLE_MS) return { block: 'settle', undoOpen: true, changesAt: pressedAt + SETTLE_MS };
-  if (age < MESSAGE_MS)
-    return { block: 'early', undoOpen: true, changesAt: pressedAt + MESSAGE_MS };
-  return { block: 'none', undoOpen: true, changesAt: undoEnds };
+  if (!pressed.stepFollows) return { block: 'held', changesAt: undoEnds };
+  if (age < SETTLE_MS) return { block: 'settle', changesAt: pressedAt + SETTLE_MS };
+  if (age < MESSAGE_MS) return { block: 'early', changesAt: pressedAt + MESSAGE_MS };
+  return { block: 'none', changesAt: undoEnds };
 }
 
 export function useDoneAction(
@@ -133,7 +131,7 @@ export function useDoneAction(
 
   const pressed = useMemo(() => lastPressed(seen.presses, shownTasks), [seen, shownTasks]);
   const phase = phaseAfter(pressed, Math.max(seen.at, tickedAt));
-  const offered = phase.undoOpen && pressed !== null && undoing !== pressed.press.pressId;
+  const offered = phase.changesAt !== null && pressed !== null && undoing !== pressed.press.pressId;
   const unsent = isOffline && pressed?.press.answer === undefined;
 
   useEffect(() => {
@@ -229,7 +227,7 @@ export function useDoneAction(
 
   const pressUndo = (): void => {
     const current = lastPressed(presses.getSeen().presses, latest.current.shownTasks);
-    if (current === null || !phaseAfter(current, Date.now()).undoOpen) return;
+    if (current === null || phaseAfter(current, Date.now()).changesAt === null) return;
     if (undoInFlight.current !== null) return;
     undoInFlight.current = current.press.pressId;
     setUndoing(current.press.pressId);
