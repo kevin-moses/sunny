@@ -53,40 +53,19 @@ public final class SunnyWidgetModule: Module {
             return await sync.replayPresses(timeout: WidgetSync.pressTimeout).rawValue
         }
 
-        AsyncFunction("unsentPresses") { () -> [[String: Any]] in
-            (WidgetSync.live()?.unsentPresses() ?? []).map { press in
-                [
-                    "pressId": press.id.uuidString,
-                    "instanceId": press.instanceId,
-                    "step": press.step,
-                    "pressedAt": epochMs(press.pressedAt),
-                ]
-            }
+        AsyncFunction("pressLog") { () -> [[String: Any]] in
+            (WidgetSync.live()?.pressLog() ?? []).map(PressLogEntry.json)
         }
 
-        AsyncFunction("markPressed") { (pressId: String, instanceId: String, step: Int, pressedAt: Double) async throws in
+        AsyncFunction("pressDone") { (instanceId: String, step: Int) async throws -> String in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
-            guard let id = UUID(uuidString: pressId) else { throw BridgeError.badPressId() }
-            try await PushStateReporter.shared.markAppPress(
-                sync,
-                id: id,
-                instanceId: instanceId,
-                step: step,
-                pressedAt: date(fromEpochMs: pressedAt)
-            )
+            return PressLogEntry.status(await sync.storeAppPress(instanceId: instanceId, step: step, in: ActivityKitStore()))
         }
 
-        AsyncFunction("answerPress") { (pressId: String) throws in
+        AsyncFunction("pressUndo") { (pressId: String) throws -> String in
             guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
             guard let id = UUID(uuidString: pressId) else { throw BridgeError.badPressId() }
-            sync.answerAppPress(id: id)
-        }
-
-        AsyncFunction("withdrawPress") { (pressId: String) throws in
-            guard let sync = WidgetSync.live() else { throw BridgeError.notConfigured() }
-            guard let id = UUID(uuidString: pressId) else { throw BridgeError.badPressId() }
-            sync.withdrawAppPress(id: id)
-            WidgetCenter.shared.reloadAllTimelines()
+            return sync.storeUndo(ofPress: id).rawValue
         }
     }
 }

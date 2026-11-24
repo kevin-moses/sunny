@@ -4,6 +4,7 @@ import {
   getState as deviceState,
   getTimeline as deviceTimeline,
   putInfo as deviceInfo,
+  undo as deviceUndo,
 } from "./deviceApi";
 import { getFrame as deviceFrame } from "./deviceFrame";
 import { callback as googleCallback, start as googleStart } from "./googleCalendar";
@@ -21,6 +22,7 @@ http.route({ path: "/device/state", method: "GET", handler: deviceState });
 http.route({ path: "/device/timeline", method: "GET", handler: deviceTimeline });
 http.route({ path: "/device/frame", method: "GET", handler: deviceFrame });
 http.route({ path: "/device/confirm", method: "POST", handler: deviceConfirm });
+http.route({ path: "/device/undo", method: "POST", handler: deviceUndo });
 http.route({ path: "/device/info", method: "PUT", handler: deviceInfo });
 http.route({ path: "/device/push-state", method: "PUT", handler: devicePushState });
 

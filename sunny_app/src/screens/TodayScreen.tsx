@@ -1,14 +1,12 @@
 import { useConvexConnectionState } from 'convex/react';
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { buildAgenda } from '../day/format';
-import { confirmQueue } from '../day/pendingConfirms';
-import { applyPending, overlayEntries } from '../day/pendingEntries';
+import { applyPresses, overlayEntries } from '../day/pressOverlay';
 import type { DayViewState } from '../day/useDayView';
 import { dayIsCurrent, doneTarget, STALE_DAY_MESSAGE, useDoneAction } from '../day/useDoneAction';
-import { usePendingConfirms } from '../day/usePendingConfirms';
 import { useTick } from '../day/useTick';
 import { usePaperFonts } from '../display/theme';
 import { dayRows, nextLine, screenMode } from '../phone/model';
@@ -22,7 +20,7 @@ import {
 } from '../phone/PhoneParts';
 import { layout, paper } from '../phone/theme';
 import { TalkButton } from '../voice/TalkButton';
-import { useUnsentWidgetPresses } from '../widget/sharedPresses';
+import { phonePresses } from '../widget/pressStore';
 
 const TICK_MS = 30_000;
 
@@ -61,14 +59,16 @@ export function TodayScreen({ dayView }: { dayView: DayViewState }) {
   const fontsReady = usePaperFonts();
   const { isWebSocketConnected } = useConvexConnectionState();
   const now = useTick(TICK_MS);
-  const queued = usePendingConfirms(confirmQueue);
-  const elsewhere = useUnsentWidgetPresses();
-  const pressed = useMemo(() => overlayEntries(queued, elsewhere), [queued, elsewhere]);
-  const tasks = useMemo(() => applyPending(day?.tasks ?? [], pressed), [day, pressed]);
+  const seen = useSyncExternalStore(phonePresses.subscribe, phonePresses.getSeen);
+  const tasks = useMemo(() => {
+    if (day === null) return [];
+    const pressed = overlayEntries(seen.presses, day.answeredPresses ?? 0);
+    return applyPresses(day.tasks, pressed);
+  }, [day, seen]);
   const agenda = useMemo(() => buildAgenda(day === null ? null : { ...day, tasks }), [day, tasks]);
   const stale = day !== null && !dayIsCurrent(day, now);
   const target = stale ? null : doneTarget(tasks, isWebSocketConnected);
-  const done = useDoneAction(target, isOffline, confirmQueue, tasks);
+  const done = useDoneAction(target, isOffline, phonePresses, tasks);
   const shown = day === null ? null : done.task;
   const rows = useMemo(() => dayRows(agenda, shown, now), [agenda, shown, now]);
 

@@ -10,119 +10,249 @@ final class PressQueueTests: XCTestCase {
         Press(instanceId: instance, step: step, via: .widget, pressedAt: start.addingTimeInterval(offset))
     }
 
-    func testAppendsOneFilePerPressAndListsThemInPressOrder() throws {
+    private func undo(_ press: Press, at offset: TimeInterval) -> PressUndo {
+        PressUndo(pressId: press.id, instanceId: press.instanceId, undoneAt: start.addingTimeInterval(offset))
+    }
+
+    private func answer(at offset: TimeInterval, applied: Bool = true, count: Int? = nil) -> PressAnswer {
+        PressAnswer(at: start.addingTimeInterval(offset), applied: applied, answeredPresses: count)
+    }
+
+    private func logFiles(_ directory: URL) throws -> Set<String> {
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("pressLog").path)
+        return Set(names).subtracting(["staging"])
+    }
+
+    func testKeepsOneFilePerPressAndSendsThemInPressOrder() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
         let later = press("b", at: 10)
         let earlier = press("a", at: 5)
         try queue.append(later)
         try queue.append(earlier)
-        XCTAssertEqual(queue.pending(), [earlier, later])
-        let files = try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("presses").path)
-        XCTAssertEqual(Set(files), [earlier.id.uuidString + ".json", later.id.uuidString + ".json"])
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("staging").path), [])
+        XCTAssertEqual(queue.unsent(), [.confirm(earlier), .confirm(later)])
+        XCTAssertEqual(try logFiles(directory), [earlier.id.uuidString + ".press.json", later.id.uuidString + ".press.json"])
+        let staging = directory.appendingPathComponent("pressLog/staging")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), [])
     }
 
-    func testAnAnsweredPressLeavesTheQueueAndOnlyItsOwnFileGoes() throws {
+    func testAnAnsweredPressIsNotSentAgainAndStaysInTheLogWithItsAnswer() throws {
         let queue = PressQueue(directory: try temporaryDirectory())
         let first = press("a")
         let second = press("b", at: 1)
         try queue.append(first)
         try queue.append(second)
-        queue.answered(first.id, at: start.addingTimeInterval(2))
-        XCTAssertEqual(queue.pending(), [second])
+        queue.answered(.confirm(first), with: answer(at: 2, count: 7))
+        XCTAssertEqual(queue.unsent(), [.confirm(second)])
+        XCTAssertEqual(
+            queue.records(),
+            [PressRecord(press: first, answer: answer(at: 2, count: 7)), PressRecord(press: second)]
+        )
     }
 
-    func testRecordsThePressedMarkAndKeepsItAfterTheAnswer() throws {
-        let queue = PressQueue(directory: try temporaryDirectory())
-        let sent = press("a")
-        try queue.append(sent)
-        queue.answered(sent.id, at: start.addingTimeInterval(1))
-        XCTAssertEqual(queue.pressed(), [sent.key])
-    }
-
-    func testReconcileDropsOnlyMarksWhosePressWasAnsweredBeforeTheFetchStarted() throws {
+    func testAPressHidesItsCardUntilATimelineFetchedAfterItsAnswer() throws {
         let queue = PressQueue(directory: try temporaryDirectory())
         let answeredBefore = press("answered-before")
         let answeredAfter = press("answered-after")
         let waiting = press("waiting", at: 1)
         let duringFetch = press("during", at: 30)
         for item in [answeredBefore, answeredAfter, waiting, duringFetch] { try queue.append(item) }
-        queue.answered(answeredBefore.id, at: start.addingTimeInterval(10))
-        queue.answered(answeredAfter.id, at: start.addingTimeInterval(25))
-        queue.answered(duringFetch.id, at: start.addingTimeInterval(31))
-        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(20))
-        XCTAssertEqual(queue.pressed(), [answeredAfter.key, waiting.key, duringFetch.key])
+        queue.answered(.confirm(answeredBefore), with: answer(at: 10))
+        queue.answered(.confirm(answeredAfter), with: answer(at: 25))
+        queue.answered(.confirm(duringFetch), with: answer(at: 31))
+        XCTAssertEqual(
+            queue.hidden(onTimelineFetchedFrom: start.addingTimeInterval(20)),
+            [answeredAfter.key, waiting.key, duringFetch.key]
+        )
+        XCTAssertEqual(queue.hidden(onTimelineFetchedFrom: nil).count, 4)
+        XCTAssertEqual(queue.hidden(onTimelineFetchedFrom: start.addingTimeInterval(40)), [waiting.key])
     }
 
-    func testReconcileDropsAMarkThatNoAnswerCanReachAfterItsLifetime() throws {
+    func testAnUndonePressShowsItsCardAgainAndItsUndoIsSentAfterIt() throws {
+        let queue = PressQueue(directory: try temporaryDirectory())
+        let pressed = press("a")
+        let other = press("b", at: 5)
+        try queue.append(pressed)
+        try queue.append(other)
+        try queue.append(undo(pressed, at: 10))
+        XCTAssertEqual(queue.hidden(onTimelineFetchedFrom: nil), [other.key])
+        XCTAssertEqual(queue.unsent(), [.confirm(pressed), .confirm(other), .undo(undo(pressed, at: 10))])
+        queue.answered(.confirm(pressed), with: answer(at: 11))
+        XCTAssertEqual(queue.unsent(), [.confirm(other), .undo(undo(pressed, at: 10))])
+        queue.answered(.undo(undo(pressed, at: 10)), with: answer(at: 12))
+        XCTAssertEqual(queue.unsent(), [.confirm(other)])
+        XCTAssertEqual(queue.record(pressed.id)?.undoAnswer, answer(at: 12))
+    }
+
+    func testUnsentReadsOnlyThePressesThatHaveSomethingToSend() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
-        let marks = directory.appendingPathComponent("marks")
-        try FileManager.default.createDirectory(at: marks, withIntermediateDirectories: true)
-        let orphan = PressedMark(key: PressKey(instanceId: "orphan", step: 0), at: start)
-        try JSONEncoder().encode(orphan).write(to: marks.appendingPathComponent("\(UUID().uuidString).json"))
-        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime))
-        XCTAssertEqual(queue.pressed(), [orphan.key])
-        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime + 1))
-        XCTAssertEqual(queue.pressed(), [])
+        let answered = press("answered")
+        let waiting = press("waiting", at: 1)
+        try queue.append(answered)
+        try queue.append(waiting)
+        queue.answered(.confirm(answered), with: answer(at: 2))
+        let answeredFile = directory.appendingPathComponent("pressLog/\(answered.id.uuidString).press.json")
+        try Data("{".utf8).write(to: answeredFile)
+        XCTAssertEqual(queue.unsent(), [.confirm(waiting)])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: answeredFile.path))
     }
 
-    func testAnAnswerWhoseMarkWasUndoneIsDroppedAfterTheMarkLifetime() throws {
+    func testAnUndoNeverGoesBeforeItsPressWhenTheClockWentBack() throws {
+        let queue = PressQueue(directory: try temporaryDirectory())
+        let pressed = press("a", at: 100)
+        try queue.append(pressed)
+        try queue.append(undo(pressed, at: 40))
+        XCTAssertEqual(queue.unsent(), [.confirm(pressed), .undo(undo(pressed, at: 40))])
+    }
+
+    func testASecondUndoOfOnePressKeepsTheFirst() throws {
+        let queue = PressQueue(directory: try temporaryDirectory())
+        let pressed = press("a")
+        try queue.append(pressed)
+        try queue.append(undo(pressed, at: 10))
+        try queue.append(undo(pressed, at: 20))
+        XCTAssertEqual(queue.record(pressed.id)?.undo, undo(pressed, at: 10))
+    }
+
+    func testTheFirstAnswerToASendIsKeptAndALaterOneIgnored() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
-        let id = UUID()
-        queue.answered(id, at: start)
-        let answers = { try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("answers").path) }
-        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime))
-        XCTAssertEqual(try answers(), [id.uuidString + ".json"])
-        queue.reconcile(withTimelineFetchedFrom: start.addingTimeInterval(PressQueue.markLifetime + 1))
-        XCTAssertEqual(try answers(), [])
+        let pressed = press("a")
+        try queue.append(pressed)
+        try queue.append(undo(pressed, at: 5))
+        queue.answered(.confirm(pressed), with: answer(at: 6, applied: true, count: 3))
+        queue.answered(.confirm(pressed), with: answer(at: 9, applied: true, count: 5))
+        queue.answered(.undo(undo(pressed, at: 5)), with: answer(at: 8, applied: true, count: 4))
+        queue.answered(.undo(undo(pressed, at: 5)), with: answer(at: 10, applied: true, count: 6))
+        XCTAssertEqual(queue.record(pressed.id)?.answer, answer(at: 6, applied: true, count: 3))
+        XCTAssertEqual(queue.record(pressed.id)?.undoAnswer, answer(at: 8, applied: true, count: 4))
+        let staging = directory.appendingPathComponent("pressLog/staging")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), [])
     }
 
-    func testDropsUnreadableFiles() throws {
+    func testARecordIsReadFromItsOwnFiles() throws {
+        let queue = PressQueue(directory: try temporaryDirectory())
+        let pressed = press("a")
+        let other = press("b", at: 1)
+        try queue.append(pressed)
+        try queue.append(other)
+        try queue.append(undo(pressed, at: 5))
+        queue.answered(.confirm(pressed), with: answer(at: 6, count: 2))
+        XCTAssertEqual(
+            queue.record(pressed.id),
+            PressRecord(press: pressed, answer: answer(at: 6, count: 2), undo: undo(pressed, at: 5))
+        )
+        XCTAssertEqual(queue.record(other.id), PressRecord(press: other))
+        XCTAssertNil(queue.record(UUID()))
+    }
+
+    func testCollectsOnlyFinishedRecordsOlderThanTwoDays() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let oldAnswered = press("old-answered")
+        let oldUndone = press("old-undone", at: 1)
+        let oldUnsent = press("old-unsent", at: 2)
+        let oldUndoUnsent = press("old-undo-unsent", at: 3)
+        let recent = press("recent", at: PressQueue.recordLifetime)
+        for item in [oldAnswered, oldUndone, oldUnsent, oldUndoUnsent, recent] { try queue.append(item) }
+        for item in [oldAnswered, oldUndone, oldUndoUnsent, recent] { queue.answered(.confirm(item), with: answer(at: 4)) }
+        try queue.append(undo(oldUndone, at: 5))
+        queue.answered(.undo(undo(oldUndone, at: 5)), with: answer(at: 6))
+        try queue.append(undo(oldUndoUnsent, at: 5))
+        queue.collect(at: start.addingTimeInterval(PressQueue.recordLifetime + 60))
+        XCTAssertEqual(queue.records().map(\.press.instanceId), ["old-unsent", "old-undo-unsent", "recent"])
+        XCTAssertEqual(try logFiles(directory).count, 6)
+    }
+
+    func testCollectRemovesFilesWhosePressIsGone() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let pressed = press("a")
+        try queue.append(pressed)
+        queue.answered(.confirm(pressed), with: answer(at: 1))
+        try queue.append(undo(pressed, at: 2))
+        let log = directory.appendingPathComponent("pressLog")
+        try FileManager.default.removeItem(at: log.appendingPathComponent(pressed.id.uuidString + ".press.json"))
+        XCTAssertEqual(queue.records(), [])
+        XCTAssertEqual(queue.unsent(), [])
+        queue.collect(at: start)
+        XCTAssertEqual(try logFiles(directory), [])
+    }
+
+    func testCollectLeavesAPressWhoseFileCannotBeReadRightNow() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let pressed = press("a")
+        try queue.append(pressed)
+        queue.answered(.confirm(pressed), with: answer(at: 1))
+        let pressFile = directory.appendingPathComponent("pressLog/\(pressed.id.uuidString).press.json").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: pressFile)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pressFile) }
+        queue.collect(at: start.addingTimeInterval(PressQueue.recordLifetime + 60))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pressFile)
+        XCTAssertEqual(queue.records(), [PressRecord(press: pressed, answer: answer(at: 1))])
+    }
+
+    func testCollectDeletesStagedFilesOlderThanTwoDays() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
         try queue.append(press("a"))
-        let junk = directory.appendingPathComponent("presses/\(UUID().uuidString).json")
+        let staging = directory.appendingPathComponent("pressLog/staging")
+        let old = staging.appendingPathComponent("old.json")
+        let fresh = staging.appendingPathComponent("fresh.json")
+        try Data("{}".utf8).write(to: old)
+        try Data("{}".utf8).write(to: fresh)
+        let now = start.addingTimeInterval(60)
+        let oldDate = now.addingTimeInterval(-PressQueue.recordLifetime - 60)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: old.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: fresh.path)
+        queue.collect(at: now)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), ["fresh.json"])
+        XCTAssertEqual(queue.records().count, 1)
+    }
+
+    func testDropsAPressFileItCannotDecode() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        try queue.append(press("a"))
+        let junk = directory.appendingPathComponent("pressLog/\(UUID().uuidString).press.json")
         try Data("{".utf8).write(to: junk)
-        XCTAssertEqual(queue.pending().map(\.instanceId), ["a"])
+        XCTAssertEqual(queue.unsentPresses.map(\.instanceId), ["a"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: junk.path))
     }
 
-    func testRemoveAllClearsPressesAndMarks() throws {
+    func testRemoveAllClearsTheLog() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
-        try queue.append(press("a"))
+        let pressed = press("a")
+        try queue.append(pressed)
+        try queue.append(undo(pressed, at: 1))
         try queue.removeAll()
-        XCTAssertEqual(queue.pending(), [])
-        XCTAssertEqual(queue.pressed(), [])
+        XCTAssertEqual(queue.records(), [])
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
         try queue.removeAll()
     }
 
-    func testAnUndoThatRacesTheAnswerLeavesNoMark() throws {
+    func testAnUndoWrittenWhileItsPressIsAnsweredLosesNeither() throws {
         let directory = try temporaryDirectory()
         let answering = PressQueue(directory: directory)
         let undoing = PressQueue(directory: directory)
-        let key = PressKey(instanceId: "a", step: 0)
-        var cameBackInRound: Int?
-        for round in 0..<500 {
-            let id = UUID()
-            try answering.mark(id, key: key, at: start.addingTimeInterval(TimeInterval(round)))
+        for round in 0..<200 {
+            let pressed = press("a", at: TimeInterval(round))
+            try answering.append(pressed)
+            let taken = undo(pressed, at: TimeInterval(round) + 1)
             DispatchQueue.concurrentPerform(iterations: 2) { side in
                 if side == 0 {
-                    answering.answered(id, at: start.addingTimeInterval(TimeInterval(round) + 1))
+                    answering.answered(.confirm(pressed), with: answer(at: TimeInterval(round) + 1))
                 } else {
-                    undoing.removeMark(id)
+                    try? undoing.append(taken)
                 }
             }
-            if !PressQueue(directory: directory).pressed().isEmpty {
-                cameBackInRound = round
-                break
-            }
+            let record = PressQueue(directory: directory).record(pressed.id)
+            XCTAssertEqual(record?.undo, taken, "round \(round)")
+            XCTAssertNotNil(record?.answer, "round \(round)")
         }
-        XCTAssertNil(cameBackInRound, "an Undo that ran while the answer was recorded came back")
     }
 
     func testTwoInterleavedWritersKeepEveryPress() throws {
@@ -133,7 +263,7 @@ final class PressQueueTests: XCTestCase {
             let writer = writers[index % 2]
             try? writer.append(press("writer\(index % 2)-\(index)", at: TimeInterval(index)))
         }
-        let pending = PressQueue(directory: directory).pending()
+        let pending = PressQueue(directory: directory).unsentPresses
         XCTAssertEqual(pending.count, perWriter * 2)
         XCTAssertEqual(Set(pending.map(\.id)).count, perWriter * 2)
         XCTAssertEqual(pending.map(\.pressedAt), pending.map(\.pressedAt).sorted())
@@ -141,17 +271,28 @@ final class PressQueueTests: XCTestCase {
 }
 
 final class PressReplayTests: XCTestCase {
-    func testDropsEveryAnsweredPress() {
-        for status in [ConfirmStatus.confirmed, .advanced, .rejected(reason: "This task is not due yet"), .unrecognized("new")] {
-            XCTAssertEqual(PressReplay.decision(for: .answered(status)), .drop)
+    func testDropsEveryAnsweredSend() {
+        let statuses: [AnswerStatus] = [
+            .confirmed, .advanced, .undone, .rejected(reason: "This task is not due yet"), .tooLate, .unrecognized("new"),
+        ]
+        for status in statuses {
+            XCTAssertEqual(PressReplay.decision(for: .answered(ServerAnswer(status: status))), .drop)
         }
     }
 
-    func testDropsAPressTheServerCouldNotRead() {
+    func testOnlyAConfirmAnAdvanceAndAnUndoCountAsApplied() {
+        XCTAssertEqual([AnswerStatus.confirmed, .advanced, .undone].map(\.applied), [true, true, true])
+        XCTAssertEqual(
+            [AnswerStatus.rejected(reason: nil), .tooLate, .unrecognized("new")].map(\.applied),
+            [false, false, false]
+        )
+    }
+
+    func testDropsASendTheServerCouldNotRead() {
         XCTAssertEqual(PressReplay.decision(for: .unreadable), .drop)
     }
 
-    func testKeepsThePressWhenTheServerIsNotReached() {
+    func testKeepsTheSendWhenTheServerIsNotReached() {
         XCTAssertEqual(PressReplay.decision(for: .failed), .keepAndStop)
         XCTAssertEqual(PressReplay.decision(for: .rateLimited(retryAfter: 30)), .keepAndStop)
     }
@@ -160,8 +301,49 @@ final class PressReplayTests: XCTestCase {
         XCTAssertEqual(PressReplay.decision(for: .serverError(status: 503)), .keepAndHoldTask)
     }
 
-    func testKeepsThePressAndStopsOnUnauthorized() {
+    func testKeepsTheSendAndStopsOnUnauthorized() {
         XCTAssertEqual(PressReplay.decision(for: .unauthorized), .keepAndStopUnauthorized)
+    }
+}
+
+final class PressLogEntryTests: XCTestCase {
+    func testShapesARecordForTheAppWithOnlyWhatItHas() throws {
+        let id = try XCTUnwrap(UUID(uuidString: "6F1B2C3D-0000-4000-8000-00000000000A"))
+        let pressedAt = Date(timeIntervalSince1970: 1_795_098_600)
+        let press = Press(id: id, instanceId: "inst", step: 1, via: .widget, pressedAt: pressedAt)
+        let unsent = PressLogEntry.json(PressRecord(press: press))
+        XCTAssertEqual(Set(unsent.keys), ["pressId", "instanceId", "step", "pressedAt"])
+        XCTAssertEqual(unsent["pressId"] as? String, "6F1B2C3D-0000-4000-8000-00000000000A")
+        XCTAssertEqual(unsent["pressedAt"] as? Double, 1_795_098_600_000)
+
+        let undone = PressLogEntry.json(
+            PressRecord(
+                press: press,
+                answer: PressAnswer(at: pressedAt, applied: true, answeredPresses: 4),
+                undo: PressUndo(pressId: id, instanceId: "inst", undoneAt: pressedAt.addingTimeInterval(9)),
+                undoAnswer: PressAnswer(at: pressedAt, applied: false, answeredPresses: nil)
+            )
+        )
+        let answer = try XCTUnwrap(undone["answer"] as? [String: Any])
+        XCTAssertEqual(answer["applied"] as? Bool, true)
+        XCTAssertEqual(answer["answeredPresses"] as? Int, 4)
+        let undo = try XCTUnwrap(undone["undo"] as? [String: Any])
+        XCTAssertEqual(undo["undoneAt"] as? Double, 1_795_098_609_000)
+        let undoAnswer = try XCTUnwrap(undo["answer"] as? [String: Any])
+        XCTAssertEqual(undoAnswer["applied"] as? Bool, false)
+        XCTAssertNil(undoAnswer["answeredPresses"])
+    }
+
+    func testNamesWhatHappenedToAPressAndAnUndo() {
+        let press = Press(instanceId: "inst", step: 0, via: .phoneApp, pressedAt: Fixture.generatedAt)
+        XCTAssertEqual(PressLogEntry.status(StoredPress.stored(press)), "stored")
+        XCTAssertEqual(PressLogEntry.status(StoredPress.sentUnstored(.clean)), "sent")
+        XCTAssertEqual(PressLogEntry.status(StoredPress.sentUnstored(.pending)), "notSaved")
+        XCTAssertEqual(PressLogEntry.status(StoredPress.sentUnstored(.unauthorized)), "notSaved")
+        XCTAssertEqual(PressLogEntry.status(StoredPress.noCredentials), "noCredentials")
+        XCTAssertEqual(StoredUndo.stored.rawValue, "stored")
+        XCTAssertEqual(StoredUndo.notSaved.rawValue, "notSaved")
+        XCTAssertEqual(StoredUndo.noCredentials.rawValue, "noCredentials")
     }
 }
 
@@ -172,24 +354,48 @@ final class DeviceClientTests: XCTestCase {
         HTTPURLResponse(url: site, statusCode: status, httpVersion: nil, headerFields: headers)!
     }
 
+    private func body(_ request: URLRequest) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
+    }
+
     func testConfirmBodyHasExactlyTheContractFields() throws {
         let client = DeviceClient(siteURL: site, token: "tok", transport: FakeTransport())
-        let press = Press(instanceId: "inst", step: 2, via: .widget, pressedAt: Fixture.generatedAt)
-        let request = client.confirmRequest(press, at: Fixture.generatedAt.addingTimeInterval(1.5), timeout: 4)
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
-        XCTAssertEqual(Set(body.keys), ["instanceId", "pressedAgoMs", "via", "step"])
-        XCTAssertEqual(body["instanceId"] as? String, "inst")
-        XCTAssertEqual(body["pressedAgoMs"] as? Int, 1500)
-        XCTAssertEqual(body["via"] as? String, "widget")
-        XCTAssertEqual(body["step"] as? Int, 2)
+        let press = Press(instanceId: "inst", step: 2, via: .phoneApp, pressedAt: Fixture.generatedAt)
+        let request = client.request(for: .confirm(press), at: Fixture.generatedAt.addingTimeInterval(1.5), timeout: 4)
+        let sent = try body(request)
+        XCTAssertEqual(Set(sent.keys), ["instanceId", "pressedAgoMs", "via", "step", "pressId"])
+        XCTAssertEqual(sent["instanceId"] as? String, "inst")
+        XCTAssertEqual(sent["pressedAgoMs"] as? Int, 1500)
+        XCTAssertEqual(sent["via"] as? String, "phone_app")
+        XCTAssertEqual(sent["step"] as? Int, 2)
+        XCTAssertEqual(sent["pressId"] as? String, press.id.uuidString)
         XCTAssertEqual(request.url?.absoluteString, "https://example.convex.site/device/confirm")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
     }
 
+    func testUndoBodyNamesThePressAndHowLongAgoItWasTapped() throws {
+        let client = DeviceClient(siteURL: site, token: "tok", transport: FakeTransport())
+        let undo = PressUndo(pressId: UUID(), instanceId: "inst", undoneAt: Fixture.generatedAt)
+        let request = client.request(for: .undo(undo), at: Fixture.generatedAt.addingTimeInterval(20), timeout: 4)
+        let sent = try body(request)
+        XCTAssertEqual(Set(sent.keys), ["instanceId", "pressId", "undoneAgoMs"])
+        XCTAssertEqual(sent["instanceId"] as? String, "inst")
+        XCTAssertEqual(sent["pressId"] as? String, undo.pressId.uuidString)
+        XCTAssertEqual(sent["undoneAgoMs"] as? Int, 20_000)
+        XCTAssertEqual(request.url?.absoluteString, "https://example.convex.site/device/undo")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+    }
+
+    func testAPressIdIsOneTheServerAccepts() {
+        let id = Press(instanceId: "inst", step: 0, via: .widget, pressedAt: Fixture.generatedAt).id.uuidString
+        XCTAssertNotNil(id.range(of: "^[A-Za-z0-9_-]{16,64}$", options: .regularExpression))
+    }
+
     func testPressAgeIsNeverNegative() {
         let press = Press(instanceId: "inst", step: 0, via: .widget, pressedAt: Fixture.generatedAt)
-        XCTAssertEqual(press.pressedAgoMs(at: Fixture.generatedAt.addingTimeInterval(-60)), 0)
+        XCTAssertEqual(QueuedSend.confirm(press).agoMs(at: Fixture.generatedAt.addingTimeInterval(-60)), 0)
     }
 
     func testTimelineRequestSendsTheCachedVersionAsTheServersQuotedETag() {
@@ -215,18 +421,22 @@ final class DeviceClientTests: XCTestCase {
         XCTAssertEqual(DeviceClient.fetchOutcome(status: 500, body: Data(), headers: response(500)), .failed)
     }
 
-    func testClassifiesConfirmResponses() throws {
-        let rejected = try Fixture.json(["status": "rejected", "reason": "This task is not due yet", "state": NSNull()])
+    func testClassifiesAnswersToAPressAndAnUndo() throws {
+        func outcome(_ status: Int, _ body: Data = Data()) -> SendOutcome {
+            DeviceClient.sendOutcome(status: status, body: body, headers: response(status))
+        }
         XCTAssertEqual(
-            DeviceClient.confirmOutcome(status: 200, body: rejected, headers: response(200)),
-            .answered(.rejected(reason: "This task is not due yet"))
+            outcome(200, try Answer.body("rejected", reason: "This task is not due yet", count: 3)),
+            .answered(ServerAnswer(status: .rejected(reason: "This task is not due yet"), answeredPresses: 3))
         )
-        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": [:]])
-        XCTAssertEqual(DeviceClient.confirmOutcome(status: 200, body: confirmed, headers: response(200)), .answered(.confirmed))
-        let advanced = try Fixture.json(["status": "advanced", "reason": NSNull(), "state": NSNull()])
-        XCTAssertEqual(DeviceClient.confirmOutcome(status: 200, body: advanced, headers: response(200)), .answered(.advanced))
-        XCTAssertEqual(DeviceClient.confirmOutcome(status: 400, body: Data(), headers: response(400)), .unreadable)
-        XCTAssertEqual(DeviceClient.confirmOutcome(status: 401, body: Data(), headers: response(401)), .unauthorized)
-        XCTAssertEqual(DeviceClient.confirmOutcome(status: 503, body: Data(), headers: response(503)), .serverError(status: 503))
+        XCTAssertEqual(outcome(200, try Answer.confirmed(count: 4)), .answered(ServerAnswer(status: .confirmed, answeredPresses: 4)))
+        XCTAssertEqual(outcome(200, try Answer.body("advanced")), .answered(ServerAnswer(status: .advanced)))
+        XCTAssertEqual(outcome(200, try Answer.undone(count: 5)), .answered(ServerAnswer(status: .undone, answeredPresses: 5)))
+        XCTAssertEqual(outcome(200, try Answer.body("too_late")), .answered(ServerAnswer(status: .tooLate)))
+        XCTAssertEqual(outcome(200, try Answer.body("later")), .answered(ServerAnswer(status: .unrecognized("later"))))
+        XCTAssertEqual(outcome(200, Data("nope".utf8)), .answered(ServerAnswer(status: .unrecognized(""))))
+        XCTAssertEqual(outcome(400), .unreadable)
+        XCTAssertEqual(outcome(401), .unauthorized)
+        XCTAssertEqual(outcome(503), .serverError(status: 503))
     }
 }

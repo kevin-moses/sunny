@@ -5,47 +5,20 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 
 import { buildAgenda } from '../../day/format';
 import type { DayTask, DayViewData } from '../../day/types';
-import { confirmQueue } from '../../day/pendingConfirms';
 import type { DayViewState } from '../../day/useDayView';
 import { instanceIdOf, makeDay, makeEvent, makeTask } from '../../testing/dayFixtures';
-import { readUnsentPresses } from '../../widget/sharedPresses';
+import { makeFakePressStore, type FakePressStore } from '../../testing/fakePressStore';
 import { TodayScreen } from '../TodayScreen';
 
-const mockStore = new Map<string, string>();
 let mockConnected = true;
 let mockFontsReady = true;
-const mockMutation = jest.fn<(...args: unknown[]) => Promise<unknown>>();
-const mockUnsentPresses = jest.fn<() => Promise<unknown[]>>();
+let mockPresses: FakePressStore;
 
-jest.mock('@react-native-async-storage/async-storage', () => ({
-  __esModule: true,
-  default: {
-    getItem: async (key: string) => mockStore.get(key) ?? null,
-    setItem: async (key: string, value: string) => void mockStore.set(key, value),
-    removeItem: async (key: string) => void mockStore.delete(key),
+jest.mock('../../widget/pressStore', () => ({
+  get phonePresses() {
+    return mockPresses;
   },
 }));
-jest.mock('expo-crypto', () => ({ randomUUID: () => 'press-0000000000000001' }));
-jest.mock('../../../modules/sunny-widget', () => ({
-  __esModule: true,
-  default: { unsentPresses: () => mockUnsentPresses() },
-}));
-jest.mock('../../backend/convex', () => ({
-  convex: {
-    mutation: (...args: unknown[]) => mockMutation(...args),
-    connectionState: () => ({ isWebSocketConnected: mockConnected, hasEverConnected: true }),
-    subscribeToConnectionState: () => () => undefined,
-  },
-}));
-jest.mock('../../day/pendingConfirms', () => {
-  const actual = jest.requireActual<typeof import('../../day/pendingConfirms')>(
-    '../../day/pendingConfirms',
-  );
-  return {
-    ...actual,
-    confirmQueue: actual.createConfirmQueue({ send: actual.sendConfirm, now: () => Date.now() }),
-  };
-});
 jest.mock('convex/react', () => ({
   useConvexConnectionState: () => ({ isWebSocketConnected: mockConnected, hasEverConnected: true }),
 }));
@@ -129,12 +102,6 @@ function render(view: DayViewState): ReactTestInstance {
   return renderer.root;
 }
 
-async function readWidgetPresses(): Promise<void> {
-  await act(async () => {
-    await readUnsentPresses();
-  });
-}
-
 function words(root: ReactTestInstance): string[] {
   return root
     .findAll((n) => (n.type as unknown) === 'Text')
@@ -150,23 +117,16 @@ function buttonLabels(root: ReactTestInstance): string[] {
 
 const OLD_WORDS = ['Monday morning', 'November 9', 'Today', 'Next up', 'Coming up'];
 
-beforeEach(async () => {
+beforeEach(() => {
   jest.useFakeTimers();
   jest.setSystemTime(NOW);
-  mockStore.clear();
   mockConnected = true;
   mockFontsReady = true;
-  mockMutation.mockReset();
-  mockMutation.mockResolvedValue({ status: 'confirmed' });
-  mockUnsentPresses.mockResolvedValue([]);
-  await readWidgetPresses();
+  mockPresses = makeFakePressStore();
 });
 
-afterEach(async () => {
+afterEach(() => {
   act(() => renderers.splice(0).forEach((r) => r.unmount()));
-  await act(async () => {
-    await confirmQueue.clear();
-  });
   jest.useRealTimers();
 });
 
@@ -226,7 +186,6 @@ describe('TodayScreen states', () => {
   });
 
   it('after Done shows the undo line, Undo, and when the press was noted', async () => {
-    mockMutation.mockReturnValue(new Promise(() => {}));
     const root = render(dayView([BREAKFAST, task(), LUNCH]));
     await act(async () => {
       root
@@ -240,47 +199,74 @@ describe('TodayScreen states', () => {
     });
     expect(words(root).slice(0, 3)).toEqual(['Morning pills done.', 'Undo', 'Noted at 9:41 AM']);
     expect(buttonLabels(root)).toEqual(['Undo Morning pills done', 'Talk to Sunny']);
-    const row = root.find(
+    expect(
+      root.find(
+        (n) =>
+          (n.type as unknown) === 'View' && n.props.accessibilityLabel === '9:30 AM, Morning pills',
+      ).props.accessibilityValue,
+    ).toEqual({ text: 'Done' });
+  });
+
+  function pillsRow(root: ReactTestInstance): ReactTestInstance {
+    return root.find(
       (n) =>
         (n.type as unknown) === 'View' && n.props.accessibilityLabel === '9:30 AM, Morning pills',
     );
-    expect(row.props.accessibilityValue).toEqual({ text: 'Done' });
-  });
+  }
 
-  it('shows a task pressed on the widget or the Lock Screen as done while that press is unsent', async () => {
-    mockUnsentPresses.mockResolvedValue([
-      {
-        pressId: 'F2B4E6A8-0000-4000-8000-000000000001',
-        instanceId: 'pills',
-        step: 0,
-        pressedAt: NOW - 60_000,
-      },
-    ]);
+  it('shows a task pressed on the widget or the Lock Screen as done while that press is unsent', () => {
     const root = render(dayView([BREAKFAST, task(), LUNCH]));
-    await readWidgetPresses();
+    act(() => {
+      mockPresses.pressedElsewhere({ instanceId: 'pills', step: 0, pressedAt: NOW - 60_000 });
+    });
     expect(buttonLabels(root)).toEqual(['Talk to Sunny']);
-    const row = root.find(
-      (n) =>
-        (n.type as unknown) === 'View' && n.props.accessibilityLabel === '9:30 AM, Morning pills',
-    );
-    expect(row.props.accessibilityValue).toEqual({ text: 'Done' });
+    expect(pillsRow(root).props.accessibilityValue).toEqual({ text: 'Done' });
   });
 
-  it('keeps showing the next step of a step task pressed elsewhere', async () => {
-    mockUnsentPresses.mockResolvedValue([
-      {
-        pressId: 'F2B4E6A8-0000-4000-8000-000000000002',
+  it('offers Undo for a Done pressed on the widget moments ago, and Undo shows the task due again', async () => {
+    const root = render(dayView([BREAKFAST, task(), LUNCH]));
+    act(() => {
+      mockPresses.pressedElsewhere({ instanceId: 'pills', step: 0, pressedAt: NOW - 10_000 });
+    });
+    expect(words(root).slice(0, 3)).toEqual(['Morning pills done.', 'Undo', 'Noted at 9:40 AM']);
+    await act(async () => {
+      root
+        .find(
+          (n) =>
+            typeof n.props.style === 'function' &&
+            n.props.accessibilityLabel === 'Undo Morning pills done',
+        )
+        .props.onPress();
+    });
+    expect(mockPresses.log()[0]?.undo).toEqual({ undoneAt: NOW });
+    expect(buttonLabels(root)).toEqual(['Done: Morning pills', 'Talk to Sunny']);
+  });
+
+  it('keeps a press drawn until the day view has caught up with the answer to it', () => {
+    const answered = { applied: true, answeredPresses: 4 };
+    act(() => {
+      const press = mockPresses.pressedElsewhere({
         instanceId: 'pills',
         step: 0,
         pressedAt: NOW - 60_000,
-      },
-    ]);
+      });
+      mockPresses.answer(press.pressId, answered);
+    });
+    const behind = render(dayView([BREAKFAST, task(), LUNCH], { answeredPresses: 3 }));
+    expect(pillsRow(behind).props.accessibilityValue).toEqual({ text: 'Done' });
+    const caughtUp = render(dayView([BREAKFAST, task(), LUNCH], { answeredPresses: 4 }));
+    expect(buttonLabels(caughtUp)).toEqual(['Done: Morning pills', 'Talk to Sunny']);
+  });
+
+  it('keeps showing the next step of a step task pressed elsewhere', () => {
     const stepped = task({
       checklistItems: ['Fill a glass', 'Take the small white ones with water.', 'Rinse'],
       step: { index: 0, count: 3, text: 'Fill a glass' },
     });
     const root = render(dayView([stepped]));
-    await readWidgetPresses();
+    act(() => {
+      mockPresses.pressedElsewhere({ instanceId: 'pills', step: 0, pressedAt: NOW - 60_000 });
+    });
     expect(words(root).slice(0, 3)).toEqual([
       'Now',
       'Step 2 of 3',
@@ -289,7 +275,6 @@ describe('TodayScreen states', () => {
   });
 
   it('holds Noted with Undo for the 30 seconds of the Undo window before the next task', async () => {
-    mockMutation.mockReturnValue(new Promise(() => {}));
     const evening = task({
       instanceId: instanceIdOf('evening'),
       displayLabel: 'Evening pills',

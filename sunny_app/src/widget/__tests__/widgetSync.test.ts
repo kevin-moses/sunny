@@ -13,7 +13,6 @@ const mockNative = {
   clearCredentials: jest.fn<AnyMock>(),
   syncSurfaces: jest.fn<AnyMock>(),
   flushPresses: jest.fn<AnyMock>(),
-  unsentPresses: jest.fn<() => Promise<unknown>>(),
 };
 const mockCallAction = jest.fn<AnyMock>();
 const mockLogger = { debug: jest.fn(), info: jest.fn(), warning: jest.fn(), error: jest.fn() };
@@ -65,7 +64,6 @@ beforeEach(() => {
   mockNative.clearCredentials.mockResolvedValue(undefined);
   mockNative.flushPresses.mockResolvedValue('clean');
   mockNative.syncSurfaces.mockResolvedValue(undefined);
-  mockNative.unsentPresses.mockResolvedValue([]);
   mockCallAction.mockResolvedValue({ deviceToken: 'tok-1' });
 });
 
@@ -100,14 +98,14 @@ describe('ensureWidgetToken', () => {
   it('keeps a stored token for this deployment', async () => {
     const { ensureWidgetToken } = loadModule();
     mockNative.storedSiteUrl.mockResolvedValue(SITE);
-    await expect(ensureWidgetToken()).resolves.toBe(true);
+    await expect(ensureWidgetToken()).resolves.toBe('ready');
     expect(mockCallAction).not.toHaveBeenCalled();
     expect(mockNative.setCredentials).not.toHaveBeenCalled();
   });
 
   it('issues and stores a token when there is none', async () => {
     const { ensureWidgetToken } = loadModule();
-    await expect(ensureWidgetToken()).resolves.toBe(true);
+    await expect(ensureWidgetToken()).resolves.toBe('ready');
     expect(mockCallAction).toHaveBeenCalledWith('deviceApi:issueToken', {});
     expect(mockNative.setCredentials).toHaveBeenCalledWith('tok-1', SITE);
   });
@@ -123,19 +121,19 @@ describe('ensureWidgetToken', () => {
     const { ensureWidgetToken } = loadModule();
     mockCallAction.mockRejectedValueOnce(new Error('offline'));
     await expect(ensureWidgetToken()).rejects.toThrow('offline');
-    await expect(ensureWidgetToken()).resolves.toBe(true);
+    await expect(ensureWidgetToken()).resolves.toBe('ready');
     expect(mockCallAction).toHaveBeenCalledTimes(2);
   });
 
   it('stops asking once the server refuses this pairing a token, until the widget is cleared', async () => {
     const { ensureWidgetToken, clearWidget } = loadModule();
     mockCallAction.mockRejectedValueOnce(new MockBackendError('revoked', 403));
-    await expect(ensureWidgetToken()).resolves.toBe(false);
-    await expect(ensureWidgetToken()).resolves.toBe(false);
+    await expect(ensureWidgetToken()).resolves.toBe('refused');
+    await expect(ensureWidgetToken()).resolves.toBe('refused');
     expect(mockCallAction).toHaveBeenCalledTimes(1);
     expect(mockNative.setCredentials).not.toHaveBeenCalled();
     await clearWidget();
-    await expect(ensureWidgetToken()).resolves.toBe(true);
+    await expect(ensureWidgetToken()).resolves.toBe('ready');
     expect(mockCallAction).toHaveBeenCalledTimes(2);
     expect(mockNative.setCredentials).toHaveBeenCalledWith('tok-1', SITE);
   });
@@ -144,19 +142,19 @@ describe('ensureWidgetToken', () => {
     const { ensureWidgetToken } = loadModule();
     mockCallAction.mockRejectedValueOnce(new MockBackendError('too many', 429));
     await expect(ensureWidgetToken()).rejects.toThrow('too many');
-    await expect(ensureWidgetToken()).resolves.toBe(true);
+    await expect(ensureWidgetToken()).resolves.toBe('ready');
     expect(mockCallAction).toHaveBeenCalledTimes(2);
   });
 
   it('stops issuing tokens once storing one has failed, until the widget is cleared', async () => {
     const { ensureWidgetToken, clearWidget } = loadModule();
     mockNative.setCredentials.mockRejectedValueOnce(new Error('keychain'));
-    await expect(ensureWidgetToken()).resolves.toBe(false);
-    await expect(ensureWidgetToken()).resolves.toBe(false);
+    await expect(ensureWidgetToken()).resolves.toBe('unavailable');
+    await expect(ensureWidgetToken()).resolves.toBe('unavailable');
     expect(mockCallAction).toHaveBeenCalledTimes(1);
     expect(mockLogger.error).toHaveBeenCalledTimes(1);
     await clearWidget();
-    await expect(ensureWidgetToken()).resolves.toBe(true);
+    await expect(ensureWidgetToken()).resolves.toBe('ready');
     expect(mockCallAction).toHaveBeenCalledTimes(2);
   });
 });
@@ -181,10 +179,11 @@ describe('syncWidget', () => {
   });
 
   it('neither flushes nor asks again after this pairing was refused a token', async () => {
-    const { syncWidget } = loadModule();
+    const { syncWidget, ensureWidgetToken } = loadModule();
     mockCallAction.mockRejectedValueOnce(new MockBackendError('revoked', 403));
     await syncWidget();
     await syncWidget();
+    await expect(ensureWidgetToken()).resolves.toBe('refused');
     expect(mockCallAction).toHaveBeenCalledTimes(1);
     expect(mockNative.flushPresses).not.toHaveBeenCalled();
     expect(mockLogger.warning).not.toHaveBeenCalled();
@@ -197,27 +196,37 @@ describe('syncWidget', () => {
     expect(mockNative.flushPresses).not.toHaveBeenCalled();
   });
 
-  it('reads the presses the widget still has to send once the flush is over', async () => {
-    const { syncWidget } = loadModule();
-    mockNative.storedSiteUrl.mockResolvedValue(SITE);
-    await syncWidget();
-    expect(mockNative.unsentPresses).toHaveBeenCalledTimes(1);
-    expect(mockNative.flushPresses.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNative.unsentPresses.mock.invocationCallOrder[0]!,
-    );
-  });
-
-  it('shares one run between overlapping calls', async () => {
-    const { syncWidget } = loadModule();
-    await Promise.all([syncWidget(), syncWidget()]);
-    expect(mockCallAction).toHaveBeenCalledTimes(1);
-    expect(mockNative.flushPresses).toHaveBeenCalledTimes(1);
-  });
-
   it('logs a failed sync instead of rejecting', async () => {
     const { syncWidget } = loadModule();
     mockCallAction.mockRejectedValueOnce(new Error('offline'));
     await expect(syncWidget()).resolves.toBeUndefined();
+    expect(mockLogger.warning).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('flushWidgetPresses', () => {
+  it('flushes queued presses and leaves the widget and the Lock Screen alone', async () => {
+    const { flushWidgetPresses } = loadModule();
+    mockNative.storedSiteUrl.mockResolvedValue(SITE);
+    await flushWidgetPresses();
+    expect(mockNative.flushPresses).toHaveBeenCalledTimes(1);
+    expect(mockNative.syncSurfaces).not.toHaveBeenCalled();
+  });
+
+  it('issues one new token after a 401 dropped the old one, then flushes again', async () => {
+    const { flushWidgetPresses } = loadModule();
+    mockNative.storedSiteUrl.mockResolvedValueOnce(SITE).mockResolvedValueOnce(null);
+    mockNative.flushPresses.mockResolvedValueOnce('unauthorized').mockResolvedValueOnce('clean');
+    await flushWidgetPresses();
+    expect(mockCallAction).toHaveBeenCalledTimes(1);
+    expect(mockNative.flushPresses).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs a failed flush instead of rejecting', async () => {
+    const { flushWidgetPresses } = loadModule();
+    mockCallAction.mockRejectedValueOnce(new Error('offline'));
+    await expect(flushWidgetPresses()).resolves.toBeUndefined();
+    expect(mockNative.flushPresses).not.toHaveBeenCalled();
     expect(mockLogger.warning).toHaveBeenCalledTimes(1);
   });
 });
@@ -300,9 +309,7 @@ describe('syncSurfaces', () => {
   it('asks the native side to sync and logs a failure instead of throwing', async () => {
     const { syncSurfaces } = loadModule();
     mockNative.syncSurfaces.mockRejectedValueOnce(new Error('native'));
-    syncSurfaces();
-    await Promise.resolve();
-    await Promise.resolve();
+    await expect(syncSurfaces()).resolves.toBeUndefined();
     expect(mockNative.syncSurfaces).toHaveBeenCalledTimes(1);
     expect(mockLogger.warning).toHaveBeenCalledTimes(1);
   });

@@ -116,16 +116,16 @@ final class WidgetSyncTests: XCTestCase {
         let result = await sync.replayPresses(timeout: 1)
         XCTAssertEqual(result, .unauthorized)
         XCTAssertEqual(rotating.current, "token-2")
-        XCTAssertEqual(queue.pending().map(\.instanceId), ["inst"])
+        XCTAssertEqual(queue.unsentPresses.map(\.instanceId), ["inst"])
     }
 
     func testPressIsQueuedThenSentAndMovesTheWidgetOn() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
-        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        transport.queueConfirm(200, body: try Answer.confirmed())
         let result = await makeSync().pressDone(instanceId: "inst-morning-pills", step: 0, via: .widget)
         XCTAssertEqual(result, .clean)
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
         XCTAssertEqual(transport.confirmBodies.first?["via"] as? String, "widget")
         transport.queueTimelineFailure()
         let plan = await makeSync().refresh(locale: Fixture.unitedStates)
@@ -141,7 +141,7 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueConfirmFailure()
         let second = await makeSync().pressDone(instanceId: "inst-tea", step: 1, via: .widget)
         XCTAssertEqual([first, second], [.pending, .pending])
-        XCTAssertEqual(queue.pending().map(\.step), [0, 1])
+        XCTAssertEqual(queue.unsentPresses.map(\.step), [0, 1])
         XCTAssertEqual(transport.confirmBodies.map { $0["step"] as? Int }, [0, 0])
 
         transport.queueTimelineFailure()
@@ -149,10 +149,10 @@ final class WidgetSyncTests: XCTestCase {
         guard case .due(let shown) = firstContent(offlinePlan) else { return XCTFail("expected the third step") }
         XCTAssertEqual(shown.step, 2)
 
-        XCTAssertEqual(queue.pending().map(\.step), [0, 1])
+        XCTAssertEqual(queue.unsentPresses.map(\.step), [0, 1])
 
         clock.advance(60)
-        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()])
+        let confirmed = try Answer.confirmed()
         transport.queueConfirm(200, body: confirmed)
         transport.queueConfirm(200, body: confirmed)
         transport.queueTimeline(200, body: try Fixture.data("three-step-task"))
@@ -160,14 +160,14 @@ final class WidgetSyncTests: XCTestCase {
         let replayed = transport.confirmBodies.suffix(2)
         XCTAssertEqual(replayed.map { $0["step"] as? Int }, [0, 1])
         XCTAssertEqual(replayed.map { $0["pressedAgoMs"] as? Int }, [65_000, 60_000])
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
     }
 
     func testAPressAnsweredAfterTheFetchStartedStaysHidden() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
         try queue.append(Press(instanceId: "inst-old", step: 0, via: .widget, pressedAt: clock.now))
-        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()])
+        let confirmed = try Answer.confirmed()
         let appProcess = makeSync()
         let widgetProcess = makeSync()
         let clock = self.clock!
@@ -187,23 +187,23 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         transport.queueConfirm(200, body: confirmed)
         let plan = await widgetProcess.refresh(locale: Fixture.unitedStates)
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
         guard case .clear = firstContent(plan) else {
             return XCTFail("a timeline the server built before it applied the press shows the task as due again")
         }
         clock.advance(10)
         transport.queueTimeline(200, body: try Fixture.data("all-done"))
         let later = await makeSync().refresh(locale: Fixture.unitedStates)
-        XCTAssertEqual(queue.pressed(), [])
+        XCTAssertEqual(WidgetStorage(directory: directory).hiddenCards(), [])
         guard case .clear = firstContent(later) else { return XCTFail("the next fetch shows the server's day") }
     }
 
     func testRefusedPressIsDroppedAndTheTaskReturnsWithTheFreshTimeline() async throws {
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         _ = await makeSync().refresh(locale: Fixture.unitedStates)
-        transport.queueConfirm(200, body: try Fixture.json(["status": "rejected", "reason": "No such task", "state": NSNull()]))
+        transport.queueConfirm(200, body: try Answer.body("rejected", reason: "No such task"))
         _ = await makeSync().pressDone(instanceId: "inst-morning-pills", step: 0, via: .widget)
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
         clock.advance(10)
         transport.queueTimeline(200, body: try Fixture.data("due-task"))
         let plan = await makeSync().refresh(locale: Fixture.unitedStates)
@@ -211,12 +211,171 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertEqual(due.instanceId, "inst-morning-pills")
     }
 
+    func testAPressIsSentWithItsIdAndTheLogKeepsTheServersAnswer() async throws {
+        transport.queueConfirm(200, body: try Answer.confirmed(count: 7))
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let logged = try XCTUnwrap(makeSync().pressLog().first)
+        XCTAssertEqual(transport.confirmBodies.first?["pressId"] as? String, logged.press.id.uuidString)
+        XCTAssertEqual(logged.answer, PressAnswer(at: clock.now, applied: true, answeredPresses: 7))
+        XCTAssertEqual(queue.unsent(), [])
+    }
+
+    func testARefusedOrUnreadablePressIsLoggedAsNotApplied() async throws {
+        transport.queueConfirm(200, body: try Answer.body("rejected", reason: "This task is not due yet", count: 3))
+        transport.queueConfirm(400)
+        _ = await makeSync().pressDone(instanceId: "inst-a", step: 0, via: .widget)
+        clock.advance(1)
+        _ = await makeSync().pressDone(instanceId: "inst-b", step: 0, via: .widget)
+        XCTAssertEqual(makeSync().pressLog().map(\.answer?.applied), [false, false])
+        XCTAssertEqual(makeSync().pressLog().map(\.answer?.answeredPresses), [3, nil])
+    }
+
+    func testAnUndoMadeOfflineIsSentAfterItsPressAndNamesIt() async throws {
+        transport.queueConfirmFailure()
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        clock.advance(10)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .stored)
+        clock.advance(50)
+        transport.queueConfirm(200, body: try Answer.confirmed(count: 1))
+        transport.queueUndo(200, body: try Answer.undone(count: 2))
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .clean)
+        XCTAssertEqual(transport.sentPaths, ["/device/confirm", "/device/confirm", "/device/undo"])
+        XCTAssertEqual(transport.confirmBodies.last?["pressedAgoMs"] as? Int, 60_000)
+        let undo = try XCTUnwrap(transport.undoBodies.first)
+        XCTAssertEqual(undo["pressId"] as? String, pressId.uuidString)
+        XCTAssertEqual(undo["instanceId"] as? String, "inst")
+        XCTAssertEqual(undo["undoneAgoMs"] as? Int, 50_000)
+        let logged = try XCTUnwrap(makeSync().pressLog().first)
+        XCTAssertEqual(logged.undoAnswer, PressAnswer(at: clock.now, applied: true, answeredPresses: 2))
+        XCTAssertEqual(queue.unsent(), [])
+    }
+
+    func testAnUndoWaitsWhileItsPressHasNoAnswer() async throws {
+        transport.queueConfirm(503)
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .stored)
+        transport.queueConfirm(503)
+        transport.queueUndo(200, body: try Answer.undone())
+        let held = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(held, .pending)
+        XCTAssertEqual(transport.undoBodies.count, 0, "the server got an Undo for a press it has not seen")
+        transport.queueConfirmFailure()
+        let offline = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(offline, .pending)
+        XCTAssertEqual(transport.undoBodies.count, 0)
+    }
+
+    func testAnUndoTheServerSaysIsTooLateIsNotSentAgain() async throws {
+        transport.queueConfirm(200, body: try Answer.confirmed(count: 1))
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .stored)
+        transport.queueUndo(200, body: try Answer.body("too_late", count: 2))
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .clean)
+        XCTAssertEqual(makeSync().pressLog().first?.undoAnswer?.applied, false)
+        _ = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(transport.undoBodies.count, 1)
+    }
+
+    func testAnUndoOfAPressTheServerDidNotApplyIsAnsweredLocallyAndNotSent() async throws {
+        transport.queueConfirm(200, body: try Answer.body("rejected", reason: "This task is not due yet", count: 1))
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .stored)
+        clock.advance(5)
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .clean)
+        XCTAssertEqual(transport.sentPaths, ["/device/confirm"])
+        XCTAssertEqual(makeSync().pressLog().first?.undoAnswer, PressAnswer(at: clock.now, applied: false, answeredPresses: nil))
+        XCTAssertEqual(queue.unsent(), [])
+    }
+
+    func testAnUndoWhosePressIsRefusedInTheSameReplayIsNotSent() async throws {
+        transport.queueConfirmFailure()
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .stored)
+        transport.queueConfirm(200, body: try Answer.body("rejected", reason: "This task is not due yet", count: 1))
+        let result = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(result, .clean)
+        XCTAssertEqual(transport.sentPaths, ["/device/confirm", "/device/confirm"])
+        XCTAssertEqual(makeSync().pressLog().first?.undoAnswer?.applied, false)
+    }
+
+    func testOnlyTheUndoOfAnAppliedPressIsSent() async throws {
+        transport.queueConfirm(200, body: try Answer.body("rejected", reason: "This task is not due yet", count: 1))
+        _ = await makeSync().pressDone(instanceId: "inst-a", step: 0, via: .widget)
+        clock.advance(1)
+        transport.queueConfirm(200, body: try Answer.confirmed(count: 2))
+        _ = await makeSync().pressDone(instanceId: "inst-b", step: 0, via: .widget)
+        let log = makeSync().pressLog()
+        for record in log { XCTAssertEqual(makeSync().storeUndo(ofPress: record.press.id), .stored) }
+        transport.queueUndo(200, body: try Answer.undone(count: 3))
+        _ = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(transport.undoBodies.map { $0["instanceId"] as? String }, ["inst-b"])
+        XCTAssertEqual(makeSync().pressLog().map(\.undoAnswer?.applied), [false, true])
+    }
+
+    func testAnUndoneWidgetPressShowsItsCardAgain() async throws {
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        transport.queueConfirm(200, body: try Answer.confirmed())
+        _ = await makeSync().pressDone(instanceId: "inst-morning-pills", step: 0, via: .widget)
+        guard case .clear = firstContent(makeSync().cachedPlan(locale: Fixture.unitedStates)) else {
+            return XCTFail("the pressed task is hidden")
+        }
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .stored)
+        guard case .due = firstContent(makeSync().cachedPlan(locale: Fixture.unitedStates)) else {
+            return XCTFail("the undone task is due again")
+        }
+    }
+
+    func testAnUndoOnAnUnpairedPhoneOrOfAnUnknownPressStoresNothing() async throws {
+        XCTAssertEqual(makeSync().storeUndo(ofPress: UUID()), .notSaved)
+        transport.queueConfirmFailure()
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
+        let pressId = try XCTUnwrap(makeSync().pressLog().first?.press.id)
+        tokens = MemoryTokenStore(nil)
+        XCTAssertEqual(makeSync().storeUndo(ofPress: pressId), .noCredentials)
+        XCTAssertNil(makeSync().pressLog().first?.undo)
+    }
+
+    func testAnAnsweredPressStaysInTheLogForTwoDaysOfFetches() async throws {
+        transport.queueConfirm(200, body: try Answer.confirmed())
+        _ = await makeSync().pressDone(instanceId: "inst-morning-pills", step: 0, via: .widget)
+        clock.advance(PressQueue.recordLifetime - 60)
+        transport.queueTimeline(200, body: try Fixture.data("due-task"))
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        XCTAssertEqual(makeSync().pressLog().count, 1)
+        clock.advance(120)
+        transport.queueTimeline(304)
+        _ = await makeSync().refresh(locale: Fixture.unitedStates)
+        XCTAssertEqual(makeSync().pressLog().count, 0)
+    }
+
+    func testAReplayCollectsTheLogOnAPhoneThatNeverFetchesATimeline() async throws {
+        transport.queueConfirm(200, body: try Answer.confirmed())
+        _ = await makeSync().pressDone(instanceId: "inst", step: 0, via: .phoneApp)
+        clock.advance(PressQueue.recordLifetime - 60)
+        _ = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(makeSync().pressLog().count, 1)
+        clock.advance(120)
+        _ = await makeSync().replayPresses(timeout: 4)
+        XCTAssertEqual(makeSync().pressLog().count, 0)
+        XCTAssertTrue(transport.timelineRequests.isEmpty)
+    }
+
     func testAServerErrorHoldsBackOnlyTheLaterPressesOfItsOwnTask() async throws {
         let start = clock.now
         for (offset, instance, step) in [(0.0, "inst-a", 0), (1, "inst-b", 0), (2, "inst-a", 1), (3, "inst-c", 0)] {
             try queue.append(Press(instanceId: instance, step: step, via: .widget, pressedAt: start.addingTimeInterval(offset)))
         }
-        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()])
+        let confirmed = try Answer.confirmed()
         transport.queueConfirm(500)
         transport.queueConfirm(200, body: confirmed)
         transport.queueConfirm(200, body: confirmed)
@@ -226,8 +385,8 @@ final class WidgetSyncTests: XCTestCase {
             transport.confirmBodies.map { "\($0["instanceId"] as? String ?? "")/\($0["step"] as? Int ?? -1)" },
             ["inst-a/0", "inst-b/0", "inst-c/0"]
         )
-        XCTAssertEqual(queue.pending().map(\.step), [0, 1])
-        XCTAssertEqual(Set(queue.pending().map(\.instanceId)), ["inst-a"])
+        XCTAssertEqual(queue.unsentPresses.map(\.step), [0, 1])
+        XCTAssertEqual(Set(queue.unsentPresses.map(\.instanceId)), ["inst-a"])
     }
 
     func testNoNetworkOrARateLimitStopsTheWholeReplay() async throws {
@@ -240,7 +399,7 @@ final class WidgetSyncTests: XCTestCase {
         let limited = await makeSync().replayPresses(timeout: 4)
         XCTAssertEqual([offline, limited], [.pending, .pending])
         XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-a", "inst-a"])
-        XCTAssertEqual(queue.pending().count, 2)
+        XCTAssertEqual(queue.unsentPresses.count, 2)
     }
 
     func testAReplayStopsWhenItsTimeIsUp() async throws {
@@ -262,14 +421,14 @@ final class WidgetSyncTests: XCTestCase {
         transport.queueConfirm(400)
         let result = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
         XCTAssertEqual(result, .clean)
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
     }
 
     func testUnauthorizedPressStaysQueuedAndDropsTheToken() async throws {
         transport.queueConfirm(401)
         let result = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
         XCTAssertEqual(result, .unauthorized)
-        XCTAssertEqual(queue.pending().map(\.instanceId), ["inst"])
+        XCTAssertEqual(queue.unsentPresses.map(\.instanceId), ["inst"])
         XCTAssertNil(tokens.read())
     }
 
@@ -277,8 +436,8 @@ final class WidgetSyncTests: XCTestCase {
         tokens = MemoryTokenStore(nil)
         let result = await makeSync().pressDone(instanceId: "inst", step: 0, via: .widget)
         XCTAssertEqual(result, .noCredentials)
-        XCTAssertEqual(queue.pending(), [])
-        XCTAssertEqual(queue.pressed(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
+        XCTAssertEqual(WidgetStorage(directory: directory).hiddenCards(), [])
         XCTAssertTrue(transport.requests.isEmpty)
     }
 
@@ -292,7 +451,7 @@ final class WidgetSyncTests: XCTestCase {
         )
         let result = await sync.pressDone(instanceId: "inst", step: 0, via: .widget)
         XCTAssertEqual(result, .pending)
-        XCTAssertEqual(queue.pending().map(\.instanceId), ["inst"])
+        XCTAssertEqual(queue.unsentPresses.map(\.instanceId), ["inst"])
         XCTAssertTrue(transport.requests.isEmpty)
     }
 
@@ -315,12 +474,12 @@ final class WidgetSyncTests: XCTestCase {
             )
         }
         clock.advance(60)
-        let confirmed = try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()])
+        let confirmed = try Answer.confirmed()
         for _ in 0..<40 { transport.queueConfirm(200, body: confirmed) }
         let result = await makeSync().replayPresses(timeout: 1)
         XCTAssertEqual(result, .clean)
         XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, (0..<40).map { "inst-\($0)" })
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
     }
 
     func testStoredSiteURLRequiresAToken() throws {
@@ -338,7 +497,7 @@ final class WidgetSyncTests: XCTestCase {
         XCTAssertNil(tokens.read())
         XCTAssertNil(sites.read())
         XCTAssertNil(WidgetStorage(directory: directory).loadCache())
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["credentials.lock"])
         try await makeSync().clear()
     }
@@ -347,13 +506,13 @@ final class WidgetSyncTests: XCTestCase {
         let start = clock.now
         try queue.append(Press(instanceId: "inst-a", step: 0, via: .widget, pressedAt: start))
         try queue.append(Press(instanceId: "inst-b", step: 0, via: .liveActivity, pressedAt: start.addingTimeInterval(1)))
-        transport.queueConfirm(200, body: try Fixture.json(["status": "confirmed", "reason": NSNull(), "state": NSNull()]))
+        transport.queueConfirm(200, body: try Answer.confirmed())
         transport.queueConfirmFailure()
         try await makeSync().clear()
         XCTAssertEqual(transport.confirmBodies.compactMap { $0["instanceId"] as? String }, ["inst-a", "inst-b"])
         XCTAssertEqual(transport.requests.first?.headers["Authorization"], "Bearer token-1")
         XCTAssertNil(tokens.read())
-        XCTAssertEqual(queue.pending(), [])
+        XCTAssertEqual(queue.unsentPresses, [])
     }
 
     func testThePairedPhoneWatchesItsActivitiesFromLaunch() {

@@ -1186,15 +1186,19 @@ describe("press ids", () => {
     expect((await row(f)).confirmPressIds).toEqual([B]);
   });
 
-  test("(b) a resent undo answers too_late and leaves the later press confirmed", async () => {
+  test("(b) a resent undo answers undone again and leaves the later press confirmed", async () => {
     const f = await dueFixture();
     await press(f, "2027-03-14T12:05:00Z", 0, A);
     await undo(f, "2027-03-14T12:05:10Z", 0, A);
     await press(f, "2027-03-14T12:05:20Z", 0, B);
-    expect(await undo(f, "2027-03-14T12:05:30Z", 20_000, A)).toEqual({ status: "too_late" });
+    const before = await row(f);
+    const auditCount = (await audits(f)).length;
+    expect(await undo(f, "2027-03-14T12:05:30Z", 20_000, A)).toMatchObject({ status: "undone" });
     const after = await row(f);
+    expect(after).toEqual(before);
     expect(after.state).toBe("confirmed");
     expect(after.confirmPressIds).toEqual([B]);
+    expect((await audits(f)).length).toBe(auditCount);
   });
 
   test("(c) on a slow network a Done just after Undo is applied", async () => {
@@ -1404,15 +1408,16 @@ describe("press ids", () => {
     expect((await row(f)).state).toBe("due");
   });
 
-  test("a resend of an undone press on a later confirm does not join it, so its resent undo is too_late", async () => {
+  test("a resend of an undone press on a later confirm does not join it, so its resent undo changes nothing", async () => {
     const f = await dueFixture();
     await press(f, "2027-03-14T12:05:00Z", 0, A);
     await undo(f, "2027-03-14T12:05:10Z", 0, A);
     await press(f, "2027-03-14T12:05:20Z", 0, B);
     await press(f, "2027-03-14T12:05:25Z", 0, A);
     expect((await row(f)).confirmPressIds).toEqual([B]);
-    expect(await undo(f, "2027-03-14T12:05:30Z", 20_000, A)).toEqual({ status: "too_late" });
+    expect(await undo(f, "2027-03-14T12:05:30Z", 20_000, A)).toMatchObject({ status: "undone" });
     expect((await row(f)).state).toBe("confirmed");
+    expect((await row(f)).confirmPressIds).toEqual([B]);
   });
 
   test("a reopen takes back every id of the confirmation and audits them", async () => {
@@ -1449,6 +1454,7 @@ describe("press ids", () => {
       tappedAt: Date.parse("2027-03-14T12:05:20Z"),
       receivedAt: Date.parse("2027-03-14T12:05:30Z"),
       pressId: B,
+      transport: "app",
     });
   });
 
@@ -1527,6 +1533,38 @@ describe("press ids", () => {
     ]);
     await undo(f, "2027-03-14T12:05:10Z", 0, B);
     expect(await pressIdsSeenBy(f, "phone")).toEqual([[], []]);
+  });
+
+  async function restoreSeenBy(f: Fixture, subject: string): Promise<(string | null)[]> {
+    const asReader = f.t.withIdentity({ subject });
+    const day = await asReader.query(api.calendar.dayView, { householdId: f.householdId });
+    const today = await asReader.query(api.instances.today, { householdId: f.householdId });
+    return [day.tasks, today].map(
+      (list) => list.find((e) => e.instanceId === f.instanceId)!.undoRestoresState,
+    );
+  }
+
+  test("the day entry says what an Undo restores, only to the confirming device", async () => {
+    const f = await dueFixture();
+    await pair(f.t, f.householdId, "pat", "phone2", "senior_phone");
+    expect(await restoreSeenBy(f, "phone")).toEqual([null, null]);
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await restoreSeenBy(f, "phone")).toEqual(["due", "due"]);
+    for (const other of ["phone2", "display", "pat", "val"]) {
+      expect(await restoreSeenBy(f, other)).toEqual([null, null]);
+    }
+    await undo(f, "2027-03-14T12:05:10Z", 0, A);
+    expect(await restoreSeenBy(f, "phone")).toEqual([null, null]);
+  });
+
+  test("the day entry's undoRestoresState is the state the confirm replaced", async () => {
+    const f = await dueFixture();
+    await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, { state: "escalated" }));
+    await press(f, "2027-03-14T12:05:00Z", 0, A);
+    expect(await restoreSeenBy(f, "phone")).toEqual(["escalated", "escalated"]);
+    expect(await undo(f, "2027-03-14T12:05:10Z", 0, A)).toMatchObject({
+      instance: { state: "escalated" },
+    });
   });
 
   test("confirmInstance refuses a press id from a caregiver actor", async () => {

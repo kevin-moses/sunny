@@ -132,6 +132,10 @@ async function postConfirm(t: TestConvex, token: string, body: unknown): Promise
   return await call(t, "POST", "/device/confirm", { token, body });
 }
 
+async function postUndo(t: TestConvex, token: string, body: unknown): Promise<Response> {
+  return await call(t, "POST", "/device/undo", { token, body });
+}
+
 async function putInfo(t: TestConvex, token: string, body: unknown): Promise<Response> {
   return await call(t, "PUT", "/device/info", { token, body });
 }
@@ -148,11 +152,19 @@ async function force(f: Fixture, patch: Record<string, unknown>): Promise<void> 
   await f.t.run(async (ctx) => await ctx.db.patch(f.instanceId, patch));
 }
 
+async function verdict(res: Response): Promise<{ status: unknown; reason: unknown }> {
+  const { status, reason } = (await res.json()) as Record<string, unknown>;
+  return { status, reason };
+}
+
 function near(actual: number | undefined, expected: number): boolean {
   return actual !== undefined && Math.abs(actual - expected) < 100;
 }
 
 const UNKNOWN_TOKEN = `sunny_dev_${"Q".repeat(43)}`;
+
+const PRESS_A = "6F1B2C3D-0000-4000-8000-00000000000A";
+const PRESS_B = "6F1B2C3D-0000-4000-8000-00000000000B";
 
 describe("issueToken", () => {
   test("returns a token once and stores only its hash, audited without either", async () => {
@@ -313,6 +325,7 @@ describe("authentication", () => {
     const t = makeBackend();
     await household(t);
     expect((await call(t, "POST", "/device/confirm", { body: "{nope" })).status).toBe(401);
+    expect((await call(t, "POST", "/device/undo", { body: "{nope" })).status).toBe(401);
     expect(
       (await call(t, "PUT", "/device/info", { token: UNKNOWN_TOKEN, body: "[]" })).status,
     ).toBe(401);
@@ -745,7 +758,7 @@ describe("POST /device/confirm from the widget", () => {
 });
 
 describe("POST /device/confirm", () => {
-  test("refuses a pressId key: the phone app's queue must stay the only sender of press ids", async () => {
+  test("records the press id it was sent with", async () => {
     const t = makeBackend();
     const f = await household(t);
     await force(f, { state: "due" });
@@ -754,12 +767,54 @@ describe("POST /device/confirm", () => {
       instanceId: f.instanceId,
       pressedAgoMs: 0,
       via: "widget",
-      pressId: "press-0000000000000001",
+      pressId: PRESS_A,
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
     const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
-    expect(row!.state).toBe("due");
-    expect(row!.confirmPressIds).toBeUndefined();
+    expect(row).toMatchObject({ state: "confirmed", confirmPressIds: [PRESS_A] });
+    const change = (await audits(t)).find((a) => a.action === "state_change");
+    expect(change!.detail).toMatchObject({ pressId: PRESS_A, transport: "device_api" });
+  });
+
+  test("a press id that is not one is 400 and the task is left alone", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    for (const pressId of ["short", 7, "has spaces in the id!"]) {
+      const res = await postConfirm(t, token, {
+        instanceId: f.instanceId,
+        pressedAgoMs: 0,
+        via: "widget",
+        pressId,
+      });
+      expect(res.status).toBe(400);
+    }
+    expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("due");
+  });
+
+  test("each answer carries the device's count of answered presses, and so does its day view", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    const phone = t.withIdentity({ subject: "phone" });
+    const dayCount = async (as = phone) =>
+      (await as.query(api.calendar.dayView, { householdId: f.householdId })).answeredPresses;
+    expect(await dayCount()).toBe(0);
+    const countOf = async (res: Response) =>
+      ((await res.json()) as { answeredPresses: number }).answeredPresses;
+    const press = { instanceId: f.instanceId, pressedAgoMs: 0, via: "widget", pressId: PRESS_A };
+    expect(await countOf(await postConfirm(t, token, press))).toBe(1);
+    expect(await dayCount()).toBe(1);
+    expect(await countOf(await postConfirm(t, token, press))).toBe(2);
+    const undo = { instanceId: f.instanceId, pressId: PRESS_A, undoneAgoMs: 0 };
+    expect(await countOf(await postUndo(t, token, undo))).toBe(3);
+    expect(await countOf(await postUndo(t, token, undo))).toBe(4);
+    expect(await dayCount()).toBe(4);
+    expect(await dayCount(t.withIdentity({ subject: "pat" }))).toBeNull();
+    expect((await postConfirm(t, token, { ...press, instanceId: "abc" })).status).toBe(400);
+    expect(await dayCount()).toBe(4);
   });
 
   test("confirms as the device and returns the fresh state with its ETag", async () => {
@@ -808,7 +863,12 @@ describe("POST /device/confirm", () => {
       via: "button",
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "confirmed", reason: null, state: null });
+    expect(await res.json()).toEqual({
+      status: "confirmed",
+      reason: null,
+      answeredPresses: 1,
+      state: null,
+    });
     expect(res.headers.get("ETag")).toBeNull();
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     const row = await t.run(async (ctx) => await ctx.db.get(f.instanceId));
@@ -922,8 +982,8 @@ describe("POST /device/confirm", () => {
     await t.run(async (ctx) => await ctx.db.delete(mine.instanceId));
     const deleted = await postConfirm(t, token, { instanceId: mine.instanceId, ...press });
     expect(foreign.status).toBe(deleted.status);
-    const { state: _a, ...foreignBody } = (await foreign.json()) as Record<string, unknown>;
-    const { state: _b, ...deletedBody } = (await deleted.json()) as Record<string, unknown>;
+    const foreignBody = await verdict(foreign);
+    const deletedBody = await verdict(deleted);
     expect(foreignBody).toEqual(deletedBody);
     expect(foreignBody).toEqual({ status: "rejected", reason: "The task no longer exists" });
     const theirRow = await t.run(async (ctx) => await ctx.db.get(theirs.instanceId));
@@ -1117,7 +1177,7 @@ describe("isolation from another household", () => {
     const press = { pressedAgoMs: 0, via: "button" };
     await t.run(async (ctx) => await ctx.db.delete(mine.instanceId));
     const reference = await postConfirm(t, token, { instanceId: mine.instanceId, ...press });
-    const { state: _ref, ...referenceBody } = (await reference.json()) as Record<string, unknown>;
+    const referenceBody = await verdict(reference);
     expect(referenceBody).toEqual({ status: "rejected", reason: "The task no longer exists" });
     const farAhead = Date.parse(START) + 4 * 60 * MIN;
     const cases: Record<string, unknown>[] = [
@@ -1144,8 +1204,7 @@ describe("isolation from another household", () => {
       const rowsBefore = await theirRows();
       const res = await postConfirm(t, token, { instanceId: theirs.instanceId, ...press });
       expect(res.status, String(patch.state)).toBe(reference.status);
-      const { state: _s, ...body } = (await res.json()) as Record<string, unknown>;
-      expect(body, String(patch.state)).toEqual(referenceBody);
+      expect(await verdict(res), String(patch.state)).toEqual(referenceBody);
       expect(await t.run(async (ctx) => await ctx.db.get(theirs.instanceId))).toEqual(before);
       expect(await theirRows(), String(patch.state)).toBe(rowsBefore);
     }
@@ -1239,7 +1298,7 @@ describe("a confirm through the device API is a device confirm", () => {
     expect(((await fresh.json()) as { status: string }).status).toBe("confirmed");
   });
 
-  test("the phone app's Undo cannot take back a press made through the API: it has no press id", async () => {
+  test("a press sent without a press id cannot be undone", async () => {
     const t = makeBackend();
     const f = await household(t);
     await force(f, { state: "due" });
@@ -1256,13 +1315,252 @@ describe("a confirm through the device API is a device confirm", () => {
     expect(undone.status).toBe("too_late");
     expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("confirmed");
   });
+});
 
-  test("the device API offers no undo route", async () => {
+describe("POST /device/undo", () => {
+  async function pressed(via = "widget"): Promise<{ t: TestConvex; f: Fixture; token: string }> {
     const t = makeBackend();
-    await household(t);
-    const token = await issue(t, "display");
-    const res = await call(t, "POST", "/device/undo", { token, body: {} });
-    expect(res.status).toBe(404);
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    setNow(local("08:05"));
+    const res = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 0,
+      via,
+      pressId: PRESS_A,
+    });
+    expect(((await res.json()) as { status: string }).status).toBe("confirmed");
+    return { t, f, token };
+  }
+
+  async function instance(f: Fixture) {
+    return (await f.t.run(async (ctx) => await ctx.db.get(f.instanceId)))!;
+  }
+
+  test("takes back a press made through the API and returns the fresh state", async () => {
+    const { t, f, token } = await pressed();
+    setNow(local("08:05") + 20_000);
+    const res = await postUndo(t, token, {
+      instanceId: f.instanceId,
+      pressId: PRESS_A,
+      undoneAgoMs: 0,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      state: { version: string; done: { instanceId: string } | null };
+    };
+    expect(body.status).toBe("undone");
+    expect(body.state.done?.instanceId).toBe(f.instanceId);
+    expect(res.headers.get("ETag")).toBe(`"${body.state.version}"`);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await instance(f)).toMatchObject({ state: "due", takenBackPressIds: [PRESS_A] });
+    const change = (await audits(t)).filter((a) => a.action === "state_change").at(-1);
+    expect(change).toMatchObject({
+      actorKind: "senior_device",
+      actorUserId: "phone",
+      detail: {
+        from: "confirmed",
+        to: "due",
+        undo: true,
+        pressId: PRESS_A,
+        transport: "device_api",
+      },
+    });
+  });
+
+  test("a press from the widget, the Live Activity or the app is undone the same way", async () => {
+    for (const via of ["widget", "live_activity", "phone_app"]) {
+      const { t, f, token } = await pressed(via);
+      const res = await postUndo(t, token, {
+        instanceId: f.instanceId,
+        pressId: PRESS_A,
+        undoneAgoMs: 0,
+      });
+      expect(((await res.json()) as { status: string }).status).toBe("undone");
+      expect((await instance(f)).state).toBe("due");
+    }
+  });
+
+  test("a press and its Undo made offline are judged from when they were tapped", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await force(f, { state: "due" });
+    const token = await issue(t);
+    setNow(local("09:00"));
+    await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 55 * MIN,
+      via: "widget",
+      pressId: PRESS_A,
+    });
+    expect(near((await instance(f)).confirmedAt, local("08:05"))).toBe(true);
+    const res = await postUndo(t, token, {
+      instanceId: f.instanceId,
+      pressId: PRESS_A,
+      undoneAgoMs: 55 * MIN - 20_000,
+    });
+    expect(((await res.json()) as { status: string }).status).toBe("undone");
+    expect((await instance(f)).state).not.toBe("confirmed");
+    const again = await postConfirm(t, token, {
+      instanceId: f.instanceId,
+      pressedAgoMs: 55 * MIN,
+      via: "widget",
+      pressId: PRESS_A,
+    });
+    expect(await again.json()).toMatchObject({
+      status: "rejected",
+      reason: "This press was taken back",
+    });
+  });
+
+  test("a repeat of an applied Undo answers undone again, changes nothing and audits nothing", async () => {
+    const { t, f, token } = await pressed();
+    const undo = { instanceId: f.instanceId, pressId: PRESS_A, undoneAgoMs: 0 };
+    setNow(local("08:05") + 20_000);
+    expect(((await (await postUndo(t, token, undo)).json()) as { status: string }).status).toBe(
+      "undone",
+    );
+    const undone = await instance(f);
+    const auditCount = (await audits(t)).length;
+    setNow(local("08:05") + 2 * MIN);
+    const again = await postUndo(t, token, undo);
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { status: string }).status).toBe("undone");
+    expect(await instance(f)).toEqual(undone);
+    expect((await audits(t)).length).toBe(auditCount);
+    expect((await audits(t)).some((a) => a.action === "undo_not_applied")).toBe(false);
+  });
+
+  test("a repeat of an applied step Undo answers undone again and leaves the step alone", async () => {
+    const t = makeBackend();
+    const f = await household(t);
+    await addPhoneDay(f);
+    const token = await issue(t);
+    setNow(local("08:05"));
+    await t.mutation(internal.scheduler.tickHousehold, {
+      householdId: f.householdId,
+      now: local("08:05"),
+    });
+    const ready = await instanceIdOf(f, "Get ready");
+    const row = async () => (await t.run(async (ctx) => await ctx.db.get(ready)))!;
+    const press = { instanceId: ready, pressedAgoMs: 0, via: "widget", step: 0, pressId: PRESS_A };
+    expect(((await (await postConfirm(t, token, press)).json()) as { status: string }).status).toBe(
+      "advanced",
+    );
+    const undo = { instanceId: ready, pressId: PRESS_A, undoneAgoMs: 0 };
+    setNow(local("08:05") + 10_000);
+    expect(((await (await postUndo(t, token, undo)).json()) as { status: string }).status).toBe(
+      "undone",
+    );
+    const steppedBack = await row();
+    expect(steppedBack.currentStep).toBe(0);
+    const auditCount = (await audits(t)).length;
+    setNow(local("08:05") + 2 * MIN);
+    expect(((await (await postUndo(t, token, undo)).json()) as { status: string }).status).toBe(
+      "undone",
+    );
+    expect(await row()).toEqual(steppedBack);
+    expect((await audits(t)).length).toBe(auditCount);
+    expect((await audits(t)).some((a) => a.action === "undo_not_applied")).toBe(false);
+  });
+
+  test("an Undo tapped more than a minute after the press is too late and audited", async () => {
+    const { t, f, token } = await pressed();
+    setNow(local("08:05") + 61_000);
+    const res = await postUndo(t, token, {
+      instanceId: f.instanceId,
+      pressId: PRESS_A,
+      undoneAgoMs: 0,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe("too_late");
+    expect((await instance(f)).state).toBe("confirmed");
+    const refusal = (await audits(t)).find((a) => a.action === "undo_not_applied");
+    expect(refusal!.detail).toMatchObject({ pressId: PRESS_A, transport: "device_api" });
+  });
+
+  test("an Undo that names another press, or comes from another device, changes nothing", async () => {
+    const { t, f, token } = await pressed();
+    const other = await postUndo(t, token, {
+      instanceId: f.instanceId,
+      pressId: PRESS_B,
+      undoneAgoMs: 0,
+    });
+    expect(((await other.json()) as { status: string }).status).toBe("too_late");
+    const displayToken = await issue(t, "display");
+    const fromDisplay = await postUndo(t, displayToken, {
+      instanceId: f.instanceId,
+      pressId: PRESS_A,
+      undoneAgoMs: 0,
+    });
+    expect(((await fromDisplay.json()) as { status: string }).status).toBe("too_late");
+    expect((await instance(f)).state).toBe("confirmed");
+  });
+
+  test("another household's instance is answered like a missing one and left alone", async () => {
+    const { t, f } = await pressed();
+    await household(t, "z_");
+    const foreignToken = await issue(t, "z_phone");
+    const res = await postUndo(t, foreignToken, {
+      instanceId: f.instanceId,
+      pressId: PRESS_A,
+      undoneAgoMs: 0,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe("too_late");
+    expect((await instance(f)).state).toBe("confirmed");
+    const refusal = (await audits(t)).find((a) => a.action === "undo_not_applied");
+    expect(refusal).toMatchObject({
+      actorUserId: "z_phone",
+      detail: { reason: "The task is not in this household", pressId: PRESS_A },
+    });
+    expect(refusal!.householdId).not.toBe(f.householdId);
+  });
+
+  test("a bad body, press id or instance id is 400 and audited", async () => {
+    const { t, f, token } = await pressed();
+    const good = { instanceId: f.instanceId, pressId: PRESS_A, undoneAgoMs: 0 };
+    const bad: unknown[] = [
+      "{nope",
+      [],
+      { ...good, extra: 1 },
+      { ...good, instanceId: "" },
+      { ...good, instanceId: "abc" },
+      { ...good, pressId: "short" },
+      { instanceId: f.instanceId, undoneAgoMs: 0 },
+      { ...good, undoneAgoMs: -1 },
+      { ...good, undoneAgoMs: "0" },
+      { ...good, undoneAgoMs: 8 * 24 * 60 * MIN },
+    ];
+    for (const body of bad) expect((await postUndo(t, token, body)).status).toBe(400);
+    expect((await instance(f)).state).toBe("confirmed");
+    const refusals = (await audits(t)).filter((a) => a.action === "undo_not_applied");
+    expect(refusals).toHaveLength(bad.length);
+    expect(
+      refusals.every((a) => (a.detail as { transport: string }).transport === "device_api"),
+    ).toBe(true);
+  });
+
+  test("refused Undos share the 20 audited refusals an hour with refused presses", async () => {
+    const { t, f, token } = await pressed();
+    for (let i = 0; i < 25; i += 1) {
+      const res = await postUndo(t, token, {
+        instanceId: f.instanceId,
+        pressId: PRESS_B,
+        undoneAgoMs: 0,
+      });
+      expect(((await res.json()) as { status: string }).status).toBe("too_late");
+    }
+    expect((await audits(t)).filter((a) => a.action === "undo_not_applied")).toHaveLength(20);
+    const late = await postConfirm(t, token, {
+      instanceId: "abc",
+      pressedAgoMs: 0,
+      via: "widget",
+    });
+    expect(late.status).toBe(400);
+    expect((await audits(t)).some((a) => a.action === "press_not_applied")).toBe(false);
   });
 });
 
@@ -1472,16 +1770,30 @@ describe("a device removed between the gate and the effect", () => {
       }),
     ).toEqual({ kind: "unauthorized" });
     expect(
+      await t.mutation(internal.deviceApi.undoByToken, {
+        tokenHash,
+        instanceId: f.instanceId,
+        pressId: PRESS_A,
+        undoneAgoMs: 0,
+      }),
+    ).toEqual({ kind: "unauthorized" });
+    expect(
       await t.mutation(internal.deviceApi.updateInfoByToken, { tokenHash, firmware: "1.0" }),
     ).toBe(false);
-    await t.mutation(internal.deviceApi.refusePressByToken, {
+    await t.mutation(internal.deviceApi.refuseByToken, {
       tokenHash,
+      action: "press_not_applied",
       reason: "The press could not be read",
-      pressedAgoMs: null,
-      via: null,
+      sent: { pressedAgoMs: null, via: null },
+    });
+    await t.mutation(internal.deviceApi.refuseByToken, {
+      tokenHash,
+      action: "undo_not_applied",
+      reason: "The undo could not be read",
+      sent: { undoneAgoMs: null, pressId: null },
     });
     expect((await t.run(async (ctx) => await ctx.db.get(f.instanceId)))!.state).toBe("upcoming");
-    expect((await audits(t)).some((a) => a.action === "press_not_applied")).toBe(false);
+    expect((await audits(t)).some((a) => a.action.endsWith("_not_applied"))).toBe(false);
     expect((await deviceRow(t, f.phoneId))!.firmware).toBeUndefined();
   });
 });
@@ -1497,6 +1809,7 @@ describe("unexpected errors", () => {
       await getState(t, token),
       await getTimeline(t, token),
       await postConfirm(t, token, {}),
+      await postUndo(t, token, {}),
       await putInfo(t, token, {}),
     ]) {
       expect(res.status).toBe(500);

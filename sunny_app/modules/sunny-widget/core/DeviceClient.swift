@@ -54,16 +54,33 @@ public struct DeviceClient: Sendable {
         return request
     }
 
-    public func confirmRequest(_ press: Press, at now: Date, timeout: TimeInterval) -> URLRequest {
-        var request = authorized(path: "device/confirm", timeout: timeout)
+    public func request(for send: QueuedSend, at now: Date, timeout: TimeInterval) -> URLRequest {
+        switch send {
+        case .confirm(let press):
+            return post(
+                "device/confirm",
+                ConfirmBody(
+                    instanceId: press.instanceId,
+                    pressedAgoMs: send.agoMs(at: now),
+                    via: press.via.rawValue,
+                    step: press.step,
+                    pressId: press.id.uuidString
+                ),
+                timeout: timeout
+            )
+        case .undo(let undo):
+            return post(
+                "device/undo",
+                UndoBody(instanceId: undo.instanceId, pressId: undo.pressId.uuidString, undoneAgoMs: send.agoMs(at: now)),
+                timeout: timeout
+            )
+        }
+    }
+
+    private func post<Body: Encodable>(_ path: String, _ body: Body, timeout: TimeInterval) -> URLRequest {
+        var request = authorized(path: path, timeout: timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body = ConfirmBody(
-            instanceId: press.instanceId,
-            pressedAgoMs: press.pressedAgoMs(at: now),
-            via: press.via.rawValue,
-            step: press.step
-        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         request.httpBody = try? encoder.encode(body)
@@ -93,11 +110,11 @@ public struct DeviceClient: Sendable {
         return Self.fetchOutcome(status: response.statusCode, body: data, headers: response)
     }
 
-    public func confirm(_ press: Press, at now: Date, timeout: TimeInterval) async -> ConfirmOutcome {
-        guard let (data, response) = try? await transport.send(confirmRequest(press, at: now, timeout: timeout)) else {
+    public func send(_ send: QueuedSend, at now: Date, timeout: TimeInterval) async -> SendOutcome {
+        guard let (data, response) = try? await transport.send(request(for: send, at: now, timeout: timeout)) else {
             return .failed
         }
-        return Self.confirmOutcome(status: response.statusCode, body: data, headers: response)
+        return Self.sendOutcome(status: response.statusCode, body: data, headers: response)
     }
 
     static func fetchOutcome(status: Int, body: Data, headers: HTTPURLResponse) -> FetchOutcome {
@@ -110,9 +127,9 @@ public struct DeviceClient: Sendable {
         }
     }
 
-    static func confirmOutcome(status: Int, body: Data, headers: HTTPURLResponse) -> ConfirmOutcome {
+    static func sendOutcome(status: Int, body: Data, headers: HTTPURLResponse) -> SendOutcome {
         switch status {
-        case 200: return .answered(confirmStatus(body))
+        case 200: return .answered(serverAnswer(body))
         case 400: return .unreadable
         case 401: return .unauthorized
         case 429: return .rateLimited(retryAfter: retryAfter(headers))
@@ -128,14 +145,20 @@ public struct DeviceClient: Sendable {
         }
     }
 
-    static func confirmStatus(_ body: Data) -> ConfirmStatus {
-        guard let answer = try? JSONDecoder().decode(ConfirmAnswer.self, from: body) else {
-            return .unrecognized("")
+    static func serverAnswer(_ body: Data) -> ServerAnswer {
+        guard let answer = try? JSONDecoder().decode(AnswerBody.self, from: body) else {
+            return ServerAnswer(status: .unrecognized(""))
         }
+        return ServerAnswer(status: answerStatus(answer), answeredPresses: answer.answeredPresses)
+    }
+
+    private static func answerStatus(_ answer: AnswerBody) -> AnswerStatus {
         switch answer.status {
         case "confirmed": return .confirmed
         case "advanced": return .advanced
+        case "undone": return .undone
         case "rejected": return .rejected(reason: answer.reason)
+        case "too_late": return .tooLate
         default: return .unrecognized(answer.status)
         }
     }
@@ -162,9 +185,17 @@ private struct ConfirmBody: Encodable {
     let pressedAgoMs: Int
     let via: String
     let step: Int
+    let pressId: String
 }
 
-private struct ConfirmAnswer: Decodable {
+private struct UndoBody: Encodable {
+    let instanceId: String
+    let pressId: String
+    let undoneAgoMs: Int
+}
+
+private struct AnswerBody: Decodable {
     let status: String
     let reason: String?
+    let answeredPresses: Int?
 }

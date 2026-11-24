@@ -39,6 +39,7 @@ export interface TodayEntry {
   confirmable: boolean;
   reopenable: boolean;
   confirmPressIds: string[];
+  undoRestoresState: InstanceState | null;
   stepPressIds: string[];
   seniorPrompts: number;
   snoozed: boolean;
@@ -111,12 +112,12 @@ function seniorReader(reader: Actor | null): string | null {
   return reader?.kind === "senior_device" ? reader.userId : null;
 }
 
-function visibleConfirmPressIds(
-  instance: Pick<Doc<"taskInstances">, "confirmedBy" | "confirmPressIds">,
+function confirmedByReader(
+  instance: Pick<Doc<"taskInstances">, "confirmedBy">,
   reader: Actor | null,
-): string[] {
+): boolean {
   const userId = seniorReader(reader);
-  return userId !== null && instance.confirmedBy === userId ? (instance.confirmPressIds ?? []) : [];
+  return userId !== null && instance.confirmedBy === userId;
 }
 
 export async function todayInstances(
@@ -155,6 +156,7 @@ export async function todayInstances(
     const claimedBy = instance.claimedBy ?? null;
     const confirmedBy = instance.confirmedBy ?? null;
     const confirmedAt = instance.confirmedAt ?? null;
+    const readerConfirmed = confirmedByReader(instance, reader);
     entries.push({
       ...instanceDayTask(instance, task, now),
       carriedOver: carriedIds.has(instance._id),
@@ -176,7 +178,8 @@ export async function todayInstances(
       resolutionNote: instance.resolutionNote ?? null,
       reopenable:
         caregiverCanReopen(instance, now, household.timezone) && taskStillRuns(task, instance),
-      confirmPressIds: visibleConfirmPressIds(instance, reader),
+      confirmPressIds: readerConfirmed ? (instance.confirmPressIds ?? []) : [],
+      undoRestoresState: readerConfirmed ? (instance.resolvedFromState ?? null) : null,
       stepPressIds: visibleStepPressIds(instance, seniorReader(reader)),
       snoozed: isSnoozed(instance.snoozedUntil, now),
     });
