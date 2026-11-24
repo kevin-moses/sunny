@@ -167,6 +167,10 @@ public struct PressQueue: Sendable {
         record(id, from: Set(LogFile.allCases.filter { exists($0, of: id) }))
     }
 
+    public func answer(of pressId: UUID) -> PressAnswer? {
+        read(.answer, of: pressId)
+    }
+
     public func unsent() -> [QueuedSend] {
         let pending = files().compactMap { id, found -> UnsentPress? in
             let sendsPress = !found.contains(.answer)
@@ -200,6 +204,17 @@ public struct PressQueue: Sendable {
             guard let uuid = UUID(uuidString: id) else { continue }
             if let record = record(uuid, from: found), !record.isCollectible(at: now) { continue }
             for file in LogFile.allCases { remove(file, of: uuid) }
+        }
+        sweepStaging(at: now)
+    }
+
+    private func sweepStaging(at now: Date) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path)) ?? []
+        for name in names {
+            let staged = stagingDirectory.appendingPathComponent(name)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: staged.path)
+            guard let modified = attributes?[.modificationDate] as? Date else { continue }
+            if now.timeIntervalSince(modified) > Self.recordLifetime { try? FileManager.default.removeItem(at: staged) }
         }
     }
 

@@ -174,6 +174,10 @@ public struct WidgetSync: Sendable {
         let deadline = clock().addingTimeInterval(timeout)
         var held: Set<String> = []
         for send in storage.presses.unsent() where !held.contains(send.instanceId) {
+            if case .undo = send, storage.presses.answer(of: send.pressId)?.applied == false {
+                storage.presses.answered(send, with: PressAnswer(at: clock(), applied: false, answeredPresses: nil))
+                continue
+            }
             let left = deadline.timeIntervalSince(clock())
             guard left > 0 else { return .pending }
             let outcome = await client.send(send, at: clock(), timeout: left)

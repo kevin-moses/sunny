@@ -180,6 +180,24 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(try logFiles(directory), [])
     }
 
+    func testCollectDeletesStagedFilesOlderThanTwoDays() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        try queue.append(press("a"))
+        let staging = directory.appendingPathComponent("pressLog/staging")
+        let old = staging.appendingPathComponent("old.json")
+        let fresh = staging.appendingPathComponent("fresh.json")
+        try Data("{}".utf8).write(to: old)
+        try Data("{}".utf8).write(to: fresh)
+        let now = start.addingTimeInterval(60)
+        let oldDate = now.addingTimeInterval(-PressQueue.recordLifetime - 60)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: old.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: fresh.path)
+        queue.collect(at: now)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), ["fresh.json"])
+        XCTAssertEqual(queue.records().count, 1)
+    }
+
     func testDropsAPressFileItCannotDecode() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)
