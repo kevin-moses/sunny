@@ -180,6 +180,20 @@ final class PressQueueTests: XCTestCase {
         XCTAssertEqual(try logFiles(directory), [])
     }
 
+    func testCollectLeavesAPressWhoseFileCannotBeReadRightNow() throws {
+        let directory = try temporaryDirectory()
+        let queue = PressQueue(directory: directory)
+        let pressed = press("a")
+        try queue.append(pressed)
+        queue.answered(.confirm(pressed), with: answer(at: 1))
+        let pressFile = directory.appendingPathComponent("pressLog/\(pressed.id.uuidString).press.json").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: pressFile)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pressFile) }
+        queue.collect(at: start.addingTimeInterval(PressQueue.recordLifetime + 60))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pressFile)
+        XCTAssertEqual(queue.records(), [PressRecord(press: pressed, answer: answer(at: 1))])
+    }
+
     func testCollectDeletesStagedFilesOlderThanTwoDays() throws {
         let directory = try temporaryDirectory()
         let queue = PressQueue(directory: directory)

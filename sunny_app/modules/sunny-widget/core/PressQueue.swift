@@ -202,8 +202,10 @@ public struct PressQueue: Sendable {
     public func collect(at now: Date) {
         for (id, found) in files() {
             guard let uuid = UUID(uuidString: id) else { continue }
-            if let record = record(uuid, from: found), !record.isCollectible(at: now) { continue }
-            for file in LogFile.allCases { remove(file, of: uuid) }
+            if found.contains(.press) {
+                guard let record = record(uuid, from: found), record.isCollectible(at: now) else { continue }
+            }
+            for file in found { remove(file, of: uuid) }
         }
         sweepStaging(at: now)
     }
